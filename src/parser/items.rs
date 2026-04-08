@@ -2,9 +2,10 @@
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
-use crate::lexer::token::{Span as TokenSpan, TokenKind};
+use crate::lexer::token::TokenKind;
 use crate::parser::Parser;
 use crate::parser::ast::*;
+use crate::parser::common::{merge_token_spans, to_ast_span};
 
 impl Parser {
     pub fn parse_fn(&mut self) -> Result<Item, String> {
@@ -261,23 +262,3 @@ impl Parser {
     }
 }
 
-// Local helpers duplicated intentionally so items parsing stays self-contained.
-
-fn merge_token_spans(a: TokenSpan, b: TokenSpan) -> TokenSpan {
-    let (line, col, start) = if a.start <= b.start {
-        (a.line, a.col, a.start)
-    } else {
-        (b.line, b.col, b.start)
-    };
-    let end = a.end.max(b.end);
-    TokenSpan {
-        line,
-        col,
-        start,
-        end,
-    }
-}
-
-fn to_ast_span(s: TokenSpan) -> Span {
-    Span::new(s.line, s.col, s.start, s.end)
-}
