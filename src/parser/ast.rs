@@ -2,59 +2,126 @@
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
-#[derive(Debug, Clone)]
-/// expressions: compares, method calls, literals
-pub enum Expr {
-    IntLit(i64),       // 5
-    FloatLit(f64),     // 3.14159
-    StringLit(String), // "hello"
-    Ident(String),     // x, stdout
-    MethodCall {
-        // stdout.println(...)
-        object: Box<Expr>,
-        method: String,
-        args: Vec<Expr>,
-    },
-    BinOp {
-        // a + b ; x > y
-        left: Box<Expr>,
-        op: BinOpKind,
-        right: Box<Expr>,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub line: usize,
+    pub col: usize,
+    pub start: usize,
+    pub end: usize,
 }
 
-/// operator kinds like adding, comparing
+impl Span {
+    pub fn new(line: usize, col: usize, start: usize, end: usize) -> Self {
+        Self {
+            line,
+            col,
+            start,
+            end,
+        }
+    }
+
+    pub fn merge(a: Span, b: Span) -> Self {
+        let (line, col, start) = if a.start <= b.start {
+            (a.line, a.col, a.start)
+        } else {
+            (b.line, b.col, b.start)
+        };
+        let end = a.end.max(b.end);
+        Self {
+            line,
+            col,
+            start,
+            end,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Spanned<T> {
+    pub node: T,
+    pub span: Span,
+}
+
+impl<T> Spanned<T> {
+    pub fn new(node: T, span: Span) -> Self {
+        Self { node, span }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Literal {
+    Int(i64),
+    Float(f64),
+    String(String),
+    Bool(bool),
+}
+
+#[derive(Debug, Clone)]
+pub enum UnaryOpKind {
+    Neg, // -x
+    Not, // !x
+}
+
 #[derive(Debug, Clone)]
 pub enum BinOpKind {
     Add,
     Sub,
     Mul,
     Div,
+    Mod,
     Lt,
     Gt,
     LtEq,
     GtEq,
     EqEq,
     NotEq,
+    AndAnd,
+    OrOr,
 }
 
 #[derive(Debug, Clone)]
-pub struct ImportPath {
-    pub path: Vec<String>,
-    pub items: ImportItems,
+pub enum ExprKind {
+    Literal(Literal),
+    Ident(String),
+    Group(Box<Expr>),
+
+    Unary {
+        op: UnaryOpKind,
+        expr: Box<Expr>,
+    },
+
+    Binary {
+        left: Box<Expr>,
+        op: BinOpKind,
+        right: Box<Expr>,
+    },
+
+    Assign {
+        target: Box<Expr>,
+        value: Box<Expr>,
+    },
+
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+
+    Field {
+        object: Box<Expr>,
+        name: String,
+    },
+
+    MethodCall {
+        object: Box<Expr>,
+        method: String,
+        args: Vec<Expr>,
+    },
 }
 
-#[derive(Debug, Clone)]
-pub enum ImportItems {
-    Single(String),
-    Multiple(Vec<String>),
-    Aliased(String, String),
-    All,
-}
+pub type Expr = Spanned<ExprKind>;
 
-/// language types
 #[derive(Debug, Clone)]
-pub enum Type {
+pub enum TypeKind {
     Int8,
     Int16,
     Int32,
@@ -70,51 +137,83 @@ pub enum Type {
     Str,
     Void,
     Any,
-    Named(String), // structs
+    Named(String),
 }
 
-/// statements
+pub type Type = Spanned<TypeKind>;
+
 #[derive(Debug, Clone)]
-pub enum Stmt {
-    Let {
-        // let x: int32 = 5
+pub enum StmtKind {
+    Var {
         name: String,
-        mutable: bool,
         ty: Option<Type>,
         value: Option<Expr>,
     },
-    Return(Option<Expr>), // return x
-    If {
-        // if (x > y) { ... } else { ... }
-        condition: Expr,
-        then_block: Vec<Stmt>,
-        else_block: Option<Vec<Stmt>>,
+    Const {
+        name: String,
+        ty: Option<Type>,
+        value: Expr,
     },
-    // stdout.println(...)
+    Return(Option<Expr>),
+    If {
+        condition: Expr,
+        then_block: Block,
+        else_block: Option<Block>,
+    },
+    While {
+        condition: Expr,
+        body: Block,
+    },
     ExprStmt(Expr),
 }
 
-/// top-level statements
+pub type Stmt = Spanned<StmtKind>;
+
 #[derive(Debug, Clone)]
-pub enum Item {
-    // fn add(a: int32, b: int32) int32 { ... }
+pub struct Block {
+    pub stmts: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportPath {
+    pub path: Vec<String>,
+    pub items: ImportItems,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportItems {
+    Single(String),
+    Multiple(Vec<String>),
+    Aliased(String, String),
+    All,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitMethod {
+    pub name: String,
+    pub params: Vec<Type>,
+    pub return_ty: Type,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum ItemKind {
     Fn {
         name: String,
         params: Vec<(String, Type)>,
         return_ty: Type,
-        body: Vec<Stmt>,
+        body: Block,
     },
-    // struct Fox { ... }
     Struct {
         name: String,
         fields: Vec<(String, Type, bool)>, // (name, type, const?)
     },
-    // trait Animal { ... }
     Trait {
         name: String,
         methods: Vec<TraitMethod>,
     },
-    // impl Animal for Fox { ... }
     Impl {
         trait_name: String,
         for_type: String,
@@ -123,14 +222,10 @@ pub enum Item {
     Import(ImportPath),
 }
 
-#[derive(Debug, Clone)]
-pub struct TraitMethod {
-    pub name: String,
-    pub params: Vec<Type>,
-    pub return_ty: Type,
-}
+pub type Item = Spanned<ItemKind>;
 
 #[derive(Debug, Clone)]
 pub struct Program {
     pub items: Vec<Item>,
+    pub span: Option<Span>,
 }

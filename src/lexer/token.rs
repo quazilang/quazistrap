@@ -2,8 +2,27 @@
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
- #[derive(Debug, Clone, PartialEq)]
-pub enum Token {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub line: usize,
+    pub col: usize,
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Span {
+    pub fn new(line: usize, col: usize, start: usize, end: usize) -> Self {
+        Self {
+            line,
+            col,
+            start,
+            end,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TokenKind {
     // literals
     Int(i64),
     Float(f64),
@@ -12,16 +31,16 @@ pub enum Token {
 
     // keywords
     Fn,
-    Let,
-    Mut,
+    Var,
+    Const,
     Return,
     If,
     Else,
+    While,
     Import,
     Impl,
     Struct,
     Trait,
-    Const,
     As,
     For,
 
@@ -52,8 +71,10 @@ pub enum Token {
     Dot,       // .
     Comma,     // ,
     Ampersand, // &
+    Pipe,      // |
     Hash,      // #
     DotDotDot, // ...
+    Percent,   // %
 
     // operators
     Eq,    // =
@@ -73,4 +94,23 @@ pub enum Token {
     Platform, // platform
 
     Eof,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Token {
+    pub kind: TokenKind,
+    pub span: Span,
+}
+
+impl Token {
+    pub fn new(kind: TokenKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+
+    pub fn eof(span: Span) -> Self {
+        Self {
+            kind: TokenKind::Eof,
+            span,
+        }
+    }
 }
