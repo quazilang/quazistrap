@@ -2,210 +2,263 @@
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
+use crate::lexer::token::TokenKind;
 use crate::parser::Parser;
-use crate::parser::Token;
 use crate::parser::ast::*;
+use crate::parser::common::{merge_token_spans, to_ast_span};
 
 impl Parser {
-    pub fn parse_struct(&mut self) -> Result<Item, String> {
-        self.expect(Token::Struct)?;
+    pub fn parse_fn(&mut self) -> Result<Item, String> {
+        let start = self.expect(TokenKind::Fn)?.span;
 
         let name = self.parse_ident()?;
+        self.expect(TokenKind::LParen)?;
 
-        self.expect(Token::LBrace)?;
+        let mut params: Vec<(String, Type)> = Vec::new();
+        if !self.at(TokenKind::RParen) {
+            loop {
+                let param_name = self.parse_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let param_ty = self.parse_type()?;
+                params.push((param_name, param_ty));
 
-        let mut fields = Vec::new();
+                if self.at(TokenKind::Comma) {
+                    self.advance();
+                    continue;
+                }
+                break;
+            }
+        }
 
-        while self.peek() != &Token::RBrace {
-            let field_name = self.parse_ident()?;
-            self.expect(Token::Colon)?;
-            let ty = self.parse_type()?;
+        self.expect(TokenKind::RParen)?;
 
-            let is_const = if self.peek() == &Token::Const {
+        let return_ty = if self.at(TokenKind::LBrace) {
+            Spanned::new(TypeKind::Void, to_ast_span(start))
+        } else {
+            self.parse_type()?
+        };
+
+        let body = self.parse_block()?;
+        let span = Span::merge(to_ast_span(start), body.span);
+
+        Ok(Spanned::new(
+            ItemKind::Fn {
+                name,
+                params,
+                return_ty,
+                body,
+            },
+            span,
+        ))
+    }
+
+    pub fn parse_struct(&mut self) -> Result<Item, String> {
+        let start = self.expect(TokenKind::Struct)?.span;
+        let name = self.parse_ident()?;
+
+        self.expect(TokenKind::LBrace)?;
+        let mut fields: Vec<(String, Type, bool)> = Vec::new();
+
+        while !self.at(TokenKind::RBrace) {
+            if self.at(TokenKind::Eof) {
+                return Err(self.err_here("unexpected EOF while parsing struct".to_string()));
+            }
+
+            let is_const = if self.at(TokenKind::Const) {
                 self.advance();
                 true
             } else {
                 false
             };
 
-            fields.push((field_name, ty, is_const));
+            let field_name = self.parse_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let field_ty = self.parse_type()?;
 
-            if self.peek() == &Token::Comma {
+            fields.push((field_name, field_ty, is_const));
+
+            if self.at(TokenKind::Comma) || self.at(TokenKind::Semicolon) {
                 self.advance();
             }
         }
 
-        self.expect(Token::RBrace)?;
+        let end = self.expect(TokenKind::RBrace)?.span;
+        let span = to_ast_span(merge_token_spans(start, end));
 
-        Ok(Item::Struct { name, fields })
+        Ok(Spanned::new(ItemKind::Struct { name, fields }, span))
     }
 
     pub fn parse_trait(&mut self) -> Result<Item, String> {
-        self.expect(Token::Trait)?;
-
+        let start = self.expect(TokenKind::Trait)?.span;
         let name = self.parse_ident()?;
 
-        self.expect(Token::LBrace)?;
-
+        self.expect(TokenKind::LBrace)?;
         let mut methods = Vec::new();
 
-        while self.peek() != &Token::RBrace {
+        while !self.at(TokenKind::RBrace) {
+            if self.at(TokenKind::Eof) {
+                return Err(self.err_here("unexpected EOF while parsing trait".to_string()));
+            }
+
+            let method_start = self.current_span();
+            self.expect(TokenKind::Fn)?;
             let method_name = self.parse_ident()?;
 
-            self.expect(Token::LParen)?;
-
+            self.expect(TokenKind::LParen)?;
             let mut params = Vec::new();
-            while self.peek() != &Token::RParen {
-                let ty = self.parse_type()?;
-                params.push(ty);
+            if !self.at(TokenKind::RParen) {
+                loop {
+                    let _param_name = self.parse_ident()?;
+                    self.expect(TokenKind::Colon)?;
+                    params.push(self.parse_type()?);
 
-                if self.peek() == &Token::Comma {
-                    self.advance();
-                } else {
+                    if self.at(TokenKind::Comma) {
+                        self.advance();
+                        continue;
+                    }
                     break;
                 }
             }
+            self.expect(TokenKind::RParen)?;
 
-            self.expect(Token::RParen)?;
-
-            let return_ty = if self.peek() != &Token::Semicolon {
-                self.parse_type()?
+            let return_ty = if self.at(TokenKind::Semicolon) {
+                Spanned::new(TypeKind::Void, to_ast_span(method_start))
             } else {
-                Type::Void
+                self.parse_type()?
             };
 
-            self.expect(Token::Semicolon)?;
+            let end = self.expect(TokenKind::Semicolon)?.span;
+            let span = to_ast_span(merge_token_spans(method_start, end));
 
             methods.push(TraitMethod {
                 name: method_name,
                 params,
                 return_ty,
+                span,
             });
         }
 
-        self.expect(Token::RBrace)?;
+        let end = self.expect(TokenKind::RBrace)?.span;
+        let span = to_ast_span(merge_token_spans(start, end));
 
-        Ok(Item::Trait { name, methods })
+        Ok(Spanned::new(ItemKind::Trait { name, methods }, span))
     }
 
     pub fn parse_impl(&mut self) -> Result<Item, String> {
-        self.expect(Token::Impl)?;
+        let start = self.expect(TokenKind::Impl)?.span;
 
         let trait_name = self.parse_ident()?;
-
-        self.expect(Token::For)?;
-
+        self.expect(TokenKind::For)?;
         let for_type = self.parse_ident()?;
 
-        self.expect(Token::LBrace)?;
-
+        self.expect(TokenKind::LBrace)?;
         let mut methods = Vec::new();
 
-        while self.peek() != &Token::RBrace {
-            methods.push(self.parse_fn()?);
-        }
-
-        self.expect(Token::RBrace)?;
-
-        Ok(Item::Impl {
-            trait_name,
-            for_type,
-            methods,
-        })
-    }
-
-    pub fn parse_fn(&mut self) -> Result<Item, String> {
-        self.expect(Token::Fn).unwrap();
-        let name = self.parse_ident()?;
-        self.expect(Token::LParen)?;
-
-        let mut params = Vec::new();
-
-        while self.peek() != &Token::RParen {
-            let param_name = self.parse_ident()?;
-            self.expect(Token::Colon)?;
-            let param_type = self.parse_type()?;
-
-            params.push((param_name, param_type));
-
-            if self.peek() == &Token::Comma {
-                self.advance();
-            } else {
-                break;
+        while !self.at(TokenKind::RBrace) {
+            if self.at(TokenKind::Eof) {
+                return Err(self.err_here("unexpected EOF while parsing impl".to_string()));
             }
+
+            let item = self.parse_fn()?;
+            methods.push(item);
         }
 
-        self.expect(Token::RParen)?;
+        let end = self.expect(TokenKind::RBrace)?.span;
+        let span = to_ast_span(merge_token_spans(start, end));
 
-        let return_ty = if self.peek() != &Token::LBrace {
-            self.parse_type()?
-        } else {
-            Type::Void
-        };
-
-        let body = self.parse_block()?;
-        return Ok(Item::Fn {
-            name,
-            params,
-            return_ty,
-            body,
-        });
+        Ok(Spanned::new(
+            ItemKind::Impl {
+                trait_name,
+                for_type,
+                methods,
+            },
+            span,
+        ))
     }
 
     pub fn parse_import(&mut self) -> Result<Item, String> {
-        self.advance();
-        let mut path = Vec::new();
-        loop {
-            if let Token::Ident(name) = self.advance() {
-                path.push(name);
-            }
-            if self.peek() == &Token::Dot {
-                self.advance();
-            } else {
+        let start = self.expect(TokenKind::Import)?.span;
+
+        let mut path: Vec<String> = Vec::new();
+
+        // base path: a.b.c
+        let first = self.parse_ident()?;
+        path.push(first);
+
+        while self.at(TokenKind::Dot) {
+            let save = self.pos;
+            self.advance(); // consume '.'
+
+            // stop if this dot starts a trailing selector form:
+            // import a.b.{x,y}; / import a.b.*;
+            if self.at(TokenKind::LBrace) || self.at(TokenKind::Star) {
+                self.pos = save;
                 break;
             }
-        }
-        let items = if path.is_empty() {
-            return Err("expected at least one identifier in import".into());
-        } else if self.peek() == &Token::LBrace {
-            self.advance();
-            let mut names = Vec::new();
-            loop {
-                if let Token::Ident(name) = self.advance() {
-                    names.push(name);
+
+            match self.peek_kind() {
+                TokenKind::Ident(_) => {
+                    path.push(self.parse_ident()?);
                 }
-                if self.peek() == &Token::Comma {
-                    self.advance();
-                } else {
+                _ => {
+                    self.pos = save;
                     break;
                 }
             }
-            self.expect(Token::RBrace)?;
-            ImportItems::Multiple(names)
-        } else if self.peek() == &Token::Star {
+        }
+
+        let items = if self.at(TokenKind::Dot) {
             self.advance();
-            ImportItems::All
-        } else if matches!(self.peek(), Token::Ident(_)) {
-            let name = if let Token::Ident(n) = self.advance() {
-                n
-            } else {
-                unreachable!()
-            };
-            if self.peek() == &Token::As {
+
+            if self.at(TokenKind::LBrace) {
                 self.advance();
-                if let Token::Ident(alias) = self.advance() {
+                let mut names = Vec::new();
+
+                if !self.at(TokenKind::RBrace) {
+                    loop {
+                        names.push(self.parse_ident()?);
+
+                        if self.at(TokenKind::Comma) {
+                            self.advance();
+                            continue;
+                        }
+                        break;
+                    }
+                }
+
+                self.expect(TokenKind::RBrace)?;
+                ImportItems::Multiple(names)
+            } else if self.at(TokenKind::Star) {
+                self.advance();
+                ImportItems::All
+            } else {
+                let name = self.parse_ident()?;
+                if self.at(TokenKind::As) {
+                    self.advance();
+                    let alias = self.parse_ident()?;
                     ImportItems::Aliased(name, alias)
                 } else {
-                    return Err("expected identifier after 'as'".into());
+                    ImportItems::Single(name)
                 }
-            } else {
-                ImportItems::Single(name)
             }
         } else {
-            let item = path.pop().unwrap();
-            ImportItems::Single(item)
+            let last = path
+                .pop()
+                .ok_or_else(|| self.err_here("invalid import path".to_string()))?;
+            ImportItems::Single(last)
         };
-        self.expect(Token::Semicolon)?;
-        Ok(Item::Import(ImportPath { path, items }))
+
+        let end = self.expect(TokenKind::Semicolon)?.span;
+        let span_tok = merge_token_spans(start, end);
+
+        Ok(Spanned::new(
+            ItemKind::Import(ImportPath {
+                path,
+                items,
+                span: to_ast_span(span_tok),
+            }),
+            to_ast_span(span_tok),
+        ))
     }
 }
+

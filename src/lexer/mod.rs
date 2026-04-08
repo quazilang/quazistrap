@@ -3,11 +3,13 @@
 // SPDX-License-Identifier: 0BSD
 
 pub mod token;
-use token::Token;
+use token::{Span, Token, TokenKind};
 
 pub struct Lexer {
     input: Vec<char>,
     pos: usize,
+    line: usize,
+    col: usize,
 }
 
 impl Lexer {
@@ -15,6 +17,8 @@ impl Lexer {
         Self {
             input: input.chars().collect(),
             pos: 0,
+            line: 1,
+            col: 1,
         }
     }
 
@@ -22,66 +26,131 @@ impl Lexer {
         self.input.get(self.pos).copied()
     }
 
+    fn peek_next(&self) -> Option<char> {
+        self.input.get(self.pos + 1).copied()
+    }
+
     fn advance(&mut self) -> Option<char> {
         let ch = self.input.get(self.pos).copied();
-        self.pos += 1;
+        if let Some(c) = ch {
+            self.pos += 1;
+            if c == '\n' {
+                self.line += 1;
+                self.col = 1;
+            } else {
+                self.col += 1;
+            }
+        }
         ch
     }
 
-    fn skip_whitespace(&mut self) {
-        while let Some(ch) = self.peek() {
-            if ch.is_whitespace() {
-                self.advance();
-            } else {
-                break;
-            }
+    fn make_span(&self, start: usize, end: usize, line: usize, col: usize) -> Span {
+        Span {
+            line,
+            col,
+            start,
+            end,
         }
     }
 
-    fn skip_comment(&mut self) {
-        while let Some(ch) = self.peek() {
-            if ch == '\n' {
-                break;
-            }
-            self.advance();
-        }
-    }
-
-    fn read_string(&mut self) -> Token {
-        let mut s = String::new();
+    fn skip_whitespace_and_comments(&mut self) {
         loop {
-            match self.advance() {
-                Some('"') | None => break,
-                Some(ch) => s.push(ch),
+            match self.peek() {
+                Some(ch) if ch.is_whitespace() => {
+                    self.advance();
+                }
+                Some('/') if self.peek_next() == Some('/') => {
+                    // consume //
+                    self.advance();
+                    self.advance();
+
+                    // skip until newline (newline itself is handled by whitespace pass)
+                    while let Some(c) = self.peek() {
+                        if c == '\n' {
+                            break;
+                        }
+                        self.advance();
+                    }
+                }
+                _ => break,
             }
         }
-        Token::StringLit(s)
     }
 
-    fn read_number(&mut self, first: char) -> Token {
+    fn read_string(&mut self, start: usize, line: usize, col: usize) -> Token {
+        let mut s = String::new();
+
+        while let Some(ch) = self.advance() {
+            match ch {
+                '"' => {
+                    let span = self.make_span(start, self.pos, line, col);
+                    return Token::new(TokenKind::StringLit(s), span);
+                }
+                '\\' => {
+                    if let Some(esc) = self.advance() {
+                        let mapped = match esc {
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            '"' => '"',
+                            '\\' => '\\',
+                            other => other,
+                        };
+                        s.push(mapped);
+                    } else {
+                        break;
+                    }
+                }
+                other => s.push(other),
+            }
+        }
+
+        // Unterminated string: still emit StringLit so parser can continue.
+        let span = self.make_span(start, self.pos, line, col);
+        Token::new(TokenKind::StringLit(s), span)
+    }
+
+    fn read_number(&mut self, first: char, start: usize, line: usize, col: usize) -> Token {
         let mut s = String::from(first);
         let mut is_float = false;
+
         while let Some(ch) = self.peek() {
             if ch.is_ascii_digit() {
                 s.push(ch);
                 self.advance();
             } else if ch == '.' && !is_float {
-                is_float = true;
-                s.push(ch);
-                self.advance();
+                // only treat as float if next char is digit
+                if self.peek_next().is_some_and(|n| n.is_ascii_digit()) {
+                    is_float = true;
+                    s.push(ch);
+                    self.advance();
+                } else {
+                    break;
+                }
             } else {
                 break;
             }
         }
-        if is_float {
-            Token::Float(s.parse().unwrap())
+
+        let kind = if is_float {
+            TokenKind::Float(s.parse().unwrap_or(0.0))
         } else {
-            Token::Int(s.parse().unwrap())
-        }
+            TokenKind::Int(s.parse().unwrap_or(0))
+        };
+
+        let span = self.make_span(start, self.pos, line, col);
+        Token::new(kind, span)
     }
 
-    fn read_ident(&mut self, first: char) -> Token {
+    fn read_ident_or_keyword(
+        &mut self,
+        first: char,
+        start: usize,
+        line: usize,
+        col: usize,
+    ) -> Token {
         let mut s = String::from(first);
+
         while let Some(ch) = self.peek() {
             if ch.is_alphanumeric() || ch == '_' {
                 s.push(ch);
@@ -90,125 +159,152 @@ impl Lexer {
                 break;
             }
         }
-        match s.as_str() {
-            "fn" => Token::Fn,
-            "let" => Token::Let,
-            "mut" => Token::Mut,
-            "return" => Token::Return,
-            "if" => Token::If,
-            "else" => Token::Else,
-            "import" => Token::Import,
-            "impl" => Token::Impl,
-            "struct" => Token::Struct,
-            "trait" => Token::Trait,
-            "const" => Token::Const,
-            "for" => Token::For,
-            "platform" => Token::Platform,
-            "uint8" => Token::Uint8,
-            "uint16" => Token::Uint16,
-            "uint32" => Token::Uint32,
-            "uint64" => Token::Uint64,
-            "int8" => Token::Int8,
-            "int16" => Token::Int16,
-            "int32" => Token::Int32,
-            "int64" => Token::Int64,
-            "float16" => Token::Float16,
-            "float32" => Token::Float32,
-            "float64" => Token::Float64,
-            "bool" => Token::Bool,
-            "str" => Token::Str,
-            "void" => Token::Void,
-            "any" => Token::Any,
-            "as" => Token::As,
-            _ => Token::Ident(s),
-        }
+
+        let kind = match s.as_str() {
+            // keywords
+            "fn" => TokenKind::Fn,
+            "var" => TokenKind::Var,
+            "const" => TokenKind::Const,
+            "return" => TokenKind::Return,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
+            "while" => TokenKind::While,
+            "import" => TokenKind::Import,
+            "impl" => TokenKind::Impl,
+            "struct" => TokenKind::Struct,
+            "trait" => TokenKind::Trait,
+            "as" => TokenKind::As,
+            "for" => TokenKind::For,
+            "platform" => TokenKind::Platform,
+
+            // primitive types
+            "int8" => TokenKind::Int8,
+            "int16" => TokenKind::Int16,
+            "int32" => TokenKind::Int32,
+            "int64" => TokenKind::Int64,
+            "uint8" => TokenKind::Uint8,
+            "uint16" => TokenKind::Uint16,
+            "uint32" => TokenKind::Uint32,
+            "uint64" => TokenKind::Uint64,
+            "float16" => TokenKind::Float16,
+            "float32" => TokenKind::Float32,
+            "float64" => TokenKind::Float64,
+            "bool" => TokenKind::Bool,
+            "str" => TokenKind::Str,
+            "void" => TokenKind::Void,
+            "any" => TokenKind::Any,
+
+            _ => TokenKind::Ident(s),
+        };
+
+        let span = self.make_span(start, self.pos, line, col);
+        Token::new(kind, span)
     }
 
     pub fn next_token(&mut self) -> Token {
-        self.skip_whitespace();
+        self.skip_whitespace_and_comments();
+
+        let start = self.pos;
+        let line = self.line;
+        let col = self.col;
+
         match self.advance() {
-            None => Token::Eof,
-            Some(ch) => match ch {
-                '(' => Token::LParen,
-                ')' => Token::RParen,
-                '{' => Token::LBrace,
-                '}' => Token::RBrace,
-                ';' => Token::Semicolon,
-                ':' => Token::Colon,
-                ',' => Token::Comma,
-                '&' => Token::Ampersand,
-                '#' => Token::Hash,
-                '+' => Token::Plus,
-                '-' => Token::Minus,
-                '*' => Token::Star,
-                '"' => self.read_string(),
-                '.' => {
-                    if self.peek() == Some('.') {
-                        self.advance();
+            None => Token::eof(self.make_span(self.pos, self.pos, self.line, self.col)),
+            Some(ch) => {
+                let kind = match ch {
+                    '(' => TokenKind::LParen,
+                    ')' => TokenKind::RParen,
+                    '{' => TokenKind::LBrace,
+                    '}' => TokenKind::RBrace,
+                    ';' => TokenKind::Semicolon,
+                    ':' => TokenKind::Colon,
+                    ',' => TokenKind::Comma,
+                    '.' => {
                         if self.peek() == Some('.') {
                             self.advance();
-                            return Token::DotDotDot;
+                            if self.peek() == Some('.') {
+                                self.advance();
+                                TokenKind::DotDotDot
+                            } else {
+                                // ".." is currently not a token in language, fallback to Dot
+                                TokenKind::Dot
+                            }
+                        } else {
+                            TokenKind::Dot
                         }
                     }
-                    Token::Dot
-                }
-                '/' => {
-                    if self.peek() == Some('/') {
-                        self.skip_comment();
-                        self.next_token()
-                    } else {
-                        Token::Slash
+                    '&' => TokenKind::Ampersand,
+                    '|' => TokenKind::Pipe,
+                    '#' => TokenKind::Hash,
+
+                    '+' => TokenKind::Plus,
+                    '-' => TokenKind::Minus,
+                    '*' => TokenKind::Star,
+                    '/' => TokenKind::Slash,
+                    '%' => TokenKind::Percent,
+
+                    '<' => {
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            TokenKind::LtEq
+                        } else {
+                            TokenKind::Lt
+                        }
                     }
-                }
-                '<' => {
-                    if self.peek() == Some('=') {
-                        self.advance();
-                        Token::LtEq
-                    } else {
-                        Token::Lt
+                    '>' => {
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            TokenKind::GtEq
+                        } else {
+                            TokenKind::Gt
+                        }
                     }
-                }
-                '>' => {
-                    if self.peek() == Some('=') {
-                        self.advance();
-                        Token::GtEq
-                    } else {
-                        Token::Gt
+                    '=' => {
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            TokenKind::EqEq
+                        } else {
+                            TokenKind::Eq
+                        }
                     }
-                }
-                '=' => {
-                    if self.peek() == Some('=') {
-                        self.advance();
-                        Token::EqEq
-                    } else {
-                        Token::Eq
+                    '!' => {
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            TokenKind::NotEq
+                        } else {
+                            TokenKind::Bang
+                        }
                     }
-                }
-                '!' => {
-                    if self.peek() == Some('=') {
-                        self.advance();
-                        Token::NotEq
-                    } else {
-                        Token::Bang
+
+                    '"' => return self.read_string(start, line, col),
+
+                    c if c.is_ascii_digit() => return self.read_number(c, start, line, col),
+                    c if c.is_alphabetic() || c == '_' => {
+                        return self.read_ident_or_keyword(c, start, line, col);
                     }
-                }
-                ch if ch.is_ascii_digit() => self.read_number(ch),
-                ch if ch.is_alphabetic() || ch == '_' => self.read_ident(ch),
-                _ => self.next_token(),
-            },
+
+                    // Unknown char: skip and continue.
+                    _ => return self.next_token(),
+                };
+
+                let span = self.make_span(start, self.pos, line, col);
+                Token::new(kind, span)
+            }
         }
     }
 
     pub fn tokenize(&mut self) -> Vec<Token> {
-        let mut tokens: Vec<Token> = Vec::new();
+        let mut tokens = Vec::new();
+
         loop {
-            let token = self.next_token();
-            let is_eof = token == Token::Eof;
-            tokens.push(token);
+            let tok = self.next_token();
+            let is_eof = tok.kind == TokenKind::Eof;
+            tokens.push(tok);
             if is_eof {
                 break;
             }
         }
+
         tokens
     }
 }
