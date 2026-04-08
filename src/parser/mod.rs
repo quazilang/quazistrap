@@ -23,9 +23,22 @@ impl Parser {
     pub fn parse(&mut self) -> Result<Program, String> {
         let mut items = Vec::new();
         let start = self.current_span();
+        let mut first_err: Option<String> = None;
 
         while !self.at(TokenKind::Eof) {
-            items.push(self.parse_item()?);
+            match self.parse_item() {
+                Ok(item) => items.push(item),
+                Err(err) => {
+                    if first_err.is_none() {
+                        first_err = Some(err);
+                    }
+                    self.synchronize_item();
+                }
+            }
+        }
+
+        if let Some(err) = first_err {
+            return Err(err);
         }
 
         let end = self.current_span();
@@ -40,6 +53,7 @@ impl Parser {
 
     fn parse_item(&mut self) -> Result<Item, String> {
         match self.peek_kind() {
+            TokenKind::Error(msg) => Err(self.err_here(format!("lexer error: {}", msg))),
             TokenKind::Import => self.parse_import(),
             TokenKind::Fn => self.parse_fn(),
             TokenKind::Struct => self.parse_struct(),
@@ -65,15 +79,29 @@ impl Parser {
     pub fn parse_block(&mut self) -> Result<Block, String> {
         let lbrace = self.expect(TokenKind::LBrace)?.span;
         let mut stmts = Vec::new();
+        let mut first_err: Option<String> = None;
 
         while !self.at(TokenKind::RBrace) {
             if self.at(TokenKind::Eof) {
                 return Err(self.err_here("unexpected EOF while parsing block".to_string()));
             }
-            stmts.push(self.parse_stmt()?);
+
+            match self.parse_stmt() {
+                Ok(stmt) => stmts.push(stmt),
+                Err(err) => {
+                    if first_err.is_none() {
+                        first_err = Some(err);
+                    }
+                    self.synchronize_stmt();
+                }
+            }
         }
 
         let rbrace = self.expect(TokenKind::RBrace)?.span;
+
+        if let Some(err) = first_err {
+            return Err(err);
+        }
 
         Ok(Block {
             stmts,
@@ -218,7 +246,7 @@ impl Parser {
     // equality (==, !=)
     // comparison (<, <=, >, >=)
     // term (+, -)
-    // factor (*, /)
+    // factor (*, /, %)
     // unary (!, -)
     // postfix (call, field, method-call)
     // primary
@@ -403,6 +431,10 @@ impl Parser {
                     self.advance();
                     Some(BinOpKind::Div)
                 }
+                TokenKind::Percent => {
+                    self.advance();
+                    Some(BinOpKind::Mod)
+                }
                 _ => None,
             };
 
@@ -559,6 +591,7 @@ impl Parser {
                 let span = Span::merge(to_ast_span(tok.span), to_ast_span(r));
                 Ok(Spanned::new(ExprKind::Group(Box::new(expr)), span))
             }
+            TokenKind::Error(msg) => Err(self.err_tok(tok.span, format!("lexer error: {}", msg))),
             other => Err(self.err_tok(
                 tok.span,
                 format!("unexpected token in expression: {:?}", other),
@@ -595,4 +628,65 @@ impl Parser {
         Ok(Spanned::new(kind, to_ast_span(tok.span)))
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::lexer::Lexer;
+
+    use super::*;
+
+    fn parse_program(src: &str) -> Program {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(tokens);
+        parser.parse().expect("source should parse")
+    }
+
+    #[test]
+    fn parses_modulo_as_factor_operator() {
+        let program = parse_program(
+            r#"
+fn main() void {
+    var x: int32 = 10 % 3 * 2;
+}
+"#,
+        );
+
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+
+        let StmtKind::Var {
+            value: Some(expr), ..
+        } = &body.stmts[0].node
+        else {
+            panic!("expected var statement with initializer");
+        };
+
+        let ExprKind::Binary {
+            left,
+            op: top_op,
+            right: _,
+        } = &expr.node
+        else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(top_op, BinOpKind::Mul));
+
+        let ExprKind::Binary { op: left_op, .. } = &left.node else {
+            panic!("expected left side to be binary");
+        };
+        assert!(matches!(left_op, BinOpKind::Mod));
+    }
+
+    #[test]
+    fn reports_lexer_error_token_at_top_level() {
+        let mut lexer = Lexer::new("@");
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(tokens);
+
+        let err = parser.parse().expect_err("parser should fail on lexer error token");
+        assert!(err.contains("lexer error"));
+    }
 }

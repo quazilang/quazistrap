@@ -99,6 +99,34 @@ impl Parser {
     pub(crate) fn err_tok(&self, s: TokenSpan, msg: String) -> String {
         format!("{} at {}:{} [{}..{}]", msg, s.line, s.col, s.start, s.end)
     }
+
+    pub(crate) fn synchronize_item(&mut self) {
+        while !self.at(TokenKind::Eof) {
+            match self.peek_kind() {
+                TokenKind::Import
+                | TokenKind::Fn
+                | TokenKind::Struct
+                | TokenKind::Trait
+                | TokenKind::Impl => break,
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+    }
+
+    pub(crate) fn synchronize_stmt(&mut self) {
+        while !self.at(TokenKind::Eof)
+            && !self.at(TokenKind::Semicolon)
+            && !self.at(TokenKind::RBrace)
+        {
+            self.advance();
+        }
+
+        if self.at(TokenKind::Semicolon) {
+            self.advance();
+        }
+    }
 }
 
 pub(crate) fn merge_token_spans(a: TokenSpan, b: TokenSpan) -> TokenSpan {

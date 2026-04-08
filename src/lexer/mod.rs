@@ -201,6 +201,15 @@ impl Lexer {
         Token::new(kind, span)
     }
 
+    fn lex_error(&self, ch: char, start: usize, line: usize, col: usize) -> Token {
+        let escaped: String = ch.escape_default().collect();
+        let span = self.make_span(start, self.pos, line, col);
+        Token::new(
+            TokenKind::Error(format!("unexpected character '{}'", escaped)),
+            span,
+        )
+    }
+
     pub fn next_token(&mut self) -> Token {
         self.skip_whitespace_and_comments();
 
@@ -283,8 +292,7 @@ impl Lexer {
                         return self.read_ident_or_keyword(c, start, line, col);
                     }
 
-                    // Unknown char: skip and continue.
-                    _ => return self.next_token(),
+                    _ => return self.lex_error(ch, start, line, col),
                 };
 
                 let span = self.make_span(start, self.pos, line, col);
@@ -306,5 +314,24 @@ impl Lexer {
         }
 
         tokens
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emits_error_token_for_unknown_character() {
+        let mut lexer = Lexer::new("@");
+        let tokens = lexer.tokenize();
+
+        assert!(matches!(tokens.last().map(|t| &t.kind), Some(TokenKind::Eof)));
+        assert!(matches!(tokens.first().map(|t| &t.kind), Some(TokenKind::Error(_))));
+
+        match &tokens[0].kind {
+            TokenKind::Error(msg) => assert!(msg.contains("@")),
+            other => panic!("expected Error token, got {:?}", other),
+        }
     }
 }

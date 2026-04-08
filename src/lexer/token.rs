@@ -28,6 +28,7 @@ pub enum TokenKind {
     Float(f64),
     StringLit(String),
     Ident(String),
+    Error(String),
 
     // keywords
     Fn,

@@ -4,9 +4,11 @@
 
 pub mod lexer;
 pub mod parser;
+pub mod sema;
 
 use lexer::Lexer;
 use parser::Parser;
+use sema::Analyzer;
 
 fn main() {
     let src = r#"
@@ -41,6 +43,18 @@ fn main() void {
         Ok(program) => {
             println!("parse success");
             println!("{:#?}", program);
+
+            let mut analyzer = Analyzer::new();
+            let sema_errors = analyzer.analyze_program(&program);
+            if !sema_errors.is_empty() {
+                eprintln!("semantic analysis failed with {} error(s):", sema_errors.len());
+                for err in sema_errors {
+                    eprintln!("- {}", err);
+                }
+                std::process::exit(1);
+            }
+
+            println!("semantic analysis success");
         }
         Err(err) => {
             eprintln!("parse error: {}", err);
