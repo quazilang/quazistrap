@@ -4,22 +4,23 @@
 
 pub mod lexer;
 pub mod parser;
-pub mod sema;
+pub mod semantic;
 
 use lexer::Lexer;
 use parser::Parser;
-use sema::Analyzer;
+use semantic::Analyzer;
 
 fn main() {
     let src = r#"
 import std.io.stdout;
 
 fn main() void {
+    const z = "hi";
     const y: int32 = 10;
     var x: int32 = 5;
 
     while (x < y) {
-        stdout.println("hello, void! x = {}", x);
+        stdout.println("{} void! x = {}",z, x);
         x = x + 1;
     }
 }
@@ -47,7 +48,10 @@ fn main() void {
             let mut analyzer = Analyzer::new();
             let sema_errors = analyzer.analyze_program(&program);
             if !sema_errors.is_empty() {
-                eprintln!("semantic analysis failed with {} error(s):", sema_errors.len());
+                eprintln!(
+                    "semantic analysis failed with {} error(s):",
+                    sema_errors.len()
+                );
                 for err in sema_errors {
                     eprintln!("- {}", err);
                 }

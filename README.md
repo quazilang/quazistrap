@@ -7,8 +7,14 @@ this programming language was designed to be fast, understandable, strict, and v
 ## what we have done
 
 * [x] lexer & tokenizer
-* [x] primitive ast source tree generation
+* [x] parser & AST
+* [x] semantic analysis (scope, duplicate declarations)
+* [x] type checking (done, not fully)
 * [ ] codegen
+* [ ] memory allocators
+* [ ] module system
+* [ ] standard library
+* [ ] cli and build system
 * [ ] finish bootstrapping
 * [ ] rewrite in itself
 
