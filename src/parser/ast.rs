@@ -103,6 +103,7 @@ pub enum ExprKind {
 
     Call {
         callee: Box<Expr>,
+        type_args: Vec<Type>,
         args: Vec<Expr>,
     },
 
@@ -114,6 +115,7 @@ pub enum ExprKind {
     MethodCall {
         object: Box<Expr>,
         method: String,
+        type_args: Vec<Type>,
         args: Vec<Expr>,
     },
 }
@@ -137,7 +139,46 @@ pub enum TypeKind {
     Str,
     Void,
     Any,
-    Named(String),
+    Named {
+        name: String,
+        type_args: Vec<Type>,
+    },
+}
+
+impl std::fmt::Display for TypeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeKind::Int8 => write!(f, "int8"),
+            TypeKind::Int16 => write!(f, "int16"),
+            TypeKind::Int32 => write!(f, "int32"),
+            TypeKind::Int64 => write!(f, "int64"),
+            TypeKind::Uint8 => write!(f, "uint8"),
+            TypeKind::Uint16 => write!(f, "uint16"),
+            TypeKind::Uint32 => write!(f, "uint32"),
+            TypeKind::Uint64 => write!(f, "uint64"),
+            TypeKind::Float16 => write!(f, "float16"),
+            TypeKind::Float32 => write!(f, "float32"),
+            TypeKind::Float64 => write!(f, "float64"),
+            TypeKind::Bool => write!(f, "bool"),
+            TypeKind::Str => write!(f, "str"),
+            TypeKind::Void => write!(f, "void"),
+            TypeKind::Any => write!(f, "any"),
+            TypeKind::Named { name, type_args } => {
+                if type_args.is_empty() {
+                    write!(f, "{}", name)
+                } else {
+                    write!(f, "{}<", name)?;
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg.node)?;
+                    }
+                    write!(f, ">")
+                }
+            }
+        }
+    }
 }
 
 pub type Type = Spanned<TypeKind>;
@@ -193,6 +234,7 @@ pub enum ImportItems {
 #[derive(Debug, Clone)]
 pub struct TraitMethod {
     pub name: String,
+    pub generic_params: Vec<String>,
     pub params: Vec<Type>,
     pub return_ty: Type,
     pub span: Span,
@@ -202,21 +244,24 @@ pub struct TraitMethod {
 pub enum ItemKind {
     Fn {
         name: String,
+        generic_params: Vec<String>,
         params: Vec<(String, Type)>,
         return_ty: Type,
         body: Block,
     },
     Struct {
         name: String,
+        generic_params: Vec<String>,
         fields: Vec<(String, Type, bool)>, // (name, type, const?)
     },
     Trait {
         name: String,
+        generic_params: Vec<String>,
         methods: Vec<TraitMethod>,
     },
     Impl {
-        trait_name: String,
-        for_type: String,
+        trait_ty: Type,
+        for_ty: Type,
         methods: Vec<Item>,
     },
     Import(ImportPath),

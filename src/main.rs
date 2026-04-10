@@ -34,12 +34,12 @@ fn main() void {
     println!("lexed {} tokens", tokens.len());
     for token in &tokens {
         println!(
-            "{:?} @ {}:{} [{}..{}]",
+            "{} @ {}:{} [{}..{}]",
             token.kind, token.span.line, token.span.col, token.span.start, token.span.end
         );
     }
 
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new_with_source(tokens, src);
     match parser.parse() {
         Ok(program) => {
             println!("parse success");
@@ -61,7 +61,7 @@ fn main() void {
             println!("semantic analysis success");
         }
         Err(err) => {
-            eprintln!("parse error: {}", err);
+            eprintln!("{}", err);
             std::process::exit(1);
         }
     }

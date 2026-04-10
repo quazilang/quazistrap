@@ -13,11 +13,24 @@ use crate::lexer::token::{Token, TokenKind};
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    source: Option<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            source: None,
+        }
+    }
+
+    pub fn new_with_source(tokens: Vec<Token>, source: &str) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            source: Some(source.to_string()),
+        }
     }
 
     pub fn parse(&mut self) -> Result<Program, String> {
@@ -53,13 +66,16 @@ impl Parser {
 
     fn parse_item(&mut self) -> Result<Item, String> {
         match self.peek_kind() {
-            TokenKind::Error(msg) => Err(self.err_here(format!("lexer error: {}", msg))),
+            TokenKind::Error(msg) => Err(self.err_here_with_code("E00", format!("lexer error: {}", msg))),
             TokenKind::Import => self.parse_import(),
             TokenKind::Fn => self.parse_fn(),
             TokenKind::Struct => self.parse_struct(),
             TokenKind::Trait => self.parse_trait(),
             TokenKind::Impl => self.parse_impl(),
-            other => Err(self.err_here(format!("unexpected token in item position: {:?}", other))),
+            other => Err(self.err_here_with_code(
+                "E03",
+                format!("unexpected token in item position: {}", other),
+            )),
         }
     }
 
@@ -83,7 +99,10 @@ impl Parser {
 
         while !self.at(TokenKind::RBrace) {
             if self.at(TokenKind::Eof) {
-                return Err(self.err_here("unexpected EOF while parsing block".to_string()));
+                return Err(self.err_here_with_code(
+                    "E04",
+                    "unexpected EOF while parsing block".to_string(),
+                ));
             }
 
             match self.parse_stmt() {
@@ -489,6 +508,9 @@ impl Parser {
         let mut expr = self.parse_primary()?;
 
         loop {
+            let call_checkpoint = self.checkpoint();
+            let type_args = self.try_parse_type_args_for_call();
+
             if self.at(TokenKind::LParen) {
                 let args = self.parse_call_args()?;
                 let end = args.last().map(|a| a.span).unwrap_or(expr.span);
@@ -496,11 +518,16 @@ impl Parser {
                 expr = Spanned::new(
                     ExprKind::Call {
                         callee: Box::new(expr),
+                        type_args,
                         args,
                     },
                     span,
                 );
                 continue;
+            }
+
+            if !type_args.is_empty() {
+                self.restore(call_checkpoint);
             }
 
             if self.at(TokenKind::Dot) {
@@ -510,6 +537,9 @@ impl Parser {
                     TokenKind::Ident(s) => s.clone(),
                     _ => unreachable!(),
                 };
+
+                let method_checkpoint = self.checkpoint();
+                let method_type_args = self.try_parse_type_args_for_call();
 
                 if self.at(TokenKind::LParen) {
                     let args = self.parse_call_args()?;
@@ -522,11 +552,16 @@ impl Parser {
                         ExprKind::MethodCall {
                             object: Box::new(expr),
                             method: name,
+                            type_args: method_type_args,
                             args,
                         },
                         span,
                     );
                 } else {
+                    if !method_type_args.is_empty() {
+                        self.restore(method_checkpoint);
+                    }
+
                     let span = Span::merge(expr.span, to_ast_span(name_tok.span));
                     expr = Spanned::new(
                         ExprKind::Field {
@@ -591,10 +626,12 @@ impl Parser {
                 let span = Span::merge(to_ast_span(tok.span), to_ast_span(r));
                 Ok(Spanned::new(ExprKind::Group(Box::new(expr)), span))
             }
-            TokenKind::Error(msg) => Err(self.err_tok(tok.span, format!("lexer error: {}", msg))),
+            TokenKind::Error(msg) => {
+                Err(self.err_tok_with_code(tok.span, "E00", format!("lexer error: {}", msg)))
+            }
             other => Err(self.err_tok(
                 tok.span,
-                format!("unexpected token in expression: {:?}", other),
+                format!("unexpected token in expression: {}", other),
             )),
         }
     }
@@ -619,13 +656,83 @@ impl Parser {
             TokenKind::Str => TypeKind::Str,
             TokenKind::Void => TypeKind::Void,
             TokenKind::Any => TypeKind::Any,
-            TokenKind::Ident(name) => TypeKind::Named(name),
+            TokenKind::Ident(name) => {
+                let type_args = self.parse_optional_type_args()?;
+                TypeKind::Named { name, type_args }
+            }
             other => {
-                return Err(self.err_tok(tok.span, format!("expected type, found {:?}", other)));
+                return Err(self.err_tok_with_code(
+                    tok.span,
+                    "E05",
+                    format!("expected type, found {}", other),
+                ));
             }
         };
 
         Ok(Spanned::new(kind, to_ast_span(tok.span)))
+    }
+
+    pub(crate) fn parse_optional_generic_params(&mut self) -> Result<Vec<String>, String> {
+        if !self.at(TokenKind::Lt) {
+            return Ok(Vec::new());
+        }
+
+        self.expect(TokenKind::Lt)?;
+        let mut params = Vec::new();
+
+        loop {
+            params.push(self.parse_ident()?);
+
+            if self.at(TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+
+        self.expect(TokenKind::Gt)?;
+        Ok(params)
+    }
+
+    fn parse_optional_type_args(&mut self) -> Result<Vec<Type>, String> {
+        if !self.at(TokenKind::Lt) {
+            return Ok(Vec::new());
+        }
+
+        self.parse_type_args()
+    }
+
+    fn parse_type_args(&mut self) -> Result<Vec<Type>, String> {
+        self.expect(TokenKind::Lt)?;
+        let mut args = Vec::new();
+
+        loop {
+            args.push(self.parse_type()?);
+
+            if self.at(TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+
+        self.expect(TokenKind::Gt)?;
+        Ok(args)
+    }
+
+    fn try_parse_type_args_for_call(&mut self) -> Vec<Type> {
+        if !self.at(TokenKind::Lt) {
+            return Vec::new();
+        }
+
+        let checkpoint = self.checkpoint();
+        match self.parse_type_args() {
+            Ok(type_args) => type_args,
+            Err(_) => {
+                self.restore(checkpoint);
+                Vec::new()
+            }
+        }
     }
 
 }
@@ -641,6 +748,13 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(tokens);
         parser.parse().expect("source should parse")
+    }
+
+    fn parse_program_err(src: &str) -> String {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new_with_source(tokens, src);
+        parser.parse().expect_err("source should fail to parse")
     }
 
     #[test]
@@ -688,5 +802,254 @@ fn main() void {
 
         let err = parser.parse().expect_err("parser should fail on lexer error token");
         assert!(err.contains("lexer error"));
+    }
+
+    #[test]
+    fn parses_generic_fn_struct_trait_and_impl_headers() {
+        let program = parse_program(
+            r#"
+struct Box<T> {
+    value: T,
+}
+
+trait Iterable<T> {
+    fn map<U>(item: T) U;
+}
+
+impl Iterable<int32> for Box<int32> {
+    fn map<U>(item: int32) U {
+        return item;
+    }
+}
+
+fn id<T>(x: T) T {
+    return x;
+}
+"#,
+        );
+
+        let ItemKind::Struct {
+            generic_params,
+            fields,
+            ..
+        } = &program.items[0].node
+        else {
+            panic!("expected struct item");
+        };
+        assert_eq!(generic_params, &vec!["T".to_string()]);
+        assert_eq!(fields.len(), 1);
+
+        let ItemKind::Trait {
+            generic_params,
+            methods,
+            ..
+        } = &program.items[1].node
+        else {
+            panic!("expected trait item");
+        };
+        assert_eq!(generic_params, &vec!["T".to_string()]);
+        assert_eq!(methods[0].generic_params, vec!["U".to_string()]);
+
+        let ItemKind::Impl { trait_ty, for_ty, .. } = &program.items[2].node else {
+            panic!("expected impl item");
+        };
+
+        match &trait_ty.node {
+            TypeKind::Named { name, type_args } => {
+                assert_eq!(name, "Iterable");
+                assert_eq!(type_args.len(), 1);
+            }
+            other => panic!("expected named trait type, got {other:?}"),
+        }
+
+        match &for_ty.node {
+            TypeKind::Named { name, type_args } => {
+                assert_eq!(name, "Box");
+                assert_eq!(type_args.len(), 1);
+            }
+            other => panic!("expected named for type, got {other:?}"),
+        }
+
+        let ItemKind::Fn { generic_params, .. } = &program.items[3].node else {
+            panic!("expected fn item");
+        };
+        assert_eq!(generic_params, &vec!["T".to_string()]);
+    }
+
+    #[test]
+    fn parses_generic_call_and_nested_type_args() {
+        let program = parse_program(
+            r#"
+fn main() void {
+    alloc<Vec<int32>>();
+}
+"#,
+        );
+
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+
+        let StmtKind::ExprStmt(expr) = &body.stmts[0].node else {
+            panic!("expected expression statement");
+        };
+
+        let ExprKind::Call {
+            callee,
+            type_args,
+            args,
+        } = &expr.node
+        else {
+            panic!("expected call expression");
+        };
+
+        assert!(args.is_empty());
+        assert_eq!(type_args.len(), 1);
+
+        let ExprKind::Ident(name) = &callee.node else {
+            panic!("expected identifier callee");
+        };
+        assert_eq!(name, "alloc");
+
+        match &type_args[0].node {
+            TypeKind::Named { name, type_args } => {
+                assert_eq!(name, "Vec");
+                assert_eq!(type_args.len(), 1);
+                assert!(matches!(type_args[0].node, TypeKind::Int32));
+            }
+            other => panic!("expected nested named type arg, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keeps_less_than_as_comparison_when_not_call_syntax() {
+        let program = parse_program(
+            r#"
+fn main() void {
+    a < b;
+}
+"#,
+        );
+
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+
+        let StmtKind::ExprStmt(expr) = &body.stmts[0].node else {
+            panic!("expected expression statement");
+        };
+
+        let ExprKind::Binary { op, .. } = &expr.node else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(op, BinOpKind::Lt));
+    }
+
+    #[test]
+    fn parses_method_call_with_type_args() {
+        let program = parse_program(
+            r#"
+fn main() void {
+    value.transform<Vec<int32>>();
+}
+"#,
+        );
+
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+
+        let StmtKind::ExprStmt(expr) = &body.stmts[0].node else {
+            panic!("expected expression statement");
+        };
+
+        let ExprKind::MethodCall {
+            method,
+            type_args,
+            args,
+            ..
+        } = &expr.node
+        else {
+            panic!("expected method call expression");
+        };
+
+        assert_eq!(method, "transform");
+        assert!(args.is_empty());
+        assert_eq!(type_args.len(), 1);
+    }
+
+    #[test]
+    fn parses_nested_generic_type_annotation() {
+        let program = parse_program(
+            r#"
+fn main() void {
+    var x: Vec<Map<str, int32>>;
+}
+"#,
+        );
+
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+
+        let StmtKind::Var { ty: Some(ty), .. } = &body.stmts[0].node else {
+            panic!("expected var statement with type annotation");
+        };
+
+        let TypeKind::Named {
+            name,
+            type_args: outer_args,
+        } = &ty.node
+        else {
+            panic!("expected outer named type");
+        };
+
+        assert_eq!(name, "Vec");
+        assert_eq!(outer_args.len(), 1);
+
+        let TypeKind::Named {
+            name,
+            type_args: inner_args,
+        } = &outer_args[0].node
+        else {
+            panic!("expected inner named type");
+        };
+
+        assert_eq!(name, "Map");
+        assert_eq!(inner_args.len(), 2);
+        assert!(matches!(inner_args[0].node, TypeKind::Str));
+        assert!(matches!(inner_args[1].node, TypeKind::Int32));
+    }
+
+    #[test]
+    fn reports_readable_expected_token_in_parser_error() {
+        let err = parse_program_err(
+            r#"
+fn main() void {
+    const x int32;
+}
+"#,
+        );
+
+        assert!(err.contains("expected ="));
+        assert!(err.contains("found int32"));
+        assert!(!err.contains("Eq"));
+        assert!(!err.contains("Int32"));
+    }
+
+    #[test]
+    fn reports_e01_identifier_error_with_snippet_and_underline() {
+        let err = parse_program_err(
+            r#"
+fn main() void {
+    var ;
+}
+"#,
+        );
+
+        assert!(err.contains("error[E01]: expected identifier, found ';'"));
+        assert!(err.contains("at 3:9"));
+        assert!(err.contains("3 |     var ;"));
+        assert!(err.contains("|         ^"));
     }
 }
