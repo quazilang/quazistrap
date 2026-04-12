@@ -115,3 +115,75 @@ impl Token {
         }
     }
 }
+
+impl std::fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenKind::Int(value) => write!(f, "integer literal {}", value),
+            TokenKind::Float(value) => write!(f, "float literal {}", value),
+            TokenKind::StringLit(_) => write!(f, "string literal"),
+            TokenKind::Ident(name) => write!(f, "identifier {}", name),
+            TokenKind::Error(msg) => write!(f, "lexer error {}", msg),
+
+            TokenKind::Fn => write!(f, "fn"),
+            TokenKind::Var => write!(f, "var"),
+            TokenKind::Const => write!(f, "const"),
+            TokenKind::Return => write!(f, "return"),
+            TokenKind::If => write!(f, "if"),
+            TokenKind::Else => write!(f, "else"),
+            TokenKind::While => write!(f, "while"),
+            TokenKind::Import => write!(f, "import"),
+            TokenKind::Impl => write!(f, "impl"),
+            TokenKind::Struct => write!(f, "struct"),
+            TokenKind::Trait => write!(f, "trait"),
+            TokenKind::As => write!(f, "as"),
+            TokenKind::For => write!(f, "for"),
+
+            TokenKind::Int8 => write!(f, "int8"),
+            TokenKind::Int16 => write!(f, "int16"),
+            TokenKind::Int32 => write!(f, "int32"),
+            TokenKind::Int64 => write!(f, "int64"),
+            TokenKind::Uint8 => write!(f, "uint8"),
+            TokenKind::Uint16 => write!(f, "uint16"),
+            TokenKind::Uint32 => write!(f, "uint32"),
+            TokenKind::Uint64 => write!(f, "uint64"),
+            TokenKind::Float16 => write!(f, "float16"),
+            TokenKind::Float32 => write!(f, "float32"),
+            TokenKind::Float64 => write!(f, "float64"),
+            TokenKind::Bool => write!(f, "bool"),
+            TokenKind::Str => write!(f, "str"),
+            TokenKind::Void => write!(f, "void"),
+            TokenKind::Any => write!(f, "any"),
+
+            TokenKind::LParen => write!(f, "("),
+            TokenKind::RParen => write!(f, ")"),
+            TokenKind::LBrace => write!(f, "{{"),
+            TokenKind::RBrace => write!(f, "}}"),
+            TokenKind::Semicolon => write!(f, ";"),
+            TokenKind::Colon => write!(f, ":"),
+            TokenKind::Dot => write!(f, "."),
+            TokenKind::Comma => write!(f, ","),
+            TokenKind::Ampersand => write!(f, "&"),
+            TokenKind::Pipe => write!(f, "|"),
+            TokenKind::Hash => write!(f, "#"),
+            TokenKind::DotDotDot => write!(f, "..."),
+            TokenKind::Percent => write!(f, "%"),
+
+            TokenKind::Eq => write!(f, "="),
+            TokenKind::Plus => write!(f, "+"),
+            TokenKind::Minus => write!(f, "-"),
+            TokenKind::Star => write!(f, "*"),
+            TokenKind::Slash => write!(f, "/"),
+            TokenKind::Lt => write!(f, "<"),
+            TokenKind::Gt => write!(f, ">"),
+            TokenKind::LtEq => write!(f, "<="),
+            TokenKind::GtEq => write!(f, ">="),
+            TokenKind::EqEq => write!(f, "=="),
+            TokenKind::NotEq => write!(f, "!="),
+            TokenKind::Bang => write!(f, "!"),
+
+            TokenKind::Platform => write!(f, "platform"),
+            TokenKind::Eof => write!(f, "EOF"),
+        }
+    }
+}

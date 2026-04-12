@@ -129,7 +129,7 @@ impl Analyzer {
     fn types_compatible(&self, a: &TypeKind, b: &TypeKind) -> bool {
         match (a, b) {
             (TypeKind::Any, _) | (_, TypeKind::Any) => true,
-            (TypeKind::Named(_), _) | (_, TypeKind::Named(_)) => true,
+            (TypeKind::Named { .. }, _) | (_, TypeKind::Named { .. }) => true,
             _ => std::mem::discriminant(a) == std::mem::discriminant(b),
         }
     }
@@ -177,7 +177,7 @@ impl Analyzer {
                         self.push_error(
                             stmt.span,
                             format!(
-                                "return type mismatch: expected {:?}, got {:?}",
+                                "return type mismatch: expected {}, got {}",
                                 expected_return, actual
                             ),
                         );
@@ -209,7 +209,7 @@ impl Analyzer {
                     if !self.types_compatible(ann, val) {
                         self.push_error(
                             stmt.span,
-                            format!("type mismatch: declared {:?}, got {:?}", ann, val),
+                            format!("type mismatch: declared {}, got {}", ann, val),
                         );
                     }
                 }
@@ -234,7 +234,7 @@ impl Analyzer {
                     if !self.types_compatible(ann, val) {
                         self.push_error(
                             stmt.span,
-                            format!("type mismatch: declared {:?}, got {:?}", ann, val),
+                            format!("type mismatch: declared {}, got {}", ann, val),
                         );
                     }
                 }
@@ -295,11 +295,11 @@ impl Analyzer {
                 let ty = self.analyze_expr(expr);
                 match (op, &ty) {
                     (UnaryOpKind::Not, Some(t)) if !matches!(t, TypeKind::Bool) => {
-                        self.push_error(expr.span, format!("! requires bool, got {:?}", t));
+                        self.push_error(expr.span, format!("! requires bool, got {}", t));
                         None
                     }
                     (UnaryOpKind::Neg, Some(t)) if matches!(t, TypeKind::Str | TypeKind::Bool) => {
-                        self.push_error(expr.span, format!("unary - not valid for {:?}", t));
+                        self.push_error(expr.span, format!("unary - not valid for {}", t));
                         None
                     }
                     _ => ty,
@@ -312,7 +312,7 @@ impl Analyzer {
                     (Some(l), Some(r)) if !self.types_compatible(l, r) => {
                         self.push_error(
                             expr.span,
-                            format!("type mismatch in binary op: {:?} vs {:?}", l, r),
+                            format!("type mismatch in binary op: {} vs {}", l, r),
                         );
                         None
                     }
@@ -330,7 +330,7 @@ impl Analyzer {
                                 self.push_error(
                                     target.span,
                                     format!(
-                                        "type mismatch in assignment: expected {:?}, got {:?}",
+                                        "type mismatch in assignment: expected {}, got {}",
                                         var_ty, val_ty
                                     ),
                                 );
@@ -340,7 +340,11 @@ impl Analyzer {
                 }
                 None
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call {
+                callee,
+                type_args: _,
+                args,
+            } => {
                 let arg_tys: Vec<Option<TypeKind>> =
                     args.iter().map(|a| self.analyze_expr(a)).collect();
                 if let ExprKind::Ident(name) = &callee.node {
@@ -359,7 +363,7 @@ impl Analyzer {
                                         self.push_error(
                                             args[i].span,
                                             format!(
-                                                "arg {}: expected {:?}, got {:?}",
+                                                "arg {}: expected {}, got {}",
                                                 i + 1,
                                                 param_ty,
                                                 at
@@ -514,6 +518,30 @@ fn main() void {
         let mut analyzer = Analyzer::new();
         let errors = analyzer.analyze_program(&program);
         assert!(errors.iter().any(|e| e.message.contains("type mismatch")));
+    }
+
+    #[test]
+    fn reports_readable_type_names_in_errors() {
+        let program = parse_program(
+            r#"
+fn main() void {
+    const x: int32 = "";
+}
+"#,
+        );
+
+        let mut analyzer = Analyzer::new();
+        let errors = analyzer.analyze_program(&program);
+        let combined = errors
+            .iter()
+            .map(|e| e.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(combined.contains("declared int32"));
+        assert!(combined.contains("got str"));
+        assert!(!combined.contains("Int32"));
+        assert!(!combined.contains("Str"));
     }
 
     #[test]

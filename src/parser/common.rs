@@ -19,6 +19,14 @@ impl Parser {
         &self.peek().kind
     }
 
+    pub(crate) fn checkpoint(&self) -> usize {
+        self.pos
+    }
+
+    pub(crate) fn restore(&mut self, checkpoint: usize) {
+        self.pos = checkpoint;
+    }
+
     pub(crate) fn at(&self, expected: TokenKind) -> bool {
         self.peek_kind() == &expected
     }
@@ -38,11 +46,14 @@ impl Parser {
         if self.at(expected.clone()) {
             Ok(self.advance())
         } else {
-            Err(self.err_here(format!(
-                "expected {:?}, got {:?}",
+            Err(self.err_here_with_code(
+                "E02",
+                format!(
+                "expected {}, found {}",
                 expected,
                 self.peek_kind()
-            )))
+                ),
+            ))
         }
     }
 
@@ -57,7 +68,10 @@ impl Parser {
     pub(crate) fn expect_ident_token(&mut self) -> Result<Token, String> {
         match self.peek_kind() {
             TokenKind::Ident(_) => Ok(self.advance()),
-            other => Err(self.err_here(format!("expected identifier, got {:?}", other))),
+            other => Err(self.err_here_with_code(
+                "E01",
+                format!("expected identifier, found '{}'", other),
+            )),
         }
     }
 
@@ -93,11 +107,43 @@ impl Parser {
 
     pub(crate) fn err_here(&self, msg: String) -> String {
         let s = self.current_span();
-        format!("{} at {}:{} [{}..{}]", msg, s.line, s.col, s.start, s.end)
+        self.render_diagnostic("E00", msg, s)
+    }
+
+    pub(crate) fn err_here_with_code(&self, code: &str, msg: String) -> String {
+        let s = self.current_span();
+        self.render_diagnostic(code, msg, s)
     }
 
     pub(crate) fn err_tok(&self, s: TokenSpan, msg: String) -> String {
-        format!("{} at {}:{} [{}..{}]", msg, s.line, s.col, s.start, s.end)
+        self.render_diagnostic("E00", msg, s)
+    }
+
+    pub(crate) fn err_tok_with_code(&self, s: TokenSpan, code: &str, msg: String) -> String {
+        self.render_diagnostic(code, msg, s)
+    }
+
+    fn render_diagnostic(&self, code: &str, msg: String, span: TokenSpan) -> String {
+        let mut out = format!("error[{}]: {}\nat {}:{}", code, msg, span.line, span.col);
+
+        if let Some(source) = &self.source {
+            if let Some(line_text) = source.lines().nth(span.line.saturating_sub(1)) {
+                let line_no = span.line;
+                let line_no_width = line_no.to_string().len();
+                let caret_offset = span.col.saturating_sub(1);
+                let caret_width = (span.end.saturating_sub(span.start)).max(1);
+
+                out.push('\n');
+                out.push_str(&format!("{} | {}", line_no, line_text));
+                out.push('\n');
+                out.push_str(&" ".repeat(line_no_width));
+                out.push_str(" | ");
+                out.push_str(&" ".repeat(caret_offset));
+                out.push_str(&"^".repeat(caret_width));
+            }
+        }
+
+        out
     }
 
     pub(crate) fn synchronize_item(&mut self) {

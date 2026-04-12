@@ -12,6 +12,7 @@ impl Parser {
         let start = self.expect(TokenKind::Fn)?.span;
 
         let name = self.parse_ident()?;
+        let generic_params = self.parse_optional_generic_params()?;
         self.expect(TokenKind::LParen)?;
 
         let mut params: Vec<(String, Type)> = Vec::new();
@@ -44,6 +45,7 @@ impl Parser {
         Ok(Spanned::new(
             ItemKind::Fn {
                 name,
+                generic_params,
                 params,
                 return_ty,
                 body,
@@ -55,6 +57,7 @@ impl Parser {
     pub fn parse_struct(&mut self) -> Result<Item, String> {
         let start = self.expect(TokenKind::Struct)?.span;
         let name = self.parse_ident()?;
+        let generic_params = self.parse_optional_generic_params()?;
 
         self.expect(TokenKind::LBrace)?;
         let mut fields: Vec<(String, Type, bool)> = Vec::new();
@@ -85,12 +88,20 @@ impl Parser {
         let end = self.expect(TokenKind::RBrace)?.span;
         let span = to_ast_span(merge_token_spans(start, end));
 
-        Ok(Spanned::new(ItemKind::Struct { name, fields }, span))
+        Ok(Spanned::new(
+            ItemKind::Struct {
+                name,
+                generic_params,
+                fields,
+            },
+            span,
+        ))
     }
 
     pub fn parse_trait(&mut self) -> Result<Item, String> {
         let start = self.expect(TokenKind::Trait)?.span;
         let name = self.parse_ident()?;
+        let generic_params = self.parse_optional_generic_params()?;
 
         self.expect(TokenKind::LBrace)?;
         let mut methods = Vec::new();
@@ -103,6 +114,7 @@ impl Parser {
             let method_start = self.current_span();
             self.expect(TokenKind::Fn)?;
             let method_name = self.parse_ident()?;
+            let method_generic_params = self.parse_optional_generic_params()?;
 
             self.expect(TokenKind::LParen)?;
             let mut params = Vec::new();
@@ -132,6 +144,7 @@ impl Parser {
 
             methods.push(TraitMethod {
                 name: method_name,
+                generic_params: method_generic_params,
                 params,
                 return_ty,
                 span,
@@ -141,15 +154,22 @@ impl Parser {
         let end = self.expect(TokenKind::RBrace)?.span;
         let span = to_ast_span(merge_token_spans(start, end));
 
-        Ok(Spanned::new(ItemKind::Trait { name, methods }, span))
+        Ok(Spanned::new(
+            ItemKind::Trait {
+                name,
+                generic_params,
+                methods,
+            },
+            span,
+        ))
     }
 
     pub fn parse_impl(&mut self) -> Result<Item, String> {
         let start = self.expect(TokenKind::Impl)?.span;
 
-        let trait_name = self.parse_ident()?;
+        let trait_ty = self.parse_type()?;
         self.expect(TokenKind::For)?;
-        let for_type = self.parse_ident()?;
+        let for_ty = self.parse_type()?;
 
         self.expect(TokenKind::LBrace)?;
         let mut methods = Vec::new();
@@ -168,8 +188,8 @@ impl Parser {
 
         Ok(Spanned::new(
             ItemKind::Impl {
-                trait_name,
-                for_type,
+                trait_ty,
+                for_ty,
                 methods,
             },
             span,
