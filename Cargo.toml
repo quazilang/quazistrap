@@ -1,6 +1,6 @@
 [package]
 name = "void"
-version = "0.1.0"
+version = "26.0.1"
 edition = "2024"
 license = "0BSD"
 
