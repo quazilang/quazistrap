@@ -167,14 +167,14 @@ impl std::fmt::Display for TypeKind {
                 if type_args.is_empty() {
                     write!(f, "{}", name)
                 } else {
-                    write!(f, "{}<", name)?;
+                    write!(f, "{}[", name)?;
                     for (i, arg) in type_args.iter().enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
                         write!(f, "{}", arg.node)?;
                     }
-                    write!(f, ">")
+                    write!(f, "]")
                 }
             }
         }

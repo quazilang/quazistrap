@@ -223,6 +223,8 @@ impl Lexer {
                 let kind = match ch {
                     '(' => TokenKind::LParen,
                     ')' => TokenKind::RParen,
+                    '[' => TokenKind::LBracket,
+                    ']' => TokenKind::RBracket,
                     '{' => TokenKind::LBrace,
                     '}' => TokenKind::RBrace,
                     ';' => TokenKind::Semicolon,

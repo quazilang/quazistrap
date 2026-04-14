@@ -21,7 +21,7 @@ this programming language was designed to be fast, understandable, strict, and v
 ## contributors
 
 * namnam1105 - made lexer tokenizer and ast
-* amapekibert - hosted project, done nothing yet.
+* amapekibert - made spans, full generic syntax, readable diagnostics
 
 ## license
 

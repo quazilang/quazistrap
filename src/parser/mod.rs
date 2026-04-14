@@ -673,11 +673,11 @@ impl Parser {
     }
 
     pub(crate) fn parse_optional_generic_params(&mut self) -> Result<Vec<String>, String> {
-        if !self.at(TokenKind::Lt) {
+        if !self.at(TokenKind::LBracket) {
             return Ok(Vec::new());
         }
 
-        self.expect(TokenKind::Lt)?;
+        self.expect(TokenKind::LBracket)?;
         let mut params = Vec::new();
 
         loop {
@@ -690,12 +690,12 @@ impl Parser {
             break;
         }
 
-        self.expect(TokenKind::Gt)?;
+        self.expect(TokenKind::RBracket)?;
         Ok(params)
     }
 
     fn parse_optional_type_args(&mut self) -> Result<Vec<Type>, String> {
-        if !self.at(TokenKind::Lt) {
+        if !self.at(TokenKind::LBracket) {
             return Ok(Vec::new());
         }
 
@@ -703,7 +703,7 @@ impl Parser {
     }
 
     fn parse_type_args(&mut self) -> Result<Vec<Type>, String> {
-        self.expect(TokenKind::Lt)?;
+        self.expect(TokenKind::LBracket)?;
         let mut args = Vec::new();
 
         loop {
@@ -716,12 +716,12 @@ impl Parser {
             break;
         }
 
-        self.expect(TokenKind::Gt)?;
+        self.expect(TokenKind::RBracket)?;
         Ok(args)
     }
 
     fn try_parse_type_args_for_call(&mut self) -> Vec<Type> {
-        if !self.at(TokenKind::Lt) {
+        if !self.at(TokenKind::LBracket) {
             return Vec::new();
         }
 
@@ -808,21 +808,21 @@ fn main() void {
     fn parses_generic_fn_struct_trait_and_impl_headers() {
         let program = parse_program(
             r#"
-struct Box<T> {
+struct Box[T] {
     value: T,
 }
 
-trait Iterable<T> {
-    fn map<U>(item: T) U;
+trait Iterable[T] {
+    fn map[U](item: T) U;
 }
 
-impl Iterable<int32> for Box<int32> {
-    fn map<U>(item: int32) U {
+impl Iterable[int32] for Box[int32] {
+    fn map[U](item: int32) U {
         return item;
     }
 }
 
-fn id<T>(x: T) T {
+fn id[T](x: T) T {
     return x;
 }
 "#,
@@ -881,7 +881,7 @@ fn id<T>(x: T) T {
         let program = parse_program(
             r#"
 fn main() void {
-    alloc<Vec<int32>>();
+    alloc[Vec[int32]]();
 }
 "#,
         );
@@ -950,7 +950,7 @@ fn main() void {
         let program = parse_program(
             r#"
 fn main() void {
-    value.transform<Vec<int32>>();
+    value.transform[Vec[int32]]();
 }
 "#,
         );
@@ -983,7 +983,7 @@ fn main() void {
         let program = parse_program(
             r#"
 fn main() void {
-    var x: Vec<Map<str, int32>>;
+    var x: Vec[Map[str, int32]];
 }
 "#,
         );

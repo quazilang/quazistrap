@@ -65,6 +65,8 @@ pub enum TokenKind {
     // symbols
     LParen,    // (
     RParen,    // )
+    LBracket,  // [
+    RBracket,  // ]
     LBrace,    // {
     RBrace,    // }
     Semicolon, // ;
@@ -157,6 +159,8 @@ impl std::fmt::Display for TokenKind {
 
             TokenKind::LParen => write!(f, "("),
             TokenKind::RParen => write!(f, ")"),
+            TokenKind::LBracket => write!(f, "["),
+            TokenKind::RBracket => write!(f, "]"),
             TokenKind::LBrace => write!(f, "{{"),
             TokenKind::RBrace => write!(f, "}}"),
             TokenKind::Semicolon => write!(f, ";"),
