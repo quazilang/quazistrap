@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  push:
+    tags:
+      - '*'
 
 jobs:
   test:
@@ -31,16 +34,16 @@ jobs:
       - name: Run tests
         run: cargo test
 
-  build:
-    name: Build release binary
+  build-and-release:
+    name: Build and Create Release
     runs-on: codeberg-medium
+    if: startsWith(github.ref, 'refs/tags/')
     needs: test
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v3
 
       - name: Cache cargo
         uses: https://code.forgejo.org/actions/cache@v3
-        
         with:
           path: |
             ~/.cargo/registry
@@ -54,11 +57,13 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Build
+      - name: Build release binary
         run: cargo build --release
 
-      - name: Upload binary
-        uses: https://code.forgejo.org/actions/upload-artifact@v3
+      - name: Create Release
+        uses: https://code.forgejo.org/actions/forgejo-release@v1
         with:
-          name: void-linux-x86_64
-          path: target/release/void
+          files: |
+            target/release/void
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
