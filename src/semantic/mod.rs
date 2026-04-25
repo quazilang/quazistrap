@@ -106,22 +106,81 @@ pub struct InlineCandidate {
 }
 
 #[derive(Debug, Clone)]
+pub struct ImportInfo {
+    pub local_name: String,
+    pub full_path: String,
+    pub used: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnnotatedProgram {
+    pub span: Option<Span>,
+    pub item_count: usize,
+    pub expr_annotations: Vec<ExprAnnotation>,
+    pub constant_evaluations: Vec<ConstantEvaluation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolTableEntry {
+    pub scope_depth: usize,
+    pub name: String,
+    pub symbol: Symbol,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SymbolTable {
+    pub entries: Vec<SymbolTableEntry>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OptimizationHints {
+    pub constant_evaluations: Vec<ConstantEvaluation>,
+    pub inline_candidates: Vec<InlineCandidate>,
+    pub removable_imports: Vec<String>,
+    pub exhaustiveness_checks: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DependencyKind {
+    Import,
+    Call,
+}
+
+#[derive(Debug, Clone)]
+pub struct DependencyEdge {
+    pub from: String,
+    pub to: String,
+    pub kind: DependencyKind,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DependencyGraph {
+    pub edges: Vec<DependencyEdge>,
+}
+
+#[derive(Debug, Clone)]
 pub struct MatchExhaustivenessIssue {
     pub span: Span,
     pub enum_name: String,
     pub missing_variants: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SemanticReport {
     pub errors: Vec<SemanticError>,
     pub warnings: Vec<SemanticWarning>,
     pub suggestions: Vec<SemanticSuggestion>,
     pub used_imports: Vec<String>,
+    pub used_imports_map: HashMap<String, ImportInfo>,
     pub unused_imports: Vec<String>,
     pub annotated_exprs: Vec<ExprAnnotation>,
+    pub annotated_program: AnnotatedProgram,
+    pub symbol_table: SymbolTable,
     pub constant_evaluations: Vec<ConstantEvaluation>,
     pub inline_candidates: Vec<InlineCandidate>,
+    pub optimization_hints: OptimizationHints,
+    pub dependency_graph: DependencyGraph,
     pub exhaustiveness_checks: usize,
     pub non_exhaustive_matches: Vec<MatchExhaustivenessIssue>,
 }
@@ -174,6 +233,8 @@ pub struct Analyzer {
     match_candidates: Vec<MatchCandidate>,
     non_exhaustive_matches: Vec<MatchExhaustivenessIssue>,
     exhaustiveness_checks: usize,
+    dependency_edges: BTreeSet<(DependencyKind, String, String)>,
+    current_function: Vec<String>,
 }
 
 fn unwrap_type(ty: &Type) -> TypeKind {
@@ -197,6 +258,8 @@ impl Analyzer {
             match_candidates: Vec::new(),
             non_exhaustive_matches: Vec::new(),
             exhaustiveness_checks: 0,
+            dependency_edges: BTreeSet::new(),
+            current_function: Vec::new(),
         }
     }
 
@@ -224,19 +287,45 @@ impl Analyzer {
         self.run_exhaustiveness_pass();
         self.run_import_optimization_pass();
 
+        let symbol_table = self.build_symbol_table();
+        let used_imports_vec: Vec<String> = self.used_import_paths.iter().cloned().collect();
+        let used_imports_map = self.build_import_usage_map(&symbol_table, true);
+        let unused_imports_vec: Vec<String> = self.unused_import_paths.iter().cloned().collect();
+
+        let annotated_exprs = std::mem::take(&mut self.annotated_exprs);
+        let constant_evaluations = std::mem::take(&mut self.constant_evaluations);
+        let inline_candidates = std::mem::take(&mut self.inline_candidates);
+
+        let annotated_program = AnnotatedProgram {
+            span: program.span,
+            item_count: program.items.len(),
+            expr_annotations: annotated_exprs.clone(),
+            constant_evaluations: constant_evaluations.clone(),
+        };
+
+        let optimization_hints = OptimizationHints {
+            constant_evaluations: constant_evaluations.clone(),
+            inline_candidates: inline_candidates.clone(),
+            removable_imports: unused_imports_vec.clone(),
+            exhaustiveness_checks: self.exhaustiveness_checks,
+        };
+
+        let dependency_graph = self.build_dependency_graph();
+
         SemanticReport {
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
             suggestions: std::mem::take(&mut self.suggestions),
-            used_imports: std::mem::take(&mut self.used_import_paths)
-                .into_iter()
-                .collect(),
-            unused_imports: std::mem::take(&mut self.unused_import_paths)
-                .into_iter()
-                .collect(),
-            annotated_exprs: std::mem::take(&mut self.annotated_exprs),
-            constant_evaluations: std::mem::take(&mut self.constant_evaluations),
-            inline_candidates: std::mem::take(&mut self.inline_candidates),
+            used_imports: used_imports_vec,
+            used_imports_map,
+            unused_imports: unused_imports_vec,
+            annotated_exprs,
+            annotated_program,
+            symbol_table,
+            constant_evaluations,
+            inline_candidates,
+            optimization_hints,
+            dependency_graph,
             exhaustiveness_checks: self.exhaustiveness_checks,
             non_exhaustive_matches: std::mem::take(&mut self.non_exhaustive_matches),
         }
@@ -259,6 +348,95 @@ impl Analyzer {
         self.match_candidates.clear();
         self.non_exhaustive_matches.clear();
         self.exhaustiveness_checks = 0;
+        self.dependency_edges.clear();
+        self.current_function.clear();
+    }
+
+    fn add_dependency_edge(&mut self, kind: DependencyKind, from: &str, to: &str) {
+        self.dependency_edges
+            .insert((kind, from.to_string(), to.to_string()));
+    }
+
+    fn build_symbol_table(&self) -> SymbolTable {
+        let mut entries = Vec::new();
+
+        if let Some(global_scope) = self.scopes.first() {
+            for (name, symbol) in global_scope {
+                entries.push(SymbolTableEntry {
+                    scope_depth: 0,
+                    name: name.clone(),
+                    symbol: symbol.clone(),
+                });
+            }
+        }
+
+        for (idx, scope) in self.finished_scopes.iter().enumerate() {
+            for (name, symbol) in scope {
+                entries.push(SymbolTableEntry {
+                    scope_depth: idx + 1,
+                    name: name.clone(),
+                    symbol: symbol.clone(),
+                });
+            }
+        }
+
+        entries.sort_by(|a, b| {
+            a.scope_depth
+                .cmp(&b.scope_depth)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+
+        SymbolTable { entries }
+    }
+
+    fn build_import_usage_map(
+        &self,
+        symbol_table: &SymbolTable,
+        include_only_used: bool,
+    ) -> HashMap<String, ImportInfo> {
+        let mut map = HashMap::new();
+
+        for entry in &symbol_table.entries {
+            if !entry.symbol.is_import {
+                continue;
+            }
+
+            if include_only_used && !entry.symbol.used {
+                continue;
+            }
+
+            let full_path = entry
+                .symbol
+                .import_path
+                .clone()
+                .unwrap_or_else(|| entry.name.clone());
+
+            map.insert(
+                full_path.clone(),
+                ImportInfo {
+                    local_name: entry.name.clone(),
+                    full_path,
+                    used: entry.symbol.used,
+                    span: entry.symbol.span,
+                },
+            );
+        }
+
+        map
+    }
+
+    fn build_dependency_graph(&self) -> DependencyGraph {
+        let edges = self
+            .dependency_edges
+            .iter()
+            .map(|(kind, from, to)| DependencyEdge {
+                from: from.clone(),
+                to: to.clone(),
+                kind: *kind,
+            })
+            .collect();
+
+        DependencyGraph { edges }
     }
 
     fn declare_top_level_item(&mut self, item: &Item) {
@@ -372,6 +550,7 @@ impl Analyzer {
     }
 
     fn declare_import_binding(&mut self, local_name: String, full_path: String, span: Span) {
+        self.add_dependency_edge(DependencyKind::Import, "__program__", &full_path);
         self.declare(
             local_name,
             Symbol {
@@ -399,11 +578,13 @@ impl Analyzer {
     fn type_check_item(&mut self, item: &Item) {
         match &item.node {
             ItemKind::Fn {
+                name,
                 params,
                 return_ty,
                 body,
                 ..
             } => {
+                self.current_function.push(name.clone());
                 self.enter_scope();
                 for (param_name, param_ty) in params {
                     self.declare(
@@ -425,6 +606,7 @@ impl Analyzer {
                 let expected = unwrap_type(return_ty);
                 let _ = self.type_check_block(body, Some(&expected));
                 self.exit_scope_collect();
+                let _ = self.current_function.pop();
             }
             ItemKind::Struct { .. }
             | ItemKind::Trait { .. }
@@ -725,6 +907,15 @@ impl Analyzer {
                         self.push_error(callee.span, format!("unknown identifier '{}'", name));
                         return ExprEval::default();
                     };
+
+                    if matches!(sym.kind, SymbolKind::Function) {
+                        let from = self
+                            .current_function
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| "__program__".to_string());
+                        self.add_dependency_edge(DependencyKind::Call, &from, name);
+                    }
 
                     if sym.params.len() != args.len() {
                         self.push_error(
@@ -1076,7 +1267,7 @@ impl Analyzer {
     }
 
     fn run_unused_pass(&mut self) {
-        let local_scopes = std::mem::take(&mut self.finished_scopes);
+        let local_scopes = self.finished_scopes.clone();
         for scope in local_scopes {
             self.emit_unused_warnings(scope, false, false);
         }
@@ -1388,6 +1579,17 @@ impl Analyzer {
             .cloned();
 
         if let Some(prev) = existing {
+            if symbol.is_import && prev.is_import {
+                self.push_error(
+                    symbol.span,
+                    format!(
+                        "import name conflict for '{}' (previous import at {}:{} [{}..{}])",
+                        name, prev.span.line, prev.span.col, prev.span.start, prev.span.end
+                    ),
+                );
+                return;
+            }
+
             self.push_error(
                 symbol.span,
                 format!(
@@ -1543,7 +1745,7 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
-    use super::{Analyzer, ConstValue, SemanticReport};
+    use super::{Analyzer, ConstValue, DependencyKind, SemanticReport};
 
     fn parse_program(src: &str) -> crate::parser::ast::Program {
         let mut lexer = Lexer::new(src);
@@ -1899,5 +2101,79 @@ fn color_value(c: Color) int32 {
                 .iter()
                 .any(|w| w.message.contains("duplicate/unreachable match arm"))
         );
+    }
+
+    #[test]
+    fn exposes_structured_semantic_output_sections() {
+        let report = analyze(
+            r#"
+import std.io.stdout;
+
+fn helper(a: int32) int32 {
+    return a + 1;
+}
+
+fn main() void {
+    const y: int32 = helper(41);
+    stdout.println("{}", y);
+}
+"#,
+        );
+
+        assert_eq!(report.annotated_program.item_count, 3);
+        assert_eq!(
+            report.annotated_program.expr_annotations.len(),
+            report.annotated_exprs.len()
+        );
+        assert!(!report.symbol_table.entries.is_empty());
+        assert!(report.symbol_table.entries.iter().any(|e| e.name == "helper"));
+
+        let import = report
+            .used_imports_map
+            .get("std.io.stdout")
+            .expect("used import map should contain stdout import");
+        assert_eq!(import.local_name, "stdout");
+        assert!(import.used);
+
+        assert!(
+            report
+                .optimization_hints
+                .inline_candidates
+                .iter()
+                .any(|c| c.name == "helper")
+        );
+        assert!(report
+            .dependency_graph
+            .edges
+            .iter()
+            .any(|edge| edge.kind == DependencyKind::Import
+                && edge.from == "__program__"
+                && edge.to == "std.io.stdout"));
+        assert!(report
+            .dependency_graph
+            .edges
+            .iter()
+            .any(|edge| {
+                edge.kind == DependencyKind::Call && edge.from == "main" && edge.to == "helper"
+            }));
+    }
+
+    #[test]
+    fn reports_import_name_conflicts_explicitly() {
+        let report = analyze(
+            r#"
+import std.io.stdout;
+import std.net.stdout;
+
+fn main() void {
+    return;
+}
+"#,
+        );
+
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("import name conflict for 'stdout'")));
     }
 }

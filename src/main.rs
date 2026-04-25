@@ -72,6 +72,13 @@ fn main() void {
                 println!("used imports: {}", sema_report.used_imports.join(", "));
             }
 
+            if !sema_report.used_imports_map.is_empty() {
+                println!(
+                    "used imports map entries: {}",
+                    sema_report.used_imports_map.len()
+                );
+            }
+
             if !sema_report.unused_imports.is_empty() {
                 eprintln!(
                     "unused imports: {}",
@@ -97,6 +104,21 @@ fn main() void {
                     sema_report.constant_evaluations.len()
                 );
             }
+
+            println!(
+                "symbol table entries: {}",
+                sema_report.symbol_table.entries.len()
+            );
+            println!(
+                "dependency edges: {}",
+                sema_report.dependency_graph.edges.len()
+            );
+            println!(
+                "optimization hints: const={}, inline={}, removable_imports={}",
+                sema_report.optimization_hints.constant_evaluations.len(),
+                sema_report.optimization_hints.inline_candidates.len(),
+                sema_report.optimization_hints.removable_imports.len()
+            );
 
             if !sema_report.errors.is_empty() {
                 eprintln!(
