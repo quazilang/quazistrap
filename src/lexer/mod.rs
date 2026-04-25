@@ -173,6 +173,8 @@ impl Lexer {
             "impl" => TokenKind::Impl,
             "struct" => TokenKind::Struct,
             "trait" => TokenKind::Trait,
+            "enum" => TokenKind::Enum,
+            "match" => TokenKind::Match,
             "as" => TokenKind::As,
             "for" => TokenKind::For,
             "platform" => TokenKind::Platform,
@@ -274,6 +276,9 @@ impl Lexer {
                         if self.peek() == Some('=') {
                             self.advance();
                             TokenKind::EqEq
+                        } else if self.peek() == Some('>') {
+                            self.advance();
+                            TokenKind::FatArrow
                         } else {
                             TokenKind::Eq
                         }

@@ -118,9 +118,33 @@ pub enum ExprKind {
         type_args: Vec<Type>,
         args: Vec<Expr>,
     },
+
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
 }
 
 pub type Expr = Spanned<ExprKind>;
+
+#[derive(Debug, Clone)]
+pub enum PatternKind {
+    Wildcard,
+    Variant {
+        enum_name: Option<String>,
+        variant: String,
+        bindings: Vec<String>,
+    },
+}
+
+pub type Pattern = Spanned<PatternKind>;
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub expr: Expr,
+    pub span: Span,
+}
 
 #[derive(Debug, Clone)]
 pub enum TypeKind {
@@ -241,6 +265,13 @@ pub struct TraitMethod {
 }
 
 #[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub payload_types: Vec<Type>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub enum ItemKind {
     Fn {
         name: String,
@@ -258,6 +289,11 @@ pub enum ItemKind {
         name: String,
         generic_params: Vec<String>,
         methods: Vec<TraitMethod>,
+    },
+    Enum {
+        name: String,
+        generic_params: Vec<String>,
+        variants: Vec<EnumVariant>,
     },
     Impl {
         trait_ty: Type,

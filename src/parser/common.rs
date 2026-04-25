@@ -153,6 +153,7 @@ impl Parser {
                 | TokenKind::Fn
                 | TokenKind::Struct
                 | TokenKind::Trait
+                | TokenKind::Enum
                 | TokenKind::Impl => break,
                 _ => {
                     self.advance();

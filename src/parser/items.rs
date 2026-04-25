@@ -164,6 +164,70 @@ impl Parser {
         ))
     }
 
+    pub fn parse_enum(&mut self) -> Result<Item, String> {
+        let start = self.expect(TokenKind::Enum)?.span;
+        let name = self.parse_ident()?;
+        let generic_params = self.parse_optional_generic_params()?;
+
+        self.expect(TokenKind::LBrace)?;
+        let mut variants = Vec::new();
+
+        while !self.at(TokenKind::RBrace) {
+            if self.at(TokenKind::Eof) {
+                return Err(self.err_here("unexpected EOF while parsing enum".to_string()));
+            }
+
+            let variant_name_tok = self.expect_ident_token()?;
+            let variant_name = match &variant_name_tok.kind {
+                TokenKind::Ident(s) => s.clone(),
+                _ => unreachable!(),
+            };
+
+            let mut payload_types = Vec::new();
+            let mut variant_end = variant_name_tok.span;
+
+            if self.at(TokenKind::LParen) {
+                self.advance();
+
+                if !self.at(TokenKind::RParen) {
+                    loop {
+                        payload_types.push(self.parse_type()?);
+
+                        if self.at(TokenKind::Comma) {
+                            self.advance();
+                            continue;
+                        }
+                        break;
+                    }
+                }
+
+                variant_end = self.expect(TokenKind::RParen)?.span;
+            }
+
+            variants.push(EnumVariant {
+                name: variant_name,
+                payload_types,
+                span: to_ast_span(merge_token_spans(variant_name_tok.span, variant_end)),
+            });
+
+            if self.at(TokenKind::Comma) || self.at(TokenKind::Semicolon) {
+                self.advance();
+            }
+        }
+
+        let end = self.expect(TokenKind::RBrace)?.span;
+        let span = to_ast_span(merge_token_spans(start, end));
+
+        Ok(Spanned::new(
+            ItemKind::Enum {
+                name,
+                generic_params,
+                variants,
+            },
+            span,
+        ))
+    }
+
     pub fn parse_impl(&mut self) -> Result<Item, String> {
         let start = self.expect(TokenKind::Impl)?.span;
 
