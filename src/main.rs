@@ -46,13 +46,86 @@ fn main() void {
             println!("{:#?}", program);
 
             let mut analyzer = Analyzer::new();
-            let sema_errors = analyzer.analyze_program(&program);
-            if !sema_errors.is_empty() {
+            let sema_report = analyzer.analyze_program(&program);
+
+            if !sema_report.warnings.is_empty() {
+                eprintln!(
+                    "semantic analysis emitted {} warning(s):",
+                    sema_report.warnings.len()
+                );
+                for warning in &sema_report.warnings {
+                    eprintln!("- {}", warning);
+                }
+            }
+
+            if !sema_report.suggestions.is_empty() {
+                eprintln!(
+                    "semantic analysis suggestions ({}):",
+                    sema_report.suggestions.len()
+                );
+                for suggestion in &sema_report.suggestions {
+                    eprintln!("- {}", suggestion.message);
+                }
+            }
+
+            if !sema_report.used_imports.is_empty() {
+                println!("used imports: {}", sema_report.used_imports.join(", "));
+            }
+
+            if !sema_report.used_imports_map.is_empty() {
+                println!(
+                    "used imports map entries: {}",
+                    sema_report.used_imports_map.len()
+                );
+            }
+
+            if !sema_report.unused_imports.is_empty() {
+                eprintln!(
+                    "unused imports: {}",
+                    sema_report.unused_imports.join(", ")
+                );
+            }
+
+            if !sema_report.inline_candidates.is_empty() {
+                println!(
+                    "inline candidates: {}",
+                    sema_report
+                        .inline_candidates
+                        .iter()
+                        .map(|c| c.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+
+            if !sema_report.constant_evaluations.is_empty() {
+                println!(
+                    "constant evaluations: {}",
+                    sema_report.constant_evaluations.len()
+                );
+            }
+
+            println!(
+                "symbol table entries: {}",
+                sema_report.symbol_table.entries.len()
+            );
+            println!(
+                "dependency edges: {}",
+                sema_report.dependency_graph.edges.len()
+            );
+            println!(
+                "optimization hints: const={}, inline={}, removable_imports={}",
+                sema_report.optimization_hints.constant_evaluations.len(),
+                sema_report.optimization_hints.inline_candidates.len(),
+                sema_report.optimization_hints.removable_imports.len()
+            );
+
+            if !sema_report.errors.is_empty() {
                 eprintln!(
                     "semantic analysis failed with {} error(s):",
-                    sema_errors.len()
+                    sema_report.errors.len()
                 );
-                for err in sema_errors {
+                for err in sema_report.errors {
                     eprintln!("- {}", err);
                 }
                 std::process::exit(1);

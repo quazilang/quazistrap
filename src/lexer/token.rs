@@ -42,6 +42,8 @@ pub enum TokenKind {
     Impl,
     Struct,
     Trait,
+    Enum,
+    Match,
     As,
     For,
 
@@ -81,6 +83,7 @@ pub enum TokenKind {
 
     // operators
     Eq,    // =
+    FatArrow, // =>
     Plus,  // +
     Minus, // -
     Star,  // *
@@ -138,6 +141,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Impl => write!(f, "impl"),
             TokenKind::Struct => write!(f, "struct"),
             TokenKind::Trait => write!(f, "trait"),
+            TokenKind::Enum => write!(f, "enum"),
+            TokenKind::Match => write!(f, "match"),
             TokenKind::As => write!(f, "as"),
             TokenKind::For => write!(f, "for"),
 
@@ -174,6 +179,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Percent => write!(f, "%"),
 
             TokenKind::Eq => write!(f, "="),
+            TokenKind::FatArrow => write!(f, "=>"),
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
             TokenKind::Star => write!(f, "*"),

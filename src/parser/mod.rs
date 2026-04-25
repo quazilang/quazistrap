@@ -71,6 +71,7 @@ impl Parser {
             TokenKind::Fn => self.parse_fn(),
             TokenKind::Struct => self.parse_struct(),
             TokenKind::Trait => self.parse_trait(),
+            TokenKind::Enum => self.parse_enum(),
             TokenKind::Impl => self.parse_impl(),
             other => Err(self.err_here_with_code(
                 "E03",
@@ -601,6 +602,105 @@ impl Parser {
         Ok(args)
     }
 
+    fn parse_match_expr(&mut self, match_span: crate::lexer::token::Span) -> Result<Expr, String> {
+        let scrutinee = self.parse_expr()?;
+        self.expect(TokenKind::LBrace)?;
+
+        let mut arms = Vec::new();
+
+        while !self.at(TokenKind::RBrace) {
+            if self.at(TokenKind::Eof) {
+                return Err(self.err_here_with_code(
+                    "E04",
+                    "unexpected EOF while parsing match expression".to_string(),
+                ));
+            }
+
+            let pattern = self.parse_pattern()?;
+            self.expect(TokenKind::FatArrow)?;
+            let arm_expr = self.parse_expr()?;
+
+            let arm_span = Span::merge(pattern.span, arm_expr.span);
+            arms.push(MatchArm {
+                pattern,
+                expr: arm_expr,
+                span: arm_span,
+            });
+
+            if self.at(TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let rbrace = self.expect(TokenKind::RBrace)?.span;
+        let span = Span::merge(to_ast_span(match_span), to_ast_span(rbrace));
+
+        Ok(Spanned::new(
+            ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            span,
+        ))
+    }
+
+    fn parse_pattern(&mut self) -> Result<Pattern, String> {
+        let first_tok = self.expect_ident_token()?;
+        let first = match &first_tok.kind {
+            TokenKind::Ident(s) => s.clone(),
+            _ => unreachable!(),
+        };
+
+        if first == "_" {
+            return Ok(Spanned::new(PatternKind::Wildcard, to_ast_span(first_tok.span)));
+        }
+
+        let mut enum_name = None;
+        let mut variant = first;
+        let mut end = first_tok.span;
+
+        if self.at(TokenKind::Dot) {
+            self.advance();
+            let variant_tok = self.expect_ident_token()?;
+            enum_name = Some(variant);
+            variant = match &variant_tok.kind {
+                TokenKind::Ident(s) => s.clone(),
+                _ => unreachable!(),
+            };
+            end = variant_tok.span;
+        }
+
+        let mut bindings = Vec::new();
+        if self.at(TokenKind::LParen) {
+            self.advance();
+
+            if !self.at(TokenKind::RParen) {
+                loop {
+                    bindings.push(self.parse_ident()?);
+
+                    if self.at(TokenKind::Comma) {
+                        self.advance();
+                        continue;
+                    }
+                    break;
+                }
+            }
+
+            end = self.expect(TokenKind::RParen)?.span;
+        }
+
+        Ok(Spanned::new(
+            PatternKind::Variant {
+                enum_name,
+                variant,
+                bindings,
+            },
+            to_ast_span(merge_token_spans(first_tok.span, end)),
+        ))
+    }
+
     fn parse_primary(&mut self) -> Result<Expr, String> {
         let tok = self.advance();
 
@@ -626,6 +726,7 @@ impl Parser {
                 let span = Span::merge(to_ast_span(tok.span), to_ast_span(r));
                 Ok(Spanned::new(ExprKind::Group(Box::new(expr)), span))
             }
+            TokenKind::Match => self.parse_match_expr(tok.span),
             TokenKind::Error(msg) => {
                 Err(self.err_tok_with_code(tok.span, "E00", format!("lexer error: {}", msg)))
             }
@@ -1019,6 +1120,113 @@ fn main() void {
         assert_eq!(inner_args.len(), 2);
         assert!(matches!(inner_args[0].node, TypeKind::Str));
         assert!(matches!(inner_args[1].node, TypeKind::Int32));
+    }
+
+    #[test]
+    fn parses_enum_and_match_expression() {
+        let program = parse_program(
+            r#"
+enum Option[T] {
+    Some(T),
+    None,
+}
+
+fn unwrap_or_zero(x: Option[int32]) int32 {
+    return match x {
+        Some(v) => v,
+        Option.None => 0,
+    };
+}
+"#,
+        );
+
+        let ItemKind::Enum {
+            name,
+            generic_params,
+            variants,
+        } = &program.items[0].node
+        else {
+            panic!("expected enum item");
+        };
+
+        assert_eq!(name, "Option");
+        assert_eq!(generic_params, &vec!["T".to_string()]);
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0].name, "Some");
+        assert_eq!(variants[0].payload_types.len(), 1);
+        assert_eq!(variants[1].name, "None");
+        assert!(variants[1].payload_types.is_empty());
+
+        let ItemKind::Fn { body, .. } = &program.items[1].node else {
+            panic!("expected function item");
+        };
+
+        let StmtKind::Return(Some(expr)) = &body.stmts[0].node else {
+            panic!("expected return with expression");
+        };
+
+        let ExprKind::Match { arms, .. } = &expr.node else {
+            panic!("expected match expression");
+        };
+
+        assert_eq!(arms.len(), 2);
+
+        let PatternKind::Variant {
+            enum_name,
+            variant,
+            bindings,
+        } = &arms[0].pattern.node
+        else {
+            panic!("expected first arm variant pattern");
+        };
+        assert!(enum_name.is_none());
+        assert_eq!(variant, "Some");
+        assert_eq!(bindings, &vec!["v".to_string()]);
+
+        let PatternKind::Variant {
+            enum_name,
+            variant,
+            bindings,
+        } = &arms[1].pattern.node
+        else {
+            panic!("expected second arm variant pattern");
+        };
+        assert_eq!(enum_name.as_deref(), Some("Option"));
+        assert_eq!(variant, "None");
+        assert!(bindings.is_empty());
+    }
+
+    #[test]
+    fn parses_match_with_wildcard_pattern() {
+        let program = parse_program(
+            r#"
+enum Color {
+    Red,
+    Blue,
+}
+
+fn value(c: Color) int32 {
+    return match c {
+        Red => 1,
+        _ => 0,
+    };
+}
+"#,
+        );
+
+        let ItemKind::Fn { body, .. } = &program.items[1].node else {
+            panic!("expected function item");
+        };
+
+        let StmtKind::Return(Some(expr)) = &body.stmts[0].node else {
+            panic!("expected return with expression");
+        };
+
+        let ExprKind::Match { arms, .. } = &expr.node else {
+            panic!("expected match expression");
+        };
+
+        assert!(matches!(arms[1].pattern.node, PatternKind::Wildcard));
     }
 
     #[test]
