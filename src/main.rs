@@ -80,10 +80,7 @@ fn main() void {
             }
 
             if !sema_report.unused_imports.is_empty() {
-                eprintln!(
-                    "unused imports: {}",
-                    sema_report.unused_imports.join(", ")
-                );
+                eprintln!("unused imports: {}", sema_report.unused_imports.join(", "));
             }
 
             if !sema_report.inline_candidates.is_empty() {

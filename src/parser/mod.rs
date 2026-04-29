@@ -282,10 +282,32 @@ impl Parser {
             self.advance();
             let value = self.parse_assignment()?;
             let span = Span::merge(left.span, value.span);
-
             return Ok(Spanned::new(
                 ExprKind::Assign {
                     target: Box::new(left),
+                    value: Box::new(value),
+                },
+                span,
+            ));
+        }
+
+        let compound_op = match self.peek_kind() {
+            TokenKind::PlusEq => Some(CompoundAssignOp::Add),
+            TokenKind::MinusEq => Some(CompoundAssignOp::Sub),
+            TokenKind::StarEq => Some(CompoundAssignOp::Mul),
+            TokenKind::SlashEq => Some(CompoundAssignOp::Div),
+            TokenKind::PercentEq => Some(CompoundAssignOp::Mod),
+            _ => None,
+        };
+
+        if let Some(op) = compound_op {
+            self.advance();
+            let value = self.parse_assignment()?;
+            let span = Span::merge(left.span, value.span);
+            return Ok(Spanned::new(
+                ExprKind::CompoundAssign {
+                    target: Box::new(left),
+                    op,
                     value: Box::new(value),
                 },
                 span,
@@ -502,6 +524,26 @@ impl Parser {
             ));
         }
 
+        if self.at(TokenKind::PlusPlus) {
+            let t = self.advance().span;
+            let expr = self.parse_unary()?;
+            let span = Span::merge(to_ast_span(t), expr.span);
+            return Ok(Spanned::new(
+                ExprKind::IncDec { expr: Box::new(expr), op: IncDecOp::Inc, prefix: true },
+                span,
+            ));
+        }
+
+        if self.at(TokenKind::MinusMinus) {
+            let t = self.advance().span;
+            let expr = self.parse_unary()?;
+            let span = Span::merge(to_ast_span(t), expr.span);
+            return Ok(Spanned::new(
+                ExprKind::IncDec { expr: Box::new(expr), op: IncDecOp::Dec, prefix: true },
+                span,
+            ));
+        }
+
         self.parse_postfix()
     }
 
@@ -573,6 +615,26 @@ impl Parser {
                     );
                 }
 
+                continue;
+            }
+
+            if self.at(TokenKind::PlusPlus) {
+                let t = self.advance().span;
+                let span = Span::merge(expr.span, to_ast_span(t));
+                expr = Spanned::new(
+                    ExprKind::IncDec { expr: Box::new(expr), op: IncDecOp::Inc, prefix: false },
+                    span,
+                );
+                continue;
+            }
+
+            if self.at(TokenKind::MinusMinus) {
+                let t = self.advance().span;
+                let span = Span::merge(expr.span, to_ast_span(t));
+                expr = Spanned::new(
+                    ExprKind::IncDec { expr: Box::new(expr), op: IncDecOp::Dec, prefix: false },
+                    span,
+                );
                 continue;
             }
 

@@ -96,6 +96,17 @@ pub enum TokenKind {
     NotEq, // !=
     Bang,  // !
 
+    // compound assignment
+    PlusEq,    // +=
+    MinusEq,   // -=
+    StarEq,    // *=
+    SlashEq,   // /=
+    PercentEq, // %=
+
+    // increment / decrement
+    PlusPlus,   // ++
+    MinusMinus, // --
+
     // directives
     Platform, // platform
 
@@ -191,6 +202,14 @@ impl std::fmt::Display for TokenKind {
             TokenKind::EqEq => write!(f, "=="),
             TokenKind::NotEq => write!(f, "!="),
             TokenKind::Bang => write!(f, "!"),
+
+            TokenKind::PlusEq => write!(f, "+="),
+            TokenKind::MinusEq => write!(f, "-="),
+            TokenKind::StarEq => write!(f, "*="),
+            TokenKind::SlashEq => write!(f, "/="),
+            TokenKind::PercentEq => write!(f, "%="),
+            TokenKind::PlusPlus => write!(f, "++"),
+            TokenKind::MinusMinus => write!(f, "--"),
 
             TokenKind::Platform => write!(f, "platform"),
             TokenKind::Eof => write!(f, "EOF"),

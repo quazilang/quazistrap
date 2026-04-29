@@ -80,6 +80,21 @@ pub enum BinOpKind {
 }
 
 #[derive(Debug, Clone)]
+pub enum CompoundAssignOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+#[derive(Debug, Clone)]
+pub enum IncDecOp {
+    Inc,
+    Dec,
+}
+
+#[derive(Debug, Clone)]
 pub enum ExprKind {
     Literal(Literal),
     Ident(String),
@@ -122,6 +137,18 @@ pub enum ExprKind {
     Match {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
+    },
+
+    CompoundAssign {
+        target: Box<Expr>,
+        op: CompoundAssignOp,
+        value: Box<Expr>,
+    },
+
+    IncDec {
+        expr: Box<Expr>,
+        op: IncDecOp,
+        prefix: bool,
     },
 }
 

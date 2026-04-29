@@ -114,6 +114,21 @@ pub struct ImportInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct MathOptimization {
+    pub span: Span,
+    pub description: String,
+    pub result_value: Option<ConstValue>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LazyImportHint {
+    pub import_span: Span,
+    pub broad_path: String,
+    pub accessed_subpaths: Vec<String>,
+    pub suggested_imports: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct AnnotatedProgram {
     pub span: Option<Span>,
     pub item_count: usize,
@@ -139,6 +154,8 @@ pub struct OptimizationHints {
     pub inline_candidates: Vec<InlineCandidate>,
     pub removable_imports: Vec<String>,
     pub exhaustiveness_checks: usize,
+    pub math_optimizations: Vec<MathOptimization>,
+    pub lazy_import_hints: Vec<LazyImportHint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -183,6 +200,7 @@ pub struct SemanticReport {
     pub dependency_graph: DependencyGraph,
     pub exhaustiveness_checks: usize,
     pub non_exhaustive_matches: Vec<MatchExhaustivenessIssue>,
+    pub lazy_import_hints: Vec<LazyImportHint>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -235,6 +253,9 @@ pub struct Analyzer {
     exhaustiveness_checks: usize,
     dependency_edges: BTreeSet<(DependencyKind, String, String)>,
     current_function: Vec<String>,
+    math_optimizations: Vec<MathOptimization>,
+    lazy_import_accesses: HashMap<String, BTreeSet<String>>,
+    lazy_import_hints: Vec<LazyImportHint>,
 }
 
 fn unwrap_type(ty: &Type) -> TypeKind {
@@ -260,6 +281,9 @@ impl Analyzer {
             exhaustiveness_checks: 0,
             dependency_edges: BTreeSet::new(),
             current_function: Vec::new(),
+            math_optimizations: Vec::new(),
+            lazy_import_accesses: HashMap::new(),
+            lazy_import_hints: Vec::new(),
         }
     }
 
@@ -286,6 +310,7 @@ impl Analyzer {
         self.run_inline_candidate_pass(program);
         self.run_exhaustiveness_pass();
         self.run_import_optimization_pass();
+        self.run_lazy_import_pass();
 
         let symbol_table = self.build_symbol_table();
         let used_imports_vec: Vec<String> = self.used_import_paths.iter().cloned().collect();
@@ -295,6 +320,8 @@ impl Analyzer {
         let annotated_exprs = std::mem::take(&mut self.annotated_exprs);
         let constant_evaluations = std::mem::take(&mut self.constant_evaluations);
         let inline_candidates = std::mem::take(&mut self.inline_candidates);
+        let math_optimizations = std::mem::take(&mut self.math_optimizations);
+        let lazy_import_hints = std::mem::take(&mut self.lazy_import_hints);
 
         let annotated_program = AnnotatedProgram {
             span: program.span,
@@ -308,6 +335,8 @@ impl Analyzer {
             inline_candidates: inline_candidates.clone(),
             removable_imports: unused_imports_vec.clone(),
             exhaustiveness_checks: self.exhaustiveness_checks,
+            math_optimizations: math_optimizations.clone(),
+            lazy_import_hints: lazy_import_hints.clone(),
         };
 
         let dependency_graph = self.build_dependency_graph();
@@ -328,6 +357,7 @@ impl Analyzer {
             dependency_graph,
             exhaustiveness_checks: self.exhaustiveness_checks,
             non_exhaustive_matches: std::mem::take(&mut self.non_exhaustive_matches),
+            lazy_import_hints,
         }
     }
 
@@ -350,6 +380,69 @@ impl Analyzer {
         self.exhaustiveness_checks = 0;
         self.dependency_edges.clear();
         self.current_function.clear();
+        self.math_optimizations.clear();
+        self.lazy_import_accesses.clear();
+        self.lazy_import_hints.clear();
+        self.init_builtins();
+    }
+
+    fn init_builtins(&mut self) {
+        let span = Span {
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        };
+
+        let mut option_variants = HashMap::new();
+        option_variants.insert("Some".to_string(), 1usize);
+        option_variants.insert("None".to_string(), 0usize);
+        self.enums.insert("Option".to_string(), EnumInfo { variants: option_variants });
+
+        let mut result_variants = HashMap::new();
+        result_variants.insert("Ok".to_string(), 1usize);
+        result_variants.insert("Err".to_string(), 1usize);
+        self.enums.insert("Result".to_string(), EnumInfo { variants: result_variants });
+
+        for type_name in &["Option", "Result"] {
+            self.declare(type_name.to_string(), Symbol {
+                kind: SymbolKind::TypeName,
+                span,
+                ty: None,
+                params: vec![],
+                used: true,
+                initialized: true,
+                is_import: false,
+                import_path: None,
+                const_value: None,
+            });
+        }
+
+        for ctor in &["Some", "Ok", "Err"] {
+            self.declare(ctor.to_string(), Symbol {
+                kind: SymbolKind::Function,
+                span,
+                ty: Some(TypeKind::Any),
+                params: vec![TypeKind::Any],
+                used: true,
+                initialized: true,
+                is_import: false,
+                import_path: None,
+                const_value: None,
+            });
+        }
+
+        self.declare("None".to_string(), Symbol {
+            kind: SymbolKind::Function,
+            span,
+            ty: Some(TypeKind::Any),
+            params: vec![],
+            used: true,
+            initialized: true,
+            is_import: false,
+            import_path: None,
+            const_value: None,
+        });
     }
 
     fn add_dependency_edge(&mut self, kind: DependencyKind, from: &str, to: &str) {
@@ -860,9 +953,12 @@ impl Analyzer {
                 let right_eval = self.type_check_expr(right, reachable);
 
                 let ty = self.infer_binary_type(expr.span, op, &left_eval.ty, &right_eval.ty);
-                let const_value = match (&left_eval.const_value, &right_eval.const_value) {
-                    (Some(lhs), Some(rhs)) => Self::const_from_binary(op, lhs, rhs),
-                    _ => None,
+                let const_value = if let (Some(lhs), Some(rhs)) =
+                    (&left_eval.const_value, &right_eval.const_value)
+                {
+                    Self::const_from_binary(op, lhs, rhs)
+                } else {
+                    self.check_math_identities(expr.span, op, &left_eval, &right_eval)
                 };
 
                 ExprEval { ty, const_value }
@@ -946,14 +1042,49 @@ impl Analyzer {
                     ExprEval::default()
                 }
             }
-            ExprKind::MethodCall { object, args, .. } => {
+            ExprKind::MethodCall { object, method: _, args, .. } => {
+                // For lazy import tracking: record the object chain path (not the method itself)
+                if let Some((base, path)) = Self::extract_field_chain(object) {
+                    if let Some(sym) = self.resolve_symbol(&base) {
+                        if sym.is_import {
+                            let import_base = sym.import_path.as_deref().unwrap_or(&base);
+                            let full_access = if path.is_empty() {
+                                import_base.to_string()
+                            } else {
+                                format!("{}.{}", import_base, path.join("."))
+                            };
+                            self.lazy_import_accesses
+                                .entry(base)
+                                .or_default()
+                                .insert(full_access);
+                        }
+                    }
+                }
                 self.type_check_expr(object, reachable);
                 for arg in args {
                     self.type_check_expr(arg, reachable);
                 }
                 ExprEval::default()
             }
-            ExprKind::Field { object, .. } => {
+            ExprKind::Field { object, name } => {
+                // For lazy import tracking: record the full chain including this field
+                if let Some((base, mut path)) = Self::extract_field_chain(object) {
+                    if let Some(sym) = self.resolve_symbol(&base) {
+                        if sym.is_import {
+                            path.push(name.clone());
+                            let import_base = sym.import_path.as_deref().unwrap_or(&base);
+                            let full_access = if path.is_empty() {
+                                import_base.to_string()
+                            } else {
+                                format!("{}.{}", import_base, path.join("."))
+                            };
+                            self.lazy_import_accesses
+                                .entry(base)
+                                .or_default()
+                                .insert(full_access);
+                        }
+                    }
+                }
                 self.type_check_expr(object, reachable);
                 ExprEval::default()
             }
@@ -1020,6 +1151,32 @@ impl Analyzer {
                     ty: result_ty,
                     const_value: None,
                 }
+            }
+            ExprKind::CompoundAssign { target, op, value } => {
+                self.analyze_assign_target(target);
+                let target_eval = self.type_check_expr(target, reachable);
+                let value_eval = self.type_check_expr(value, reachable);
+
+                let bin_op = match op {
+                    CompoundAssignOp::Add => BinOpKind::Add,
+                    CompoundAssignOp::Sub => BinOpKind::Sub,
+                    CompoundAssignOp::Mul => BinOpKind::Mul,
+                    CompoundAssignOp::Div => BinOpKind::Div,
+                    CompoundAssignOp::Mod => BinOpKind::Mod,
+                };
+                let ty = self.infer_binary_type(expr.span, &bin_op, &target_eval.ty, &value_eval.ty);
+                ExprEval { ty, const_value: None }
+            }
+            ExprKind::IncDec { expr: inner, .. } => {
+                self.analyze_assign_target(inner);
+                let inner_eval = self.type_check_expr(inner, reachable);
+
+                if let Some(ty) = &inner_eval.ty {
+                    if matches!(ty, TypeKind::Str | TypeKind::Bool | TypeKind::Void) {
+                        self.push_error(inner.span, format!("++ / -- not valid for {}", ty));
+                    }
+                }
+                ExprEval { ty: inner_eval.ty, const_value: None }
             }
         };
 
@@ -1263,6 +1420,147 @@ impl Analyzer {
                     bindings.clone(),
                 )
             }
+        }
+    }
+
+    fn extract_field_chain(expr: &Expr) -> Option<(String, Vec<String>)> {
+        match &expr.node {
+            ExprKind::Ident(name) => Some((name.clone(), vec![])),
+            ExprKind::Field { object, name } => {
+                let (base, mut path) = Self::extract_field_chain(object)?;
+                path.push(name.clone());
+                Some((base, path))
+            }
+            _ => None,
+        }
+    }
+
+    fn check_math_identities(
+        &mut self,
+        span: Span,
+        op: &BinOpKind,
+        left: &ExprEval,
+        right: &ExprEval,
+    ) -> Option<ConstValue> {
+        // Absorbing elements: result is constant regardless of the unknown operand.
+        let absorbed: Option<(ConstValue, &str)> = match (op, &left.const_value, &right.const_value) {
+            (BinOpKind::Mul, _, Some(ConstValue::Int(0)))
+            | (BinOpKind::Mul, Some(ConstValue::Int(0)), _) => {
+                Some((ConstValue::Int(0), "x * 0 = 0"))
+            }
+            (BinOpKind::Mul, _, Some(ConstValue::Float(f))) if *f == 0.0 => {
+                Some((ConstValue::Float(0.0), "x * 0.0 = 0.0"))
+            }
+            (BinOpKind::Mul, Some(ConstValue::Float(f)), _) if *f == 0.0 => {
+                Some((ConstValue::Float(0.0), "0.0 * x = 0.0"))
+            }
+            (BinOpKind::AndAnd, _, Some(ConstValue::Bool(false)))
+            | (BinOpKind::AndAnd, Some(ConstValue::Bool(false)), _) => {
+                Some((ConstValue::Bool(false), "x && false = false"))
+            }
+            (BinOpKind::OrOr, _, Some(ConstValue::Bool(true)))
+            | (BinOpKind::OrOr, Some(ConstValue::Bool(true)), _) => {
+                Some((ConstValue::Bool(true), "x || true = true"))
+            }
+            _ => None,
+        };
+
+        if let Some((val, desc)) = absorbed {
+            self.math_optimizations.push(MathOptimization {
+                span,
+                description: desc.to_string(),
+                result_value: Some(val.clone()),
+            });
+            self.push_suggestion(Some(span), format!("math optimization: {}", desc));
+            // Return the folded value so ExprAnnotation.const_value carries it.
+            return Some(val);
+        }
+
+        // Identity elements: result equals the non-constant operand — emit suggestion only.
+        let identity_desc: Option<&str> = match (op, &left.const_value, &right.const_value) {
+            (BinOpKind::Add, _, Some(ConstValue::Int(0)))
+            | (BinOpKind::Add, Some(ConstValue::Int(0)), _) => Some("x + 0 = x"),
+            (BinOpKind::Sub, _, Some(ConstValue::Int(0))) => Some("x - 0 = x"),
+            (BinOpKind::Add, _, Some(ConstValue::Float(f))) if *f == 0.0 => Some("x + 0.0 = x"),
+            (BinOpKind::Add, Some(ConstValue::Float(f)), _) if *f == 0.0 => Some("0.0 + x = x"),
+            (BinOpKind::Sub, _, Some(ConstValue::Float(f))) if *f == 0.0 => Some("x - 0.0 = x"),
+            (BinOpKind::Mul, _, Some(ConstValue::Int(1)))
+            | (BinOpKind::Mul, Some(ConstValue::Int(1)), _) => Some("x * 1 = x"),
+            (BinOpKind::Div, _, Some(ConstValue::Int(1))) => Some("x / 1 = x"),
+            (BinOpKind::Mul, _, Some(ConstValue::Float(f))) if *f == 1.0 => Some("x * 1.0 = x"),
+            (BinOpKind::Mul, Some(ConstValue::Float(f)), _) if *f == 1.0 => Some("1.0 * x = x"),
+            (BinOpKind::Div, _, Some(ConstValue::Float(f))) if *f == 1.0 => Some("x / 1.0 = x"),
+            (BinOpKind::AndAnd, _, Some(ConstValue::Bool(true)))
+            | (BinOpKind::AndAnd, Some(ConstValue::Bool(true)), _) => Some("x && true = x"),
+            (BinOpKind::OrOr, _, Some(ConstValue::Bool(false)))
+            | (BinOpKind::OrOr, Some(ConstValue::Bool(false)), _) => Some("x || false = x"),
+            _ => None,
+        };
+
+        if let Some(desc) = identity_desc {
+            self.math_optimizations.push(MathOptimization {
+                span,
+                description: desc.to_string(),
+                result_value: None,
+            });
+            self.push_suggestion(Some(span), format!("math optimization: {}", desc));
+        }
+
+        None
+    }
+
+    fn run_lazy_import_pass(&mut self) {
+        let accesses = self.lazy_import_accesses.clone();
+
+        for (local_name, paths) in &accesses {
+            let sym = match self.resolve_symbol(local_name) {
+                Some(s) if s.is_import => s,
+                _ => continue,
+            };
+
+            let import_path = sym.import_path.as_deref().unwrap_or(local_name).to_string();
+
+            // Keep only deepest paths (remove any that are a strict prefix of another).
+            let mut paths_vec: Vec<String> = paths.iter().cloned().collect();
+            paths_vec.sort();
+            let deepest: Vec<String> = paths_vec
+                .iter()
+                .filter(|p| {
+                    !paths_vec
+                        .iter()
+                        .any(|other| other != *p && other.starts_with(&format!("{}.", p)))
+                })
+                .cloned()
+                .collect();
+
+            // Only emit when the accessed paths are strictly deeper than the import itself.
+            let narrower: Vec<String> = deepest
+                .into_iter()
+                .filter(|p| p.len() > import_path.len())
+                .collect();
+
+            if narrower.is_empty() {
+                continue;
+            }
+
+            let suggested: Vec<String> =
+                narrower.iter().map(|p| format!("import {};", p)).collect();
+
+            self.push_suggestion(
+                Some(sym.span),
+                format!(
+                    "lazy import: '{}' only accesses [{}]; consider narrowing",
+                    import_path,
+                    narrower.join(", ")
+                ),
+            );
+
+            self.lazy_import_hints.push(LazyImportHint {
+                import_span: sym.span,
+                broad_path: import_path,
+                accessed_subpaths: narrower,
+                suggested_imports: suggested,
+            });
         }
     }
 
@@ -2175,5 +2473,310 @@ fn main() void {
             .errors
             .iter()
             .any(|e| e.message.contains("import name conflict for 'stdout'")));
+    }
+
+    #[test]
+    fn builtin_option_some_and_none_resolve_without_declaration() {
+        let report = analyze(
+            r#"
+fn wrap(x: int32) Option[int32] {
+    return Some(x);
+}
+
+fn empty() Option[int32] {
+    return None();
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn builtin_none_bare_ident_resolves() {
+        let report = analyze(
+            r#"
+fn get_none() Option[int32] {
+    const n = None;
+    return n;
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn builtin_result_ok_and_err_resolve_without_declaration() {
+        let report = analyze(
+            r#"
+fn succeed(x: int32) Result[int32, str] {
+    return Ok(x);
+}
+
+fn fail(msg: str) Result[int32, str] {
+    return Err(msg);
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn builtin_option_exhaustiveness_check_works() {
+        let report = analyze(
+            r#"
+fn unwrap_or_zero(x: Option[int32]) int32 {
+    return match x {
+        Some(v) => v,
+        None => 0,
+    };
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert_eq!(report.exhaustiveness_checks, 1);
+    }
+
+    #[test]
+    fn builtin_option_non_exhaustive_match_is_caught() {
+        let report = analyze(
+            r#"
+fn bad_match(x: Option[int32]) int32 {
+    return match x {
+        Some(v) => v,
+    };
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.message.contains("non-exhaustive match")),
+            "expected non-exhaustive match error"
+        );
+    }
+
+    #[test]
+    fn builtin_result_exhaustiveness_check_works() {
+        let report = analyze(
+            r#"
+fn handle(x: Result[int32, str]) int32 {
+    return match x {
+        Ok(v) => v,
+        Err(e) => 0,
+    };
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert_eq!(report.exhaustiveness_checks, 1);
+    }
+
+    #[test]
+    fn redefining_builtin_type_is_an_error() {
+        let report = analyze(
+            r#"
+enum Option[T] {
+    Some(T),
+    None,
+}
+
+fn main() void {}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.message.contains("duplicate declaration 'Option'")),
+            "expected duplicate declaration error for Option"
+        );
+    }
+
+    #[test]
+    fn compound_assign_ops_are_valid() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var x: int32 = 0;
+    x += 1;
+    x -= 1;
+    x *= 2;
+    x /= 2;
+    x %= 3;
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn compound_assign_on_const_is_error() {
+        let report = analyze(
+            r#"
+fn main() void {
+    const x: int32 = 1;
+    x += 1;
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.message.contains("cannot assign to const")),
+            "expected const assign error"
+        );
+    }
+
+    #[test]
+    fn postfix_increment_is_valid() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var x: int32 = 0;
+    x++;
+    x--;
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn prefix_increment_is_valid() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var x: int32 = 0;
+    ++x;
+    --x;
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn inc_dec_on_bool_is_error() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var flag: bool = false;
+    flag++;
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.message.contains("++ / -- not valid")),
+            "expected inc/dec type error"
+        );
+    }
+
+    #[test]
+    fn inc_dec_on_const_is_error() {
+        let report = analyze(
+            r#"
+fn main() void {
+    const x: int32 = 1;
+    x++;
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.message.contains("cannot assign to const")),
+            "expected const assign error"
+        );
+    }
+
+    #[test]
+    fn math_absorber_mul_zero_folds_to_zero_in_annotated_tree() {
+        let report = analyze(
+            r#"
+fn mul(x: int32) int32 {
+    return x * 0;
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        // The binary expr annotation must carry const_value = Int(0)
+        assert!(
+            report.annotated_exprs.iter().any(|a| a.const_value == Some(ConstValue::Int(0))),
+            "x * 0 should fold to Int(0) in annotated tree"
+        );
+        assert!(
+            report.optimization_hints.math_optimizations.iter().any(|m| m.description.contains("x * 0 = 0")),
+        );
+    }
+
+    #[test]
+    fn math_absorber_mul_zero_float_folds_in_annotated_tree() {
+        let report = analyze(
+            r#"
+fn scale(x: float64) float64 {
+    return 0.0 * x;
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.annotated_exprs.iter().any(|a| matches!(a.const_value, Some(ConstValue::Float(f)) if f == 0.0)),
+            "0.0 * x should fold to Float(0.0) in annotated tree"
+        );
+        assert!(
+            report.optimization_hints.math_optimizations.iter().any(|m| m.description.contains("0.0 * x = 0.0")),
+        );
+    }
+
+    #[test]
+    fn math_identity_add_zero_emits_suggestion() {
+        let report = analyze(
+            r#"
+fn add(x: int32) int32 {
+    return x + 0;
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.optimization_hints.math_optimizations.iter().any(|m| m.description.contains("x + 0 = x")),
+            "x + 0 should produce identity optimization hint"
+        );
+        assert!(
+            report.suggestions.iter().any(|s| s.message.contains("x + 0 = x")),
+        );
+    }
+
+    #[test]
+    fn lazy_import_broad_import_suggests_narrower_path() {
+        let report = analyze(
+            r#"
+import std;
+
+fn main() void {
+    std.io.stdout.println("hello");
+}
+"#,
+        );
+        assert!(
+            report.lazy_import_hints.iter().any(|h| {
+                h.broad_path == "std"
+                    && h.accessed_subpaths.iter().any(|p| p == "std.io.stdout")
+            }),
+            "expected lazy import hint for std -> std.io.stdout, got {:?}",
+            report.lazy_import_hints
+        );
+        assert!(
+            report.optimization_hints.lazy_import_hints.iter().any(|h| h.broad_path == "std"),
+        );
+    }
+
+    #[test]
+    fn lazy_import_exact_import_produces_no_hint() {
+        let report = analyze(
+            r#"
+import std.io.stdout;
+
+fn main() void {
+    stdout.println("hello");
+}
+"#,
+        );
+        // stdout is the leaf symbol — no deeper sub-path accessed, no hint expected
+        assert!(
+            report.lazy_import_hints.is_empty(),
+            "exact import should not produce a lazy import hint"
+        );
     }
 }

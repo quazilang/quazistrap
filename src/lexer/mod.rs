@@ -250,11 +250,52 @@ impl Lexer {
                     '|' => TokenKind::Pipe,
                     '#' => TokenKind::Hash,
 
-                    '+' => TokenKind::Plus,
-                    '-' => TokenKind::Minus,
-                    '*' => TokenKind::Star,
-                    '/' => TokenKind::Slash,
-                    '%' => TokenKind::Percent,
+                    '+' => {
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            TokenKind::PlusEq
+                        } else if self.peek() == Some('+') {
+                            self.advance();
+                            TokenKind::PlusPlus
+                        } else {
+                            TokenKind::Plus
+                        }
+                    }
+                    '-' => {
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            TokenKind::MinusEq
+                        } else if self.peek() == Some('-') {
+                            self.advance();
+                            TokenKind::MinusMinus
+                        } else {
+                            TokenKind::Minus
+                        }
+                    }
+                    '*' => {
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            TokenKind::StarEq
+                        } else {
+                            TokenKind::Star
+                        }
+                    }
+                    '/' => {
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            TokenKind::SlashEq
+                        } else {
+                            TokenKind::Slash
+                        }
+                    }
+                    '%' => {
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            TokenKind::PercentEq
+                        } else {
+                            TokenKind::Percent
+                        }
+                    }
 
                     '<' => {
                         if self.peek() == Some('=') {
