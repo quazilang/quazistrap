@@ -38,21 +38,54 @@ Compiler frontend pipeline: source string → `Lexer` → `Vec<Token>` → `Pars
 
 **Trait impl syntax**: `impl TraitName[T] for StructName[T] { ... }` — the `for` keyword is consumed by `parse_impl`, not a reserved `TokenKind`.
 
-### Semantic Analysis (`src/semantic/mod.rs`)
-`Analyzer` runs five sequential passes over the `Program` AST:
+### Semantic Analysis (`src/semantic/`)
+Split across files. `Analyzer` runs five sequential passes over the `Program` AST:
 
-1. **Declare** — register top-level functions, structs, traits, enums, imports into global scope.
-2. **Type-check** — scope tracking, type inference, type compatibility, initialization checks, expression annotations.
-3. **Unused** — warn on unused variables, parameters, functions, imports.
-4. **Dead code** — reachability analysis, warn on statements after guaranteed returns.
-5. **Optimization hints** — inline candidates (≤2-statement non-branching functions), match exhaustiveness, removable imports.
+1. **Declare** (`declare.rs`) — register top-level functions, structs, traits, enums, imports into global scope.
+2. **Type-check** (`typecheck.rs`) — scope tracking, type inference, type compatibility, initialization checks, expression annotations.
+3. **Unused** (`unused.rs`) — warn on unused variables, parameters, functions, imports.
+4. **Dead code** (`unused.rs`) — reachability analysis, warn on statements after guaranteed returns.
+5. **Optimization** (`optimize.rs`) — inline candidates (≤2-statement non-branching functions), match exhaustiveness, removable imports, **constant folding** (both-sides-known → `ConstValue`), **math identity/absorber reduction** (`x*0=0`, `x+0=x`, `x&&false=false`, etc. — result stored in `ExprAnnotation.const_value` in annotated tree), **lazy import hints** (field-chain tracking: `import std;` + `std.io.stdout.println(...)` → suggests `import std.io.stdout;`).
 
 `types_compatible` treats `Any` as compatible with everything and `Named` types as compatible with everything (generics are not yet resolved).
 
 `main` is exempt from unused-function and inline-candidate checks.
 
+Public types live in `types.rs`, re-exported from `mod.rs`.
+
 ### `SemanticReport`
-Structured output with: `errors`, `warnings`, `suggestions`, `symbol_table`, `dependency_graph`, `optimization_hints`, `annotated_exprs`, `constant_evaluations`, `used_imports_map`, `non_exhaustive_matches`.
+Structured output with: `errors`, `warnings`, `suggestions`, `symbol_table`, `dependency_graph`, `optimization_hints` (includes `math_optimizations`, `lazy_import_hints`), `annotated_exprs`, `constant_evaluations`, `used_imports_map`, `non_exhaustive_matches`, `lazy_import_hints`.
+
+### Bytecode (`src/bytecode/`)
+VBC (Void Bytecode) — platform-independent, AOT-only. **6 bytes per instruction.**
+
+```
+[byte 0]     opcode (u8, up to 256 opcodes)
+[bytes 1–4]  operands (32 bits, layout varies by opcode group)
+[byte 5]     flags / reserved
+```
+
+Operand layouts (32-bit field):
+- **RRR** — `ops[0]`=dst, `ops[1]`=src1, `ops[2]`=src2
+- **RI16** — `ops[0]`=dst, `ops[1..2]`=imm16 (LE)
+- **MEM** — `ops[0]`=value\_reg, `ops[1]`=base\_reg, `ops[2..3]`=offset16 (LE, signed)
+
+Opcode groups:
+- `0x00–0x0F` — data movement (`Nop`, `Mov`, `MovI`, `MovConst`)
+- `0x10–0x1F` — arithmetic/logic (`Add`–`Sar`)
+- `0x20–0x2F` — memory & ownership (`Load`, `Store`, `Lea`, `Move`, `Drop`, `Dup`)
+- `0x30–0x3F` — control flow (`Cmp`, `Jmp`, `Je`–`Jnz`, `CallIdx`, `CallReg`, `Ret`)
+- `0x40–0x4F` — structs/objects (`New`, `NewObj`, `FieldLoad`, `FieldStore`, `VtblLoad`)
+- `0x50–0x5F` — atomics/threading (`AtomicAdd`, `AtomicCas`, `MemFence`, `Spawn`)
+- `0x60–0x7F` — reserved (superinstructions, SIMD prefixes, debug)
+
+Key design decisions:
+- `Move` (ownership transfer, src invalidated) vs `Dup` (copy, Copy types only) — compiler chooses at codegen, never both for same value.
+- `Drop` = RAII destructor call emitted by compiler at scope exit, no runtime GC.
+- No null — `Option[T]` is discriminant + value, `match` compiles to `Cmp` + conditional jump.
+- `Chunk` = one function's code (`Vec<Instruction>`) + constant pool (`Vec<ConstPoolEntry>`). `patch_jump` backpatches forward jumps after target is known.
+- Flat serialization: `Chunk::to_bytes()` → `Vec<u8>` at 6 bytes/instruction.
+- Register allocation and platform lowering happen in AOT backend (QBE or custom), not in VBC.
 
 ## Language Syntax (current)
 

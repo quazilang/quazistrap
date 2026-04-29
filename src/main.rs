@@ -2,10 +2,12 @@
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
+pub mod bytecode;
 pub mod lexer;
 pub mod parser;
 pub mod semantic;
 
+use bytecode::Codegen;
 use lexer::Lexer;
 use parser::Parser;
 use semantic::Analyzer;
@@ -129,6 +131,17 @@ fn main() void {
             }
 
             println!("semantic analysis success");
+
+            // Bytecode generation.
+            let mut cg = Codegen::new(&sema_report);
+            let chunks = cg.compile_program(&program);
+            println!("\n== VBC bytecode ==");
+            println!("{} chunk(s) generated", chunks.len());
+            for chunk in &chunks {
+                print!("{}", chunk);
+            }
+            let total_bytes: usize = chunks.iter().map(|c| c.to_bytes().len()).sum();
+            println!("total bytecode: {} bytes", total_bytes);
         }
         Err(err) => {
             eprintln!("{}", err);
