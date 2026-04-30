@@ -22,12 +22,13 @@ impl Analyzer {
                     kind: SymbolKind::Function,
                     span: item.span,
                     ty: Some(unwrap_type(return_ty)),
-                    params: params.iter().map(|(_, t)| unwrap_type(t)).collect(),
+                    params: params.iter().map(|p| unwrap_type(&p.ty)).collect(),
                     used: false,
                     initialized: true,
                     is_import: false,
                     import_path: None,
                     const_value: None,
+                    variadic: params.last().map(|p| p.variadic).unwrap_or(false),
                 },
             ),
             ItemKind::Struct { name, .. } | ItemKind::Trait { name, .. } => self.declare(
@@ -42,6 +43,7 @@ impl Analyzer {
                     is_import: false,
                     import_path: None,
                     const_value: None,
+                    variadic: false,
                 },
             ),
             ItemKind::Enum {
@@ -61,6 +63,7 @@ impl Analyzer {
                         is_import: false,
                         import_path: None,
                         const_value: None,
+                        variadic: false,
                     },
                 );
                 self.register_enum(name, variants, item.span);
@@ -78,6 +81,7 @@ impl Analyzer {
             if map.insert(variant.name.clone(), arity).is_some() {
                 self.push_error(
                     variant.span,
+                    "S05",
                     format!(
                         "duplicate enum variant '{}' in enum '{}'",
                         variant.name, enum_name
@@ -89,6 +93,7 @@ impl Analyzer {
         if variants.is_empty() {
             self.push_warning(
                 span,
+                "W06",
                 format!("enum '{}' has no variants", enum_name),
             );
         }
@@ -121,6 +126,13 @@ impl Analyzer {
 
     pub(super) fn declare_import_binding(&mut self, local_name: String, full_path: String, span: Span) {
         self.add_dependency_edge(DependencyKind::Import, "__program__", &full_path);
+        // If the name is already declared as a function (loaded from a local file),
+        // the import is satisfied — skip the redundant binding.
+        if let Some(existing) = self.resolve_symbol(&local_name) {
+            if matches!(existing.kind, SymbolKind::Function) {
+                return;
+            }
+        }
         self.declare(
             local_name,
             Symbol {
@@ -133,6 +145,7 @@ impl Analyzer {
                 is_import: true,
                 import_path: Some(full_path),
                 const_value: None,
+                variadic: false,
             },
         );
     }

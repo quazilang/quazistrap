@@ -241,6 +241,7 @@ impl Analyzer {
                         if wildcard_seen {
                             self.push_warning(
                                 arm.span,
+                                "W05",
                                 "unreachable wildcard match arm".to_string(),
                             );
                         }
@@ -250,6 +251,7 @@ impl Analyzer {
                         if wildcard_seen {
                             self.push_warning(
                                 arm.span,
+                                "W05",
                                 format!(
                                     "unreachable match arm '{}', wildcard already covers it",
                                     variant
@@ -264,6 +266,7 @@ impl Analyzer {
                         if target_enum != scrutinee_enum {
                             self.push_error(
                                 arm.span,
+                                "S09",
                                 format!(
                                     "match arm enum '{}' does not match '{}'",
                                     target_enum, scrutinee_enum
@@ -275,6 +278,7 @@ impl Analyzer {
                         if !enum_info.variants.contains_key(variant) {
                             self.push_error(
                                 arm.span,
+                                "S04",
                                 format!(
                                     "unknown variant '{}.{}' in match arm",
                                     scrutinee_enum, variant
@@ -286,6 +290,7 @@ impl Analyzer {
                         if !covered.insert(variant.clone()) {
                             self.push_warning(
                                 arm.span,
+                                "W05",
                                 format!("duplicate/unreachable match arm '{}.{}'", scrutinee_enum, variant),
                             );
                             self.push_suggestion(
@@ -317,6 +322,7 @@ impl Analyzer {
 
                     self.push_error(
                         candidate.span,
+                        "S09",
                         format!(
                             "non-exhaustive match for enum '{}': missing [{}]",
                             scrutinee_enum, missing_joined

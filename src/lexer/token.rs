@@ -46,6 +46,7 @@ pub enum TokenKind {
     Match,
     As,
     For,
+    Pub,
 
     // types
     Int8,
@@ -56,6 +57,8 @@ pub enum TokenKind {
     Uint16,
     Uint32,
     Uint64,
+    Isize,
+    Usize,
     Float16,
     Float32,
     Float64,
@@ -78,6 +81,8 @@ pub enum TokenKind {
     Ampersand, // &
     Pipe,      // |
     Hash,      // #
+    At,        // @
+    DotDot,    // ..
     DotDotDot, // ...
     Percent,   // %
 
@@ -144,7 +149,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Fn => write!(f, "fn"),
             TokenKind::Var => write!(f, "var"),
             TokenKind::Const => write!(f, "const"),
-            TokenKind::Return => write!(f, "return"),
+            TokenKind::Return => write!(f, "ret"),
             TokenKind::If => write!(f, "if"),
             TokenKind::Else => write!(f, "else"),
             TokenKind::While => write!(f, "while"),
@@ -156,6 +161,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Match => write!(f, "match"),
             TokenKind::As => write!(f, "as"),
             TokenKind::For => write!(f, "for"),
+            TokenKind::Pub => write!(f, "pub"),
 
             TokenKind::Int8 => write!(f, "int8"),
             TokenKind::Int16 => write!(f, "int16"),
@@ -165,6 +171,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Uint16 => write!(f, "uint16"),
             TokenKind::Uint32 => write!(f, "uint32"),
             TokenKind::Uint64 => write!(f, "uint64"),
+            TokenKind::Isize => write!(f, "isize"),
+            TokenKind::Usize => write!(f, "usize"),
             TokenKind::Float16 => write!(f, "float16"),
             TokenKind::Float32 => write!(f, "float32"),
             TokenKind::Float64 => write!(f, "float64"),
@@ -186,6 +194,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Ampersand => write!(f, "&"),
             TokenKind::Pipe => write!(f, "|"),
             TokenKind::Hash => write!(f, "#"),
+            TokenKind::At => write!(f, "@"),
+            TokenKind::DotDot => write!(f, ".."),
             TokenKind::DotDotDot => write!(f, "..."),
             TokenKind::Percent => write!(f, "%"),
 

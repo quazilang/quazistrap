@@ -44,38 +44,62 @@ pub struct Symbol {
     pub is_import: bool,
     pub import_path: Option<String>,
     pub const_value: Option<ConstValue>,
+    pub variadic: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct SemanticError {
+    pub code: &'static str,
     pub message: String,
     pub span: Span,
 }
 
+impl SemanticError {
+    pub fn render(&self, source: &str) -> String {
+        render_diag("error", self.code, &self.message, self.span, source)
+    }
+}
+
 impl std::fmt::Display for SemanticError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} at {}:{} [{}..{}]",
-            self.message, self.span.line, self.span.col, self.span.start, self.span.end
-        )
+        write!(f, "error[{}]: {} at {}:{}", self.code, self.message, self.span.line, self.span.col)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct SemanticWarning {
+    pub code: &'static str,
     pub message: String,
     pub span: Span,
 }
 
+impl SemanticWarning {
+    pub fn render(&self, source: &str) -> String {
+        render_diag("warning", self.code, &self.message, self.span, source)
+    }
+}
+
 impl std::fmt::Display for SemanticWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} at {}:{} [{}..{}]",
-            self.message, self.span.line, self.span.col, self.span.start, self.span.end
-        )
+        write!(f, "warning[{}]: {} at {}:{}", self.code, self.message, self.span.line, self.span.col)
     }
+}
+
+fn render_diag(label: &str, code: &str, message: &str, span: Span, source: &str) -> String {
+    let mut out = format!("{}[{}]: {}\nat {}:{}", label, code, message, span.line, span.col);
+    if let Some(line_text) = source.lines().nth(span.line.saturating_sub(1)) {
+        let line_no_width = span.line.to_string().len();
+        let caret_offset = span.col.saturating_sub(1);
+        let caret_width = (span.end.saturating_sub(span.start)).max(1);
+        out.push('\n');
+        out.push_str(&format!("{} | {}", span.line, line_text));
+        out.push('\n');
+        out.push_str(&" ".repeat(line_no_width));
+        out.push_str(" | ");
+        out.push_str(&" ".repeat(caret_offset));
+        out.push_str(&"^".repeat(caret_width));
+    }
+    out
 }
 
 #[derive(Debug, Clone)]

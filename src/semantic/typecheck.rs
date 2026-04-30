@@ -14,29 +14,59 @@ impl Analyzer {
                 params,
                 return_ty,
                 body,
+                attributes,
                 ..
             } => {
+                let is_syscall = attributes.iter().any(|a| a.name == "syscall");
                 self.current_function.push(name.clone());
                 self.enter_scope();
-                for (param_name, param_ty) in params {
+                for p in params {
+                    let ty = unwrap_type(&p.ty);
+                    let ty = if p.variadic {
+                        TypeKind::Slice { elem_ty: Box::new(Spanned::new(ty, p.ty.span)) }
+                    } else {
+                        ty
+                    };
                     self.declare(
-                        param_name.clone(),
+                        p.name.clone(),
                         Symbol {
                             kind: SymbolKind::Parameter,
                             span: item.span,
-                            ty: Some(unwrap_type(param_ty)),
+                            ty: Some(ty),
                             params: vec![],
                             used: false,
                             initialized: true,
                             is_import: false,
                             import_path: None,
                             const_value: None,
+                            variadic: false,
                         },
                     );
                 }
 
                 let expected = unwrap_type(return_ty);
-                let _ = self.type_check_block(body, Some(&expected));
+
+                if name == "main"
+                    && !matches!(expected, TypeKind::Void | TypeKind::Int32 | TypeKind::Uint32)
+                {
+                    self.push_error(
+                        item.span,
+                        "S01",
+                        format!("main() return type must be void, int32, or uint32, got {}", expected),
+                    );
+                }
+
+                let guaranteed = self.type_check_block(body, Some(&expected));
+                if !guaranteed && !is_syscall && !matches!(expected, TypeKind::Void) {
+                    self.push_error(
+                        item.span,
+                        "S03",
+                        format!(
+                            "function `{}` with return type `{}` does not always return a value",
+                            name, expected
+                        ),
+                    );
+                }
                 self.exit_scope_collect();
                 let _ = self.current_function.pop();
             }
@@ -88,6 +118,7 @@ impl Analyzer {
                     if !self.types_compatible(ann, val) {
                         self.push_error(
                             stmt.span,
+                            "S01",
                             format!("type mismatch: declared {}, got {}", ann, val),
                         );
                     }
@@ -115,6 +146,7 @@ impl Analyzer {
                         is_import: false,
                         import_path: None,
                         const_value: None,
+                        variadic: false,
                     },
                 );
                 false
@@ -129,6 +161,7 @@ impl Analyzer {
                     if !self.types_compatible(ann, val) {
                         self.push_error(
                             stmt.span,
+                            "S01",
                             format!("type mismatch: declared {}, got {}", ann, val),
                         );
                     }
@@ -146,6 +179,7 @@ impl Analyzer {
                         is_import: false,
                         import_path: None,
                         const_value: value_eval.const_value,
+                        variadic: false,
                     },
                 );
                 false
@@ -158,6 +192,7 @@ impl Analyzer {
                             if !self.types_compatible(expected, &actual) {
                                 self.push_error(
                                     stmt.span,
+                                    "S01",
                                     format!(
                                         "return type mismatch: expected {}, got {}",
                                         expected, actual
@@ -170,6 +205,7 @@ impl Analyzer {
                         if !matches!(expected, TypeKind::Void) {
                             self.push_error(
                                 stmt.span,
+                                "S01",
                                 format!("return type mismatch: expected {}, got void", expected),
                             );
                         }
@@ -191,6 +227,7 @@ impl Analyzer {
                     if !matches!(condition_ty, TypeKind::Bool | TypeKind::Any) {
                         self.push_error(
                             condition.span,
+                            "S01",
                             format!("if condition must be bool, got {}", condition_ty),
                         );
                     }
@@ -211,6 +248,7 @@ impl Analyzer {
                     if !matches!(condition_ty, TypeKind::Bool | TypeKind::Any) {
                         self.push_error(
                             condition.span,
+                            "S01",
                             format!("while condition must be bool, got {}", condition_ty),
                         );
                     }
@@ -219,8 +257,48 @@ impl Analyzer {
                 let _ = self.type_check_block(body, expected_return);
                 false
             }
+            StmtKind::For { vars, iter, body } => {
+                // Type-check the iterable expression(s).
+                match iter {
+                    ForIter::Range { start, end } => {
+                        self.type_check_expr(start, true);
+                        self.type_check_expr(end, true);
+                    }
+                    ForIter::Iter(expr) => {
+                        self.type_check_expr(expr, true);
+                    }
+                }
+                // Declare loop variables into the body scope.
+                self.enter_scope();
+                for var in vars {
+                    self.declare(
+                        var.clone(),
+                        crate::semantic::Symbol {
+                            kind: crate::semantic::SymbolKind::Variable { mutable: false },
+                            span: stmt.span,
+                            ty: Some(TypeKind::Any),
+                            params: vec![],
+                            used: false,
+                            initialized: true,
+                            is_import: false,
+                            import_path: None,
+                            const_value: None,
+                            variadic: false,
+                        },
+                    );
+                }
+                for s in &body.stmts {
+                    self.type_check_stmt(s, expected_return);
+                }
+                self.exit_scope_collect();
+                false
+            }
             StmtKind::ExprStmt(expr) => {
                 self.type_check_expr(expr, true);
+                false
+            }
+            StmtKind::CfgBlock { body, .. } => {
+                self.type_check_block(body, expected_return);
                 false
             }
         }
@@ -243,7 +321,7 @@ impl Analyzer {
             }
             ExprKind::Ident(name) => match self.resolve_for_read(name) {
                 None => {
-                    self.push_error(expr.span, format!("unknown identifier '{}'", name));
+                    self.push_error(expr.span, "S04", format!("unknown identifier '{}'", name));
                     ExprEval::default()
                 }
                 Some(sym) => {
@@ -252,6 +330,7 @@ impl Analyzer {
                     {
                         self.push_error(
                             expr.span,
+                            "S02",
                             format!("use of '{}' before initialization", name),
                         );
                         ExprEval {
@@ -272,10 +351,10 @@ impl Analyzer {
 
                 match (op, &inner_eval.ty) {
                     (UnaryOpKind::Not, Some(t)) if !matches!(t, TypeKind::Bool | TypeKind::Any) => {
-                        self.push_error(inner.span, format!("! requires bool, got {}", t));
+                        self.push_error(inner.span, "S06", format!("! requires bool, got {}", t));
                     }
                     (UnaryOpKind::Neg, Some(t)) if matches!(t, TypeKind::Str | TypeKind::Bool) => {
-                        self.push_error(inner.span, format!("unary - not valid for {}", t));
+                        self.push_error(inner.span, "S06", format!("unary - not valid for {}", t));
                     }
                     _ => {}
                 }
@@ -312,6 +391,7 @@ impl Analyzer {
                             if !self.types_compatible(var_ty, val_ty) {
                                 self.push_error(
                                     target.span,
+                                    "S01",
                                     format!(
                                         "type mismatch in assignment: expected {}, got {}",
                                         var_ty, val_ty
@@ -339,11 +419,20 @@ impl Analyzer {
 
                 if let ExprKind::Ident(name) = &callee.node {
                     let Some(sym) = self.resolve_for_read(name) else {
-                        self.push_error(callee.span, format!("unknown identifier '{}'", name));
+                        self.push_error(callee.span, "S04", format!("unknown identifier '{}'", name));
                         return ExprEval::default();
                     };
 
-                    if matches!(sym.kind, SymbolKind::Function) {
+                    if !matches!(sym.kind, SymbolKind::Function) {
+                        self.push_error(
+                            callee.span,
+                            "S04",
+                            format!("function '{}' does not exist", name),
+                        );
+                        return ExprEval::default();
+                    }
+
+                    {
                         let from = self
                             .current_function
                             .last()
@@ -352,21 +441,42 @@ impl Analyzer {
                         self.add_dependency_edge(DependencyKind::Call, &from, name);
                     }
 
-                    if sym.params.len() != args.len() {
-                        self.push_error(
-                            callee.span,
-                            format!("expected {} args, got {}", sym.params.len(), args.len()),
-                        );
+                    let is_variadic = sym.variadic;
+                    let non_variadic_count = if is_variadic {
+                        sym.params.len().saturating_sub(1)
                     } else {
+                        sym.params.len()
+                    };
+                    if !is_variadic && sym.params.len() != args.len() {
+                        self.push_error(callee.span, "S08",
+                            format!("expected {} args, got {}", sym.params.len(), args.len()));
+                    } else if is_variadic && args.len() < non_variadic_count {
+                        self.push_error(callee.span, "S08",
+                            format!("expected at least {} args, got {}", non_variadic_count, args.len()));
+                    } else {
+                        // Type-check non-variadic args.
                         for (i, (param_ty, arg_ty)) in
-                            sym.params.iter().zip(arg_tys.iter().map(|e| &e.ty)).enumerate()
+                            sym.params[..non_variadic_count].iter()
+                                .zip(arg_tys.iter().map(|e| &e.ty))
+                                .enumerate()
                         {
                             if let Some(at) = arg_ty {
                                 if !self.types_compatible(param_ty, at) {
-                                    self.push_error(
-                                        args[i].span,
-                                        format!("arg {}: expected {}, got {}", i + 1, param_ty, at),
-                                    );
+                                    self.push_error(args[i].span, "S08",
+                                        format!("arg {}: expected {}, got {}", i + 1, param_ty, at));
+                                }
+                            }
+                        }
+                        // Variadic args checked against the element type.
+                        if is_variadic {
+                            if let Some(elem_ty) = sym.params.last() {
+                                for (i, arg_ty) in arg_tys[non_variadic_count..].iter().map(|e| &e.ty).enumerate() {
+                                    if let Some(at) = arg_ty {
+                                        if !self.types_compatible(elem_ty, at) {
+                                            self.push_error(args[non_variadic_count + i].span, "S08",
+                                                format!("variadic arg {}: expected {}, got {}", i + 1, elem_ty, at));
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -381,7 +491,7 @@ impl Analyzer {
                     ExprEval::default()
                 }
             }
-            ExprKind::MethodCall { object, method: _, args, .. } => {
+            ExprKind::MethodCall { object, method, type_args, args } => {
                 // For lazy import tracking: record the object chain path (not the method itself)
                 if let Some((base, path)) = Self::extract_field_chain(object) {
                     if let Some(sym) = self.resolve_symbol(&base) {
@@ -403,7 +513,14 @@ impl Analyzer {
                 for arg in args {
                     self.type_check_expr(arg, reachable);
                 }
-                ExprEval::default()
+                let builtin_ty = match method.as_str() {
+                    "len" => Some(TypeKind::Usize),
+                    "to_string" => Some(TypeKind::Named { name: "String".to_string(), type_args: vec![] }),
+                    "as_string" | "as_str" => Some(TypeKind::Str),
+                    "parse" => type_args.first().map(|t| t.node.clone()),
+                    _ => None,
+                };
+                ExprEval { ty: builtin_ty, const_value: None }
             }
             ExprKind::Field { object, name } => {
                 // For lazy import tracking: record the full chain including this field
@@ -433,7 +550,7 @@ impl Analyzer {
                 let mut result_ty: Option<TypeKind> = None;
 
                 if arms.is_empty() {
-                    self.push_error(expr.span, "match expression has no arms".to_string());
+                    self.push_error(expr.span, "S09", "match expression has no arms".to_string());
                 }
 
                 for arm in arms {
@@ -454,6 +571,7 @@ impl Analyzer {
                                 is_import: false,
                                 import_path: None,
                                 const_value: None,
+                                variadic: false,
                             },
                         );
                     }
@@ -466,6 +584,7 @@ impl Analyzer {
                             if !self.types_compatible(current, &arm_ty) {
                                 self.push_error(
                                     arm.span,
+                                    "S01",
                                     format!(
                                         "match arm type mismatch: expected {}, got {}",
                                         current, arm_ty
@@ -512,10 +631,59 @@ impl Analyzer {
 
                 if let Some(ty) = &inner_eval.ty {
                     if matches!(ty, TypeKind::Str | TypeKind::Bool | TypeKind::Void) {
-                        self.push_error(inner.span, format!("++ / -- not valid for {}", ty));
+                        self.push_error(inner.span, "S06", format!("++ / -- not valid for {}", ty));
                     }
                 }
                 ExprEval { ty: inner_eval.ty, const_value: None }
+            }
+            ExprKind::ArrayLit(elems) => {
+                let mut elem_ty: Option<TypeKind> = None;
+                for elem in elems {
+                    let eval = self.type_check_expr(elem, reachable);
+                    if let (Some(expected), Some(got)) = (&elem_ty, &eval.ty) {
+                        if !self.types_compatible(expected, got) {
+                            self.push_error(
+                                elem.span,
+                                "S01",
+                                format!("array element type mismatch: expected {}, got {}", expected, got),
+                            );
+                        }
+                    } else if elem_ty.is_none() {
+                        elem_ty = eval.ty;
+                    }
+                }
+                let len = elems.len() as u64;
+                let elem_spanned = elem_ty.clone().map(|k| {
+                    crate::parser::ast::Spanned::new(k, expr.span)
+                });
+                let ty = elem_spanned.map(|e| TypeKind::Array {
+                    elem_ty: Box::new(e),
+                    len,
+                });
+                ExprEval { ty, const_value: None }
+            }
+            ExprKind::Index { object, index } => {
+                let obj_eval = self.type_check_expr(object, reachable);
+                let idx_eval = self.type_check_expr(index, reachable);
+
+                if let Some(idx_ty) = &idx_eval.ty {
+                    if !matches!(idx_ty, TypeKind::Int8 | TypeKind::Int16 | TypeKind::Int32 | TypeKind::Int64
+                        | TypeKind::Uint8 | TypeKind::Uint16 | TypeKind::Uint32 | TypeKind::Uint64
+                        | TypeKind::Isize | TypeKind::Usize | TypeKind::Any) {
+                        self.push_error(
+                            index.span,
+                            "S06",
+                            format!("array index must be an integer, got {}", idx_ty),
+                        );
+                    }
+                }
+
+                let elem_ty = match &obj_eval.ty {
+                    Some(TypeKind::Array { elem_ty, .. }) => Some(elem_ty.node.clone()),
+                    Some(TypeKind::Slice { elem_ty }) => Some(elem_ty.node.clone()),
+                    _ => None,
+                };
+                ExprEval { ty: elem_ty, const_value: None }
             }
         };
 
@@ -537,6 +705,7 @@ impl Analyzer {
                     (Some(l), Some(r)) => {
                         self.push_error(
                             span,
+                            "S01",
                             format!("type mismatch in binary op: {} vs {}", l, r),
                         );
                         None
@@ -556,6 +725,7 @@ impl Analyzer {
                     if !self.types_compatible(l, r) {
                         self.push_error(
                             span,
+                            "S01",
                             format!("type mismatch in binary op: {} vs {}", l, r),
                         );
                     }
@@ -565,13 +735,13 @@ impl Analyzer {
             BinOpKind::AndAnd | BinOpKind::OrOr => {
                 if let Some(l) = left {
                     if !matches!(l, TypeKind::Bool | TypeKind::Any) {
-                        self.push_error(span, format!("logical op requires bool, got {}", l));
+                        self.push_error(span, "S06", format!("logical op requires bool, got {}", l));
                     }
                 }
 
                 if let Some(r) = right {
                     if !matches!(r, TypeKind::Bool | TypeKind::Any) {
-                        self.push_error(span, format!("logical op requires bool, got {}", r));
+                        self.push_error(span, "S06", format!("logical op requires bool, got {}", r));
                     }
                 }
 
@@ -705,6 +875,7 @@ impl Analyzer {
                     if target_enum != *name {
                         self.push_error(
                             pattern.span,
+                            "S09",
                             format!(
                                 "pattern enum '{}' does not match scrutinee enum '{}'",
                                 target_enum, name
@@ -717,6 +888,7 @@ impl Analyzer {
                             if *expected_arity != bindings.len() {
                                 self.push_error(
                                     pattern.span,
+                                    "S09",
                                     format!(
                                         "variant '{}.{}' expects {} binding(s), got {}",
                                         target_enum,
@@ -729,6 +901,7 @@ impl Analyzer {
                         } else {
                             self.push_error(
                                 pattern.span,
+                                "S04",
                                 format!(
                                     "unknown variant '{}.{}' in match pattern",
                                     target_enum, variant
@@ -738,12 +911,14 @@ impl Analyzer {
                     } else {
                         self.push_error(
                             pattern.span,
+                            "S04",
                             format!("unknown enum '{}' in match pattern", target_enum),
                         );
                     }
                 } else if scrutinee_ty.is_some() {
                     self.push_error(
                         pattern.span,
+                        "S09",
                         "variant pattern requires enum scrutinee".to_string(),
                     );
                 }
@@ -765,13 +940,13 @@ impl Analyzer {
     pub(super) fn analyze_assign_target(&mut self, target: &Expr) {
         match &target.node {
             ExprKind::Ident(name) => match self.resolve_symbol(name) {
-                None => self.push_error(target.span, format!("unknown identifier '{}'", name)),
+                None => self.push_error(target.span, "S04", format!("unknown identifier '{}'", name)),
                 Some(sym) => match sym.kind {
                     SymbolKind::Variable { mutable: false } => {
-                        self.push_error(target.span, format!("cannot assign to const '{}'", name));
+                        self.push_error(target.span, "S07", format!("cannot assign to const '{}'", name));
                     }
                     SymbolKind::Function | SymbolKind::TypeName => {
-                        self.push_error(target.span, format!("cannot assign to '{}'", name));
+                        self.push_error(target.span, "S07", format!("cannot assign to '{}'", name));
                     }
                     SymbolKind::Parameter | SymbolKind::Variable { mutable: true } => {}
                 },
@@ -781,7 +956,7 @@ impl Analyzer {
             }
             _ => {
                 self.type_check_expr(target, true);
-                self.push_error(target.span, "invalid assignment target".to_string());
+                self.push_error(target.span, "S07", "invalid assignment target".to_string());
             }
         }
     }
@@ -790,7 +965,39 @@ impl Analyzer {
         match (a, b) {
             (TypeKind::Any, _) | (_, TypeKind::Any) => true,
             (TypeKind::Named { .. }, _) | (_, TypeKind::Named { .. }) => true,
+            (a, b) if Self::is_integer(a) && Self::is_integer(b) => true,
+            (a, b) if Self::is_float(a) && Self::is_float(b) => true,
+            (TypeKind::Array { elem_ty: a_e, len: a_l }, TypeKind::Array { elem_ty: b_e, len: b_l }) => {
+                a_l == b_l && self.types_compatible(&a_e.node, &b_e.node)
+            }
+            (TypeKind::Slice { elem_ty: a_e }, TypeKind::Slice { elem_ty: b_e }) => {
+                self.types_compatible(&a_e.node, &b_e.node)
+            }
+            (TypeKind::Array { elem_ty, .. }, TypeKind::Slice { elem_ty: s_e }) |
+            (TypeKind::Slice { elem_ty: s_e }, TypeKind::Array { elem_ty, .. }) => {
+                self.types_compatible(&elem_ty.node, &s_e.node)
+            }
             _ => std::mem::discriminant(a) == std::mem::discriminant(b),
         }
+    }
+
+    fn is_integer(t: &TypeKind) -> bool {
+        matches!(
+            t,
+            TypeKind::Int8
+                | TypeKind::Int16
+                | TypeKind::Int32
+                | TypeKind::Int64
+                | TypeKind::Uint8
+                | TypeKind::Uint16
+                | TypeKind::Uint32
+                | TypeKind::Uint64
+                | TypeKind::Isize
+                | TypeKind::Usize
+        )
+    }
+
+    fn is_float(t: &TypeKind) -> bool {
+        matches!(t, TypeKind::Float16 | TypeKind::Float32 | TypeKind::Float64)
     }
 }

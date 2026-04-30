@@ -8,21 +8,30 @@ use crate::parser::ast::*;
 use crate::parser::common::{merge_token_spans, to_ast_span};
 
 impl Parser {
-    pub fn parse_fn(&mut self) -> Result<Item, String> {
+    pub fn parse_fn(&mut self, attributes: Vec<Attribute>) -> Result<Item, String> {
         let start = self.expect(TokenKind::Fn)?.span;
 
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
         self.expect(TokenKind::LParen)?;
 
-        let mut params: Vec<(String, Type)> = Vec::new();
+        let mut params: Vec<Param> = Vec::new();
         if !self.at(TokenKind::RParen) {
             loop {
+                let variadic = if self.at(TokenKind::DotDotDot) {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
                 let param_name = self.parse_ident()?;
                 self.expect(TokenKind::Colon)?;
                 let param_ty = self.parse_type()?;
-                params.push((param_name, param_ty));
-
+                let is_last = self.at(TokenKind::RParen);
+                if variadic && !is_last {
+                    return Err(self.err_here("variadic parameter must be the last parameter".to_string()));
+                }
+                params.push(Param { name: param_name, ty: param_ty, variadic });
                 if self.at(TokenKind::Comma) {
                     self.advance();
                     continue;
@@ -49,12 +58,13 @@ impl Parser {
                 params,
                 return_ty,
                 body,
+                attributes,
             },
             span,
         ))
     }
 
-    pub fn parse_struct(&mut self) -> Result<Item, String> {
+    pub fn parse_struct(&mut self, attributes: Vec<Attribute>) -> Result<Item, String> {
         let start = self.expect(TokenKind::Struct)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
@@ -93,12 +103,13 @@ impl Parser {
                 name,
                 generic_params,
                 fields,
+                attributes,
             },
             span,
         ))
     }
 
-    pub fn parse_trait(&mut self) -> Result<Item, String> {
+    pub fn parse_trait(&mut self, attributes: Vec<Attribute>) -> Result<Item, String> {
         let start = self.expect(TokenKind::Trait)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
@@ -159,12 +170,13 @@ impl Parser {
                 name,
                 generic_params,
                 methods,
+                attributes,
             },
             span,
         ))
     }
 
-    pub fn parse_enum(&mut self) -> Result<Item, String> {
+    pub fn parse_enum(&mut self, attributes: Vec<Attribute>) -> Result<Item, String> {
         let start = self.expect(TokenKind::Enum)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
@@ -223,6 +235,7 @@ impl Parser {
                 name,
                 generic_params,
                 variants,
+                attributes,
             },
             span,
         ))
@@ -243,7 +256,8 @@ impl Parser {
                 return Err(self.err_here("unexpected EOF while parsing impl".to_string()));
             }
 
-            let item = self.parse_fn()?;
+            let attrs = self.parse_attributes()?;
+            let item = self.parse_fn(attrs)?;
             methods.push(item);
         }
 

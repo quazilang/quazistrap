@@ -15,16 +15,22 @@ pub enum ConstPoolEntry {
 }
 
 /// A single function's bytecode + its constant pool.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Chunk {
     pub code: Vec<Instruction>,
     pub constants: Vec<ConstPoolEntry>,
     pub name: String,
+    pub param_count: usize,
+    pub reg_count: u8,
 }
 
 impl Chunk {
     pub fn new(name: impl Into<String>) -> Self {
         Self { name: name.into(), ..Default::default() }
+    }
+
+    pub fn with_params(name: impl Into<String>, param_count: usize) -> Self {
+        Self { name: name.into(), param_count, ..Default::default() }
     }
 
     pub fn emit(&mut self, instr: Instruction) -> usize {
@@ -66,14 +72,61 @@ impl Chunk {
     pub fn to_bytes(&self) -> Vec<u8> {
         self.code.iter().flat_map(|i| i.to_bytes()).collect()
     }
+
+    fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let name_bytes = self.name.as_bytes();
+        buf.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        buf.extend_from_slice(name_bytes);
+        buf.extend_from_slice(&(self.constants.len() as u16).to_le_bytes());
+        for c in &self.constants {
+            match c {
+                ConstPoolEntry::Int(v) => { buf.push(0); buf.extend_from_slice(&v.to_le_bytes()); }
+                ConstPoolEntry::Float(v) => { buf.push(1); buf.extend_from_slice(&v.to_le_bytes()); }
+                ConstPoolEntry::Str(s) => {
+                    buf.push(2);
+                    let sb = s.as_bytes();
+                    buf.extend_from_slice(&(sb.len() as u16).to_le_bytes());
+                    buf.extend_from_slice(sb);
+                }
+            }
+        }
+        buf.extend_from_slice(&(self.code.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&self.to_bytes());
+        buf
+    }
+}
+
+pub const VBC_MAGIC: &[u8; 4] = b"\x00VBC";
+pub const VBC_VERSION: u8 = 1;
+
+pub fn serialize_vbc(chunks: &[Chunk]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(VBC_MAGIC);
+    buf.push(VBC_VERSION);
+    buf.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
+    for chunk in chunks {
+        buf.extend_from_slice(&chunk.serialize());
+    }
+    buf
 }
 
 impl std::fmt::Display for Chunk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "fn {} ({} instructions):", self.name, self.code.len())?;
+        if !self.constants.is_empty() {
+            writeln!(f, "  constants:")?;
+            for (i, c) in self.constants.iter().enumerate() {
+                let val = match c {
+                    ConstPoolEntry::Int(v) => format!("{}", v),
+                    ConstPoolEntry::Float(v) => format!("{}", v),
+                    ConstPoolEntry::Str(s) => format!("{:?}", s),
+                };
+                writeln!(f, "    [{}] = {}", i, val)?;
+            }
+        }
         for (i, instr) in self.code.iter().enumerate() {
-            let op = instr.opcode().map(|o| format!("{}", o)).unwrap_or_else(|| format!("0x{:02X}", instr.opcode));
-            writeln!(f, "  {:04}  {} {:?}", i, op, instr.ops)?;
+            writeln!(f, "  {:04}  {}", i, instr.disasm(&self.constants))?;
         }
         Ok(())
     }

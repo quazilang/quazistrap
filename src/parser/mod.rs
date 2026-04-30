@@ -65,13 +65,18 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> Result<Item, String> {
+        let attributes = self.parse_attributes()?;
+        // skip optional visibility modifier
+        if self.at(TokenKind::Pub) {
+            self.advance();
+        }
         match self.peek_kind() {
             TokenKind::Error(msg) => Err(self.err_here_with_code("E00", format!("lexer error: {}", msg))),
             TokenKind::Import => self.parse_import(),
-            TokenKind::Fn => self.parse_fn(),
-            TokenKind::Struct => self.parse_struct(),
-            TokenKind::Trait => self.parse_trait(),
-            TokenKind::Enum => self.parse_enum(),
+            TokenKind::Fn => self.parse_fn(attributes),
+            TokenKind::Struct => self.parse_struct(attributes),
+            TokenKind::Trait => self.parse_trait(attributes),
+            TokenKind::Enum => self.parse_enum(attributes),
             TokenKind::Impl => self.parse_impl(),
             other => Err(self.err_here_with_code(
                 "E03",
@@ -80,15 +85,78 @@ impl Parser {
         }
     }
 
+    pub(crate) fn parse_attributes(&mut self) -> Result<Vec<Attribute>, String> {
+        let mut attrs = Vec::new();
+        while self.at(TokenKind::At) {
+            let at_tok = self.advance();
+            let name = self.parse_ident()?;
+            let start = at_tok.span;
+            let mut args = Vec::new();
+            if self.at(TokenKind::LParen) {
+                self.advance();
+                while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                    // key = value  OR  bare value
+                    let first = self.advance();
+                    let first_val = match first.kind {
+                        TokenKind::StringLit(s) => AttrVal::Str(s),
+                        TokenKind::Int(n) => AttrVal::Int(n),
+                        TokenKind::Ident(s) => {
+                            if self.at(TokenKind::Eq) {
+                                self.advance();
+                                let val_tok = self.advance();
+                                let val = match val_tok.kind {
+                                    TokenKind::StringLit(s) => AttrVal::Str(s),
+                                    TokenKind::Int(n) => AttrVal::Int(n),
+                                    TokenKind::Ident(v) => AttrVal::Ident(v),
+                                    other => return Err(self.err_tok(val_tok.span,
+                                        format!("expected attribute value, found {}", other))),
+                                };
+                                args.push(AttrArg::KeyValue(s, val));
+                                if self.at(TokenKind::Comma) { self.advance(); }
+                                continue;
+                            }
+                            AttrVal::Ident(s)
+                        }
+                        other => return Err(self.err_tok(first.span,
+                            format!("expected attribute argument, found {}", other))),
+                    };
+                    args.push(AttrArg::Positional(first_val));
+                    if self.at(TokenKind::Comma) { self.advance(); }
+                }
+                self.expect(TokenKind::RParen)?;
+            }
+            let end_span = self.current_span();
+            attrs.push(Attribute {
+                name,
+                args,
+                span: to_ast_span(crate::parser::common::merge_token_spans(start, end_span)),
+            });
+        }
+        Ok(attrs)
+    }
+
     // ===== statements =====
 
     pub fn parse_stmt(&mut self) -> Result<Stmt, String> {
+        if self.at(TokenKind::At) {
+            let attrs = self.parse_attributes()?;
+            if attrs.len() == 1 && attrs[0].name == "cfg" && self.at(TokenKind::LBrace) {
+                let condition = attrs.into_iter().next().unwrap();
+                let start = condition.span;
+                let body = self.parse_block()?;
+                let span = Span::merge(start, body.span);
+                return Ok(Spanned::new(StmtKind::CfgBlock { condition, body }, span));
+            }
+            return Err(self.err_here_with_code("E03",
+                "attributes on statements are only supported for @cfg blocks".to_string()));
+        }
         match self.peek_kind() {
             TokenKind::Var => self.parse_var_stmt(),
             TokenKind::Const => self.parse_const_stmt(),
             TokenKind::Return => self.parse_return_stmt(),
             TokenKind::If => self.parse_if_stmt(),
             TokenKind::While => self.parse_while_stmt(),
+            TokenKind::For => self.parse_for_stmt(),
             _ => self.parse_expr_stmt(),
         }
     }
@@ -248,6 +316,38 @@ impl Parser {
 
         Ok(Spanned::new(
             StmtKind::While { condition, body },
+            Span::merge(to_ast_span(start), end),
+        ))
+    }
+
+    fn parse_for_stmt(&mut self) -> Result<Stmt, String> {
+        let start = self.expect(TokenKind::For)?.span;
+
+        // Parse one or two binding names: `i` or `i, v`
+        let first_var = self.parse_ident()?;
+        let mut vars = vec![first_var];
+        if self.at(TokenKind::Comma) {
+            self.advance();
+            vars.push(self.parse_ident()?);
+        }
+
+        self.expect(TokenKind::Colon)?;
+
+        // Parse the iterable expression, then check for `..`
+        let lhs = self.parse_expr()?;
+        let iter = if self.at(TokenKind::DotDot) {
+            self.advance();
+            let rhs = self.parse_expr()?;
+            ForIter::Range { start: Box::new(lhs), end: Box::new(rhs) }
+        } else {
+            ForIter::Iter(Box::new(lhs))
+        };
+
+        let body = self.parse_block()?;
+        let end = body.span;
+
+        Ok(Spanned::new(
+            StmtKind::For { vars, iter, body },
             Span::merge(to_ast_span(start), end),
         ))
     }
@@ -573,6 +673,19 @@ impl Parser {
                 self.restore(call_checkpoint);
             }
 
+            // subscript: expr[index]
+            if self.at(TokenKind::LBracket) {
+                self.advance();
+                let index = self.parse_expr()?;
+                let rbracket = self.expect(TokenKind::RBracket)?.span;
+                let span = Span::merge(expr.span, to_ast_span(rbracket));
+                expr = Spanned::new(
+                    ExprKind::Index { object: Box::new(expr), index: Box::new(index) },
+                    span,
+                );
+                continue;
+            }
+
             if self.at(TokenKind::Dot) {
                 self.advance();
                 let name_tok = self.expect_ident_token()?;
@@ -789,6 +902,22 @@ impl Parser {
                 Ok(Spanned::new(ExprKind::Group(Box::new(expr)), span))
             }
             TokenKind::Match => self.parse_match_expr(tok.span),
+            TokenKind::LBracket => {
+                let mut elems = Vec::new();
+                if !self.at(TokenKind::RBracket) {
+                    loop {
+                        elems.push(self.parse_expr()?);
+                        if self.at(TokenKind::Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                let rbracket = self.expect(TokenKind::RBracket)?.span;
+                let span = Span::merge(to_ast_span(tok.span), to_ast_span(rbracket));
+                Ok(Spanned::new(ExprKind::ArrayLit(elems), span))
+            }
             TokenKind::Error(msg) => {
                 Err(self.err_tok_with_code(tok.span, "E00", format!("lexer error: {}", msg)))
             }
@@ -803,11 +932,14 @@ impl Parser {
 
     pub fn parse_type(&mut self) -> Result<Type, String> {
         let tok = self.advance();
+        let start = tok.span;
         let kind = match tok.kind {
             TokenKind::Uint8 => TypeKind::Uint8,
             TokenKind::Uint16 => TypeKind::Uint16,
             TokenKind::Uint32 => TypeKind::Uint32,
             TokenKind::Uint64 => TypeKind::Uint64,
+            TokenKind::Isize => TypeKind::Isize,
+            TokenKind::Usize => TypeKind::Usize,
             TokenKind::Int8 => TypeKind::Int8,
             TokenKind::Int16 => TypeKind::Int16,
             TokenKind::Int32 => TypeKind::Int32,
@@ -822,6 +954,34 @@ impl Parser {
             TokenKind::Ident(name) => {
                 let type_args = self.parse_optional_type_args()?;
                 TypeKind::Named { name, type_args }
+            }
+            TokenKind::LBracket => {
+                let elem_ty = self.parse_type()?;
+                if self.at(TokenKind::Semicolon) {
+                    self.advance();
+                    let len_tok = self.advance();
+                    let len = match len_tok.kind {
+                        TokenKind::Int(n) if n >= 0 => n as u64,
+                        other => {
+                            return Err(self.err_tok_with_code(
+                                len_tok.span,
+                                "E05",
+                                format!("expected array length (non-negative integer), found {}", other),
+                            ));
+                        }
+                    };
+                    let end = self.expect(TokenKind::RBracket)?.span;
+                    return Ok(Spanned::new(
+                        TypeKind::Array { elem_ty: Box::new(elem_ty), len },
+                        to_ast_span(merge_token_spans(start, end)),
+                    ));
+                } else {
+                    let end = self.expect(TokenKind::RBracket)?.span;
+                    return Ok(Spanned::new(
+                        TypeKind::Slice { elem_ty: Box::new(elem_ty) },
+                        to_ast_span(merge_token_spans(start, end)),
+                    ));
+                }
             }
             other => {
                 return Err(self.err_tok_with_code(
@@ -958,13 +1118,30 @@ fn main() void {
     }
 
     #[test]
-    fn reports_lexer_error_token_at_top_level() {
-        let mut lexer = Lexer::new("@");
-        let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens);
+    fn parses_isize_usize_type_annotations() {
+        let program = parse_program("fn f(a: isize, b: usize) isize { ret a; }");
+        let ItemKind::Fn { params, return_ty, .. } = &program.items[0].node else {
+            panic!("expected fn");
+        };
+        assert!(matches!(params[0].ty.node, TypeKind::Isize));
+        assert!(matches!(params[1].ty.node, TypeKind::Usize));
+        assert!(matches!(return_ty.node, TypeKind::Isize));
+    }
 
-        let err = parser.parse().expect_err("parser should fail on lexer error token");
-        assert!(err.contains("lexer error"));
+    #[test]
+    fn parses_cfg_block_stmt() {
+        let program = parse_program(
+            r#"fn main() void { @cfg(target_os = "linux") { var x: int32 = 1; } }"#,
+        );
+        let ItemKind::Fn { body, .. } = &program.items[0].node else { panic!() };
+        assert!(matches!(body.stmts[0].node, StmtKind::CfgBlock { .. }));
+    }
+
+    #[test]
+    fn parses_syscall_attribute_on_fn() {
+        let program = parse_program(r#"@syscall("write") fn write(fd: int32) isize { }"#);
+        let ItemKind::Fn { attributes, .. } = &program.items[0].node else { panic!() };
+        assert_eq!(attributes[0].name, "syscall");
     }
 
     #[test]
@@ -981,12 +1158,12 @@ trait Iterable[T] {
 
 impl Iterable[int32] for Box[int32] {
     fn map[U](item: int32) U {
-        return item;
+        ret item;
     }
 }
 
 fn id[T](x: T) T {
-    return x;
+    ret x;
 }
 "#,
         );
@@ -1194,7 +1371,7 @@ enum Option[T] {
 }
 
 fn unwrap_or_zero(x: Option[int32]) int32 {
-    return match x {
+    ret match x {
         Some(v) => v,
         Option.None => 0,
     };
@@ -1206,6 +1383,7 @@ fn unwrap_or_zero(x: Option[int32]) int32 {
             name,
             generic_params,
             variants,
+            ..
         } = &program.items[0].node
         else {
             panic!("expected enum item");
@@ -1268,7 +1446,7 @@ enum Color {
 }
 
 fn value(c: Color) int32 {
-    return match c {
+    ret match c {
         Red => 1,
         _ => 0,
     };

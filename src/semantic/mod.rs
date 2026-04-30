@@ -227,6 +227,7 @@ impl Analyzer {
                 is_import: false,
                 import_path: None,
                 const_value: None,
+                variadic: false,
             });
         }
 
@@ -241,6 +242,7 @@ impl Analyzer {
                 is_import: false,
                 import_path: None,
                 const_value: None,
+                variadic: false,
             });
         }
 
@@ -254,6 +256,7 @@ impl Analyzer {
             is_import: false,
             import_path: None,
             const_value: None,
+            variadic: false,
         });
     }
 
@@ -356,6 +359,7 @@ impl Analyzer {
             if symbol.is_import && prev.is_import {
                 self.push_error(
                     symbol.span,
+                    "S05",
                     format!(
                         "import name conflict for '{}' (previous import at {}:{} [{}..{}])",
                         name, prev.span.line, prev.span.col, prev.span.start, prev.span.end
@@ -366,6 +370,7 @@ impl Analyzer {
 
             self.push_error(
                 symbol.span,
+                "S05",
                 format!(
                     "duplicate declaration '{}' (previous at {}:{} [{}..{}])",
                     name, prev.span.line, prev.span.col, prev.span.start, prev.span.end
@@ -435,12 +440,12 @@ impl Analyzer {
         self.finished_scopes.push(scope.into_iter().collect());
     }
 
-    pub(super) fn push_error(&mut self, span: Span, message: String) {
-        self.errors.push(SemanticError { message, span });
+    pub(super) fn push_error(&mut self, span: Span, code: &'static str, message: String) {
+        self.errors.push(SemanticError { code, message, span });
     }
 
-    pub(super) fn push_warning(&mut self, span: Span, message: String) {
-        self.warnings.push(SemanticWarning { message, span });
+    pub(super) fn push_warning(&mut self, span: Span, code: &'static str, message: String) {
+        self.warnings.push(SemanticWarning { code, message, span });
     }
 
     pub(super) fn push_suggestion(&mut self, span: Option<Span>, message: String) {
@@ -628,7 +633,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    return;
+    ret;
     var x: int32 = 1;
 }
 "#,
@@ -648,9 +653,9 @@ fn main() void {
             r#"
 fn main() void {
     if (true) {
-        return;
+        ret;
     } else {
-        return;
+        ret;
     }
     var x: int32 = 1;
 }
@@ -688,11 +693,11 @@ fn main() void {
         let report = analyze(
             r#"
 fn helper() void {
-    return;
+    ret;
 }
 
 fn main() void {
-    return;
+    ret;
 }
 "#,
         );
@@ -724,7 +729,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn helper(a: int32) int32 {
-    return a;
+    ret a;
 }
 
 fn main() void {
@@ -746,7 +751,7 @@ enum Option[T] {
 }
 
 fn unwrap_or_fail(x: Option[int32]) int32 {
-    return match x {
+    ret match x {
         Some(v) => v,
     };
 }
@@ -773,7 +778,7 @@ enum Option[T] {
 }
 
 fn unwrap_or_zero(x: Option[int32]) int32 {
-    return match x {
+    ret match x {
         Some(v) => v,
         None => 0,
     };
@@ -800,7 +805,7 @@ enum Color {
 }
 
 fn color_value(c: Color) int32 {
-    return match c {
+    ret match c {
         Red => 1,
         Red => 2,
         Blue => 3,
@@ -824,7 +829,7 @@ fn color_value(c: Color) int32 {
 import std.io.stdout;
 
 fn helper(a: int32) int32 {
-    return a + 1;
+    ret a + 1;
 }
 
 fn main() void {
@@ -880,7 +885,7 @@ import std.io.stdout;
 import std.net.stdout;
 
 fn main() void {
-    return;
+    ret;
 }
 "#,
         );
@@ -896,11 +901,11 @@ fn main() void {
         let report = analyze(
             r#"
 fn wrap(x: int32) Option[int32] {
-    return Some(x);
+    ret Some(x);
 }
 
 fn empty() Option[int32] {
-    return None();
+    ret None();
 }
 "#,
         );
@@ -913,7 +918,7 @@ fn empty() Option[int32] {
             r#"
 fn get_none() Option[int32] {
     const n = None;
-    return n;
+    ret n;
 }
 "#,
         );
@@ -925,11 +930,11 @@ fn get_none() Option[int32] {
         let report = analyze(
             r#"
 fn succeed(x: int32) Result[int32, str] {
-    return Ok(x);
+    ret Ok(x);
 }
 
 fn fail(msg: str) Result[int32, str] {
-    return Err(msg);
+    ret Err(msg);
 }
 "#,
         );
@@ -941,7 +946,7 @@ fn fail(msg: str) Result[int32, str] {
         let report = analyze(
             r#"
 fn unwrap_or_zero(x: Option[int32]) int32 {
-    return match x {
+    ret match x {
         Some(v) => v,
         None => 0,
     };
@@ -957,7 +962,7 @@ fn unwrap_or_zero(x: Option[int32]) int32 {
         let report = analyze(
             r#"
 fn bad_match(x: Option[int32]) int32 {
-    return match x {
+    ret match x {
         Some(v) => v,
     };
 }
@@ -974,7 +979,7 @@ fn bad_match(x: Option[int32]) int32 {
         let report = analyze(
             r#"
 fn handle(x: Result[int32, str]) int32 {
-    return match x {
+    ret match x {
         Ok(v) => v,
         Err(e) => 0,
     };
@@ -1101,7 +1106,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn mul(x: int32) int32 {
-    return x * 0;
+    ret x * 0;
 }
 "#,
         );
@@ -1121,7 +1126,7 @@ fn mul(x: int32) int32 {
         let report = analyze(
             r#"
 fn scale(x: float64) float64 {
-    return 0.0 * x;
+    ret 0.0 * x;
 }
 "#,
         );
@@ -1140,7 +1145,7 @@ fn scale(x: float64) float64 {
         let report = analyze(
             r#"
 fn add(x: int32) int32 {
-    return x + 0;
+    ret x + 0;
 }
 "#,
         );

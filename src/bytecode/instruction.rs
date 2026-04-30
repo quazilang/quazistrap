@@ -63,6 +63,133 @@ impl Instruction {
         Opcode::from_u8(self.opcode)
     }
 
+    pub fn disasm(&self, consts: &[crate::bytecode::chunk::ConstPoolEntry]) -> String {
+        use crate::bytecode::opcode::Opcode;
+        use crate::bytecode::chunk::ConstPoolEntry;
+
+        let Some(op) = self.opcode() else {
+            return format!("??? (0x{:02X})  {:?}", self.opcode, self.ops);
+        };
+
+        let name = format!("{:?}", op).to_lowercase();
+        let pad = |s: &str| format!("{:<12}", s);
+
+        match op {
+            Opcode::Nop | Opcode::Ret | Opcode::MemFence => pad(&name),
+
+            // RRR — dst, src1, src2
+            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Mod
+            | Opcode::And | Opcode::Or | Opcode::Xor | Opcode::Shl | Opcode::Shr | Opcode::Sar
+            | Opcode::StrConcat | Opcode::AtomicAdd | Opcode::AtomicCas => {
+                let (d, s1, s2) = self.rrr();
+                format!("{}r{}, r{}, r{}", pad(&name), d, s1, s2)
+            }
+
+            // RR — dst, src only
+            Opcode::Mov | Opcode::Move | Opcode::Dup | Opcode::Neg | Opcode::Not
+            | Opcode::Inc | Opcode::Dec | Opcode::StrLen | Opcode::VtblLoad | Opcode::FieldLoad
+            | Opcode::StrToInt | Opcode::StrToFloat | Opcode::PrimToStr | Opcode::StrAsStr => {
+                let (d, s, _) = self.rrr();
+                format!("{}r{}, r{}", pad(&name), d, s)
+            }
+
+            // Cmp: no dst
+            Opcode::Cmp => {
+                let (_, s1, s2) = self.rrr();
+                format!("{}r{}, r{}", pad("cmp"), s1, s2)
+            }
+
+            // FieldStore: [obj] = val
+            Opcode::FieldStore => {
+                let (val, obj, _) = self.rrr();
+                format!("{}[r{}], r{}", pad("fieldstore"), obj, val)
+            }
+
+            // CallReg: dst, reg
+            Opcode::CallReg => {
+                let (d, s, _) = self.rrr();
+                format!("{}r{}, r{}", pad(&name), d, s)
+            }
+
+            // MovI: dst, #imm
+            Opcode::MovI => {
+                let (d, imm) = self.ri16();
+                format!("{}r{}, #{}", pad("movi"), d, imm)
+            }
+
+            // MovConst: dst, const[idx]=val
+            Opcode::MovConst => {
+                let (d, idx) = self.ri16();
+                let val = consts.get(idx as usize).map(|c| match c {
+                    ConstPoolEntry::Int(v) => format!("={}", v),
+                    ConstPoolEntry::Float(v) => format!("={}", v),
+                    ConstPoolEntry::Str(s) => format!("={:?}", s),
+                }).unwrap_or_default();
+                format!("{}r{}, const[{}]{}", pad("movconst"), d, idx, val)
+            }
+
+            // CallIdx: dst, fn[idx]
+            Opcode::CallIdx => {
+                let (d, idx) = self.ri16();
+                format!("{}r{}, fn[{}]", pad("callidx"), d, idx)
+            }
+
+            // Jumps — Jz/Jnz check reg vs 0
+            Opcode::Jz | Opcode::Jnz => {
+                let (r, tgt) = self.ri16();
+                if r == 0 {
+                    format!("{}@{}", pad(&name), tgt)
+                } else {
+                    format!("{}r{}, @{}", pad(&name), r, tgt)
+                }
+            }
+
+            // Other conditional jumps (after Cmp, ops[0]=0)
+            Opcode::Je | Opcode::Jne | Opcode::Jg | Opcode::Jge | Opcode::Jl | Opcode::Jle
+            | Opcode::Ja | Opcode::Jb | Opcode::Jmp => {
+                let (_, tgt) = self.ri16();
+                format!("{}@{}", pad(&name), tgt)
+            }
+
+            // CallArg / Drop: single reg
+            Opcode::CallArg | Opcode::Drop => {
+                format!("{}r{}", pad(&name), self.ops[0])
+            }
+
+            // MEM
+            Opcode::Load => {
+                let (d, base, off) = self.mem();
+                format!("{}r{}, [r{} + {}]", pad("load"), d, base, off)
+            }
+            Opcode::Store => {
+                let (src, base, off) = self.mem();
+                format!("{}[r{} + {}], r{}", pad("store"), base, off, src)
+            }
+            Opcode::Lea => {
+                let (d, base, off) = self.mem();
+                format!("{}r{}, &[r{} + {}]", pad("lea"), d, base, off)
+            }
+
+            // Syscall: dst, sys#num (args=flags)
+            Opcode::Syscall => {
+                let (d, num) = self.ri16();
+                format!("{}r{}, sys#{} (args={})", pad("syscall"), d, num, self.flags)
+            }
+
+            // New/NewObj
+            Opcode::New | Opcode::NewObj => {
+                let (d, imm) = self.ri16();
+                format!("{}r{}, #{}", pad(&name), d, imm)
+            }
+
+            // Spawn
+            Opcode::Spawn => {
+                let (d, s, _) = self.rrr();
+                format!("{}r{}, r{}", pad("spawn"), d, s)
+            }
+        }
+    }
+
     // ── Serialisation ─────────────────────────────────────────────────────────
 
     pub fn to_bytes(self) -> [u8; 6] {
@@ -93,6 +220,11 @@ pub fn mem_load(base: u8, dst: u8, offset: i16) -> Instruction {
 pub fn mem_store(base: u8, src: u8, offset: i16) -> Instruction {
     let [ol, oh] = offset.to_le_bytes();
     Instruction::new(Opcode::Store, [src, base, ol, oh], 0)
+}
+
+pub fn mem_lea(base: u8, dst: u8, offset: i16) -> Instruction {
+    let [ol, oh] = offset.to_le_bytes();
+    Instruction::new(Opcode::Lea, [dst, base, ol, oh], 0)
 }
 
 pub fn jmp(target_idx: u16) -> Instruction {

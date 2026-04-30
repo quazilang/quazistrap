@@ -165,7 +165,7 @@ impl Lexer {
             "fn" => TokenKind::Fn,
             "var" => TokenKind::Var,
             "const" => TokenKind::Const,
-            "return" => TokenKind::Return,
+            "ret" => TokenKind::Return,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "while" => TokenKind::While,
@@ -177,6 +177,7 @@ impl Lexer {
             "match" => TokenKind::Match,
             "as" => TokenKind::As,
             "for" => TokenKind::For,
+            "pub" => TokenKind::Pub,
             "platform" => TokenKind::Platform,
 
             // primitive types
@@ -188,6 +189,8 @@ impl Lexer {
             "uint16" => TokenKind::Uint16,
             "uint32" => TokenKind::Uint32,
             "uint64" => TokenKind::Uint64,
+            "isize" => TokenKind::Isize,
+            "usize" => TokenKind::Usize,
             "float16" => TokenKind::Float16,
             "float32" => TokenKind::Float32,
             "float64" => TokenKind::Float64,
@@ -239,8 +242,7 @@ impl Lexer {
                                 self.advance();
                                 TokenKind::DotDotDot
                             } else {
-                                // ".." is currently not a token in language, fallback to Dot
-                                TokenKind::Dot
+                                TokenKind::DotDot
                             }
                         } else {
                             TokenKind::Dot
@@ -249,6 +251,7 @@ impl Lexer {
                     '&' => TokenKind::Ampersand,
                     '|' => TokenKind::Pipe,
                     '#' => TokenKind::Hash,
+                    '@' => TokenKind::At,
 
                     '+' => {
                         if self.peek() == Some('=') {
@@ -370,16 +373,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn emits_error_token_for_unknown_character() {
+    fn emits_at_token_for_at_sign() {
         let mut lexer = Lexer::new("@");
         let tokens = lexer.tokenize();
-
+        assert!(matches!(tokens.first().map(|t| &t.kind), Some(TokenKind::At)));
         assert!(matches!(tokens.last().map(|t| &t.kind), Some(TokenKind::Eof)));
-        assert!(matches!(tokens.first().map(|t| &t.kind), Some(TokenKind::Error(_))));
+    }
 
-        match &tokens[0].kind {
-            TokenKind::Error(msg) => assert!(msg.contains("@")),
-            other => panic!("expected Error token, got {:?}", other),
-        }
+    #[test]
+    fn emits_error_token_for_unknown_character() {
+        let mut lexer = Lexer::new("$");
+        let tokens = lexer.tokenize();
+        assert!(matches!(tokens.first().map(|t| &t.kind), Some(TokenKind::Error(_))));
+    }
+
+    #[test]
+    fn isize_usize_are_keywords() {
+        let mut lexer = Lexer::new("isize usize");
+        let tokens = lexer.tokenize();
+        assert!(matches!(tokens[0].kind, TokenKind::Isize));
+        assert!(matches!(tokens[1].kind, TokenKind::Usize));
     }
 }

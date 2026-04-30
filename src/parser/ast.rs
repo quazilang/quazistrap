@@ -150,6 +150,13 @@ pub enum ExprKind {
         op: IncDecOp,
         prefix: bool,
     },
+
+    ArrayLit(Vec<Expr>),
+
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
 }
 
 pub type Expr = Spanned<ExprKind>;
@@ -183,6 +190,8 @@ pub enum TypeKind {
     Uint16,
     Uint32,
     Uint64,
+    Isize,
+    Usize,
     Float16,
     Float32,
     Float64,
@@ -193,6 +202,15 @@ pub enum TypeKind {
     Named {
         name: String,
         type_args: Vec<Type>,
+    },
+    /// `[T; N]` — fixed-size stack-allocated array.
+    Array {
+        elem_ty: Box<Type>,
+        len: u64,
+    },
+    /// `[T]` — unsized slice (fat pointer: ptr + len, resolved later).
+    Slice {
+        elem_ty: Box<Type>,
     },
 }
 
@@ -207,6 +225,8 @@ impl std::fmt::Display for TypeKind {
             TypeKind::Uint16 => write!(f, "uint16"),
             TypeKind::Uint32 => write!(f, "uint32"),
             TypeKind::Uint64 => write!(f, "uint64"),
+            TypeKind::Isize => write!(f, "isize"),
+            TypeKind::Usize => write!(f, "usize"),
             TypeKind::Float16 => write!(f, "float16"),
             TypeKind::Float32 => write!(f, "float32"),
             TypeKind::Float64 => write!(f, "float64"),
@@ -228,11 +248,50 @@ impl std::fmt::Display for TypeKind {
                     write!(f, "]")
                 }
             }
+            TypeKind::Array { elem_ty, len } => write!(f, "[{}; {}]", elem_ty.node, len),
+            TypeKind::Slice { elem_ty } => write!(f, "[{}]", elem_ty.node),
         }
     }
 }
 
 pub type Type = Spanned<TypeKind>;
+
+// ── Attributes ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum AttrVal {
+    Str(String),
+    Int(i64),
+    Ident(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum AttrArg {
+    Positional(AttrVal),
+    KeyValue(String, AttrVal),
+}
+
+#[derive(Debug, Clone)]
+pub struct Attribute {
+    pub name: String,
+    pub args: Vec<AttrArg>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum ForIter {
+    /// `start .. end`  (exclusive upper bound)
+    Range { start: Box<Expr>, end: Box<Expr> },
+    /// any other expression: array, map, iterator call, etc.
+    Iter(Box<Expr>),
+}
+
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub name: String,
+    pub ty: Type,
+    pub variadic: bool,
+}
 
 #[derive(Debug, Clone)]
 pub enum StmtKind {
@@ -256,7 +315,18 @@ pub enum StmtKind {
         condition: Expr,
         body: Block,
     },
+    /// `for var [, var] : iter_expr { body }`
+    For {
+        vars: Vec<String>,
+        iter: ForIter,
+        body: Block,
+    },
     ExprStmt(Expr),
+    /// `@cfg(key = "value") { ... }` — compile-time conditional block.
+    CfgBlock {
+        condition: Attribute,
+        body: Block,
+    },
 }
 
 pub type Stmt = Spanned<StmtKind>;
@@ -303,24 +373,28 @@ pub enum ItemKind {
     Fn {
         name: String,
         generic_params: Vec<String>,
-        params: Vec<(String, Type)>,
+        params: Vec<Param>,
         return_ty: Type,
         body: Block,
+        attributes: Vec<Attribute>,
     },
     Struct {
         name: String,
         generic_params: Vec<String>,
         fields: Vec<(String, Type, bool)>, // (name, type, const?)
+        attributes: Vec<Attribute>,
     },
     Trait {
         name: String,
         generic_params: Vec<String>,
         methods: Vec<TraitMethod>,
+        attributes: Vec<Attribute>,
     },
     Enum {
         name: String,
         generic_params: Vec<String>,
         variants: Vec<EnumVariant>,
+        attributes: Vec<Attribute>,
     },
     Impl {
         trait_ty: Type,
