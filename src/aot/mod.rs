@@ -16,6 +16,8 @@ use std::fmt::Write;
 use crate::bytecode::{Chunk, ConstPoolEntry, Opcode};
 
 const ARG_REGS: &[&str] = &["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+const SYSCALL_ARG_REGS: &[&str] = &["%rdi", "%rsi", "%rdx", "%r10", "%r8", "%r9"];
+const WIN64_ARG_REGS: &[&str] = &["%rcx", "%rdx", "%r8", "%r9"];
 
 pub struct X86Emitter<'a> {
     chunks: &'a [Chunk],
@@ -329,6 +331,14 @@ impl<'a> X86Emitter<'a> {
                 writeln!(out, "\tmovq %rax, {}", slot(0)).unwrap();
             }
 
+            Some(Opcode::CallExt) => {
+                self.emit_call_ext(instr, chunk, out);
+            }
+
+            Some(Opcode::Syscall) => {
+                self.emit_syscall(instr, out);
+            }
+
             _ => {
                 writeln!(out, "\t# unimplemented opcode 0x{:02X}", instr.opcode).unwrap();
             }
@@ -346,6 +356,64 @@ impl<'a> X86Emitter<'a> {
             writeln!(out, "\tmovq {}, {}", slot(vreg), ARG_REGS[i]).unwrap();
         }
         writeln!(out, "\tcallq {}", safe_label(fn_name)).unwrap();
+        writeln!(out, "\tmovq %rax, {}", slot(dst)).unwrap();
+    }
+
+    fn emit_syscall(&self, instr: &crate::bytecode::Instruction, out: &mut String) {
+        let (dst, num) = instr.ri16();
+        let arg_count = instr.flags as usize;
+        let max_args = SYSCALL_ARG_REGS.len();
+        if arg_count > max_args {
+            writeln!(out, "\t# Syscall: truncating {} args to {}", arg_count, max_args).unwrap();
+        }
+        for (i, reg) in SYSCALL_ARG_REGS.iter().enumerate().take(arg_count.min(max_args)) {
+            writeln!(out, "\tmovq {}, {}", slot(i as u8), reg).unwrap();
+        }
+        writeln!(out, "\tmovq ${}, %rax", num).unwrap();
+        writeln!(out, "\tsyscall").unwrap();
+        writeln!(out, "\tmovq %rax, {}", slot(dst)).unwrap();
+    }
+
+    fn emit_call_ext(&self, instr: &crate::bytecode::Instruction, chunk: &Chunk, out: &mut String) {
+        let (dst, idx) = instr.ri16();
+        let arg_count = instr.flags as usize;
+        let Some(ConstPoolEntry::Str(sym)) = chunk.constants.get(idx as usize) else {
+            writeln!(out, "\t# CallExt: missing symbol for const[{}]", idx).unwrap();
+            writeln!(out, "\txorq %rax, %rax").unwrap();
+            writeln!(out, "\tmovq %rax, {}", slot(dst)).unwrap();
+            return;
+        };
+
+        if cfg!(target_os = "windows") {
+            let extra = arg_count.saturating_sub(WIN64_ARG_REGS.len());
+            let stack_bytes = 32 + extra * 8;
+            let aligned = (stack_bytes + 15) & !15;
+            if aligned > 0 {
+                writeln!(out, "\tsubq ${}, %rsp", aligned).unwrap();
+            }
+            for (i, reg) in WIN64_ARG_REGS.iter().enumerate().take(arg_count.min(WIN64_ARG_REGS.len())) {
+                writeln!(out, "\tmovq {}, {}", slot(i as u8), reg).unwrap();
+            }
+            for i in WIN64_ARG_REGS.len()..arg_count {
+                let offset = 32 + (i - WIN64_ARG_REGS.len()) * 8;
+                writeln!(out, "\tmovq {}, %rax", slot(i as u8)).unwrap();
+                writeln!(out, "\tmovq %rax, {}(%rsp)", offset).unwrap();
+            }
+            writeln!(out, "\tcallq {}", sym).unwrap();
+            if aligned > 0 {
+                writeln!(out, "\taddq ${}, %rsp", aligned).unwrap();
+            }
+        } else {
+            let max_args = ARG_REGS.len();
+            if arg_count > max_args {
+                writeln!(out, "\t# CallExt: truncating {} args to {}", arg_count, max_args).unwrap();
+            }
+            for (i, reg) in ARG_REGS.iter().enumerate().take(arg_count.min(max_args)) {
+                writeln!(out, "\tmovq {}, {}", slot(i as u8), reg).unwrap();
+            }
+            writeln!(out, "\tcallq {}", sym).unwrap();
+        }
+
         writeln!(out, "\tmovq %rax, {}", slot(dst)).unwrap();
     }
 }
@@ -383,7 +451,10 @@ fn max_reg_used(chunk: &Chunk) -> usize {
                 max = max.max(r0).max(r1);
             }
             // RI16 where ops[0] is a real register
-            Some(Opcode::MovI | Opcode::MovConst | Opcode::Jz | Opcode::Jnz | Opcode::CallArg | Opcode::CallIdx) => {
+            Some(
+                Opcode::MovI | Opcode::MovConst | Opcode::Jz | Opcode::Jnz |
+                Opcode::CallArg | Opcode::CallIdx | Opcode::CallExt | Opcode::Syscall
+            ) => {
                 max = max.max(r0);
             }
             // Pure jumps / Ret / Nop: ops[0] is 0, not a reg

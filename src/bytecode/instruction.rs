@@ -134,6 +134,16 @@ impl Instruction {
                 format!("{}r{}, fn[{}]", pad("callidx"), d, idx)
             }
 
+            // CallExt: dst, ext[idx]
+            Opcode::CallExt => {
+                let (d, idx) = self.ri16();
+                let val = consts.get(idx as usize).and_then(|c| match c {
+                    ConstPoolEntry::Str(s) => Some(format!("={:?}", s)),
+                    _ => None,
+                }).unwrap_or_default();
+                format!("{}r{}, ext[{}]{} (args={})", pad("callext"), d, idx, val, self.flags)
+            }
+
             // Jumps — Jz/Jnz check reg vs 0
             Opcode::Jz | Opcode::Jnz => {
                 let (r, tgt) = self.ri16();

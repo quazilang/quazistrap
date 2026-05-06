@@ -30,7 +30,7 @@ pub enum Command {
         #[arg(short, long)]
         run: bool,
     },
-    /// build project (reads void.toml) (UNIMPLEMENTED)
+    /// build project (reads void.toml)
     Build {
         #[arg(short, long)]
         output: Option<String>,
@@ -39,9 +39,9 @@ pub enum Command {
         #[arg(short = 'b', long = "bytecode")]
         emit_bytecode: bool,
     },
-    /// build and run project
+    /// build and run project (reads void.toml)
     Run,
-    /// check project without compiling
+    /// check project without compiling (reads void.toml)
     Check,
     /// create new project
     New { name: String },

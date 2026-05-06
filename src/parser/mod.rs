@@ -1085,7 +1085,7 @@ mod tests {
         let program = parse_program(
             r#"
 fn main() void {
-    var x: int32 = 10 % 3 * 2;
+    var x: i32 = 10 % 3 * 2;
 }
 "#,
         );
@@ -1131,7 +1131,7 @@ fn main() void {
     #[test]
     fn parses_cfg_block_stmt() {
         let program = parse_program(
-            r#"fn main() void { @cfg(target_os = "linux") { var x: int32 = 1; } }"#,
+            r#"fn main() void { @cfg(target_os = "linux") { var x: i32 = 1; } }"#,
         );
         let ItemKind::Fn { body, .. } = &program.items[0].node else { panic!() };
         assert!(matches!(body.stmts[0].node, StmtKind::CfgBlock { .. }));
@@ -1139,7 +1139,7 @@ fn main() void {
 
     #[test]
     fn parses_syscall_attribute_on_fn() {
-        let program = parse_program(r#"@syscall("write") fn write(fd: int32) isize { }"#);
+        let program = parse_program(r#"@syscall("write") fn write(fd: i32) isize { }"#);
         let ItemKind::Fn { attributes, .. } = &program.items[0].node else { panic!() };
         assert_eq!(attributes[0].name, "syscall");
     }
@@ -1156,8 +1156,8 @@ trait Iterable[T] {
     fn map[U](item: T) U;
 }
 
-impl Iterable[int32] for Box[int32] {
-    fn map[U](item: int32) U {
+impl Iterable[i32] for Box[i32] {
+    fn map[U](item: i32) U {
         ret item;
     }
 }
@@ -1221,7 +1221,7 @@ fn id[T](x: T) T {
         let program = parse_program(
             r#"
 fn main() void {
-    alloc[Vec[int32]]();
+    alloc[Vec[i32]]();
 }
 "#,
         );
@@ -1290,7 +1290,7 @@ fn main() void {
         let program = parse_program(
             r#"
 fn main() void {
-    value.transform[Vec[int32]]();
+    value.transform[Vec[i32]]();
 }
 "#,
         );
@@ -1323,7 +1323,7 @@ fn main() void {
         let program = parse_program(
             r#"
 fn main() void {
-    var x: Vec[Map[str, int32]];
+    var x: Vec[Map[str, i32]];
 }
 "#,
         );
@@ -1370,7 +1370,7 @@ enum Option[T] {
     None,
 }
 
-fn unwrap_or_zero(x: Option[int32]) int32 {
+fn unwrap_or_zero(x: Option[i32]) i32 {
     ret match x {
         Some(v) => v,
         Option.None => 0,
@@ -1445,7 +1445,7 @@ enum Color {
     Blue,
 }
 
-fn value(c: Color) int32 {
+fn value(c: Color) i32 {
     ret match c {
         Red => 1,
         _ => 0,
@@ -1474,13 +1474,13 @@ fn value(c: Color) int32 {
         let err = parse_program_err(
             r#"
 fn main() void {
-    const x int32;
+    const x i32;
 }
 "#,
         );
 
         assert!(err.contains("expected ="));
-        assert!(err.contains("found int32"));
+        assert!(err.contains("found i32"));
         assert!(!err.contains("Eq"));
         assert!(!err.contains("Int32"));
     }

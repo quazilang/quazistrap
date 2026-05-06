@@ -20,8 +20,11 @@ void compile <file> [files...]      # compile to native binary via gcc (default)
 void compile <file> -b              # emit .vbc bytecode
 void compile <file> -s              # emit .s AT&T x86-64 assembly
 void compile <file> [-b|-s] -o out  # specify output filename
+void build [-b|-s] [-o out]         # build project from void.toml
+void run                            # build + run project from void.toml
+void check                          # analyze project without emitting
 void debug [-b|-s]                  # compile hardcoded demo source
-void build | run | check | new | fmt | clean   # unimplemented
+void new | fmt | clean              # unimplemented
 ```
 
 Default output names: `<stem>.vbc` (bytecode), `<stem>.s` (assembly), `<stem>` / `<stem>.exe` (binary).
@@ -34,10 +37,17 @@ Compiler frontend pipeline: source files → `Loader` → merged source string �
 
 ### Loader (`src/loader.rs`)
 - `load_programs(entries: &[PathBuf]) -> Result<LoadResult>` — resolves local imports recursively, merges sources in dependency-first order, parses the merged string as one `Program`.
-- **Local import detection**: `import foo.bar` is local if `foo.void` exists next to the importing file. Otherwise treated as stdlib/external (no file loaded).
+- `load_programs_with_resolver(entries, resolver)` — like `load_programs`, but resolves module imports via `ModuleResolver` when a dependency name matches the first import segment.
+- **Local import detection**: `import foo.bar` resolves to a module when `foo` exists in `ModuleResolver`; otherwise local if `foo.void` exists next to the importing file. Otherwise treated as stdlib/external (no file loaded).
 - Deduplicates via canonical-path `HashSet` — circular or repeated imports are safe.
 - Merged source byte offsets are contiguous, so `render_diagnostic` works correctly across file boundaries.
 - Declare pass in semantic: when an import name collides with an already-declared function (from a loaded local file), the import binding is silently skipped — no duplicate-declaration error.
+
+### Project Config (`src/project.rs`)
+- `ProjectContext::load(start)` finds the nearest `void.toml`, loads project metadata, and builds a `ModuleResolver`.
+- `ProjectContext::discover(start)` is used by `void compile` to apply module resolution when a project config exists.
+- `void.toml` supports `[package]`, `[build]`, and `[dependencies]` (path + optional version).
+- `void.lock` is created on build/run when dependencies exist, and validated if present.
 
 ### Lexer (`src/lexer/`)
 - `token.rs` — `Token`, `TokenKind`, `Span` (line, col, byte start/end).
@@ -96,7 +106,7 @@ Opcode groups:
 - `0x20–0x2F` — memory & ownership (`Load`, `Store`, `Lea`, `Move`, `Drop`, `Dup`)
 - `0x30–0x3F` — control flow (`Cmp`, `Jmp`, `Je`–`Jnz`, `CallIdx`, `CallReg`, `Ret`)
 - `0x40–0x4F` — structs/objects (`New`, `NewObj`, `FieldLoad`, `FieldStore`, `VtblLoad`)
-- `0x50–0x5F` — atomics, threading & syscalls (`AtomicAdd`, `AtomicCas`, `MemFence`, `Spawn`, `Syscall=0x5E`)
+- `0x50–0x5F` — atomics, threading & foreign calls (`AtomicAdd`, `AtomicCas`, `MemFence`, `Spawn`, `CallExt=0x5D`, `Syscall=0x5E`)
 - `0x60–0x6F` — string ops (`StrLen=0x60`, `StrConcat=0x61`, `StrToInt=0x62`, `StrToFloat=0x63`, `PrimToStr=0x64`, `StrAsStr=0x65`)
 - `0x70–0x7F` — reserved
 
@@ -127,7 +137,8 @@ per chunk:
 - **Pass 1**: assign each `fn` item a function-table index (order of appearance).
 - **Pass 2**: compile each function body via `FnCompiler` (virtual register allocator).
 - **Post-pass**: inline expansion — replaces `CallArg* + CallIdx` sequences for functions in `inline_candidates` with a register-remapped copy of the callee body (Ret stripped, args copied to callee param regs via base offset).
-- `@syscall` functions: emit single `Syscall` (num from Linux x86-64 table) + `Ret`, skip body.
+- `@syscall` functions: emit single `Syscall` (num from Linux x86-64 table or raw number) + `Ret`, skip body.
+- `@api` functions: emit single `CallExt` (symbol from attribute string in the constant pool) + `Ret`, flags store arg count.
 - Const-fold: expressions with a `ConstValue` in `const_map` (from semantic) emit `MovI`/`MovConst` directly.
 - `&&` / `||`: short-circuit via `Jz`/`Jnz` — right side only evaluated if needed.
 - Return value convention: always in virtual register 0 (`r0`).
@@ -143,6 +154,8 @@ per chunk:
 - **Prologue**: `pushq %rbp; movq %rsp, %rbp; subq $frame, %rsp`; then load SysV arg regs into param slots.
 - **Jump labels**: collected first (`jump_targets`), emitted as `.{fn_label}_L{instr_idx}:`.
 - **`CallArg` + `CallIdx`**: pending arg list accumulated; on `CallIdx`, args moved to SysV regs, then `callq`; result in `%rax` moved to dst slot.
+- **`Syscall`**: Linux x86-64 ABI — `rax` = syscall number, args in `rdi, rsi, rdx, r10, r8, r9`, return in `rax`.
+- **`CallExt`**: external symbol call — Windows uses Win64 ABI (`rcx, rdx, r8, r9` + 32-byte shadow + stack args), non-Windows uses SysV ABI (`rdi, rsi, rdx, rcx, r8, r9`).
 - **Unimplemented**: `VtblLoad`, `CallReg` emit placeholder `xorq %rax, %rax` + comment.
 - String constants go to `.rodata` as `.{fn_label}_str{idx}:`, loaded via `leaq ... (%rip), %rax`.
 
@@ -153,7 +166,7 @@ import std.io.stdout;
 import mymodule.myFunc;  // auto-loads mymodule.void from same directory
 
 pub fn name[T](param: Type) ReturnType {  // pub is optional, ignored
-    const x: int32 = 1 + 2;
+    const x: i32 = 1 + 2;
     var y: str;
     y = "hello";
     x += 1; x -= 1; x *= 2; x /= 2; x %= 2;  // compound assign
@@ -170,7 +183,7 @@ pub fn name[T](param: Type) ReturnType {  // pub is optional, ignored
 
 struct Foo[T] { field: T, const flag: bool, }
 trait Bar[T] { fn method(x: T) T; }
-impl Bar[int32] for Foo[int32] { fn method(x: int32) int32 { ret x; } }
+impl Bar[i32] for Foo[i32] { fn method(x: i32) i32 { ret x; } }
 enum Option[T] { Some(T), None, }
 
 match value {
@@ -180,7 +193,7 @@ match value {
 }
 ```
 
-Primitive types: `int8/16/32/64`, `uint8/16/32/64`, `isize`, `usize`, `float16/32/64`, `bool`, `str`, `void`, `any`.
+Primitive types: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`, `bool`, `str`, `void`, `any`.
 
 ## String Model
 
@@ -195,8 +208,8 @@ str.len()              -> usize   (bytecode: StrLen 0x60 — reads the len field
 str.to_string()        -> String  (bytecode: PrimToStr 0x64 — heap alloc)
 str.as_str()           -> str     (bytecode: StrAsStr 0x65 — String→str view)
 str.as_string()        -> str     (alias for as_str)
-str.parse[int32]()     -> int64   (bytecode: StrToInt 0x62)
-str.parse[float64]()   -> float64 (bytecode: StrToFloat 0x63)
+str.parse[i32]()        -> i64   (bytecode: StrToInt 0x62)
+str.parse[f64]()        -> f64   (bytecode: StrToFloat 0x63)
 String.bytes()         -> str     (view of heap buffer, no copy)
 String.runes()         -> RuneIterator
 RuneIterator.next()    -> Option[Rune]
@@ -211,14 +224,17 @@ Attributes annotate items and statements. Syntax: `@name` or `@name(args)`.
 
 ```
 @syscall("write")
-fn write(fd: int32, buf: str, len: usize) isize { }
+fn write(fd: i32, buf: str, len: usize) isize { }
+
+@api("WriteFile")
+fn write_file(handle: usize, buf: str, len: usize, out: usize, overlapped: usize) usize { }
 
 @cfg(target_os = "linux")
 fn linux_only() void { ... }
 
 // conditional block inside a function:
 @cfg(target_os = "linux") {
-    var x: int32 = 1;
+    var x: i32 = 1;
 }
 ```
 
@@ -226,7 +242,8 @@ fn linux_only() void { ... }
 
 | Attribute | Target | Effect |
 |-----------|--------|--------|
-| `@syscall("name")` | `fn` | Body replaced by single `Syscall` instruction. Syscall number looked up by name (Linux x86-64 table). Skips guaranteed-return check. |
+| `@syscall("name")` / `@syscall(number)` | `fn` | Body replaced by single `Syscall` instruction. Name is mapped via Linux x86-64 table or the number is used directly. Skips guaranteed-return check. |
+| `@api("FunctionName")` | `fn` | Body replaced by single `CallExt` instruction that calls an external symbol. Win64 ABI on Windows, SysV ABI on other targets. Skips guaranteed-return check. |
 | `@cfg(key = "value")` | `fn`, `struct`, `enum`, `trait`, block | Conditional compilation. Currently compiled unconditionally; cfg evaluation deferred to AOT backend. |
 | `@inline` | `fn` | Hint for inlining (connects to semantic inline-candidate pass). |
 

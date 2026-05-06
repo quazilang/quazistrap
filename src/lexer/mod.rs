@@ -181,19 +181,19 @@ impl Lexer {
             "platform" => TokenKind::Platform,
 
             // primitive types
-            "int8" => TokenKind::Int8,
-            "int16" => TokenKind::Int16,
-            "int32" => TokenKind::Int32,
-            "int64" => TokenKind::Int64,
-            "uint8" => TokenKind::Uint8,
-            "uint16" => TokenKind::Uint16,
-            "uint32" => TokenKind::Uint32,
-            "uint64" => TokenKind::Uint64,
+            "i8" => TokenKind::Int8,
+            "i16" => TokenKind::Int16,
+            "i32" => TokenKind::Int32,
+            "i64" => TokenKind::Int64,
+            "u8" => TokenKind::Uint8,
+            "u16" => TokenKind::Uint16,
+            "u32" => TokenKind::Uint32,
+            "u64" => TokenKind::Uint64,
             "isize" => TokenKind::Isize,
             "usize" => TokenKind::Usize,
-            "float16" => TokenKind::Float16,
-            "float32" => TokenKind::Float32,
-            "float64" => TokenKind::Float64,
+            "f16" => TokenKind::Float16,
+            "f32" => TokenKind::Float32,
+            "f64" => TokenKind::Float64,
             "bool" => TokenKind::Bool,
             "str" => TokenKind::Str,
             "void" => TokenKind::Void,
@@ -393,5 +393,22 @@ mod tests {
         let tokens = lexer.tokenize();
         assert!(matches!(tokens[0].kind, TokenKind::Isize));
         assert!(matches!(tokens[1].kind, TokenKind::Usize));
+    }
+
+    #[test]
+    fn numeric_type_keywords_use_short_names() {
+        let mut lexer = Lexer::new("i8 i16 i32 i64 u8 u16 u32 u64 f16 f32 f64");
+        let tokens = lexer.tokenize();
+        assert!(matches!(tokens[0].kind, TokenKind::Int8));
+        assert!(matches!(tokens[1].kind, TokenKind::Int16));
+        assert!(matches!(tokens[2].kind, TokenKind::Int32));
+        assert!(matches!(tokens[3].kind, TokenKind::Int64));
+        assert!(matches!(tokens[4].kind, TokenKind::Uint8));
+        assert!(matches!(tokens[5].kind, TokenKind::Uint16));
+        assert!(matches!(tokens[6].kind, TokenKind::Uint32));
+        assert!(matches!(tokens[7].kind, TokenKind::Uint64));
+        assert!(matches!(tokens[8].kind, TokenKind::Float16));
+        assert!(matches!(tokens[9].kind, TokenKind::Float32));
+        assert!(matches!(tokens[10].kind, TokenKind::Float64));
     }
 }

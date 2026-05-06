@@ -498,7 +498,7 @@ mod tests {
         let report = analyze(
             r#"
 fn main() void {
-    const x: int32 = "";
+    const x: i32 = "";
 }
 "#,
         );
@@ -532,7 +532,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    const x: int32 = "";
+    const x: i32 = "";
 }
 "#,
         );
@@ -544,7 +544,7 @@ fn main() void {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(combined.contains("declared int32"));
+        assert!(combined.contains("declared i32"));
         assert!(combined.contains("got str"));
         assert!(!combined.contains("Int32"));
         assert!(!combined.contains("Str"));
@@ -573,8 +573,8 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    var x: int32 = 1;
-    var x: int32 = 2;
+    var x: i32 = 1;
+    var x: i32 = 2;
 }
 "#,
         );
@@ -594,7 +594,7 @@ fn main() void {
 import std.io.stdout;
 
 fn main() void {
-    const x: int32 = 1;
+    const x: i32 = 1;
 }
 "#,
         );
@@ -624,12 +624,32 @@ fn main() void {
     }
 
     #[test]
+    fn module_qualified_call_marks_import_used() {
+        let report = analyze(
+            r#"
+import mymod;
+
+fn foo(x: i32) i32 {
+    ret x;
+}
+
+fn main() void {
+    const y: i32 = mymod.foo(1);
+}
+"#,
+        );
+
+        assert!(report.errors.is_empty());
+        assert!(report.used_imports.contains(&"mymod".to_string()));
+    }
+
+    #[test]
     fn reports_use_before_initialization() {
         let report = analyze(
             r#"
 fn main() void {
-    var x: int32;
-    const y: int32 = x;
+    var x: i32;
+    const y: i32 = x;
 }
 "#,
         );
@@ -648,7 +668,7 @@ fn main() void {
             r#"
 fn main() void {
     ret;
-    var x: int32 = 1;
+    var x: i32 = 1;
 }
 "#,
         );
@@ -671,7 +691,7 @@ fn main() void {
     } else {
         ret;
     }
-    var x: int32 = 1;
+    var x: i32 = 1;
 }
 "#,
         );
@@ -689,7 +709,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    var x: int32 = 1;
+    var x: i32 = 1;
 }
 "#,
         );
@@ -729,7 +749,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    const x: int32 = 1 + 2;
+    const x: i32 = 1 + 2;
 }
 "#,
         );
@@ -742,7 +762,7 @@ fn main() void {
     fn detects_inline_candidates() {
         let report = analyze(
             r#"
-fn helper(a: int32) int32 {
+fn helper(a: i32) i32 {
     ret a;
 }
 
@@ -764,7 +784,7 @@ enum Option[T] {
     None,
 }
 
-fn unwrap_or_fail(x: Option[int32]) int32 {
+fn unwrap_or_fail(x: Option[i32]) i32 {
     ret match x {
         Some(v) => v,
     };
@@ -791,7 +811,7 @@ enum Option[T] {
     None,
 }
 
-fn unwrap_or_zero(x: Option[int32]) int32 {
+fn unwrap_or_zero(x: Option[i32]) i32 {
     ret match x {
         Some(v) => v,
         None => 0,
@@ -818,7 +838,7 @@ enum Color {
     Blue,
 }
 
-fn color_value(c: Color) int32 {
+fn color_value(c: Color) i32 {
     ret match c {
         Red => 1,
         Red => 2,
@@ -842,12 +862,12 @@ fn color_value(c: Color) int32 {
             r#"
 import std.io.stdout;
 
-fn helper(a: int32) int32 {
+fn helper(a: i32) i32 {
     ret a + 1;
 }
 
 fn main() void {
-    const y: int32 = helper(41);
+    const y: i32 = helper(41);
     stdout.println("{}", y);
 }
 "#,
@@ -914,11 +934,11 @@ fn main() void {
     fn builtin_option_some_and_none_resolve_without_declaration() {
         let report = analyze(
             r#"
-fn wrap(x: int32) Option[int32] {
+fn wrap(x: i32) Option[i32] {
     ret Some(x);
 }
 
-fn empty() Option[int32] {
+fn empty() Option[i32] {
     ret None();
 }
 "#,
@@ -930,7 +950,7 @@ fn empty() Option[int32] {
     fn builtin_none_bare_ident_resolves() {
         let report = analyze(
             r#"
-fn get_none() Option[int32] {
+fn get_none() Option[i32] {
     const n = None;
     ret n;
 }
@@ -943,11 +963,11 @@ fn get_none() Option[int32] {
     fn builtin_result_ok_and_err_resolve_without_declaration() {
         let report = analyze(
             r#"
-fn succeed(x: int32) Result[int32, str] {
+fn succeed(x: i32) Result[i32, str] {
     ret Ok(x);
 }
 
-fn fail(msg: str) Result[int32, str] {
+fn fail(msg: str) Result[i32, str] {
     ret Err(msg);
 }
 "#,
@@ -959,7 +979,7 @@ fn fail(msg: str) Result[int32, str] {
     fn builtin_option_exhaustiveness_check_works() {
         let report = analyze(
             r#"
-fn unwrap_or_zero(x: Option[int32]) int32 {
+fn unwrap_or_zero(x: Option[i32]) i32 {
     ret match x {
         Some(v) => v,
         None => 0,
@@ -975,7 +995,7 @@ fn unwrap_or_zero(x: Option[int32]) int32 {
     fn builtin_option_non_exhaustive_match_is_caught() {
         let report = analyze(
             r#"
-fn bad_match(x: Option[int32]) int32 {
+fn bad_match(x: Option[i32]) i32 {
     ret match x {
         Some(v) => v,
     };
@@ -992,7 +1012,7 @@ fn bad_match(x: Option[int32]) int32 {
     fn builtin_result_exhaustiveness_check_works() {
         let report = analyze(
             r#"
-fn handle(x: Result[int32, str]) int32 {
+fn handle(x: Result[i32, str]) i32 {
     ret match x {
         Ok(v) => v,
         Err(e) => 0,
@@ -1027,7 +1047,7 @@ fn main() void {}
         let report = analyze(
             r#"
 fn main() void {
-    var x: int32 = 0;
+    var x: i32 = 0;
     x += 1;
     x -= 1;
     x *= 2;
@@ -1044,7 +1064,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    const x: int32 = 1;
+    const x: i32 = 1;
     x += 1;
 }
 "#,
@@ -1060,7 +1080,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    var x: int32 = 0;
+    var x: i32 = 0;
     x++;
     x--;
 }
@@ -1074,7 +1094,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    var x: int32 = 0;
+    var x: i32 = 0;
     ++x;
     --x;
 }
@@ -1104,7 +1124,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    const x: int32 = 1;
+    const x: i32 = 1;
     x++;
 }
 "#,
@@ -1119,7 +1139,7 @@ fn main() void {
     fn math_absorber_mul_zero_folds_to_zero_in_annotated_tree() {
         let report = analyze(
             r#"
-fn mul(x: int32) int32 {
+fn mul(x: i32) i32 {
     ret x * 0;
 }
 "#,
@@ -1139,7 +1159,7 @@ fn mul(x: int32) int32 {
     fn math_absorber_mul_zero_float_folds_in_annotated_tree() {
         let report = analyze(
             r#"
-fn scale(x: float64) float64 {
+fn scale(x: f64) f64 {
     ret 0.0 * x;
 }
 "#,
@@ -1158,7 +1178,7 @@ fn scale(x: float64) float64 {
     fn math_identity_add_zero_emits_suggestion() {
         let report = analyze(
             r#"
-fn add(x: int32) int32 {
+fn add(x: i32) i32 {
     ret x + 0;
 }
 "#,
@@ -1221,7 +1241,7 @@ fn main() void {
         // helper2 should appear in dead_functions because it's only reachable from dead code.
         let report = analyze(
             r#"
-fn helper2(x: int32) int32 {
+fn helper2(x: i32) i32 {
     ret x;
 }
 
@@ -1256,7 +1276,7 @@ fn main() void {
     fn reachable_functions_not_in_dead_set() {
         let report = analyze(
             r#"
-fn helper(x: int32) int32 {
+fn helper(x: i32) i32 {
     ret x + 1;
 }
 
@@ -1300,7 +1320,7 @@ fn main() void {
         );
         assert!(
             report.errors.iter().any(|e| e.message.contains("type mismatch")),
-            "for loop var typed as int32 — assigning to str should error"
+            "for loop var typed as i32 — assigning to str should error"
         );
     }
 
@@ -1310,9 +1330,9 @@ fn main() void {
     fn use_after_move_is_error() {
         let report = analyze(
             r#"
-struct Point { x: int32, y: int32, }
+struct Point { x: i32, y: i32, }
 
-fn consume(p: Point) int32 { ret p.x; }
+fn consume(p: Point) i32 { ret p.x; }
 
 fn main() void {
     var p: Point;
@@ -1332,26 +1352,26 @@ fn main() void {
     fn copy_type_not_moved() {
         let report = analyze(
             r#"
-fn double(x: int32) int32 { ret x + x; }
+fn double(x: i32) i32 { ret x + x; }
 
 fn main() void {
-    var x: int32 = 5;
+    var x: i32 = 5;
     double(x);
     double(x);
 }
 "#,
         );
         let borrow_errors: Vec<_> = report.errors.iter().filter(|e| e.code == "S10").collect();
-        assert!(borrow_errors.is_empty(), "int32 is Copy — should not produce S10 errors: {:?}", borrow_errors);
+        assert!(borrow_errors.is_empty(), "i32 is Copy — should not produce S10 errors: {:?}", borrow_errors);
     }
 
     #[test]
     fn reassign_clears_moved_state() {
         let report = analyze(
             r#"
-struct Box { val: int32, }
+struct Box { val: i32, }
 
-fn consume(b: Box) int32 { ret b.val; }
+fn consume(b: Box) i32 { ret b.val; }
 
 fn make() Box { var b: Box; ret b; }
 
@@ -1371,13 +1391,13 @@ fn main() void {
     fn move_in_loop_is_error() {
         let report = analyze(
             r#"
-struct Obj { id: int32, }
+struct Obj { id: i32, }
 
 fn consume(o: Obj) void { ret; }
 
 fn main() void {
     var o: Obj;
-    var i: int32 = 0;
+    var i: i32 = 0;
     while (i < 3) {
         consume(o);
         i += 1;
@@ -1396,7 +1416,7 @@ fn main() void {
     fn move_in_if_branch_conservatively_blocks_later_use() {
         let report = analyze(
             r#"
-struct Val { n: int32, }
+struct Val { n: i32, }
 
 fn consume(v: Val) void { ret; }
 
