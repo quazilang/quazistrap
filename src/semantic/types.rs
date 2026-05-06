@@ -180,6 +180,8 @@ pub struct OptimizationHints {
     pub exhaustiveness_checks: usize,
     pub math_optimizations: Vec<MathOptimization>,
     pub lazy_import_hints: Vec<LazyImportHint>,
+    /// Functions that are defined and called, but not reachable from `main`.
+    pub dead_functions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -225,4 +227,6 @@ pub struct SemanticReport {
     pub exhaustiveness_checks: usize,
     pub non_exhaustive_matches: Vec<MatchExhaustivenessIssue>,
     pub lazy_import_hints: Vec<LazyImportHint>,
+    /// Functions that are defined and called, but not reachable from `main`.
+    pub dead_functions: Vec<String>,
 }

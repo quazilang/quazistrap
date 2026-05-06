@@ -16,18 +16,21 @@ cargo fmt               # format
 CLI (one dependency: `clap 4.6`):
 
 ```bash
-void compile <file> [files...]   # compile; auto-resolves local imports
-void compile <file> -b           # emit .vbc bytecode
-void compile <file> -s           # emit assembly (unimplemented)
-void debug [-b|-s]               # compile hardcoded demo source
+void compile <file> [files...]      # compile to native binary via gcc (default)
+void compile <file> -b              # emit .vbc bytecode
+void compile <file> -s              # emit .s AT&T x86-64 assembly
+void compile <file> [-b|-s] -o out  # specify output filename
+void debug [-b|-s]                  # compile hardcoded demo source
 void build | run | check | new | fmt | clean   # unimplemented
 ```
+
+Default output names: `<stem>.vbc` (bytecode), `<stem>.s` (assembly), `<stem>` / `<stem>.exe` (binary).
 
 Rust edition 2024.
 
 ## Architecture
 
-Compiler frontend pipeline: source files → `Loader` → merged source string → `Lexer` → `Vec<Token>` → `Parser` → `Program` → `Analyzer` → `SemanticReport`.
+Compiler frontend pipeline: source files → `Loader` → merged source string → `Lexer` → `Vec<Token>` → `Parser` → `Program` → `Analyzer` → `SemanticReport` → `Codegen` → `Vec<Chunk>` → `X86Emitter` → AT&T asm → `gcc` → binary.
 
 ### Loader (`src/loader.rs`)
 - `load_programs(entries: &[PathBuf]) -> Result<LoadResult>` — resolves local imports recursively, merges sources in dependency-first order, parses the merged string as one `Program`.
@@ -71,7 +74,7 @@ Split across files. `Analyzer` runs five sequential passes over the `Program` AS
 Public types live in `types.rs`, re-exported from `mod.rs`.
 
 ### `SemanticReport`
-Structured output with: `errors`, `warnings`, `suggestions`, `symbol_table`, `dependency_graph`, `optimization_hints` (includes `math_optimizations`, `lazy_import_hints`), `annotated_exprs`, `constant_evaluations`, `used_imports_map`, `non_exhaustive_matches`, `lazy_import_hints`.
+Structured output with: `errors`, `warnings`, `suggestions`, `symbol_table`, `dependency_graph`, `optimization_hints` (includes `math_optimizations`, `lazy_import_hints`), `annotated_exprs`, `constant_evaluations`, `used_imports_map`, `non_exhaustive_matches`, `lazy_import_hints`, **`inline_candidates`** (consumed by `Codegen` for the inline expansion pass).
 
 ### Bytecode (`src/bytecode/`)
 VBC (Void Bytecode) — platform-independent, AOT-only. **6 bytes per instruction.**
@@ -94,16 +97,54 @@ Opcode groups:
 - `0x30–0x3F` — control flow (`Cmp`, `Jmp`, `Je`–`Jnz`, `CallIdx`, `CallReg`, `Ret`)
 - `0x40–0x4F` — structs/objects (`New`, `NewObj`, `FieldLoad`, `FieldStore`, `VtblLoad`)
 - `0x50–0x5F` — atomics, threading & syscalls (`AtomicAdd`, `AtomicCas`, `MemFence`, `Spawn`, `Syscall=0x5E`)
-- `0x60–0x6F` — string ops (`StrLen=0x60`, `StrConcat=0x61`)
+- `0x60–0x6F` — string ops (`StrLen=0x60`, `StrConcat=0x61`, `StrToInt=0x62`, `StrToFloat=0x63`, `PrimToStr=0x64`, `StrAsStr=0x65`)
 - `0x70–0x7F` — reserved
 
 Key design decisions:
 - `Move` (ownership transfer, src invalidated) vs `Dup` (copy, Copy types only) — compiler chooses at codegen, never both for same value.
 - `Drop` = RAII destructor call emitted by compiler at scope exit, no runtime GC.
 - No null — `Option[T]` is discriminant + value, `match` compiles to `Cmp` + conditional jump.
-- `Chunk` = one function's code (`Vec<Instruction>`) + constant pool (`Vec<ConstPoolEntry>`). `patch_jump` backpatches forward jumps after target is known.
+- `Chunk` = one function's code (`Vec<Instruction>`) + constant pool (`Vec<ConstPoolEntry>`) + `name` + `param_count` + `reg_count`. `patch_jump` backpatches forward jumps after target is known.
 - Flat serialization: `Chunk::to_bytes()` → `Vec<u8>` at 6 bytes/instruction.
-- Register allocation and platform lowering happen in AOT backend (QBE or custom), not in VBC.
+- Register allocation and platform lowering happen in AOT backend, not in VBC.
+
+**VBC file format** (`serialize_vbc`):
+```
+magic:       \x00VBC  (4 bytes)
+version:     0x01     (u8)
+chunk_count: u32 LE
+per chunk:
+  name_len:  u16 LE + name bytes
+  const_count: u16 LE
+  per constant: tag(u8) + value (8 bytes Int/Float, u16 len + bytes for Str)
+  instr_count: u32 LE
+  instructions: instr_count * 6 bytes
+```
+
+### Codegen (`src/bytecode/codegen.rs`)
+`Codegen` takes a `&SemanticReport` and compiles a `Program` to `Vec<Chunk>`.
+
+- **Pass 1**: assign each `fn` item a function-table index (order of appearance).
+- **Pass 2**: compile each function body via `FnCompiler` (virtual register allocator).
+- **Post-pass**: inline expansion — replaces `CallArg* + CallIdx` sequences for functions in `inline_candidates` with a register-remapped copy of the callee body (Ret stripped, args copied to callee param regs via base offset).
+- `@syscall` functions: emit single `Syscall` (num from Linux x86-64 table) + `Ret`, skip body.
+- Const-fold: expressions with a `ConstValue` in `const_map` (from semantic) emit `MovI`/`MovConst` directly.
+- `&&` / `||`: short-circuit via `Jz`/`Jnz` — right side only evaluated if needed.
+- Return value convention: always in virtual register 0 (`r0`).
+- Known method call builtins: `len()→StrLen`, `to_string()→PrimToStr`, `as_str()/as_string()→StrAsStr`, `parse[T]()→StrToInt` or `StrToFloat` depending on type arg.
+- `FnCompiler.next_reg` monotonically allocates virtual registers; stored in `Chunk.reg_count` for use by inline expansion and AOT.
+
+### AOT Backend (`src/aot/mod.rs`)
+`X86Emitter` lowers `Vec<Chunk>` to AT&T x86-64 assembly (`.s` file). Binary emit writes `.s` then shells out to `gcc`, deletes the `.s` after.
+
+- **Calling convention**: SysV AMD64 — args in `rdi, rsi, rdx, rcx, r8, r9`; return in `rax`.
+- **VBC register N** maps to stack slot `[rbp - (N+1)*8]`.
+- **Frame**: `round_to_16(max_reg_used * 8)` bytes, allocated with `subq`.
+- **Prologue**: `pushq %rbp; movq %rsp, %rbp; subq $frame, %rsp`; then load SysV arg regs into param slots.
+- **Jump labels**: collected first (`jump_targets`), emitted as `.{fn_label}_L{instr_idx}:`.
+- **`CallArg` + `CallIdx`**: pending arg list accumulated; on `CallIdx`, args moved to SysV regs, then `callq`; result in `%rax` moved to dst slot.
+- **Unimplemented**: `VtblLoad`, `CallReg` emit placeholder `xorq %rax, %rax` + comment.
+- String constants go to `.rodata` as `.{fn_label}_str{idx}:`, loaded via `leaq ... (%rip), %rax`.
 
 ## Language Syntax (current)
 
@@ -115,8 +156,15 @@ pub fn name[T](param: Type) ReturnType {  // pub is optional, ignored
     const x: int32 = 1 + 2;
     var y: str;
     y = "hello";
+    x += 1; x -= 1; x *= 2; x /= 2; x %= 2;  // compound assign
+    x++; x--; ++x; --x;                        // inc/dec (prefix and postfix)
     if (cond) { ... } else { ... }
     while (cond) { ... }
+    for i : 0..10 { ... }          // range loop (i in [0, 10))
+    for i : collection { ... }     // iterator loop
+    for i, v : collection { ... }  // iterator loop with index+value binding
+    var arr = [1, 2, 3];           // array literal
+    arr[0];                        // index
     ret expr;
 }
 
@@ -144,7 +192,11 @@ Primitive types: `int8/16/32/64`, `uint8/16/32/64`, `isize`, `usize`, `float16/3
 Key API surface (implemented as stdlib methods via vtable):
 ```
 str.len()              -> usize   (bytecode: StrLen 0x60 — reads the len field)
-str.to_string()        -> String
+str.to_string()        -> String  (bytecode: PrimToStr 0x64 — heap alloc)
+str.as_str()           -> str     (bytecode: StrAsStr 0x65 — String→str view)
+str.as_string()        -> str     (alias for as_str)
+str.parse[int32]()     -> int64   (bytecode: StrToInt 0x62)
+str.parse[float64]()   -> float64 (bytecode: StrToFloat 0x63)
 String.bytes()         -> str     (view of heap buffer, no copy)
 String.runes()         -> RuneIterator
 RuneIterator.next()    -> Option[Rune]

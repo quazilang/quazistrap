@@ -22,5 +22,8 @@ Cargo.lock
 #.idea/
 
 *.void
+*.vbc
 
 .forgejo/
+
+.claude/

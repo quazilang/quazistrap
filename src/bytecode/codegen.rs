@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use crate::parser::ast::*;
-use crate::semantic::{ConstValue, SemanticReport};
+use crate::semantic::{ConstValue, DependencyKind, SemanticReport};
 use super::instruction::{mem_lea, mem_load, ri16, rrr};
 use super::{Chunk, ConstPoolEntry, Opcode};
 
@@ -29,20 +29,51 @@ impl<'a> Codegen<'a> {
     }
 
     pub fn compile_program(&mut self, program: &Program) -> Vec<Chunk> {
-        // Pass 1: assign each function a table index.
+        // Compute the set of functions reachable from main via the call graph.
+        // Library mode (no main) compiles everything.
+        let has_main = program.items.iter()
+            .any(|item| matches!(&item.node, ItemKind::Fn { name, .. } if name == "main"));
+
+        let reachable: Option<std::collections::HashSet<String>> = if has_main {
+            let mut set = std::collections::HashSet::new();
+            set.insert("main".to_string());
+            let mut queue = vec!["main".to_string()];
+            while let Some(fn_name) = queue.pop() {
+                for edge in &self.report.dependency_graph.edges {
+                    if edge.kind == DependencyKind::Call && edge.from == fn_name {
+                        if set.insert(edge.to.clone()) {
+                            queue.push(edge.to.clone());
+                        }
+                    }
+                }
+            }
+            Some(set)
+        } else {
+            None
+        };
+
+        let is_live = |name: &str| -> bool {
+            reachable.as_ref().map_or(true, |r| r.contains(name))
+        };
+
+        // Pass 1: assign each live function a table index.
         let mut idx = 0u16;
         for item in &program.items {
             if let ItemKind::Fn { name, .. } = &item.node {
-                self.fn_index.insert(name.clone(), idx);
-                idx += 1;
+                if is_live(name) {
+                    self.fn_index.insert(name.clone(), idx);
+                    idx += 1;
+                }
             }
         }
 
-        // Pass 2: compile each function body.
+        // Pass 2: compile each live function body.
         let mut chunks = Vec::new();
         for item in &program.items {
             if let ItemKind::Fn { name, params, body, attributes, .. } = &item.node {
-                chunks.push(self.compile_fn(name, params, body, attributes));
+                if is_live(name) {
+                    chunks.push(self.compile_fn(name, params, body, attributes));
+                }
             }
         }
 
@@ -224,12 +255,13 @@ impl<'a> FnCompiler<'a> {
 
     // ── Block / statement ─────────────────────────────────────────────────────
 
-    fn compile_block(&mut self, block: &Block) {
+    fn compile_block(&mut self, block: &Block) -> bool {
         for stmt in &block.stmts {
             if self.compile_stmt(stmt) {
-                break;
+                return true;
             }
         }
+        false
     }
 
     /// Returns true if the statement guarantees exit (return).
@@ -270,22 +302,40 @@ impl<'a> FnCompiler<'a> {
                 false
             }
             StmtKind::If { condition, then_block, else_block } => {
+                // Constant-condition elimination: skip the dead branch entirely.
+                let cond_key = (condition.span.start, condition.span.end);
+                if let Some(ConstValue::Bool(b)) = self.const_map.get(&cond_key).cloned() {
+                    return if b {
+                        self.compile_block(then_block)
+                    } else if let Some(eb) = else_block {
+                        self.compile_block(eb)
+                    } else {
+                        false
+                    };
+                }
+
                 // Emit condition + jump-if-false past the then block.
                 let jump_else = self.compile_condition_jump(condition, true);
-
-                self.compile_block(then_block);
+                let then_returns = self.compile_block(then_block);
 
                 if let Some(else_block) = else_block {
                     let jump_end = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
                     self.chunk.patch_jump(jump_else, self.chunk.len() as u16);
-                    self.compile_block(else_block);
+                    let else_returns = self.compile_block(else_block);
                     self.chunk.patch_jump(jump_end, self.chunk.len() as u16);
+                    then_returns && else_returns
                 } else {
                     self.chunk.patch_jump(jump_else, self.chunk.len() as u16);
+                    false
                 }
-                false
             }
             StmtKind::While { condition, body } => {
+                // Constant false condition: skip the loop entirely (dead code).
+                let cond_key = (condition.span.start, condition.span.end);
+                if let Some(ConstValue::Bool(false)) = self.const_map.get(&cond_key).cloned() {
+                    return false;
+                }
+
                 let loop_top = self.chunk.len() as u16;
                 let jump_exit = self.compile_condition_jump(condition, true);
                 self.compile_block(body);
@@ -1010,6 +1060,76 @@ mod tests {
         assert!(
             main_chunk.code.iter().any(|i| i.opcode == Opcode::VtblLoad as u8),
             "method call should emit VtblLoad"
+        );
+    }
+
+    #[test]
+    fn tree_shaking_omits_unreachable_function() {
+        // dead_fn is called only by zombie_fn; zombie_fn is never called by main.
+        // Tree-shaking should exclude both from the output chunks.
+        let chunks = compile(
+            r#"fn dead_fn(x: int32) int32 { const a: int32 = 1; const b: int32 = 2; ret x; }
+               fn zombie_fn() void { dead_fn(1); }
+               fn main() void { ret; }"#,
+        );
+        assert!(!chunks.iter().any(|c| c.name == "dead_fn"), "dead_fn should be tree-shaken");
+        assert!(!chunks.iter().any(|c| c.name == "zombie_fn"), "zombie_fn should be tree-shaken");
+        assert!(chunks.iter().any(|c| c.name == "main"), "main must be present");
+    }
+
+    #[test]
+    fn const_true_if_skips_else_branch() {
+        // `1 == 1` const-folds to Bool(true) — else branch must not be compiled.
+        let chunks = compile(
+            r#"fn f() int32 {
+                if (1 == 1) { ret 1; } else { ret 2; }
+            }"#,
+        );
+        let code = &chunks[0].code;
+        // With const-condition elimination, no conditional jump instruction.
+        let has_conditional_jump = code.iter().any(|i| matches!(
+            Opcode::from_u8(i.opcode),
+            Some(Opcode::Je | Opcode::Jne | Opcode::Jl | Opcode::Jle |
+                 Opcode::Jg | Opcode::Jge | Opcode::Jz | Opcode::Jnz)
+        ));
+        assert!(!has_conditional_jump, "const-true if should not emit a conditional jump");
+        // Dead else branch must not emit MovI(2).
+        let has_movi_2 = code.iter().any(|i| {
+            let (_, imm) = i.ri16();
+            i.opcode == Opcode::MovI as u8 && imm == 2
+        });
+        assert!(!has_movi_2, "const-true if should not emit MovI(2) from dead else branch");
+    }
+
+    #[test]
+    fn const_false_if_skips_then_branch() {
+        // `0 == 1` const-folds to Bool(false) — then branch must not be compiled.
+        let chunks = compile(
+            r#"fn f() int32 {
+                if (0 == 1) { ret 99; } else { ret 7; }
+            }"#,
+        );
+        let code = &chunks[0].code;
+        let has_movi_99 = code.iter().any(|i| {
+            let (_, imm) = i.ri16();
+            i.opcode == Opcode::MovI as u8 && imm == 99
+        });
+        assert!(!has_movi_99, "const-false if should not emit MovI(99) from dead then branch");
+    }
+
+    #[test]
+    fn const_false_while_emits_no_loop_instructions() {
+        // `0 == 1` const-folds to Bool(false) — while body must be skipped entirely.
+        let chunks = compile(
+            r#"fn f() void {
+                while (0 == 1) { var x: int32 = 1; }
+            }"#,
+        );
+        let code = &chunks[0].code;
+        // No loop-back Jmp should exist.
+        assert!(
+            !code.iter().any(|i| i.opcode == Opcode::Jmp as u8),
+            "while(0==1) should emit no Jmp"
         );
     }
 }

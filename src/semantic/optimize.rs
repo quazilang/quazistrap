@@ -150,6 +150,61 @@ impl Analyzer {
         }
     }
 
+    pub(super) fn run_tree_shake_pass(&mut self, program: &Program) {
+        // Collect all locally-defined function names.
+        let all_fns: BTreeSet<String> = program.items.iter()
+            .filter_map(|item| match &item.node {
+                ItemKind::Fn { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Library mode: no main → can't determine reachability, skip.
+        if !all_fns.contains("main") {
+            return;
+        }
+
+        // BFS from main using Call edges.
+        let mut reachable: BTreeSet<String> = BTreeSet::new();
+        reachable.insert("main".to_string());
+        let mut queue: Vec<String> = vec!["main".to_string()];
+
+        while let Some(fn_name) = queue.pop() {
+            for (kind, from, to) in &self.dependency_edges {
+                if *kind == DependencyKind::Call && from == &fn_name && all_fns.contains(to) && reachable.insert(to.clone()) {
+                    queue.push(to.clone());
+                }
+            }
+        }
+
+        // Warn on functions that are called but not reachable from main
+        // (i.e., called only by other dead functions).
+        // Functions with zero callers are already caught by "unused function".
+        let global_scope = self.scopes.first()
+            .expect("global scope must exist")
+            .clone();
+
+        for fn_name in all_fns.difference(&reachable) {
+            let is_called_by_someone = self.dependency_edges.iter().any(|(k, _, to)| {
+                *k == DependencyKind::Call && to == fn_name
+            });
+            if is_called_by_someone {
+                if let Some(sym) = global_scope.get(fn_name) {
+                    self.push_warning(
+                        sym.span,
+                        "W07",
+                        format!("dead function '{}': only reachable from dead code, never from main", fn_name),
+                    );
+                    self.push_suggestion(
+                        Some(sym.span),
+                        format!("function '{}' is transitively unreachable from main — remove or make it reachable", fn_name),
+                    );
+                }
+            }
+            self.unreachable_functions.insert(fn_name.clone());
+        }
+    }
+
     pub(super) fn run_inline_candidate_pass(&mut self, program: &Program) {
         for item in &program.items {
             match &item.node {

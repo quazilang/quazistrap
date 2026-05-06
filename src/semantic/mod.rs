@@ -12,6 +12,7 @@ mod declare;
 mod typecheck;
 mod unused;
 mod optimize;
+mod borrow;
 
 // Private internal types used across sub-modules via `use super::*;`
 
@@ -68,6 +69,8 @@ pub struct Analyzer {
     pub(super) math_optimizations: Vec<MathOptimization>,
     pub(super) lazy_import_accesses: HashMap<String, BTreeSet<String>>,
     pub(super) lazy_import_hints: Vec<LazyImportHint>,
+    /// Functions not reachable from `main` via the call graph.
+    pub(super) unreachable_functions: BTreeSet<String>,
 }
 
 pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
@@ -96,6 +99,7 @@ impl Analyzer {
             math_optimizations: Vec::new(),
             lazy_import_accesses: HashMap::new(),
             lazy_import_hints: Vec::new(),
+            unreachable_functions: BTreeSet::new(),
         }
     }
 
@@ -118,11 +122,17 @@ impl Analyzer {
         // Pass 4: dead code detection (reachability).
         self.run_dead_code_pass(program);
 
-        // Pass 5: optimization hints.
+        // Pass 5: tree-shaking — find functions not reachable from main.
+        self.run_tree_shake_pass(program);
+
+        // Pass 6: optimization hints.
         self.run_inline_candidate_pass(program);
         self.run_exhaustiveness_pass();
         self.run_import_optimization_pass();
         self.run_lazy_import_pass();
+
+        // Pass 7: borrow / move checker.
+        self.run_borrow_check_pass(program);
 
         let symbol_table = self.build_symbol_table();
         let used_imports_vec: Vec<String> = self.used_import_paths.iter().cloned().collect();
@@ -134,6 +144,7 @@ impl Analyzer {
         let inline_candidates = std::mem::take(&mut self.inline_candidates);
         let math_optimizations = std::mem::take(&mut self.math_optimizations);
         let lazy_import_hints = std::mem::take(&mut self.lazy_import_hints);
+        let dead_functions: Vec<String> = self.unreachable_functions.iter().cloned().collect();
 
         let annotated_program = AnnotatedProgram {
             span: program.span,
@@ -149,6 +160,7 @@ impl Analyzer {
             exhaustiveness_checks: self.exhaustiveness_checks,
             math_optimizations: math_optimizations.clone(),
             lazy_import_hints: lazy_import_hints.clone(),
+            dead_functions: dead_functions.clone(),
         };
 
         let dependency_graph = self.build_dependency_graph();
@@ -170,6 +182,7 @@ impl Analyzer {
             exhaustiveness_checks: self.exhaustiveness_checks,
             non_exhaustive_matches: std::mem::take(&mut self.non_exhaustive_matches),
             lazy_import_hints,
+            dead_functions,
         }
     }
 
@@ -195,6 +208,7 @@ impl Analyzer {
         self.math_optimizations.clear();
         self.lazy_import_accesses.clear();
         self.lazy_import_hints.clear();
+        self.unreachable_functions.clear();
         self.init_builtins();
     }
 
@@ -1198,6 +1212,208 @@ fn main() void {
         assert!(
             report.lazy_import_hints.is_empty(),
             "exact import should not produce a lazy import hint"
+        );
+    }
+
+    #[test]
+    fn dead_function_in_call_chain_is_warned() {
+        // helper1 is unused (no callers), helper2 is called only by helper1.
+        // helper2 should appear in dead_functions because it's only reachable from dead code.
+        let report = analyze(
+            r#"
+fn helper2(x: int32) int32 {
+    ret x;
+}
+
+fn helper1() void {
+    helper2(1);
+}
+
+fn main() void {
+    ret;
+}
+"#,
+        );
+        // helper1: unused function (directly uncalled)
+        assert!(
+            report.warnings.iter().any(|w| w.message.contains("unused function 'helper1'")),
+            "expected unused function warning for helper1"
+        );
+        // helper2: dead function (called only from dead code)
+        assert!(
+            report.dead_functions.contains(&"helper2".to_string()),
+            "helper2 should be in dead_functions, got {:?}", report.dead_functions
+        );
+        assert!(
+            report.warnings.iter().any(|w| w.message.contains("dead function 'helper2'")),
+            "expected dead function warning for helper2"
+        );
+        // main is reachable
+        assert!(!report.dead_functions.contains(&"main".to_string()));
+    }
+
+    #[test]
+    fn reachable_functions_not_in_dead_set() {
+        let report = analyze(
+            r#"
+fn helper(x: int32) int32 {
+    ret x + 1;
+}
+
+fn main() void {
+    helper(1);
+}
+"#,
+        );
+        assert!(report.dead_functions.is_empty(), "helper is reachable, should not be dead");
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn for_range_bounds_must_be_integers() {
+        let report = analyze(
+            r#"
+fn main() void {
+    for i : "hello"..10 {
+        ret;
+    }
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.message.contains("for range start must be an integer type")),
+            "expected integer type error for str range start, got: {:?}",
+            report.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn for_range_loop_var_has_integer_type() {
+        let report = analyze(
+            r#"
+fn main() void {
+    for i : 0..10 {
+        var s: str = i;
+    }
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.message.contains("type mismatch")),
+            "for loop var typed as int32 — assigning to str should error"
+        );
+    }
+
+    // ── Borrow checker tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn use_after_move_is_error() {
+        let report = analyze(
+            r#"
+struct Point { x: int32, y: int32, }
+
+fn consume(p: Point) int32 { ret p.x; }
+
+fn main() void {
+    var p: Point;
+    consume(p);
+    consume(p);
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S10" && e.message.contains("use of moved value 'p'")),
+            "expected use-after-move error, got: {:?}",
+            report.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn copy_type_not_moved() {
+        let report = analyze(
+            r#"
+fn double(x: int32) int32 { ret x + x; }
+
+fn main() void {
+    var x: int32 = 5;
+    double(x);
+    double(x);
+}
+"#,
+        );
+        let borrow_errors: Vec<_> = report.errors.iter().filter(|e| e.code == "S10").collect();
+        assert!(borrow_errors.is_empty(), "int32 is Copy — should not produce S10 errors: {:?}", borrow_errors);
+    }
+
+    #[test]
+    fn reassign_clears_moved_state() {
+        let report = analyze(
+            r#"
+struct Box { val: int32, }
+
+fn consume(b: Box) int32 { ret b.val; }
+
+fn make() Box { var b: Box; ret b; }
+
+fn main() void {
+    var b: Box;
+    consume(b);
+    b = make();
+    consume(b);
+}
+"#,
+        );
+        let borrow_errors: Vec<_> = report.errors.iter().filter(|e| e.code == "S10").collect();
+        assert!(borrow_errors.is_empty(), "reassign should clear moved state: {:?}", borrow_errors);
+    }
+
+    #[test]
+    fn move_in_loop_is_error() {
+        let report = analyze(
+            r#"
+struct Obj { id: int32, }
+
+fn consume(o: Obj) void { ret; }
+
+fn main() void {
+    var o: Obj;
+    var i: int32 = 0;
+    while (i < 3) {
+        consume(o);
+        i += 1;
+    }
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S10" && e.message.contains("cannot move 'o' inside a loop")),
+            "expected move-in-loop error, got: {:?}",
+            report.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn move_in_if_branch_conservatively_blocks_later_use() {
+        let report = analyze(
+            r#"
+struct Val { n: int32, }
+
+fn consume(v: Val) void { ret; }
+
+fn main() void {
+    var v: Val;
+    var cond: bool = 1 == 1;
+    if (cond) {
+        consume(v);
+    }
+    consume(v);
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S10" && e.message.contains("use of moved value 'v'")),
+            "conservative branch merge: move in if-branch should block post-if use, got: {:?}",
+            report.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
     }
 }

@@ -258,25 +258,51 @@ impl Analyzer {
                 false
             }
             StmtKind::For { vars, iter, body } => {
-                // Type-check the iterable expression(s).
-                match iter {
+                // Type-check the iterable expression(s) and infer loop variable type.
+                let loop_var_ty = match iter {
                     ForIter::Range { start, end } => {
-                        self.type_check_expr(start, true);
-                        self.type_check_expr(end, true);
+                        let start_eval = self.type_check_expr(start, true);
+                        let end_eval = self.type_check_expr(end, true);
+                        if let Some(t) = &start_eval.ty {
+                            if !Self::is_integer(t) {
+                                self.push_error(
+                                    start.span,
+                                    "S01",
+                                    format!("for range start must be an integer type, got {}", t),
+                                );
+                            }
+                        }
+                        if let Some(t) = &end_eval.ty {
+                            if !Self::is_integer(t) {
+                                self.push_error(
+                                    end.span,
+                                    "S01",
+                                    format!("for range end must be an integer type, got {}", t),
+                                );
+                            }
+                        }
+                        // Use start type if known, else end, else default to int32.
+                        start_eval.ty.or(end_eval.ty).unwrap_or(TypeKind::Int32)
                     }
                     ForIter::Iter(expr) => {
-                        self.type_check_expr(expr, true);
+                        let iter_eval = self.type_check_expr(expr, true);
+                        // Element type from array/slice; otherwise Any.
+                        match &iter_eval.ty {
+                            Some(TypeKind::Array { elem_ty, .. }) => elem_ty.node.clone(),
+                            Some(TypeKind::Slice { elem_ty }) => elem_ty.node.clone(),
+                            _ => TypeKind::Any,
+                        }
                     }
-                }
+                };
                 // Declare loop variables into the body scope.
                 self.enter_scope();
                 for var in vars {
                     self.declare(
                         var.clone(),
-                        crate::semantic::Symbol {
-                            kind: crate::semantic::SymbolKind::Variable { mutable: false },
+                        Symbol {
+                            kind: SymbolKind::Variable { mutable: false },
                             span: stmt.span,
-                            ty: Some(TypeKind::Any),
+                            ty: Some(loop_var_ty.clone()),
                             params: vec![],
                             used: false,
                             initialized: true,
@@ -981,7 +1007,7 @@ impl Analyzer {
         }
     }
 
-    fn is_integer(t: &TypeKind) -> bool {
+    pub(super) fn is_integer(t: &TypeKind) -> bool {
         matches!(
             t,
             TypeKind::Int8
@@ -997,7 +1023,7 @@ impl Analyzer {
         )
     }
 
-    fn is_float(t: &TypeKind) -> bool {
+    pub(super) fn is_float(t: &TypeKind) -> bool {
         matches!(t, TypeKind::Float16 | TypeKind::Float32 | TypeKind::Float64)
     }
 }
