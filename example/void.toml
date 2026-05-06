@@ -1,0 +1,8 @@
+[package]
+name = "testting"
+version = "26.0.1"
+
+[build]
+entry = "src/main.void"   # optional, defaults to src/main.void
+src = "src"               # optional, defaults to src
+flags = ["-O3"]           # optional, passed to gcc when emitting binaries

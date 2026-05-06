@@ -61,18 +61,19 @@ pub enum Opcode {
     FieldStore = 0x43, // obj->field = src
     VtblLoad   = 0x44, // dst = obj->vtable_ptr
 
-    // 0x50–0x5F  Atomics, threading & syscalls
+    // 0x50–0x5F  Atomics, threading & foreign calls
     AtomicAdd = 0x50,
     AtomicCas = 0x51, // compare-and-swap
     MemFence  = 0x52,
     Spawn     = 0x53,
+    CallExt   = 0x5D, // call external symbol (FFI/API)
     Syscall   = 0x5E, // syscall — RI16: ops[0]=dst, ops[1..2]=syscall_num; flags=arg_count
 
     // 0x60–0x6F  String operations
     StrLen    = 0x60, // dst = len field of str fat pointer — RRR: ops[0]=dst, ops[1]=src
     StrConcat = 0x61, // dst = concat(src1, src2) → new heap String — RRR
-    StrToInt   = 0x62, // parse str → int64  — RR: ops[0]=dst ops[1]=src
-    StrToFloat = 0x63, // parse str → float64 — RR
+    StrToInt   = 0x62, // parse str → i64  — RR: ops[0]=dst ops[1]=src
+    StrToFloat = 0x63, // parse str → f64 — RR
     PrimToStr  = 0x64, // primitive/str → String (heap alloc) — RR
     StrAsStr   = 0x65, // String → str view — RR
 }
@@ -130,6 +131,7 @@ impl Opcode {
             0x51 => Some(Self::AtomicCas),
             0x52 => Some(Self::MemFence),
             0x53 => Some(Self::Spawn),
+            0x5D => Some(Self::CallExt),
             0x5E => Some(Self::Syscall),
             0x60 => Some(Self::StrLen),
             0x61 => Some(Self::StrConcat),

@@ -17,7 +17,10 @@ impl Analyzer {
                 attributes,
                 ..
             } => {
-                let is_syscall = attributes.iter().any(|a| a.name == "syscall");
+                self.validate_foreign_attributes(attributes);
+                let is_foreign = attributes
+                    .iter()
+                    .any(|a| a.name == "syscall" || a.name == "api");
                 self.current_function.push(name.clone());
                 self.enter_scope();
                 for p in params {
@@ -52,12 +55,12 @@ impl Analyzer {
                     self.push_error(
                         item.span,
                         "S01",
-                        format!("main() return type must be void, int32, or uint32, got {}", expected),
+                        format!("main() return type must be void, i32, or u32, got {}", expected),
                     );
                 }
 
                 let guaranteed = self.type_check_block(body, Some(&expected));
-                if !guaranteed && !is_syscall && !matches!(expected, TypeKind::Void) {
+                if !guaranteed && !is_foreign && !matches!(expected, TypeKind::Void) {
                     self.push_error(
                         item.span,
                         "S03",
@@ -79,6 +82,63 @@ impl Analyzer {
                     self.type_check_item(method);
                 }
             }
+        }
+    }
+
+    fn validate_foreign_attributes(&mut self, attributes: &[Attribute]) {
+        let mut syscall_attr: Option<&Attribute> = None;
+        let mut api_attr: Option<&Attribute> = None;
+
+        for attr in attributes {
+            match attr.name.as_str() {
+                "syscall" => syscall_attr = Some(attr),
+                "api" => api_attr = Some(attr),
+                _ => {}
+            }
+        }
+
+        if syscall_attr.is_some() && api_attr.is_some() {
+            let span = api_attr.unwrap().span;
+            self.push_error(
+                span,
+                "S06",
+                "cannot combine @syscall and @api on the same function".to_string(),
+            );
+        }
+
+        if let Some(attr) = syscall_attr {
+            self.validate_syscall_attr(attr);
+        }
+
+        if let Some(attr) = api_attr {
+            self.validate_api_attr(attr);
+        }
+    }
+
+    fn validate_syscall_attr(&mut self, attr: &Attribute) {
+        let ok = match attr.args.as_slice() {
+            [AttrArg::Positional(AttrVal::Str(_))] => true,
+            [AttrArg::Positional(AttrVal::Int(n))] => *n >= 0 && *n <= u16::MAX as i64,
+            _ => false,
+        };
+
+        if !ok {
+            self.push_error(
+                attr.span,
+                "S06",
+                "invalid @syscall attribute (use @syscall(\"name\") or @syscall(number))".to_string(),
+            );
+        }
+    }
+
+    fn validate_api_attr(&mut self, attr: &Attribute) {
+        let ok = matches!(attr.args.as_slice(), [AttrArg::Positional(AttrVal::Str(_))]);
+        if !ok {
+            self.push_error(
+                attr.span,
+                "S06",
+                "invalid @api attribute (use @api(\"FunctionName\"))".to_string(),
+            );
         }
     }
 
@@ -281,7 +341,7 @@ impl Analyzer {
                                 );
                             }
                         }
-                        // Use start type if known, else end, else default to int32.
+                        // Use start type if known, else end, else default to i32.
                         start_eval.ty.or(end_eval.ty).unwrap_or(TypeKind::Int32)
                     }
                     ForIter::Iter(expr) => {
@@ -438,7 +498,7 @@ impl Analyzer {
                 type_args: _,
                 args,
             } => {
-                let arg_tys: Vec<ExprEval> = args
+                let arg_evals: Vec<ExprEval> = args
                     .iter()
                     .map(|a| self.type_check_expr(a, reachable))
                     .collect();
@@ -457,61 +517,7 @@ impl Analyzer {
                         );
                         return ExprEval::default();
                     }
-
-                    {
-                        let from = self
-                            .current_function
-                            .last()
-                            .cloned()
-                            .unwrap_or_else(|| "__program__".to_string());
-                        self.add_dependency_edge(DependencyKind::Call, &from, name);
-                    }
-
-                    let is_variadic = sym.variadic;
-                    let non_variadic_count = if is_variadic {
-                        sym.params.len().saturating_sub(1)
-                    } else {
-                        sym.params.len()
-                    };
-                    if !is_variadic && sym.params.len() != args.len() {
-                        self.push_error(callee.span, "S08",
-                            format!("expected {} args, got {}", sym.params.len(), args.len()));
-                    } else if is_variadic && args.len() < non_variadic_count {
-                        self.push_error(callee.span, "S08",
-                            format!("expected at least {} args, got {}", non_variadic_count, args.len()));
-                    } else {
-                        // Type-check non-variadic args.
-                        for (i, (param_ty, arg_ty)) in
-                            sym.params[..non_variadic_count].iter()
-                                .zip(arg_tys.iter().map(|e| &e.ty))
-                                .enumerate()
-                        {
-                            if let Some(at) = arg_ty {
-                                if !self.types_compatible(param_ty, at) {
-                                    self.push_error(args[i].span, "S08",
-                                        format!("arg {}: expected {}, got {}", i + 1, param_ty, at));
-                                }
-                            }
-                        }
-                        // Variadic args checked against the element type.
-                        if is_variadic {
-                            if let Some(elem_ty) = sym.params.last() {
-                                for (i, arg_ty) in arg_tys[non_variadic_count..].iter().map(|e| &e.ty).enumerate() {
-                                    if let Some(at) = arg_ty {
-                                        if !self.types_compatible(elem_ty, at) {
-                                            self.push_error(args[non_variadic_count + i].span, "S08",
-                                                format!("variadic arg {}: expected {}, got {}", i + 1, elem_ty, at));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    ExprEval {
-                        ty: sym.ty,
-                        const_value: None,
-                    }
+                    self.check_function_call(name, callee.span, args, &arg_evals, &sym)
                 } else {
                     self.type_check_expr(callee, reachable);
                     ExprEval::default()
@@ -535,18 +541,41 @@ impl Analyzer {
                         }
                     }
                 }
-                self.type_check_expr(object, reachable);
-                for arg in args {
-                    self.type_check_expr(arg, reachable);
+                if self.is_module_import_receiver(object) {
+                    self.type_check_expr(object, reachable);
+                    let arg_evals: Vec<ExprEval> = args
+                        .iter()
+                        .map(|a| self.type_check_expr(a, reachable))
+                        .collect();
+                    if let Some(sym) = self.resolve_symbol(method) {
+                        if !matches!(sym.kind, SymbolKind::Function) {
+                            self.push_error(
+                                expr.span,
+                                "S04",
+                                format!("function '{}' does not exist", method),
+                            );
+                            ExprEval::default()
+                        } else {
+                            let sym = self.resolve_for_read(method).expect("symbol should resolve");
+                            self.check_function_call(method, expr.span, args, &arg_evals, &sym)
+                        }
+                    } else {
+                        ExprEval::default()
+                    }
+                } else {
+                    self.type_check_expr(object, reachable);
+                    for arg in args {
+                        self.type_check_expr(arg, reachable);
+                    }
+                    let builtin_ty = match method.as_str() {
+                        "len" => Some(TypeKind::Usize),
+                        "to_string" => Some(TypeKind::Named { name: "String".to_string(), type_args: vec![] }),
+                        "as_string" | "as_str" => Some(TypeKind::Str),
+                        "parse" => type_args.first().map(|t| t.node.clone()),
+                        _ => None,
+                    };
+                    ExprEval { ty: builtin_ty, const_value: None }
                 }
-                let builtin_ty = match method.as_str() {
-                    "len" => Some(TypeKind::Usize),
-                    "to_string" => Some(TypeKind::Named { name: "String".to_string(), type_args: vec![] }),
-                    "as_string" | "as_str" => Some(TypeKind::Str),
-                    "parse" => type_args.first().map(|t| t.node.clone()),
-                    _ => None,
-                };
-                ExprEval { ty: builtin_ty, const_value: None }
             }
             ExprKind::Field { object, name } => {
                 // For lazy import tracking: record the full chain including this field
@@ -715,6 +744,96 @@ impl Analyzer {
 
         self.annotate_expr(expr, &result, reachable);
         result
+    }
+
+    fn is_module_import_receiver(&self, object: &Expr) -> bool {
+        let Some((base, _)) = Self::extract_field_chain(object) else {
+            return false;
+        };
+        self.resolve_symbol(&base).map_or(false, |sym| sym.is_import)
+    }
+
+    fn check_function_call(
+        &mut self,
+        name: &str,
+        callee_span: Span,
+        args: &[Expr],
+        arg_evals: &[ExprEval],
+        sym: &Symbol,
+    ) -> ExprEval {
+        let from = self
+            .current_function
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "__program__".to_string());
+        self.add_dependency_edge(DependencyKind::Call, &from, name);
+
+        let is_variadic = sym.variadic;
+        let non_variadic_count = if is_variadic {
+            sym.params.len().saturating_sub(1)
+        } else {
+            sym.params.len()
+        };
+        if !is_variadic && sym.params.len() != args.len() {
+            self.push_error(
+                callee_span,
+                "S08",
+                format!("expected {} args, got {}", sym.params.len(), args.len()),
+            );
+        } else if is_variadic && args.len() < non_variadic_count {
+            self.push_error(
+                callee_span,
+                "S08",
+                format!("expected at least {} args, got {}", non_variadic_count, args.len()),
+            );
+        } else {
+            // Type-check non-variadic args.
+            for (i, (param_ty, arg_ty)) in sym.params[..non_variadic_count]
+                .iter()
+                .zip(arg_evals.iter().map(|e| &e.ty))
+                .enumerate()
+            {
+                if let Some(at) = arg_ty {
+                    if !self.types_compatible(param_ty, at) {
+                        self.push_error(
+                            args[i].span,
+                            "S08",
+                            format!("arg {}: expected {}, got {}", i + 1, param_ty, at),
+                        );
+                    }
+                }
+            }
+            // Variadic args checked against the element type.
+            if is_variadic {
+                if let Some(elem_ty) = sym.params.last() {
+                    for (i, arg_ty) in arg_evals[non_variadic_count..]
+                        .iter()
+                        .map(|e| &e.ty)
+                        .enumerate()
+                    {
+                        if let Some(at) = arg_ty {
+                            if !self.types_compatible(elem_ty, at) {
+                                self.push_error(
+                                    args[non_variadic_count + i].span,
+                                    "S08",
+                                    format!(
+                                        "variadic arg {}: expected {}, got {}",
+                                        i + 1,
+                                        elem_ty,
+                                        at
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        ExprEval {
+            ty: sym.ty.clone(),
+            const_value: None,
+        }
     }
 
     pub(super) fn infer_binary_type(

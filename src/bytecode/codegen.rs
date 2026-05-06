@@ -2,7 +2,7 @@
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::parser::ast::*;
 use crate::semantic::{ConstValue, DependencyKind, SemanticReport};
@@ -15,6 +15,7 @@ pub struct Codegen<'a> {
     report: &'a SemanticReport,
     fn_index: HashMap<String, u16>,
     const_map: HashMap<(usize, usize), ConstValue>,
+    import_names: HashSet<String>,
 }
 
 impl<'a> Codegen<'a> {
@@ -25,7 +26,13 @@ impl<'a> Codegen<'a> {
                 const_map.insert((ann.span.start, ann.span.end), cv.clone());
             }
         }
-        Self { report, fn_index: HashMap::new(), const_map }
+        let mut import_names = HashSet::new();
+        for entry in &report.symbol_table.entries {
+            if entry.symbol.is_import {
+                import_names.insert(entry.name.clone());
+            }
+        }
+        Self { report, fn_index: HashMap::new(), const_map, import_names }
     }
 
     pub fn compile_program(&mut self, program: &Program) -> Vec<Chunk> {
@@ -179,7 +186,18 @@ impl<'a> Codegen<'a> {
             return self.compile_syscall_fn(name, params, attr);
         }
 
-        let mut fc = FnCompiler::new(name, params.len(), &self.fn_index, &self.const_map);
+        // @api: emit a single CallExt instruction instead of the function body.
+        if let Some(attr) = attributes.iter().find(|a| a.name == "api") {
+            return self.compile_api_fn(name, params, attr);
+        }
+
+        let mut fc = FnCompiler::new(
+            name,
+            params.len(),
+            &self.fn_index,
+            &self.const_map,
+            &self.import_names,
+        );
         for p in params {
             fc.bind(p.name.clone());
         }
@@ -209,6 +227,25 @@ impl<'a> Codegen<'a> {
         chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
         chunk
     }
+
+    fn compile_api_fn(
+        &self,
+        name: &str,
+        params: &[crate::parser::ast::Param],
+        attr: &crate::parser::ast::Attribute,
+    ) -> Chunk {
+        let mut chunk = Chunk::with_params(name, params.len());
+        let symbol = api_symbol(attr);
+        let sym_idx = chunk.add_constant(ConstPoolEntry::Str(symbol));
+        // Params are in r0..r(n-1) by calling convention.
+        // Emit CallExt: dst=r0, sym_idx, flags=arg_count.
+        let arg_count = params.len() as u8;
+        let mut instr = ri16(Opcode::CallExt, 0, sym_idx);
+        instr.flags = arg_count;
+        chunk.emit(instr);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+        chunk
+    }
 }
 
 // ── Per-function compiler ─────────────────────────────────────────────────────
@@ -219,6 +256,7 @@ struct FnCompiler<'a> {
     next_reg: u8,
     fn_index: &'a HashMap<String, u16>,
     const_map: &'a HashMap<(usize, usize), ConstValue>,
+    import_names: &'a HashSet<String>,
 }
 
 impl<'a> FnCompiler<'a> {
@@ -227,6 +265,7 @@ impl<'a> FnCompiler<'a> {
         param_count: usize,
         fn_index: &'a HashMap<String, u16>,
         const_map: &'a HashMap<(usize, usize), ConstValue>,
+        import_names: &'a HashSet<String>,
     ) -> Self {
         Self {
             chunk: Chunk::with_params(name, param_count),
@@ -234,6 +273,7 @@ impl<'a> FnCompiler<'a> {
             next_reg: 0,
             fn_index,
             const_map,
+            import_names,
         }
     }
 
@@ -411,6 +451,26 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    fn emit_call_by_name(&mut self, name: &str, arg_regs: &[u8], dst: u8) {
+        if let Some(&idx) = self.fn_index.get(name) {
+            for &r in arg_regs {
+                self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
+            }
+            // ops[0] = dst reg for return value; ops[1..2] = fn index
+            self.chunk.emit(ri16(Opcode::CallIdx, dst, idx));
+        }
+    }
+
+    fn is_module_import_receiver(&self, object: &Expr) -> bool {
+        let Some((base, _)) = extract_field_chain(object) else {
+            return false;
+        };
+        if self.regs.contains_key(&base) {
+            return false;
+        }
+        self.import_names.contains(&base)
+    }
+
     // ── Expression ───────────────────────────────────────────────────────────
 
     fn compile_expr(&mut self, expr: &Expr) -> u8 {
@@ -543,18 +603,18 @@ impl<'a> FnCompiler<'a> {
                 let arg_regs: Vec<u8> = args.iter().map(|a| self.compile_expr(a)).collect();
                 let dst = self.alloc_reg();
                 if let ExprKind::Ident(name) = &callee.node {
-                    if let Some(&idx) = self.fn_index.get(name.as_str()) {
-                        for &r in &arg_regs {
-                            self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
-                        }
-                        // ops[0] = dst reg for return value; ops[1..2] = fn index
-                        self.chunk.emit(ri16(Opcode::CallIdx, dst, idx));
-                    }
+                    self.emit_call_by_name(name, &arg_regs, dst);
                 }
                 dst
             }
 
             ExprKind::MethodCall { object, method, type_args, args } => {
+                if self.is_module_import_receiver(object) {
+                    let arg_regs: Vec<u8> = args.iter().map(|a| self.compile_expr(a)).collect();
+                    let dst = self.alloc_reg();
+                    self.emit_call_by_name(method, &arg_regs, dst);
+                    return dst;
+                }
                 let obj = self.compile_expr(object);
                 // str.len() — known built-in, emit StrLen directly.
                 if method == "len" && args.is_empty() {
@@ -741,7 +801,7 @@ fn remap_instr_regs(instr: &mut crate::bytecode::instruction::Instruction, remap
         | Opcode::Ja | Opcode::Jb => {}
 
         // RI16 — ops[0]=dst only
-        Opcode::MovI | Opcode::MovConst | Opcode::CallIdx | Opcode::Syscall
+        Opcode::MovI | Opcode::MovConst | Opcode::CallIdx | Opcode::CallExt | Opcode::Syscall
         | Opcode::New | Opcode::NewObj => {
             instr.ops[0] = remap(instr.ops[0]);
         }
@@ -771,7 +831,25 @@ fn remap_instr_regs(instr: &mut crate::bytecode::instruction::Instruction, remap
     }
 }
 
+fn extract_field_chain(expr: &Expr) -> Option<(String, Vec<String>)> {
+    match &expr.node {
+        ExprKind::Ident(name) => Some((name.clone(), vec![])),
+        ExprKind::Field { object, name } => {
+            let (base, mut path) = extract_field_chain(object)?;
+            path.push(name.clone());
+            Some((base, path))
+        }
+        _ => None,
+    }
+}
+
 fn syscall_number(attr: &crate::parser::ast::Attribute) -> u16 {
+    if let Some(crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Int(n))) = attr.args.first() {
+        if *n >= 0 && *n <= u16::MAX as i64 {
+            return *n as u16;
+        }
+    }
+
     let name = attr.args.first().and_then(|a| match a {
         crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => Some(s.as_str()),
         _ => None,
@@ -789,6 +867,13 @@ fn syscall_number(attr: &crate::parser::ast::Attribute) -> u16 {
         "exit_group"  => 231,
         _             => 0,
     }
+}
+
+fn api_symbol(attr: &crate::parser::ast::Attribute) -> String {
+    attr.args.first().and_then(|a| match a {
+        crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => Some(s.clone()),
+        _ => None,
+    }).unwrap_or_default()
 }
 
 fn is_comparison(op: &BinOpKind) -> bool {
@@ -848,7 +933,7 @@ mod tests {
 
     #[test]
     fn simple_add_function_emits_add_and_ret() {
-        let chunks = compile("fn add(a: int32, b: int32) int32 { ret a + b; }");
+        let chunks = compile("fn add(a: i32, b: i32) i32 { ret a + b; }");
         assert_eq!(chunks.len(), 1);
         let chunk = &chunks[0];
         assert_eq!(chunk.name, "add");
@@ -863,7 +948,7 @@ mod tests {
     fn const_fold_reduces_instruction_count() {
         // Without folding: MovI, MovI, Add, Mov, Ret = 5
         // With folding:    MovI(3), Mov, Ret = 3
-        let chunks = compile("fn foo() int32 { const x: int32 = 1 + 2; ret x; }");
+        let chunks = compile("fn foo() i32 { const x: i32 = 1 + 2; ret x; }");
         assert_eq!(chunks.len(), 1);
         let count = chunks[0].code.len();
         assert!(
@@ -881,7 +966,7 @@ mod tests {
     #[test]
     fn while_loop_jump_points_back_to_condition() {
         let chunks = compile(
-            r#"fn countdown(x: int32) void {
+            r#"fn countdown(x: i32) void {
                 while (x > 0) { x = x + 1; }
             }"#,
         );
@@ -902,7 +987,7 @@ mod tests {
     #[test]
     fn if_else_jump_targets_are_patched() {
         let chunks = compile(
-            r#"fn sign(x: int32) int32 {
+            r#"fn sign(x: i32) i32 {
                 if (x > 0) { ret 1; } else { ret 0; }
             }"#,
         );
@@ -934,7 +1019,7 @@ mod tests {
     fn function_call_emits_call_idx() {
         // Use a function with more than 2 statements so it won't be inlined.
         let chunks = compile(
-            r#"fn helper(x: int32) int32 { const a: int32 = 1; const b: int32 = 2; ret x; }
+            r#"fn helper(x: i32) i32 { const a: i32 = 1; const b: i32 = 2; ret x; }
                fn main() void { helper(1); }"#,
         );
         let main_chunk = chunks.iter().find(|c| c.name == "main").expect("no main chunk");
@@ -948,7 +1033,7 @@ mod tests {
     fn ret_always_last_in_every_chunk() {
         let chunks = compile(
             r#"fn a() void {}
-               fn b(x: int32) int32 { ret x; }"#,
+               fn b(x: i32) i32 { ret x; }"#,
         );
         for chunk in &chunks {
             assert_eq!(
@@ -963,7 +1048,7 @@ mod tests {
     #[test]
     fn compound_assign_emits_arithmetic_op_in_place() {
         let chunks = compile(
-            r#"fn inc(x: int32) int32 {
+            r#"fn inc(x: i32) i32 {
                 x += 1;
                 ret x;
             }"#,
@@ -977,7 +1062,7 @@ mod tests {
     #[test]
     fn inc_dec_emits_inc_dec_opcode() {
         let chunks = compile(
-            r#"fn bump(x: int32) int32 {
+            r#"fn bump(x: i32) i32 {
                 x++;
                 ret x;
             }"#,
@@ -990,7 +1075,7 @@ mod tests {
 
     #[test]
     fn large_int_goes_to_constant_pool() {
-        let chunks = compile("fn big() int32 { ret 100000; }");
+        let chunks = compile("fn big() i32 { ret 100000; }");
         assert!(!chunks[0].constants.is_empty(), "100000 should be in constant pool");
         assert!(
             chunks[0].code.iter().any(|i| i.opcode == Opcode::MovConst as u8),
@@ -1009,7 +1094,7 @@ mod tests {
 
     #[test]
     fn to_bytes_produces_six_bytes_per_instruction() {
-        let chunks = compile("fn f(a: int32, b: int32) int32 { ret a + b; }");
+        let chunks = compile("fn f(a: i32, b: i32) i32 { ret a + b; }");
         let bytes = chunks[0].to_bytes();
         assert_eq!(bytes.len(), chunks[0].code.len() * 6);
     }
@@ -1017,7 +1102,7 @@ mod tests {
     #[test]
     fn negative_const_value_goes_to_constant_pool() {
         // const-folded 0 - 1 produces ConstValue::Int(-1) which must use MovConst not MovI
-        let chunks = compile("fn neg() int32 { const x: int32 = 0 - 1; ret x; }");
+        let chunks = compile("fn neg() i32 { const x: i32 = 0 - 1; ret x; }");
         assert!(
             chunks[0].code.iter().any(|i| i.opcode == Opcode::MovConst as u8),
             "negative constant should be in constant pool"
@@ -1026,13 +1111,42 @@ mod tests {
 
     #[test]
     fn syscall_attribute_emits_syscall_opcode() {
-        let chunks = compile(r#"@syscall("write") fn write(fd: int32, buf: str, len: usize) isize { }"#);
+        let chunks = compile(r#"@syscall("write") fn write(fd: i32, buf: str, len: usize) isize { }"#);
         assert_eq!(chunks[0].name, "write");
         assert!(
             chunks[0].code.iter().any(|i| i.opcode == Opcode::Syscall as u8),
             "expected Syscall instruction for @syscall fn"
         );
         assert_eq!(chunks[0].code.last().unwrap().opcode, Opcode::Ret as u8);
+    }
+
+    #[test]
+    fn syscall_attribute_accepts_numeric_id() {
+        let chunks = compile(r#"@syscall(60) fn exit(code: i32) isize { }"#);
+        let instr = chunks[0]
+            .code
+            .iter()
+            .find(|i| i.opcode == Opcode::Syscall as u8)
+            .expect("expected Syscall instruction");
+        let (_, num) = instr.ri16();
+        assert_eq!(num, 60);
+        assert_eq!(instr.flags, 1);
+    }
+
+    #[test]
+    fn api_attribute_emits_call_ext_opcode() {
+        let chunks = compile(
+            r#"@api("WriteFile") fn win_write(h: usize, buf: str, len: usize, out: usize, ovl: usize) usize { }"#,
+        );
+        let chunk = &chunks[0];
+        assert!(
+            chunk.code.iter().any(|i| i.opcode == Opcode::CallExt as u8),
+            "expected CallExt instruction for @api fn"
+        );
+        assert!(
+            chunk.constants.iter().any(|c| matches!(c, ConstPoolEntry::Str(s) if s == "WriteFile")),
+            "expected WriteFile in constant pool"
+        );
     }
 
     #[test]
@@ -1068,7 +1182,7 @@ mod tests {
         // dead_fn is called only by zombie_fn; zombie_fn is never called by main.
         // Tree-shaking should exclude both from the output chunks.
         let chunks = compile(
-            r#"fn dead_fn(x: int32) int32 { const a: int32 = 1; const b: int32 = 2; ret x; }
+            r#"fn dead_fn(x: i32) i32 { const a: i32 = 1; const b: i32 = 2; ret x; }
                fn zombie_fn() void { dead_fn(1); }
                fn main() void { ret; }"#,
         );
@@ -1081,7 +1195,7 @@ mod tests {
     fn const_true_if_skips_else_branch() {
         // `1 == 1` const-folds to Bool(true) — else branch must not be compiled.
         let chunks = compile(
-            r#"fn f() int32 {
+            r#"fn f() i32 {
                 if (1 == 1) { ret 1; } else { ret 2; }
             }"#,
         );
@@ -1105,7 +1219,7 @@ mod tests {
     fn const_false_if_skips_then_branch() {
         // `0 == 1` const-folds to Bool(false) — then branch must not be compiled.
         let chunks = compile(
-            r#"fn f() int32 {
+            r#"fn f() i32 {
                 if (0 == 1) { ret 99; } else { ret 7; }
             }"#,
         );
@@ -1122,7 +1236,7 @@ mod tests {
         // `0 == 1` const-folds to Bool(false) — while body must be skipped entirely.
         let chunks = compile(
             r#"fn f() void {
-                while (0 == 1) { var x: int32 = 1; }
+                while (0 == 1) { var x: i32 = 1; }
             }"#,
         );
         let code = &chunks[0].code;
