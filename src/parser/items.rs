@@ -18,6 +18,11 @@ impl Parser {
         let mut params: Vec<Param> = Vec::new();
         if !self.at(TokenKind::RParen) {
             loop {
+                let param_attributes = if self.at(TokenKind::At) {
+                    self.parse_attributes()?
+                } else {
+                    Vec::new()
+                };
                 let variadic = if self.at(TokenKind::DotDotDot) {
                     self.advance();
                     true
@@ -31,7 +36,7 @@ impl Parser {
                 if variadic && !is_last {
                     return Err(self.err_here("variadic parameter must be the last parameter".to_string()));
                 }
-                params.push(Param { name: param_name, ty: param_ty, variadic });
+                params.push(Param { name: param_name, ty: param_ty, variadic, attributes: param_attributes });
                 if self.at(TokenKind::Comma) {
                     self.advance();
                     continue;

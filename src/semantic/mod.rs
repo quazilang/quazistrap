@@ -78,6 +78,10 @@ pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
     ty.node.clone()
 }
 
+pub(super) fn extract_attribute_names(attributes: &[Attribute]) -> Vec<String> {
+    attributes.iter().map(|a| a.name.clone()).collect()
+}
+
 impl Analyzer {
     pub fn new() -> Self {
         Self {
@@ -245,6 +249,7 @@ impl Analyzer {
                 import_path: None,
                 const_value: None,
                 variadic: false,
+                attributes: Vec::new(),
             });
         }
 
@@ -260,6 +265,7 @@ impl Analyzer {
                 import_path: None,
                 const_value: None,
                 variadic: false,
+                attributes: Vec::new(),
             });
         }
 
@@ -274,6 +280,7 @@ impl Analyzer {
             import_path: None,
             const_value: None,
             variadic: false,
+            attributes: Vec::new(),
         });
     }
 
@@ -462,7 +469,11 @@ impl Analyzer {
     }
 
     pub(super) fn push_warning(&mut self, span: Span, code: &'static str, message: String) {
-        self.warnings.push(SemanticWarning { code, message, span });
+        self.warnings.push(SemanticWarning { code, message, span, suggestions: Vec::new() });
+    }
+
+    pub(super) fn push_warning_with_suggestion(&mut self, span: Span, code: &'static str, message: String, suggestion: String) {
+        self.warnings.push(SemanticWarning { code, message, span, suggestions: vec![suggestion] });
     }
 
     pub(super) fn push_suggestion(&mut self, span: Option<Span>, message: String) {

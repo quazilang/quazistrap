@@ -6,6 +6,28 @@ use crate::parser::ast::*;
 
 use super::*;
 
+fn should_ignore_warning(attributes: &[String], warning_code: &str) -> bool {
+    for attr in attributes {
+        if attr == "ignore" {
+            return true;
+        }
+        // Check for specific ignore categories
+        if warning_code == "W01" || warning_code == "W02" {
+            // unused variable/parameter warnings
+            if attr == "ignore" || attr.contains("unused_vars") {
+                return true;
+            }
+        }
+        if warning_code == "W03" || warning_code == "W07" {
+            // unused function / dead function warnings
+            if attr == "ignore" || attr.contains("dead_code") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 impl Analyzer {
     pub(super) fn run_unused_pass(&mut self) {
         let local_scopes = self.finished_scopes.clone();
@@ -42,13 +64,10 @@ impl Analyzer {
                         .clone()
                         .unwrap_or_else(|| name.clone());
                     self.unused_import_paths.insert(full.clone());
-                    self.push_warning(
+                    self.push_warning_with_suggestion(
                         symbol.span,
                         "W03",
                         format!("unused import '{}' (path '{}')", name, full),
-                    );
-                    self.push_suggestion(
-                        Some(symbol.span),
                         format!("remove import '{}' if it is not needed", full),
                     );
                 }
@@ -57,25 +76,32 @@ impl Analyzer {
 
             match symbol.kind {
                 SymbolKind::Parameter => {
-                    self.push_warning(symbol.span, "W02", format!("unused parameter '{}'", name));
-                    self.push_suggestion(
-                        Some(symbol.span),
-                        format!("remove or use parameter '{}'", name),
-                    );
+                    if !should_ignore_warning(&symbol.attributes, "W02") {
+                        self.push_warning_with_suggestion(
+                            symbol.span,
+                            "W02",
+                            format!("unused parameter '{}'", name),
+                            format!("remove or use parameter '{}'", name),
+                        );
+                    }
                 }
                 SymbolKind::Variable { mutable } => {
-                    let label = if mutable { "variable" } else { "const" };
-                    self.push_warning(symbol.span, "W01", format!("unused {} '{}'", label, name));
-                    self.push_suggestion(
-                        Some(symbol.span),
-                        format!("remove or use {} '{}'", label, name),
-                    );
+                    if !should_ignore_warning(&symbol.attributes, "W01") {
+                        let label = if mutable { "variable" } else { "const" };
+                        self.push_warning_with_suggestion(
+                            symbol.span,
+                            "W01",
+                            format!("unused {} '{}'", label, name),
+                            format!("remove or use {} '{}'", label, name),
+                        );
+                    }
                 }
                 SymbolKind::Function => {
-                    if include_functions && name != "main" {
-                        self.push_warning(symbol.span, "W03", format!("unused function '{}'", name));
-                        self.push_suggestion(
-                            Some(symbol.span),
+                    if include_functions && name != "main" && !should_ignore_warning(&symbol.attributes, "W03") {
+                        self.push_warning_with_suggestion(
+                            symbol.span,
+                            "W03",
+                            format!("unused function '{}'", name),
                             format!("remove function '{}' or call it", name),
                         );
                     }
@@ -109,9 +135,10 @@ impl Analyzer {
 
         for stmt in &block.stmts {
             if !reachable {
-                self.push_warning(stmt.span, "W04", "unreachable code".to_string());
-                self.push_suggestion(
-                    Some(stmt.span),
+                self.push_warning_with_suggestion(
+                    stmt.span,
+                    "W04",
+                    "unreachable code".to_string(),
                     "remove or move the unreachable statement".to_string(),
                 );
                 continue;

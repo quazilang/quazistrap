@@ -30,6 +30,12 @@ impl Analyzer {
                     } else {
                         ty
                     };
+                    // Merge function attributes with parameter attributes
+                    let mut param_attrs = extract_attribute_names(&p.attributes);
+                    // If function has @syscall or @api, add @ignore to suppress unused warnings
+                    if is_foreign {
+                        param_attrs.push("ignore".to_string());
+                    }
                     self.declare(
                         p.name.clone(),
                         Symbol {
@@ -43,6 +49,7 @@ impl Analyzer {
                             import_path: None,
                             const_value: None,
                             variadic: false,
+                            attributes: param_attrs,
                         },
                     );
                 }
@@ -166,7 +173,7 @@ impl Analyzer {
     pub(super) fn type_check_stmt(&mut self, stmt: &Stmt, expected_return: Option<&TypeKind>) -> bool {
         match &stmt.node {
             StmtKind::Var {
-                name, value, ty, ..
+                name, value, ty, attributes, ..
             } => {
                 let value_eval = value
                     .as_ref()
@@ -207,12 +214,13 @@ impl Analyzer {
                         import_path: None,
                         const_value: None,
                         variadic: false,
+                        attributes: extract_attribute_names(attributes),
                     },
                 );
                 false
             }
             StmtKind::Const {
-                name, value, ty, ..
+                name, value, ty, attributes, ..
             } => {
                 let value_eval = self.type_check_expr(value, true);
                 let declared_ty = ty.as_ref().map(|t| t.node.clone());
@@ -240,6 +248,7 @@ impl Analyzer {
                         import_path: None,
                         const_value: value_eval.const_value,
                         variadic: false,
+                        attributes: extract_attribute_names(attributes),
                     },
                 );
                 false
@@ -370,6 +379,7 @@ impl Analyzer {
                             import_path: None,
                             const_value: None,
                             variadic: false,
+                            attributes: Vec::new(),
                         },
                     );
                 }
@@ -627,6 +637,7 @@ impl Analyzer {
                                 import_path: None,
                                 const_value: None,
                                 variadic: false,
+                                attributes: Vec::new(),
                             },
                         );
                     }
