@@ -2,7 +2,7 @@
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::parser::ast::*;
 
@@ -208,13 +208,13 @@ impl Analyzer {
     pub(super) fn run_inline_candidate_pass(&mut self, program: &Program) {
         for item in &program.items {
             match &item.node {
-                ItemKind::Fn { name, body, .. } => {
-                    self.maybe_add_inline_candidate(name, body, item.span);
+                ItemKind::Fn { name, body, attributes, .. } => {
+                    self.maybe_add_inline_candidate(name, body, attributes, item.span);
                 }
                 ItemKind::Impl { methods, .. } => {
                     for method in methods {
-                        if let ItemKind::Fn { name, body, .. } = &method.node {
-                            self.maybe_add_inline_candidate(name, body, method.span);
+                        if let ItemKind::Fn { name, body, attributes, .. } = &method.node {
+                            self.maybe_add_inline_candidate(name, body, attributes, method.span);
                         }
                     }
                 }
@@ -223,27 +223,49 @@ impl Analyzer {
         }
     }
 
-    pub(super) fn maybe_add_inline_candidate(&mut self, name: &str, body: &Block, span: Span) {
+    pub(super) fn maybe_add_inline_candidate(
+        &mut self,
+        name: &str,
+        body: &Block,
+        attributes: &[Attribute],
+        span: Span,
+    ) {
         if name == "main" {
             return;
         }
 
-        if body.stmts.len() > 2 {
+        if attributes.iter().any(|a| matches!(a.name.as_str(), "syscall" | "api")) {
             return;
         }
 
-        if body
-            .stmts
-            .iter()
-            .any(|stmt| matches!(stmt.node, StmtKind::If { .. } | StmtKind::While { .. }))
-        {
+        let inline_hint = attributes.iter().any(|a| a.name == "inline");
+        if self.is_recursive(name) {
             return;
         }
+
+        let is_small = self.is_small_inline_body(body);
+        let (is_hot, call_count, called_from_main) = self.is_hot_call_target(name);
+
+        if !inline_hint && (!is_small || !is_hot) {
+            return;
+        }
+        let reason = if inline_hint {
+            "inline attribute".to_string()
+        } else {
+            let mut parts = Vec::new();
+            parts.push("small body".to_string());
+            if called_from_main {
+                parts.push("direct main call".to_string());
+            } else {
+                parts.push(format!("hot call ({} call{})", call_count, if call_count == 1 { "" } else { "s" }));
+            }
+            parts.join(", ")
+        };
 
         let candidate = InlineCandidate {
             name: name.to_string(),
             span,
-            reason: "small function body".to_string(),
+            reason,
         };
         self.inline_candidates.push(candidate.clone());
         self.push_suggestion(
@@ -253,6 +275,51 @@ impl Analyzer {
                 candidate.name, candidate.reason
             ),
         );
+    }
+
+    fn is_small_inline_body(&self, body: &Block) -> bool {
+        if body.stmts.len() > 2 {
+            return false;
+        }
+
+        !body.stmts.iter().any(|stmt| matches!(
+            stmt.node,
+            StmtKind::If { .. }
+                | StmtKind::While { .. }
+                | StmtKind::For { .. }
+                | StmtKind::CfgBlock { .. }
+        ))
+    }
+
+    fn is_recursive(&self, name: &str) -> bool {
+        let mut stack = vec![name.to_string()];
+        let mut visited: HashSet<String> = HashSet::new();
+
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            for (kind, from, to) in &self.dependency_edges {
+                if *kind != DependencyKind::Call || from != &current {
+                    continue;
+                }
+                if to == name {
+                    return true;
+                }
+                stack.push(to.clone());
+            }
+        }
+
+        false
+    }
+
+    fn is_hot_call_target(&self, name: &str) -> (bool, usize, bool) {
+        let call_count = self.call_counts.get(name).copied().unwrap_or(0);
+        let called_from_main = self.dependency_edges.iter().any(|(kind, from, to)| {
+            *kind == DependencyKind::Call && from == "main" && to == name
+        });
+        let hot = call_count >= 2 || called_from_main;
+        (hot, call_count, called_from_main)
     }
 
     pub(super) fn run_import_optimization_pass(&mut self) {

@@ -17,8 +17,9 @@ use cli::Args;
 use lexer::Lexer;
 use parser::Parser;
 use semantic::Analyzer;
+use std::collections::HashSet;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use loader::LoadResult;
 
 use cli::Command as CliCmd;
@@ -160,6 +161,121 @@ fn load_project_context() -> ProjectContext {
     })
 }
 
+fn write_file(path: &Path, contents: &str) {
+    std::fs::write(path, contents).unwrap_or_else(|e| {
+        eprintln!("\x1b[31;1merror:\x1b[0m cannot write {}: {}", path.display(), e);
+        std::process::exit(1);
+    });
+}
+
+fn create_new_project(name: &str) {
+    let root = PathBuf::from(name);
+    if root.exists() {
+        eprintln!("\x1b[31;1merror:\x1b[0m path already exists: {}", root.display());
+        std::process::exit(1);
+    }
+
+    let pkg_name = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(name);
+
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap_or_else(|e| {
+        eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {}", src_dir.display(), e);
+        std::process::exit(1);
+    });
+
+    let toml = format!(
+        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[build]\nentry = \"src/main.void\"\nsrc = \"src\"\n",
+        pkg_name
+    );
+    write_file(&root.join("void.toml"), &toml);
+
+    let main_src = "fn main() void {\n    ret;\n}\n";
+    write_file(&src_dir.join("main.void"), main_src);
+
+    println!("created project '{}'", root.display());
+}
+
+fn collect_void_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot read dir entry: {}", e))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_void_files(&path, out)?;
+        } else if path.extension().and_then(|s| s.to_str()) == Some("void") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn format_void_source(input: &str) -> String {
+    let lines: Vec<String> = input.lines().map(|line| line.trim_end().to_string()).collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+fn format_project_sources() {
+    let ctx = load_project_context();
+    let mut files = Vec::new();
+    collect_void_files(&ctx.config.src_dir, &mut files).unwrap_or_else(|e| {
+        eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+        std::process::exit(1);
+    });
+
+    let mut changed = 0usize;
+    for path in files {
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot read {}: {}", path.display(), e);
+            std::process::exit(1);
+        });
+        let formatted = format_void_source(&src);
+        if formatted != src {
+            write_file(&path, &formatted);
+            changed += 1;
+        }
+    }
+
+    println!("formatted {} file{}", changed, if changed == 1 { "" } else { "s" });
+}
+
+fn clean_project_artifacts() {
+    let ctx = load_project_context();
+    let root = &ctx.config.root;
+    let bin_name = project_output_name(&ctx.config.name, EmitType::Binary);
+
+    let mut targets: HashSet<PathBuf> = HashSet::new();
+    targets.insert(root.join(&bin_name));
+    targets.insert(root.join(format!("{}.s", bin_name)));
+    targets.insert(root.join(format!("{}.s", ctx.config.name)));
+    targets.insert(root.join(format!("{}.vbc", ctx.config.name)));
+
+    let mut removed = 0usize;
+    for path in targets {
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m cannot remove {}: {}", path.display(), e);
+                std::process::exit(1);
+            });
+            removed += 1;
+        }
+    }
+
+    if removed == 0 {
+        println!("no build artifacts found");
+    } else {
+        println!("removed {} artifact{}", removed, if removed == 1 { "" } else { "s" });
+    }
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -282,6 +398,15 @@ fn main() {
                     std::process::exit(1);
                 });
             run_check(&result.merged_source, &result.program);
+        }
+        CliCmd::New { name } => {
+            create_new_project(&name);
+        }
+        CliCmd::Fmt => {
+            format_project_sources();
+        }
+        CliCmd::Clean => {
+            clean_project_artifacts();
         }
         CliCmd::Debug {
             emit_asm,

@@ -9,5 +9,6 @@ Cargo.lock
 .idea/
 *.void
 *.vbc
-.forgejo/
-.claude/
+*.s
+.forgejo/*
+.claude/*

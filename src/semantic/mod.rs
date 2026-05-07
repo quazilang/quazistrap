@@ -65,6 +65,7 @@ pub struct Analyzer {
     pub(super) non_exhaustive_matches: Vec<MatchExhaustivenessIssue>,
     pub(super) exhaustiveness_checks: usize,
     pub(super) dependency_edges: BTreeSet<(DependencyKind, String, String)>,
+    pub(super) call_counts: HashMap<String, usize>,
     pub(super) current_function: Vec<String>,
     pub(super) math_optimizations: Vec<MathOptimization>,
     pub(super) lazy_import_accesses: HashMap<String, BTreeSet<String>>,
@@ -95,6 +96,7 @@ impl Analyzer {
             non_exhaustive_matches: Vec::new(),
             exhaustiveness_checks: 0,
             dependency_edges: BTreeSet::new(),
+            call_counts: HashMap::new(),
             current_function: Vec::new(),
             math_optimizations: Vec::new(),
             lazy_import_accesses: HashMap::new(),
@@ -204,6 +206,7 @@ impl Analyzer {
         self.non_exhaustive_matches.clear();
         self.exhaustiveness_checks = 0;
         self.dependency_edges.clear();
+        self.call_counts.clear();
         self.current_function.clear();
         self.math_optimizations.clear();
         self.lazy_import_accesses.clear();
@@ -768,11 +771,29 @@ fn helper(a: i32) i32 {
 
 fn main() void {
     helper(1);
+        helper(2);
 }
 "#,
         );
 
         assert!(report.inline_candidates.iter().any(|c| c.name == "helper"));
+    }
+
+    #[test]
+    fn skips_inline_candidates_for_recursive_function() {
+        let report = analyze(
+            r#"
+fn recurse(x: i32) i32 {
+    ret recurse(x);
+}
+
+fn main() void {
+    recurse(1);
+}
+"#,
+        );
+
+        assert!(!report.inline_candidates.iter().any(|c| c.name == "recurse"));
     }
 
     #[test]

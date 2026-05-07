@@ -24,7 +24,9 @@ void build [-b|-s] [-o out]         # build project from void.toml
 void run                            # build + run project from void.toml
 void check                          # analyze project without emitting
 void debug [-b|-s]                  # compile hardcoded demo source
-void new | fmt | clean              # unimplemented
+void new <name>                     # create a new project
+void fmt                            # trim trailing whitespace in .void files
+void clean                          # remove build artifacts
 ```
 
 Default output names: `<stem>.vbc` (bytecode), `<stem>.s` (assembly), `<stem>` / `<stem>.exe` (binary).
@@ -75,7 +77,7 @@ Split across files. `Analyzer` runs five sequential passes over the `Program` AS
 2. **Type-check** (`typecheck.rs`) — scope tracking, type inference, type compatibility, initialization checks, expression annotations.
 3. **Unused** (`unused.rs`) — warn on unused variables, parameters, functions, imports.
 4. **Dead code** (`unused.rs`) — reachability analysis, warn on statements after guaranteed returns.
-5. **Optimization** (`optimize.rs`) — inline candidates (≤2-statement non-branching functions), match exhaustiveness, removable imports, **constant folding** (both-sides-known → `ConstValue`), **math identity/absorber reduction** (`x*0=0`, `x+0=x`, `x&&false=false`, etc. — result stored in `ExprAnnotation.const_value` in annotated tree), **lazy import hints** (field-chain tracking: `import std;` + `std.io.stdout.println(...)` → suggests `import std.io.stdout;`).
+5. **Optimization** (`optimize.rs`) — inline candidates (small non-branching bodies, non-recursive, hot-path calls or `@inline`), match exhaustiveness, removable imports, **constant folding** (both-sides-known → `ConstValue`), **math identity/absorber reduction** (`x*0=0`, `x+0=x`, `x&&false=false`, etc. — result stored in `ExprAnnotation.const_value` in annotated tree), **lazy import hints** (field-chain tracking: `import std;` + `std.io.stdout.println(...)` → suggests `import std.io.stdout;`).
 
 `types_compatible` treats `Any` as compatible with everything and `Named` types as compatible with everything (generics are not yet resolved).
 
@@ -136,7 +138,7 @@ per chunk:
 
 - **Pass 1**: assign each `fn` item a function-table index (order of appearance).
 - **Pass 2**: compile each function body via `FnCompiler` (virtual register allocator).
-- **Post-pass**: inline expansion — replaces `CallArg* + CallIdx` sequences for functions in `inline_candidates` with a register-remapped copy of the callee body (Ret stripped, args copied to callee param regs via base offset).
+- **Post-pass**: inline expansion — replaces `CallArg* + CallIdx` sequences for functions in `inline_candidates` with a register-remapped copy of the callee body (Ret stripped, args copied to callee param regs via base offset). Vtable calls (`CallReg`) are not inlined.
 - `@syscall` functions: emit single `Syscall` (num from Linux x86-64 table or raw number) + `Ret`, skip body.
 - `@api` functions: emit single `CallExt` (symbol from attribute string in the constant pool) + `Ret`, flags store arg count.
 - Const-fold: expressions with a `ConstValue` in `const_map` (from semantic) emit `MovI`/`MovConst` directly.
@@ -245,8 +247,21 @@ fn linux_only() void { ... }
 | `@syscall("name")` / `@syscall(number)` | `fn` | Body replaced by single `Syscall` instruction. Name is mapped via Linux x86-64 table or the number is used directly. Skips guaranteed-return check. |
 | `@api("FunctionName")` | `fn` | Body replaced by single `CallExt` instruction that calls an external symbol. Win64 ABI on Windows, SysV ABI on other targets. Skips guaranteed-return check. |
 | `@cfg(key = "value")` | `fn`, `struct`, `enum`, `trait`, block | Conditional compilation. Currently compiled unconditionally; cfg evaluation deferred to AOT backend. |
-| `@inline` | `fn` | Hint for inlining (connects to semantic inline-candidate pass). |
+| `@inline` | `fn` | Forces inlining eligibility even when the call count is low (still excluded if recursive). |
 
 **Parsing:** `parse_attributes()` in `parser/mod.rs` consumes zero or more `@ident(args)` before items or statements. Item parsers (`parse_fn`, `parse_struct`, etc.) take `Vec<Attribute>` as a parameter. Statement-level `@cfg` becomes `StmtKind::CfgBlock { condition, body }`.
 
 **Codegen:** `@syscall` functions emit `Syscall` (0x5E) + `Ret` instead of the normal body. `StmtKind::CfgBlock` body is compiled unconditionally (AOT handles stripping).
+
+## Syscall Example (Linux)
+
+```void
+@syscall("write")
+fn write(fd: i32, buf: str, len: usize) isize { }
+
+fn main() void {
+    const msg: str = "hello from syscall\n";
+    write(1, msg, msg.len());
+    ret;
+}
+```

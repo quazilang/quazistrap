@@ -367,7 +367,8 @@ impl<'a> X86Emitter<'a> {
             writeln!(out, "\t# Syscall: truncating {} args to {}", arg_count, max_args).unwrap();
         }
         for (i, reg) in SYSCALL_ARG_REGS.iter().enumerate().take(arg_count.min(max_args)) {
-            writeln!(out, "\tmovq {}, {}", slot(i as u8), reg).unwrap();
+            let slot_idx = (dst as usize + i) as u8;
+            writeln!(out, "\tmovq {}, {}", slot(slot_idx), reg).unwrap();
         }
         writeln!(out, "\tmovq ${}, %rax", num).unwrap();
         writeln!(out, "\tsyscall").unwrap();
