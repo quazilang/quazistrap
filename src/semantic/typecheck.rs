@@ -766,6 +766,7 @@ impl Analyzer {
             .last()
             .cloned()
             .unwrap_or_else(|| "__program__".to_string());
+        *self.call_counts.entry(name.to_string()).or_insert(0) += 1;
         self.add_dependency_edge(DependencyKind::Call, &from, name);
 
         let is_variadic = sym.variadic;

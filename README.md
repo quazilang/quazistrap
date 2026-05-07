@@ -15,7 +15,7 @@ this programming language was designed to be fast, understandable, strict, and v
 * [x] module system (void.toml + local deps)
 * [ ] standard library
 * [x] cli and build system (compile/build/run/check)
-* [ ] project scaffolding (new/fmt/clean)
+* [x] project scaffolding (new/fmt/clean)
 * [ ] finish bootstrapping
 * [ ] rewrite in itself
 
@@ -49,6 +49,21 @@ utils = { path = "../utils", version = "0.1.0" }
 
 if a void.lock file exists, it is used to pin dependency versions. when missing and
 dependencies are present, a lockfile is created on build/run.
+
+## project scaffolding
+
+```bash
+void new my_app   # create a new project
+void fmt          # trim trailing whitespace in .void files
+void clean        # remove build artifacts (binary/.s/.vbc)
+```
+
+## inlining
+
+functions are auto-inlined when they have a small, non-branching body, are not recursive,
+and are called in a hot path (called at least twice or directly from main). the `@inline`
+attribute can force inlining even when the call count is low. only direct calls
+(`CallIdx`) are inlined; vtable-based method calls are not inlined yet.
 
 ## syscalls and platform apis
 

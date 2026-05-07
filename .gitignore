@@ -7,7 +7,7 @@ Cargo.lock
 **/*.rs.bk
 *.pdb
 .idea/
-*.void
 *.vbc
-.forgejo/
-.claude/
+*.s
+.forgejo/*
+.claude/*
