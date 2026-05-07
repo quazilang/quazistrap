@@ -1,0 +1,8 @@
+@syscall("write")
+fn sys_write(fd: i32, buf: str, len: isize) isize { }
+
+fn main() i32 {
+    var msg: str = "Hello World!\n";
+    sys_write(1, msg, 13);
+    ret 0;
+}
