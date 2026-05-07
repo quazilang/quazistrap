@@ -15,6 +15,7 @@ impl Analyzer {
                 name,
                 return_ty,
                 params,
+                attributes,
                 ..
             } => self.declare(
                 name.clone(),
@@ -29,9 +30,10 @@ impl Analyzer {
                     import_path: None,
                     const_value: None,
                     variadic: params.last().map(|p| p.variadic).unwrap_or(false),
+                    attributes: extract_attribute_names(attributes),
                 },
             ),
-            ItemKind::Struct { name, .. } | ItemKind::Trait { name, .. } => self.declare(
+            ItemKind::Struct { name, attributes, .. } | ItemKind::Trait { name, attributes, .. } => self.declare(
                 name.clone(),
                 Symbol {
                     kind: SymbolKind::TypeName,
@@ -44,11 +46,13 @@ impl Analyzer {
                     import_path: None,
                     const_value: None,
                     variadic: false,
+                    attributes: extract_attribute_names(attributes),
                 },
             ),
             ItemKind::Enum {
                 name,
                 variants,
+                attributes,
                 ..
             } => {
                 self.declare(
@@ -64,6 +68,7 @@ impl Analyzer {
                         import_path: None,
                         const_value: None,
                         variadic: false,
+                        attributes: extract_attribute_names(attributes),
                     },
                 );
                 self.register_enum(name, variants, item.span);
@@ -146,6 +151,7 @@ impl Analyzer {
                 import_path: Some(full_path),
                 const_value: None,
                 variadic: false,
+                attributes: Vec::new(),
             },
         );
     }

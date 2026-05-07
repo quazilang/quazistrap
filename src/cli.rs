@@ -18,8 +18,8 @@ pub struct Args {
 
 #[derive(Clone, Subcommand, Debug)]
 pub enum Command {
-    /// compile one or more files directly
-    Compile {
+    /// build files or project (if no files given, reads void.toml)
+    Build {
         files: Vec<PathBuf>,
         #[arg(short, long)]
         output: Option<String>,
@@ -29,15 +29,6 @@ pub enum Command {
         emit_bytecode: bool,
         #[arg(short, long)]
         run: bool,
-    },
-    /// build project (reads void.toml)
-    Build {
-        #[arg(short, long)]
-        output: Option<String>,
-        #[arg(short = 's', long = "asm")]
-        emit_asm: bool,
-        #[arg(short = 'b', long = "bytecode")]
-        emit_bytecode: bool,
     },
     /// build and run project (reads void.toml)
     Run,

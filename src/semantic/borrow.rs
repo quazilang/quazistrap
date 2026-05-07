@@ -140,14 +140,14 @@ impl Analyzer {
 
     fn bc_stmt(&mut self, stmt: &Stmt, env: &mut MoveEnv) {
         match &stmt.node {
-            StmtKind::Var { name, ty, value } => {
+            StmtKind::Var { name, ty, value, .. } => {
                 let var_ty = ty.as_ref().map(|t| t.node.clone());
                 if let Some(v) = value {
                     self.bc_expr(v, env, true);
                 }
                 env.declare(name.clone(), var_ty);
             }
-            StmtKind::Const { name, ty, value } => {
+            StmtKind::Const { name, ty, value, .. } => {
                 let var_ty = ty.as_ref().map(|t| t.node.clone());
                 self.bc_expr(value, env, true);
                 env.declare(name.clone(), var_ty);

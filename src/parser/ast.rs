@@ -291,6 +291,7 @@ pub struct Param {
     pub name: String,
     pub ty: Type,
     pub variadic: bool,
+    pub attributes: Vec<Attribute>,
 }
 
 #[derive(Debug, Clone)]
@@ -299,11 +300,13 @@ pub enum StmtKind {
         name: String,
         ty: Option<Type>,
         value: Option<Expr>,
+        attributes: Vec<Attribute>,
     },
     Const {
         name: String,
         ty: Option<Type>,
         value: Expr,
+        attributes: Vec<Attribute>,
     },
     Return(Option<Expr>),
     If {

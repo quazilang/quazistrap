@@ -26,7 +26,7 @@ use cli::Command as CliCmd;
 use cli::EmitType;
 use project::ProjectContext;
 
-fn analyze_program(src: &str, program: &parser::ast::Program) -> semantic::SemanticReport {
+fn analyze_program(_src: &str, program: &parser::ast::Program) -> semantic::SemanticReport {
     let mut analyzer = Analyzer::new();
     analyzer.analyze_program(program)
 }
@@ -192,7 +192,15 @@ fn create_new_project(name: &str) {
     );
     write_file(&root.join("void.toml"), &toml);
 
-    let main_src = "fn main() void {\n    ret;\n}\n";
+    let main_src = r#"@syscall("write")
+fn sys_write(fd: i32, buf: str, len: isize) isize { }
+
+fn main() i32 {
+    var msg: str = "Hello World!\n";
+    sys_write(1, msg, 13);
+    ret 0;
+}
+"#;
     write_file(&src_dir.join("main.void"), main_src);
 
     println!("created project '{}'", root.display());
@@ -280,81 +288,92 @@ fn main() {
     let args = Args::parse();
 
     match args.command {
-        CliCmd::Compile {
+        CliCmd::Build {
             files,
             output,
             emit_asm,
             emit_bytecode,
-            run: _,
+            run,
         } => {
+            let emit = if emit_bytecode {
+                EmitType::Bytecode
+            } else if emit_asm {
+                EmitType::Assembly
+            } else {
+                EmitType::Binary
+            };
+
             if files.is_empty() {
-                eprintln!("\x1b[31;1merror:\x1b[0m no input files");
-                std::process::exit(1);
-            }
-            let emit = if emit_bytecode {
-                EmitType::Bytecode
-            } else if emit_asm {
-                EmitType::Assembly
-            } else {
-                EmitType::Binary
-            };
-
-            let result = load_with_optional_project(&files);
-
-            if result.loaded_files.len() > 1 {
-                let names: Vec<_> = result.loaded_files.iter()
-                    .map(|p| p.display().to_string())
-                    .collect();
-                eprintln!("compiling: {}", names.join(", "));
-            }
-
-            let out = output.clone().unwrap_or_else(|| {
-                let stem = files[0].file_stem().unwrap_or_default().to_string_lossy().into_owned();
-                match emit {
-                    EmitType::Bytecode => format!("{}.vbc", stem),
-                    EmitType::Assembly => format!("{}.s", stem),
-                    EmitType::Binary => {
-                        if cfg!(target_os = "windows") { format!("{}.exe", stem) } else { stem }
-                    }
-                }
-            });
-
-            run_pipeline(&result.merged_source, &result.program, emit, &out, None);
-        }
-        CliCmd::Build {
-            output,
-            emit_asm,
-            emit_bytecode,
-        } => {
-            let emit = if emit_bytecode {
-                EmitType::Bytecode
-            } else if emit_asm {
-                EmitType::Assembly
-            } else {
-                EmitType::Binary
-            };
-
-            let ctx = load_project_context();
-            ctx.ensure_lockfile().unwrap_or_else(|e| {
-                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
-            });
-
-            let entry = ctx.config.entry.clone();
-            let result = loader::load_programs_with_resolver(&[entry], Some(&ctx.resolver))
-                .unwrap_or_else(|e| {
+                // No files: build project from void.toml
+                let ctx = load_project_context();
+                ctx.ensure_lockfile().unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                     std::process::exit(1);
                 });
 
-            let out = output.unwrap_or_else(|| project_output_name(&ctx.config.name, emit.clone()));
-            run_pipeline(
-                &result.merged_source,
-                &result.program,
-                emit,
-                &out,
-                Some(&ctx.config.flags),
-            );
+                let entry = ctx.config.entry.clone();
+                let result = loader::load_programs_with_resolver(&[entry], Some(&ctx.resolver))
+                    .unwrap_or_else(|e| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+                        std::process::exit(1);
+                    });
+
+                let out = output.clone().unwrap_or_else(|| project_output_name(&ctx.config.name, emit.clone()));
+                run_pipeline(
+                    &result.merged_source,
+                    &result.program,
+                    emit,
+                    &out,
+                    Some(&ctx.config.flags),
+                );
+
+                if run && !emit_bytecode && !emit_asm {
+                    let status = std::process::Command::new(&out)
+                        .status()
+                        .unwrap_or_else(|e| {
+                            eprintln!("\x1b[31;1merror:\x1b[0m cannot run {}: {}", out, e);
+                            std::process::exit(1);
+                        });
+                    if !status.success() {
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
+                }
+            } else {
+                // Files given: compile files directly
+                let result = load_with_optional_project(&files);
+
+                if result.loaded_files.len() > 1 {
+                    let names: Vec<_> = result.loaded_files.iter()
+                        .map(|p| p.display().to_string())
+                        .collect();
+                    eprintln!("compiling: {}", names.join(", "));
+                }
+
+                let out = output.clone().unwrap_or_else(|| {
+                    let stem = files[0].file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                    match emit {
+                        EmitType::Bytecode => format!("{}.vbc", stem),
+                        EmitType::Assembly => format!("{}.s", stem),
+                        EmitType::Binary => {
+                            if cfg!(target_os = "windows") { format!("{}.exe", stem) } else { stem }
+                        }
+                    }
+                });
+
+                run_pipeline(&result.merged_source, &result.program, emit, &out, None);
+
+                if run && !emit_bytecode && !emit_asm {
+                    let status = std::process::Command::new(format!("./{}", out))
+                        .status()
+                        .unwrap_or_else(|e| {
+                            eprintln!("\x1b[31;1merror:\x1b[0m failed to run binary: {}", e);
+                            std::process::exit(1);
+                        });
+                    if !status.success() {
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
+                }
+            }
         }
         CliCmd::Run => {
             let ctx = load_project_context();
@@ -443,10 +462,6 @@ fn main() void {
                     std::process::exit(1);
                 }
             }
-        }
-        _ => {
-            eprintln!("\x1b[31;1merror: \x1b[0;1mnot implemented\x1b[0m");
-            std::process::exit(2);
         }
     }
 }

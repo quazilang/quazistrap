@@ -45,6 +45,7 @@ pub struct Symbol {
     pub import_path: Option<String>,
     pub const_value: Option<ConstValue>,
     pub variadic: bool,
+    pub attributes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,11 +72,18 @@ pub struct SemanticWarning {
     pub code: &'static str,
     pub message: String,
     pub span: Span,
+    pub suggestions: Vec<String>,
 }
 
 impl SemanticWarning {
     pub fn render(&self, source: &str) -> String {
-        render_diag("warning", self.code, &self.message, self.span, source)
+        let mut out = render_diag("warning", self.code, &self.message, self.span, source);
+        for suggestion in &self.suggestions {
+            out.push('\n');
+            out.push_str("  suggestion: ");
+            out.push_str(suggestion);
+        }
+        out
     }
 }
 

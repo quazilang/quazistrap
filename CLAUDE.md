@@ -16,11 +16,14 @@ cargo fmt               # format
 CLI (one dependency: `clap 4.6`):
 
 ```bash
-void compile <file> [files...]      # compile to native binary via gcc (default)
-void compile <file> -b              # emit .vbc bytecode
-void compile <file> -s              # emit .s AT&T x86-64 assembly
-void compile <file> [-b|-s] -o out  # specify output filename
-void build [-b|-s] [-o out]         # build project from void.toml
+void build <file> [files...]        # compile files to native binary via gcc (default)
+void build <file> -b                # emit .vbc bytecode
+void build <file> -s                # emit .s AT&T x86-64 assembly
+void build <file> [-b|-s] -o out    # specify output filename
+void build <file> -r                # compile and run
+void build                          # build project from void.toml (no files given)
+void build [-b|-s] [-o out]         # build project with options
+void build -r                       # build + run project from void.toml
 void run                            # build + run project from void.toml
 void check                          # analyze project without emitting
 void debug [-b|-s]                  # compile hardcoded demo source
@@ -75,9 +78,14 @@ Split across files. `Analyzer` runs five sequential passes over the `Program` AS
 
 1. **Declare** (`declare.rs`) — register top-level functions, structs, traits, enums, imports into global scope.
 2. **Type-check** (`typecheck.rs`) — scope tracking, type inference, type compatibility, initialization checks, expression annotations.
-3. **Unused** (`unused.rs`) — warn on unused variables, parameters, functions, imports.
-4. **Dead code** (`unused.rs`) — reachability analysis, warn on statements after guaranteed returns.
+3. **Unused** (`unused.rs`) — warn on unused variables (W01), parameters (W02), functions (W03), imports (W03). Supports `@ignore` attribute.
+4. **Dead code** (`unused.rs`) — reachability analysis, warn on statements after guaranteed returns (W04).
 5. **Optimization** (`optimize.rs`) — inline candidates (small non-branching bodies, non-recursive, hot-path calls or `@inline`), match exhaustiveness, removable imports, **constant folding** (both-sides-known → `ConstValue`), **math identity/absorber reduction** (`x*0=0`, `x+0=x`, `x&&false=false`, etc. — result stored in `ExprAnnotation.const_value` in annotated tree), **lazy import hints** (field-chain tracking: `import std;` + `std.io.stdout.println(...)` → suggests `import std.io.stdout;`).
+
+**Warning suppression**: `@ignore` attribute silences warnings for items/statements. Forms:
+- `@ignore` — silence all warnings for that item.
+- `@ignore(unused_vars)` — silence W01/W02 (unused variable/parameter).
+- `@ignore(dead_code)` — silence W03/W07 (unused/dead function).
 
 `types_compatible` treats `Any` as compatible with everything and `Named` types as compatible with everything (generics are not yet resolved).
 
@@ -86,7 +94,7 @@ Split across files. `Analyzer` runs five sequential passes over the `Program` AS
 Public types live in `types.rs`, re-exported from `mod.rs`.
 
 ### `SemanticReport`
-Structured output with: `errors`, `warnings`, `suggestions`, `symbol_table`, `dependency_graph`, `optimization_hints` (includes `math_optimizations`, `lazy_import_hints`), `annotated_exprs`, `constant_evaluations`, `used_imports_map`, `non_exhaustive_matches`, `lazy_import_hints`, **`inline_candidates`** (consumed by `Codegen` for the inline expansion pass).
+Structured output with: `errors`, `warnings` (each warning includes a `suggestions: Vec<String>` field that merges related suggestions), `suggestions` (standalone list, deprecated in favor of per-warning suggestions), `symbol_table`, `dependency_graph`, `optimization_hints` (includes `math_optimizations`, `lazy_import_hints`), `annotated_exprs`, `constant_evaluations`, `used_imports_map`, `non_exhaustive_matches`, `lazy_import_hints`, **`inline_candidates`** (consumed by `Codegen` for the inline expansion pass).
 
 ### Bytecode (`src/bytecode/`)
 VBC (Void Bytecode) — platform-independent, AOT-only. **6 bytes per instruction.**
@@ -248,8 +256,9 @@ fn linux_only() void { ... }
 | `@api("FunctionName")` | `fn` | Body replaced by single `CallExt` instruction that calls an external symbol. Win64 ABI on Windows, SysV ABI on other targets. Skips guaranteed-return check. |
 | `@cfg(key = "value")` | `fn`, `struct`, `enum`, `trait`, block | Conditional compilation. Currently compiled unconditionally; cfg evaluation deferred to AOT backend. |
 | `@inline` | `fn` | Forces inlining eligibility even when the call count is low (still excluded if recursive). |
+| `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)` | `fn`, `var`, `const`, parameter | Suppresses specific warnings. `@ignore` silences all; `unused_vars` silences W01/W02; `dead_code` silences W03/W07. Implemented in `unused.rs`. |
 
-**Parsing:** `parse_attributes()` in `parser/mod.rs` consumes zero or more `@ident(args)` before items or statements. Item parsers (`parse_fn`, `parse_struct`, etc.) take `Vec<Attribute>` as a parameter. Statement-level `@cfg` becomes `StmtKind::CfgBlock { condition, body }`.
+**Parsing:** `parse_attributes()` in `parser/mod.rs` consumes zero or more `@ident(args)` before items or statements. Item parsers (`parse_fn`, `parse_struct`, etc.) take `Vec<Attribute>` as a parameter. Statement-level `@cfg` becomes `StmtKind::CfgBlock { condition, body }`. Parameters and var/const statements can also have attributes (`Param.attributes`, `StmtKind::Var/Const.attributes`).
 
 **Codegen:** `@syscall` functions emit `Syscall` (0x5E) + `Ret` instead of the normal body. `StmtKind::CfgBlock` body is compiled unconditionally (AOT handles stripping).
 

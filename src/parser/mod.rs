@@ -147,8 +147,13 @@ impl Parser {
                 let span = Span::merge(start, body.span);
                 return Ok(Spanned::new(StmtKind::CfgBlock { condition, body }, span));
             }
-            return Err(self.err_here_with_code("E03",
-                "attributes on statements are only supported for @cfg blocks".to_string()));
+            // Allow attributes on var/const statements
+            match self.peek_kind() {
+                TokenKind::Var => return self.parse_var_stmt_with_attrs(attrs),
+                TokenKind::Const => return self.parse_const_stmt_with_attrs(attrs),
+                _ => return Err(self.err_here_with_code("E03",
+                    "attributes on statements are only supported for @cfg blocks, var, and const".to_string())),
+            }
         }
         match self.peek_kind() {
             TokenKind::Var => self.parse_var_stmt(),
@@ -198,6 +203,10 @@ impl Parser {
     }
 
     fn parse_var_stmt(&mut self) -> Result<Stmt, String> {
+        self.parse_var_stmt_with_attrs(Vec::new())
+    }
+
+    fn parse_var_stmt_with_attrs(&mut self, attributes: Vec<Attribute>) -> Result<Stmt, String> {
         let start = self.expect(TokenKind::Var)?.span;
 
         let name = self.parse_ident()?;
@@ -219,12 +228,16 @@ impl Parser {
         let semi = self.expect(TokenKind::Semicolon)?.span;
 
         Ok(Spanned::new(
-            StmtKind::Var { name, ty, value },
+            StmtKind::Var { name, ty, value, attributes },
             to_ast_span(merge_token_spans(start, semi)),
         ))
     }
 
     fn parse_const_stmt(&mut self) -> Result<Stmt, String> {
+        self.parse_const_stmt_with_attrs(Vec::new())
+    }
+
+    fn parse_const_stmt_with_attrs(&mut self, attributes: Vec<Attribute>) -> Result<Stmt, String> {
         let start = self.expect(TokenKind::Const)?.span;
 
         let name = self.parse_ident()?;
@@ -241,7 +254,7 @@ impl Parser {
         let semi = self.expect(TokenKind::Semicolon)?.span;
 
         Ok(Spanned::new(
-            StmtKind::Const { name, ty, value },
+            StmtKind::Const { name, ty, value, attributes },
             to_ast_span(merge_token_spans(start, semi)),
         ))
     }
