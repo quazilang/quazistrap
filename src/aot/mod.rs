@@ -33,14 +33,36 @@ impl<'a> X86Emitter<'a> {
     pub fn emit_asm(&self) -> String {
         let mut out = String::new();
 
-        // string constants → .rodata
+        let has_prim_to_str = self.chunks.iter().any(|c| {
+            c.code.iter().any(|i| i.opcode == Opcode::PrimToStr as u8)
+        });
+
+        // .rodata: format strings + string constants
         writeln!(out, "\t.section .rodata").unwrap();
+        if has_prim_to_str {
+            writeln!(out, "__void_fmt_ld:").unwrap();
+            writeln!(out, "\t.string \"%ld\"").unwrap();
+        }
         for chunk in self.chunks {
             let lbl = safe_label(&chunk.name);
             for (i, entry) in chunk.constants.iter().enumerate() {
                 if let ConstPoolEntry::Str(s) = entry {
                     writeln!(out, ".{}_str{}:", lbl, i).unwrap();
                     writeln!(out, "\t.string \"{}\"", escape_str(s)).unwrap();
+                }
+            }
+        }
+
+        // .bss: per-instruction buffers for PrimToStr (32 bytes each)
+        if has_prim_to_str {
+            writeln!(out, "\n\t.section .bss").unwrap();
+            for chunk in self.chunks {
+                let lbl = safe_label(&chunk.name);
+                for (idx, instr) in chunk.code.iter().enumerate() {
+                    if instr.opcode == Opcode::PrimToStr as u8 {
+                        writeln!(out, ".__void_itoa_{}_{}:", lbl, idx).unwrap();
+                        writeln!(out, "\t.zero 32").unwrap();
+                    }
                 }
             }
         }
@@ -90,7 +112,7 @@ impl<'a> X86Emitter<'a> {
                     self.emit_call(instr, &pending_args, &lbl, out);
                     pending_args.clear();
                 }
-                _ => self.emit_instr(instr, chunk, &lbl, out),
+                _ => self.emit_instr(instr, chunk, &lbl, idx, out),
             }
         }
 
@@ -104,7 +126,7 @@ impl<'a> X86Emitter<'a> {
         }
     }
 
-    fn emit_instr(&self, instr: &crate::bytecode::Instruction, chunk: &Chunk, lbl: &str, out: &mut String) {
+    fn emit_instr(&self, instr: &crate::bytecode::Instruction, chunk: &Chunk, lbl: &str, idx: usize, out: &mut String) {
         match Opcode::from_u8(instr.opcode) {
             Some(Opcode::Nop) => {
                 writeln!(out, "\tnop").unwrap();
@@ -337,6 +359,60 @@ impl<'a> X86Emitter<'a> {
 
             Some(Opcode::Syscall) => {
                 self.emit_syscall(instr, out);
+            }
+
+            Some(Opcode::Pow) => {
+                // dst = src1 ** src2 — delegate to libm pow(), truncate to i64 for integer types.
+                let (dst, s1, s2) = instr.rrr();
+                // Move s2 to xmm1, s1 to xmm0, call pow, truncate result.
+                writeln!(out, "\tmovq {}, %rdi", slot(s1)).unwrap();
+                writeln!(out, "\tmovq {}, %rsi", slot(s2)).unwrap();
+                writeln!(out, "\tcvtsi2sdq %rdi, %xmm0").unwrap();
+                writeln!(out, "\tcvtsi2sdq %rsi, %xmm1").unwrap();
+                writeln!(out, "\tcallq pow").unwrap();
+                writeln!(out, "\tcvttsd2siq %xmm0, %rax").unwrap();
+                writeln!(out, "\tmovq %rax, {}", slot(dst)).unwrap();
+            }
+
+            Some(Opcode::StrLen) => {
+                let (dst, src, _) = instr.rrr();
+                writeln!(out, "\tmovq {}, %rdi", slot(src)).unwrap();
+                writeln!(out, "\tcallq strlen").unwrap();
+                writeln!(out, "\tmovq %rax, {}", slot(dst)).unwrap();
+            }
+
+            Some(Opcode::PrimToStr) => {
+                // snprintf(buf, 32, "%ld", value) → pointer in dst
+                let (dst, src, _) = instr.rrr();
+                let buf = format!(".__void_itoa_{}_{}", lbl, idx);
+                writeln!(out, "\tleaq {}(%rip), %rdi", buf).unwrap();
+                writeln!(out, "\tmovq $32, %rsi").unwrap();
+                writeln!(out, "\tleaq __void_fmt_ld(%rip), %rdx").unwrap();
+                writeln!(out, "\tmovq {}, %rcx", slot(src)).unwrap();
+                writeln!(out, "\tcallq snprintf").unwrap();
+                writeln!(out, "\tleaq {}(%rip), %rax", buf).unwrap();
+                writeln!(out, "\tmovq %rax, {}", slot(dst)).unwrap();
+            }
+
+            Some(Opcode::StrAsStr) => {
+                let (dst, src, _) = instr.rrr();
+                writeln!(out, "\tmovq {}, %rax", slot(src)).unwrap();
+                writeln!(out, "\tmovq %rax, {}", slot(dst)).unwrap();
+            }
+
+            Some(Opcode::StrToInt) => {
+                let (dst, src, _) = instr.rrr();
+                writeln!(out, "\tmovq {}, %rdi", slot(src)).unwrap();
+                writeln!(out, "\tcallq atoll").unwrap();
+                writeln!(out, "\tmovq %rax, {}", slot(dst)).unwrap();
+            }
+
+            Some(Opcode::StrToFloat) => {
+                let (dst, src, _) = instr.rrr();
+                writeln!(out, "\tmovq {}, %rdi", slot(src)).unwrap();
+                writeln!(out, "\txorq %rsi, %rsi").unwrap();
+                writeln!(out, "\tcallq strtod").unwrap();
+                writeln!(out, "\tmovsd %xmm0, {}", slot(dst)).unwrap();
             }
 
             _ => {

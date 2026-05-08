@@ -107,7 +107,7 @@ impl Analyzer {
     pub(super) fn run_borrow_check_pass(&mut self, program: &Program) {
         for item in &program.items {
             match &item.node {
-                ItemKind::Fn { params, body, .. } => {
+                ItemKind::Fn { params, body: Some(body), .. } => {
                     let mut env = MoveEnv::new();
                     for p in params {
                         env.declare(p.name.clone(), Some(p.ty.node.clone()));
@@ -116,7 +116,7 @@ impl Analyzer {
                 }
                 ItemKind::Impl { methods, .. } => {
                     for m in methods {
-                        if let ItemKind::Fn { params, body, .. } = &m.node {
+                        if let ItemKind::Fn { params, body: Some(body), .. } = &m.node {
                             let mut env = MoveEnv::new();
                             for p in params {
                                 env.declare(p.name.clone(), Some(p.ty.node.clone()));
@@ -174,41 +174,53 @@ impl Analyzer {
                     env.apply_branch_moves(&then_env);
                 }
             }
-            StmtKind::While { condition, body } => {
-                self.bc_expr(condition, env, false);
-                // Increment loop depth before cloning so that vars declared
-                // outside the loop are known to be at a lower depth.
+            StmtKind::For { kind, body } => {
                 env.loop_depth += 1;
                 let mut loop_env = env.clone();
-                self.bc_block(body, &mut loop_env);
+                match kind {
+                    ForLoop::Each { vars, iter } => {
+                        match iter {
+                            ForIter::Range { start, end } => {
+                                self.bc_expr(start, env, false);
+                                self.bc_expr(end, env, false);
+                            }
+                            ForIter::Iter(expr) => {
+                                self.bc_expr(expr, env, true);
+                            }
+                        }
+                        loop_env.enter_scope();
+                        for var in vars {
+                            loop_env.declare(var.clone(), None);
+                        }
+                        for s in &body.stmts {
+                            self.bc_stmt(s, &mut loop_env);
+                        }
+                        loop_env.exit_scope();
+                    }
+                    ForLoop::CStyle { init, condition, update } => {
+                        if let Some(init_stmt) = init {
+                            self.bc_stmt(init_stmt, &mut loop_env);
+                        }
+                        if let Some(cond) = condition {
+                            self.bc_expr(cond, &mut loop_env, false);
+                        }
+                        self.bc_block(body, &mut loop_env);
+                        if let Some(upd) = update {
+                            self.bc_expr(upd, &mut loop_env, false);
+                        }
+                    }
+                    ForLoop::Cond { condition } => {
+                        if let Some(cond) = condition {
+                            self.bc_expr(cond, &mut loop_env, false);
+                        }
+                        self.bc_block(body, &mut loop_env);
+                    }
+                }
                 env.loop_depth -= 1;
-                // Propagate moves of outer-scope vars out of the loop.
                 env.apply_branch_moves(&loop_env);
             }
-            StmtKind::For { vars, iter, body } => {
-                match iter {
-                    ForIter::Range { start, end } => {
-                        self.bc_expr(start, env, false);
-                        self.bc_expr(end, env, false);
-                    }
-                    ForIter::Iter(expr) => {
-                        // The iterable itself is consumed (e.g., an owned collection).
-                        self.bc_expr(expr, env, true);
-                    }
-                }
-                env.loop_depth += 1;
-                let mut loop_env = env.clone();
-                // Declare loop binding variables inside the loop scope.
-                loop_env.enter_scope();
-                for var in vars {
-                    loop_env.declare(var.clone(), None); // element type inferred as Any
-                }
-                for s in &body.stmts {
-                    self.bc_stmt(s, &mut loop_env);
-                }
-                loop_env.exit_scope();
-                env.loop_depth -= 1;
-                env.apply_branch_moves(&loop_env);
+            StmtKind::UnsafeBlock { body } => {
+                self.bc_block(body, env);
             }
             StmtKind::CfgBlock { body, .. } => {
                 self.bc_block(body, env);

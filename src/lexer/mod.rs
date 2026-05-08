@@ -178,6 +178,7 @@ impl Lexer {
             "as" => TokenKind::As,
             "for" => TokenKind::For,
             "pub" => TokenKind::Pub,
+            "unsafe" => TokenKind::Unsafe,
             "platform" => TokenKind::Platform,
 
             // primitive types
@@ -279,6 +280,9 @@ impl Lexer {
                         if self.peek() == Some('=') {
                             self.advance();
                             TokenKind::StarEq
+                        } else if self.peek() == Some('*') {
+                            self.advance();
+                            TokenKind::StarStar
                         } else {
                             TokenKind::Star
                         }

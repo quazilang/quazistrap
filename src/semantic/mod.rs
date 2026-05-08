@@ -72,6 +72,8 @@ pub struct Analyzer {
     pub(super) lazy_import_hints: Vec<LazyImportHint>,
     /// Functions not reachable from `main` via the call graph.
     pub(super) unreachable_functions: BTreeSet<String>,
+    /// Nesting depth of `unsafe` blocks/functions (0 = safe context).
+    pub(super) unsafe_depth: usize,
 }
 
 pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
@@ -106,6 +108,7 @@ impl Analyzer {
             lazy_import_accesses: HashMap::new(),
             lazy_import_hints: Vec::new(),
             unreachable_functions: BTreeSet::new(),
+            unsafe_depth: 0,
         }
     }
 
@@ -216,6 +219,7 @@ impl Analyzer {
         self.lazy_import_accesses.clear();
         self.lazy_import_hints.clear();
         self.unreachable_functions.clear();
+        self.unsafe_depth = 0;
         self.init_builtins();
     }
 
@@ -1326,7 +1330,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    for i : "hello"..10 {
+    for var i : "hello"..10 {
         ret;
     }
 }
@@ -1344,7 +1348,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    for i : 0..10 {
+    for var i : 0..10 {
         var s: str = i;
     }
 }
@@ -1430,7 +1434,7 @@ fn consume(o: Obj) void { ret; }
 fn main() void {
     var o: Obj;
     var i: i32 = 0;
-    while (i < 3) {
+    for i < 3 {
         consume(o);
         i += 1;
     }

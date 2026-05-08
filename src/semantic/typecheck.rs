@@ -15,12 +15,14 @@ impl Analyzer {
                 return_ty,
                 body,
                 attributes,
+                unsafe_fn,
                 ..
             } => {
                 self.validate_foreign_attributes(attributes);
                 let is_foreign = attributes
                     .iter()
                     .any(|a| a.name == "syscall" || a.name == "api");
+                if *unsafe_fn { self.unsafe_depth += 1; }
                 self.current_function.push(name.clone());
                 self.enter_scope();
                 for p in params {
@@ -66,7 +68,11 @@ impl Analyzer {
                     );
                 }
 
-                let guaranteed = self.type_check_block(body, Some(&expected));
+                let guaranteed = if let Some(body) = body {
+                    self.type_check_block(body, Some(&expected))
+                } else {
+                    true // bodyless declaration — no return check
+                };
                 if !guaranteed && !is_foreign && !matches!(expected, TypeKind::Void) {
                     self.push_error(
                         item.span,
@@ -79,6 +85,7 @@ impl Analyzer {
                 }
                 self.exit_scope_collect();
                 let _ = self.current_function.pop();
+                if *unsafe_fn { self.unsafe_depth -= 1; }
             }
             ItemKind::Struct { .. }
             | ItemKind::Trait { .. }
@@ -311,82 +318,112 @@ impl Analyzer {
 
                 then_returns && else_returns
             }
-            StmtKind::While { condition, body } => {
-                let condition_eval = self.type_check_expr(condition, true);
-                if let Some(condition_ty) = condition_eval.ty {
-                    if !matches!(condition_ty, TypeKind::Bool | TypeKind::Any) {
-                        self.push_error(
-                            condition.span,
-                            "S01",
-                            format!("while condition must be bool, got {}", condition_ty),
-                        );
+            StmtKind::For { kind, body } => {
+                match kind {
+                    ForLoop::Cond { condition: Some(cond) } => {
+                        let cond_eval = self.type_check_expr(cond, true);
+                        if let Some(cond_ty) = cond_eval.ty {
+                            if !matches!(cond_ty, TypeKind::Bool | TypeKind::Any) {
+                                self.push_error(
+                                    cond.span,
+                                    "S01",
+                                    format!("for condition must be bool, got {}", cond_ty),
+                                );
+                            }
+                        }
+                        let _ = self.type_check_block(body, expected_return);
+                    }
+                    ForLoop::Cond { condition: None } => {
+                        let _ = self.type_check_block(body, expected_return);
+                    }
+                    ForLoop::CStyle { init, condition, update } => {
+                        self.enter_scope();
+                        if let Some(init_stmt) = init {
+                            self.type_check_stmt(init_stmt, expected_return);
+                        }
+                        if let Some(cond) = condition {
+                            let cond_eval = self.type_check_expr(cond, true);
+                            if let Some(cond_ty) = cond_eval.ty {
+                                if !matches!(cond_ty, TypeKind::Bool | TypeKind::Any) {
+                                    self.push_error(
+                                        cond.span,
+                                        "S01",
+                                        format!("for condition must be bool, got {}", cond_ty),
+                                    );
+                                }
+                            }
+                        }
+                        if let Some(upd) = update {
+                            self.type_check_expr(upd, true);
+                        }
+                        self.type_check_block(body, expected_return);
+                        self.exit_scope_collect();
+                    }
+                    ForLoop::Each { vars, iter } => {
+                        let loop_var_ty = match iter {
+                            ForIter::Range { start, end } => {
+                                let start_eval = self.type_check_expr(start, true);
+                                let end_eval = self.type_check_expr(end, true);
+                                if let Some(t) = &start_eval.ty {
+                                    if !Self::is_integer(t) {
+                                        self.push_error(
+                                            start.span,
+                                            "S01",
+                                            format!("for range start must be an integer type, got {}", t),
+                                        );
+                                    }
+                                }
+                                if let Some(t) = &end_eval.ty {
+                                    if !Self::is_integer(t) {
+                                        self.push_error(
+                                            end.span,
+                                            "S01",
+                                            format!("for range end must be an integer type, got {}", t),
+                                        );
+                                    }
+                                }
+                                start_eval.ty.or(end_eval.ty).unwrap_or(TypeKind::Int32)
+                            }
+                            ForIter::Iter(expr) => {
+                                let iter_eval = self.type_check_expr(expr, true);
+                                match &iter_eval.ty {
+                                    Some(TypeKind::Array { elem_ty, .. }) => elem_ty.node.clone(),
+                                    Some(TypeKind::Slice { elem_ty }) => elem_ty.node.clone(),
+                                    _ => TypeKind::Any,
+                                }
+                            }
+                        };
+                        self.enter_scope();
+                        for var in vars {
+                            self.declare(
+                                var.clone(),
+                                Symbol {
+                                    kind: SymbolKind::Variable { mutable: false },
+                                    span: stmt.span,
+                                    ty: Some(loop_var_ty.clone()),
+                                    params: vec![],
+                                    used: true,
+                                    initialized: true,
+                                    is_import: false,
+                                    import_path: None,
+                                    const_value: None,
+                                    variadic: false,
+                                    attributes: Vec::new(),
+                                },
+                            );
+                        }
+                        for s in &body.stmts {
+                            self.type_check_stmt(s, expected_return);
+                        }
+                        self.exit_scope_collect();
                     }
                 }
-
-                let _ = self.type_check_block(body, expected_return);
                 false
             }
-            StmtKind::For { vars, iter, body } => {
-                // Type-check the iterable expression(s) and infer loop variable type.
-                let loop_var_ty = match iter {
-                    ForIter::Range { start, end } => {
-                        let start_eval = self.type_check_expr(start, true);
-                        let end_eval = self.type_check_expr(end, true);
-                        if let Some(t) = &start_eval.ty {
-                            if !Self::is_integer(t) {
-                                self.push_error(
-                                    start.span,
-                                    "S01",
-                                    format!("for range start must be an integer type, got {}", t),
-                                );
-                            }
-                        }
-                        if let Some(t) = &end_eval.ty {
-                            if !Self::is_integer(t) {
-                                self.push_error(
-                                    end.span,
-                                    "S01",
-                                    format!("for range end must be an integer type, got {}", t),
-                                );
-                            }
-                        }
-                        // Use start type if known, else end, else default to i32.
-                        start_eval.ty.or(end_eval.ty).unwrap_or(TypeKind::Int32)
-                    }
-                    ForIter::Iter(expr) => {
-                        let iter_eval = self.type_check_expr(expr, true);
-                        // Element type from array/slice; otherwise Any.
-                        match &iter_eval.ty {
-                            Some(TypeKind::Array { elem_ty, .. }) => elem_ty.node.clone(),
-                            Some(TypeKind::Slice { elem_ty }) => elem_ty.node.clone(),
-                            _ => TypeKind::Any,
-                        }
-                    }
-                };
-                // Declare loop variables into the body scope.
-                self.enter_scope();
-                for var in vars {
-                    self.declare(
-                        var.clone(),
-                        Symbol {
-                            kind: SymbolKind::Variable { mutable: false },
-                            span: stmt.span,
-                            ty: Some(loop_var_ty.clone()),
-                            params: vec![],
-                            used: false,
-                            initialized: true,
-                            is_import: false,
-                            import_path: None,
-                            const_value: None,
-                            variadic: false,
-                            attributes: Vec::new(),
-                        },
-                    );
-                }
-                for s in &body.stmts {
-                    self.type_check_stmt(s, expected_return);
-                }
-                self.exit_scope_collect();
+            StmtKind::UnsafeBlock { body } => {
+                self.unsafe_depth += 1;
+                self.type_check_block(body, expected_return);
+                self.unsafe_depth -= 1;
                 false
             }
             StmtKind::ExprStmt(expr) => {
@@ -406,7 +443,9 @@ impl Analyzer {
                 let ty = match lit {
                     Literal::Int(_) => TypeKind::Int32,
                     Literal::Float(_) => TypeKind::Float64,
-                    Literal::String(_) => TypeKind::Str,
+                    Literal::String(_) => TypeKind::Ref {
+                        inner: Box::new(Spanned::new(TypeKind::Str, expr.span)),
+                    },
                     Literal::Bool(_) => TypeKind::Bool,
                 };
 
@@ -445,14 +484,49 @@ impl Analyzer {
             ExprKind::Unary { expr: inner, op } => {
                 let inner_eval = self.type_check_expr(inner, reachable);
 
-                match (op, &inner_eval.ty) {
-                    (UnaryOpKind::Not, Some(t)) if !matches!(t, TypeKind::Bool | TypeKind::Any) => {
-                        self.push_error(inner.span, "S06", format!("! requires bool, got {}", t));
+                match op {
+                    UnaryOpKind::Ref => {
+                        // &expr → type is Ref<inner_type>
+                        let ref_ty = inner_eval.ty.map(|t| TypeKind::Ref {
+                            inner: Box::new(Spanned::new(t, inner.span)),
+                        });
+                        let result = ExprEval { ty: ref_ty, const_value: None };
+                        self.annotate_expr(expr, &result, reachable);
+                        return result;
                     }
-                    (UnaryOpKind::Neg, Some(t)) if matches!(t, TypeKind::Str | TypeKind::Bool) => {
-                        self.push_error(inner.span, "S06", format!("unary - not valid for {}", t));
+                    UnaryOpKind::Deref => {
+                        // *expr → unwrap Ref<T> or RawPtr<T>
+                        let result = match &inner_eval.ty {
+                            Some(TypeKind::Ref { inner: t }) => ExprEval { ty: Some(t.node.clone()), const_value: None },
+                            Some(TypeKind::RawPtr { inner: t }) => {
+                                if self.unsafe_depth == 0 {
+                                    self.push_error(expr.span, "S11", "dereference of raw pointer requires unsafe block".to_string());
+                                }
+                                ExprEval { ty: Some(t.node.clone()), const_value: None }
+                            }
+                            Some(other) => {
+                                self.push_error(expr.span, "S11", format!("cannot dereference non-pointer type {}", other));
+                                ExprEval::default()
+                            }
+                            None => ExprEval::default(),
+                        };
+                        self.annotate_expr(expr, &result, reachable);
+                        return result;
                     }
-                    _ => {}
+                    UnaryOpKind::Not => {
+                        if let Some(t) = &inner_eval.ty {
+                            if !matches!(t, TypeKind::Bool | TypeKind::Any) {
+                                self.push_error(inner.span, "S06", format!("! requires bool, got {}", t));
+                            }
+                        }
+                    }
+                    UnaryOpKind::Neg => {
+                        if let Some(t) = &inner_eval.ty {
+                            if matches!(t, TypeKind::Str | TypeKind::Bool | TypeKind::Ref { .. } | TypeKind::RawPtr { .. }) {
+                                self.push_error(inner.span, "S06", format!("unary - not valid for {}", t));
+                            }
+                        }
+                    }
                 }
 
                 ExprEval {
@@ -573,14 +647,38 @@ impl Analyzer {
                         ExprEval::default()
                     }
                 } else {
-                    self.type_check_expr(object, reachable);
+                    let object_eval = self.type_check_expr(object, reachable);
                     for arg in args {
                         self.type_check_expr(arg, reachable);
                     }
+                    let ref_str = TypeKind::Ref {
+                        inner: Box::new(Spanned::new(TypeKind::Str, expr.span)),
+                    };
                     let builtin_ty = match method.as_str() {
                         "len" => Some(TypeKind::Usize),
-                        "to_string" => Some(TypeKind::Named { name: "String".to_string(), type_args: vec![] }),
-                        "as_string" | "as_str" => Some(TypeKind::Str),
+                        "to_string" | "to_str" => {
+                            match &object_eval.ty {
+                                Some(t) if Self::is_integer(t) || Self::is_float(t)
+                                    || matches!(t, TypeKind::Str | TypeKind::Ref { .. }) => {
+                                    Some(ref_str)
+                                }
+                                _ => Some(TypeKind::Named { name: "String".to_string(), type_args: vec![] }),
+                            }
+                        }
+                        "as_string" | "as_str" => {
+                            match &object_eval.ty {
+                                Some(t) if matches!(t, TypeKind::Str | TypeKind::Ref { .. })
+                                    || matches!(t, TypeKind::Named { name, .. } if name == "String") => {
+                                    Some(ref_str)
+                                }
+                                Some(other) => {
+                                    self.push_error(expr.span, "S06",
+                                        format!("as_str() not valid for {} — use to_str() to convert primitives to string", other));
+                                    None
+                                }
+                                None => None,
+                            }
+                        }
                         "parse" => type_args.first().map(|t| t.node.clone()),
                         _ => None,
                     };
@@ -696,7 +794,7 @@ impl Analyzer {
                 let inner_eval = self.type_check_expr(inner, reachable);
 
                 if let Some(ty) = &inner_eval.ty {
-                    if matches!(ty, TypeKind::Str | TypeKind::Bool | TypeKind::Void) {
+                    if matches!(ty, TypeKind::Str | TypeKind::Bool | TypeKind::Void | TypeKind::Ref { .. } | TypeKind::RawPtr { .. }) {
                         self.push_error(inner.span, "S06", format!("++ / -- not valid for {}", ty));
                     }
                 }
@@ -903,6 +1001,14 @@ impl Analyzer {
                 }
 
                 Some(TypeKind::Bool)
+            }
+            BinOpKind::Pow => {
+                match (left, right) {
+                    (Some(l), Some(r)) if self.types_compatible(l, r) => Some(l.clone()),
+                    (Some(l), _) => Some(l.clone()),
+                    (None, Some(r)) => Some(r.clone()),
+                    (None, None) => None,
+                }
             }
         }
     }
@@ -1111,6 +1217,24 @@ impl Analyzer {
             ExprKind::Field { object, .. } => {
                 self.type_check_expr(object, true);
             }
+            ExprKind::Unary { op: UnaryOpKind::Deref, expr: inner } => {
+                let inner_eval = self.type_check_expr(inner, true);
+                match &inner_eval.ty {
+                    Some(TypeKind::RawPtr { .. }) => {
+                        if self.unsafe_depth == 0 {
+                            self.push_error(target.span, "S11", "store through raw pointer requires unsafe block".to_string());
+                        }
+                    }
+                    Some(TypeKind::Ref { .. }) | None => {}
+                    Some(other) => {
+                        self.push_error(target.span, "S11", format!("cannot assign through non-pointer type {}", other));
+                    }
+                }
+            }
+            ExprKind::Index { object, index } => {
+                self.type_check_expr(object, true);
+                self.type_check_expr(index, true);
+            }
             _ => {
                 self.type_check_expr(target, true);
                 self.push_error(target.span, "S07", "invalid assignment target".to_string());
@@ -1134,6 +1258,12 @@ impl Analyzer {
             (TypeKind::Slice { elem_ty: s_e }, TypeKind::Array { elem_ty, .. }) => {
                 self.types_compatible(&elem_ty.node, &s_e.node)
             }
+            (TypeKind::Ref { inner: a }, TypeKind::Ref { inner: b }) => self.types_compatible(&a.node, &b.node),
+            (TypeKind::RawPtr { inner: a }, TypeKind::RawPtr { inner: b }) => self.types_compatible(&a.node, &b.node),
+            (TypeKind::RawPtr { .. }, TypeKind::Ref { .. }) | (TypeKind::Ref { .. }, TypeKind::RawPtr { .. }) => true,
+            // str and &str are interchangeable — both are UTF-8 string views
+            (TypeKind::Str, TypeKind::Ref { inner }) | (TypeKind::Ref { inner }, TypeKind::Str)
+                if matches!(inner.node, TypeKind::Str) => true,
             _ => std::mem::discriminant(a) == std::mem::discriminant(b),
         }
     }

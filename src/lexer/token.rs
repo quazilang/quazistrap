@@ -47,6 +47,7 @@ pub enum TokenKind {
     As,
     For,
     Pub,
+    Unsafe,
 
     // types
     Int8,
@@ -91,7 +92,8 @@ pub enum TokenKind {
     FatArrow, // =>
     Plus,  // +
     Minus, // -
-    Star,  // *
+    Star,     // *
+    StarStar, // **
     Slash, // /
     Lt,    // <
     Gt,    // >
@@ -162,6 +164,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::As => write!(f, "as"),
             TokenKind::For => write!(f, "for"),
             TokenKind::Pub => write!(f, "pub"),
+            TokenKind::Unsafe => write!(f, "unsafe"),
 
             TokenKind::Int8 => write!(f, "i8"),
             TokenKind::Int16 => write!(f, "i16"),
@@ -204,6 +207,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
             TokenKind::Star => write!(f, "*"),
+            TokenKind::StarStar => write!(f, "**"),
             TokenKind::Slash => write!(f, "/"),
             TokenKind::Lt => write!(f, "<"),
             TokenKind::Gt => write!(f, ">"),

@@ -8,7 +8,7 @@ use crate::parser::ast::*;
 use crate::parser::common::{merge_token_spans, to_ast_span};
 
 impl Parser {
-    pub fn parse_fn(&mut self, attributes: Vec<Attribute>) -> Result<Item, String> {
+    pub fn parse_fn(&mut self, attributes: Vec<Attribute>, unsafe_fn: bool) -> Result<Item, String> {
         let start = self.expect(TokenKind::Fn)?.span;
 
         let name = self.parse_ident()?;
@@ -47,14 +47,21 @@ impl Parser {
 
         self.expect(TokenKind::RParen)?;
 
-        let return_ty = if self.at(TokenKind::LBrace) {
+        let return_ty = if self.at(TokenKind::LBrace) || self.at(TokenKind::Semicolon) {
             Spanned::new(TypeKind::Void, to_ast_span(start))
         } else {
             self.parse_type()?
         };
 
-        let body = self.parse_block()?;
-        let span = Span::merge(to_ast_span(start), body.span);
+        let (body, end_span) = if self.at(TokenKind::Semicolon) {
+            let end = self.expect(TokenKind::Semicolon)?.span;
+            (None, to_ast_span(end))
+        } else {
+            let block = self.parse_block()?;
+            let s = block.span;
+            (Some(block), s)
+        };
+        let span = Span::merge(to_ast_span(start), end_span);
 
         Ok(Spanned::new(
             ItemKind::Fn {
@@ -64,6 +71,7 @@ impl Parser {
                 return_ty,
                 body,
                 attributes,
+                unsafe_fn,
             },
             span,
         ))
@@ -262,7 +270,7 @@ impl Parser {
             }
 
             let attrs = self.parse_attributes()?;
-            let item = self.parse_fn(attrs)?;
+            let item = self.parse_fn(attrs, false)?;
             methods.push(item);
         }
 

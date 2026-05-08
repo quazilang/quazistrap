@@ -73,7 +73,11 @@ impl Parser {
         match self.peek_kind() {
             TokenKind::Error(msg) => Err(self.err_here_with_code("E00", format!("lexer error: {}", msg))),
             TokenKind::Import => self.parse_import(),
-            TokenKind::Fn => self.parse_fn(attributes),
+            TokenKind::Unsafe => {
+                self.advance(); // consume 'unsafe'
+                self.parse_fn(attributes, true)
+            }
+            TokenKind::Fn => self.parse_fn(attributes, false),
             TokenKind::Struct => self.parse_struct(attributes),
             TokenKind::Trait => self.parse_trait(attributes),
             TokenKind::Enum => self.parse_enum(attributes),
@@ -155,12 +159,17 @@ impl Parser {
                     "attributes on statements are only supported for @cfg blocks, var, and const".to_string())),
             }
         }
+        if self.at(TokenKind::Unsafe) {
+            let t = self.advance().span;
+            let body = self.parse_block()?;
+            let span = Span::merge(to_ast_span(t), body.span);
+            return Ok(Spanned::new(StmtKind::UnsafeBlock { body }, span));
+        }
         match self.peek_kind() {
             TokenKind::Var => self.parse_var_stmt(),
             TokenKind::Const => self.parse_const_stmt(),
             TokenKind::Return => self.parse_return_stmt(),
             TokenKind::If => self.parse_if_stmt(),
-            TokenKind::While => self.parse_while_stmt(),
             TokenKind::For => self.parse_for_stmt(),
             _ => self.parse_expr_stmt(),
         }
@@ -312,57 +321,127 @@ impl Parser {
         ))
     }
 
-    fn parse_while_stmt(&mut self) -> Result<Stmt, String> {
-        let start = self.expect(TokenKind::While)?.span;
-
-        let condition = if self.at(TokenKind::LParen) {
-            self.advance();
-            let c = self.parse_expr()?;
-            self.expect(TokenKind::RParen)?;
-            c
-        } else {
-            self.parse_expr()?
-        };
-
-        let body = self.parse_block()?;
-        let end = body.span;
-
-        Ok(Spanned::new(
-            StmtKind::While { condition, body },
-            Span::merge(to_ast_span(start), end),
-        ))
-    }
-
     fn parse_for_stmt(&mut self) -> Result<Stmt, String> {
         let start = self.expect(TokenKind::For)?.span;
 
-        // Parse one or two binding names: `i` or `i, v`
-        let first_var = self.parse_ident()?;
-        let mut vars = vec![first_var];
-        if self.at(TokenKind::Comma) {
-            self.advance();
-            vars.push(self.parse_ident()?);
+        // `for {}` — infinite loop
+        if self.at(TokenKind::LBrace) {
+            let body = self.parse_block()?;
+            let end = body.span;
+            return Ok(Spanned::new(
+                StmtKind::For { kind: ForLoop::Cond { condition: None }, body },
+                Span::merge(to_ast_span(start), end),
+            ));
         }
 
-        self.expect(TokenKind::Colon)?;
+        // `for ;; {}` — infinite C-style loop (no clauses)
+        if self.at(TokenKind::Semicolon) {
+            self.advance(); // first `;`
+            self.expect(TokenKind::Semicolon)?; // second `;`
+            let body = self.parse_block()?;
+            let end = body.span;
+            return Ok(Spanned::new(
+                StmtKind::For {
+                    kind: ForLoop::CStyle { init: None, condition: None, update: None },
+                    body,
+                },
+                Span::merge(to_ast_span(start), end),
+            ));
+        }
 
-        // Parse the iterable expression, then check for `..`
-        let lhs = self.parse_expr()?;
-        let iter = if self.at(TokenKind::DotDot) {
-            self.advance();
-            let rhs = self.parse_expr()?;
-            ForIter::Range { start: Box::new(lhs), end: Box::new(rhs) }
-        } else {
-            ForIter::Iter(Box::new(lhs))
-        };
+        // `for var name [, name] : iter` or `for var name = init ; cond ; update`
+        if self.at(TokenKind::Var) {
+            self.advance(); // consume 'var'
 
-        let body = self.parse_block()?;
-        let end = body.span;
+            let first_var = self.parse_ident()?;
 
-        Ok(Spanned::new(
-            StmtKind::For { vars, iter, body },
-            Span::merge(to_ast_span(start), end),
-        ))
+            // Check for comma (multiple binding vars in Each form)
+            let mut vars = vec![first_var.clone()];
+            if self.at(TokenKind::Comma) {
+                self.advance();
+                vars.push(self.parse_ident()?);
+            }
+
+            if self.at(TokenKind::Colon) {
+                // Each form: `for var i : 0..10` or `for var e : collection`
+                self.advance(); // consume `:`
+                let lhs = self.parse_expr()?;
+                let iter = if self.at(TokenKind::DotDot) {
+                    self.advance();
+                    let rhs = self.parse_expr()?;
+                    ForIter::Range { start: Box::new(lhs), end: Box::new(rhs) }
+                } else {
+                    ForIter::Iter(Box::new(lhs))
+                };
+                let body = self.parse_block()?;
+                let end = body.span;
+                return Ok(Spanned::new(
+                    StmtKind::For { kind: ForLoop::Each { vars, iter }, body },
+                    Span::merge(to_ast_span(start), end),
+                ));
+            } else if self.at(TokenKind::Eq) {
+                // C-style init: `for var i = 0; i < 10; i++`
+                self.advance(); // consume `=`
+                let init_val = self.parse_expr()?;
+                let init_span = init_val.span;
+                let init_stmt = Spanned::new(
+                    StmtKind::Var { name: first_var, ty: None, value: Some(init_val), attributes: Vec::new() },
+                    init_span,
+                );
+                self.expect(TokenKind::Semicolon)?;
+                let condition = if self.at(TokenKind::Semicolon) { None } else { Some(self.parse_expr()?) };
+                self.expect(TokenKind::Semicolon)?;
+                let update = if self.at(TokenKind::LBrace) { None } else { Some(self.parse_expr()?) };
+                let body = self.parse_block()?;
+                let end = body.span;
+                return Ok(Spanned::new(
+                    StmtKind::For {
+                        kind: ForLoop::CStyle { init: Some(Box::new(init_stmt)), condition, update },
+                        body,
+                    },
+                    Span::merge(to_ast_span(start), end),
+                ));
+            } else {
+                return Err(self.err_here_with_code(
+                    "E02",
+                    "expected ':' or '=' after for loop variable name".to_string(),
+                ));
+            }
+        }
+
+        // No `var` — parse expression first, then decide form
+        let expr = self.parse_expr()?;
+
+        if self.at(TokenKind::LBrace) {
+            // `for cond {}` — while-like or `for 1 {}`
+            let body = self.parse_block()?;
+            let end = body.span;
+            return Ok(Spanned::new(
+                StmtKind::For { kind: ForLoop::Cond { condition: Some(expr) }, body },
+                Span::merge(to_ast_span(start), end),
+            ));
+        }
+
+        if self.at(TokenKind::Semicolon) {
+            // C-style with expr as init: `for expr; cond; update {}`
+            self.advance(); // consume `;`
+            let condition = if self.at(TokenKind::Semicolon) { None } else { Some(self.parse_expr()?) };
+            self.expect(TokenKind::Semicolon)?;
+            let update = if self.at(TokenKind::LBrace) { None } else { Some(self.parse_expr()?) };
+            let body = self.parse_block()?;
+            let end = body.span;
+            let init_span = expr.span;
+            let init_stmt = Spanned::new(StmtKind::ExprStmt(expr), init_span);
+            return Ok(Spanned::new(
+                StmtKind::For {
+                    kind: ForLoop::CStyle { init: Some(Box::new(init_stmt)), condition, update },
+                    body,
+                },
+                Span::merge(to_ast_span(start), end),
+            ));
+        }
+
+        Err(self.err_here_with_code("E02", "expected '{' or ';' after for loop expression".to_string()))
     }
 
     fn parse_expr_stmt(&mut self) -> Result<Stmt, String> {
@@ -574,7 +653,7 @@ impl Parser {
     }
 
     fn parse_factor(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_unary()?;
+        let mut expr = self.parse_power()?;
 
         loop {
             let op = match self.peek_kind() {
@@ -595,7 +674,7 @@ impl Parser {
 
             let Some(op) = op else { break };
 
-            let right = self.parse_unary()?;
+            let right = self.parse_power()?;
             let span = Span::merge(expr.span, right.span);
             expr = Spanned::new(
                 ExprKind::Binary {
@@ -608,6 +687,25 @@ impl Parser {
         }
 
         Ok(expr)
+    }
+
+    fn parse_power(&mut self) -> Result<Expr, String> {
+        let base = self.parse_unary()?;
+        if self.at(TokenKind::StarStar) {
+            self.advance();
+            // Right-associative: recurse into parse_power.
+            let exp = self.parse_power()?;
+            let span = Span::merge(base.span, exp.span);
+            return Ok(Spanned::new(
+                ExprKind::Binary {
+                    left: Box::new(base),
+                    op: BinOpKind::Pow,
+                    right: Box::new(exp),
+                },
+                span,
+            ));
+        }
+        Ok(base)
     }
 
     fn parse_unary(&mut self) -> Result<Expr, String> {
@@ -653,6 +751,26 @@ impl Parser {
             let span = Span::merge(to_ast_span(t), expr.span);
             return Ok(Spanned::new(
                 ExprKind::IncDec { expr: Box::new(expr), op: IncDecOp::Dec, prefix: true },
+                span,
+            ));
+        }
+
+        if self.at(TokenKind::Star) {
+            let t = self.advance().span;
+            let expr = self.parse_unary()?;
+            let span = Span::merge(to_ast_span(t), expr.span);
+            return Ok(Spanned::new(
+                ExprKind::Unary { op: UnaryOpKind::Deref, expr: Box::new(expr) },
+                span,
+            ));
+        }
+
+        if self.at(TokenKind::Ampersand) {
+            let t = self.advance().span;
+            let expr = self.parse_unary()?;
+            let span = Span::merge(to_ast_span(t), expr.span);
+            return Ok(Spanned::new(
+                ExprKind::Unary { op: UnaryOpKind::Ref, expr: Box::new(expr) },
                 span,
             ));
         }
@@ -996,6 +1114,16 @@ impl Parser {
                     ));
                 }
             }
+            TokenKind::Ampersand => {
+                let inner = self.parse_type()?;
+                let span = Span::merge(to_ast_span(start), inner.span);
+                return Ok(Spanned::new(TypeKind::Ref { inner: Box::new(inner) }, span));
+            }
+            TokenKind::Star => {
+                let inner = self.parse_type()?;
+                let span = Span::merge(to_ast_span(start), inner.span);
+                return Ok(Spanned::new(TypeKind::RawPtr { inner: Box::new(inner) }, span));
+            }
             other => {
                 return Err(self.err_tok_with_code(
                     tok.span,
@@ -1109,7 +1237,7 @@ fn main() void {
 
         let StmtKind::Var {
             value: Some(expr), ..
-        } = &body.stmts[0].node
+        } = &body.as_ref().unwrap().stmts[0].node
         else {
             panic!("expected var statement with initializer");
         };
@@ -1147,7 +1275,7 @@ fn main() void {
             r#"fn main() void { @cfg(target_os = "linux") { var x: i32 = 1; } }"#,
         );
         let ItemKind::Fn { body, .. } = &program.items[0].node else { panic!() };
-        assert!(matches!(body.stmts[0].node, StmtKind::CfgBlock { .. }));
+        assert!(matches!(body.as_ref().unwrap().stmts[0].node, StmtKind::CfgBlock { .. }));
     }
 
     #[test]
@@ -1243,7 +1371,7 @@ fn main() void {
             panic!("expected function item");
         };
 
-        let StmtKind::ExprStmt(expr) = &body.stmts[0].node else {
+        let StmtKind::ExprStmt(expr) = &body.as_ref().unwrap().stmts[0].node else {
             panic!("expected expression statement");
         };
 
@@ -1288,7 +1416,7 @@ fn main() void {
             panic!("expected function item");
         };
 
-        let StmtKind::ExprStmt(expr) = &body.stmts[0].node else {
+        let StmtKind::ExprStmt(expr) = &body.as_ref().unwrap().stmts[0].node else {
             panic!("expected expression statement");
         };
 
@@ -1312,7 +1440,7 @@ fn main() void {
             panic!("expected function item");
         };
 
-        let StmtKind::ExprStmt(expr) = &body.stmts[0].node else {
+        let StmtKind::ExprStmt(expr) = &body.as_ref().unwrap().stmts[0].node else {
             panic!("expected expression statement");
         };
 
@@ -1345,7 +1473,7 @@ fn main() void {
             panic!("expected function item");
         };
 
-        let StmtKind::Var { ty: Some(ty), .. } = &body.stmts[0].node else {
+        let StmtKind::Var { ty: Some(ty), .. } = &body.as_ref().unwrap().stmts[0].node else {
             panic!("expected var statement with type annotation");
         };
 
@@ -1414,7 +1542,7 @@ fn unwrap_or_zero(x: Option[i32]) i32 {
             panic!("expected function item");
         };
 
-        let StmtKind::Return(Some(expr)) = &body.stmts[0].node else {
+        let StmtKind::Return(Some(expr)) = &body.as_ref().unwrap().stmts[0].node else {
             panic!("expected return with expression");
         };
 
@@ -1471,7 +1599,7 @@ fn value(c: Color) i32 {
             panic!("expected function item");
         };
 
-        let StmtKind::Return(Some(expr)) = &body.stmts[0].node else {
+        let StmtKind::Return(Some(expr)) = &body.as_ref().unwrap().stmts[0].node else {
             panic!("expected return with expression");
         };
 

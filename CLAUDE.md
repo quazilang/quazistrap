@@ -177,8 +177,8 @@ import mymodule.myFunc;  // auto-loads mymodule.void from same directory
 
 pub fn name[T](param: Type) ReturnType {  // pub is optional, ignored
     const x: i32 = 1 + 2;
-    var y: str;
-    y = "hello";
+    var y: &str;
+    y = "hello";           // string literals are &str
     x += 1; x -= 1; x *= 2; x /= 2; x %= 2;  // compound assign
     x++; x--; ++x; --x;                        // inc/dec (prefix and postfix)
     if (cond) { ... } else { ... }
@@ -207,26 +207,30 @@ Primitive types: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/
 
 ## String Model
 
-- `str` — primitive type (keyword). Immutable byte-slice view: fat pointer (`ptr: *u8, len: usize`). No ownership, no UTF-8 guarantee. String literals have type `str`. Fat-pointer layout is resolved by the AOT backend.
+- `&str` — canonical string view type. Immutable fat pointer (`ptr: *u8, len: usize`), valid UTF-8. **String literals have type `&str`**. Preferred form in user code.
+- `str` — primitive keyword, alias for `&str`. Fully compatible in all type positions — `str` and `&str` are interchangeable. Kept for ergonomics (`fn foo(s: str)` and `fn foo(s: &str)` are equivalent).
 - `String` — stdlib struct. Owned heap string: `ptr + len + cap`, UTF-8 valid. Allocated/freed by RAII (`Drop` at scope exit).
+- `&[u8; N]` — byte string (future). Fixed-size byte array reference for non-UTF-8 data.
 - `Rune = u32` — Unicode codepoint. Defined as a type alias in stdlib.
-- `RuneIterator` — stdlib struct that iterates UTF-8 codepoints over a `str`.
+- `RuneIterator` — stdlib struct that iterates UTF-8 codepoints over a `&str`.
+
+**Compatibility rule** (`types_compatible`): `TypeKind::Str` ↔ `TypeKind::Ref { inner: Str }` always compatible. Both lower to identical fat-pointer representation in codegen/AOT.
 
 Key API surface (implemented as stdlib methods via vtable):
 ```
-str.len()              -> usize   (bytecode: StrLen 0x60 — reads the len field)
-str.to_string()        -> String  (bytecode: PrimToStr 0x64 — heap alloc)
-str.as_str()           -> str     (bytecode: StrAsStr 0x65 — String→str view)
-str.as_string()        -> str     (alias for as_str)
-str.parse[i32]()        -> i64   (bytecode: StrToInt 0x62)
-str.parse[f64]()        -> f64   (bytecode: StrToFloat 0x63)
-String.bytes()         -> str     (view of heap buffer, no copy)
+(&str).len()           -> usize   (bytecode: StrLen 0x60 — calls strlen)
+(&str).to_string()     -> String  (bytecode: PrimToStr 0x64 — heap alloc)
+(&str).as_str()        -> &str    (bytecode: StrAsStr 0x65 — String→&str view)
+(&str).as_string()     -> &str    (alias for as_str)
+(&str).parse[i32]()    -> i64     (bytecode: StrToInt 0x62)
+(&str).parse[f64]()    -> f64     (bytecode: StrToFloat 0x63)
+String.bytes()         -> &str    (view of heap buffer, no copy)
 String.runes()         -> RuneIterator
 RuneIterator.next()    -> Option[Rune]
 RuneIterator.at(i)     -> Rune    // O(n)
 ```
 
-Mutability is a property of the binding (`var`/`const`), not the type. A `var s: str` can be rebound; bytes viewed through `str` are immutable.
+Mutability is a property of the binding (`var`/`const`), not the type. A `var s: &str` can be rebound; bytes viewed through `&str` are immutable.
 
 ## Attribute System
 

@@ -208,12 +208,12 @@ impl Analyzer {
     pub(super) fn run_inline_candidate_pass(&mut self, program: &Program) {
         for item in &program.items {
             match &item.node {
-                ItemKind::Fn { name, body, attributes, .. } => {
+                ItemKind::Fn { name, body: Some(body), attributes, .. } => {
                     self.maybe_add_inline_candidate(name, body, attributes, item.span);
                 }
                 ItemKind::Impl { methods, .. } => {
                     for method in methods {
-                        if let ItemKind::Fn { name, body, attributes, .. } = &method.node {
+                        if let ItemKind::Fn { name, body: Some(body), attributes, .. } = &method.node {
                             self.maybe_add_inline_candidate(name, body, attributes, method.span);
                         }
                     }
@@ -285,8 +285,8 @@ impl Analyzer {
         !body.stmts.iter().any(|stmt| matches!(
             stmt.node,
             StmtKind::If { .. }
-                | StmtKind::While { .. }
                 | StmtKind::For { .. }
+                | StmtKind::UnsafeBlock { .. }
                 | StmtKind::CfgBlock { .. }
         ))
     }

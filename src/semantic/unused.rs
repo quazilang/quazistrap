@@ -114,12 +114,12 @@ impl Analyzer {
     pub(super) fn run_dead_code_pass(&mut self, program: &Program) {
         for item in &program.items {
             match &item.node {
-                ItemKind::Fn { body, .. } => {
+                ItemKind::Fn { body: Some(body), .. } => {
                     let _ = self.dead_code_block(body);
                 }
                 ItemKind::Impl { methods, .. } => {
                     for method in methods {
-                        if let ItemKind::Fn { body, .. } = &method.node {
+                        if let ItemKind::Fn { body: Some(body), .. } = &method.node {
                             let _ = self.dead_code_block(body);
                         }
                     }
@@ -169,7 +169,14 @@ impl Analyzer {
                 };
                 then_returns && else_returns
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+            StmtKind::For { body, kind } => {
+                if let ForLoop::CStyle { init: Some(init_stmt), .. } = kind {
+                    let _ = self.dead_code_stmt(init_stmt);
+                }
+                let _ = self.dead_code_block(body);
+                false
+            }
+            StmtKind::UnsafeBlock { body } => {
                 let _ = self.dead_code_block(body);
                 false
             }

@@ -78,7 +78,7 @@ impl Instruction {
             Opcode::Nop | Opcode::Ret | Opcode::MemFence => pad(&name),
 
             // RRR — dst, src1, src2
-            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Mod
+            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Mod | Opcode::Pow
             | Opcode::And | Opcode::Or | Opcode::Xor | Opcode::Shl | Opcode::Shr | Opcode::Sar
             | Opcode::StrConcat | Opcode::AtomicAdd | Opcode::AtomicCas => {
                 let (d, s1, s2) = self.rrr();

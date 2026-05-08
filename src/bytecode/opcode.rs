@@ -27,6 +27,7 @@ pub enum Opcode {
     Shl = 0x1C,
     Shr = 0x1D, // logical right shift
     Sar = 0x1E, // arithmetic right shift
+    Pow = 0x1F, // dst = src1 ** src2 (calls pow/powi at AOT)
 
     // 0x20–0x2F  Memory & ownership
     Load  = 0x20, // dst = *(base + offset16)
@@ -100,6 +101,7 @@ impl Opcode {
             0x1C => Some(Self::Shl),
             0x1D => Some(Self::Shr),
             0x1E => Some(Self::Sar),
+            0x1F => Some(Self::Pow),
             0x20 => Some(Self::Load),
             0x21 => Some(Self::Store),
             0x22 => Some(Self::Lea),

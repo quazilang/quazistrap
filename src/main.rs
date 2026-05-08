@@ -101,7 +101,7 @@ fn run_pipeline(
                 cmd.args(flags);
             }
             let status = cmd
-                .args(["-o", output_file_name, &asm_path])
+                .args(["-o", output_file_name, &asm_path, "-lm"])
                 .status()
                 .unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m gcc not found: {}", e);
@@ -439,7 +439,7 @@ fn main() void {
     const y: i32 = 10;
     var x: i32 = 5;
 
-    while (x < y) {
+    for x < y {
         stdout.println("{} void! x = {}", z, x);
         x++;
     }

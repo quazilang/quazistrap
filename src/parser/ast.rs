@@ -58,8 +58,10 @@ pub enum Literal {
 
 #[derive(Debug, Clone)]
 pub enum UnaryOpKind {
-    Neg, // -x
-    Not, // !x
+    Neg,  // -x
+    Not,  // !x
+    Ref,  // &x  (take address)
+    Deref, // *x (dereference)
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +79,7 @@ pub enum BinOpKind {
     NotEq,
     AndAnd,
     OrOr,
+    Pow,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +215,14 @@ pub enum TypeKind {
     Slice {
         elem_ty: Box<Type>,
     },
+    /// `&T` — shared reference.
+    Ref {
+        inner: Box<Type>,
+    },
+    /// `*T` — raw pointer (unsafe to dereference).
+    RawPtr {
+        inner: Box<Type>,
+    },
 }
 
 impl std::fmt::Display for TypeKind {
@@ -250,6 +261,8 @@ impl std::fmt::Display for TypeKind {
             }
             TypeKind::Array { elem_ty, len } => write!(f, "[{}; {}]", elem_ty.node, len),
             TypeKind::Slice { elem_ty } => write!(f, "[{}]", elem_ty.node),
+            TypeKind::Ref { inner } => write!(f, "&{}", inner.node),
+            TypeKind::RawPtr { inner } => write!(f, "*{}", inner.node),
         }
     }
 }
@@ -287,6 +300,20 @@ pub enum ForIter {
 }
 
 #[derive(Debug, Clone)]
+pub enum ForLoop {
+    /// `for var e : collection {}` / `for var i : 0..10 {}`
+    Each { vars: Vec<String>, iter: ForIter },
+    /// `for [init;] [cond;] [update] {}`  — C-style
+    CStyle {
+        init: Option<Box<Stmt>>,
+        condition: Option<Expr>,
+        update: Option<Expr>,
+    },
+    /// `for [cond] {}` — while-like (condition = None means infinite)
+    Cond { condition: Option<Expr> },
+}
+
+#[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
     pub ty: Type,
@@ -314,20 +341,19 @@ pub enum StmtKind {
         then_block: Block,
         else_block: Option<Block>,
     },
-    While {
-        condition: Expr,
-        body: Block,
-    },
-    /// `for var [, var] : iter_expr { body }`
+    /// Unified `for` loop — all loop forms.
     For {
-        vars: Vec<String>,
-        iter: ForIter,
+        kind: ForLoop,
         body: Block,
     },
     ExprStmt(Expr),
     /// `@cfg(key = "value") { ... }` — compile-time conditional block.
     CfgBlock {
         condition: Attribute,
+        body: Block,
+    },
+    /// `unsafe { ... }` — unsafe block.
+    UnsafeBlock {
         body: Block,
     },
 }
@@ -378,8 +404,9 @@ pub enum ItemKind {
         generic_params: Vec<String>,
         params: Vec<Param>,
         return_ty: Type,
-        body: Block,
+        body: Option<Block>,
         attributes: Vec<Attribute>,
+        unsafe_fn: bool,
     },
     Struct {
         name: String,
