@@ -2,7 +2,7 @@
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
-mod aot;
+mod backend;
 pub mod bytecode;
 mod cli;
 mod loader;
@@ -11,6 +11,8 @@ pub mod lexer;
 pub mod parser;
 pub mod semantic;
 
+use backend::linker::{remove_temp, write_temp_object, LinkerInvocation};
+use backend::{select_backend, TargetSpec};
 use bytecode::{serialize_vbc, Codegen};
 use clap::Parser as ClapParser;
 use cli::Args;
@@ -54,6 +56,7 @@ fn run_pipeline(
     emit: EmitType,
     output_file_name: &str,
     link_flags: Option<&[String]>,
+    explicit_linker: Option<&Path>,
 ) {
     let sema_report = analyze_program(src, program);
     if !report_diagnostics(&sema_report, src) {
@@ -79,42 +82,67 @@ fn run_pipeline(
                 print!("{}", chunk);
             }
         }
-        EmitType::Assembly => {
-            let emitter = aot::X86Emitter::new(&chunks);
-            let asm = emitter.emit_asm();
-            std::fs::write(output_file_name, &asm).unwrap_or_else(|e| {
+
+        EmitType::Object => {
+            let obj_bytes = compile_to_object(&chunks, false);
+            std::fs::write(output_file_name, &obj_bytes).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot write {}: {}", output_file_name, e);
                 std::process::exit(1);
             });
             println!("wrote {}", output_file_name);
         }
+
         EmitType::Binary => {
-            let emitter = aot::X86Emitter::new(&chunks);
-            let asm = emitter.emit_asm();
-            let asm_path = format!("{}.s", output_file_name);
-            std::fs::write(&asm_path, &asm).unwrap_or_else(|e| {
-                eprintln!("\x1b[31;1merror:\x1b[0m cannot write {}: {}", asm_path, e);
+            let obj_bytes = compile_to_object(&chunks, true);
+            let stem = Path::new(output_file_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(output_file_name);
+            let tmp_obj = write_temp_object(&obj_bytes, stem).unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
             });
-            let mut cmd = std::process::Command::new("gcc");
-            if let Some(flags) = link_flags {
-                cmd.args(flags);
-            }
-            let status = cmd
-                .args(["-o", output_file_name, &asm_path, "-lm"])
-                .status()
-                .unwrap_or_else(|e| {
-                    eprintln!("\x1b[31;1merror:\x1b[0m gcc not found: {}", e);
-                    std::process::exit(1);
-                });
-            let _ = std::fs::remove_file(&asm_path);
-            if !status.success() {
-                eprintln!("\x1b[31;1merror:\x1b[0m gcc failed");
+
+            // Override linker if the user passed --linker.
+            let flags = link_flags.unwrap_or(&[]);
+            let mut inv = LinkerInvocation::new(
+                tmp_obj.clone(),
+                PathBuf::from(output_file_name),
+                TargetSpec::host(),
+                flags.to_vec(),
+            )
+            .unwrap_or_else(|e| {
+                remove_temp(&tmp_obj);
+                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
+            });
+
+            if let Some(lnk) = explicit_linker {
+                inv.linker = lnk.to_path_buf();
             }
+
+            inv.run().unwrap_or_else(|e| {
+                remove_temp(&tmp_obj);
+                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+                std::process::exit(1);
+            });
+
+            remove_temp(&tmp_obj);
             println!("wrote {}", output_file_name);
         }
     }
+}
+
+fn compile_to_object(chunks: &[crate::bytecode::Chunk], emit_start: bool) -> Vec<u8> {
+    let mut target = TargetSpec::host();
+    if !emit_start {
+        target = target.without_start();
+    }
+    let backend = select_backend(&target);
+    backend.compile(chunks, &target).unwrap_or_else(|e| {
+        eprintln!("\x1b[31;1merror:\x1b[0m codegen failed: {}", e);
+        std::process::exit(1);
+    }).bytes
 }
 
 fn run_check(src: &str, program: &parser::ast::Program) {
@@ -127,7 +155,7 @@ fn run_check(src: &str, program: &parser::ast::Program) {
 fn project_output_name(name: &str, emit: EmitType) -> String {
     match emit {
         EmitType::Bytecode => format!("{}.vbc", name),
-        EmitType::Assembly => format!("{}.s", name),
+        EmitType::Object => format!("{}.o", name),
         EmitType::Binary => {
             if cfg!(target_os = "windows") {
                 format!("{}.exe", name)
@@ -138,13 +166,62 @@ fn project_output_name(name: &str, emit: EmitType) -> String {
     }
 }
 
+/// Walk up from the executable to find the std library root (contains void.toml).
+/// Search order: VOID_STD env var → ancestors of exe → cwd/std.
+fn find_std_root() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("VOID_STD") {
+        let path = PathBuf::from(&p);
+        if path.join("void.toml").exists() {
+            return Some(path);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent();
+        while let Some(d) = dir {
+            let candidate = d.join("std");
+            if candidate.join("void.toml").exists() {
+                return Some(candidate);
+            }
+            dir = d.parent();
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidate = cwd.join("std");
+        if candidate.join("void.toml").exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Returns true if any file contains a bare `@no_std` line.
+fn has_no_std(files: &[PathBuf]) -> bool {
+    files.iter().any(|f| {
+        std::fs::read_to_string(f)
+            .map(|s| s.lines().any(|line| line.trim() == "@no_std"))
+            .unwrap_or(false)
+    })
+}
+
+/// Inject std into resolver unless @no_std is present in the source files.
+fn inject_std(resolver: &mut loader::ModuleResolver, entry_files: &[PathBuf]) {
+    if has_no_std(entry_files) {
+        return;
+    }
+    let Some(std_root) = find_std_root() else { return };
+    if let Err(e) = project::inject_std_module(resolver, &std_root) {
+        eprintln!("\x1b[33mwarning:\x1b[0m std not available: {}", e);
+    }
+}
+
 fn load_with_optional_project(files: &[PathBuf]) -> LoadResult {
     let ctx = ProjectContext::discover(&files[0]).unwrap_or_else(|e| {
         eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
         std::process::exit(1);
     });
-    let resolver = ctx.as_ref().map(|c| &c.resolver);
-    loader::load_programs_with_resolver(files, resolver).unwrap_or_else(|e| {
+    let mut resolver_owned: Option<loader::ModuleResolver> = ctx.map(|c| c.resolver);
+    inject_std(resolver_owned.get_or_insert_with(loader::ModuleResolver::default), files);
+    loader::load_programs_with_resolver(files, resolver_owned.as_ref()).unwrap_or_else(|e| {
         eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
         std::process::exit(1);
     })
@@ -262,8 +339,7 @@ fn clean_project_artifacts() {
 
     let mut targets: HashSet<PathBuf> = HashSet::new();
     targets.insert(root.join(&bin_name));
-    targets.insert(root.join(format!("{}.s", bin_name)));
-    targets.insert(root.join(format!("{}.s", ctx.config.name)));
+    targets.insert(root.join(format!("{}.o", ctx.config.name)));
     targets.insert(root.join(format!("{}.vbc", ctx.config.name)));
 
     let mut removed = 0usize;
@@ -291,26 +367,29 @@ fn main() {
         CliCmd::Build {
             files,
             output,
-            emit_asm,
             emit_bytecode,
+            emit_object,
             run,
+            linker,
         } => {
             let emit = if emit_bytecode {
                 EmitType::Bytecode
-            } else if emit_asm {
-                EmitType::Assembly
+            } else if emit_object {
+                EmitType::Object
             } else {
                 EmitType::Binary
             };
 
+            let explicit_linker = linker.as_deref();
+
             if files.is_empty() {
-                // No files: build project from void.toml
-                let ctx = load_project_context();
+                let mut ctx = load_project_context();
                 ctx.ensure_lockfile().unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                     std::process::exit(1);
                 });
 
+                inject_std(&mut ctx.resolver, &[ctx.config.entry.clone()]);
                 let entry = ctx.config.entry.clone();
                 let result = loader::load_programs_with_resolver(&[entry], Some(&ctx.resolver))
                     .unwrap_or_else(|e| {
@@ -318,16 +397,19 @@ fn main() {
                         std::process::exit(1);
                     });
 
-                let out = output.clone().unwrap_or_else(|| project_output_name(&ctx.config.name, emit.clone()));
+                let out = output.clone().unwrap_or_else(|| {
+                    project_output_name(&ctx.config.name, emit.clone())
+                });
                 run_pipeline(
                     &result.merged_source,
                     &result.program,
                     emit,
                     &out,
                     Some(&ctx.config.flags),
+                    explicit_linker,
                 );
 
-                if run && !emit_bytecode && !emit_asm {
+                if run && !emit_bytecode && !emit_object {
                     let status = std::process::Command::new(&out)
                         .status()
                         .unwrap_or_else(|e| {
@@ -339,7 +421,6 @@ fn main() {
                     }
                 }
             } else {
-                // Files given: compile files directly
                 let result = load_with_optional_project(&files);
 
                 if result.loaded_files.len() > 1 {
@@ -353,16 +434,16 @@ fn main() {
                     let stem = files[0].file_stem().unwrap_or_default().to_string_lossy().into_owned();
                     match emit {
                         EmitType::Bytecode => format!("{}.vbc", stem),
-                        EmitType::Assembly => format!("{}.s", stem),
-                        EmitType::Binary => {
+                        EmitType::Object  => format!("{}.o", stem),
+                        EmitType::Binary  => {
                             if cfg!(target_os = "windows") { format!("{}.exe", stem) } else { stem }
                         }
                     }
                 });
 
-                run_pipeline(&result.merged_source, &result.program, emit, &out, None);
+                run_pipeline(&result.merged_source, &result.program, emit, &out, None, explicit_linker);
 
-                if run && !emit_bytecode && !emit_asm {
+                if run && !emit_bytecode && !emit_object {
                     let status = std::process::Command::new(format!("./{}", out))
                         .status()
                         .unwrap_or_else(|e| {
@@ -375,13 +456,15 @@ fn main() {
                 }
             }
         }
-        CliCmd::Run => {
-            let ctx = load_project_context();
+
+        CliCmd::Run { linker } => {
+            let mut ctx = load_project_context();
             ctx.ensure_lockfile().unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
             });
 
+            inject_std(&mut ctx.resolver, &[ctx.config.entry.clone()]);
             let entry = ctx.config.entry.clone();
             let result = loader::load_programs_with_resolver(&[entry], Some(&ctx.resolver))
                 .unwrap_or_else(|e| {
@@ -396,6 +479,7 @@ fn main() {
                 EmitType::Binary,
                 &out,
                 Some(&ctx.config.flags),
+                linker.as_deref(),
             );
 
             let status = std::process::Command::new(&out)
@@ -408,8 +492,10 @@ fn main() {
                 std::process::exit(status.code().unwrap_or(1));
             }
         }
+
         CliCmd::Check => {
-            let ctx = load_project_context();
+            let mut ctx = load_project_context();
+            inject_std(&mut ctx.resolver, &[ctx.config.entry.clone()]);
             let entry = ctx.config.entry.clone();
             let result = loader::load_programs_with_resolver(&[entry], Some(&ctx.resolver))
                 .unwrap_or_else(|e| {
@@ -418,19 +504,20 @@ fn main() {
                 });
             run_check(&result.merged_source, &result.program);
         }
+
         CliCmd::New { name } => {
             create_new_project(&name);
         }
+
         CliCmd::Fmt => {
             format_project_sources();
         }
+
         CliCmd::Clean => {
             clean_project_artifacts();
         }
-        CliCmd::Debug {
-            emit_asm,
-            emit_bytecode,
-        } => {
+
+        CliCmd::Debug { emit_bytecode } => {
             let src = r#"
 import std.io.stdout;
 
@@ -447,8 +534,6 @@ fn main() void {
 "#;
             let (emit, output) = if emit_bytecode {
                 (EmitType::Bytecode, "dbg.vbc".to_owned())
-            } else if emit_asm {
-                (EmitType::Assembly, "dbg.s".to_owned())
             } else {
                 (EmitType::Binary, if cfg!(target_os = "windows") { "dbg.exe".to_owned() } else { "dbg".to_owned() })
             };
@@ -456,7 +541,7 @@ fn main() void {
             let tokens = lexer.tokenize();
             let mut parser = Parser::new_with_source(tokens, src);
             match parser.parse() {
-                Ok(program) => run_pipeline(src, &program, emit, &output, None),
+                Ok(program) => run_pipeline(src, &program, emit, &output, None, None),
                 Err(err) => {
                     eprintln!("{}", err);
                     std::process::exit(1);

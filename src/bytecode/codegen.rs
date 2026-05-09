@@ -183,6 +183,11 @@ impl<'a> Codegen<'a> {
         body: Option<&Block>,
         attributes: &[crate::parser::ast::Attribute],
     ) -> Option<Chunk> {
+        // @intrinsic: emit a platform-neutral Intrinsic instruction.
+        if let Some(attr) = attributes.iter().find(|a| a.name == "intrinsic") {
+            return Some(self.compile_intrinsic_fn(name, params, attr));
+        }
+
         // @syscall: emit a single Syscall instruction instead of the function body.
         if let Some(attr) = attributes.iter().find(|a| a.name == "syscall") {
             return Some(self.compile_syscall_fn(name, params, attr));
@@ -221,12 +226,33 @@ impl<'a> Codegen<'a> {
         params: &[crate::parser::ast::Param],
         attr: &crate::parser::ast::Attribute,
     ) -> Chunk {
+        use crate::parser::ast::{AttrArg, AttrVal};
         let mut chunk = Chunk::with_params(name, params.len());
-        let syscall_num = syscall_number(attr);
-        // Params are in r0..r(n-1) by calling convention.
-        // Emit Syscall: dst=r0, num=syscall_num, flags=arg_count.
+        // Store name or raw number in const pool — arch-neutral VBC.
+        let entry = match attr.args.first() {
+            Some(AttrArg::Positional(AttrVal::Int(n))) => ConstPoolEntry::Int(*n),
+            Some(AttrArg::Positional(AttrVal::Str(s))) => ConstPoolEntry::Str(s.clone()),
+            _ => ConstPoolEntry::Str(String::new()),
+        };
+        let idx = chunk.add_constant(entry);
         let arg_count = params.len() as u8;
-        let mut instr = ri16(Opcode::Syscall, 0, syscall_num);
+        let mut instr = ri16(Opcode::Syscall, 0, idx);
+        instr.flags = arg_count;
+        chunk.emit(instr);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+        chunk
+    }
+
+    fn compile_intrinsic_fn(
+        &self,
+        name: &str,
+        params: &[crate::parser::ast::Param],
+        attr: &crate::parser::ast::Attribute,
+    ) -> Chunk {
+        let mut chunk = Chunk::with_params(name, params.len());
+        let id = intrinsic_id(attr);
+        let arg_count = params.len() as u8;
+        let mut instr = ri16(Opcode::Intrinsic, 0, id);
         instr.flags = arg_count;
         chunk.emit(instr);
         chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
@@ -341,10 +367,12 @@ impl<'a> FnCompiler<'a> {
                 self.compile_expr(expr);
                 false
             }
-            StmtKind::CfgBlock { body, .. } => {
-                // cfg evaluation deferred to AOT backend; compile body unconditionally.
-                self.compile_block(body);
-                false
+            StmtKind::CfgBlock { body, condition } => {
+                if cfg_condition_matches(condition) {
+                    self.compile_block(body)
+                } else {
+                    false
+                }
             }
             StmtKind::If { condition, then_block, else_block } => {
                 // Constant-condition elimination: skip the dead branch entirely.
@@ -904,29 +932,27 @@ fn extract_field_chain(expr: &Expr) -> Option<(String, Vec<String>)> {
     }
 }
 
-fn syscall_number(attr: &crate::parser::ast::Attribute) -> u16 {
-    if let Some(crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Int(n))) = attr.args.first() {
-        if *n >= 0 && *n <= u16::MAX as i64 {
-            return *n as u16;
-        }
-    }
-
+fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> u16 {
     let name = attr.args.first().and_then(|a| match a {
         crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => Some(s.as_str()),
         _ => None,
     }).unwrap_or("");
-    // Linux x86-64 syscall numbers
     match name {
-        "read"        => 0,
-        "write"       => 1,
-        "open"        => 2,
-        "close"       => 3,
-        "mmap"        => 9,
-        "munmap"      => 11,
-        "brk"         => 12,
-        "exit"        => 60,
-        "exit_group"  => 231,
-        _             => 0,
+        "void.write"        => 0,
+        "void.read"         => 1,
+        "void.exit"         => 2,
+        "void.malloc"       => 3,
+        "void.free"         => 4,
+        "void.realloc"      => 5,
+        "void.memcpy"       => 6,
+        "void.memset"       => 7,
+        "void.memmove"      => 8,
+        "void.memcmp"       => 9,
+        "void.strlen"       => 10,
+        "void.stderr_write" => 11,
+        "void.sleep_ms"     => 12,
+        "void.getenv"       => 13,
+        _                   => 0,
     }
 }
 
@@ -935,6 +961,19 @@ fn api_symbol(attr: &crate::parser::ast::Attribute) -> String {
         crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => Some(s.clone()),
         _ => None,
     }).unwrap_or_default()
+}
+
+fn cfg_condition_matches(attr: &crate::parser::ast::Attribute) -> bool {
+    use crate::parser::ast::{AttrArg, AttrVal};
+    for arg in &attr.args {
+        match arg {
+            AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_os" => {
+                return val.as_str() == std::env::consts::OS;
+            }
+            _ => {}
+        }
+    }
+    true // unknown condition — include unconditionally
 }
 
 fn is_comparison(op: &BinOpKind) -> bool {
@@ -1189,8 +1228,12 @@ mod tests {
             .iter()
             .find(|i| i.opcode == Opcode::Syscall as u8)
             .expect("expected Syscall instruction");
-        let (_, num) = instr.ri16();
-        assert_eq!(num, 60);
+        // Numeric syscall id is stored in the const pool, ri16 gives the pool index.
+        let (_, idx) = instr.ri16();
+        assert!(
+            matches!(chunks[0].constants.get(idx as usize), Some(ConstPoolEntry::Int(60))),
+            "expected Int(60) in const pool at index {idx}"
+        );
         assert_eq!(instr.flags, 1);
     }
 

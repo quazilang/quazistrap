@@ -152,6 +152,14 @@ impl ProjectContext {
     }
 }
 
+/// Inject the std module into an existing resolver without needing void.toml deps.
+/// Called by the compiler when std is auto-discovered and @no_std is absent.
+pub fn inject_std_module(resolver: &mut ModuleResolver, std_root: &Path) -> Result<(), String> {
+    let mut visited = HashSet::new();
+    let mut dep_versions = HashMap::new();
+    collect_modules(std_root, resolver, &mut visited, None, "__void_builtin__", &mut dep_versions)
+}
+
 fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut dir = if start.is_file() {
         start.parent()?.to_path_buf()

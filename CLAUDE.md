@@ -16,29 +16,43 @@ cargo fmt               # format
 CLI (one dependency: `clap 4.6`):
 
 ```bash
-void build <file> [files...]        # compile files to native binary via gcc (default)
+void build <file> [files...]        # compile files to native binary (default)
 void build <file> -b                # emit .vbc bytecode
-void build <file> -s                # emit .s AT&T x86-64 assembly
-void build <file> [-b|-s] -o out    # specify output filename
+void build <file> -c                # emit relocatable .o object file (no link)
+void build <file> [-b|-c] -o out    # specify output filename
 void build <file> -r                # compile and run
 void build                          # build project from void.toml (no files given)
-void build [-b|-s] [-o out]         # build project with options
+void build [-b|-c] [-o out]         # build project with options
 void build -r                       # build + run project from void.toml
+void build --linker /path/to/ld     # override linker binary
 void run                            # build + run project from void.toml
+void run --linker /path/to/ld       # build + run with explicit linker
 void check                          # analyze project without emitting
-void debug [-b|-s]                  # compile hardcoded demo source
+void debug [-b]                     # compile hardcoded demo source
 void new <name>                     # create a new project
 void fmt                            # trim trailing whitespace in .void files
 void clean                          # remove build artifacts
 ```
 
-Default output names: `<stem>.vbc` (bytecode), `<stem>.s` (assembly), `<stem>` / `<stem>.exe` (binary).
+Default output names: `<stem>.vbc` (bytecode), `<stem>.o` (object), `<stem>` / `<stem>.exe` (binary).
+
+**Linker selection**: binary emit requires an external linker. Search order: `VOID_LINKER` env var → `ld.lld` → `mold` → `ld`. Override with `--linker /path/to/linker` or `export VOID_LINKER=/path/to/linker`.
 
 Rust edition 2024.
 
 ## Architecture
 
-Compiler frontend pipeline: source files → `Loader` → merged source string → `Lexer` → `Vec<Token>` → `Parser` → `Program` → `Analyzer` → `SemanticReport` → `Codegen` → `Vec<Chunk>` → `X86Emitter` → AT&T asm → `gcc` → binary.
+Compiler frontend pipeline:
+```
+source files → Loader → merged source → Lexer → Vec<Token> → Parser → Program
+             → Analyzer → SemanticReport → Codegen → Vec<Chunk>
+             → ElfBackend (object + iced-x86) → .o bytes
+             → LinkerInvocation (ld/lld/mold) → binary
+```
+
+VBC (`-b`) output: Codegen → `Vec<Chunk>` serialized directly, no backend involved.  
+Object (`-c`) output: same as binary but stop after `.o`; no linker step.  
+The GCC/GAS toolchain is no longer required or used.
 
 ### Loader (`src/loader.rs`)
 - `load_programs(entries: &[PathBuf]) -> Result<LoadResult>` — resolves local imports recursively, merges sources in dependency-first order, parses the merged string as one `Program`.
@@ -153,21 +167,158 @@ per chunk:
 - `&&` / `||`: short-circuit via `Jz`/`Jnz` — right side only evaluated if needed.
 - Return value convention: always in virtual register 0 (`r0`).
 - Known method call builtins: `len()→StrLen`, `to_string()→PrimToStr`, `as_str()/as_string()→StrAsStr`, `parse[T]()→StrToInt` or `StrToFloat` depending on type arg.
-- `FnCompiler.next_reg` monotonically allocates virtual registers; stored in `Chunk.reg_count` for use by inline expansion and AOT.
+- `FnCompiler.next_reg` monotonically allocates virtual registers; stored in `Chunk.reg_count` for use by inline expansion and the backend.
 
-### AOT Backend (`src/aot/mod.rs`)
-`X86Emitter` lowers `Vec<Chunk>` to AT&T x86-64 assembly (`.s` file). Binary emit writes `.s` then shells out to `gcc`, deletes the `.s` after.
+### Backend (`src/backend/`)
 
-- **Calling convention**: SysV AMD64 — args in `rdi, rsi, rdx, rcx, r8, r9`; return in `rax`.
-- **VBC register N** maps to stack slot `[rbp - (N+1)*8]`.
-- **Frame**: `round_to_16(max_reg_used * 8)` bytes, allocated with `subq`.
-- **Prologue**: `pushq %rbp; movq %rsp, %rbp; subq $frame, %rsp`; then load SysV arg regs into param slots.
-- **Jump labels**: collected first (`jump_targets`), emitted as `.{fn_label}_L{instr_idx}:`.
-- **`CallArg` + `CallIdx`**: pending arg list accumulated; on `CallIdx`, args moved to SysV regs, then `callq`; result in `%rax` moved to dst slot.
-- **`Syscall`**: Linux x86-64 ABI — `rax` = syscall number, args in `rdi, rsi, rdx, r10, r8, r9`, return in `rax`.
-- **`CallExt`**: external symbol call — Windows uses Win64 ABI (`rcx, rdx, r8, r9` + 32-byte shadow + stack args), non-Windows uses SysV ABI (`rdi, rsi, rdx, rcx, r8, r9`).
-- **Unimplemented**: `VtblLoad`, `CallReg` emit placeholder `xorq %rax, %rax` + comment.
-- String constants go to `.rodata` as `.{fn_label}_str{idx}:`, loaded via `leaq ... (%rip), %rax`.
+Replaces the old `src/aot/` (deleted). Emits native ELF `.o` object files directly using the `object` crate (0.36) for ELF construction and `iced-x86` (1.x, `code_asm` feature) for x86-64 instruction encoding. No GCC/GAS involved.
+
+```
+src/backend/
+├── mod.rs             # Backend trait, ObjectOutput, select_backend()
+├── target.rs          # TargetSpec { arch, os, abi, emit_start }
+├── linker.rs          # LinkerInvocation: find ld/lld/mold, exec
+└── x86_64/
+    ├── mod.rs         # ElfBackend: impl Backend, orchestrates sub-modules
+    ├── encoder.rs     # FnEncoder: one Chunk → (machine-code bytes, PendingReloc[])
+    ├── sections.rs    # SectionAccumulator: .text/.rodata/.data management
+    ├── symbols.rs     # SymbolTable: defined + UNDEF symbols
+    ├── relocations.rs # PendingReloc, RelocKind, write_reloc()
+    └── start.rs       # _start stub (Linux only, raw bytes)
+```
+
+**`Backend` trait** (`src/backend/mod.rs`):
+```rust
+pub trait Backend {
+    fn compile(&self, chunks: &[Chunk], target: &TargetSpec) -> Result<ObjectOutput, BackendError>;
+}
+pub fn select_backend(target: &TargetSpec) -> Box<dyn Backend>
+// Linux/MacOs → ElfBackend; Windows → panic (CoffBackend: future work)
+```
+
+**`TargetSpec`** (`src/backend/target.rs`):
+```rust
+pub enum Arch  { X86_64 }
+pub enum Os    { Linux, Windows, MacOs }
+pub enum Abi   { SysV, Win64 }
+pub struct TargetSpec { pub arch, pub os, pub abi, pub emit_start: bool }
+impl TargetSpec {
+    pub fn host() -> Self              // derive from cfg!(target_os/target_arch)
+    pub fn binary_format() -> BinaryFormat   // Elf / Coff / MachO
+    pub fn object_architecture() -> Architecture
+    pub fn dynamic_linker() -> Option<&'static str>  // "/lib64/ld-linux-x86-64.so.2" on Linux
+    pub fn without_start(self) -> Self // for -c (object-only) builds
+}
+```
+
+**Calling conventions**:
+- **SysV AMD64** (Linux/macOS): args in `rdi, rsi, rdx, rcx, r8, r9`; return in `rax`.
+- **Win64** (Windows): args 1-4 in `rcx, rdx, r8, r9`; args 5-6 at `[rsp+32]`/`[rsp+40]`; return in `rax`. Float args in `xmm0`-`xmm3` by position.
+
+**VBC register N** maps to stack slot `[rbp - (N+1)*8]` (`slot(N)` helper in encoder).  
+**Frame**: `round_to_16(reg_count * 8)` bytes (SysV) or `round_to_16(reg_count * 8 + 48)` bytes (Win64 — 32 shadow + 16 stack-arg slots).  
+**Prologue**: `push rbp; mov rbp,rsp; sub rsp,frame`; then load ABI arg regs into param slots. Win64 params 5-6 loaded from `[rbp+48]`/`[rbp+56]`.  
+**`CallArg` + `CallIdx`**: pending arg list accumulated; on `CallIdx`, args moved to ABI regs (+ stack for Win64 args 5-6), `call target` with PLT32/REL32 reloc; result in `rax` moved to dst slot.  
+**`Syscall`**: Linux x86-64 only — `rax`=syscall number, args in `rdi, rsi, rdx, r10, r8, r9`. On Win64, emits `xor rax,rax` (no-op) since raw syscalls are unsafe on Windows.  
+**`CallExt`**: uses the target ABI (SysV on Linux/macOS, Win64 on Windows).  
+**Unimplemented**: `VtblLoad`, `CallReg`, `New`, `NewObj`, `FieldLoad`, `FieldStore` emit `xor rax,rax` placeholder.
+
+### VBC → Object Lowering Design
+
+**`FnEncoder`** (`src/backend/x86_64/encoder.rs`) encodes one `Chunk` to `(Vec<u8>, Vec<PendingReloc>)`:
+
+1. Create a `fn_start` label at byte 0 as a dummy target for all external references.
+2. For every call or RIP-relative data load, emit `call fn_start` / `lea rax,[fn_start]` — the displacement will be wrong (relative to self) but the instruction shape and size are correct.
+3. Record `(asm_instr_idx, disp_byte_offset_within_instr, kind, target_symbol, addend=-4)`.
+4. `asm.assemble(fn_offset)` → raw bytes.
+5. Decode bytes with `iced_x86::Decoder` to map `asm_instr_idx → byte_offset_in_text`.
+6. Zero out the 4 displacement bytes at each recorded position.
+7. Emit `PendingReloc { offset_in_text, kind, symbol, addend }` for each.
+
+The linker fills in the real displacements at link time. No partial encodings or manual byte patching of instruction opcodes.
+
+**Relocation offsets within instruction**:
+- `call rel32` (E8 xx xx xx xx, 5 bytes) → disp at `instr_offset + 1`
+- `lea rax,[rip+rel32]` (48 8D 05 xx xx xx xx, 7 bytes) → disp at `instr_offset + 3`
+
+### Symbol and Relocation Model
+
+**Relocation kinds** (`src/backend/x86_64/relocations.rs`):
+
+| Kind | ELF type | Use |
+|------|----------|-----|
+| `Plt32` | `R_X86_64_PLT32` | Function calls (`CallIdx`, `CallExt`, `_start→main`) |
+| `Pc32` | `R_X86_64_PC32` | RIP-relative data (`lea rax,[rip+str]`, `lea rax,[rip+buf]`) |
+
+Addend is always `-4` (PC-relative displacement accounts for end-of-instruction IP).
+
+**Symbol naming**:
+- Functions: chunk name as-is (e.g. `main`, `add`).
+- String constants: `__void_str_{chunk_name}_{const_pool_idx}` in `.rodata`.
+- PrimToStr format string: `__void_fmt_ld` in `.rodata` (`"%ld\0"`), one per object.
+- PrimToStr buffers: `__void_itoa_{chunk_name}_{instr_idx}` in `.data` (32 bytes each).
+- Entry point: `_start` (emitted when `target.emit_start = true`; Linux binary builds only).
+
+External symbols referenced but not defined (libc, etc.) become UNDEF entries and are resolved by the linker.
+
+### Entry-Point Stubs (`src/backend/x86_64/start.rs`)
+
+Emitted as raw bytes — no CRT object files needed. Selected by `target.os`; `-c` builds omit the stub entirely (`emit_start = false`).
+
+**Linux `_start`** (`StartStub::generate`):
+```
+48 31 ED              xor rbp, rbp
+E8 00 00 00 00        call main   ← PLT32 reloc → "main", addend=-4
+48 89 C7              mov rdi, rax
+48 C7 C0 3C 00 00 00  mov rax, 60
+0F 05                 syscall
+```
+Symbol: `_start`, `SymbolScope::Linkage`.
+
+**Windows `mainCRTStartup`** (`StartStub::generate_windows`):
+```
+48 83 EC 28           sub rsp, 40  (32-byte shadow + 8-byte alignment)
+E8 00 00 00 00        call main   ← REL32 reloc → "main", addend=-4
+48 89 C1              mov rcx, rax
+E8 00 00 00 00        call ExitProcess ← REL32 reloc → "ExitProcess", addend=-4
+```
+Symbol: `mainCRTStartup`, `SymbolScope::Linkage`. Linked with `kernel32.lib`. macOS uses the system dyld entry; `-c` builds omit this stub.
+
+### Linker (`src/backend/linker.rs`)
+
+**Detection order**:
+- Linux/macOS: `VOID_LINKER` env var → `ld.lld` → `mold` → `ld`
+- Windows: `VOID_LINKER` env var → `lld-link` → `link`
+
+**Override**: `--linker /path/to/linker` CLI flag or `export VOID_LINKER=/path/to/linker`.
+
+Linux invocation:
+```
+<linker> -o <output> <obj.o> -lc -lm --dynamic-linker /lib64/ld-linux-x86-64.so.2
+```
+macOS invocation:
+```
+<linker> -o <output> <obj.o> -lc -lm
+```
+Windows invocation (requires `LIB` env var pointing to Windows SDK + MSVC lib dirs):
+```
+<linker> /out:<output.exe> <obj.obj> /subsystem:console /entry:mainCRTStartup kernel32.lib ucrt.lib
+```
+Extra flags from `void.toml [build].flags` are appended after.
+
+`write_temp_object(bytes, stem)` writes object bytes to `$TMPDIR/void_{stem}_{pid}.o`; `remove_temp(path)` cleans up after linking.
+
+### Target Support
+
+| OS | Object format | Calling convention | Entry stub | Status |
+|----|--------------|-------------------|------------|--------|
+| Linux x86-64 | ELF64 | SysV AMD64 | `_start` | Supported |
+| macOS x86-64 | Mach-O | SysV AMD64 | system dyld | Partial |
+| Windows x86-64 | PE/COFF | Win64 | `mainCRTStartup` | Supported |
+
+All targets share the same `ElfBackend` (the `object` crate writes the correct binary format based on `TargetSpec.binary_format()`). Future architectures implement `trait Backend` and are selected in `select_backend()`. VBC stays the same canonical IR regardless of target.
+
+**Windows notes**: linking requires `lld-link` or `link.exe` with `LIB` pointing to Windows SDK + MSVC runtime directories. `@syscall` functions emit a no-op on Windows (raw syscalls are kernel-internal only). `@api("WinFn")` functions use Win64 ABI automatically.
 
 ## Language Syntax (current)
 
@@ -214,7 +365,7 @@ Primitive types: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/
 - `Rune = u32` — Unicode codepoint. Defined as a type alias in stdlib.
 - `RuneIterator` — stdlib struct that iterates UTF-8 codepoints over a `&str`.
 
-**Compatibility rule** (`types_compatible`): `TypeKind::Str` ↔ `TypeKind::Ref { inner: Str }` always compatible. Both lower to identical fat-pointer representation in codegen/AOT.
+**Compatibility rule** (`types_compatible`): `TypeKind::Str` ↔ `TypeKind::Ref { inner: Str }` always compatible. Both lower to identical fat-pointer representation in codegen/backend.
 
 Key API surface (implemented as stdlib methods via vtable):
 ```

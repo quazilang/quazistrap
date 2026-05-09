@@ -5,6 +5,8 @@ edition = "2024"
 license = "0BSD"
 
 [dependencies]
-clap = { version = "4.6.1", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
+clap    = { version = "4.6.1", features = ["derive"] }
+serde   = { version = "1.0",   features = ["derive"] }
+toml    = "0.8"
+object  = { version = "0.36",  features = ["write"] }
+iced-x86 = { version = "1",   features = ["code_asm"] }

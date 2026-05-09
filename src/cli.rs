@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub enum EmitType {
     Bytecode,
-    Assembly,
+    Object,
     Binary,
 }
 
@@ -23,15 +23,23 @@ pub enum Command {
         files: Vec<PathBuf>,
         #[arg(short, long)]
         output: Option<String>,
-        #[arg(short = 's', long = "asm")]
-        emit_asm: bool,
         #[arg(short = 'b', long = "bytecode")]
         emit_bytecode: bool,
+        /// emit relocatable object file (.o) without linking
+        #[arg(short = 'c', long = "obj")]
+        emit_object: bool,
         #[arg(short, long)]
         run: bool,
+        /// explicit linker binary (overrides VOID_LINKER env var)
+        #[arg(long = "linker")]
+        linker: Option<PathBuf>,
     },
     /// build and run project (reads void.toml)
-    Run,
+    Run {
+        /// explicit linker binary
+        #[arg(long = "linker")]
+        linker: Option<PathBuf>,
+    },
     /// check project without compiling (reads void.toml)
     Check,
     /// create new project
@@ -42,8 +50,6 @@ pub enum Command {
     Clean,
     /// debug (use preset code and nothing more)
     Debug {
-        #[arg(short = 's', long = "asm")]
-        emit_asm: bool,
         #[arg(short = 'b', long = "bytecode")]
         emit_bytecode: bool,
     },

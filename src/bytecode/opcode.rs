@@ -68,7 +68,7 @@ pub enum Opcode {
     MemFence  = 0x52,
     Spawn     = 0x53,
     CallExt   = 0x5D, // call external symbol (FFI/API)
-    Syscall   = 0x5E, // syscall — RI16: ops[0]=dst, ops[1..2]=syscall_num; flags=arg_count
+    Syscall   = 0x5E, // syscall — RI16: ops[0]=dst, ops[1..2]=const_pool_idx (name or raw num); flags=arg_count
 
     // 0x60–0x6F  String operations
     StrLen    = 0x60, // dst = len field of str fat pointer — RRR: ops[0]=dst, ops[1]=src
@@ -77,6 +77,9 @@ pub enum Opcode {
     StrToFloat = 0x63, // parse str → f64 — RR
     PrimToStr  = 0x64, // primitive/str → String (heap alloc) — RR
     StrAsStr   = 0x65, // String → str view — RR
+
+    // 0x70–0x7F  Intrinsics (stdlib runtime, platform-neutral VBC)
+    Intrinsic  = 0x70, // platform intrinsic — RI16: ops[0]=dst, ops[1..2]=intrinsic_id; flags=arg_count
 }
 
 impl Opcode {
@@ -141,6 +144,7 @@ impl Opcode {
             0x63 => Some(Self::StrToFloat),
             0x64 => Some(Self::PrimToStr),
             0x65 => Some(Self::StrAsStr),
+            0x70 => Some(Self::Intrinsic),
             _ => None,
         }
     }

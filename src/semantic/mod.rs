@@ -563,7 +563,7 @@ fn main() void {
             .join("\n");
 
         assert!(combined.contains("declared i32"));
-        assert!(combined.contains("got str"));
+        assert!(combined.contains("got &str"));
         assert!(!combined.contains("Int32"));
         assert!(!combined.contains("Str"));
     }

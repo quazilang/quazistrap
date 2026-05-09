@@ -180,10 +180,38 @@ impl Instruction {
                 format!("{}r{}, &[r{} + {}]", pad("lea"), d, base, off)
             }
 
-            // Syscall: dst, sys#num (args=flags)
+            // Syscall: dst, sys[idx] where idx points to const pool name or raw number
             Opcode::Syscall => {
-                let (d, num) = self.ri16();
-                format!("{}r{}, sys#{} (args={})", pad("syscall"), d, num, self.flags)
+                let (d, idx) = self.ri16();
+                let val = consts.get(idx as usize).map(|c| match c {
+                    ConstPoolEntry::Str(s) => format!("={:?}", s),
+                    ConstPoolEntry::Int(n) => format!("={}", n),
+                    ConstPoolEntry::Float(f) => format!("={}", f),
+                }).unwrap_or_default();
+                format!("{}r{}, sys[{}]{} (args={})", pad("syscall"), d, idx, val, self.flags)
+            }
+
+            // Intrinsic: dst, #id (args=flags)
+            Opcode::Intrinsic => {
+                let (d, id) = self.ri16();
+                let name = match id {
+                    0  => "void.write",
+                    1  => "void.read",
+                    2  => "void.exit",
+                    3  => "void.malloc",
+                    4  => "void.free",
+                    5  => "void.realloc",
+                    6  => "void.memcpy",
+                    7  => "void.memset",
+                    8  => "void.memmove",
+                    9  => "void.memcmp",
+                    10 => "void.strlen",
+                    11 => "void.stderr_write",
+                    12 => "void.sleep_ms",
+                    13 => "void.getenv",
+                    _  => "?",
+                };
+                format!("{}r{}, #{}({}) (args={})", pad("intrinsic"), d, id, name, self.flags)
             }
 
             // New/NewObj

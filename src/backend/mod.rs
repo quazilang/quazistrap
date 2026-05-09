@@ -1,0 +1,44 @@
+// void - the programming language
+// Copyright titago (C) 2026
+// SPDX-License-Identifier: 0BSD
+
+pub mod linker;
+pub mod target;
+pub mod x86_64;
+
+pub use target::TargetSpec;
+
+use crate::bytecode::Chunk;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectFormat {
+    Elf,
+    PeCoff,
+    MachO,
+}
+
+pub struct ObjectOutput {
+    pub bytes: Vec<u8>,
+    pub format: ObjectFormat,
+}
+
+#[derive(Debug)]
+pub struct BackendError(pub String);
+
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+pub trait Backend {
+    fn compile(
+        &self,
+        chunks: &[Chunk],
+        target: &TargetSpec,
+    ) -> Result<ObjectOutput, BackendError>;
+}
+
+pub fn select_backend(_target: &TargetSpec) -> Box<dyn Backend> {
+    Box::new(x86_64::ElfBackend)
+}
