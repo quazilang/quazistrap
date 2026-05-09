@@ -17,722 +17,722 @@
 // ── File I/O ─────────────────────────────────────────────────────────────────
 
 @syscall("read")
-fn read(fd: i32, buf: str, count: usize) isize;
+pub fn read(fd: i32, buf: str, count: usize) isize;
 
 @syscall("write")
-fn write(fd: i32, buf: str, count: usize) isize;
+pub fn write(fd: i32, buf: str, count: usize) isize;
 
 // flags: O_RDONLY=0, O_WRONLY=1, O_RDWR=2, O_CREAT=64, O_TRUNC=512, O_APPEND=1024
 @syscall("open")
-fn open(path: str, flags: i32, mode: u32) i32;
+pub fn open(path: str, flags: i32, mode: u32) i32;
 
 @syscall("close")
-fn close(fd: i32) i32;
+pub fn close(fd: i32) i32;
 
 // statbuf: pointer to struct stat (108 bytes on x86-64)
 @syscall("stat")
-fn stat(path: str, statbuf: usize) i32;
+pub fn stat(path: str, statbuf: usize) i32;
 
 @syscall("fstat")
-fn fstat(fd: i32, statbuf: usize) i32;
+pub fn fstat(fd: i32, statbuf: usize) i32;
 
 @syscall("lstat")
-fn lstat(path: str, statbuf: usize) i32;
+pub fn lstat(path: str, statbuf: usize) i32;
 
 // fds: pointer to struct pollfd[]; nfds: count; timeout: ms (-1 = forever)
 @syscall("poll")
-fn poll(fds: usize, nfds: usize, timeout: i32) i32;
+pub fn poll(fds: usize, nfds: usize, timeout: i32) i32;
 
 // whence: SEEK_SET=0, SEEK_CUR=1, SEEK_END=2
 @syscall("lseek")
-fn lseek(fd: i32, offset: i64, whence: i32) i64;
+pub fn lseek(fd: i32, offset: i64, whence: i32) i64;
 
 // pread64 / pwrite64 — positional read/write (no seek side effect)
 @syscall("pread64")
-fn pread64(fd: i32, buf: str, count: usize, offset: i64) isize;
+pub fn pread64(fd: i32, buf: str, count: usize, offset: i64) isize;
 
 @syscall("pwrite64")
-fn pwrite64(fd: i32, buf: str, count: usize, offset: i64) isize;
+pub fn pwrite64(fd: i32, buf: str, count: usize, offset: i64) isize;
 
 // iov: pointer to struct iovec[]; iovcnt: vector count
 @syscall("readv")
-fn readv(fd: i32, iov: usize, iovcnt: i32) isize;
+pub fn readv(fd: i32, iov: usize, iovcnt: i32) isize;
 
 @syscall("writev")
-fn writev(fd: i32, iov: usize, iovcnt: i32) isize;
+pub fn writev(fd: i32, iov: usize, iovcnt: i32) isize;
 
 // mode: R_OK=4, W_OK=2, X_OK=1, F_OK=0
 @syscall("access")
-fn access(path: str, mode: i32) i32;
+pub fn access(path: str, mode: i32) i32;
 
 // pipe — write end in pipefd[1], read end in pipefd[0]
 @syscall("pipe")
-fn pipe(pipefd: usize) i32;
+pub fn pipe(pipefd: usize) i32;
 
 @syscall("pipe2")
-fn pipe2(pipefd: usize, flags: i32) i32;
+pub fn pipe2(pipefd: usize, flags: i32) i32;
 
 // select — readfds/writefds/exceptfds: pointer to fd_set; timeout: pointer to struct timeval
 @syscall("select")
-fn select(nfds: i32, readfds: usize, writefds: usize, exceptfds: usize, timeout: usize) i32;
+pub fn select(nfds: i32, readfds: usize, writefds: usize, exceptfds: usize, timeout: usize) i32;
 
 @syscall("dup")
-fn dup(oldfd: i32) i32;
+pub fn dup(oldfd: i32) i32;
 
 @syscall("dup2")
-fn dup2(oldfd: i32, newfd: i32) i32;
+pub fn dup2(oldfd: i32, newfd: i32) i32;
 
 @syscall("dup3")
-fn dup3(oldfd: i32, newfd: i32, flags: i32) i32;
+pub fn dup3(oldfd: i32, newfd: i32, flags: i32) i32;
 
 @syscall("ioctl")
-fn ioctl(fd: i32, request: usize, arg: usize) i32;
+pub fn ioctl(fd: i32, request: usize, arg: usize) i32;
 
 // cmd: F_DUPFD=0, F_GETFD=1, F_SETFD=2, F_GETFL=3, F_SETFL=4
 @syscall("fcntl")
-fn fcntl(fd: i32, cmd: i32, arg: i64) i32;
+pub fn fcntl(fd: i32, cmd: i32, arg: i64) i32;
 
 // operation: LOCK_SH=1, LOCK_EX=2, LOCK_NB=4, LOCK_UN=8
 @syscall("flock")
-fn flock(fd: i32, operation: i32) i32;
+pub fn flock(fd: i32, operation: i32) i32;
 
 @syscall("fsync")
-fn fsync(fd: i32) i32;
+pub fn fsync(fd: i32) i32;
 
 @syscall("fdatasync")
-fn fdatasync(fd: i32) i32;
+pub fn fdatasync(fd: i32) i32;
 
 @syscall("truncate")
-fn truncate(path: str, length: i64) i32;
+pub fn truncate(path: str, length: i64) i32;
 
 @syscall("ftruncate")
-fn ftruncate(fd: i32, length: i64) i32;
+pub fn ftruncate(fd: i32, length: i64) i32;
 
 // dirp: pointer to struct dirent buffer; count: buffer size
 @syscall("getdents")
-fn getdents(fd: i32, dirp: usize, count: usize) isize;
+pub fn getdents(fd: i32, dirp: usize, count: usize) isize;
 
 @syscall("getdents64")
-fn getdents64(fd: i32, dirp: usize, count: usize) isize;
+pub fn getdents64(fd: i32, dirp: usize, count: usize) isize;
 
 @syscall("getcwd")
-fn getcwd(buf: str, size: usize) isize;
+pub fn getcwd(buf: str, size: usize) isize;
 
 @syscall("chdir")
-fn chdir(path: str) i32;
+pub fn chdir(path: str) i32;
 
 @syscall("fchdir")
-fn fchdir(fd: i32) i32;
+pub fn fchdir(fd: i32) i32;
 
 @syscall("rename")
-fn rename(oldpath: str, newpath: str) i32;
+pub fn rename(oldpath: str, newpath: str) i32;
 
 @syscall("renameat")
-fn renameat(olddirfd: i32, oldpath: str, newdirfd: i32, newpath: str) i32;
+pub fn renameat(olddirfd: i32, oldpath: str, newdirfd: i32, newpath: str) i32;
 
 @syscall("mkdir")
-fn mkdir(path: str, mode: u32) i32;
+pub fn mkdir(path: str, mode: u32) i32;
 
 @syscall("mkdirat")
-fn mkdirat(dirfd: i32, path: str, mode: u32) i32;
+pub fn mkdirat(dirfd: i32, path: str, mode: u32) i32;
 
 @syscall("rmdir")
-fn rmdir(path: str) i32;
+pub fn rmdir(path: str) i32;
 
 @syscall("creat")
-fn creat(path: str, mode: u32) i32;
+pub fn creat(path: str, mode: u32) i32;
 
 @syscall("link")
-fn link(oldpath: str, newpath: str) i32;
+pub fn link(oldpath: str, newpath: str) i32;
 
 @syscall("linkat")
-fn linkat(olddirfd: i32, oldpath: str, newdirfd: i32, newpath: str, flags: i32) i32;
+pub fn linkat(olddirfd: i32, oldpath: str, newdirfd: i32, newpath: str, flags: i32) i32;
 
 @syscall("unlink")
-fn unlink(path: str) i32;
+pub fn unlink(path: str) i32;
 
 @syscall("unlinkat")
-fn unlinkat(dirfd: i32, path: str, flags: i32) i32;
+pub fn unlinkat(dirfd: i32, path: str, flags: i32) i32;
 
 @syscall("symlink")
-fn symlink(target: str, linkpath: str) i32;
+pub fn symlink(target: str, linkpath: str) i32;
 
 @syscall("symlinkat")
-fn symlinkat(target: str, newdirfd: i32, linkpath: str) i32;
+pub fn symlinkat(target: str, newdirfd: i32, linkpath: str) i32;
 
 @syscall("readlink")
-fn readlink(path: str, buf: str, bufsiz: usize) isize;
+pub fn readlink(path: str, buf: str, bufsiz: usize) isize;
 
 @syscall("readlinkat")
-fn readlinkat(dirfd: i32, path: str, buf: str, bufsiz: usize) isize;
+pub fn readlinkat(dirfd: i32, path: str, buf: str, bufsiz: usize) isize;
 
 @syscall("chmod")
-fn chmod(path: str, mode: u32) i32;
+pub fn chmod(path: str, mode: u32) i32;
 
 @syscall("fchmod")
-fn fchmod(fd: i32, mode: u32) i32;
+pub fn fchmod(fd: i32, mode: u32) i32;
 
 @syscall("fchmodat")
-fn fchmodat(dirfd: i32, path: str, mode: u32, flags: i32) i32;
+pub fn fchmodat(dirfd: i32, path: str, mode: u32, flags: i32) i32;
 
 @syscall("chown")
-fn chown(path: str, owner: u32, group: u32) i32;
+pub fn chown(path: str, owner: u32, group: u32) i32;
 
 @syscall("fchown")
-fn fchown(fd: i32, owner: u32, group: u32) i32;
+pub fn fchown(fd: i32, owner: u32, group: u32) i32;
 
 @syscall("lchown")
-fn lchown(path: str, owner: u32, group: u32) i32;
+pub fn lchown(path: str, owner: u32, group: u32) i32;
 
 @syscall("fchownat")
-fn fchownat(dirfd: i32, path: str, owner: u32, group: u32, flags: i32) i32;
+pub fn fchownat(dirfd: i32, path: str, owner: u32, group: u32, flags: i32) i32;
 
 @syscall("umask")
-fn umask(mask: u32) u32;
+pub fn umask(mask: u32) u32;
 
 // dirfd: AT_FDCWD=-100 to use cwd; flags: AT_ACCESS_*
 @syscall("faccessat")
-fn faccessat(dirfd: i32, path: str, mode: i32, flags: i32) i32;
+pub fn faccessat(dirfd: i32, path: str, mode: i32, flags: i32) i32;
 
 @syscall("openat")
-fn openat(dirfd: i32, path: str, flags: i32, mode: u32) i32;
+pub fn openat(dirfd: i32, path: str, flags: i32, mode: u32) i32;
 
 // in/out: pointer to int (file descriptors); offset: pointer to off_t
 @syscall("sendfile")
-fn sendfile(out_fd: i32, in_fd: i32, offset: usize, count: usize) isize;
+pub fn sendfile(out_fd: i32, in_fd: i32, offset: usize, count: usize) isize;
 
 // preadv / pwritev — scatter-gather with offset
 @syscall("preadv")
-fn preadv(fd: i32, iov: usize, iovcnt: i32, offset: i64) isize;
+pub fn preadv(fd: i32, iov: usize, iovcnt: i32, offset: i64) isize;
 
 @syscall("pwritev")
-fn pwritev(fd: i32, iov: usize, iovcnt: i32, offset: i64) isize;
+pub fn pwritev(fd: i32, iov: usize, iovcnt: i32, offset: i64) isize;
 
 // statx — extended stat; mask controls which fields are filled
 @syscall("statx")
-fn statx(dirfd: i32, path: str, flags: i32, mask: u32, statxbuf: usize) i32;
+pub fn statx(dirfd: i32, path: str, flags: i32, mask: u32, statxbuf: usize) i32;
 
 // mknod — create special file (device, FIFO, socket)
 @syscall("mknod")
-fn mknod(path: str, mode: u32, dev: u64) i32;
+pub fn mknod(path: str, mode: u32, dev: u64) i32;
 
 // splice, tee, copy_file_range — zero-copy I/O
 @syscall("splice")
-fn splice(fd_in: i32, off_in: usize, fd_out: i32, off_out: usize, len: usize, flags: u32) isize;
+pub fn splice(fd_in: i32, off_in: usize, fd_out: i32, off_out: usize, len: usize, flags: u32) isize;
 
 @syscall("tee")
-fn tee(fd_in: i32, fd_out: i32, len: usize, flags: u32) isize;
+pub fn tee(fd_in: i32, fd_out: i32, len: usize, flags: u32) isize;
 
 @syscall("copy_file_range")
-fn copy_file_range(fd_in: i32, off_in: usize, fd_out: i32, off_out: usize, len: usize, flags: u32) isize;
+pub fn copy_file_range(fd_in: i32, off_in: usize, fd_out: i32, off_out: usize, len: usize, flags: u32) isize;
 
 // fallocate — preallocate file space
 @syscall("fallocate")
-fn fallocate(fd: i32, mode: i32, offset: i64, len: i64) i32;
+pub fn fallocate(fd: i32, mode: i32, offset: i64, len: i64) i32;
 
 // sync
 @syscall("sync")
-fn sync() void;
+pub fn sync() void;
 
 @syscall("syncfs")
-fn syncfs(fd: i32) i32;
+pub fn syncfs(fd: i32) i32;
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 
 // prot: PROT_NONE=0, PROT_READ=1, PROT_WRITE=2, PROT_EXEC=4
 // flags: MAP_SHARED=1, MAP_PRIVATE=2, MAP_ANONYMOUS=32, MAP_FIXED=16
 @syscall("mmap")
-fn mmap(addr: usize, length: usize, prot: i32, flags: i32, fd: i32, offset: i64) usize;
+pub fn mmap(addr: usize, length: usize, prot: i32, flags: i32, fd: i32, offset: i64) usize;
 
 @syscall("munmap")
-fn munmap(addr: usize, length: usize) i32;
+pub fn munmap(addr: usize, length: usize) i32;
 
 @syscall("mprotect")
-fn mprotect(addr: usize, len: usize, prot: i32) i32;
+pub fn mprotect(addr: usize, len: usize, prot: i32) i32;
 
 // flags: MREMAP_MAYMOVE=1, MREMAP_FIXED=2
 @syscall("mremap")
-fn mremap(old_addr: usize, old_size: usize, new_size: usize, flags: i32, new_addr: usize) usize;
+pub fn mremap(old_addr: usize, old_size: usize, new_size: usize, flags: i32, new_addr: usize) usize;
 
 // advice: MADV_NORMAL=0, MADV_RANDOM=1, MADV_SEQUENTIAL=2, MADV_DONTNEED=4, MADV_FREE=8
 @syscall("madvise")
-fn madvise(addr: usize, length: usize, advice: i32) i32;
+pub fn madvise(addr: usize, length: usize, advice: i32) i32;
 
 // flags: MS_ASYNC=1, MS_SYNC=4, MS_INVALIDATE=2
 @syscall("msync")
-fn msync(addr: usize, length: usize, flags: i32) i32;
+pub fn msync(addr: usize, length: usize, flags: i32) i32;
 
 @syscall("mlock")
-fn mlock(addr: usize, len: usize) i32;
+pub fn mlock(addr: usize, len: usize) i32;
 
 @syscall("munlock")
-fn munlock(addr: usize, len: usize) i32;
+pub fn munlock(addr: usize, len: usize) i32;
 
 // flags: MCL_CURRENT=1, MCL_FUTURE=2
 @syscall("mlockall")
-fn mlockall(flags: i32) i32;
+pub fn mlockall(flags: i32) i32;
 
 @syscall("munlockall")
-fn munlockall() i32;
+pub fn munlockall() i32;
 
 @syscall("brk")
-fn brk(addr: usize) usize;
+pub fn brk(addr: usize) usize;
 
 // memfd_create — anonymous file in memory
 @syscall("memfd_create")
-fn memfd_create(name: str, flags: u32) i32;
+pub fn memfd_create(name: str, flags: u32) i32;
 
 // getrandom — kernel CSPRNG
 @syscall("getrandom")
-fn getrandom(buf: str, buflen: usize, flags: u32) isize;
+pub fn getrandom(buf: str, buflen: usize, flags: u32) isize;
 
 // ── Process ──────────────────────────────────────────────────────────────────
 
 @syscall("fork")
-fn fork() i32;
+pub fn fork() i32;
 
 @syscall("vfork")
-fn vfork() i32;
+pub fn vfork() i32;
 
 // argv/envp: pointer to null-terminated array of C strings (usize)
 @syscall("execve")
-fn execve(path: str, argv: usize, envp: usize) i32;
+pub fn execve(path: str, argv: usize, envp: usize) i32;
 
 @syscall("execveat")
-fn execveat(dirfd: i32, path: str, argv: usize, envp: usize, flags: i32) i32;
+pub fn execveat(dirfd: i32, path: str, argv: usize, envp: usize, flags: i32) i32;
 
 // options: WNOHANG=1, WUNTRACED=2; usage: pointer to struct rusage or 0
 @syscall("wait4")
-fn wait4(pid: i32, wstatus: usize, options: i32, rusage: usize) i32;
+pub fn wait4(pid: i32, wstatus: usize, options: i32, rusage: usize) i32;
 
 // idtype: P_PID=1, P_PGID=2, P_ALL=0
 @syscall("waitid")
-fn waitid(idtype: i32, id: u32, infop: usize, options: i32) i32;
+pub fn waitid(idtype: i32, id: u32, infop: usize, options: i32) i32;
 
 @syscall("exit")
-fn exit(status: i32) void;
+pub fn exit(status: i32) void;
 
 @syscall("exit_group")
-fn exit_group(status: i32) void;
+pub fn exit_group(status: i32) void;
 
 @syscall("getpid")
-fn getpid() i32;
+pub fn getpid() i32;
 
 @syscall("getppid")
-fn getppid() i32;
+pub fn getppid() i32;
 
 @syscall("gettid")
-fn gettid() i32;
+pub fn gettid() i32;
 
 @syscall("setsid")
-fn setsid() i32;
+pub fn setsid() i32;
 
 @syscall("getsid")
-fn getsid(pid: i32) i32;
+pub fn getsid(pid: i32) i32;
 
 @syscall("setpgid")
-fn setpgid(pid: i32, pgid: i32) i32;
+pub fn setpgid(pid: i32, pgid: i32) i32;
 
 @syscall("getpgid")
-fn getpgid(pid: i32) i32;
+pub fn getpgid(pid: i32) i32;
 
 @syscall("getpgrp")
-fn getpgrp() i32;
+pub fn getpgrp() i32;
 
 // sig: SIGTERM=15, SIGKILL=9, SIGINT=2, SIGHUP=1, SIGUSR1=10, SIGUSR2=12
 @syscall("kill")
-fn kill(pid: i32, sig: i32) i32;
+pub fn kill(pid: i32, sig: i32) i32;
 
 @syscall("tkill")
-fn tkill(tid: i32, sig: i32) i32;
+pub fn tkill(tid: i32, sig: i32) i32;
 
 @syscall("tgkill")
-fn tgkill(tgid: i32, tid: i32, sig: i32) i32;
+pub fn tgkill(tgid: i32, tid: i32, sig: i32) i32;
 
 // clone — low-level thread/process creation; flags control what's shared
 @syscall("clone")
-fn clone(flags: u64, stack: usize, parent_tid: usize, child_tid: usize, tls: usize) i32;
+pub fn clone(flags: u64, stack: usize, parent_tid: usize, child_tid: usize, tls: usize) i32;
 
 // prctl — process control
 @syscall("prctl")
-fn prctl(option: i32, arg2: usize, arg3: usize, arg4: usize, arg5: usize) i32;
+pub fn prctl(option: i32, arg2: usize, arg3: usize, arg4: usize, arg5: usize) i32;
 
 // arch_prctl — x86-64 specific; op: ARCH_SET_FS=0x1002, ARCH_GET_FS=0x1003
 @syscall("arch_prctl")
-fn arch_prctl(op: i32, addr: usize) i32;
+pub fn arch_prctl(op: i32, addr: usize) i32;
 
 @syscall("sched_yield")
-fn sched_yield() i32;
+pub fn sched_yield() i32;
 
 // sched_setaffinity / sched_getaffinity — CPU affinity mask
 @syscall("sched_setaffinity")
-fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: usize) i32;
+pub fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: usize) i32;
 
 @syscall("sched_getaffinity")
-fn sched_getaffinity(pid: i32, cpusetsize: usize, mask: usize) i32;
+pub fn sched_getaffinity(pid: i32, cpusetsize: usize, mask: usize) i32;
 
 @syscall("getcpu")
-fn getcpu(cpu: usize, node: usize) i32;
+pub fn getcpu(cpu: usize, node: usize) i32;
 
 // ptrace — process tracing
 @syscall("ptrace")
-fn ptrace(request: i32, pid: i32, addr: usize, data: usize) isize;
+pub fn ptrace(request: i32, pid: i32, addr: usize, data: usize) isize;
 
 @syscall("set_tid_address")
-fn set_tid_address(tidptr: usize) i32;
+pub fn set_tid_address(tidptr: usize) i32;
 
 // ── Signals ──────────────────────────────────────────────────────────────────
 
 // signum: signal number; act: pointer to struct sigaction; oldact: pointer or 0
 @syscall("rt_sigaction")
-fn rt_sigaction(signum: i32, act: usize, oldact: usize, sigsetsize: usize) i32;
+pub fn rt_sigaction(signum: i32, act: usize, oldact: usize, sigsetsize: usize) i32;
 
 // how: SIG_BLOCK=0, SIG_UNBLOCK=1, SIG_SETMASK=2
 @syscall("rt_sigprocmask")
-fn rt_sigprocmask(how: i32, set: usize, oldset: usize, sigsetsize: usize) i32;
+pub fn rt_sigprocmask(how: i32, set: usize, oldset: usize, sigsetsize: usize) i32;
 
 @syscall("rt_sigpending")
-fn rt_sigpending(set: usize, sigsetsize: usize) i32;
+pub fn rt_sigpending(set: usize, sigsetsize: usize) i32;
 
 @syscall("rt_sigsuspend")
-fn rt_sigsuspend(mask: usize, sigsetsize: usize) i32;
+pub fn rt_sigsuspend(mask: usize, sigsetsize: usize) i32;
 
 @syscall("pause")
-fn pause() i32;
+pub fn pause() i32;
 
 @syscall("alarm")
-fn alarm(seconds: u32) u32;
+pub fn alarm(seconds: u32) u32;
 
 // sigaltstack — set/get alternate signal stack
 @syscall("sigaltstack")
-fn sigaltstack(ss: usize, old_ss: usize) i32;
+pub fn sigaltstack(ss: usize, old_ss: usize) i32;
 
 // ── Time ─────────────────────────────────────────────────────────────────────
 
 // tv: pointer to struct timeval { i64 sec, i64 usec }; tz: pointer to struct timezone or 0
 @syscall("gettimeofday")
-fn gettimeofday(tv: usize, tz: usize) i32;
+pub fn gettimeofday(tv: usize, tz: usize) i32;
 
 @syscall("settimeofday")
-fn settimeofday(tv: usize, tz: usize) i32;
+pub fn settimeofday(tv: usize, tz: usize) i32;
 
 // req/rem: pointer to struct timespec { i64 sec, i64 nsec }
 @syscall("nanosleep")
-fn nanosleep(req: usize, rem: usize) i32;
+pub fn nanosleep(req: usize, rem: usize) i32;
 
 // clockid: CLOCK_REALTIME=0, CLOCK_MONOTONIC=1, CLOCK_PROCESS_CPUTIME_ID=2
 @syscall("clock_gettime")
-fn clock_gettime(clockid: i32, tp: usize) i32;
+pub fn clock_gettime(clockid: i32, tp: usize) i32;
 
 @syscall("clock_settime")
-fn clock_settime(clockid: i32, tp: usize) i32;
+pub fn clock_settime(clockid: i32, tp: usize) i32;
 
 @syscall("clock_getres")
-fn clock_getres(clockid: i32, res: usize) i32;
+pub fn clock_getres(clockid: i32, res: usize) i32;
 
 @syscall("clock_nanosleep")
-fn clock_nanosleep(clockid: i32, flags: i32, req: usize, rem: usize) i32;
+pub fn clock_nanosleep(clockid: i32, flags: i32, req: usize, rem: usize) i32;
 
 @syscall("getitimer")
-fn getitimer(which: i32, curr_value: usize) i32;
+pub fn getitimer(which: i32, curr_value: usize) i32;
 
 @syscall("setitimer")
-fn setitimer(which: i32, new_value: usize, old_value: usize) i32;
+pub fn setitimer(which: i32, new_value: usize, old_value: usize) i32;
 
 @syscall("times")
-fn times(buf: usize) isize;
+pub fn times(buf: usize) isize;
 
 @syscall("time")
-fn time(tloc: usize) i64;
+pub fn time(tloc: usize) i64;
 
 // ── Networking ───────────────────────────────────────────────────────────────
 
 // domain: AF_UNIX=1, AF_INET=2, AF_INET6=10
 // type: SOCK_STREAM=1, SOCK_DGRAM=2, SOCK_RAW=3, SOCK_NONBLOCK=2048, SOCK_CLOEXEC=524288
 @syscall("socket")
-fn socket(domain: i32, stype: i32, protocol: i32) i32;
+pub fn socket(domain: i32, stype: i32, protocol: i32) i32;
 
 // addr: pointer to sockaddr variant; addrlen: sizeof(sockaddr_*)
 @syscall("bind")
-fn bind(sockfd: i32, addr: usize, addrlen: u32) i32;
+pub fn bind(sockfd: i32, addr: usize, addrlen: u32) i32;
 
 @syscall("listen")
-fn listen(sockfd: i32, backlog: i32) i32;
+pub fn listen(sockfd: i32, backlog: i32) i32;
 
 @syscall("accept")
-fn accept(sockfd: i32, addr: usize, addrlen: usize) i32;
+pub fn accept(sockfd: i32, addr: usize, addrlen: usize) i32;
 
 @syscall("accept4")
-fn accept4(sockfd: i32, addr: usize, addrlen: usize, flags: i32) i32;
+pub fn accept4(sockfd: i32, addr: usize, addrlen: usize, flags: i32) i32;
 
 @syscall("connect")
-fn connect(sockfd: i32, addr: usize, addrlen: u32) i32;
+pub fn connect(sockfd: i32, addr: usize, addrlen: u32) i32;
 
 @syscall("sendto")
-fn sendto(sockfd: i32, buf: str, len: usize, flags: i32, dest_addr: usize, addrlen: u32) isize;
+pub fn sendto(sockfd: i32, buf: str, len: usize, flags: i32, dest_addr: usize, addrlen: u32) isize;
 
 @syscall("recvfrom")
-fn recvfrom(sockfd: i32, buf: str, len: usize, flags: i32, src_addr: usize, addrlen: usize) isize;
+pub fn recvfrom(sockfd: i32, buf: str, len: usize, flags: i32, src_addr: usize, addrlen: usize) isize;
 
 // msghdr: pointer to struct msghdr
 @syscall("sendmsg")
-fn sendmsg(sockfd: i32, msg: usize, flags: i32) isize;
+pub fn sendmsg(sockfd: i32, msg: usize, flags: i32) isize;
 
 @syscall("recvmsg")
-fn recvmsg(sockfd: i32, msg: usize, flags: i32) isize;
+pub fn recvmsg(sockfd: i32, msg: usize, flags: i32) isize;
 
 // how: SHUT_RD=0, SHUT_WR=1, SHUT_RDWR=2
 @syscall("shutdown")
-fn shutdown(sockfd: i32, how: i32) i32;
+pub fn shutdown(sockfd: i32, how: i32) i32;
 
 @syscall("getsockname")
-fn getsockname(sockfd: i32, addr: usize, addrlen: usize) i32;
+pub fn getsockname(sockfd: i32, addr: usize, addrlen: usize) i32;
 
 @syscall("getpeername")
-fn getpeername(sockfd: i32, addr: usize, addrlen: usize) i32;
+pub fn getpeername(sockfd: i32, addr: usize, addrlen: usize) i32;
 
 @syscall("socketpair")
-fn socketpair(domain: i32, stype: i32, protocol: i32, sv: usize) i32;
+pub fn socketpair(domain: i32, stype: i32, protocol: i32, sv: usize) i32;
 
 @syscall("setsockopt")
-fn setsockopt(sockfd: i32, level: i32, optname: i32, optval: usize, optlen: u32) i32;
+pub fn setsockopt(sockfd: i32, level: i32, optname: i32, optval: usize, optlen: u32) i32;
 
 @syscall("getsockopt")
-fn getsockopt(sockfd: i32, level: i32, optname: i32, optval: usize, optlen: usize) i32;
+pub fn getsockopt(sockfd: i32, level: i32, optname: i32, optval: usize, optlen: usize) i32;
 
 // ── Async I/O & event notification ───────────────────────────────────────────
 
 // epoll
 @syscall("epoll_create1")
-fn epoll_create1(flags: i32) i32;
+pub fn epoll_create1(flags: i32) i32;
 
 // op: EPOLL_CTL_ADD=1, EPOLL_CTL_DEL=2, EPOLL_CTL_MOD=3; event: pointer to struct epoll_event
 @syscall("epoll_ctl")
-fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: usize) i32;
+pub fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: usize) i32;
 
 // events: pointer to struct epoll_event[]; maxevents: capacity; timeout: ms
 @syscall("epoll_wait")
-fn epoll_wait(epfd: i32, events: usize, maxevents: i32, timeout: i32) i32;
+pub fn epoll_wait(epfd: i32, events: usize, maxevents: i32, timeout: i32) i32;
 
 @syscall("epoll_pwait")
-fn epoll_pwait(epfd: i32, events: usize, maxevents: i32, timeout: i32, sigmask: usize) i32;
+pub fn epoll_pwait(epfd: i32, events: usize, maxevents: i32, timeout: i32, sigmask: usize) i32;
 
 // eventfd
 @syscall("eventfd2")
-fn eventfd2(initval: u32, flags: i32) i32;
+pub fn eventfd2(initval: u32, flags: i32) i32;
 
 // timerfd
 // clockid: CLOCK_REALTIME=0, CLOCK_MONOTONIC=1
 @syscall("timerfd_create")
-fn timerfd_create(clockid: i32, flags: i32) i32;
+pub fn timerfd_create(clockid: i32, flags: i32) i32;
 
 // new_value/old_value: pointer to struct itimerspec
 @syscall("timerfd_settime")
-fn timerfd_settime(fd: i32, flags: i32, new_value: usize, old_value: usize) i32;
+pub fn timerfd_settime(fd: i32, flags: i32, new_value: usize, old_value: usize) i32;
 
 @syscall("timerfd_gettime")
-fn timerfd_gettime(fd: i32, curr_value: usize) i32;
+pub fn timerfd_gettime(fd: i32, curr_value: usize) i32;
 
 // inotify
 @syscall("inotify_init1")
-fn inotify_init1(flags: i32) i32;
+pub fn inotify_init1(flags: i32) i32;
 
 @syscall("inotify_add_watch")
-fn inotify_add_watch(fd: i32, path: str, mask: u32) i32;
+pub fn inotify_add_watch(fd: i32, path: str, mask: u32) i32;
 
 @syscall("inotify_rm_watch")
-fn inotify_rm_watch(fd: i32, wd: i32) i32;
+pub fn inotify_rm_watch(fd: i32, wd: i32) i32;
 
 // signalfd
 @syscall("signalfd4")
-fn signalfd4(fd: i32, mask: usize, sizemask: usize, flags: i32) i32;
+pub fn signalfd4(fd: i32, mask: usize, sizemask: usize, flags: i32) i32;
 
 // futex — building block for mutexes and condition variables
 // op: FUTEX_WAIT=0, FUTEX_WAKE=1, FUTEX_FD=2, FUTEX_REQUEUE=3
 @syscall("futex")
-fn futex(uaddr: usize, op: i32, val: u32, timeout: usize, uaddr2: usize, val3: u32) i32;
+pub fn futex(uaddr: usize, op: i32, val: u32, timeout: usize, uaddr2: usize, val3: u32) i32;
 
 // ── User / Group ─────────────────────────────────────────────────────────────
 
 @syscall("getuid")
-fn getuid() u32;
+pub fn getuid() u32;
 
 @syscall("getgid")
-fn getgid() u32;
+pub fn getgid() u32;
 
 @syscall("geteuid")
-fn geteuid() u32;
+pub fn geteuid() u32;
 
 @syscall("getegid")
-fn getegid() u32;
+pub fn getegid() u32;
 
 @syscall("setuid")
-fn setuid(uid: u32) i32;
+pub fn setuid(uid: u32) i32;
 
 @syscall("setgid")
-fn setgid(gid: u32) i32;
+pub fn setgid(gid: u32) i32;
 
 @syscall("setreuid")
-fn setreuid(ruid: u32, euid: u32) i32;
+pub fn setreuid(ruid: u32, euid: u32) i32;
 
 @syscall("setregid")
-fn setregid(rgid: u32, egid: u32) i32;
+pub fn setregid(rgid: u32, egid: u32) i32;
 
 @syscall("setresuid")
-fn setresuid(ruid: u32, euid: u32, suid: u32) i32;
+pub fn setresuid(ruid: u32, euid: u32, suid: u32) i32;
 
 @syscall("getresuid")
-fn getresuid(ruid: usize, euid: usize, suid: usize) i32;
+pub fn getresuid(ruid: usize, euid: usize, suid: usize) i32;
 
 @syscall("setresgid")
-fn setresgid(rgid: u32, egid: u32, sgid: u32) i32;
+pub fn setresgid(rgid: u32, egid: u32, sgid: u32) i32;
 
 @syscall("getresgid")
-fn getresgid(rgid: usize, egid: usize, sgid: usize) i32;
+pub fn getresgid(rgid: usize, egid: usize, sgid: usize) i32;
 
 // list: pointer to gid_t[]; size: capacity
 @syscall("getgroups")
-fn getgroups(size: i32, list: usize) i32;
+pub fn getgroups(size: i32, list: usize) i32;
 
 @syscall("setgroups")
-fn setgroups(size: usize, list: usize) i32;
+pub fn setgroups(size: usize, list: usize) i32;
 
 @syscall("setfsuid")
-fn setfsuid(fsuid: u32) i32;
+pub fn setfsuid(fsuid: u32) i32;
 
 @syscall("setfsgid")
-fn setfsgid(fsgid: u32) i32;
+pub fn setfsgid(fsgid: u32) i32;
 
 // ── System info ──────────────────────────────────────────────────────────────
 
 // buf: pointer to struct utsname
 @syscall("uname")
-fn uname(buf: usize) i32;
+pub fn uname(buf: usize) i32;
 
 // info: pointer to struct sysinfo
 @syscall("sysinfo")
-fn sysinfo(info: usize) i32;
+pub fn sysinfo(info: usize) i32;
 
 // who: RUSAGE_SELF=0, RUSAGE_CHILDREN=-1; usage: pointer to struct rusage
 @syscall("getrusage")
-fn getrusage(who: i32, usage: usize) i32;
+pub fn getrusage(who: i32, usage: usize) i32;
 
 // resource: RLIMIT_NOFILE=7, RLIMIT_STACK=3, RLIMIT_AS=9; rlim: pointer to struct rlimit
 @syscall("getrlimit")
-fn getrlimit(resource: i32, rlim: usize) i32;
+pub fn getrlimit(resource: i32, rlim: usize) i32;
 
 @syscall("setrlimit")
-fn setrlimit(resource: i32, rlim: usize) i32;
+pub fn setrlimit(resource: i32, rlim: usize) i32;
 
 // pid=0 means self; new_limit: pointer to struct rlimit64
 @syscall("prlimit64")
-fn prlimit64(pid: i32, resource: i32, new_limit: usize, old_limit: usize) i32;
+pub fn prlimit64(pid: i32, resource: i32, new_limit: usize, old_limit: usize) i32;
 
 @syscall("syslog")
-fn syslog(stype: i32, buf: str, len: i32) i32;
+pub fn syslog(stype: i32, buf: str, len: i32) i32;
 
 // hostname
 @syscall("sethostname")
-fn sethostname(name: str, len: usize) i32;
+pub fn sethostname(name: str, len: usize) i32;
 
 @syscall("setdomainname")
-fn setdomainname(name: str, len: usize) i32;
+pub fn setdomainname(name: str, len: usize) i32;
 
 // reboot — requires CAP_SYS_BOOT
 // magic1=0xfee1dead, magic2=0x28121969; cmd: LINUX_REBOOT_CMD_RESTART=0x01234567
 @syscall("reboot")
-fn reboot(magic1: i32, magic2: i32, cmd: u32, arg: usize) i32;
+pub fn reboot(magic1: i32, magic2: i32, cmd: u32, arg: usize) i32;
 
 // chroot — requires CAP_SYS_CHROOT
 @syscall("chroot")
-fn chroot(path: str) i32;
+pub fn chroot(path: str) i32;
 
 // mount / umount2 — require CAP_SYS_ADMIN
 @syscall("mount")
-fn mount(source: str, target: str, fstype: str, mountflags: usize, data: usize) i32;
+pub fn mount(source: str, target: str, fstype: str, mountflags: usize, data: usize) i32;
 
 @syscall("umount2")
-fn umount2(target: str, flags: i32) i32;
+pub fn umount2(target: str, flags: i32) i32;
 
 // swap
 @syscall("swapon")
-fn swapon(path: str, swapflags: i32) i32;
+pub fn swapon(path: str, swapflags: i32) i32;
 
 @syscall("swapoff")
-fn swapoff(path: str) i32;
+pub fn swapoff(path: str) i32;
 
 // acct — process accounting (requires CAP_SYS_PACCT)
 @syscall("acct")
-fn acct(filename: str) i32;
+pub fn acct(filename: str) i32;
 
 // ── Extended attributes ───────────────────────────────────────────────────────
 
 @syscall("setxattr")
-fn setxattr(path: str, name: str, value: usize, size: usize, flags: i32) i32;
+pub fn setxattr(path: str, name: str, value: usize, size: usize, flags: i32) i32;
 
 @syscall("lsetxattr")
-fn lsetxattr(path: str, name: str, value: usize, size: usize, flags: i32) i32;
+pub fn lsetxattr(path: str, name: str, value: usize, size: usize, flags: i32) i32;
 
 @syscall("fsetxattr")
-fn fsetxattr(fd: i32, name: str, value: usize, size: usize, flags: i32) i32;
+pub fn fsetxattr(fd: i32, name: str, value: usize, size: usize, flags: i32) i32;
 
 @syscall("getxattr")
-fn getxattr(path: str, name: str, value: usize, size: usize) isize;
+pub fn getxattr(path: str, name: str, value: usize, size: usize) isize;
 
 @syscall("lgetxattr")
-fn lgetxattr(path: str, name: str, value: usize, size: usize) isize;
+pub fn lgetxattr(path: str, name: str, value: usize, size: usize) isize;
 
 @syscall("fgetxattr")
-fn fgetxattr(fd: i32, name: str, value: usize, size: usize) isize;
+pub fn fgetxattr(fd: i32, name: str, value: usize, size: usize) isize;
 
 @syscall("listxattr")
-fn listxattr(path: str, list: str, size: usize) isize;
+pub fn listxattr(path: str, list: str, size: usize) isize;
 
 @syscall("llistxattr")
-fn llistxattr(path: str, list: str, size: usize) isize;
+pub fn llistxattr(path: str, list: str, size: usize) isize;
 
 @syscall("flistxattr")
-fn flistxattr(fd: i32, list: str, size: usize) isize;
+pub fn flistxattr(fd: i32, list: str, size: usize) isize;
 
 @syscall("removexattr")
-fn removexattr(path: str, name: str) i32;
+pub fn removexattr(path: str, name: str) i32;
 
 @syscall("lremovexattr")
-fn lremovexattr(path: str, name: str) i32;
+pub fn lremovexattr(path: str, name: str) i32;
 
 @syscall("fremovexattr")
-fn fremovexattr(fd: i32, name: str) i32;
+pub fn fremovexattr(fd: i32, name: str) i32;
 
 // ── Misc ─────────────────────────────────────────────────────────────────────
 
 @syscall("readahead")
-fn readahead(fd: i32, offset: i64, count: usize) isize;
+pub fn readahead(fd: i32, offset: i64, count: usize) isize;
 
 // seccomp — sandbox syscall filtering; op: SECCOMP_SET_MODE_STRICT=0
 @syscall("seccomp")
-fn seccomp(op: u32, flags: u32, args: usize) i32;
+pub fn seccomp(op: u32, flags: u32, args: usize) i32;
 
 // bpf — BPF program management
 @syscall("bpf")
-fn bpf(cmd: i32, attr: usize, size: u32) i32;
+pub fn bpf(cmd: i32, attr: usize, size: u32) i32;
 
 // setns — join a namespace (fd from /proc/*/ns/*)
 @syscall("setns")
-fn setns(fd: i32, nstype: i32) i32;
+pub fn setns(fd: i32, nstype: i32) i32;
 
 @syscall("unshare")
-fn unshare(flags: i32) i32;
+pub fn unshare(flags: i32) i32;
 
 @syscall("pivot_root")
-fn pivot_root(new_root: str, put_old: str) i32;
+pub fn pivot_root(new_root: str, put_old: str) i32;
 
 // membarrier — memory ordering between threads
 @syscall("membarrier")
-fn membarrier(cmd: i32, flags: u32, cpu_id: i32) i32;
+pub fn membarrier(cmd: i32, flags: u32, cpu_id: i32) i32;
 
 // process_vm_readv / process_vm_writev — cross-process memory access
 @syscall("process_vm_readv")
-fn process_vm_readv(pid: i32, lvec: usize, liovcnt: usize, rvec: usize, riovcnt: usize, flags: usize) isize;
+pub fn process_vm_readv(pid: i32, lvec: usize, liovcnt: usize, rvec: usize, riovcnt: usize, flags: usize) isize;
 
 @syscall("process_vm_writev")
-fn process_vm_writev(pid: i32, lvec: usize, liovcnt: usize, rvec: usize, riovcnt: usize, flags: usize) isize;
+pub fn process_vm_writev(pid: i32, lvec: usize, liovcnt: usize, rvec: usize, riovcnt: usize, flags: usize) isize;

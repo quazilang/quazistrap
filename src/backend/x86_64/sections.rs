@@ -10,7 +10,13 @@ use super::symbols::SymbolTable;
 
 fn safe_label(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -38,14 +44,20 @@ impl SectionAccumulator {
         sym_table: &mut SymbolTable,
         chunks: &[Chunk],
     ) -> Vec<Vec<Option<String>>> {
-        let has_prim = chunks.iter().any(|c| {
-            c.code.iter().any(|i| i.opcode == Opcode::PrimToStr as u8)
-        });
+        let has_prim = chunks
+            .iter()
+            .any(|c| c.code.iter().any(|i| i.opcode == Opcode::PrimToStr as u8));
 
         if has_prim {
             let fmt = b"%ld\0";
             let offset = obj.append_section_data(self.rodata_id, fmt, 1);
-            sym_table.define_data(obj, self.rodata_id, "__void_fmt_ld", offset, fmt.len() as u64);
+            sym_table.define_data(
+                obj,
+                self.rodata_id,
+                "__void_fmt_ld",
+                offset,
+                fmt.len() as u64,
+            );
         }
 
         chunks
@@ -101,13 +113,7 @@ impl SectionAccumulator {
                         let zeroes = [0u8; 32];
                         let offset = obj.append_section_data(self.data_id, &zeroes, 8);
                         let sym_name = format!("__void_itoa_{}_{}", lbl, idx);
-                        sym_table.define_data(
-                            obj,
-                            self.data_id,
-                            &sym_name,
-                            offset,
-                            32,
-                        );
+                        sym_table.define_data(obj, self.data_id, &sym_name, offset, 32);
                         Some(sym_name)
                     })
                     .collect()

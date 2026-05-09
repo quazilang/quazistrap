@@ -16,7 +16,10 @@ pub struct SymbolTable {
 
 impl SymbolTable {
     pub fn new() -> Self {
-        Self { defined: HashMap::new(), undefined: HashMap::new() }
+        Self {
+            defined: HashMap::new(),
+            undefined: HashMap::new(),
+        }
     }
 
     /// Register a global function symbol in the .text section.

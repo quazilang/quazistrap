@@ -29,7 +29,8 @@ impl Analyzer {
         right: &ExprEval,
     ) -> Option<ConstValue> {
         // Absorbing elements: result is constant regardless of the unknown operand.
-        let absorbed: Option<(ConstValue, &str)> = match (op, &left.const_value, &right.const_value) {
+        let absorbed: Option<(ConstValue, &str)> = match (op, &left.const_value, &right.const_value)
+        {
             (BinOpKind::Mul, _, Some(ConstValue::Int(0)))
             | (BinOpKind::Mul, Some(ConstValue::Int(0)), _) => {
                 Some((ConstValue::Int(0), "x * 0 = 0"))
@@ -152,7 +153,9 @@ impl Analyzer {
 
     pub(super) fn run_tree_shake_pass(&mut self, program: &Program) {
         // Collect all locally-defined function names.
-        let all_fns: BTreeSet<String> = program.items.iter()
+        let all_fns: BTreeSet<String> = program
+            .items
+            .iter()
             .filter_map(|item| match &item.node {
                 ItemKind::Fn { name, .. } => Some(name.clone()),
                 _ => None,
@@ -171,7 +174,11 @@ impl Analyzer {
 
         while let Some(fn_name) = queue.pop() {
             for (kind, from, to) in &self.dependency_edges {
-                if *kind == DependencyKind::Call && from == &fn_name && all_fns.contains(to) && reachable.insert(to.clone()) {
+                if *kind == DependencyKind::Call
+                    && from == &fn_name
+                    && all_fns.contains(to)
+                    && reachable.insert(to.clone())
+                {
                     queue.push(to.clone());
                 }
             }
@@ -180,20 +187,26 @@ impl Analyzer {
         // Warn on functions that are called but not reachable from main
         // (i.e., called only by other dead functions).
         // Functions with zero callers are already caught by "unused function".
-        let global_scope = self.scopes.first()
+        let global_scope = self
+            .scopes
+            .first()
             .expect("global scope must exist")
             .clone();
 
         for fn_name in all_fns.difference(&reachable) {
-            let is_called_by_someone = self.dependency_edges.iter().any(|(k, _, to)| {
-                *k == DependencyKind::Call && to == fn_name
-            });
+            let is_called_by_someone = self
+                .dependency_edges
+                .iter()
+                .any(|(k, _, to)| *k == DependencyKind::Call && to == fn_name);
             if is_called_by_someone {
                 if let Some(sym) = global_scope.get(fn_name) {
                     self.push_warning(
                         sym.span,
                         "W07",
-                        format!("dead function '{}': only reachable from dead code, never from main", fn_name),
+                        format!(
+                            "dead function '{}': only reachable from dead code, never from main",
+                            fn_name
+                        ),
                     );
                     self.push_suggestion(
                         Some(sym.span),
@@ -208,12 +221,23 @@ impl Analyzer {
     pub(super) fn run_inline_candidate_pass(&mut self, program: &Program) {
         for item in &program.items {
             match &item.node {
-                ItemKind::Fn { name, body: Some(body), attributes, .. } => {
+                ItemKind::Fn {
+                    name,
+                    body: Some(body),
+                    attributes,
+                    ..
+                } => {
                     self.maybe_add_inline_candidate(name, body, attributes, item.span);
                 }
                 ItemKind::Impl { methods, .. } => {
                     for method in methods {
-                        if let ItemKind::Fn { name, body: Some(body), attributes, .. } = &method.node {
+                        if let ItemKind::Fn {
+                            name,
+                            body: Some(body),
+                            attributes,
+                            ..
+                        } = &method.node
+                        {
                             self.maybe_add_inline_candidate(name, body, attributes, method.span);
                         }
                     }
@@ -234,7 +258,10 @@ impl Analyzer {
             return;
         }
 
-        if attributes.iter().any(|a| matches!(a.name.as_str(), "syscall" | "api")) {
+        if attributes
+            .iter()
+            .any(|a| matches!(a.name.as_str(), "syscall" | "api"))
+        {
             return;
         }
 
@@ -257,7 +284,11 @@ impl Analyzer {
             if called_from_main {
                 parts.push("direct main call".to_string());
             } else {
-                parts.push(format!("hot call ({} call{})", call_count, if call_count == 1 { "" } else { "s" }));
+                parts.push(format!(
+                    "hot call ({} call{})",
+                    call_count,
+                    if call_count == 1 { "" } else { "s" }
+                ));
             }
             parts.join(", ")
         };
@@ -282,13 +313,15 @@ impl Analyzer {
             return false;
         }
 
-        !body.stmts.iter().any(|stmt| matches!(
-            stmt.node,
-            StmtKind::If { .. }
-                | StmtKind::For { .. }
-                | StmtKind::UnsafeBlock { .. }
-                | StmtKind::CfgBlock { .. }
-        ))
+        !body.stmts.iter().any(|stmt| {
+            matches!(
+                stmt.node,
+                StmtKind::If { .. }
+                    | StmtKind::For { .. }
+                    | StmtKind::UnsafeBlock { .. }
+                    | StmtKind::CfgBlock { .. }
+            )
+        })
     }
 
     fn is_recursive(&self, name: &str) -> bool {
@@ -315,9 +348,10 @@ impl Analyzer {
 
     fn is_hot_call_target(&self, name: &str) -> (bool, usize, bool) {
         let call_count = self.call_counts.get(name).copied().unwrap_or(0);
-        let called_from_main = self.dependency_edges.iter().any(|(kind, from, to)| {
-            *kind == DependencyKind::Call && from == "main" && to == name
-        });
+        let called_from_main = self
+            .dependency_edges
+            .iter()
+            .any(|(kind, from, to)| *kind == DependencyKind::Call && from == "main" && to == name);
         let hot = call_count >= 2 || called_from_main;
         (hot, call_count, called_from_main)
     }
@@ -344,7 +378,11 @@ impl Analyzer {
         let candidates = std::mem::take(&mut self.match_candidates);
 
         for candidate in candidates {
-            let Some(TypeKind::Named { name: scrutinee_enum, .. }) = candidate.scrutinee_ty else {
+            let Some(TypeKind::Named {
+                name: scrutinee_enum,
+                ..
+            }) = candidate.scrutinee_ty
+            else {
                 continue;
             };
 
@@ -413,7 +451,10 @@ impl Analyzer {
                             self.push_warning(
                                 arm.span,
                                 "W05",
-                                format!("duplicate/unreachable match arm '{}.{}'", scrutinee_enum, variant),
+                                format!(
+                                    "duplicate/unreachable match arm '{}.{}'",
+                                    scrutinee_enum, variant
+                                ),
                             );
                             self.push_suggestion(
                                 Some(arm.span),

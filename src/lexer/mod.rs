@@ -380,15 +380,24 @@ mod tests {
     fn emits_at_token_for_at_sign() {
         let mut lexer = Lexer::new("@");
         let tokens = lexer.tokenize();
-        assert!(matches!(tokens.first().map(|t| &t.kind), Some(TokenKind::At)));
-        assert!(matches!(tokens.last().map(|t| &t.kind), Some(TokenKind::Eof)));
+        assert!(matches!(
+            tokens.first().map(|t| &t.kind),
+            Some(TokenKind::At)
+        ));
+        assert!(matches!(
+            tokens.last().map(|t| &t.kind),
+            Some(TokenKind::Eof)
+        ));
     }
 
     #[test]
     fn emits_error_token_for_unknown_character() {
         let mut lexer = Lexer::new("$");
         let tokens = lexer.tokenize();
-        assert!(matches!(tokens.first().map(|t| &t.kind), Some(TokenKind::Error(_))));
+        assert!(matches!(
+            tokens.first().map(|t| &t.kind),
+            Some(TokenKind::Error(_))
+        ));
     }
 
     #[test]

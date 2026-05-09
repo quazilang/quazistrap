@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use iced_x86::code_asm::*;
 
-use crate::backend::{target::Abi, BackendError, TargetSpec};
+use crate::backend::{BackendError, TargetSpec, target::Abi};
 use crate::bytecode::{Chunk, ConstPoolEntry, Opcode};
 
 use super::relocations::{PendingReloc, RelocKind};
@@ -133,7 +133,13 @@ fn jump_targets(chunk: &Chunk) -> std::collections::HashSet<u16> {
 
 fn safe_fn_label(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -181,7 +187,9 @@ impl<'a> FnEncoder<'a> {
         // Implicit-return label at chunk.code.len() (jumped to by conditionals at fn end).
         let needs_implicit_ret = targets.contains(&(chunk.code.len() as u16));
         if needs_implicit_ret {
-            label_map.entry(chunk.code.len()).or_insert_with(|| asm.create_label());
+            label_map
+                .entry(chunk.code.len())
+                .or_insert_with(|| asm.create_label());
         }
 
         // Pending relocations: (asm_instr_idx, disp_field_offset_in_instr, kind, symbol, addend)
@@ -268,7 +276,14 @@ impl<'a> FnEncoder<'a> {
                 // ── All other opcodes ─────────────────────────────────────────
                 op => {
                     self.emit_instr(
-                        &mut asm, instr, chunk, vbc_idx, op, &mut pending, &label_map, fn_start,
+                        &mut asm,
+                        instr,
+                        chunk,
+                        vbc_idx,
+                        op,
+                        &mut pending,
+                        &label_map,
+                        fn_start,
                     )?;
                 }
             }
@@ -391,7 +406,8 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     Some(ConstPoolEntry::Str(_)) => {
-                        if let Some(sym) = self.str_syms.get(idx as usize).and_then(|s| s.as_ref()) {
+                        if let Some(sym) = self.str_syms.get(idx as usize).and_then(|s| s.as_ref())
+                        {
                             lea_rip!(rax, sym.clone());
                             emit!(asm.mov(slot(dst), rax));
                         }
@@ -527,7 +543,9 @@ impl<'a> FnEncoder<'a> {
 
             Some(Opcode::Jmp) => {
                 let (_, target) = instr.ri16();
-                let lbl = *label_map.get(&(target as usize)).expect("Jmp target missing label");
+                let lbl = *label_map
+                    .get(&(target as usize))
+                    .expect("Jmp target missing label");
                 emit!(asm.jmp(lbl));
             }
             Some(Opcode::Je) => {
@@ -648,49 +666,90 @@ impl<'a> FnEncoder<'a> {
                 let (dst, id) = instr.ri16();
                 let arg_count = instr.flags as usize;
                 match id {
-                    0 => { // void.write(fd, buf, len) → isize
+                    0 => {
+                        // void.write(fd, buf, len) → isize
                         if is_win64 {
-                            emit!(asm.mov(rcx, slot(dst)));
-                            if arg_count > 1 { emit!(asm.mov(rdx, slot(dst + 1))); }
-                            if arg_count > 2 { emit!(asm.mov(r8, slot(dst + 2))); }
-                            call_ext!("_write".into(), RelocKind::Plt32);
+                            // GetStdHandle: fd 0→STD_INPUT(0xFFFFFFF6), 1→STD_OUTPUT(0xFFFFFFF5), 2→STD_ERROR(0xFFFFFFF4)
+                            // Formula: handle_const = -10 - fd  (as i64, lower 32 bits = Win32 constant)
+                            emit!(asm.mov(rax, -10i64));
+                            emit!(asm.sub(rax, slot(dst)));
+                            emit!(asm.mov(rcx, rax));
+                            call_ext!("GetStdHandle".into(), RelocKind::Plt32);
+                            // WriteFile(handle, buf, count, &n_written, null)
+                            emit!(asm.mov(rcx, rax));
+                            if arg_count > 1 {
+                                emit!(asm.mov(rdx, slot(dst + 1)));
+                            }
+                            if arg_count > 2 {
+                                emit!(asm.mov(r8, slot(dst + 2)));
+                            }
+                            emit!(asm.lea(r9, qword_ptr(rsp)));
+                            emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
+                            call_ext!("WriteFile".into(), RelocKind::Plt32);
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
-                            if arg_count > 1 { emit!(asm.mov(rsi, slot(dst + 1))); }
-                            if arg_count > 2 { emit!(asm.mov(rdx, slot(dst + 2))); }
+                            if arg_count > 1 {
+                                emit!(asm.mov(rsi, slot(dst + 1)));
+                            }
+                            if arg_count > 2 {
+                                emit!(asm.mov(rdx, slot(dst + 2)));
+                            }
                             emit!(asm.mov(rax, 1i64));
                             emit!(asm.syscall());
                         }
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    1 => { // void.read(fd, buf, len) → isize
+                    1 => {
+                        // void.read(fd, buf, len) → isize
                         if is_win64 {
-                            emit!(asm.mov(rcx, slot(dst)));
-                            if arg_count > 1 { emit!(asm.mov(rdx, slot(dst + 1))); }
-                            if arg_count > 2 { emit!(asm.mov(r8, slot(dst + 2))); }
-                            call_ext!("_read".into(), RelocKind::Plt32);
+                            // GetStdHandle for the fd, then ReadFile
+                            emit!(asm.mov(rax, -10i64));
+                            emit!(asm.sub(rax, slot(dst)));
+                            emit!(asm.mov(rcx, rax));
+                            call_ext!("GetStdHandle".into(), RelocKind::Plt32);
+                            // ReadFile(handle, buf, count, &n_read, null)
+                            emit!(asm.mov(rcx, rax));
+                            if arg_count > 1 {
+                                emit!(asm.mov(rdx, slot(dst + 1)));
+                            }
+                            if arg_count > 2 {
+                                emit!(asm.mov(r8, slot(dst + 2)));
+                            }
+                            emit!(asm.lea(r9, qword_ptr(rsp)));
+                            emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
+                            call_ext!("ReadFile".into(), RelocKind::Plt32);
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
-                            if arg_count > 1 { emit!(asm.mov(rsi, slot(dst + 1))); }
-                            if arg_count > 2 { emit!(asm.mov(rdx, slot(dst + 2))); }
+                            if arg_count > 1 {
+                                emit!(asm.mov(rsi, slot(dst + 1)));
+                            }
+                            if arg_count > 2 {
+                                emit!(asm.mov(rdx, slot(dst + 2)));
+                            }
                             emit!(asm.mov(rax, 0i64));
                             emit!(asm.syscall());
                         }
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    2 => { // void.exit(code) → !
+                    2 => {
+                        // void.exit(code) → !
                         if is_win64 {
-                            if arg_count > 0 { emit!(asm.mov(rcx, slot(dst))); }
+                            if arg_count > 0 {
+                                emit!(asm.mov(rcx, slot(dst)));
+                            }
                             call_ext!("ExitProcess".into(), RelocKind::Plt32);
                         } else {
-                            if arg_count > 0 { emit!(asm.mov(rdi, slot(dst))); }
+                            if arg_count > 0 {
+                                emit!(asm.mov(rdi, slot(dst)));
+                            }
                             emit!(asm.mov(rax, 60i64));
                             emit!(asm.syscall());
                         }
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    3 => { // void.malloc(size) → ptr
+                    3 => {
+                        // void.malloc(size) → ptr
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                         } else {
@@ -699,7 +758,8 @@ impl<'a> FnEncoder<'a> {
                         call_ext!("malloc".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    4 => { // void.free(ptr) → void
+                    4 => {
+                        // void.free(ptr) → void
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                         } else {
@@ -709,7 +769,8 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    5 => { // void.realloc(ptr, size) → usize
+                    5 => {
+                        // void.realloc(ptr, size) → usize
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -720,7 +781,8 @@ impl<'a> FnEncoder<'a> {
                         call_ext!("realloc".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    6 => { // void.memcpy(dst_ptr, src, n) → usize
+                    6 => {
+                        // void.memcpy(dst_ptr, src, n) → usize
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -733,7 +795,8 @@ impl<'a> FnEncoder<'a> {
                         call_ext!("memcpy".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    7 => { // void.memset(ptr, val, n) → usize
+                    7 => {
+                        // void.memset(ptr, val, n) → usize
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -746,7 +809,8 @@ impl<'a> FnEncoder<'a> {
                         call_ext!("memset".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    8 => { // void.memmove(dst_ptr, src, n) → usize
+                    8 => {
+                        // void.memmove(dst_ptr, src, n) → usize
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -759,7 +823,8 @@ impl<'a> FnEncoder<'a> {
                         call_ext!("memmove".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    9 => { // void.memcmp(a, b, n) → i32
+                    9 => {
+                        // void.memcmp(a, b, n) → i32
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -772,7 +837,8 @@ impl<'a> FnEncoder<'a> {
                         call_ext!("memcmp".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    10 => { // void.strlen(s) → usize
+                    10 => {
+                        // void.strlen(s) → usize
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                         } else {
@@ -781,12 +847,21 @@ impl<'a> FnEncoder<'a> {
                         call_ext!("strlen".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    11 => { // void.stderr_write(buf, len) → isize
+                    11 => {
+                        // void.stderr_write(buf, len) → isize
                         if is_win64 {
-                            emit!(asm.mov(rcx, 2i64));
+                            // GetStdHandle(STD_ERROR_HANDLE = -12 = 0xFFFFFFF4)
+                            emit!(asm.mov(rcx, -12i64));
+                            call_ext!("GetStdHandle".into(), RelocKind::Plt32);
+                            // WriteFile(handle, buf, count, &n_written, null)
+                            emit!(asm.mov(rcx, rax));
                             emit!(asm.mov(rdx, slot(dst)));
-                            emit!(asm.mov(r8, slot(dst + 1)));
-                            call_ext!("_write".into(), RelocKind::Plt32);
+                            if arg_count > 1 {
+                                emit!(asm.mov(r8, slot(dst + 1)));
+                            }
+                            emit!(asm.lea(r9, qword_ptr(rsp)));
+                            emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
+                            call_ext!("WriteFile".into(), RelocKind::Plt32);
                             emit!(asm.mov(slot(dst), rax));
                         } else {
                             emit!(asm.mov(rdi, 2i64));
@@ -797,7 +872,8 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(slot(dst), rax));
                         }
                     }
-                    12 => { // void.sleep_ms(ms) → void
+                    12 => {
+                        // void.sleep_ms(ms) → void
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             call_ext!("Sleep".into(), RelocKind::Plt32);
@@ -812,7 +888,8 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    13 => { // void.getenv(name) → usize (char*)
+                    13 => {
+                        // void.getenv(name) → usize (char*)
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                         } else {
@@ -950,285 +1027,285 @@ impl<'a> FnEncoder<'a> {
 fn resolve_x86_64_syscall(name: &str) -> u64 {
     match name {
         // File I/O
-        "read"              => 0,
-        "write"             => 1,
-        "open"              => 2,
-        "close"             => 3,
-        "stat"              => 4,
-        "fstat"             => 5,
-        "lstat"             => 6,
-        "poll"              => 7,
-        "lseek"             => 8,
-        "mmap"              => 9,
-        "mprotect"          => 10,
-        "munmap"            => 11,
-        "brk"               => 12,
-        "rt_sigaction"      => 13,
-        "rt_sigprocmask"    => 14,
-        "rt_sigreturn"      => 15,
-        "ioctl"             => 16,
-        "pread64"           => 17,
-        "pwrite64"          => 18,
-        "readv"             => 19,
-        "writev"            => 20,
-        "access"            => 21,
-        "pipe"              => 22,
-        "select"            => 23,
-        "sched_yield"       => 24,
-        "mremap"            => 25,
-        "msync"             => 26,
-        "mincore"           => 27,
-        "madvise"           => 28,
-        "shmget"            => 29,
-        "shmat"             => 30,
-        "shmctl"            => 31,
-        "dup"               => 32,
-        "dup2"              => 33,
-        "pause"             => 34,
-        "nanosleep"         => 35,
-        "getitimer"         => 36,
-        "alarm"             => 37,
-        "setitimer"         => 38,
-        "getpid"            => 39,
-        "sendfile"          => 40,
-        "socket"            => 41,
-        "connect"           => 42,
-        "accept"            => 43,
-        "sendto"            => 44,
-        "recvfrom"          => 45,
-        "sendmsg"           => 46,
-        "recvmsg"           => 47,
-        "shutdown"          => 48,
-        "bind"              => 49,
-        "listen"            => 50,
-        "getsockname"       => 51,
-        "getpeername"       => 52,
-        "socketpair"        => 53,
-        "setsockopt"        => 54,
-        "getsockopt"        => 55,
-        "clone"             => 56,
-        "fork"              => 57,
-        "vfork"             => 58,
-        "execve"            => 59,
-        "exit"              => 60,
-        "wait4"             => 61,
-        "kill"              => 62,
-        "uname"             => 63,
-        "semget"            => 64,
-        "semop"             => 65,
-        "semctl"            => 66,
-        "shmdt"             => 67,
-        "msgget"            => 68,
-        "msgsnd"            => 69,
-        "msgrcv"            => 70,
-        "msgctl"            => 71,
-        "fcntl"             => 72,
-        "flock"             => 73,
-        "fsync"             => 74,
-        "fdatasync"         => 75,
-        "truncate"          => 76,
-        "ftruncate"         => 77,
-        "getdents"          => 78,
-        "getcwd"            => 79,
-        "chdir"             => 80,
-        "fchdir"            => 81,
-        "rename"            => 82,
-        "mkdir"             => 83,
-        "rmdir"             => 84,
-        "creat"             => 85,
-        "link"              => 86,
-        "unlink"            => 87,
-        "symlink"           => 88,
-        "readlink"          => 89,
-        "chmod"             => 90,
-        "fchmod"            => 91,
-        "chown"             => 92,
-        "fchown"            => 93,
-        "lchown"            => 94,
-        "umask"             => 95,
-        "gettimeofday"      => 96,
-        "getrlimit"         => 97,
-        "getrusage"         => 98,
-        "sysinfo"           => 99,
-        "times"             => 100,
-        "ptrace"            => 101,
-        "getuid"            => 102,
-        "syslog"            => 103,
-        "getgid"            => 104,
-        "setuid"            => 105,
-        "setgid"            => 106,
-        "geteuid"           => 107,
-        "getegid"           => 108,
-        "setpgid"           => 109,
-        "getppid"           => 110,
-        "getpgrp"           => 111,
-        "setsid"            => 112,
-        "setreuid"          => 113,
-        "setregid"          => 114,
-        "getgroups"         => 115,
-        "setgroups"         => 116,
-        "setresuid"         => 117,
-        "getresuid"         => 118,
-        "setresgid"         => 119,
-        "getresgid"         => 120,
-        "getpgid"           => 121,
-        "setfsuid"          => 122,
-        "setfsgid"          => 123,
-        "getsid"            => 124,
-        "capget"            => 125,
-        "capset"            => 126,
-        "rt_sigpending"     => 127,
-        "rt_sigtimedwait"   => 128,
-        "rt_sigqueueinfo"   => 129,
-        "rt_sigsuspend"     => 130,
-        "sigaltstack"       => 131,
-        "utime"             => 132,
-        "mknod"             => 133,
-        "statfs"            => 137,
-        "fstatfs"           => 138,
-        "getpriority"       => 140,
-        "setpriority"       => 141,
-        "sched_setparam"    => 142,
-        "sched_getparam"    => 143,
+        "read" => 0,
+        "write" => 1,
+        "open" => 2,
+        "close" => 3,
+        "stat" => 4,
+        "fstat" => 5,
+        "lstat" => 6,
+        "poll" => 7,
+        "lseek" => 8,
+        "mmap" => 9,
+        "mprotect" => 10,
+        "munmap" => 11,
+        "brk" => 12,
+        "rt_sigaction" => 13,
+        "rt_sigprocmask" => 14,
+        "rt_sigreturn" => 15,
+        "ioctl" => 16,
+        "pread64" => 17,
+        "pwrite64" => 18,
+        "readv" => 19,
+        "writev" => 20,
+        "access" => 21,
+        "pipe" => 22,
+        "select" => 23,
+        "sched_yield" => 24,
+        "mremap" => 25,
+        "msync" => 26,
+        "mincore" => 27,
+        "madvise" => 28,
+        "shmget" => 29,
+        "shmat" => 30,
+        "shmctl" => 31,
+        "dup" => 32,
+        "dup2" => 33,
+        "pause" => 34,
+        "nanosleep" => 35,
+        "getitimer" => 36,
+        "alarm" => 37,
+        "setitimer" => 38,
+        "getpid" => 39,
+        "sendfile" => 40,
+        "socket" => 41,
+        "connect" => 42,
+        "accept" => 43,
+        "sendto" => 44,
+        "recvfrom" => 45,
+        "sendmsg" => 46,
+        "recvmsg" => 47,
+        "shutdown" => 48,
+        "bind" => 49,
+        "listen" => 50,
+        "getsockname" => 51,
+        "getpeername" => 52,
+        "socketpair" => 53,
+        "setsockopt" => 54,
+        "getsockopt" => 55,
+        "clone" => 56,
+        "fork" => 57,
+        "vfork" => 58,
+        "execve" => 59,
+        "exit" => 60,
+        "wait4" => 61,
+        "kill" => 62,
+        "uname" => 63,
+        "semget" => 64,
+        "semop" => 65,
+        "semctl" => 66,
+        "shmdt" => 67,
+        "msgget" => 68,
+        "msgsnd" => 69,
+        "msgrcv" => 70,
+        "msgctl" => 71,
+        "fcntl" => 72,
+        "flock" => 73,
+        "fsync" => 74,
+        "fdatasync" => 75,
+        "truncate" => 76,
+        "ftruncate" => 77,
+        "getdents" => 78,
+        "getcwd" => 79,
+        "chdir" => 80,
+        "fchdir" => 81,
+        "rename" => 82,
+        "mkdir" => 83,
+        "rmdir" => 84,
+        "creat" => 85,
+        "link" => 86,
+        "unlink" => 87,
+        "symlink" => 88,
+        "readlink" => 89,
+        "chmod" => 90,
+        "fchmod" => 91,
+        "chown" => 92,
+        "fchown" => 93,
+        "lchown" => 94,
+        "umask" => 95,
+        "gettimeofday" => 96,
+        "getrlimit" => 97,
+        "getrusage" => 98,
+        "sysinfo" => 99,
+        "times" => 100,
+        "ptrace" => 101,
+        "getuid" => 102,
+        "syslog" => 103,
+        "getgid" => 104,
+        "setuid" => 105,
+        "setgid" => 106,
+        "geteuid" => 107,
+        "getegid" => 108,
+        "setpgid" => 109,
+        "getppid" => 110,
+        "getpgrp" => 111,
+        "setsid" => 112,
+        "setreuid" => 113,
+        "setregid" => 114,
+        "getgroups" => 115,
+        "setgroups" => 116,
+        "setresuid" => 117,
+        "getresuid" => 118,
+        "setresgid" => 119,
+        "getresgid" => 120,
+        "getpgid" => 121,
+        "setfsuid" => 122,
+        "setfsgid" => 123,
+        "getsid" => 124,
+        "capget" => 125,
+        "capset" => 126,
+        "rt_sigpending" => 127,
+        "rt_sigtimedwait" => 128,
+        "rt_sigqueueinfo" => 129,
+        "rt_sigsuspend" => 130,
+        "sigaltstack" => 131,
+        "utime" => 132,
+        "mknod" => 133,
+        "statfs" => 137,
+        "fstatfs" => 138,
+        "getpriority" => 140,
+        "setpriority" => 141,
+        "sched_setparam" => 142,
+        "sched_getparam" => 143,
         "sched_setscheduler" => 144,
         "sched_getscheduler" => 145,
         "sched_get_priority_max" => 146,
         "sched_get_priority_min" => 147,
         "sched_rr_get_interval" => 148,
-        "mlock"             => 149,
-        "munlock"           => 150,
-        "mlockall"          => 151,
-        "munlockall"        => 152,
-        "vhangup"           => 153,
-        "modify_ldt"        => 154,
-        "pivot_root"        => 155,
-        "prctl"             => 157,
-        "arch_prctl"        => 158,
-        "adjtimex"          => 159,
-        "setrlimit"         => 160,
-        "chroot"            => 161,
-        "sync"              => 162,
-        "acct"              => 163,
-        "settimeofday"      => 164,
-        "mount"             => 165,
-        "umount2"           => 166,
-        "swapon"            => 167,
-        "swapoff"           => 168,
-        "reboot"            => 169,
-        "sethostname"       => 170,
-        "setdomainname"     => 171,
-        "iopl"              => 172,
-        "ioperm"            => 173,
-        "gettid"            => 186,
-        "readahead"         => 187,
-        "setxattr"          => 188,
-        "lsetxattr"         => 189,
-        "fsetxattr"         => 190,
-        "getxattr"          => 191,
-        "lgetxattr"         => 192,
-        "fgetxattr"         => 193,
-        "listxattr"         => 194,
-        "llistxattr"        => 195,
-        "flistxattr"        => 196,
-        "removexattr"       => 197,
-        "lremovexattr"      => 198,
-        "fremovexattr"      => 199,
-        "tkill"             => 200,
-        "time"              => 201,
-        "futex"             => 202,
+        "mlock" => 149,
+        "munlock" => 150,
+        "mlockall" => 151,
+        "munlockall" => 152,
+        "vhangup" => 153,
+        "modify_ldt" => 154,
+        "pivot_root" => 155,
+        "prctl" => 157,
+        "arch_prctl" => 158,
+        "adjtimex" => 159,
+        "setrlimit" => 160,
+        "chroot" => 161,
+        "sync" => 162,
+        "acct" => 163,
+        "settimeofday" => 164,
+        "mount" => 165,
+        "umount2" => 166,
+        "swapon" => 167,
+        "swapoff" => 168,
+        "reboot" => 169,
+        "sethostname" => 170,
+        "setdomainname" => 171,
+        "iopl" => 172,
+        "ioperm" => 173,
+        "gettid" => 186,
+        "readahead" => 187,
+        "setxattr" => 188,
+        "lsetxattr" => 189,
+        "fsetxattr" => 190,
+        "getxattr" => 191,
+        "lgetxattr" => 192,
+        "fgetxattr" => 193,
+        "listxattr" => 194,
+        "llistxattr" => 195,
+        "flistxattr" => 196,
+        "removexattr" => 197,
+        "lremovexattr" => 198,
+        "fremovexattr" => 199,
+        "tkill" => 200,
+        "time" => 201,
+        "futex" => 202,
         "sched_setaffinity" => 203,
         "sched_getaffinity" => 204,
-        "io_setup"          => 206,
-        "io_destroy"        => 207,
-        "io_getevents"      => 208,
-        "io_submit"         => 209,
-        "io_cancel"         => 210,
-        "epoll_create"      => 213,
-        "getdents64"        => 217,
-        "set_tid_address"   => 218,
-        "fadvise64"         => 221,
-        "timer_create"      => 222,
-        "timer_settime"     => 223,
-        "timer_gettime"     => 224,
-        "timer_getoverrun"  => 225,
-        "timer_delete"      => 226,
-        "clock_settime"     => 227,
-        "clock_gettime"     => 228,
-        "clock_getres"      => 229,
-        "clock_nanosleep"   => 230,
-        "exit_group"        => 231,
-        "epoll_wait"        => 232,
-        "epoll_ctl"         => 233,
-        "tgkill"            => 234,
-        "utimes"            => 235,
-        "mq_open"           => 240,
-        "mq_unlink"         => 241,
-        "mq_timedsend"      => 242,
-        "mq_timedreceive"   => 243,
-        "mq_notify"         => 244,
-        "mq_getsetattr"     => 245,
-        "waitid"            => 247,
-        "inotify_init"      => 253,
+        "io_setup" => 206,
+        "io_destroy" => 207,
+        "io_getevents" => 208,
+        "io_submit" => 209,
+        "io_cancel" => 210,
+        "epoll_create" => 213,
+        "getdents64" => 217,
+        "set_tid_address" => 218,
+        "fadvise64" => 221,
+        "timer_create" => 222,
+        "timer_settime" => 223,
+        "timer_gettime" => 224,
+        "timer_getoverrun" => 225,
+        "timer_delete" => 226,
+        "clock_settime" => 227,
+        "clock_gettime" => 228,
+        "clock_getres" => 229,
+        "clock_nanosleep" => 230,
+        "exit_group" => 231,
+        "epoll_wait" => 232,
+        "epoll_ctl" => 233,
+        "tgkill" => 234,
+        "utimes" => 235,
+        "mq_open" => 240,
+        "mq_unlink" => 241,
+        "mq_timedsend" => 242,
+        "mq_timedreceive" => 243,
+        "mq_notify" => 244,
+        "mq_getsetattr" => 245,
+        "waitid" => 247,
+        "inotify_init" => 253,
         "inotify_add_watch" => 254,
-        "inotify_rm_watch"  => 255,
-        "openat"            => 257,
-        "mkdirat"           => 258,
-        "mknodat"           => 259,
-        "fchownat"          => 260,
-        "futimesat"         => 261,
-        "newfstatat"        => 262,
-        "unlinkat"          => 263,
-        "renameat"          => 264,
-        "linkat"            => 265,
-        "symlinkat"         => 266,
-        "readlinkat"        => 267,
-        "fchmodat"          => 268,
-        "faccessat"         => 269,
-        "pselect6"          => 270,
-        "ppoll"             => 271,
-        "unshare"           => 272,
-        "splice"            => 275,
-        "tee"               => 276,
-        "sync_file_range"   => 277,
-        "vmsplice"          => 278,
-        "move_pages"        => 279,
-        "utimensat"         => 280,
-        "epoll_pwait"       => 281,
-        "signalfd"          => 282,
-        "timerfd_create"    => 283,
-        "eventfd"           => 284,
-        "fallocate"         => 285,
-        "timerfd_settime"   => 286,
-        "timerfd_gettime"   => 287,
-        "accept4"           => 288,
-        "signalfd4"         => 289,
-        "eventfd2"          => 290,
-        "epoll_create1"     => 291,
-        "dup3"              => 292,
-        "pipe2"             => 293,
-        "inotify_init1"     => 294,
-        "preadv"            => 295,
-        "pwritev"           => 296,
-        "prlimit64"         => 302,
-        "fanotify_init"     => 303,
-        "fanotify_mark"     => 304,
-        "syncfs"            => 306,
-        "sendmmsg"          => 307,
-        "setns"             => 308,
-        "getcpu"            => 309,
-        "process_vm_readv"  => 310,
+        "inotify_rm_watch" => 255,
+        "openat" => 257,
+        "mkdirat" => 258,
+        "mknodat" => 259,
+        "fchownat" => 260,
+        "futimesat" => 261,
+        "newfstatat" => 262,
+        "unlinkat" => 263,
+        "renameat" => 264,
+        "linkat" => 265,
+        "symlinkat" => 266,
+        "readlinkat" => 267,
+        "fchmodat" => 268,
+        "faccessat" => 269,
+        "pselect6" => 270,
+        "ppoll" => 271,
+        "unshare" => 272,
+        "splice" => 275,
+        "tee" => 276,
+        "sync_file_range" => 277,
+        "vmsplice" => 278,
+        "move_pages" => 279,
+        "utimensat" => 280,
+        "epoll_pwait" => 281,
+        "signalfd" => 282,
+        "timerfd_create" => 283,
+        "eventfd" => 284,
+        "fallocate" => 285,
+        "timerfd_settime" => 286,
+        "timerfd_gettime" => 287,
+        "accept4" => 288,
+        "signalfd4" => 289,
+        "eventfd2" => 290,
+        "epoll_create1" => 291,
+        "dup3" => 292,
+        "pipe2" => 293,
+        "inotify_init1" => 294,
+        "preadv" => 295,
+        "pwritev" => 296,
+        "prlimit64" => 302,
+        "fanotify_init" => 303,
+        "fanotify_mark" => 304,
+        "syncfs" => 306,
+        "sendmmsg" => 307,
+        "setns" => 308,
+        "getcpu" => 309,
+        "process_vm_readv" => 310,
         "process_vm_writev" => 311,
-        "seccomp"           => 317,
-        "getrandom"         => 318,
-        "memfd_create"      => 319,
-        "bpf"               => 321,
-        "execveat"          => 322,
-        "membarrier"        => 324,
-        "mlock2"            => 325,
-        "copy_file_range"   => 326,
-        "preadv2"           => 327,
-        "pwritev2"          => 328,
-        "statx"             => 332,
-        _                   => 0,
+        "seccomp" => 317,
+        "getrandom" => 318,
+        "memfd_create" => 319,
+        "bpf" => 321,
+        "execveat" => 322,
+        "membarrier" => 324,
+        "mlock2" => 325,
+        "copy_file_range" => 326,
+        "preadv2" => 327,
+        "pwritev2" => 328,
+        "statx" => 332,
+        _ => 0,
     }
 }

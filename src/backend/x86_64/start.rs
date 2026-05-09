@@ -28,11 +28,11 @@ impl StartStub {
     /// Linux _start stub.
     pub fn generate(fn_offset: usize) -> Self {
         let bytes: Vec<u8> = vec![
-            0x48, 0x31, 0xED,                         // xor rbp, rbp
-            0xE8, 0x00, 0x00, 0x00, 0x00,             // call main
-            0x48, 0x89, 0xC7,                         // mov rdi, rax
+            0x48, 0x31, 0xED, // xor rbp, rbp
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call main
+            0x48, 0x89, 0xC7, // mov rdi, rax
             0x48, 0xC7, 0xC0, 0x3C, 0x00, 0x00, 0x00, // mov rax, 60
-            0x0F, 0x05,                               // syscall
+            0x0F, 0x05, // syscall
         ];
         let relocs = vec![PendingReloc {
             offset_in_text: fn_offset + 4,
@@ -51,9 +51,9 @@ impl StartStub {
         // mov rcx, rax    (3 bytes): 48 89 C1
         // call ExitProcess(5 bytes): E8 rel32
         let bytes: Vec<u8> = vec![
-            0x48, 0x83, 0xEC, 0x28,       // sub rsp, 40
+            0x48, 0x83, 0xEC, 0x28, // sub rsp, 40
             0xE8, 0x00, 0x00, 0x00, 0x00, // call main
-            0x48, 0x89, 0xC1,             // mov rcx, rax
+            0x48, 0x89, 0xC1, // mov rcx, rax
             0xE8, 0x00, 0x00, 0x00, 0x00, // call ExitProcess
         ];
         // call main displacement at fn_offset + 4+1 = fn_offset+5

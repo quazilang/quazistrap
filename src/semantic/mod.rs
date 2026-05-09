@@ -8,11 +8,11 @@ use crate::parser::ast::*;
 
 pub mod types;
 pub use types::*;
+mod borrow;
 mod declare;
+mod optimize;
 mod typecheck;
 mod unused;
-mod optimize;
-mod borrow;
 
 // Private internal types used across sub-modules via `use super::*;`
 
@@ -74,6 +74,16 @@ pub struct Analyzer {
     pub(super) unreachable_functions: BTreeSet<String>,
     /// Nesting depth of `unsafe` blocks/functions (0 = safe context).
     pub(super) unsafe_depth: usize,
+    /// Function names that live in library (dependency) files.
+    /// Set once from LoadResult; not reset between analyses.
+    pub(super) library_fn_names: std::collections::HashSet<String>,
+    /// Symbols declared by library files that are not part of the parsed user program.
+    /// Used by tooling paths such as the LSP, where open-buffer analysis should not
+    /// merge dependency source and shift user spans.
+    pub(super) library_symbols: Vec<(String, Symbol)>,
+    /// Function names explicitly imported by leaf name (e.g. `import std.core.write`).
+    /// Reset at the start of each analysis; populated during the declare pass.
+    pub(super) explicitly_imported_fns: std::collections::HashSet<String>,
 }
 
 pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
@@ -109,7 +119,18 @@ impl Analyzer {
             lazy_import_hints: Vec::new(),
             unreachable_functions: BTreeSet::new(),
             unsafe_depth: 0,
+            library_fn_names: std::collections::HashSet::new(),
+            library_symbols: Vec::new(),
+            explicitly_imported_fns: std::collections::HashSet::new(),
         }
+    }
+
+    pub fn set_library_fns(&mut self, names: std::collections::HashSet<String>) {
+        self.library_fn_names = names;
+    }
+
+    pub fn set_library_symbols(&mut self, symbols: Vec<(String, Symbol)>) {
+        self.library_symbols = symbols;
     }
 
     pub fn analyze_program(&mut self, program: &Program) -> SemanticReport {
@@ -220,7 +241,9 @@ impl Analyzer {
         self.lazy_import_hints.clear();
         self.unreachable_functions.clear();
         self.unsafe_depth = 0;
+        self.explicitly_imported_fns.clear();
         self.init_builtins();
+        self.init_library_symbols();
     }
 
     fn init_builtins(&mut self) {
@@ -234,18 +257,69 @@ impl Analyzer {
         let mut option_variants = HashMap::new();
         option_variants.insert("Some".to_string(), 1usize);
         option_variants.insert("None".to_string(), 0usize);
-        self.enums.insert("Option".to_string(), EnumInfo { variants: option_variants });
+        self.enums.insert(
+            "Option".to_string(),
+            EnumInfo {
+                variants: option_variants,
+            },
+        );
 
         let mut result_variants = HashMap::new();
         result_variants.insert("Ok".to_string(), 1usize);
         result_variants.insert("Err".to_string(), 1usize);
-        self.enums.insert("Result".to_string(), EnumInfo { variants: result_variants });
+        self.enums.insert(
+            "Result".to_string(),
+            EnumInfo {
+                variants: result_variants,
+            },
+        );
 
         for type_name in &["Option", "Result"] {
-            self.declare(type_name.to_string(), Symbol {
-                kind: SymbolKind::TypeName,
+            self.declare(
+                type_name.to_string(),
+                Symbol {
+                    kind: SymbolKind::TypeName,
+                    span,
+                    ty: None,
+                    params: vec![],
+                    used: true,
+                    initialized: true,
+                    is_import: false,
+                    import_path: None,
+                    const_value: None,
+                    variadic: false,
+                    attributes: Vec::new(),
+                    public: true,
+                },
+            );
+        }
+
+        for ctor in &["Some", "Ok", "Err"] {
+            self.declare(
+                ctor.to_string(),
+                Symbol {
+                    kind: SymbolKind::Function,
+                    span,
+                    ty: Some(TypeKind::Any),
+                    params: vec![TypeKind::Any],
+                    used: true,
+                    initialized: true,
+                    is_import: false,
+                    import_path: None,
+                    const_value: None,
+                    variadic: false,
+                    attributes: Vec::new(),
+                    public: true,
+                },
+            );
+        }
+
+        self.declare(
+            "None".to_string(),
+            Symbol {
+                kind: SymbolKind::Function,
                 span,
-                ty: None,
+                ty: Some(TypeKind::Any),
                 params: vec![],
                 used: true,
                 initialized: true,
@@ -254,38 +328,17 @@ impl Analyzer {
                 const_value: None,
                 variadic: false,
                 attributes: Vec::new(),
-            });
-        }
+                public: true,
+            },
+        );
+    }
 
-        for ctor in &["Some", "Ok", "Err"] {
-            self.declare(ctor.to_string(), Symbol {
-                kind: SymbolKind::Function,
-                span,
-                ty: Some(TypeKind::Any),
-                params: vec![TypeKind::Any],
-                used: true,
-                initialized: true,
-                is_import: false,
-                import_path: None,
-                const_value: None,
-                variadic: false,
-                attributes: Vec::new(),
-            });
+    fn init_library_symbols(&mut self) {
+        for (name, symbol) in self.library_symbols.clone() {
+            if self.resolve_symbol(&name).is_none() {
+                self.declare(name, symbol);
+            }
         }
-
-        self.declare("None".to_string(), Symbol {
-            kind: SymbolKind::Function,
-            span,
-            ty: Some(TypeKind::Any),
-            params: vec![],
-            used: true,
-            initialized: true,
-            is_import: false,
-            import_path: None,
-            const_value: None,
-            variadic: false,
-            attributes: Vec::new(),
-        });
     }
 
     pub(super) fn add_dependency_edge(&mut self, kind: DependencyKind, from: &str, to: &str) {
@@ -469,15 +522,35 @@ impl Analyzer {
     }
 
     pub(super) fn push_error(&mut self, span: Span, code: &'static str, message: String) {
-        self.errors.push(SemanticError { code, message, span });
+        self.errors.push(SemanticError {
+            code,
+            message,
+            span,
+        });
     }
 
     pub(super) fn push_warning(&mut self, span: Span, code: &'static str, message: String) {
-        self.warnings.push(SemanticWarning { code, message, span, suggestions: Vec::new() });
+        self.warnings.push(SemanticWarning {
+            code,
+            message,
+            span,
+            suggestions: Vec::new(),
+        });
     }
 
-    pub(super) fn push_warning_with_suggestion(&mut self, span: Span, code: &'static str, message: String, suggestion: String) {
-        self.warnings.push(SemanticWarning { code, message, span, suggestions: vec![suggestion] });
+    pub(super) fn push_warning_with_suggestion(
+        &mut self,
+        span: Span,
+        code: &'static str,
+        message: String,
+        suggestion: String,
+    ) {
+        self.warnings.push(SemanticWarning {
+            code,
+            message,
+            span,
+            suggestions: vec![suggestion],
+        });
     }
 
     pub(super) fn push_suggestion(&mut self, span: Option<Span>, message: String) {
@@ -621,7 +694,8 @@ fn main() void {
             report
                 .warnings
                 .iter()
-                .any(|w| w.message.contains("unused import 'stdout'") && w.message.contains("std.io.stdout"))
+                .any(|w| w.message.contains("unused import 'stdout'")
+                    && w.message.contains("std.io.stdout"))
         );
         assert!(report.unused_imports.contains(&"std.io.stdout".to_string()));
     }
@@ -773,7 +847,12 @@ fn main() void {
         );
 
         assert!(!report.annotated_exprs.is_empty());
-        assert!(report.constant_evaluations.iter().any(|entry| entry.value == ConstValue::Int(3)));
+        assert!(
+            report
+                .constant_evaluations
+                .iter()
+                .any(|entry| entry.value == ConstValue::Int(3))
+        );
     }
 
     #[test]
@@ -915,7 +994,13 @@ fn main() void {
             report.annotated_exprs.len()
         );
         assert!(!report.symbol_table.entries.is_empty());
-        assert!(report.symbol_table.entries.iter().any(|e| e.name == "helper"));
+        assert!(
+            report
+                .symbol_table
+                .entries
+                .iter()
+                .any(|e| e.name == "helper")
+        );
 
         let import = report
             .used_imports_map
@@ -931,20 +1016,18 @@ fn main() void {
                 .iter()
                 .any(|c| c.name == "helper")
         );
-        assert!(report
-            .dependency_graph
-            .edges
-            .iter()
-            .any(|edge| edge.kind == DependencyKind::Import
-                && edge.from == "__program__"
-                && edge.to == "std.io.stdout"));
-        assert!(report
-            .dependency_graph
-            .edges
-            .iter()
-            .any(|edge| {
-                edge.kind == DependencyKind::Call && edge.from == "main" && edge.to == "helper"
-            }));
+        assert!(
+            report
+                .dependency_graph
+                .edges
+                .iter()
+                .any(|edge| edge.kind == DependencyKind::Import
+                    && edge.from == "__program__"
+                    && edge.to == "std.io.stdout")
+        );
+        assert!(report.dependency_graph.edges.iter().any(|edge| {
+            edge.kind == DependencyKind::Call && edge.from == "main" && edge.to == "helper"
+        }));
     }
 
     #[test]
@@ -960,10 +1043,12 @@ fn main() void {
 "#,
         );
 
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| e.message.contains("import name conflict for 'stdout'")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("import name conflict for 'stdout'"))
+        );
     }
 
     #[test]
@@ -979,7 +1064,11 @@ fn empty() Option[i32] {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -992,7 +1081,11 @@ fn get_none() Option[i32] {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -1008,7 +1101,11 @@ fn fail(msg: str) Result[i32, str] {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -1023,7 +1120,11 @@ fn unwrap_or_zero(x: Option[i32]) i32 {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
         assert_eq!(report.exhaustiveness_checks, 1);
     }
 
@@ -1039,7 +1140,10 @@ fn bad_match(x: Option[i32]) i32 {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.message.contains("non-exhaustive match")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("non-exhaustive match")),
             "expected non-exhaustive match error"
         );
     }
@@ -1056,7 +1160,11 @@ fn handle(x: Result[i32, str]) i32 {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
         assert_eq!(report.exhaustiveness_checks, 1);
     }
 
@@ -1073,7 +1181,10 @@ fn main() void {}
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.message.contains("duplicate declaration 'Option'")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("duplicate declaration 'Option'")),
             "expected duplicate declaration error for Option"
         );
     }
@@ -1092,7 +1203,11 @@ fn main() void {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -1106,7 +1221,10 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.message.contains("cannot assign to const")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("cannot assign to const")),
             "expected const assign error"
         );
     }
@@ -1122,7 +1240,11 @@ fn main() void {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -1136,7 +1258,11 @@ fn main() void {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -1150,7 +1276,10 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.message.contains("++ / -- not valid")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("++ / -- not valid")),
             "expected inc/dec type error"
         );
     }
@@ -1166,7 +1295,10 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.message.contains("cannot assign to const")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("cannot assign to const")),
             "expected const assign error"
         );
     }
@@ -1180,14 +1312,25 @@ fn mul(x: i32) i32 {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
         // The binary expr annotation must carry const_value = Int(0)
         assert!(
-            report.annotated_exprs.iter().any(|a| a.const_value == Some(ConstValue::Int(0))),
+            report
+                .annotated_exprs
+                .iter()
+                .any(|a| a.const_value == Some(ConstValue::Int(0))),
             "x * 0 should fold to Int(0) in annotated tree"
         );
         assert!(
-            report.optimization_hints.math_optimizations.iter().any(|m| m.description.contains("x * 0 = 0")),
+            report
+                .optimization_hints
+                .math_optimizations
+                .iter()
+                .any(|m| m.description.contains("x * 0 = 0")),
         );
     }
 
@@ -1200,13 +1343,24 @@ fn scale(x: f64) f64 {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
         assert!(
-            report.annotated_exprs.iter().any(|a| matches!(a.const_value, Some(ConstValue::Float(f)) if f == 0.0)),
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .annotated_exprs
+                .iter()
+                .any(|a| matches!(a.const_value, Some(ConstValue::Float(f)) if f == 0.0)),
             "0.0 * x should fold to Float(0.0) in annotated tree"
         );
         assert!(
-            report.optimization_hints.math_optimizations.iter().any(|m| m.description.contains("0.0 * x = 0.0")),
+            report
+                .optimization_hints
+                .math_optimizations
+                .iter()
+                .any(|m| m.description.contains("0.0 * x = 0.0")),
         );
     }
 
@@ -1219,13 +1373,24 @@ fn add(x: i32) i32 {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
         assert!(
-            report.optimization_hints.math_optimizations.iter().any(|m| m.description.contains("x + 0 = x")),
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .optimization_hints
+                .math_optimizations
+                .iter()
+                .any(|m| m.description.contains("x + 0 = x")),
             "x + 0 should produce identity optimization hint"
         );
         assert!(
-            report.suggestions.iter().any(|s| s.message.contains("x + 0 = x")),
+            report
+                .suggestions
+                .iter()
+                .any(|s| s.message.contains("x + 0 = x")),
         );
     }
 
@@ -1242,14 +1407,17 @@ fn main() void {
         );
         assert!(
             report.lazy_import_hints.iter().any(|h| {
-                h.broad_path == "std"
-                    && h.accessed_subpaths.iter().any(|p| p == "std.io.stdout")
+                h.broad_path == "std" && h.accessed_subpaths.iter().any(|p| p == "std.io.stdout")
             }),
             "expected lazy import hint for std -> std.io.stdout, got {:?}",
             report.lazy_import_hints
         );
         assert!(
-            report.optimization_hints.lazy_import_hints.iter().any(|h| h.broad_path == "std"),
+            report
+                .optimization_hints
+                .lazy_import_hints
+                .iter()
+                .any(|h| h.broad_path == "std"),
         );
     }
 
@@ -1292,16 +1460,23 @@ fn main() void {
         );
         // helper1: unused function (directly uncalled)
         assert!(
-            report.warnings.iter().any(|w| w.message.contains("unused function 'helper1'")),
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("unused function 'helper1'")),
             "expected unused function warning for helper1"
         );
         // helper2: dead function (called only from dead code)
         assert!(
             report.dead_functions.contains(&"helper2".to_string()),
-            "helper2 should be in dead_functions, got {:?}", report.dead_functions
+            "helper2 should be in dead_functions, got {:?}",
+            report.dead_functions
         );
         assert!(
-            report.warnings.iter().any(|w| w.message.contains("dead function 'helper2'")),
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("dead function 'helper2'")),
             "expected dead function warning for helper2"
         );
         // main is reachable
@@ -1321,8 +1496,15 @@ fn main() void {
 }
 "#,
         );
-        assert!(report.dead_functions.is_empty(), "helper is reachable, should not be dead");
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        assert!(
+            report.dead_functions.is_empty(),
+            "helper is reachable, should not be dead"
+        );
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -1337,7 +1519,9 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.message.contains("for range start must be an integer type")),
+            report.errors.iter().any(|e| e
+                .message
+                .contains("for range start must be an integer type")),
             "expected integer type error for str range start, got: {:?}",
             report.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -1355,7 +1539,10 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.message.contains("type mismatch")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("type mismatch")),
             "for loop var typed as i32 — assigning to str should error"
         );
     }
@@ -1378,7 +1565,10 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S10" && e.message.contains("use of moved value 'p'")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.code == "S10" && e.message.contains("use of moved value 'p'")),
             "expected use-after-move error, got: {:?}",
             report.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -1398,7 +1588,11 @@ fn main() void {
 "#,
         );
         let borrow_errors: Vec<_> = report.errors.iter().filter(|e| e.code == "S10").collect();
-        assert!(borrow_errors.is_empty(), "i32 is Copy — should not produce S10 errors: {:?}", borrow_errors);
+        assert!(
+            borrow_errors.is_empty(),
+            "i32 is Copy — should not produce S10 errors: {:?}",
+            borrow_errors
+        );
     }
 
     #[test]
@@ -1420,7 +1614,11 @@ fn main() void {
 "#,
         );
         let borrow_errors: Vec<_> = report.errors.iter().filter(|e| e.code == "S10").collect();
-        assert!(borrow_errors.is_empty(), "reassign should clear moved state: {:?}", borrow_errors);
+        assert!(
+            borrow_errors.is_empty(),
+            "reassign should clear moved state: {:?}",
+            borrow_errors
+        );
     }
 
     #[test]
@@ -1442,7 +1640,10 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S10" && e.message.contains("cannot move 'o' inside a loop")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.code == "S10" && e.message.contains("cannot move 'o' inside a loop")),
             "expected move-in-loop error, got: {:?}",
             report.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -1467,9 +1668,30 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S10" && e.message.contains("use of moved value 'v'")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.code == "S10" && e.message.contains("use of moved value 'v'")),
             "conservative branch merge: move in if-branch should block post-if use, got: {:?}",
             report.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn main_may_return_never() {
+        let report = analyze(
+            r#"
+fn main() ! {
+}
+"#,
+        );
+        assert!(
+            !report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("main() return type must")),
+            "main returning ! should be accepted, got {:?}",
+            report.errors
         );
     }
 }

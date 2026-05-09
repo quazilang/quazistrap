@@ -1,0 +1,28 @@
+{
+    "name": "tree-sitter-void",
+    "version": "0.1.0",
+    "author": "namnam1105",
+    "license": "0BSD",
+    "description": "Tree-sitter grammar for the Void programming language",
+    "main": "bindings/node",
+    "scripts": {
+        "build": "tree-sitter generate && node-gyp build",
+        "test": "tree-sitter test"
+    },
+    "dependencies": {
+        "nan": "*"
+    },
+    "devDependencies": {
+        "tree-sitter-cli": "*"
+    },
+    "tree-sitter": [
+        {
+            "scope": "source.void",
+            "file-types": [
+                "void"
+            ],
+            "highlights": "queries/highlights.scm",
+            "locals": "queries/locals.scm"
+        }
+    ]
+}

@@ -8,7 +8,12 @@ use crate::parser::ast::*;
 use crate::parser::common::{merge_token_spans, to_ast_span};
 
 impl Parser {
-    pub fn parse_fn(&mut self, attributes: Vec<Attribute>, unsafe_fn: bool) -> Result<Item, String> {
+    pub fn parse_fn(
+        &mut self,
+        attributes: Vec<Attribute>,
+        unsafe_fn: bool,
+        pub_fn: bool,
+    ) -> Result<Item, String> {
         let start = self.expect(TokenKind::Fn)?.span;
 
         let name = self.parse_ident()?;
@@ -34,9 +39,16 @@ impl Parser {
                 let param_ty = self.parse_type()?;
                 let is_last = self.at(TokenKind::RParen);
                 if variadic && !is_last {
-                    return Err(self.err_here("variadic parameter must be the last parameter".to_string()));
+                    return Err(
+                        self.err_here("variadic parameter must be the last parameter".to_string())
+                    );
                 }
-                params.push(Param { name: param_name, ty: param_ty, variadic, attributes: param_attributes });
+                params.push(Param {
+                    name: param_name,
+                    ty: param_ty,
+                    variadic,
+                    attributes: param_attributes,
+                });
                 if self.at(TokenKind::Comma) {
                     self.advance();
                     continue;
@@ -72,6 +84,7 @@ impl Parser {
                 body,
                 attributes,
                 unsafe_fn,
+                pub_fn,
             },
             span,
         ))
@@ -270,7 +283,7 @@ impl Parser {
             }
 
             let attrs = self.parse_attributes()?;
-            let item = self.parse_fn(attrs, false)?;
+            let item = self.parse_fn(attrs, false, false)?;
             methods.push(item);
         }
 
@@ -372,4 +385,3 @@ impl Parser {
         ))
     }
 }
-

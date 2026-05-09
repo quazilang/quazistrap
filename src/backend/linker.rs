@@ -29,7 +29,13 @@ impl LinkerInvocation {
                 _ => "no linker found; install ld.lld, mold, or ld, or set VOID_LINKER=/path/to/linker".to_string(),
             }
         })?;
-        Ok(Self { output, object, linker, extra_flags, target })
+        Ok(Self {
+            output,
+            object,
+            linker,
+            extra_flags,
+            target,
+        })
     }
 
     fn detect_for_target(target: &TargetSpec) -> Option<PathBuf> {
@@ -105,7 +111,7 @@ impl LinkerInvocation {
                 args.push("/subsystem:console".into());
                 args.push("/entry:mainCRTStartup".into());
                 args.push("kernel32.lib".into()); // ExitProcess
-                args.push("ucrt.lib".into());     // strlen, snprintf, atoll, strtod, pow
+                args.push("ucrt.lib".into()); // strlen, snprintf, atoll, strtod, pow
             }
         }
 
@@ -139,11 +145,7 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 
 /// Write object bytes to a temporary file and return its path.
 pub fn write_temp_object(bytes: &[u8], stem: &str) -> Result<PathBuf, String> {
-    let tmp = std::env::temp_dir().join(format!(
-        "void_{}_{}.o",
-        stem,
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("void_{}_{}.o", stem, std::process::id()));
     std::fs::write(&tmp, bytes)
         .map_err(|e| format!("cannot write temp object {}: {}", tmp.display(), e))?;
     Ok(tmp)

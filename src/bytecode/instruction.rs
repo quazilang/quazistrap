@@ -28,7 +28,11 @@ impl Instruction {
     pub const SIZE: usize = 6;
 
     pub fn new(opcode: Opcode, ops: [u8; 4], flags: u8) -> Self {
-        Self { opcode: opcode as u8, ops, flags }
+        Self {
+            opcode: opcode as u8,
+            ops,
+            flags,
+        }
     }
 
     pub fn nop() -> Self {
@@ -64,178 +68,300 @@ impl Instruction {
     }
 
     pub fn disasm(&self, consts: &[crate::bytecode::chunk::ConstPoolEntry]) -> String {
-        use crate::bytecode::opcode::Opcode;
         use crate::bytecode::chunk::ConstPoolEntry;
+        use crate::bytecode::opcode::Opcode;
+
+        // ── colour helpers ────────────────────────────────────────────────────
+        fn r(n: u8) -> String {
+            format!("\x1b[36mr{n}\x1b[0m")
+        }
+        fn imm(v: impl std::fmt::Display) -> String {
+            format!("\x1b[33m#{v}\x1b[0m")
+        }
+        fn tgt(t: u16) -> String {
+            format!("\x1b[35m@{t}\x1b[0m")
+        }
+        fn dim(s: &str) -> String {
+            format!("\x1b[2m{s}\x1b[0m")
+        }
+        fn cval(c: &ConstPoolEntry) -> String {
+            match c {
+                ConstPoolEntry::Int(v) => format!("\x1b[33m{v}\x1b[0m"),
+                ConstPoolEntry::Float(v) => format!("\x1b[33m{v}\x1b[0m"),
+                ConstPoolEntry::Str(s) => format!("\x1b[32m{s:?}\x1b[0m"),
+            }
+        }
 
         let Some(op) = self.opcode() else {
-            return format!("??? (0x{:02X})  {:?}", self.opcode, self.ops);
+            return format!(
+                "\x1b[1;31m???\x1b[0m \x1b[2m(0x{:02X}) {:?}\x1b[0m",
+                self.opcode, self.ops
+            );
         };
 
-        let name = format!("{:?}", op).to_lowercase();
-        let pad = |s: &str| format!("{:<12}", s);
+        let op_color = match op {
+            Opcode::Add
+            | Opcode::Sub
+            | Opcode::Mul
+            | Opcode::Div
+            | Opcode::Mod
+            | Opcode::Pow
+            | Opcode::And
+            | Opcode::Or
+            | Opcode::Xor
+            | Opcode::Neg
+            | Opcode::Not
+            | Opcode::Inc
+            | Opcode::Dec
+            | Opcode::Shl
+            | Opcode::Shr
+            | Opcode::Sar => "\x1b[32m", // green  – arithmetic/logic
+            Opcode::Cmp
+            | Opcode::Je
+            | Opcode::Jne
+            | Opcode::Jg
+            | Opcode::Jge
+            | Opcode::Jl
+            | Opcode::Jle
+            | Opcode::Ja
+            | Opcode::Jb
+            | Opcode::Jz
+            | Opcode::Jnz
+            | Opcode::Jmp
+            | Opcode::Ret => "\x1b[33m", // yellow – control flow
+            Opcode::CallIdx | Opcode::CallReg | Opcode::CallArg => "\x1b[1;33m", // bold yellow – calls
+            Opcode::Mov
+            | Opcode::MovI
+            | Opcode::MovConst
+            | Opcode::Dup
+            | Opcode::Move
+            | Opcode::Drop => "\x1b[34m", // blue   – data movement
+            Opcode::Load | Opcode::Store | Opcode::Lea => "\x1b[35m",            // magenta – memory
+            Opcode::New
+            | Opcode::NewObj
+            | Opcode::FieldLoad
+            | Opcode::FieldStore
+            | Opcode::VtblLoad => "\x1b[35m", // magenta – struct/object
+            Opcode::StrLen
+            | Opcode::StrConcat
+            | Opcode::StrToInt
+            | Opcode::StrToFloat
+            | Opcode::PrimToStr
+            | Opcode::StrAsStr => "\x1b[36m", // cyan   – string ops
+            Opcode::Syscall
+            | Opcode::CallExt
+            | Opcode::Intrinsic
+            | Opcode::AtomicAdd
+            | Opcode::AtomicCas
+            | Opcode::MemFence
+            | Opcode::Spawn => "\x1b[31m", // red    – foreign/system
+            Opcode::Nop => "\x1b[2m",
+            _ => "\x1b[0m", // default colour for unclassified ops
+        };
+        let plain = format!("{:?}", op).to_lowercase();
+        let cop = format!("{op_color}{:<12}\x1b[0m", plain);
 
         match op {
-            Opcode::Nop | Opcode::Ret | Opcode::MemFence => pad(&name),
+            Opcode::Nop | Opcode::Ret | Opcode::MemFence => cop,
 
-            // RRR — dst, src1, src2
-            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Mod | Opcode::Pow
-            | Opcode::And | Opcode::Or | Opcode::Xor | Opcode::Shl | Opcode::Shr | Opcode::Sar
-            | Opcode::StrConcat | Opcode::AtomicAdd | Opcode::AtomicCas => {
+            Opcode::Add
+            | Opcode::Sub
+            | Opcode::Mul
+            | Opcode::Div
+            | Opcode::Mod
+            | Opcode::Pow
+            | Opcode::And
+            | Opcode::Or
+            | Opcode::Xor
+            | Opcode::Shl
+            | Opcode::Shr
+            | Opcode::Sar
+            | Opcode::StrConcat
+            | Opcode::AtomicAdd
+            | Opcode::AtomicCas => {
                 let (d, s1, s2) = self.rrr();
-                format!("{}r{}, r{}, r{}", pad(&name), d, s1, s2)
+                format!("{cop}{}, {}, {}", r(d), r(s1), r(s2))
             }
 
-            // RR — dst, src only
-            Opcode::Mov | Opcode::Move | Opcode::Dup | Opcode::Neg | Opcode::Not
-            | Opcode::Inc | Opcode::Dec | Opcode::StrLen | Opcode::VtblLoad | Opcode::FieldLoad
-            | Opcode::StrToInt | Opcode::StrToFloat | Opcode::PrimToStr | Opcode::StrAsStr => {
+            Opcode::Mov
+            | Opcode::Move
+            | Opcode::Dup
+            | Opcode::Neg
+            | Opcode::Not
+            | Opcode::Inc
+            | Opcode::Dec
+            | Opcode::StrLen
+            | Opcode::VtblLoad
+            | Opcode::FieldLoad
+            | Opcode::StrToInt
+            | Opcode::StrToFloat
+            | Opcode::PrimToStr
+            | Opcode::StrAsStr => {
                 let (d, s, _) = self.rrr();
-                format!("{}r{}, r{}", pad(&name), d, s)
+                format!("{cop}{}, {}", r(d), r(s))
             }
 
-            // Cmp: no dst
             Opcode::Cmp => {
                 let (_, s1, s2) = self.rrr();
-                format!("{}r{}, r{}", pad("cmp"), s1, s2)
+                format!("{cop}{}, {}", r(s1), r(s2))
             }
 
-            // FieldStore: [obj] = val
             Opcode::FieldStore => {
                 let (val, obj, _) = self.rrr();
-                format!("{}[r{}], r{}", pad("fieldstore"), obj, val)
+                format!("{cop}[{}], {}", r(obj), r(val))
             }
 
-            // CallReg: dst, reg
-            Opcode::CallReg => {
+            Opcode::CallReg | Opcode::Spawn => {
                 let (d, s, _) = self.rrr();
-                format!("{}r{}, r{}", pad(&name), d, s)
+                format!("{cop}{}, {}", r(d), r(s))
             }
 
-            // MovI: dst, #imm
             Opcode::MovI => {
-                let (d, imm) = self.ri16();
-                format!("{}r{}, #{}", pad("movi"), d, imm)
+                let (d, v) = self.ri16();
+                format!("{cop}{}, {}", r(d), imm(v))
             }
 
-            // MovConst: dst, const[idx]=val
             Opcode::MovConst => {
                 let (d, idx) = self.ri16();
-                let val = consts.get(idx as usize).map(|c| match c {
-                    ConstPoolEntry::Int(v) => format!("={}", v),
-                    ConstPoolEntry::Float(v) => format!("={}", v),
-                    ConstPoolEntry::Str(s) => format!("={:?}", s),
-                }).unwrap_or_default();
-                format!("{}r{}, const[{}]{}", pad("movconst"), d, idx, val)
+                let val = consts
+                    .get(idx as usize)
+                    .map(|c| format!(" {}", cval(c)))
+                    .unwrap_or_default();
+                format!("{cop}{}, {}{val}", r(d), dim(&format!("const[{idx}]")))
             }
 
-            // CallIdx: dst, fn[idx]
             Opcode::CallIdx => {
                 let (d, idx) = self.ri16();
-                format!("{}r{}, fn[{}]", pad("callidx"), d, idx)
+                format!("{cop}{}, \x1b[1;33mfn[{idx}]\x1b[0m", r(d))
             }
 
-            // CallExt: dst, ext[idx]
             Opcode::CallExt => {
                 let (d, idx) = self.ri16();
-                let val = consts.get(idx as usize).and_then(|c| match c {
-                    ConstPoolEntry::Str(s) => Some(format!("={:?}", s)),
-                    _ => None,
-                }).unwrap_or_default();
-                format!("{}r{}, ext[{}]{} (args={})", pad("callext"), d, idx, val, self.flags)
+                let sym = consts
+                    .get(idx as usize)
+                    .and_then(|c| match c {
+                        ConstPoolEntry::Str(s) => Some(format!(" \x1b[32m{s:?}\x1b[0m")),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                format!(
+                    "{cop}{}, {}{sym}  {}",
+                    r(d),
+                    dim(&format!("ext[{idx}]")),
+                    dim(&format!("args={}", self.flags))
+                )
             }
 
-            // Jumps — Jz/Jnz check reg vs 0
             Opcode::Jz | Opcode::Jnz => {
-                let (r, tgt) = self.ri16();
-                if r == 0 {
-                    format!("{}@{}", pad(&name), tgt)
+                let (reg, t) = self.ri16();
+                if reg == 0 {
+                    format!("{cop}{}", tgt(t))
                 } else {
-                    format!("{}r{}, @{}", pad(&name), r, tgt)
+                    format!("{cop}{}, {}", r(reg), tgt(t))
                 }
             }
 
-            // Other conditional jumps (after Cmp, ops[0]=0)
-            Opcode::Je | Opcode::Jne | Opcode::Jg | Opcode::Jge | Opcode::Jl | Opcode::Jle
-            | Opcode::Ja | Opcode::Jb | Opcode::Jmp => {
-                let (_, tgt) = self.ri16();
-                format!("{}@{}", pad(&name), tgt)
+            Opcode::Je
+            | Opcode::Jne
+            | Opcode::Jg
+            | Opcode::Jge
+            | Opcode::Jl
+            | Opcode::Jle
+            | Opcode::Ja
+            | Opcode::Jb
+            | Opcode::Jmp => {
+                let (_, t) = self.ri16();
+                format!("{cop}{}", tgt(t))
             }
 
-            // CallArg / Drop: single reg
             Opcode::CallArg | Opcode::Drop => {
-                format!("{}r{}", pad(&name), self.ops[0])
+                format!("{cop}{}", r(self.ops[0]))
             }
 
-            // MEM
             Opcode::Load => {
                 let (d, base, off) = self.mem();
-                format!("{}r{}, [r{} + {}]", pad("load"), d, base, off)
+                format!("{cop}{}, [{}+{}]", r(d), r(base), dim(&off.to_string()))
             }
             Opcode::Store => {
                 let (src, base, off) = self.mem();
-                format!("{}[r{} + {}], r{}", pad("store"), base, off, src)
+                format!("{cop}[{}+{}], {}", r(base), dim(&off.to_string()), r(src))
             }
             Opcode::Lea => {
                 let (d, base, off) = self.mem();
-                format!("{}r{}, &[r{} + {}]", pad("lea"), d, base, off)
+                format!("{cop}{}, &[{}+{}]", r(d), r(base), dim(&off.to_string()))
             }
 
-            // Syscall: dst, sys[idx] where idx points to const pool name or raw number
             Opcode::Syscall => {
                 let (d, idx) = self.ri16();
-                let val = consts.get(idx as usize).map(|c| match c {
-                    ConstPoolEntry::Str(s) => format!("={:?}", s),
-                    ConstPoolEntry::Int(n) => format!("={}", n),
-                    ConstPoolEntry::Float(f) => format!("={}", f),
-                }).unwrap_or_default();
-                format!("{}r{}, sys[{}]{} (args={})", pad("syscall"), d, idx, val, self.flags)
+                let val = consts
+                    .get(idx as usize)
+                    .map(|c| match c {
+                        ConstPoolEntry::Str(s) => format!(" \x1b[32m{s:?}\x1b[0m"),
+                        ConstPoolEntry::Int(n) => format!(" \x1b[33m{n}\x1b[0m"),
+                        ConstPoolEntry::Float(f) => format!(" \x1b[33m{f}\x1b[0m"),
+                    })
+                    .unwrap_or_default();
+                format!(
+                    "{cop}{}, {}{val}  {}",
+                    r(d),
+                    dim(&format!("sys[{idx}]")),
+                    dim(&format!("args={}", self.flags))
+                )
             }
 
-            // Intrinsic: dst, #id (args=flags)
             Opcode::Intrinsic => {
                 let (d, id) = self.ri16();
-                let name = match id {
-                    0  => "void.write",
-                    1  => "void.read",
-                    2  => "void.exit",
-                    3  => "void.malloc",
-                    4  => "void.free",
-                    5  => "void.realloc",
-                    6  => "void.memcpy",
-                    7  => "void.memset",
-                    8  => "void.memmove",
-                    9  => "void.memcmp",
+                let iname = match id {
+                    0 => "void.write",
+                    1 => "void.read",
+                    2 => "void.exit",
+                    3 => "void.malloc",
+                    4 => "void.free",
+                    5 => "void.realloc",
+                    6 => "void.memcpy",
+                    7 => "void.memset",
+                    8 => "void.memmove",
+                    9 => "void.memcmp",
                     10 => "void.strlen",
                     11 => "void.stderr_write",
                     12 => "void.sleep_ms",
                     13 => "void.getenv",
-                    _  => "?",
+                    _ => "?",
                 };
-                format!("{}r{}, #{}({}) (args={})", pad("intrinsic"), d, id, name, self.flags)
+                format!(
+                    "{cop}{}, \x1b[31m{iname}\x1b[0m  {}",
+                    r(d),
+                    dim(&format!("args={}", self.flags))
+                )
             }
 
-            // New/NewObj
             Opcode::New | Opcode::NewObj => {
-                let (d, imm) = self.ri16();
-                format!("{}r{}, #{}", pad(&name), d, imm)
-            }
-
-            // Spawn
-            Opcode::Spawn => {
-                let (d, s, _) = self.rrr();
-                format!("{}r{}, r{}", pad("spawn"), d, s)
-            }
+                let (d, v) = self.ri16();
+                format!("{cop}{}, {}", r(d), imm(v))
+            },
+            _ => todo!("disasm for {op:?}"),
         }
     }
 
     // ── Serialisation ─────────────────────────────────────────────────────────
 
     pub fn to_bytes(self) -> [u8; 6] {
-        [self.opcode, self.ops[0], self.ops[1], self.ops[2], self.ops[3], self.flags]
+        [
+            self.opcode,
+            self.ops[0],
+            self.ops[1],
+            self.ops[2],
+            self.ops[3],
+            self.flags,
+        ]
     }
 
     pub fn from_bytes(b: [u8; 6]) -> Self {
-        Self { opcode: b[0], ops: [b[1], b[2], b[3], b[4]], flags: b[5] }
+        Self {
+            opcode: b[0],
+            ops: [b[1], b[2], b[3], b[4]],
+            flags: b[5],
+        }
     }
 }
 

@@ -21,14 +21,18 @@ impl Analyzer {
                 self.validate_foreign_attributes(attributes);
                 let is_foreign = attributes
                     .iter()
-                    .any(|a| a.name == "syscall" || a.name == "api");
-                if *unsafe_fn { self.unsafe_depth += 1; }
+                    .any(|a| a.name == "syscall" || a.name == "api" || a.name == "intrinsic");
+                if *unsafe_fn {
+                    self.unsafe_depth += 1;
+                }
                 self.current_function.push(name.clone());
                 self.enter_scope();
                 for p in params {
                     let ty = unwrap_type(&p.ty);
                     let ty = if p.variadic {
-                        TypeKind::Slice { elem_ty: Box::new(Spanned::new(ty, p.ty.span)) }
+                        TypeKind::Slice {
+                            elem_ty: Box::new(Spanned::new(ty, p.ty.span)),
+                        }
                     } else {
                         ty
                     };
@@ -52,6 +56,7 @@ impl Analyzer {
                             const_value: None,
                             variadic: false,
                             attributes: param_attrs,
+                            public: false,
                         },
                     );
                 }
@@ -59,12 +64,18 @@ impl Analyzer {
                 let expected = unwrap_type(return_ty);
 
                 if name == "main"
-                    && !matches!(expected, TypeKind::Void | TypeKind::Int32 | TypeKind::Uint32)
+                    && !matches!(
+                        expected,
+                        TypeKind::Void | TypeKind::Int32 | TypeKind::Uint32 | TypeKind::Never
+                    )
                 {
                     self.push_error(
                         item.span,
                         "S01",
-                        format!("main() return type must be void, i32, or u32, got {}", expected),
+                        format!(
+                            "main() return type must be void, i32, u32, or !, got {}",
+                            expected
+                        ),
                     );
                 }
 
@@ -73,7 +84,10 @@ impl Analyzer {
                 } else {
                     true // bodyless declaration — no return check
                 };
-                if !guaranteed && !is_foreign && !matches!(expected, TypeKind::Void) {
+                if !guaranteed
+                    && !is_foreign
+                    && !matches!(expected, TypeKind::Void | TypeKind::Never)
+                {
                     self.push_error(
                         item.span,
                         "S03",
@@ -85,7 +99,9 @@ impl Analyzer {
                 }
                 self.exit_scope_collect();
                 let _ = self.current_function.pop();
-                if *unsafe_fn { self.unsafe_depth -= 1; }
+                if *unsafe_fn {
+                    self.unsafe_depth -= 1;
+                }
             }
             ItemKind::Struct { .. }
             | ItemKind::Trait { .. }
@@ -140,7 +156,8 @@ impl Analyzer {
             self.push_error(
                 attr.span,
                 "S06",
-                "invalid @syscall attribute (use @syscall(\"name\") or @syscall(number))".to_string(),
+                "invalid @syscall attribute (use @syscall(\"name\") or @syscall(number))"
+                    .to_string(),
             );
         }
     }
@@ -156,7 +173,11 @@ impl Analyzer {
         }
     }
 
-    pub(super) fn type_check_block(&mut self, block: &Block, expected_return: Option<&TypeKind>) -> bool {
+    pub(super) fn type_check_block(
+        &mut self,
+        block: &Block,
+        expected_return: Option<&TypeKind>,
+    ) -> bool {
         self.enter_scope();
         let mut reachable = true;
         let mut guaranteed_return = false;
@@ -177,10 +198,18 @@ impl Analyzer {
         guaranteed_return
     }
 
-    pub(super) fn type_check_stmt(&mut self, stmt: &Stmt, expected_return: Option<&TypeKind>) -> bool {
+    pub(super) fn type_check_stmt(
+        &mut self,
+        stmt: &Stmt,
+        expected_return: Option<&TypeKind>,
+    ) -> bool {
         match &stmt.node {
             StmtKind::Var {
-                name, value, ty, attributes, ..
+                name,
+                value,
+                ty,
+                attributes,
+                ..
             } => {
                 let value_eval = value
                     .as_ref()
@@ -222,12 +251,17 @@ impl Analyzer {
                         const_value: None,
                         variadic: false,
                         attributes: extract_attribute_names(attributes),
+                        public: false,
                     },
                 );
                 false
             }
             StmtKind::Const {
-                name, value, ty, attributes, ..
+                name,
+                value,
+                ty,
+                attributes,
+                ..
             } => {
                 let value_eval = self.type_check_expr(value, true);
                 let declared_ty = ty.as_ref().map(|t| t.node.clone());
@@ -256,6 +290,7 @@ impl Analyzer {
                         const_value: value_eval.const_value,
                         variadic: false,
                         attributes: extract_attribute_names(attributes),
+                        public: false,
                     },
                 );
                 false
@@ -320,7 +355,9 @@ impl Analyzer {
             }
             StmtKind::For { kind, body } => {
                 match kind {
-                    ForLoop::Cond { condition: Some(cond) } => {
+                    ForLoop::Cond {
+                        condition: Some(cond),
+                    } => {
                         let cond_eval = self.type_check_expr(cond, true);
                         if let Some(cond_ty) = cond_eval.ty {
                             if !matches!(cond_ty, TypeKind::Bool | TypeKind::Any) {
@@ -336,7 +373,11 @@ impl Analyzer {
                     ForLoop::Cond { condition: None } => {
                         let _ = self.type_check_block(body, expected_return);
                     }
-                    ForLoop::CStyle { init, condition, update } => {
+                    ForLoop::CStyle {
+                        init,
+                        condition,
+                        update,
+                    } => {
                         self.enter_scope();
                         if let Some(init_stmt) = init {
                             self.type_check_stmt(init_stmt, expected_return);
@@ -369,7 +410,10 @@ impl Analyzer {
                                         self.push_error(
                                             start.span,
                                             "S01",
-                                            format!("for range start must be an integer type, got {}", t),
+                                            format!(
+                                                "for range start must be an integer type, got {}",
+                                                t
+                                            ),
                                         );
                                     }
                                 }
@@ -378,7 +422,10 @@ impl Analyzer {
                                         self.push_error(
                                             end.span,
                                             "S01",
-                                            format!("for range end must be an integer type, got {}", t),
+                                            format!(
+                                                "for range end must be an integer type, got {}",
+                                                t
+                                            ),
                                         );
                                     }
                                 }
@@ -409,6 +456,7 @@ impl Analyzer {
                                     const_value: None,
                                     variadic: false,
                                     attributes: Vec::new(),
+                                    public: false,
                                 },
                             );
                         }
@@ -460,8 +508,10 @@ impl Analyzer {
                     ExprEval::default()
                 }
                 Some(sym) => {
-                    if matches!(sym.kind, SymbolKind::Variable { .. } | SymbolKind::Parameter)
-                        && !sym.initialized
+                    if matches!(
+                        sym.kind,
+                        SymbolKind::Variable { .. } | SymbolKind::Parameter
+                    ) && !sym.initialized
                     {
                         self.push_error(
                             expr.span,
@@ -490,22 +540,40 @@ impl Analyzer {
                         let ref_ty = inner_eval.ty.map(|t| TypeKind::Ref {
                             inner: Box::new(Spanned::new(t, inner.span)),
                         });
-                        let result = ExprEval { ty: ref_ty, const_value: None };
+                        let result = ExprEval {
+                            ty: ref_ty,
+                            const_value: None,
+                        };
                         self.annotate_expr(expr, &result, reachable);
                         return result;
                     }
                     UnaryOpKind::Deref => {
                         // *expr → unwrap Ref<T> or RawPtr<T>
                         let result = match &inner_eval.ty {
-                            Some(TypeKind::Ref { inner: t }) => ExprEval { ty: Some(t.node.clone()), const_value: None },
+                            Some(TypeKind::Ref { inner: t }) => ExprEval {
+                                ty: Some(t.node.clone()),
+                                const_value: None,
+                            },
                             Some(TypeKind::RawPtr { inner: t }) => {
                                 if self.unsafe_depth == 0 {
-                                    self.push_error(expr.span, "S11", "dereference of raw pointer requires unsafe block".to_string());
+                                    self.push_error(
+                                        expr.span,
+                                        "S11",
+                                        "dereference of raw pointer requires unsafe block"
+                                            .to_string(),
+                                    );
                                 }
-                                ExprEval { ty: Some(t.node.clone()), const_value: None }
+                                ExprEval {
+                                    ty: Some(t.node.clone()),
+                                    const_value: None,
+                                }
                             }
                             Some(other) => {
-                                self.push_error(expr.span, "S11", format!("cannot dereference non-pointer type {}", other));
+                                self.push_error(
+                                    expr.span,
+                                    "S11",
+                                    format!("cannot dereference non-pointer type {}", other),
+                                );
                                 ExprEval::default()
                             }
                             None => ExprEval::default(),
@@ -516,14 +584,28 @@ impl Analyzer {
                     UnaryOpKind::Not => {
                         if let Some(t) = &inner_eval.ty {
                             if !matches!(t, TypeKind::Bool | TypeKind::Any) {
-                                self.push_error(inner.span, "S06", format!("! requires bool, got {}", t));
+                                self.push_error(
+                                    inner.span,
+                                    "S06",
+                                    format!("! requires bool, got {}", t),
+                                );
                             }
                         }
                     }
                     UnaryOpKind::Neg => {
                         if let Some(t) = &inner_eval.ty {
-                            if matches!(t, TypeKind::Str | TypeKind::Bool | TypeKind::Ref { .. } | TypeKind::RawPtr { .. }) {
-                                self.push_error(inner.span, "S06", format!("unary - not valid for {}", t));
+                            if matches!(
+                                t,
+                                TypeKind::Str
+                                    | TypeKind::Bool
+                                    | TypeKind::Ref { .. }
+                                    | TypeKind::RawPtr { .. }
+                            ) {
+                                self.push_error(
+                                    inner.span,
+                                    "S06",
+                                    format!("unary - not valid for {}", t),
+                                );
                             }
                         }
                     }
@@ -589,7 +671,11 @@ impl Analyzer {
 
                 if let ExprKind::Ident(name) = &callee.node {
                     let Some(sym) = self.resolve_for_read(name) else {
-                        self.push_error(callee.span, "S04", format!("unknown identifier '{}'", name));
+                        self.push_error(
+                            callee.span,
+                            "S04",
+                            format!("unknown identifier '{}'", name),
+                        );
                         return ExprEval::default();
                     };
 
@@ -601,13 +687,34 @@ impl Analyzer {
                         );
                         return ExprEval::default();
                     }
+
+                    // Library functions require explicit import-by-name to be called unqualified.
+                    if self.library_fn_names.contains(name.as_str())
+                        && !self.explicitly_imported_fns.contains(name.as_str())
+                    {
+                        self.push_error(
+                            callee.span,
+                            "S04",
+                            format!(
+                                "'{}' is not in scope; use qualified access or add 'import ...{};'",
+                                name, name
+                            ),
+                        );
+                        return ExprEval::default();
+                    }
+
                     self.check_function_call(name, callee.span, args, &arg_evals, &sym)
                 } else {
                     self.type_check_expr(callee, reachable);
                     ExprEval::default()
                 }
             }
-            ExprKind::MethodCall { object, method, type_args, args } => {
+            ExprKind::MethodCall {
+                object,
+                method,
+                type_args,
+                args,
+            } => {
                 // For lazy import tracking: record the object chain path (not the method itself)
                 if let Some((base, path)) = Self::extract_field_chain(object) {
                     if let Some(sym) = self.resolve_symbol(&base) {
@@ -639,8 +746,13 @@ impl Analyzer {
                                 format!("function '{}' does not exist", method),
                             );
                             ExprEval::default()
+                        } else if self.library_fn_names.contains(method.as_str()) && !sym.public {
+                            self.push_error(expr.span, "S04", format!("'{}' is private", method));
+                            ExprEval::default()
                         } else {
-                            let sym = self.resolve_for_read(method).expect("symbol should resolve");
+                            let sym = self
+                                .resolve_for_read(method)
+                                .expect("symbol should resolve");
                             self.check_function_call(method, expr.span, args, &arg_evals, &sym)
                         }
                     } else {
@@ -656,33 +768,65 @@ impl Analyzer {
                     };
                     let builtin_ty = match method.as_str() {
                         "len" => Some(TypeKind::Usize),
-                        "to_string" | "to_str" => {
-                            match &object_eval.ty {
-                                Some(t) if Self::is_integer(t) || Self::is_float(t)
-                                    || matches!(t, TypeKind::Str | TypeKind::Ref { .. }) => {
-                                    Some(ref_str)
-                                }
-                                _ => Some(TypeKind::Named { name: "String".to_string(), type_args: vec![] }),
+                        "to_string" | "to_str" => match &object_eval.ty {
+                            Some(t)
+                                if Self::is_integer(t)
+                                    || Self::is_float(t)
+                                    || matches!(t, TypeKind::Str | TypeKind::Ref { .. }
+                                        | TypeKind::Bool) =>
+                            {
+                                Some(ref_str.clone())
                             }
-                        }
-                        "as_string" | "as_str" => {
-                            match &object_eval.ty {
-                                Some(t) if matches!(t, TypeKind::Str | TypeKind::Ref { .. })
-                                    || matches!(t, TypeKind::Named { name, .. } if name == "String") => {
-                                    Some(ref_str)
-                                }
-                                Some(other) => {
-                                    self.push_error(expr.span, "S06",
+                            _ => Some(TypeKind::Named {
+                                name: "String".to_string(),
+                                type_args: vec![],
+                            }),
+                        },
+                        "as_string" | "as_str" => match &object_eval.ty {
+                            Some(t)
+                                if matches!(t, TypeKind::Str | TypeKind::Ref { .. })
+                                    || matches!(t, TypeKind::Named { name, .. } if name == "String") =>
+                            {
+                                Some(ref_str.clone())
+                            }
+                            Some(other) => {
+                                self.push_error(expr.span, "S06",
                                         format!("as_str() not valid for {} — use to_str() to convert primitives to string", other));
-                                    None
-                                }
-                                None => None,
+                                None
                             }
-                        }
+                            None => None,
+                        },
                         "parse" => type_args.first().map(|t| t.node.clone()),
+                        "abs" => match &object_eval.ty {
+                            Some(t) if Self::is_integer(t) || Self::is_float(t) => {
+                                object_eval.ty.clone()
+                            }
+                            _ => None,
+                        },
+                        "min" | "max" => match &object_eval.ty {
+                            Some(t) if Self::is_integer(t) || Self::is_float(t) => {
+                                object_eval.ty.clone()
+                            }
+                            _ => None,
+                        },
+                        "sqrt" | "floor" | "ceil" | "round" => match &object_eval.ty {
+                            Some(t) if Self::is_float(t) => object_eval.ty.clone(),
+                            _ => None,
+                        },
+                        "concat" => match &object_eval.ty {
+                            Some(t)
+                                if matches!(t, TypeKind::Str | TypeKind::Ref { .. }) =>
+                            {
+                                Some(ref_str.clone())
+                            }
+                            _ => None,
+                        },
                         _ => None,
                     };
-                    ExprEval { ty: builtin_ty, const_value: None }
+                    ExprEval {
+                        ty: builtin_ty,
+                        const_value: None,
+                    }
                 }
             }
             ExprKind::Field { object, name } => {
@@ -736,6 +880,7 @@ impl Analyzer {
                                 const_value: None,
                                 variadic: false,
                                 attributes: Vec::new(),
+                                public: false,
                             },
                         );
                     }
@@ -786,19 +931,33 @@ impl Analyzer {
                     CompoundAssignOp::Div => BinOpKind::Div,
                     CompoundAssignOp::Mod => BinOpKind::Mod,
                 };
-                let ty = self.infer_binary_type(expr.span, &bin_op, &target_eval.ty, &value_eval.ty);
-                ExprEval { ty, const_value: None }
+                let ty =
+                    self.infer_binary_type(expr.span, &bin_op, &target_eval.ty, &value_eval.ty);
+                ExprEval {
+                    ty,
+                    const_value: None,
+                }
             }
             ExprKind::IncDec { expr: inner, .. } => {
                 self.analyze_assign_target(inner);
                 let inner_eval = self.type_check_expr(inner, reachable);
 
                 if let Some(ty) = &inner_eval.ty {
-                    if matches!(ty, TypeKind::Str | TypeKind::Bool | TypeKind::Void | TypeKind::Ref { .. } | TypeKind::RawPtr { .. }) {
+                    if matches!(
+                        ty,
+                        TypeKind::Str
+                            | TypeKind::Bool
+                            | TypeKind::Void
+                            | TypeKind::Ref { .. }
+                            | TypeKind::RawPtr { .. }
+                    ) {
                         self.push_error(inner.span, "S06", format!("++ / -- not valid for {}", ty));
                     }
                 }
-                ExprEval { ty: inner_eval.ty, const_value: None }
+                ExprEval {
+                    ty: inner_eval.ty,
+                    const_value: None,
+                }
             }
             ExprKind::ArrayLit(elems) => {
                 let mut elem_ty: Option<TypeKind> = None;
@@ -809,7 +968,10 @@ impl Analyzer {
                             self.push_error(
                                 elem.span,
                                 "S01",
-                                format!("array element type mismatch: expected {}, got {}", expected, got),
+                                format!(
+                                    "array element type mismatch: expected {}, got {}",
+                                    expected, got
+                                ),
                             );
                         }
                     } else if elem_ty.is_none() {
@@ -817,23 +979,37 @@ impl Analyzer {
                     }
                 }
                 let len = elems.len() as u64;
-                let elem_spanned = elem_ty.clone().map(|k| {
-                    crate::parser::ast::Spanned::new(k, expr.span)
-                });
+                let elem_spanned = elem_ty
+                    .clone()
+                    .map(|k| crate::parser::ast::Spanned::new(k, expr.span));
                 let ty = elem_spanned.map(|e| TypeKind::Array {
                     elem_ty: Box::new(e),
                     len,
                 });
-                ExprEval { ty, const_value: None }
+                ExprEval {
+                    ty,
+                    const_value: None,
+                }
             }
             ExprKind::Index { object, index } => {
                 let obj_eval = self.type_check_expr(object, reachable);
                 let idx_eval = self.type_check_expr(index, reachable);
 
                 if let Some(idx_ty) = &idx_eval.ty {
-                    if !matches!(idx_ty, TypeKind::Int8 | TypeKind::Int16 | TypeKind::Int32 | TypeKind::Int64
-                        | TypeKind::Uint8 | TypeKind::Uint16 | TypeKind::Uint32 | TypeKind::Uint64
-                        | TypeKind::Isize | TypeKind::Usize | TypeKind::Any) {
+                    if !matches!(
+                        idx_ty,
+                        TypeKind::Int8
+                            | TypeKind::Int16
+                            | TypeKind::Int32
+                            | TypeKind::Int64
+                            | TypeKind::Uint8
+                            | TypeKind::Uint16
+                            | TypeKind::Uint32
+                            | TypeKind::Uint64
+                            | TypeKind::Isize
+                            | TypeKind::Usize
+                            | TypeKind::Any
+                    ) {
                         self.push_error(
                             index.span,
                             "S06",
@@ -847,7 +1023,10 @@ impl Analyzer {
                     Some(TypeKind::Slice { elem_ty }) => Some(elem_ty.node.clone()),
                     _ => None,
                 };
-                ExprEval { ty: elem_ty, const_value: None }
+                ExprEval {
+                    ty: elem_ty,
+                    const_value: None,
+                }
             }
         };
 
@@ -859,7 +1038,8 @@ impl Analyzer {
         let Some((base, _)) = Self::extract_field_chain(object) else {
             return false;
         };
-        self.resolve_symbol(&base).map_or(false, |sym| sym.is_import)
+        self.resolve_symbol(&base)
+            .map_or(false, |sym| sym.is_import)
     }
 
     fn check_function_call(
@@ -894,7 +1074,11 @@ impl Analyzer {
             self.push_error(
                 callee_span,
                 "S08",
-                format!("expected at least {} args, got {}", non_variadic_count, args.len()),
+                format!(
+                    "expected at least {} args, got {}",
+                    non_variadic_count,
+                    args.len()
+                ),
             );
         } else {
             // Type-check non-variadic args.
@@ -990,26 +1174,32 @@ impl Analyzer {
             BinOpKind::AndAnd | BinOpKind::OrOr => {
                 if let Some(l) = left {
                     if !matches!(l, TypeKind::Bool | TypeKind::Any) {
-                        self.push_error(span, "S06", format!("logical op requires bool, got {}", l));
+                        self.push_error(
+                            span,
+                            "S06",
+                            format!("logical op requires bool, got {}", l),
+                        );
                     }
                 }
 
                 if let Some(r) = right {
                     if !matches!(r, TypeKind::Bool | TypeKind::Any) {
-                        self.push_error(span, "S06", format!("logical op requires bool, got {}", r));
+                        self.push_error(
+                            span,
+                            "S06",
+                            format!("logical op requires bool, got {}", r),
+                        );
                     }
                 }
 
                 Some(TypeKind::Bool)
             }
-            BinOpKind::Pow => {
-                match (left, right) {
-                    (Some(l), Some(r)) if self.types_compatible(l, r) => Some(l.clone()),
-                    (Some(l), _) => Some(l.clone()),
-                    (None, Some(r)) => Some(r.clone()),
-                    (None, None) => None,
-                }
-            }
+            BinOpKind::Pow => match (left, right) {
+                (Some(l), Some(r)) if self.types_compatible(l, r) => Some(l.clone()),
+                (Some(l), _) => Some(l.clone()),
+                (None, Some(r)) => Some(r.clone()),
+                (None, None) => None,
+            },
         }
     }
 
@@ -1031,11 +1221,21 @@ impl Analyzer {
         }
     }
 
-    pub(super) fn const_from_binary(op: &BinOpKind, left: &ConstValue, right: &ConstValue) -> Option<ConstValue> {
+    pub(super) fn const_from_binary(
+        op: &BinOpKind,
+        left: &ConstValue,
+        right: &ConstValue,
+    ) -> Option<ConstValue> {
         match (op, left, right) {
-            (BinOpKind::Add, ConstValue::Int(a), ConstValue::Int(b)) => Some(ConstValue::Int(a + b)),
-            (BinOpKind::Sub, ConstValue::Int(a), ConstValue::Int(b)) => Some(ConstValue::Int(a - b)),
-            (BinOpKind::Mul, ConstValue::Int(a), ConstValue::Int(b)) => Some(ConstValue::Int(a * b)),
+            (BinOpKind::Add, ConstValue::Int(a), ConstValue::Int(b)) => {
+                Some(ConstValue::Int(a + b))
+            }
+            (BinOpKind::Sub, ConstValue::Int(a), ConstValue::Int(b)) => {
+                Some(ConstValue::Int(a - b))
+            }
+            (BinOpKind::Mul, ConstValue::Int(a), ConstValue::Int(b)) => {
+                Some(ConstValue::Int(a * b))
+            }
             (BinOpKind::Div, ConstValue::Int(a), ConstValue::Int(b)) if *b != 0 => {
                 Some(ConstValue::Int(a / b))
             }
@@ -1063,8 +1263,12 @@ impl Analyzer {
                 Some(ConstValue::String(format!("{}{}", a, b)))
             }
 
-            (BinOpKind::Lt, ConstValue::Int(a), ConstValue::Int(b)) => Some(ConstValue::Bool(a < b)),
-            (BinOpKind::Gt, ConstValue::Int(a), ConstValue::Int(b)) => Some(ConstValue::Bool(a > b)),
+            (BinOpKind::Lt, ConstValue::Int(a), ConstValue::Int(b)) => {
+                Some(ConstValue::Bool(a < b))
+            }
+            (BinOpKind::Gt, ConstValue::Int(a), ConstValue::Int(b)) => {
+                Some(ConstValue::Bool(a > b))
+            }
             (BinOpKind::LtEq, ConstValue::Int(a), ConstValue::Int(b)) => {
                 Some(ConstValue::Bool(a <= b))
             }
@@ -1203,10 +1407,16 @@ impl Analyzer {
     pub(super) fn analyze_assign_target(&mut self, target: &Expr) {
         match &target.node {
             ExprKind::Ident(name) => match self.resolve_symbol(name) {
-                None => self.push_error(target.span, "S04", format!("unknown identifier '{}'", name)),
+                None => {
+                    self.push_error(target.span, "S04", format!("unknown identifier '{}'", name))
+                }
                 Some(sym) => match sym.kind {
                     SymbolKind::Variable { mutable: false } => {
-                        self.push_error(target.span, "S07", format!("cannot assign to const '{}'", name));
+                        self.push_error(
+                            target.span,
+                            "S07",
+                            format!("cannot assign to const '{}'", name),
+                        );
                     }
                     SymbolKind::Function | SymbolKind::TypeName => {
                         self.push_error(target.span, "S07", format!("cannot assign to '{}'", name));
@@ -1217,17 +1427,28 @@ impl Analyzer {
             ExprKind::Field { object, .. } => {
                 self.type_check_expr(object, true);
             }
-            ExprKind::Unary { op: UnaryOpKind::Deref, expr: inner } => {
+            ExprKind::Unary {
+                op: UnaryOpKind::Deref,
+                expr: inner,
+            } => {
                 let inner_eval = self.type_check_expr(inner, true);
                 match &inner_eval.ty {
                     Some(TypeKind::RawPtr { .. }) => {
                         if self.unsafe_depth == 0 {
-                            self.push_error(target.span, "S11", "store through raw pointer requires unsafe block".to_string());
+                            self.push_error(
+                                target.span,
+                                "S11",
+                                "store through raw pointer requires unsafe block".to_string(),
+                            );
                         }
                     }
                     Some(TypeKind::Ref { .. }) | None => {}
                     Some(other) => {
-                        self.push_error(target.span, "S11", format!("cannot assign through non-pointer type {}", other));
+                        self.push_error(
+                            target.span,
+                            "S11",
+                            format!("cannot assign through non-pointer type {}", other),
+                        );
                     }
                 }
             }
@@ -1248,22 +1469,37 @@ impl Analyzer {
             (TypeKind::Named { .. }, _) | (_, TypeKind::Named { .. }) => true,
             (a, b) if Self::is_integer(a) && Self::is_integer(b) => true,
             (a, b) if Self::is_float(a) && Self::is_float(b) => true,
-            (TypeKind::Array { elem_ty: a_e, len: a_l }, TypeKind::Array { elem_ty: b_e, len: b_l }) => {
-                a_l == b_l && self.types_compatible(&a_e.node, &b_e.node)
-            }
+            (
+                TypeKind::Array {
+                    elem_ty: a_e,
+                    len: a_l,
+                },
+                TypeKind::Array {
+                    elem_ty: b_e,
+                    len: b_l,
+                },
+            ) => a_l == b_l && self.types_compatible(&a_e.node, &b_e.node),
             (TypeKind::Slice { elem_ty: a_e }, TypeKind::Slice { elem_ty: b_e }) => {
                 self.types_compatible(&a_e.node, &b_e.node)
             }
-            (TypeKind::Array { elem_ty, .. }, TypeKind::Slice { elem_ty: s_e }) |
-            (TypeKind::Slice { elem_ty: s_e }, TypeKind::Array { elem_ty, .. }) => {
+            (TypeKind::Array { elem_ty, .. }, TypeKind::Slice { elem_ty: s_e })
+            | (TypeKind::Slice { elem_ty: s_e }, TypeKind::Array { elem_ty, .. }) => {
                 self.types_compatible(&elem_ty.node, &s_e.node)
             }
-            (TypeKind::Ref { inner: a }, TypeKind::Ref { inner: b }) => self.types_compatible(&a.node, &b.node),
-            (TypeKind::RawPtr { inner: a }, TypeKind::RawPtr { inner: b }) => self.types_compatible(&a.node, &b.node),
-            (TypeKind::RawPtr { .. }, TypeKind::Ref { .. }) | (TypeKind::Ref { .. }, TypeKind::RawPtr { .. }) => true,
+            (TypeKind::Ref { inner: a }, TypeKind::Ref { inner: b }) => {
+                self.types_compatible(&a.node, &b.node)
+            }
+            (TypeKind::RawPtr { inner: a }, TypeKind::RawPtr { inner: b }) => {
+                self.types_compatible(&a.node, &b.node)
+            }
+            (TypeKind::RawPtr { .. }, TypeKind::Ref { .. })
+            | (TypeKind::Ref { .. }, TypeKind::RawPtr { .. }) => true,
             // str and &str are interchangeable — both are UTF-8 string views
             (TypeKind::Str, TypeKind::Ref { inner }) | (TypeKind::Ref { inner }, TypeKind::Str)
-                if matches!(inner.node, TypeKind::Str) => true,
+                if matches!(inner.node, TypeKind::Str) =>
+            {
+                true
+            }
             _ => std::mem::discriminant(a) == std::mem::discriminant(b),
         }
     }

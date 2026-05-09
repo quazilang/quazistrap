@@ -16,24 +16,42 @@ impl Analyzer {
                 return_ty,
                 params,
                 attributes,
+                pub_fn,
                 ..
+            } => {
+                let mut attr_names = extract_attribute_names(attributes);
+                // Foreign functions (@syscall, @api, @intrinsic) are library stubs —
+                // suppress all unused warnings for them automatically.
+                let is_foreign = attr_names
+                    .iter()
+                    .any(|a| matches!(a.as_str(), "syscall" | "api" | "intrinsic"));
+                if is_foreign && !attr_names.contains(&"ignore".to_string()) {
+                    attr_names.push("ignore".to_string());
+                }
+                self.declare(
+                    name.clone(),
+                    Symbol {
+                        kind: SymbolKind::Function,
+                        span: item.span,
+                        ty: Some(unwrap_type(return_ty)),
+                        params: params.iter().map(|p| unwrap_type(&p.ty)).collect(),
+                        used: false,
+                        initialized: true,
+                        is_import: false,
+                        import_path: None,
+                        const_value: None,
+                        variadic: params.last().map(|p| p.variadic).unwrap_or(false),
+                        attributes: attr_names,
+                        public: *pub_fn,
+                    },
+                );
+            }
+            ItemKind::Struct {
+                name, attributes, ..
+            }
+            | ItemKind::Trait {
+                name, attributes, ..
             } => self.declare(
-                name.clone(),
-                Symbol {
-                    kind: SymbolKind::Function,
-                    span: item.span,
-                    ty: Some(unwrap_type(return_ty)),
-                    params: params.iter().map(|p| unwrap_type(&p.ty)).collect(),
-                    used: false,
-                    initialized: true,
-                    is_import: false,
-                    import_path: None,
-                    const_value: None,
-                    variadic: params.last().map(|p| p.variadic).unwrap_or(false),
-                    attributes: extract_attribute_names(attributes),
-                },
-            ),
-            ItemKind::Struct { name, attributes, .. } | ItemKind::Trait { name, attributes, .. } => self.declare(
                 name.clone(),
                 Symbol {
                     kind: SymbolKind::TypeName,
@@ -47,6 +65,7 @@ impl Analyzer {
                     const_value: None,
                     variadic: false,
                     attributes: extract_attribute_names(attributes),
+                    public: false,
                 },
             ),
             ItemKind::Enum {
@@ -69,6 +88,7 @@ impl Analyzer {
                         const_value: None,
                         variadic: false,
                         attributes: extract_attribute_names(attributes),
+                        public: false,
                     },
                 );
                 self.register_enum(name, variants, item.span);
@@ -96,17 +116,11 @@ impl Analyzer {
         }
 
         if variants.is_empty() {
-            self.push_warning(
-                span,
-                "W06",
-                format!("enum '{}' has no variants", enum_name),
-            );
+            self.push_warning(span, "W06", format!("enum '{}' has no variants", enum_name));
         }
 
-        self.enums.insert(
-            enum_name.to_string(),
-            EnumInfo { variants: map },
-        );
+        self.enums
+            .insert(enum_name.to_string(), EnumInfo { variants: map });
     }
 
     pub(super) fn declare_import_item(&mut self, import_path: &ImportPath, span: Span) {
@@ -125,16 +139,38 @@ impl Analyzer {
                     self.declare_import_binding(name.clone(), full, span);
                 }
             }
-            ImportItems::All => {}
+            ImportItems::All => {
+                // Wildcard: allow all library functions to be called unqualified.
+                let all: Vec<String> = self.library_fn_names.iter().cloned().collect();
+                for name in all {
+                    self.explicitly_imported_fns.insert(name);
+                }
+            }
         }
     }
 
-    pub(super) fn declare_import_binding(&mut self, local_name: String, full_path: String, span: Span) {
+    pub(super) fn declare_import_binding(
+        &mut self,
+        local_name: String,
+        full_path: String,
+        span: Span,
+    ) {
         self.add_dependency_edge(DependencyKind::Import, "__program__", &full_path);
-        // If the name is already declared as a function (loaded from a local file),
-        // the import is satisfied — skip the redundant binding.
+        // If the name is already declared as a function (loaded from a library file),
+        // this is an explicit by-name import — record it and skip the redundant binding.
         if let Some(existing) = self.resolve_symbol(&local_name) {
             if matches!(existing.kind, SymbolKind::Function) {
+                if self.library_fn_names.contains(&local_name) {
+                    if !existing.public {
+                        self.push_error(
+                            span,
+                            "S04",
+                            format!("'{}' is private and cannot be imported", local_name),
+                        );
+                        return;
+                    }
+                    self.explicitly_imported_fns.insert(local_name);
+                }
                 return;
             }
         }
@@ -152,6 +188,7 @@ impl Analyzer {
                 const_value: None,
                 variadic: false,
                 attributes: Vec::new(),
+                public: false,
             },
         );
     }

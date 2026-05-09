@@ -24,56 +24,56 @@
 // STD_OUTPUT_HANDLE = 0xFFFFFFF5 (4294967285)
 // STD_ERROR_HANDLE  = 0xFFFFFFF4 (4294967284)
 @api("GetStdHandle")
-fn get_std_handle(n_std_handle: u32) usize;
+pub fn get_std_handle(n_std_handle: u32) usize;
 
 @api("CloseHandle")
-fn close_handle(object: usize) i32;
+pub fn close_handle(object: usize) i32;
 
 @api("DuplicateHandle")
-fn duplicate_handle(src_proc: usize, src: usize, dst_proc: usize, dst: usize, access: u32, inherit: i32, options: u32) i32;
+pub fn duplicate_handle(src_proc: usize, src: usize, dst_proc: usize, dst: usize, access: u32, inherit: i32, options: u32) i32;
 
 // ── Console I/O ──────────────────────────────────────────────────────────────
 
 // WriteFile — works on files, pipes, consoles, and serial ports
 // overlapped: 0 for synchronous
 @api("WriteFile")
-fn write_file(file: usize, buf: str, n_to_write: u32, n_written: usize, overlapped: usize) i32;
+pub fn write_file(file: usize, buf: str, n_to_write: u32, n_written: usize, overlapped: usize) i32;
 
 @api("ReadFile")
-fn read_file(file: usize, buf: str, n_to_read: u32, n_read: usize, overlapped: usize) i32;
+pub fn read_file(file: usize, buf: str, n_to_read: u32, n_read: usize, overlapped: usize) i32;
 
 // WriteConsoleA — console-only; fails on redirected stdout
 @api("WriteConsoleA")
-fn write_console_a(console: usize, buf: str, n_chars: u32, n_written: usize, reserved: usize) i32;
+pub fn write_console_a(console: usize, buf: str, n_chars: u32, n_written: usize, reserved: usize) i32;
 
 @api("ReadConsoleA")
-fn read_console_a(console: usize, buf: str, n_chars: u32, n_read: usize, reserved: usize) i32;
+pub fn read_console_a(console: usize, buf: str, n_chars: u32, n_read: usize, reserved: usize) i32;
 
 @api("FlushFileBuffers")
-fn flush_file_buffers(file: usize) i32;
+pub fn flush_file_buffers(file: usize) i32;
 
 // mode: ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, etc.
 @api("GetConsoleMode")
-fn get_console_mode(console: usize, mode: usize) i32;
+pub fn get_console_mode(console: usize, mode: usize) i32;
 
 @api("SetConsoleMode")
-fn set_console_mode(console: usize, mode: u32) i32;
+pub fn set_console_mode(console: usize, mode: u32) i32;
 
 @api("SetConsoleTitleA")
-fn set_console_title_a(title: str) i32;
+pub fn set_console_title_a(title: str) i32;
 
 // attr: combination of FOREGROUND_*/BACKGROUND_* constants
 @api("SetConsoleTextAttribute")
-fn set_console_text_attribute(console: usize, attr: u16) i32;
+pub fn set_console_text_attribute(console: usize, attr: u16) i32;
 
 @api("AllocConsole")
-fn alloc_console() i32;
+pub fn alloc_console() i32;
 
 @api("FreeConsole")
-fn free_console() i32;
+pub fn free_console() i32;
 
 @api("GetConsoleWindow")
-fn get_console_window() usize;
+pub fn get_console_window() usize;
 
 // ── File I/O ─────────────────────────────────────────────────────────────────
 
@@ -82,339 +82,339 @@ fn get_console_window() usize;
 // disposition: CREATE_NEW=1, CREATE_ALWAYS=2, OPEN_EXISTING=3, OPEN_ALWAYS=4, TRUNCATE_EXISTING=5
 // flags: FILE_ATTRIBUTE_NORMAL=128, FILE_FLAG_OVERLAPPED=0x40000000
 @api("CreateFileA")
-fn create_file_a(path: str, access: u32, share: u32, security: usize, disposition: u32, flags: u32, template: usize) usize;
+pub fn create_file_a(path: str, access: u32, share: u32, security: usize, disposition: u32, flags: u32, template: usize) usize;
 
 @api("GetFileSize")
-fn get_file_size(file: usize, high: usize) u32;
+pub fn get_file_size(file: usize, high: usize) u32;
 
 @api("GetFileSizeEx")
-fn get_file_size_ex(file: usize, size: usize) i32;
+pub fn get_file_size_ex(file: usize, size: usize) i32;
 
 // method: FILE_BEGIN=0, FILE_CURRENT=1, FILE_END=2
 @api("SetFilePointer")
-fn set_file_pointer(file: usize, dist_low: i32, dist_high: usize, method: u32) u32;
+pub fn set_file_pointer(file: usize, dist_low: i32, dist_high: usize, method: u32) u32;
 
 @api("SetFilePointerEx")
-fn set_file_pointer_ex(file: usize, dist: i64, new_ptr: usize, method: u32) i32;
+pub fn set_file_pointer_ex(file: usize, dist: i64, new_ptr: usize, method: u32) i32;
 
 @api("DeleteFileA")
-fn delete_file_a(path: str) i32;
+pub fn delete_file_a(path: str) i32;
 
 @api("MoveFileA")
-fn move_file_a(existing: str, new_path: str) i32;
+pub fn move_file_a(existing: str, new_path: str) i32;
 
 @api("CopyFileA")
-fn copy_file_a(existing: str, new_path: str, fail_if_exists: i32) i32;
+pub fn copy_file_a(existing: str, new_path: str, fail_if_exists: i32) i32;
 
 @api("CreateDirectoryA")
-fn create_directory_a(path: str, security: usize) i32;
+pub fn create_directory_a(path: str, security: usize) i32;
 
 @api("RemoveDirectoryA")
-fn remove_directory_a(path: str) i32;
+pub fn remove_directory_a(path: str) i32;
 
 @api("GetCurrentDirectoryA")
-fn get_current_directory_a(buf_len: u32, buf: str) u32;
+pub fn get_current_directory_a(buf_len: u32, buf: str) u32;
 
 @api("SetCurrentDirectoryA")
-fn set_current_directory_a(path: str) i32;
+pub fn set_current_directory_a(path: str) i32;
 
 // data: pointer to WIN32_FIND_DATAA struct
 @api("FindFirstFileA")
-fn find_first_file_a(pattern: str, data: usize) usize;
+pub fn find_first_file_a(pattern: str, data: usize) usize;
 
 @api("FindNextFileA")
-fn find_next_file_a(handle: usize, data: usize) i32;
+pub fn find_next_file_a(handle: usize, data: usize) i32;
 
 @api("FindClose")
-fn find_close(handle: usize) i32;
+pub fn find_close(handle: usize) i32;
 
 @api("GetTempPathA")
-fn get_temp_path_a(buf_len: u32, buf: str) u32;
+pub fn get_temp_path_a(buf_len: u32, buf: str) u32;
 
 @api("GetTempFileNameA")
-fn get_temp_file_name_a(path: str, prefix: str, unique: u32, name: str) u32;
+pub fn get_temp_file_name_a(path: str, prefix: str, unique: u32, name: str) u32;
 
 @api("GetFileAttributesA")
-fn get_file_attributes_a(path: str) u32;
+pub fn get_file_attributes_a(path: str) u32;
 
 @api("SetFileAttributesA")
-fn set_file_attributes_a(path: str, attrs: u32) i32;
+pub fn set_file_attributes_a(path: str, attrs: u32) i32;
 
 // ── Process ──────────────────────────────────────────────────────────────────
 
 @api("GetCurrentProcess")
-fn get_current_process() usize;
+pub fn get_current_process() usize;
 
 @api("GetCurrentProcessId")
-fn get_current_process_id() u32;
+pub fn get_current_process_id() u32;
 
 @api("GetCurrentThreadId")
-fn get_current_thread_id() u32;
+pub fn get_current_thread_id() u32;
 
 @api("ExitProcess")
-fn exit_process(exit_code: u32) void;
+pub fn exit_process(exit_code: u32) void;
 
 // startup_info: pointer to STARTUPINFOA; proc_info: pointer to PROCESS_INFORMATION
 // creation_flags: CREATE_NEW_CONSOLE=0x10, CREATE_SUSPENDED=0x4, DETACHED_PROCESS=0x8
 @api("CreateProcessA")
-fn create_process_a(app: str, cmd: str, proc_sec: usize, thread_sec: usize, inherit: i32, flags: u32, env: usize, dir: str, startup: usize, proc_info: usize) i32;
+pub fn create_process_a(app: str, cmd: str, proc_sec: usize, thread_sec: usize, inherit: i32, flags: u32, env: usize, dir: str, startup: usize, proc_info: usize) i32;
 
 // access: PROCESS_ALL_ACCESS=0x1FFFFF, PROCESS_QUERY_INFORMATION=0x400
 @api("OpenProcess")
-fn open_process(access: u32, inherit: i32, pid: u32) usize;
+pub fn open_process(access: u32, inherit: i32, pid: u32) usize;
 
 @api("TerminateProcess")
-fn terminate_process(proc: usize, exit_code: u32) i32;
+pub fn terminate_process(proc: usize, exit_code: u32) i32;
 
 @api("GetExitCodeProcess")
-fn get_exit_code_process(proc: usize, exit_code: usize) i32;
+pub fn get_exit_code_process(proc: usize, exit_code: usize) i32;
 
 @api("GetExitCodeThread")
-fn get_exit_code_thread(thread: usize, exit_code: usize) i32;
+pub fn get_exit_code_thread(thread: usize, exit_code: usize) i32;
 
 // milliseconds: INFINITE=0xFFFFFFFF
 @api("WaitForSingleObject")
-fn wait_for_single_object(handle: usize, ms: u32) u32;
+pub fn wait_for_single_object(handle: usize, ms: u32) u32;
 
 @api("WaitForMultipleObjects")
-fn wait_for_multiple_objects(count: u32, handles: usize, wait_all: i32, ms: u32) u32;
+pub fn wait_for_multiple_objects(count: u32, handles: usize, wait_all: i32, ms: u32) u32;
 
 // ── Thread ───────────────────────────────────────────────────────────────────
 
 // stack_size: 0 = default; creation_flags: 0 = run immediately, CREATE_SUSPENDED=4
 @api("CreateThread")
-fn create_thread(security: usize, stack_size: usize, start_routine: usize, param: usize, flags: u32, thread_id: usize) usize;
+pub fn create_thread(security: usize, stack_size: usize, start_routine: usize, param: usize, flags: u32, thread_id: usize) usize;
 
 @api("ExitThread")
-fn exit_thread(exit_code: u32) void;
+pub fn exit_thread(exit_code: u32) void;
 
 @api("GetCurrentThread")
-fn get_current_thread() usize;
+pub fn get_current_thread() usize;
 
 @api("ResumeThread")
-fn resume_thread(thread: usize) u32;
+pub fn resume_thread(thread: usize) u32;
 
 @api("SuspendThread")
-fn suspend_thread(thread: usize) u32;
+pub fn suspend_thread(thread: usize) u32;
 
 @api("TerminateThread")
-fn terminate_thread(thread: usize, exit_code: u32) i32;
+pub fn terminate_thread(thread: usize, exit_code: u32) i32;
 
 // priority: THREAD_PRIORITY_NORMAL=0, ABOVE_NORMAL=1, BELOW_NORMAL=-1, HIGHEST=2, LOWEST=-2
 @api("SetThreadPriority")
-fn set_thread_priority(thread: usize, priority: i32) i32;
+pub fn set_thread_priority(thread: usize, priority: i32) i32;
 
 @api("GetThreadPriority")
-fn get_thread_priority(thread: usize) i32;
+pub fn get_thread_priority(thread: usize) i32;
 
 @api("TlsAlloc")
-fn tls_alloc() u32;
+pub fn tls_alloc() u32;
 
 @api("TlsGetValue")
-fn tls_get_value(index: u32) usize;
+pub fn tls_get_value(index: u32) usize;
 
 @api("TlsSetValue")
-fn tls_set_value(index: u32, value: usize) i32;
+pub fn tls_set_value(index: u32, value: usize) i32;
 
 @api("TlsFree")
-fn tls_free(index: u32) i32;
+pub fn tls_free(index: u32) i32;
 
 @api("Sleep")
-fn sleep(ms: u32) void;
+pub fn sleep(ms: u32) void;
 
 @api("SleepEx")
-fn sleep_ex(ms: u32, alertable: i32) u32;
+pub fn sleep_ex(ms: u32, alertable: i32) u32;
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 
 // type: MEM_COMMIT=0x1000, MEM_RESERVE=0x2000, MEM_COMMIT|MEM_RESERVE=0x3000
 // protect: PAGE_READWRITE=4, PAGE_READONLY=2, PAGE_EXECUTE_READ=0x20, PAGE_EXECUTE_READWRITE=0x40, PAGE_NOACCESS=1
 @api("VirtualAlloc")
-fn virtual_alloc(addr: usize, size: usize, alloc_type: u32, protect: u32) usize;
+pub fn virtual_alloc(addr: usize, size: usize, alloc_type: u32, protect: u32) usize;
 
 // type: MEM_RELEASE=0x8000, MEM_DECOMMIT=0x4000
 @api("VirtualFree")
-fn virtual_free(addr: usize, size: usize, free_type: u32) i32;
+pub fn virtual_free(addr: usize, size: usize, free_type: u32) i32;
 
 @api("VirtualProtect")
-fn virtual_protect(addr: usize, size: usize, new_protect: u32, old_protect: usize) i32;
+pub fn virtual_protect(addr: usize, size: usize, new_protect: u32, old_protect: usize) i32;
 
 @api("VirtualQuery")
-fn virtual_query(addr: usize, buf: usize, len: usize) usize;
+pub fn virtual_query(addr: usize, buf: usize, len: usize) usize;
 
 @api("GetProcessHeap")
-fn get_process_heap() usize;
+pub fn get_process_heap() usize;
 
 // flags: HEAP_ZERO_MEMORY=8
 @api("HeapAlloc")
-fn heap_alloc(heap: usize, flags: u32, size: usize) usize;
+pub fn heap_alloc(heap: usize, flags: u32, size: usize) usize;
 
 @api("HeapFree")
-fn heap_free(heap: usize, flags: u32, mem: usize) i32;
+pub fn heap_free(heap: usize, flags: u32, mem: usize) i32;
 
 @api("HeapReAlloc")
-fn heap_realloc(heap: usize, flags: u32, mem: usize, size: usize) usize;
+pub fn heap_realloc(heap: usize, flags: u32, mem: usize, size: usize) usize;
 
 @api("HeapSize")
-fn heap_size(heap: usize, flags: u32, mem: usize) usize;
+pub fn heap_size(heap: usize, flags: u32, mem: usize) usize;
 
 @api("HeapCreate")
-fn heap_create(options: u32, initial: usize, maximum: usize) usize;
+pub fn heap_create(options: u32, initial: usize, maximum: usize) usize;
 
 @api("HeapDestroy")
-fn heap_destroy(heap: usize) i32;
+pub fn heap_destroy(heap: usize) i32;
 
 // flags: LMEM_FIXED=0, LMEM_ZEROINIT=0x40
 @api("LocalAlloc")
-fn local_alloc(flags: u32, size: usize) usize;
+pub fn local_alloc(flags: u32, size: usize) usize;
 
 @api("LocalFree")
-fn local_free(mem: usize) usize;
+pub fn local_free(mem: usize) usize;
 
 @api("GlobalAlloc")
-fn global_alloc(flags: u32, size: usize) usize;
+pub fn global_alloc(flags: u32, size: usize) usize;
 
 @api("GlobalFree")
-fn global_free(mem: usize) usize;
+pub fn global_free(mem: usize) usize;
 
 // ── Synchronization ──────────────────────────────────────────────────────────
 
 // initial_owner: TRUE=1 if creating thread owns mutex
 @api("CreateMutexA")
-fn create_mutex_a(security: usize, initial_owner: i32, name: str) usize;
+pub fn create_mutex_a(security: usize, initial_owner: i32, name: str) usize;
 
 @api("OpenMutexA")
-fn open_mutex_a(access: u32, inherit: i32, name: str) usize;
+pub fn open_mutex_a(access: u32, inherit: i32, name: str) usize;
 
 @api("ReleaseMutex")
-fn release_mutex(mutex: usize) i32;
+pub fn release_mutex(mutex: usize) i32;
 
 // manual_reset: TRUE=1 for manual, FALSE=0 for auto-reset
 @api("CreateEventA")
-fn create_event_a(security: usize, manual_reset: i32, initial_state: i32, name: str) usize;
+pub fn create_event_a(security: usize, manual_reset: i32, initial_state: i32, name: str) usize;
 
 @api("OpenEventA")
-fn open_event_a(access: u32, inherit: i32, name: str) usize;
+pub fn open_event_a(access: u32, inherit: i32, name: str) usize;
 
 @api("SetEvent")
-fn set_event(event: usize) i32;
+pub fn set_event(event: usize) i32;
 
 @api("ResetEvent")
-fn reset_event(event: usize) i32;
+pub fn reset_event(event: usize) i32;
 
 @api("PulseEvent")
-fn pulse_event(event: usize) i32;
+pub fn pulse_event(event: usize) i32;
 
 @api("CreateSemaphoreA")
-fn create_semaphore_a(security: usize, initial: i32, maximum: i32, name: str) usize;
+pub fn create_semaphore_a(security: usize, initial: i32, maximum: i32, name: str) usize;
 
 @api("ReleaseSemaphore")
-fn release_semaphore(sem: usize, count: i32, prev: usize) i32;
+pub fn release_semaphore(sem: usize, count: i32, prev: usize) i32;
 
 // cs: pointer to CRITICAL_SECTION (40 bytes on x86-64)
 @api("InitializeCriticalSection")
-fn initialize_critical_section(cs: usize) void;
+pub fn initialize_critical_section(cs: usize) void;
 
 @api("EnterCriticalSection")
-fn enter_critical_section(cs: usize) void;
+pub fn enter_critical_section(cs: usize) void;
 
 @api("TryEnterCriticalSection")
-fn try_enter_critical_section(cs: usize) i32;
+pub fn try_enter_critical_section(cs: usize) i32;
 
 @api("LeaveCriticalSection")
-fn leave_critical_section(cs: usize) void;
+pub fn leave_critical_section(cs: usize) void;
 
 @api("DeleteCriticalSection")
-fn delete_critical_section(cs: usize) void;
+pub fn delete_critical_section(cs: usize) void;
 
 // ── Error ────────────────────────────────────────────────────────────────────
 
 @api("GetLastError")
-fn get_last_error() u32;
+pub fn get_last_error() u32;
 
 @api("SetLastError")
-fn set_last_error(err: u32) void;
+pub fn set_last_error(err: u32) void;
 
 // flags: FORMAT_MESSAGE_FROM_SYSTEM=0x1000, FORMAT_MESSAGE_IGNORE_INSERTS=0x200
 // lang: MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT) = 0x400
 @api("FormatMessageA")
-fn format_message_a(flags: u32, source: usize, msg_id: u32, lang: u32, buf: str, size: u32, args: usize) u32;
+pub fn format_message_a(flags: u32, source: usize, msg_id: u32, lang: u32, buf: str, size: u32, args: usize) u32;
 
 // ── Library ──────────────────────────────────────────────────────────────────
 
 @api("LoadLibraryA")
-fn load_library_a(name: str) usize;
+pub fn load_library_a(name: str) usize;
 
 @api("LoadLibraryExA")
-fn load_library_ex_a(name: str, file: usize, flags: u32) usize;
+pub fn load_library_ex_a(name: str, file: usize, flags: u32) usize;
 
 @api("GetProcAddress")
-fn get_proc_address(module: usize, name: str) usize;
+pub fn get_proc_address(module: usize, name: str) usize;
 
 @api("FreeLibrary")
-fn free_library(module: usize) i32;
+pub fn free_library(module: usize) i32;
 
 @api("GetModuleHandleA")
-fn get_module_handle_a(name: str) usize;
+pub fn get_module_handle_a(name: str) usize;
 
 @api("GetModuleFileNameA")
-fn get_module_file_name_a(module: usize, buf: str, size: u32) u32;
+pub fn get_module_file_name_a(module: usize, buf: str, size: u32) u32;
 
 // ── Environment & Command Line ────────────────────────────────────────────────
 
 @api("GetEnvironmentVariableA")
-fn get_environment_variable_a(name: str, buf: str, size: u32) u32;
+pub fn get_environment_variable_a(name: str, buf: str, size: u32) u32;
 
 @api("SetEnvironmentVariableA")
-fn set_environment_variable_a(name: str, value: str) i32;
+pub fn set_environment_variable_a(name: str, value: str) i32;
 
 @api("GetCommandLineA")
-fn get_command_line_a() str;
+pub fn get_command_line_a() str;
 
 // returns pointer to null-terminated array of null-terminated strings
 @api("GetEnvironmentStringsA")
-fn get_environment_strings_a() usize;
+pub fn get_environment_strings_a() usize;
 
 @api("FreeEnvironmentStringsA")
-fn free_environment_strings_a(env: usize) i32;
+pub fn free_environment_strings_a(env: usize) i32;
 
 // ── Time ─────────────────────────────────────────────────────────────────────
 
 // st: pointer to SYSTEMTIME { u16 year, month, dow, day, hour, min, sec, ms }
 @api("GetSystemTime")
-fn get_system_time(st: usize) void;
+pub fn get_system_time(st: usize) void;
 
 @api("GetLocalTime")
-fn get_local_time(st: usize) void;
+pub fn get_local_time(st: usize) void;
 
 @api("SetSystemTime")
-fn set_system_time(st: usize) i32;
+pub fn set_system_time(st: usize) i32;
 
 @api("SetLocalTime")
-fn set_local_time(st: usize) i32;
+pub fn set_local_time(st: usize) i32;
 
 // ft: pointer to FILETIME { u32 low, u32 high } — 100-nanosecond intervals since 1601-01-01
 @api("GetSystemTimeAsFileTime")
-fn get_system_time_as_file_time(ft: usize) void;
+pub fn get_system_time_as_file_time(ft: usize) void;
 
 @api("FileTimeToSystemTime")
-fn file_time_to_system_time(ft: usize, st: usize) i32;
+pub fn file_time_to_system_time(ft: usize, st: usize) i32;
 
 @api("SystemTimeToFileTime")
-fn system_time_to_file_time(st: usize, ft: usize) i32;
+pub fn system_time_to_file_time(st: usize, ft: usize) i32;
 
 @api("FileTimeToLocalFileTime")
-fn file_time_to_local_file_time(utc: usize, local: usize) i32;
+pub fn file_time_to_local_file_time(utc: usize, local: usize) i32;
 
 // perf counter (use for high-res timing)
 @api("QueryPerformanceCounter")
-fn query_performance_counter(count: usize) i32;
+pub fn query_performance_counter(count: usize) i32;
 
 @api("QueryPerformanceFrequency")
-fn query_performance_frequency(freq: usize) i32;
+pub fn query_performance_frequency(freq: usize) i32;
 
 @api("GetTickCount64")
-fn get_tick_count64() u64;
+pub fn get_tick_count64() u64;
 
 // ── Registry ─────────────────────────────────────────────────────────────────
 // Predefined keys: HKEY_LOCAL_MACHINE=0x80000002, HKEY_CURRENT_USER=0x80000001
@@ -422,76 +422,76 @@ fn get_tick_count64() u64;
 
 // access: KEY_READ=0x20019, KEY_WRITE=0x20006, KEY_ALL_ACCESS=0xF003F
 @api("RegOpenKeyExA")
-fn reg_open_key_ex_a(key: usize, sub_key: str, options: u32, access: u32, result: usize) i32;
+pub fn reg_open_key_ex_a(key: usize, sub_key: str, options: u32, access: u32, result: usize) i32;
 
 @api("RegCreateKeyExA")
-fn reg_create_key_ex_a(key: usize, sub_key: str, reserved: u32, cls: str, options: u32, access: u32, security: usize, result: usize, disposition: usize) i32;
+pub fn reg_create_key_ex_a(key: usize, sub_key: str, reserved: u32, cls: str, options: u32, access: u32, security: usize, result: usize, disposition: usize) i32;
 
 @api("RegCloseKey")
-fn reg_close_key(key: usize) i32;
+pub fn reg_close_key(key: usize) i32;
 
 // type: REG_SZ=1, REG_DWORD=4, REG_BINARY=3, REG_EXPAND_SZ=2, REG_MULTI_SZ=7
 @api("RegQueryValueExA")
-fn reg_query_value_ex_a(key: usize, value: str, reserved: usize, reg_type: usize, data: usize, cb_data: usize) i32;
+pub fn reg_query_value_ex_a(key: usize, value: str, reserved: usize, reg_type: usize, data: usize, cb_data: usize) i32;
 
 @api("RegSetValueExA")
-fn reg_set_value_ex_a(key: usize, value: str, reserved: u32, reg_type: u32, data: usize, cb_data: u32) i32;
+pub fn reg_set_value_ex_a(key: usize, value: str, reserved: u32, reg_type: u32, data: usize, cb_data: u32) i32;
 
 @api("RegDeleteValueA")
-fn reg_delete_value_a(key: usize, value: str) i32;
+pub fn reg_delete_value_a(key: usize, value: str) i32;
 
 @api("RegDeleteKeyA")
-fn reg_delete_key_a(key: usize, sub_key: str) i32;
+pub fn reg_delete_key_a(key: usize, sub_key: str) i32;
 
 @api("RegEnumKeyExA")
-fn reg_enum_key_ex_a(key: usize, index: u32, name: str, name_size: usize, reserved: usize, cls: str, cls_size: usize, last_write: usize) i32;
+pub fn reg_enum_key_ex_a(key: usize, index: u32, name: str, name_size: usize, reserved: usize, cls: str, cls_size: usize, last_write: usize) i32;
 
 @api("RegEnumValueA")
-fn reg_enum_value_a(key: usize, index: u32, value: str, value_size: usize, reserved: usize, reg_type: usize, data: usize, data_size: usize) i32;
+pub fn reg_enum_value_a(key: usize, index: u32, value: str, value_size: usize, reserved: usize, reg_type: usize, data: usize, data_size: usize) i32;
 
 // ── Security & Privileges ────────────────────────────────────────────────────
 
 // access: TOKEN_ADJUST_PRIVILEGES|TOKEN_QUERY=0x28
 @api("OpenProcessToken")
-fn open_process_token(proc: usize, access: u32, token: usize) i32;
+pub fn open_process_token(proc: usize, access: u32, token: usize) i32;
 
 @api("OpenThreadToken")
-fn open_thread_token(thread: usize, access: u32, open_as_self: i32, token: usize) i32;
+pub fn open_thread_token(thread: usize, access: u32, open_as_self: i32, token: usize) i32;
 
 // luid: pointer to LUID struct (8 bytes)
 @api("LookupPrivilegeValueA")
-fn lookup_privilege_value_a(system: str, name: str, luid: usize) i32;
+pub fn lookup_privilege_value_a(system: str, name: str, luid: usize) i32;
 
 // privileges: pointer to TOKEN_PRIVILEGES struct
 @api("AdjustTokenPrivileges")
-fn adjust_token_privileges(token: usize, disable_all: i32, new_state: usize, buf_len: u32, prev: usize, ret_len: usize) i32;
+pub fn adjust_token_privileges(token: usize, disable_all: i32, new_state: usize, buf_len: u32, prev: usize, ret_len: usize) i32;
 
 @api("GetTokenInformation")
-fn get_token_information(token: usize, info_class: i32, info: usize, info_len: u32, ret_len: usize) i32;
+pub fn get_token_information(token: usize, info_class: i32, info: usize, info_len: u32, ret_len: usize) i32;
 
 @api("IsUserAnAdmin")
-fn is_user_an_admin() i32;
+pub fn is_user_an_admin() i32;
 
 // ── System Info ──────────────────────────────────────────────────────────────
 
 // si: pointer to SYSTEM_INFO struct
 @api("GetSystemInfo")
-fn get_system_info(si: usize) void;
+pub fn get_system_info(si: usize) void;
 
 @api("GetNativeSystemInfo")
-fn get_native_system_info(si: usize) void;
+pub fn get_native_system_info(si: usize) void;
 
 @api("GlobalMemoryStatusEx")
-fn global_memory_status_ex(stat: usize) i32;
+pub fn global_memory_status_ex(stat: usize) i32;
 
 @api("GetComputerNameA")
-fn get_computer_name_a(buf: str, size: usize) i32;
+pub fn get_computer_name_a(buf: str, size: usize) i32;
 
 @api("GetUserNameA")
-fn get_user_name_a(buf: str, size: usize) i32;
+pub fn get_user_name_a(buf: str, size: usize) i32;
 
 @api("GetVersionExA")
-fn get_version_ex_a(os_ver: usize) i32;
+pub fn get_version_ex_a(os_ver: usize) i32;
 
 // ── WinSock2 ─────────────────────────────────────────────────────────────────
 // Link with ws2_32.lib.  Call ws_startup() before using any socket function.
@@ -499,92 +499,92 @@ fn get_version_ex_a(os_ver: usize) i32;
 // version: MAKEWORD(2,2) = 0x0202
 
 @api("WSAStartup")
-fn ws_startup(version: u16, data: usize) i32;
+pub fn ws_startup(version: u16, data: usize) i32;
 
 @api("WSACleanup")
-fn ws_cleanup() i32;
+pub fn ws_cleanup() i32;
 
 @api("WSAGetLastError")
-fn ws_get_last_error() i32;
+pub fn ws_get_last_error() i32;
 
 // af: AF_INET=2, AF_INET6=23; type: SOCK_STREAM=1, SOCK_DGRAM=2; proto: IPPROTO_TCP=6, IPPROTO_UDP=17
 @api("socket")
-fn socket(af: i32, stype: i32, protocol: i32) usize;
+pub fn socket(af: i32, stype: i32, protocol: i32) usize;
 
 @api("closesocket")
-fn closesocket(s: usize) i32;
+pub fn closesocket(s: usize) i32;
 
 @api("bind")
-fn bind(s: usize, addr: usize, addrlen: i32) i32;
+pub fn bind(s: usize, addr: usize, addrlen: i32) i32;
 
 @api("listen")
-fn listen(s: usize, backlog: i32) i32;
+pub fn listen(s: usize, backlog: i32) i32;
 
 @api("accept")
-fn accept(s: usize, addr: usize, addrlen: usize) usize;
+pub fn accept(s: usize, addr: usize, addrlen: usize) usize;
 
 @api("connect")
-fn connect(s: usize, addr: usize, addrlen: i32) i32;
+pub fn connect(s: usize, addr: usize, addrlen: i32) i32;
 
 @api("send")
-fn send(s: usize, buf: str, len: i32, flags: i32) i32;
+pub fn send(s: usize, buf: str, len: i32, flags: i32) i32;
 
 @api("recv")
-fn recv(s: usize, buf: str, len: i32, flags: i32) i32;
+pub fn recv(s: usize, buf: str, len: i32, flags: i32) i32;
 
 @api("sendto")
-fn sendto(s: usize, buf: str, len: i32, flags: i32, to: usize, tolen: i32) i32;
+pub fn sendto(s: usize, buf: str, len: i32, flags: i32, to: usize, tolen: i32) i32;
 
 @api("recvfrom")
-fn recvfrom(s: usize, buf: str, len: i32, flags: i32, from: usize, fromlen: usize) i32;
+pub fn recvfrom(s: usize, buf: str, len: i32, flags: i32, from: usize, fromlen: usize) i32;
 
 @api("setsockopt")
-fn setsockopt(s: usize, level: i32, optname: i32, optval: usize, optlen: i32) i32;
+pub fn setsockopt(s: usize, level: i32, optname: i32, optval: usize, optlen: i32) i32;
 
 @api("getsockopt")
-fn getsockopt(s: usize, level: i32, optname: i32, optval: usize, optlen: usize) i32;
+pub fn getsockopt(s: usize, level: i32, optname: i32, optval: usize, optlen: usize) i32;
 
 @api("getsockname")
-fn getsockname(s: usize, addr: usize, addrlen: usize) i32;
+pub fn getsockname(s: usize, addr: usize, addrlen: usize) i32;
 
 @api("getpeername")
-fn getpeername(s: usize, addr: usize, addrlen: usize) i32;
+pub fn getpeername(s: usize, addr: usize, addrlen: usize) i32;
 
 @api("shutdown")
-fn shutdown(s: usize, how: i32) i32;
+pub fn shutdown(s: usize, how: i32) i32;
 
 // fds: pointer to fd_set; timeout: pointer to TIMEVAL or null
 @api("select")
-fn select(nfds: i32, readfds: usize, writefds: usize, exceptfds: usize, timeout: usize) i32;
+pub fn select(nfds: i32, readfds: usize, writefds: usize, exceptfds: usize, timeout: usize) i32;
 
 @api("ioctlsocket")
-fn ioctlsocket(s: usize, cmd: i32, argp: usize) i32;
+pub fn ioctlsocket(s: usize, cmd: i32, argp: usize) i32;
 
 // hints: pointer to ADDRINFOA; result: pointer to ADDRINFOA*
 @api("getaddrinfo")
-fn getaddrinfo(node: str, service: str, hints: usize, result: usize) i32;
+pub fn getaddrinfo(node: str, service: str, hints: usize, result: usize) i32;
 
 @api("freeaddrinfo")
-fn freeaddrinfo(info: usize) void;
+pub fn freeaddrinfo(info: usize) void;
 
 @api("getnameinfo")
-fn getnameinfo(addr: usize, addrlen: i32, host: str, host_len: u32, serv: str, serv_len: u32, flags: i32) i32;
+pub fn getnameinfo(addr: usize, addrlen: i32, host: str, host_len: u32, serv: str, serv_len: u32, flags: i32) i32;
 
 @api("inet_pton")
-fn inet_pton(af: i32, src: str, dst: usize) i32;
+pub fn inet_pton(af: i32, src: str, dst: usize) i32;
 
 @api("inet_ntop")
-fn inet_ntop(af: i32, src: usize, dst: str, size: usize) str;
+pub fn inet_ntop(af: i32, src: usize, dst: str, size: usize) str;
 
 // htons / ntohs — byte order conversion
 @api("htons")
-fn htons(hostshort: u16) u16;
+pub fn htons(hostshort: u16) u16;
 
 @api("ntohs")
-fn ntohs(netshort: u16) u16;
+pub fn ntohs(netshort: u16) u16;
 
 @api("htonl")
-fn htonl(hostlong: u32) u32;
+pub fn htonl(hostlong: u32) u32;
 
 @api("ntohl")
-fn ntohl(netlong: u32) u32;
+pub fn ntohl(netlong: u32) u32;

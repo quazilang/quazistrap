@@ -53,7 +53,12 @@ pub fn write_reloc(
     };
     obj.add_relocation(
         section_id,
-        Relocation { offset, symbol: sym_id, addend, flags },
+        Relocation {
+            offset,
+            symbol: sym_id,
+            addend,
+            flags,
+        },
     )
     .expect("relocation add failed");
 }

@@ -58,7 +58,10 @@ struct RawBuild {
 #[serde(untagged)]
 enum RawDependency {
     Path(String),
-    Table { path: String, version: Option<String> },
+    Table {
+        path: String,
+        version: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -146,18 +149,13 @@ impl ProjectContext {
         dependencies.sort_by(|a, b| a.name.cmp(&b.name));
 
         Ok(Self {
-            config: ProjectConfig { dependencies, ..config },
+            config: ProjectConfig {
+                dependencies,
+                ..config
+            },
             resolver,
         })
     }
-}
-
-/// Inject the std module into an existing resolver without needing void.toml deps.
-/// Called by the compiler when std is auto-discovered and @no_std is absent.
-pub fn inject_std_module(resolver: &mut ModuleResolver, std_root: &Path) -> Result<(), String> {
-    let mut visited = HashSet::new();
-    let mut dep_versions = HashMap::new();
-    collect_modules(std_root, resolver, &mut visited, None, "__void_builtin__", &mut dep_versions)
 }
 
 fn find_project_root(start: &Path) -> Option<PathBuf> {
@@ -194,10 +192,7 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
     let entry = root.join(build.entry.unwrap_or_else(|| "src/main.void".to_string()));
 
     if !entry.exists() {
-        return Err(format!(
-            "entry file not found: {}",
-            entry.to_string_lossy()
-        ));
+        return Err(format!("entry file not found: {}", entry.to_string_lossy()));
     }
 
     let mut dependencies = Vec::new();
@@ -229,8 +224,7 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
 fn read_raw_config(path: &Path) -> Result<RawConfig, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read '{}': {}", path.to_string_lossy(), e))?;
-    toml::from_str(&text)
-        .map_err(|e| format!("cannot parse '{}': {}", path.to_string_lossy(), e))
+    toml::from_str(&text).map_err(|e| format!("cannot parse '{}': {}", path.to_string_lossy(), e))
 }
 
 fn collect_modules(
@@ -311,8 +305,7 @@ fn collect_modules(
 fn load_lockfile(path: &Path) -> Result<Lockfile, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read '{}': {}", path.to_string_lossy(), e))?;
-    toml::from_str(&text)
-        .map_err(|e| format!("cannot parse '{}': {}", path.to_string_lossy(), e))
+    toml::from_str(&text).map_err(|e| format!("cannot parse '{}': {}", path.to_string_lossy(), e))
 }
 
 fn validate_lockfile(
@@ -345,11 +338,7 @@ fn validate_lockfile(
     Ok(())
 }
 
-fn write_lockfile(
-    path: &Path,
-    resolver: &ModuleResolver,
-    root_name: &str,
-) -> Result<(), String> {
+fn write_lockfile(path: &Path, resolver: &ModuleResolver, root_name: &str) -> Result<(), String> {
     let mut packages: Vec<LockPackage> = resolver
         .modules
         .iter()
@@ -363,8 +352,8 @@ fn write_lockfile(
     packages.sort_by(|a, b| a.name.cmp(&b.name));
 
     let lock = Lockfile { package: packages };
-    let text = toml::to_string_pretty(&lock)
-        .map_err(|e| format!("cannot serialize lockfile: {}", e))?;
+    let text =
+        toml::to_string_pretty(&lock).map_err(|e| format!("cannot serialize lockfile: {}", e))?;
     std::fs::write(path, text)
         .map_err(|e| format!("cannot write '{}': {}", path.to_string_lossy(), e))
 }
@@ -391,8 +380,7 @@ mod tests {
         let root = temp_dir("void_project");
         let src_dir = root.join("src");
         fs::create_dir_all(&src_dir).expect("create src");
-        fs::write(src_dir.join("main.void"), "fn main() void { ret; }")
-            .expect("write main.void");
+        fs::write(src_dir.join("main.void"), "fn main() void { ret; }").expect("write main.void");
 
         let dep_root = root.join("dep");
         let dep_src = dep_root.join("src");

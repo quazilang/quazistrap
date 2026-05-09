@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: 0BSD
 
 use super::instruction::Instruction;
+use super::instruction::{ri16, rrr};
 use super::opcode::Opcode;
-use super::instruction::{rrr, ri16};
 
 /// Constant pool value — lives alongside bytecode, referenced by MovConst.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,11 +26,18 @@ pub struct Chunk {
 
 impl Chunk {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), ..Default::default() }
+        Self {
+            name: name.into(),
+            ..Default::default()
+        }
     }
 
     pub fn with_params(name: impl Into<String>, param_count: usize) -> Self {
-        Self { name: name.into(), param_count, ..Default::default() }
+        Self {
+            name: name.into(),
+            param_count,
+            ..Default::default()
+        }
     }
 
     pub fn emit(&mut self, instr: Instruction) -> usize {
@@ -81,8 +88,14 @@ impl Chunk {
         buf.extend_from_slice(&(self.constants.len() as u16).to_le_bytes());
         for c in &self.constants {
             match c {
-                ConstPoolEntry::Int(v) => { buf.push(0); buf.extend_from_slice(&v.to_le_bytes()); }
-                ConstPoolEntry::Float(v) => { buf.push(1); buf.extend_from_slice(&v.to_le_bytes()); }
+                ConstPoolEntry::Int(v) => {
+                    buf.push(0);
+                    buf.extend_from_slice(&v.to_le_bytes());
+                }
+                ConstPoolEntry::Float(v) => {
+                    buf.push(1);
+                    buf.extend_from_slice(&v.to_le_bytes());
+                }
                 ConstPoolEntry::Str(s) => {
                     buf.push(2);
                     let sb = s.as_bytes();
@@ -113,20 +126,86 @@ pub fn serialize_vbc(chunks: &[Chunk]) -> Vec<u8> {
 
 impl std::fmt::Display for Chunk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "fn {} ({} instructions):", self.name, self.code.len())?;
+        writeln!(
+            f,
+            "\x1b[1;36mfn\x1b[0m \x1b[1m{}\x1b[0m  \x1b[2m({} instrs · {} params · {} regs)\x1b[0m",
+            self.name,
+            self.code.len(),
+            self.param_count,
+            self.reg_count
+        )?;
         if !self.constants.is_empty() {
-            writeln!(f, "  constants:")?;
+            writeln!(f, "\x1b[2m  consts:\x1b[0m")?;
             for (i, c) in self.constants.iter().enumerate() {
                 let val = match c {
-                    ConstPoolEntry::Int(v) => format!("{}", v),
-                    ConstPoolEntry::Float(v) => format!("{}", v),
-                    ConstPoolEntry::Str(s) => format!("{:?}", s),
+                    ConstPoolEntry::Int(v) => format!("\x1b[33m{v}\x1b[0m"),
+                    ConstPoolEntry::Float(v) => format!("\x1b[33m{v}\x1b[0m"),
+                    ConstPoolEntry::Str(s) => format!("\x1b[32m{s:?}\x1b[0m"),
                 };
-                writeln!(f, "    [{}] = {}", i, val)?;
+                writeln!(f, "  \x1b[2m[{i:>2}]\x1b[0m  {val}")?;
             }
         }
+
+        // Pass 1: annotate each callarg with (arg_index, callee_name).
+        // callarg* sequences are always immediately followed by callidx/callext/callreg.
+        let mut callarg_info: Vec<Option<(usize, String)>> = vec![None; self.code.len()];
+        {
+            let mut pending: Vec<usize> = Vec::new();
+            for (i, instr) in self.code.iter().enumerate() {
+                match instr.opcode() {
+                    Some(Opcode::CallArg) => pending.push(i),
+                    Some(Opcode::CallIdx) => {
+                        let (_, idx) = instr.ri16();
+                        let callee = format!("fn[{}]", idx);
+                        for (pos, &pi) in pending.iter().enumerate() {
+                            callarg_info[pi] = Some((pos, callee.clone()));
+                        }
+                        pending.clear();
+                    }
+                    Some(Opcode::CallExt) => {
+                        let (_, idx) = instr.ri16();
+                        let callee = self
+                            .constants
+                            .get(idx as usize)
+                            .and_then(|c| {
+                                if let ConstPoolEntry::Str(s) = c {
+                                    Some(s.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| format!("ext[{}]", idx));
+                        for (pos, &pi) in pending.iter().enumerate() {
+                            callarg_info[pi] = Some((pos, callee.clone()));
+                        }
+                        pending.clear();
+                    }
+                    Some(Opcode::CallReg) => {
+                        let (_, src, _) = instr.rrr();
+                        let callee = format!("r{}", src);
+                        for (pos, &pi) in pending.iter().enumerate() {
+                            callarg_info[pi] = Some((pos, callee.clone()));
+                        }
+                        pending.clear();
+                    }
+                    _ => {
+                        pending.clear();
+                    }
+                }
+            }
+        }
+
+        // Pass 2: display with inline annotations.
         for (i, instr) in self.code.iter().enumerate() {
-            writeln!(f, "  {:04}  {}", i, instr.disasm(&self.constants))?;
+            let line = instr.disasm(&self.constants);
+            if let Some((pos, callee)) = &callarg_info[i] {
+                writeln!(
+                    f,
+                    "  \x1b[2m{i:04} │\x1b[0m  {line}  \x1b[2m; arg {pos} → {callee}\x1b[0m"
+                )?;
+            } else {
+                writeln!(f, "  \x1b[2m{i:04} │\x1b[0m  {line}")?;
+            }
         }
         Ok(())
     }
