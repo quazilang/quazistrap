@@ -12,3 +12,4 @@ Cargo.lock
 .forgejo/*
 .claude/*
 .cargo/*
+tree-sitter-void/node_modules/
