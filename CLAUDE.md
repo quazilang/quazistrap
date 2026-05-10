@@ -25,8 +25,10 @@ void build                          # build project from void.toml (no files giv
 void build [-b|-c] [-o out]         # build project with options
 void build -r                       # build + run project from void.toml
 void build --linker /path/to/ld     # override linker binary
+void build -s / --strip             # strip debug symbols from output binary
 void run                            # build + run project from void.toml
 void run --linker /path/to/ld       # build + run with explicit linker
+void run -s / --strip               # strip debug symbols before running
 void check                          # analyze project without emitting
 void debug [-b]                     # compile hardcoded demo source
 void new <name>                     # create a new project
@@ -35,6 +37,8 @@ void clean                          # remove build artifacts
 ```
 
 Default output names: `<stem>.vbc` (bytecode), `<stem>.o` (object), `<stem>` / `<stem>.exe` (binary).
+
+**.vbc as input**: `void build foo.vbc -o out` compiles pre-compiled VBC bytecode to native (skips frontend). Supports `-c`, `-b`, `-r`, `--linker`.
 
 **Linker selection**: binary emit requires an external linker. Search order: `VOID_LINKER` env var → `ld.lld` → `mold` → `ld`. Override with `--linker /path/to/linker` or `export VOID_LINKER=/path/to/linker`.
 
@@ -46,7 +50,7 @@ Compiler frontend pipeline:
 ```
 source files → Loader → merged source → Lexer → Vec<Token> → Parser → Program
              → Analyzer → SemanticReport → Codegen → Vec<Chunk>
-             → ElfBackend (object + iced-x86) → .o bytes
+             → Backend (object + iced-x86) → .o bytes
              → LinkerInvocation (ld/lld/mold) → binary
 ```
 
@@ -58,6 +62,7 @@ The GCC/GAS toolchain is no longer required or used.
 - `load_programs(entries: &[PathBuf]) -> Result<LoadResult>` — resolves local imports recursively, merges sources in dependency-first order, parses the merged string as one `Program`.
 - `load_programs_with_resolver(entries, resolver)` — like `load_programs`, but resolves module imports via `ModuleResolver` when a dependency name matches the first import segment.
 - **Local import detection**: `import foo.bar` resolves to a module when `foo` exists in `ModuleResolver`; otherwise local if `foo.void` exists next to the importing file. Otherwise treated as stdlib/external (no file loaded).
+- **Built-in std resolution order**: `VOID_STD_ROOT` env var → `~/.void/std` / `%USERPROFILE%/.void/std` → `CARGO_MANIFEST_DIR/std` → `cwd/std`.
 - Deduplicates via canonical-path `HashSet` — circular or repeated imports are safe.
 - Merged source byte offsets are contiguous, so `render_diagnostic` works correctly across file boundaries.
 - Declare pass in semantic: when an import name collides with an already-declared function (from a loaded local file), the import binding is silently skipped — no duplicate-declaration error.
@@ -145,15 +150,19 @@ Key design decisions:
 **VBC file format** (`serialize_vbc`):
 ```
 magic:       \x00VBC  (4 bytes)
-version:     0x01     (u8)
+version:     0x02     (u8)
 chunk_count: u32 LE
 per chunk:
   name_len:  u16 LE + name bytes
+  param_count: u16 LE   (v2+)
+  reg_count:  u8        (v2+)
   const_count: u16 LE
   per constant: tag(u8) + value (8 bytes Int/Float, u16 len + bytes for Str)
   instr_count: u32 LE
   instructions: instr_count * 6 bytes
 ```
+`deserialize_vbc` handles both v1 (lacks param_count/reg_count, defaults to 0)
+and v2. `void build foo.vbc` reads any supported version.
 
 ### Codegen (`src/bytecode/codegen.rs`)
 `Codegen` takes a `&SemanticReport` and compiles a `Program` to `Vec<Chunk>`.
@@ -193,7 +202,7 @@ pub trait Backend {
     fn compile(&self, chunks: &[Chunk], target: &TargetSpec) -> Result<ObjectOutput, BackendError>;
 }
 pub fn select_backend(target: &TargetSpec) -> Box<dyn Backend>
-// Linux/MacOs → ElfBackend; Windows → panic (CoffBackend: future work)
+// Linux/MacOs → ElfBackend; Windows → PeBackend
 ```
 
 **`TargetSpec`** (`src/backend/target.rs`):

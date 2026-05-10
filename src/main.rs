@@ -149,6 +149,53 @@ fn run_pipeline(
     }
 }
 
+fn strip_binary(path: &Path) {
+    let candidates = if cfg!(target_os = "windows") {
+        ["llvm-strip.exe", "strip.exe"]
+    } else {
+        ["llvm-strip", "strip"]
+    };
+
+    let found = candidates.iter().find_map(|name| {
+        // Check PATH
+        std::env::var_os("PATH")
+            .and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .find_map(|dir| {
+                        let full = dir.join(name);
+                        if full.is_file() {
+                            Some(full)
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .or_else(|| {
+                // Check current dir / common locations
+                let local = PathBuf::from(name);
+                if local.is_file() { Some(local) } else { None }
+            })
+    });
+
+    match found {
+        Some(strip_path) => {
+            let status = std::process::Command::new(&strip_path)
+                .arg(path)
+                .status()
+                .unwrap_or_else(|e| {
+                    eprintln!("\x1b[33;1mwarning:\x1b[0m strip failed: {}", e);
+                    return std::process::ExitStatus::default();
+                });
+            if status.success() {
+                eprintln!("\x1b[2mstripped\x1b[0m  \x1b[1m{}\x1b[0m", path.display());
+            }
+        }
+        None => {
+            eprintln!("\x1b[33;1mwarning:\x1b[0m no strip tool found; debug symbols retained");
+        }
+    }
+}
+
 fn compile_to_object(chunks: &[crate::bytecode::Chunk], emit_start: bool) -> Vec<u8> {
     let mut target = TargetSpec::host();
     if !emit_start {
@@ -162,6 +209,98 @@ fn compile_to_object(chunks: &[crate::bytecode::Chunk], emit_start: bool) -> Vec
             std::process::exit(1);
         })
         .bytes
+}
+
+/// Emit chunks to bytecode, object, or binary (same as run_pipeline but skips analysis/codegen).
+fn emit_chunks(
+    chunks: &[bytecode::Chunk],
+    emit: EmitType,
+    output_file_name: &str,
+    link_flags: Option<&[String]>,
+    explicit_linker: Option<&Path>,
+    debug: bool,
+) {
+    if debug {
+        for chunk in chunks {
+            eprint!("{}", chunk);
+        }
+    }
+
+    match emit {
+        EmitType::Bytecode => {
+            let bytes = serialize_vbc(chunks);
+            let mut f = std::fs::File::create(output_file_name).unwrap_or_else(|e| {
+                eprintln!(
+                    "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
+                    output_file_name, e
+                );
+                std::process::exit(1);
+            });
+            f.write_all(&bytes).unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m write failed: {}", e);
+                std::process::exit(1);
+            });
+            println!(
+                "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m({} bytes)\x1b[0m",
+                bytes.len()
+            );
+            for chunk in chunks {
+                print!("{}", chunk);
+            }
+        }
+
+        EmitType::Object => {
+            let obj_bytes = compile_to_object(chunks, false);
+            std::fs::write(output_file_name, &obj_bytes).unwrap_or_else(|e| {
+                eprintln!(
+                    "\x1b[31;1merror:\x1b[0m cannot write {}: {}",
+                    output_file_name, e
+                );
+                std::process::exit(1);
+            });
+            println!(
+                "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m[object]\x1b[0m"
+            );
+        }
+
+        EmitType::Binary => {
+            let obj_bytes = compile_to_object(chunks, true);
+            let stem = Path::new(output_file_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(output_file_name);
+            let tmp_obj = write_temp_object(&obj_bytes, stem).unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+                std::process::exit(1);
+            });
+
+            let flags = link_flags.unwrap_or(&[]);
+            let mut inv = LinkerInvocation::new(
+                tmp_obj.clone(),
+                PathBuf::from(output_file_name),
+                TargetSpec::host(),
+                flags.to_vec(),
+            )
+            .unwrap_or_else(|e| {
+                remove_temp(&tmp_obj);
+                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+                std::process::exit(1);
+            });
+
+            if let Some(lnk) = explicit_linker {
+                inv.linker = lnk.to_path_buf();
+            }
+
+            inv.run().unwrap_or_else(|e| {
+                remove_temp(&tmp_obj);
+                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+                std::process::exit(1);
+            });
+
+            remove_temp(&tmp_obj);
+            println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
+        }
+    }
 }
 
 fn run_check(src: &str, program: &parser::ast::Program, library_fn_names: HashSet<String>) {
@@ -378,6 +517,7 @@ fn main() {
             run,
             debug,
             linker,
+            strip,
         } => {
             let emit = if emit_bytecode {
                 EmitType::Bytecode
@@ -388,6 +528,7 @@ fn main() {
             };
 
             let explicit_linker = linker.as_deref();
+            let do_strip = strip && matches!(emit, EmitType::Binary);
 
             if files.is_empty() {
                 let ctx = load_project_context();
@@ -421,11 +562,84 @@ fn main() {
                     explicit_linker,
                 );
 
+                if do_strip {
+                    strip_binary(Path::new(&out));
+                }
+
                 if run && !emit_bytecode && !emit_object {
                     let status = std::process::Command::new(abs_path(&out))
                         .status()
                         .unwrap_or_else(|e| {
                             eprintln!("\x1b[31;1merror:\x1b[0m cannot run {}: {}", out, e);
+                            std::process::exit(1);
+                        });
+                    if !status.success() {
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
+                }
+            } else if files.iter().any(|f| f.extension().map_or(false, |e| e == "vbc")) {
+                // .vbc input — deserialize and compile to native directly.
+                for vbc_file in &files {
+                    if vbc_file.extension().map_or(false, |e| e != "vbc") {
+                        eprintln!(
+                            "\x1b[31;1merror:\x1b[0m cannot mix .vbc and source files: {}",
+                            vbc_file.display()
+                        );
+                        std::process::exit(1);
+                    }
+                }
+
+                let mut all_chunks: Vec<bytecode::Chunk> = Vec::new();
+                for vbc_file in &files {
+                    let bytes = std::fs::read(vbc_file).unwrap_or_else(|e| {
+                        eprintln!(
+                            "\x1b[31;1merror:\x1b[0m cannot read '{}': {}",
+                            vbc_file.display(),
+                            e
+                        );
+                        std::process::exit(1);
+                    });
+                    let chunks = bytecode::deserialize_vbc(&bytes).unwrap_or_else(|e| {
+                        eprintln!(
+                            "\x1b[31;1merror:\x1b[0m invalid .vbc '{}': {}",
+                            vbc_file.display(),
+                            e
+                        );
+                        std::process::exit(1);
+                    });
+                    all_chunks.extend(chunks);
+                }
+
+                let out = output.clone().unwrap_or_else(|| {
+                    let stem = files[0]
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    match emit {
+                        EmitType::Bytecode => format!("{}.vbc", stem),
+                        EmitType::Object => format!("{}.o", stem),
+                        EmitType::Binary => {
+                            if cfg!(target_os = "windows") {
+                                format!("{}.exe", stem)
+                            } else {
+                                stem
+                            }
+                        }
+                    }
+                });
+
+                emit_chunks(&all_chunks, emit, &out, None, explicit_linker, debug);
+
+                if do_strip {
+                    strip_binary(Path::new(&out));
+                }
+
+                if run && !emit_bytecode && !emit_object {
+                    let status = std::process::Command::new(abs_path(&out))
+                        .status()
+                        .unwrap_or_else(|e| {
+                            eprintln!("\x1b[31;1merror:\x1b[0m cannot run binary: {}", e);
                             std::process::exit(1);
                         });
                     if !status.success() {
@@ -466,6 +680,10 @@ fn main() {
                     explicit_linker,
                 );
 
+                if do_strip {
+                    strip_binary(Path::new(&out));
+                }
+
                 if run && !emit_bytecode && !emit_object {
                     let status = std::process::Command::new(abs_path(&out))
                         .status()
@@ -480,7 +698,7 @@ fn main() {
             }
         }
 
-        CliCmd::Run { linker } => {
+        CliCmd::Run { linker, strip } => {
             let ctx = load_project_context();
             ctx.ensure_lockfile().unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
@@ -505,6 +723,10 @@ fn main() {
                 Some(&ctx.config.flags),
                 linker.as_deref(),
             );
+
+            if strip {
+                strip_binary(Path::new(&out));
+            }
 
             let status = std::process::Command::new(abs_path(&out))
                 .status()

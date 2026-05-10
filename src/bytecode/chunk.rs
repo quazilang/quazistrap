@@ -85,6 +85,8 @@ impl Chunk {
         let name_bytes = self.name.as_bytes();
         buf.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
         buf.extend_from_slice(name_bytes);
+        buf.extend_from_slice(&(self.param_count as u16).to_le_bytes());
+        buf.push(self.reg_count);
         buf.extend_from_slice(&(self.constants.len() as u16).to_le_bytes());
         for c in &self.constants {
             match c {
@@ -110,8 +112,138 @@ impl Chunk {
     }
 }
 
+pub fn deserialize_vbc(buf: &[u8]) -> Result<Vec<Chunk>, String> {
+    use super::instruction::Instruction;
+
+    let mut pos = 0;
+
+    if buf.len() < 4 || &buf[0..4] != VBC_MAGIC.as_slice() {
+        return Err("invalid VBC magic".to_string());
+    }
+    pos += 4;
+
+    if buf.len() <= pos {
+        return Err("truncated VBC header".to_string());
+    }
+    let version = buf[pos];
+    if version != 1 && version != 2 {
+        return Err(format!("unsupported VBC version {}", version));
+    }
+    pos += 1;
+
+    if buf.len() < pos + 4 {
+        return Err("truncated VBC chunk count".to_string());
+    }
+    let chunk_count = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+
+    let mut chunks = Vec::with_capacity(chunk_count);
+    for _ in 0..chunk_count {
+        if buf.len() < pos + 2 {
+            return Err("truncated chunk name length".to_string());
+        }
+        let name_len = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+        pos += 2;
+
+        if buf.len() < pos + name_len {
+            return Err("truncated chunk name".to_string());
+        }
+        let name =
+            String::from_utf8(buf[pos..pos + name_len].to_vec()).map_err(|_| "invalid UTF-8 in chunk name".to_string())?;
+        pos += name_len;
+
+        let (param_count, reg_count) = if version >= 2 {
+            if buf.len() < pos + 3 {
+                return Err("truncated chunk param_count/reg_count".to_string());
+            }
+            let pc = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+            let rc = buf[pos + 2];
+            pos += 3;
+            (pc, rc)
+        } else {
+            (0, 0)
+        };
+
+        if buf.len() < pos + 2 {
+            return Err("truncated chunk const count".to_string());
+        }
+        let const_count = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+        pos += 2;
+
+        let mut constants = Vec::with_capacity(const_count);
+        for _ in 0..const_count {
+            if buf.len() <= pos {
+                return Err("truncated const tag".to_string());
+            }
+            let tag = buf[pos];
+            pos += 1;
+            match tag {
+                0 => {
+                    if buf.len() < pos + 8 {
+                        return Err("truncated const int".to_string());
+                    }
+                    let v = i64::from_le_bytes(buf[pos..pos + 8].try_into().unwrap());
+                    pos += 8;
+                    constants.push(ConstPoolEntry::Int(v));
+                }
+                1 => {
+                    if buf.len() < pos + 8 {
+                        return Err("truncated const float".to_string());
+                    }
+                    let v = f64::from_le_bytes(buf[pos..pos + 8].try_into().unwrap());
+                    pos += 8;
+                    constants.push(ConstPoolEntry::Float(v));
+                }
+                2 => {
+                    if buf.len() < pos + 2 {
+                        return Err("truncated const str length".to_string());
+                    }
+                    let str_len = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+                    pos += 2;
+                    if buf.len() < pos + str_len {
+                        return Err("truncated const str data".to_string());
+                    }
+                    let s = String::from_utf8(buf[pos..pos + str_len].to_vec())
+                        .map_err(|_| "invalid UTF-8 in const str".to_string())?;
+                    pos += str_len;
+                    constants.push(ConstPoolEntry::Str(s));
+                }
+                _ => return Err(format!("unknown const tag {}", tag)),
+            }
+        }
+
+        if buf.len() < pos + 4 {
+            return Err("truncated instr count".to_string());
+        }
+        let instr_count = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+
+        let instr_bytes = instr_count * 6;
+        if buf.len() < pos + instr_bytes {
+            return Err("truncated instructions".to_string());
+        }
+        let mut code = Vec::with_capacity(instr_count);
+        for _ in 0..instr_count {
+            let mut arr = [0u8; 6];
+            arr.copy_from_slice(&buf[pos..pos + 6]);
+            code.push(Instruction::from_bytes(arr));
+            pos += 6;
+        }
+
+        chunks.push(Chunk {
+            code,
+            constants,
+            name,
+            param_count,
+            reg_count,
+        });
+    }
+
+    Ok(chunks)
+}
+
 pub const VBC_MAGIC: &[u8; 4] = b"\x00VBC";
-pub const VBC_VERSION: u8 = 1;
+pub const VBC_VERSION: u8 = 2;
 
 pub fn serialize_vbc(chunks: &[Chunk]) -> Vec<u8> {
     let mut buf = Vec::new();

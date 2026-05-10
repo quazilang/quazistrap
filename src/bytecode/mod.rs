@@ -7,7 +7,7 @@ pub mod codegen;
 pub mod instruction;
 pub mod opcode;
 
-pub use chunk::{Chunk, ConstPoolEntry, serialize_vbc};
+pub use chunk::{Chunk, ConstPoolEntry, deserialize_vbc, serialize_vbc};
 pub use codegen::Codegen;
 pub use instruction::Instruction;
 pub use opcode::Opcode;

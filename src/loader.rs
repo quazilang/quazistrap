@@ -65,11 +65,13 @@ pub fn load_programs_with_resolver(
     entries: &[PathBuf],
     resolver: Option<&ModuleResolver>,
 ) -> Result<LoadResult, String> {
+    // First pass: lenient — only checks for @no_std, skips import errors.
     let initial = collect_sources(entries, resolver, false)?;
     if sources_contain_no_std(&initial.sources) {
         return finalize_sources(initial);
     }
 
+    // Second pass: strict — std resolver available, errors on unresolved imports.
     let resolver_with_std = resolver_with_builtin_std(resolver);
     collect_sources(entries, resolver_with_std.as_ref().or(resolver), true)
         .and_then(finalize_sources)
@@ -83,7 +85,7 @@ struct SourceCollection {
 fn collect_sources(
     entries: &[PathBuf],
     resolver: Option<&ModuleResolver>,
-    inject_std: bool,
+    strict: bool,
 ) -> Result<SourceCollection, String> {
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut sources: Vec<(PathBuf, String)> = Vec::new();
@@ -97,20 +99,8 @@ fn collect_sources(
             &mut sources,
             &mut library_paths,
             resolver,
+            strict,
         )?;
-    }
-
-    if inject_std {
-        if let Some(std_spec) = resolver.and_then(|r| r.modules.get("std")) {
-            collect(
-                &std_spec.entry,
-                true,
-                &mut visited,
-                &mut sources,
-                &mut library_paths,
-                resolver,
-            )?;
-        }
     }
 
     Ok(SourceCollection {
@@ -360,6 +350,16 @@ fn find_builtin_std_root() -> Option<PathBuf> {
         }
     }
 
+    // Check ~/.void/std (Unix) or %USERPROFILE%/.void/std (Windows)
+    for home_var in &["HOME", "USERPROFILE"] {
+        if let Ok(home) = std::env::var(home_var) {
+            let home_path = PathBuf::from(home).join(".void").join("std");
+            if home_path.join("src").join("core.void").exists() {
+                return Some(home_path);
+            }
+        }
+    }
+
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std");
     if manifest_path.join("src").join("core.void").exists() {
         return Some(manifest_path);
@@ -413,6 +413,7 @@ fn collect(
     sources: &mut Vec<(PathBuf, String)>,
     library_paths: &mut HashSet<PathBuf>,
     resolver: Option<&ModuleResolver>,
+    strict: bool,
 ) -> Result<(), String> {
     let canonical = path
         .canonicalize()
@@ -425,7 +426,7 @@ fn collect(
     let src = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
 
-    for (dep, dep_is_lib) in local_import_paths(path, &src, resolver)? {
+    for (dep, dep_is_lib) in local_import_paths(path, &src, resolver, strict)? {
         collect(
             &dep,
             is_library || dep_is_lib,
@@ -433,6 +434,7 @@ fn collect(
             sources,
             library_paths,
             resolver,
+            strict,
         )?;
     }
 
@@ -449,6 +451,7 @@ fn local_import_paths(
     file: &Path,
     src: &str,
     resolver: Option<&ModuleResolver>,
+    strict: bool,
 ) -> Result<Vec<(PathBuf, bool)>, String> {
     let dir = file.parent().unwrap_or(Path::new("."));
 
@@ -474,19 +477,12 @@ fn local_import_paths(
         if let Some(mods) = resolver {
             if let Some(spec) = mods.modules.get(&base) {
                 if remainder.is_empty() && base == "std" {
-                    let mut targets = vec![spec.entry.clone()];
+                    // import std; — only load sub-modules actually used in source
                     for module in used_std_modules(src) {
                         let mut target = spec.src_dir.clone();
                         target.push(module);
                         target.set_extension("void");
-                        if target.exists() {
-                            targets.push(target);
-                        }
-                    }
-                    targets.sort();
-                    targets.dedup();
-                    for target in targets {
-                        if seen.insert(target.clone()) {
+                        if target.exists() && seen.insert(target.clone()) {
                             paths.push((target, true));
                         }
                     }
@@ -540,6 +536,53 @@ fn local_import_paths(
         let candidate = dir.join(format!("{}.void", base));
         if candidate.exists() && seen.insert(candidate.clone()) {
             paths.push((candidate, false)); // local file → not library
+        } else if !remainder.is_empty() {
+            // Progressive subfile resolution under a directory namespace.
+            // e.g. `import a.y` → try `a/y.void`, `import a.y.method` → `a/y/method.void` then `a/y.void`
+            let mut found = false;
+            for len in (1..=remainder.len()).rev() {
+                let mut sub = dir.join(&base);
+                for seg in &remainder[..len] {
+                    sub.push(seg);
+                }
+                sub.set_extension("void");
+                if sub.exists() && seen.insert(sub.clone()) {
+                    paths.push((sub, true)); // library = true
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                if strict {
+                    return Err(format!(
+                        "cannot resolve import '{}.{}': no such file",
+                        base,
+                        remainder.join(".")
+                    ));
+                }
+            }
+        } else {
+            // Directory namespace: import a; where a/ is a directory
+            let ns_dir = dir.join(&base);
+            if ns_dir.is_dir() {
+                let mut entries: Vec<_> = std::fs::read_dir(&ns_dir)
+                    .map_err(|e| format!("cannot read directory '{}': {}", ns_dir.display(), e))?
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|ext| ext == "void"))
+                    .collect();
+                entries.sort();
+                for f in entries {
+                    if seen.insert(f.clone()) {
+                        paths.push((f, true)); // library = true
+                    }
+                }
+            } else if strict {
+                return Err(format!(
+                    "cannot resolve import '{}': no such file or directory",
+                    base
+                ));
+            }
         }
     }
 
@@ -618,10 +661,14 @@ mod tests {
     }
 
     #[test]
-    fn injects_std_core_by_default() {
+    fn std_is_available_as_namespace_with_explicit_import() {
         let root = temp_dir("void_loader_std");
         let main_path = root.join("main.void");
-        fs::write(&main_path, "fn main() void { ret; }").expect("write main.void");
+        fs::write(
+            &main_path,
+            "import std.core.write;\nfn main() void { ret; }",
+        )
+        .expect("write main.void");
 
         let result = load_programs(&[main_path]).expect("load programs");
         assert!(
@@ -629,7 +676,7 @@ mod tests {
                 .library_file_paths
                 .iter()
                 .any(|p| p.ends_with(Path::new("src").join("core.void"))),
-            "expected std/src/core.void to be injected, got {:?}",
+            "expected std/src/core.void to be loaded via explicit import, got {:?}",
             result.library_file_paths
         );
         assert!(result.library_fn_names.contains("write"));

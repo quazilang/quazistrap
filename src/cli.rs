@@ -36,12 +36,18 @@ pub enum Command {
         /// explicit linker binary (overrides VOID_LINKER env var)
         #[arg(long = "linker")]
         linker: Option<PathBuf>,
+        /// strip debug symbols from the output binary
+        #[arg(short = 's', long = "strip")]
+        strip: bool,
     },
     /// build and run project (reads void.toml)
     Run {
         /// explicit linker binary
         #[arg(long = "linker")]
         linker: Option<PathBuf>,
+        /// strip debug symbols from the output binary
+        #[arg(short = 's', long = "strip")]
+        strip: bool,
     },
     /// check project without compiling (reads void.toml)
     Check,

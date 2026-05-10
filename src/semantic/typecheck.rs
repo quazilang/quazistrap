@@ -680,11 +680,16 @@ impl Analyzer {
                     };
 
                     if !matches!(sym.kind, SymbolKind::Function) {
-                        self.push_error(
-                            callee.span,
-                            "S04",
-                            format!("function '{}' does not exist", name),
-                        );
+                        let msg = if let Some(ref path) = sym.import_path {
+                            let module_path = path
+                                .rsplit_once('.')
+                                .map(|(prefix, _)| prefix.to_string())
+                                .unwrap_or_else(|| path.clone());
+                            format!("'{}' is not exported by '{}'", name, module_path)
+                        } else {
+                            format!("function '{}' does not exist", name)
+                        };
+                        self.push_error(callee.span, "S04", msg);
                         return ExprEval::default();
                     }
 
@@ -740,14 +745,16 @@ impl Analyzer {
                         .collect();
                     if let Some(sym) = self.resolve_symbol(method) {
                         if !matches!(sym.kind, SymbolKind::Function) {
-                            self.push_error(
-                                expr.span,
-                                "S04",
-                                format!("function '{}' does not exist", method),
-                            );
-                            ExprEval::default()
-                        } else if self.library_fn_names.contains(method.as_str()) && !sym.public {
-                            self.push_error(expr.span, "S04", format!("'{}' is private", method));
+                            let msg = if let Some(ref path) = sym.import_path {
+                                let module_path = path
+                                    .rsplit_once('.')
+                                    .map(|(prefix, _)| prefix.to_string())
+                                    .unwrap_or_else(|| path.clone());
+                                format!("'{}' is not exported by '{}'", method, module_path)
+                            } else {
+                                format!("function '{}' does not exist", method)
+                            };
+                            self.push_error(expr.span, "S04", msg);
                             ExprEval::default()
                         } else {
                             let sym = self
