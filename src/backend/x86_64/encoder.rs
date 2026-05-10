@@ -939,15 +939,22 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::StrLen) => {
-                let (dst, src, _) = instr.rrr();
-                if is_win64 {
-                    emit!(asm.mov(rcx, slot(src)));
-                } else {
-                    emit!(asm.mov(rdi, slot(src)));
-                }
-                call_ext!("strlen".into(), RelocKind::Plt32);
-                emit!(asm.mov(slot(dst), rax));
-            }
+    let (dst, src, _) = instr.rrr();
+    // inline strlen: scan bytes until null
+    let mut loop_lbl = asm.create_label();
+    let mut done_lbl = asm.create_label();
+    emit!(asm.mov(rax, slot(src)));         // rax = pointer
+    emit!(asm.xor(rcx, rcx));               // rcx = length = 0
+    emit!(asm.set_label(&mut loop_lbl));
+    emit!(asm.movzx(rdx, byte_ptr(rax)));   // rdx = *rax
+    emit!(asm.test(rdx, rdx));              // null?
+    emit!(asm.je(done_lbl));
+    emit!(asm.inc(rax));
+    emit!(asm.inc(rcx));
+    emit!(asm.jmp(loop_lbl));
+    emit!(asm.set_label(&mut done_lbl));
+    emit!(asm.mov(slot(dst), rcx));
+}
 
             Some(Opcode::StrToInt) => {
                 let (dst, src, _) = instr.rrr();

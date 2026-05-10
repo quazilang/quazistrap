@@ -78,7 +78,7 @@ impl SymbolTable {
             value: 0,
             size: 0,
             kind: SymbolKind::Text,
-            scope: SymbolScope::Linkage,
+            scope: SymbolScope::Dynamic,
             weak: false,
             section: SymbolSection::Undefined,
             flags: SymbolFlags::None,

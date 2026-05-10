@@ -88,18 +88,12 @@ impl LinkerInvocation {
                 args.push("-o".into());
                 args.push(self.output.as_os_str().into());
                 args.push(self.object.as_os_str().into());
-                args.push("-lc".into());
-                args.push("-lm".into());
-                if let Some(dl) = self.target.dynamic_linker() {
-                    args.push("--dynamic-linker".into());
-                    args.push(dl.into());
-                }
+                args.push("-L/usr/lib".into());
             }
             Os::MacOs => {
                 args.push("-o".into());
                 args.push(self.output.as_os_str().into());
                 args.push(self.object.as_os_str().into());
-                args.push("-lc".into());
                 args.push("-lm".into());
             }
             Os::Windows => {
