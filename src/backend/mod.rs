@@ -32,11 +32,7 @@ impl std::fmt::Display for BackendError {
 }
 
 pub trait Backend {
-    fn compile(
-        &self,
-        chunks: &[Chunk],
-        target: &TargetSpec,
-    ) -> Result<ObjectOutput, BackendError>;
+    fn compile(&self, chunks: &[Chunk], target: &TargetSpec) -> Result<ObjectOutput, BackendError>;
 }
 
 pub fn select_backend(_target: &TargetSpec) -> Box<dyn Backend> {

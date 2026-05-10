@@ -44,7 +44,10 @@ struct MoveEnv {
 
 impl MoveEnv {
     fn new() -> Self {
-        Self { scopes: vec![HashMap::new()], loop_depth: 0 }
+        Self {
+            scopes: vec![HashMap::new()],
+            loop_depth: 0,
+        }
     }
 
     fn enter_scope(&mut self) {
@@ -58,13 +61,22 @@ impl MoveEnv {
     fn declare(&mut self, name: String, ty: Option<TypeKind>) {
         let depth = self.loop_depth;
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, OwnedVar { ty, moved_at: None, loop_depth_at_decl: depth });
+            scope.insert(
+                name,
+                OwnedVar {
+                    ty,
+                    moved_at: None,
+                    loop_depth_at_decl: depth,
+                },
+            );
         }
     }
 
     fn lookup(&self, name: &str) -> Option<&OwnedVar> {
         for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.get(name) { return Some(v); }
+            if let Some(v) = scope.get(name) {
+                return Some(v);
+            }
         }
         None
     }
@@ -107,7 +119,11 @@ impl Analyzer {
     pub(super) fn run_borrow_check_pass(&mut self, program: &Program) {
         for item in &program.items {
             match &item.node {
-                ItemKind::Fn { params, body: Some(body), .. } => {
+                ItemKind::Fn {
+                    params,
+                    body: Some(body),
+                    ..
+                } => {
                     let mut env = MoveEnv::new();
                     for p in params {
                         env.declare(p.name.clone(), Some(p.ty.node.clone()));
@@ -116,7 +132,12 @@ impl Analyzer {
                 }
                 ItemKind::Impl { methods, .. } => {
                     for m in methods {
-                        if let ItemKind::Fn { params, body: Some(body), .. } = &m.node {
+                        if let ItemKind::Fn {
+                            params,
+                            body: Some(body),
+                            ..
+                        } = &m.node
+                        {
                             let mut env = MoveEnv::new();
                             for p in params {
                                 env.declare(p.name.clone(), Some(p.ty.node.clone()));
@@ -140,14 +161,18 @@ impl Analyzer {
 
     fn bc_stmt(&mut self, stmt: &Stmt, env: &mut MoveEnv) {
         match &stmt.node {
-            StmtKind::Var { name, ty, value, .. } => {
+            StmtKind::Var {
+                name, ty, value, ..
+            } => {
                 let var_ty = ty.as_ref().map(|t| t.node.clone());
                 if let Some(v) = value {
                     self.bc_expr(v, env, true);
                 }
                 env.declare(name.clone(), var_ty);
             }
-            StmtKind::Const { name, ty, value, .. } => {
+            StmtKind::Const {
+                name, ty, value, ..
+            } => {
                 let var_ty = ty.as_ref().map(|t| t.node.clone());
                 self.bc_expr(value, env, true);
                 env.declare(name.clone(), var_ty);
@@ -159,7 +184,11 @@ impl Analyzer {
             StmtKind::ExprStmt(expr) => {
                 self.bc_expr(expr, env, false);
             }
-            StmtKind::If { condition, then_block, else_block } => {
+            StmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.bc_expr(condition, env, false);
                 let mut then_env = env.clone();
                 self.bc_block(then_block, &mut then_env);
@@ -197,7 +226,11 @@ impl Analyzer {
                         }
                         loop_env.exit_scope();
                     }
-                    ForLoop::CStyle { init, condition, update } => {
+                    ForLoop::CStyle {
+                        init,
+                        condition,
+                        update,
+                    } => {
                         if let Some(init_stmt) = init {
                             self.bc_stmt(init_stmt, &mut loop_env);
                         }
@@ -237,7 +270,9 @@ impl Analyzer {
         match &expr.node {
             ExprKind::Ident(name) => {
                 let Some(var) = env.lookup(name) else { return };
-                if !var.is_move_type() { return; } // Copy type: no tracking needed.
+                if !var.is_move_type() {
+                    return;
+                } // Copy type: no tracking needed.
 
                 // Use-after-move check (both consuming and non-consuming reads).
                 if let Some(moved_at) = var.moved_at {

@@ -48,11 +48,7 @@ impl Parser {
         } else {
             Err(self.err_here_with_code(
                 "E02",
-                format!(
-                "expected {}, found {}",
-                expected,
-                self.peek_kind()
-                ),
+                format!("expected {}, found {}", expected, self.peek_kind()),
             ))
         }
     }
@@ -68,10 +64,10 @@ impl Parser {
     pub(crate) fn expect_ident_token(&mut self) -> Result<Token, String> {
         match self.peek_kind() {
             TokenKind::Ident(_) => Ok(self.advance()),
-            other => Err(self.err_here_with_code(
-                "E01",
-                format!("expected identifier, found '{}'", other),
-            )),
+            other => {
+                Err(self
+                    .err_here_with_code("E01", format!("expected identifier, found '{}'", other)))
+            }
         }
     }
 
@@ -124,25 +120,29 @@ impl Parser {
     }
 
     fn render_diagnostic(&self, code: &str, msg: String, span: TokenSpan) -> String {
-        let mut out = format!("error[{}]: {}\nat {}:{}", code, msg, span.line, span.col);
-
+        let mut out = format!(
+            "\x1b[1;31merror\x1b[0m\x1b[1m[{code}]\x1b[0m: {msg}\n  \x1b[1;34m-->\x1b[0m {line}:{col}",
+            line = span.line,
+            col = span.col
+        );
         if let Some(source) = &self.source {
             if let Some(line_text) = source.lines().nth(span.line.saturating_sub(1)) {
-                let line_no = span.line;
-                let line_no_width = line_no.to_string().len();
-                let caret_offset = span.col.saturating_sub(1);
-                let caret_width = (span.end.saturating_sub(span.start)).max(1);
-
-                out.push('\n');
-                out.push_str(&format!("{} | {}", line_no, line_text));
-                out.push('\n');
-                out.push_str(&" ".repeat(line_no_width));
-                out.push_str(" | ");
-                out.push_str(&" ".repeat(caret_offset));
-                out.push_str(&"^".repeat(caret_width));
+                let lnum = span.line.to_string();
+                let w = lnum.len();
+                let blank = " ".repeat(w);
+                let caret_off = span.col.saturating_sub(1);
+                let caret_w = (span.end.saturating_sub(span.start)).max(1);
+                out.push_str(&format!("\n{blank} \x1b[1;34m|\x1b[0m"));
+                out.push_str(&format!(
+                    "\n\x1b[1;34m{lnum}\x1b[0m \x1b[1;34m|\x1b[0m {line_text}"
+                ));
+                out.push_str(&format!(
+                    "\n{blank} \x1b[1;34m|\x1b[0m {}\x1b[1;31m{}\x1b[0m",
+                    " ".repeat(caret_off),
+                    "^".repeat(caret_w)
+                ));
             }
         }
-
         out
     }
 

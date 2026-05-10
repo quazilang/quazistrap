@@ -16,7 +16,10 @@ pub struct SymbolTable {
 
 impl SymbolTable {
     pub fn new() -> Self {
-        Self { defined: HashMap::new(), undefined: HashMap::new() }
+        Self {
+            defined: HashMap::new(),
+            undefined: HashMap::new(),
+        }
     }
 
     /// Register a global function symbol in the .text section.
@@ -75,7 +78,7 @@ impl SymbolTable {
             value: 0,
             size: 0,
             kind: SymbolKind::Text,
-            scope: SymbolScope::Linkage,
+            scope: SymbolScope::Dynamic,
             weak: false,
             section: SymbolSection::Undefined,
             flags: SymbolFlags::None,

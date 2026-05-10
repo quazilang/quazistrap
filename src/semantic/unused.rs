@@ -59,10 +59,7 @@ impl Analyzer {
 
             if symbol.is_import {
                 if include_imports {
-                    let full = symbol
-                        .import_path
-                        .clone()
-                        .unwrap_or_else(|| name.clone());
+                    let full = symbol.import_path.clone().unwrap_or_else(|| name.clone());
                     self.unused_import_paths.insert(full.clone());
                     self.push_warning_with_suggestion(
                         symbol.span,
@@ -97,7 +94,10 @@ impl Analyzer {
                     }
                 }
                 SymbolKind::Function => {
-                    if include_functions && name != "main" && !should_ignore_warning(&symbol.attributes, "W03") {
+                    if include_functions
+                        && name != "main"
+                        && !should_ignore_warning(&symbol.attributes, "W03")
+                    {
                         self.push_warning_with_suggestion(
                             symbol.span,
                             "W03",
@@ -114,12 +114,17 @@ impl Analyzer {
     pub(super) fn run_dead_code_pass(&mut self, program: &Program) {
         for item in &program.items {
             match &item.node {
-                ItemKind::Fn { body: Some(body), .. } => {
+                ItemKind::Fn {
+                    body: Some(body), ..
+                } => {
                     let _ = self.dead_code_block(body);
                 }
                 ItemKind::Impl { methods, .. } => {
                     for method in methods {
-                        if let ItemKind::Fn { body: Some(body), .. } = &method.node {
+                        if let ItemKind::Fn {
+                            body: Some(body), ..
+                        } = &method.node
+                        {
                             let _ = self.dead_code_block(body);
                         }
                     }
@@ -170,7 +175,11 @@ impl Analyzer {
                 then_returns && else_returns
             }
             StmtKind::For { body, kind } => {
-                if let ForLoop::CStyle { init: Some(init_stmt), .. } = kind {
+                if let ForLoop::CStyle {
+                    init: Some(init_stmt),
+                    ..
+                } = kind
+                {
                     let _ = self.dead_code_stmt(init_stmt);
                 }
                 let _ = self.dead_code_block(body);

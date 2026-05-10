@@ -8,10 +8,10 @@ pub mod sections;
 pub mod start;
 pub mod symbols;
 
-use object::write::Object;
 use object::Endianness;
+use object::write::Object;
 
-use crate::backend::{target::Os, Backend, BackendError, ObjectFormat, ObjectOutput, TargetSpec};
+use crate::backend::{Backend, BackendError, ObjectFormat, ObjectOutput, TargetSpec, target::Os};
 use crate::bytecode::Chunk;
 
 use encoder::FnEncoder;
@@ -22,7 +22,13 @@ use symbols::SymbolTable;
 
 fn safe_label(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

@@ -4,10 +4,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::parser::ast::*;
-use crate::semantic::{ConstValue, DependencyKind, SemanticReport};
 use super::instruction::{mem_lea, mem_load, mem_store, ri16, rrr};
 use super::{Chunk, ConstPoolEntry, Opcode};
+use crate::parser::ast::*;
+use crate::semantic::{ConstValue, DependencyKind, SemanticReport};
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -15,15 +15,21 @@ pub struct Codegen<'a> {
     report: &'a SemanticReport,
     fn_index: HashMap<String, u16>,
     const_map: HashMap<(usize, usize), ConstValue>,
+    type_map: HashMap<(usize, usize), TypeKind>,
     import_names: HashSet<String>,
 }
 
 impl<'a> Codegen<'a> {
     pub fn new(report: &'a SemanticReport) -> Self {
         let mut const_map = HashMap::new();
+        let mut type_map = HashMap::new();
         for ann in &report.annotated_exprs {
+            let key = (ann.span.start, ann.span.end);
             if let Some(cv) = &ann.const_value {
-                const_map.insert((ann.span.start, ann.span.end), cv.clone());
+                const_map.insert(key, cv.clone());
+            }
+            if let Some(ty) = &ann.ty {
+                type_map.insert(key, ty.clone());
             }
         }
         let mut import_names = HashSet::new();
@@ -32,13 +38,21 @@ impl<'a> Codegen<'a> {
                 import_names.insert(entry.name.clone());
             }
         }
-        Self { report, fn_index: HashMap::new(), const_map, import_names }
+        Self {
+            report,
+            fn_index: HashMap::new(),
+            const_map,
+            type_map,
+            import_names,
+        }
     }
 
     pub fn compile_program(&mut self, program: &Program) -> Vec<Chunk> {
         // Compute the set of functions reachable from main via the call graph.
         // Library mode (no main) compiles everything.
-        let has_main = program.items.iter()
+        let has_main = program
+            .items
+            .iter()
             .any(|item| matches!(&item.node, ItemKind::Fn { name, .. } if name == "main"));
 
         let reachable: Option<std::collections::HashSet<String>> = if has_main {
@@ -59,9 +73,8 @@ impl<'a> Codegen<'a> {
             None
         };
 
-        let is_live = |name: &str| -> bool {
-            reachable.as_ref().map_or(true, |r| r.contains(name))
-        };
+        let is_live =
+            |name: &str| -> bool { reachable.as_ref().map_or(true, |r| r.contains(name)) };
 
         // Pass 1: assign each live function a table index.
         let mut idx = 0u16;
@@ -77,9 +90,21 @@ impl<'a> Codegen<'a> {
         // Pass 2: compile each live function body.
         let mut chunks = Vec::new();
         for item in &program.items {
-            if let ItemKind::Fn { name, params, body, attributes, .. } = &item.node {
+            if let ItemKind::Fn {
+                name,
+                params,
+                body,
+                attributes,
+                ..
+            } = &item.node
+            {
                 if is_live(name) {
-                    if let Some(chunk) = self.compile_fn(name, params, body.as_ref().map(|b| b as &Block), attributes) {
+                    if let Some(chunk) = self.compile_fn(
+                        name,
+                        params,
+                        body.as_ref().map(|b| b as &Block),
+                        attributes,
+                    ) {
                         chunks.push(chunk);
                     }
                 }
@@ -87,7 +112,8 @@ impl<'a> Codegen<'a> {
         }
 
         // Post-pass: inline small functions that are inline candidates.
-        let inline_set: std::collections::HashSet<String> = self.report
+        let inline_set: std::collections::HashSet<String> = self
+            .report
             .inline_candidates
             .iter()
             .map(|c| c.name.clone())
@@ -102,29 +128,42 @@ impl<'a> Codegen<'a> {
                 .collect();
 
             // Build reverse index: fn_idx -> name
-            let idx_to_name: std::collections::HashMap<u16, String> = self.fn_index
-                .iter()
-                .map(|(k, &v)| (v, k.clone()))
-                .collect();
+            let idx_to_name: std::collections::HashMap<u16, String> =
+                self.fn_index.iter().map(|(k, &v)| (v, k.clone())).collect();
 
             for chunk in &mut chunks {
                 let mut i = 0;
                 while i < chunk.code.len() {
                     let instr = chunk.code[i];
-                    if instr.opcode != Opcode::CallIdx as u8 { i += 1; continue; }
+                    if instr.opcode != Opcode::CallIdx as u8 {
+                        i += 1;
+                        continue;
+                    }
 
                     let (dst, fn_idx) = instr.ri16();
-                    let Some(callee_name) = idx_to_name.get(&fn_idx) else { i += 1; continue; };
-                    let Some(callee) = callee_map.get(callee_name) else { i += 1; continue; };
+                    let Some(callee_name) = idx_to_name.get(&fn_idx) else {
+                        i += 1;
+                        continue;
+                    };
+                    let Some(callee) = callee_map.get(callee_name) else {
+                        i += 1;
+                        continue;
+                    };
 
                     // Collect preceding CallArg instructions.
                     let arg_count = callee.param_count;
-                    if i < arg_count { i += 1; continue; }
+                    if i < arg_count {
+                        i += 1;
+                        continue;
+                    }
                     let call_start = i - arg_count;
                     let all_callargs = chunk.code[call_start..i]
                         .iter()
                         .all(|ins| ins.opcode == Opcode::CallArg as u8);
-                    if !all_callargs { i += 1; continue; }
+                    if !all_callargs {
+                        i += 1;
+                        continue;
+                    }
 
                     let arg_regs: Vec<u8> = chunk.code[call_start..i]
                         .iter()
@@ -146,7 +185,12 @@ impl<'a> Codegen<'a> {
                     }
 
                     // Remap callee body, drop final Ret.
-                    let body: &[_] = if callee.code.last().map(|x| x.opcode == Opcode::Ret as u8).unwrap_or(false) {
+                    let body: &[_] = if callee
+                        .code
+                        .last()
+                        .map(|x| x.opcode == Opcode::Ret as u8)
+                        .unwrap_or(false)
+                    {
                         &callee.code[..callee.code.len() - 1]
                     } else {
                         &callee.code[..]
@@ -287,6 +331,7 @@ struct FnCompiler<'a> {
     next_reg: u8,
     fn_index: &'a HashMap<String, u16>,
     const_map: &'a HashMap<(usize, usize), ConstValue>,
+    // type_map: &'a HashMap<(usize, usize), TypeKind>,
     import_names: &'a HashSet<String>,
 }
 
@@ -296,6 +341,7 @@ impl<'a> FnCompiler<'a> {
         param_count: usize,
         fn_index: &'a HashMap<String, u16>,
         const_map: &'a HashMap<(usize, usize), ConstValue>,
+        // type_map: &'a HashMap<(usize, usize), TypeKind>,
         import_names: &'a HashSet<String>,
     ) -> Self {
         Self {
@@ -304,6 +350,7 @@ impl<'a> FnCompiler<'a> {
             next_reg: 0,
             fn_index,
             const_map,
+            // type_map,
             import_names,
         }
     }
@@ -374,7 +421,11 @@ impl<'a> FnCompiler<'a> {
                     false
                 }
             }
-            StmtKind::If { condition, then_block, else_block } => {
+            StmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 // Constant-condition elimination: skip the dead branch entirely.
                 let cond_key = (condition.span.start, condition.span.end);
                 if let Some(ConstValue::Bool(b)) = self.const_map.get(&cond_key).cloned() {
@@ -410,10 +461,14 @@ impl<'a> FnCompiler<'a> {
                         self.compile_block(body);
                         self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
                     }
-                    ForLoop::Cond { condition: Some(condition) } => {
+                    ForLoop::Cond {
+                        condition: Some(condition),
+                    } => {
                         // While-like loop.
                         let cond_key = (condition.span.start, condition.span.end);
-                        if let Some(ConstValue::Bool(false)) = self.const_map.get(&cond_key).cloned() {
+                        if let Some(ConstValue::Bool(false)) =
+                            self.const_map.get(&cond_key).cloned()
+                        {
                             return false;
                         }
                         let loop_top = self.chunk.len() as u16;
@@ -422,7 +477,11 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
                         self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
                     }
-                    ForLoop::CStyle { init, condition, update } => {
+                    ForLoop::CStyle {
+                        init,
+                        condition,
+                        update,
+                    } => {
                         if let Some(init_stmt) = init {
                             self.compile_stmt(init_stmt);
                         }
@@ -441,37 +500,35 @@ impl<'a> FnCompiler<'a> {
                             self.chunk.patch_jump(je, self.chunk.len() as u16);
                         }
                     }
-                    ForLoop::Each { vars, iter } => {
-                        match iter {
-                            ForIter::Range { start, end } => {
-                                let loop_var = vars.first().map(|s| s.as_str()).unwrap_or("_");
-                                let r_i = self.bind(loop_var.to_string());
-                                let r_start = self.compile_expr(start);
-                                if r_start != r_i {
-                                    self.chunk.emit(rrr(Opcode::Mov, r_i, r_start, 0));
-                                }
-                                let r_end = self.compile_expr(end);
-                                let loop_top = self.chunk.len() as u16;
-                                self.chunk.emit(rrr(Opcode::Cmp, 0, r_i, r_end));
-                                let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
-                                self.compile_block(body);
-                                self.chunk.emit(rrr(Opcode::Inc, r_i, r_i, 0));
-                                self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
-                                self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
+                    ForLoop::Each { vars, iter } => match iter {
+                        ForIter::Range { start, end } => {
+                            let loop_var = vars.first().map(|s| s.as_str()).unwrap_or("_");
+                            let r_i = self.bind(loop_var.to_string());
+                            let r_start = self.compile_expr(start);
+                            if r_start != r_i {
+                                self.chunk.emit(rrr(Opcode::Mov, r_i, r_start, 0));
                             }
-                            ForIter::Iter(expr) => {
-                                let r_iter = self.compile_expr(expr);
-                                for var in vars.iter() {
-                                    self.bind(var.clone());
-                                }
-                                let loop_top = self.chunk.len() as u16;
-                                let jump_exit = self.chunk.emit(ri16(Opcode::Jz, r_iter, 0));
-                                self.compile_block(body);
-                                self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
-                                self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
-                            }
+                            let r_end = self.compile_expr(end);
+                            let loop_top = self.chunk.len() as u16;
+                            self.chunk.emit(rrr(Opcode::Cmp, 0, r_i, r_end));
+                            let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
+                            self.compile_block(body);
+                            self.chunk.emit(rrr(Opcode::Inc, r_i, r_i, 0));
+                            self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
+                            self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
                         }
-                    }
+                        ForIter::Iter(expr) => {
+                            let r_iter = self.compile_expr(expr);
+                            for var in vars.iter() {
+                                self.bind(var.clone());
+                            }
+                            let loop_top = self.chunk.len() as u16;
+                            let jump_exit = self.chunk.emit(ri16(Opcode::Jz, r_iter, 0));
+                            self.compile_block(body);
+                            self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
+                            self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
+                        }
+                    },
                 }
                 false
             }
@@ -489,19 +546,25 @@ impl<'a> FnCompiler<'a> {
     /// Returns the index of the emitted jump instruction (caller must patch).
     fn compile_condition_jump(&mut self, expr: &Expr, jump_if_false: bool) -> usize {
         match &expr.node {
-            ExprKind::Binary { left, op, right }
-                if is_comparison(op) =>
-            {
+            ExprKind::Binary { left, op, right } if is_comparison(op) => {
                 let r1 = self.compile_expr(left);
                 let r2 = self.compile_expr(right);
                 self.chunk.emit(rrr(Opcode::Cmp, 0, r1, r2));
-                let jop = if jump_if_false { negate_cmp(op) } else { direct_cmp(op) };
+                let jop = if jump_if_false {
+                    negate_cmp(op)
+                } else {
+                    direct_cmp(op)
+                };
                 self.chunk.emit(ri16(jop, 0, 0))
             }
             ExprKind::Group(inner) => self.compile_condition_jump(inner, jump_if_false),
             _ => {
                 let r = self.compile_expr(expr);
-                let jop = if jump_if_false { Opcode::Jz } else { Opcode::Jnz };
+                let jop = if jump_if_false {
+                    Opcode::Jz
+                } else {
+                    Opcode::Jnz
+                };
                 // ri16 layout: ops[0]=register, ops[1..2]=target (patched later)
                 self.chunk.emit(ri16(jop, r, 0))
             }
@@ -548,37 +611,39 @@ impl<'a> FnCompiler<'a> {
 
             ExprKind::Group(inner) => self.compile_expr(inner),
 
-            ExprKind::Unary { op, expr: inner } => {
-                match op {
-                    UnaryOpKind::Ref => {
-                        let src = self.compile_expr(inner);
-                        let dst = self.alloc_reg();
-                        self.chunk.emit(mem_lea(src, dst, 0));
-                        dst
-                    }
-                    UnaryOpKind::Deref => {
-                        let ptr = self.compile_expr(inner);
-                        let dst = self.alloc_reg();
-                        self.chunk.emit(mem_load(ptr, dst, 0));
-                        dst
-                    }
-                    UnaryOpKind::Neg => {
-                        let src = self.compile_expr(inner);
-                        let dst = self.alloc_reg();
-                        self.chunk.emit(rrr(Opcode::Neg, dst, src, 0));
-                        dst
-                    }
-                    UnaryOpKind::Not => {
-                        let src = self.compile_expr(inner);
-                        let dst = self.alloc_reg();
-                        self.chunk.emit(rrr(Opcode::Not, dst, src, 0));
-                        dst
-                    }
+            ExprKind::Unary { op, expr: inner } => match op {
+                UnaryOpKind::Ref => {
+                    let src = self.compile_expr(inner);
+                    let dst = self.alloc_reg();
+                    self.chunk.emit(mem_lea(src, dst, 0));
+                    dst
                 }
-            }
+                UnaryOpKind::Deref => {
+                    let ptr = self.compile_expr(inner);
+                    let dst = self.alloc_reg();
+                    self.chunk.emit(mem_load(ptr, dst, 0));
+                    dst
+                }
+                UnaryOpKind::Neg => {
+                    let src = self.compile_expr(inner);
+                    let dst = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Neg, dst, src, 0));
+                    dst
+                }
+                UnaryOpKind::Not => {
+                    let src = self.compile_expr(inner);
+                    let dst = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Not, dst, src, 0));
+                    dst
+                }
+            },
 
             // Short-circuit logical ops — lazy right evaluation.
-            ExprKind::Binary { left, op: BinOpKind::AndAnd, right } => {
+            ExprKind::Binary {
+                left,
+                op: BinOpKind::AndAnd,
+                right,
+            } => {
                 let r1 = self.compile_expr(left);
                 let dst = self.alloc_reg();
                 let false_idx = self.chunk.emit(ri16(Opcode::Jz, r1, 0));
@@ -591,7 +656,11 @@ impl<'a> FnCompiler<'a> {
                 self.chunk.patch_jump(end_idx, self.chunk.len() as u16);
                 dst
             }
-            ExprKind::Binary { left, op: BinOpKind::OrOr, right } => {
+            ExprKind::Binary {
+                left,
+                op: BinOpKind::OrOr,
+                right,
+            } => {
                 let r1 = self.compile_expr(left);
                 let dst = self.alloc_reg();
                 let true_idx = self.chunk.emit(ri16(Opcode::Jnz, r1, 0));
@@ -610,11 +679,21 @@ impl<'a> FnCompiler<'a> {
                 let r2 = self.compile_expr(right);
                 let dst = self.alloc_reg();
                 match op {
-                    BinOpKind::Add => { self.chunk.emit(rrr(Opcode::Add, dst, r1, r2)); }
-                    BinOpKind::Sub => { self.chunk.emit(rrr(Opcode::Sub, dst, r1, r2)); }
-                    BinOpKind::Mul => { self.chunk.emit(rrr(Opcode::Mul, dst, r1, r2)); }
-                    BinOpKind::Div => { self.chunk.emit(rrr(Opcode::Div, dst, r1, r2)); }
-                    BinOpKind::Mod => { self.chunk.emit(rrr(Opcode::Mod, dst, r1, r2)); }
+                    BinOpKind::Add => {
+                        self.chunk.emit(rrr(Opcode::Add, dst, r1, r2));
+                    }
+                    BinOpKind::Sub => {
+                        self.chunk.emit(rrr(Opcode::Sub, dst, r1, r2));
+                    }
+                    BinOpKind::Mul => {
+                        self.chunk.emit(rrr(Opcode::Mul, dst, r1, r2));
+                    }
+                    BinOpKind::Div => {
+                        self.chunk.emit(rrr(Opcode::Div, dst, r1, r2));
+                    }
+                    BinOpKind::Mod => {
+                        self.chunk.emit(rrr(Opcode::Mod, dst, r1, r2));
+                    }
                     // Comparisons: materialize bool result into dst.
                     _ if is_comparison(op) => {
                         self.chunk.emit(rrr(Opcode::Cmp, 0, r1, r2));
@@ -623,9 +702,13 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.emit(ri16(Opcode::MovI, dst, 0));
                         self.chunk.patch_jump(skip, self.chunk.len() as u16);
                     }
-                    BinOpKind::Pow => { self.chunk.emit(rrr(Opcode::Pow, dst, r1, r2)); }
+                    BinOpKind::Pow => {
+                        self.chunk.emit(rrr(Opcode::Pow, dst, r1, r2));
+                    }
                     BinOpKind::AndAnd | BinOpKind::OrOr => unreachable!(),
-                    _ => { self.chunk.emit(rrr(Opcode::Add, dst, r1, r2)); } // fallback
+                    _ => {
+                        self.chunk.emit(rrr(Opcode::Add, dst, r1, r2));
+                    } // fallback
                 }
                 dst
             }
@@ -640,7 +723,10 @@ impl<'a> FnCompiler<'a> {
                         }
                         dst
                     }
-                    ExprKind::Unary { op: UnaryOpKind::Deref, expr: ptr_expr } => {
+                    ExprKind::Unary {
+                        op: UnaryOpKind::Deref,
+                        expr: ptr_expr,
+                    } => {
                         let ptr = self.compile_expr(ptr_expr);
                         self.chunk.emit(mem_store(ptr, src, 0));
                         src
@@ -667,7 +753,9 @@ impl<'a> FnCompiler<'a> {
                 }
             }
 
-            ExprKind::IncDec { expr: inner, op, .. } => {
+            ExprKind::IncDec {
+                expr: inner, op, ..
+            } => {
                 if let ExprKind::Ident(name) = &inner.node {
                     let r = self.reg_of(name);
                     let opcode = match op {
@@ -690,7 +778,12 @@ impl<'a> FnCompiler<'a> {
                 dst
             }
 
-            ExprKind::MethodCall { object, method, type_args, args } => {
+            ExprKind::MethodCall {
+                object,
+                method,
+                type_args,
+                args,
+            } => {
                 if self.is_module_import_receiver(object) {
                     let arg_regs: Vec<u8> = args.iter().map(|a| self.compile_expr(a)).collect();
                     let dst = self.alloc_reg();
@@ -729,7 +822,7 @@ impl<'a> FnCompiler<'a> {
                     self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
                 }
                 let vtbl = self.alloc_reg();
-                let dst  = self.alloc_reg();
+                let dst = self.alloc_reg();
                 self.chunk.emit(rrr(Opcode::VtblLoad, vtbl, obj, 0));
                 self.chunk.emit(rrr(Opcode::CallReg, dst, vtbl, 0));
                 dst
@@ -873,24 +966,45 @@ impl<'a> FnCompiler<'a> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn remap_instr_regs(instr: &mut crate::bytecode::instruction::Instruction, remap: impl Fn(u8) -> u8) {
+fn remap_instr_regs(
+    instr: &mut crate::bytecode::instruction::Instruction,
+    remap: impl Fn(u8) -> u8,
+) {
     use crate::bytecode::opcode::Opcode;
-    let Some(op) = Opcode::from_u8(instr.opcode) else { return; };
+    let Some(op) = Opcode::from_u8(instr.opcode) else {
+        return;
+    };
     match op {
         // No-op / no regs
-        Opcode::Nop | Opcode::Ret | Opcode::MemFence | Opcode::Jmp
-        | Opcode::Je | Opcode::Jne | Opcode::Jg | Opcode::Jge | Opcode::Jl | Opcode::Jle
-        | Opcode::Ja | Opcode::Jb => {}
+        Opcode::Nop
+        | Opcode::Ret
+        | Opcode::MemFence
+        | Opcode::Jmp
+        | Opcode::Je
+        | Opcode::Jne
+        | Opcode::Jg
+        | Opcode::Jge
+        | Opcode::Jl
+        | Opcode::Jle
+        | Opcode::Ja
+        | Opcode::Jb => {}
 
         // RI16 — ops[0]=dst only
-        Opcode::MovI | Opcode::MovConst | Opcode::CallIdx | Opcode::CallExt | Opcode::Syscall
-        | Opcode::New | Opcode::NewObj => {
+        Opcode::MovI
+        | Opcode::MovConst
+        | Opcode::CallIdx
+        | Opcode::CallExt
+        | Opcode::Syscall
+        | Opcode::New
+        | Opcode::NewObj => {
             instr.ops[0] = remap(instr.ops[0]);
         }
 
         // Jz/Jnz: ops[0] may be a register (or 0 for flag-only)
         Opcode::Jz | Opcode::Jnz => {
-            if instr.ops[0] != 0 { instr.ops[0] = remap(instr.ops[0]); }
+            if instr.ops[0] != 0 {
+                instr.ops[0] = remap(instr.ops[0]);
+            }
         }
 
         // CallArg / Drop — single reg
@@ -933,34 +1047,45 @@ fn extract_field_chain(expr: &Expr) -> Option<(String, Vec<String>)> {
 }
 
 fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> u16 {
-    let name = attr.args.first().and_then(|a| match a {
-        crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => Some(s.as_str()),
-        _ => None,
-    }).unwrap_or("");
+    let name = attr
+        .args
+        .first()
+        .and_then(|a| match a {
+            crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => {
+                Some(s.as_str())
+            }
+            _ => None,
+        })
+        .unwrap_or("");
     match name {
-        "void.write"        => 0,
-        "void.read"         => 1,
-        "void.exit"         => 2,
-        "void.malloc"       => 3,
-        "void.free"         => 4,
-        "void.realloc"      => 5,
-        "void.memcpy"       => 6,
-        "void.memset"       => 7,
-        "void.memmove"      => 8,
-        "void.memcmp"       => 9,
-        "void.strlen"       => 10,
+        "void.write" => 0,
+        "void.read" => 1,
+        "void.exit" => 2,
+        "void.malloc" => 3,
+        "void.free" => 4,
+        "void.realloc" => 5,
+        "void.memcpy" => 6,
+        "void.memset" => 7,
+        "void.memmove" => 8,
+        "void.memcmp" => 9,
+        "void.strlen" => 10,
         "void.stderr_write" => 11,
-        "void.sleep_ms"     => 12,
-        "void.getenv"       => 13,
-        _                   => 0,
+        "void.sleep_ms" => 12,
+        "void.getenv" => 13,
+        _ => 0,
     }
 }
 
 fn api_symbol(attr: &crate::parser::ast::Attribute) -> String {
-    attr.args.first().and_then(|a| match a {
-        crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => Some(s.clone()),
-        _ => None,
-    }).unwrap_or_default()
+    attr.args
+        .first()
+        .and_then(|a| match a {
+            crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => {
+                Some(s.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn cfg_condition_matches(attr: &crate::parser::ast::Attribute) -> bool {
@@ -991,26 +1116,26 @@ fn is_comparison(op: &BinOpKind) -> bool {
 /// Conditional jump opcode that fires when the comparison is TRUE.
 fn direct_cmp(op: &BinOpKind) -> Opcode {
     match op {
-        BinOpKind::Lt    => Opcode::Jl,
-        BinOpKind::LtEq  => Opcode::Jle,
-        BinOpKind::Gt    => Opcode::Jg,
-        BinOpKind::GtEq  => Opcode::Jge,
-        BinOpKind::EqEq  => Opcode::Je,
+        BinOpKind::Lt => Opcode::Jl,
+        BinOpKind::LtEq => Opcode::Jle,
+        BinOpKind::Gt => Opcode::Jg,
+        BinOpKind::GtEq => Opcode::Jge,
+        BinOpKind::EqEq => Opcode::Je,
         BinOpKind::NotEq => Opcode::Jne,
-        _                => Opcode::Jnz,
+        _ => Opcode::Jnz,
     }
 }
 
 /// Conditional jump opcode that fires when the comparison is FALSE (negated).
 fn negate_cmp(op: &BinOpKind) -> Opcode {
     match op {
-        BinOpKind::Lt    => Opcode::Jge,
-        BinOpKind::LtEq  => Opcode::Jg,
-        BinOpKind::Gt    => Opcode::Jle,
-        BinOpKind::GtEq  => Opcode::Jl,
-        BinOpKind::EqEq  => Opcode::Jne,
+        BinOpKind::Lt => Opcode::Jge,
+        BinOpKind::LtEq => Opcode::Jg,
+        BinOpKind::Gt => Opcode::Jle,
+        BinOpKind::GtEq => Opcode::Jl,
+        BinOpKind::EqEq => Opcode::Jne,
         BinOpKind::NotEq => Opcode::Je,
-        _                => Opcode::Jz,
+        _ => Opcode::Jz,
     }
 }
 
@@ -1027,7 +1152,11 @@ mod tests {
         let tokens = Lexer::new(src).tokenize();
         let program = Parser::new(tokens).parse().expect("parse failed");
         let report = Analyzer::new().analyze_program(&program);
-        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
         Codegen::new(&report).compile_program(&program)
     }
 
@@ -1081,7 +1210,10 @@ mod tests {
 
         // Its target must be instruction 0 (loop_top = 0).
         let (_, target) = code[back_jmp].ri16();
-        assert_eq!(target, 0, "back-edge Jmp must target instruction 0 (loop top)");
+        assert_eq!(
+            target, 0,
+            "back-edge Jmp must target instruction 0 (loop top)"
+        );
     }
 
     #[test]
@@ -1100,8 +1232,15 @@ mod tests {
             let is_jump = matches!(
                 Opcode::from_u8(op),
                 Some(
-                    Opcode::Jmp | Opcode::Je | Opcode::Jne | Opcode::Jl | Opcode::Jle |
-                    Opcode::Jg | Opcode::Jge | Opcode::Jz | Opcode::Jnz
+                    Opcode::Jmp
+                        | Opcode::Je
+                        | Opcode::Jne
+                        | Opcode::Jl
+                        | Opcode::Jle
+                        | Opcode::Jg
+                        | Opcode::Jge
+                        | Opcode::Jz
+                        | Opcode::Jnz
                 )
             );
             if is_jump {
@@ -1109,7 +1248,8 @@ mod tests {
                 assert!(
                     target <= len,
                     "jump target {} out of bounds (chunk has {} instructions)",
-                    target, len
+                    target,
+                    len
                 );
             }
         }
@@ -1122,9 +1262,15 @@ mod tests {
             r#"fn helper(x: i32) i32 { const a: i32 = 1; const b: i32 = 2; ret x; }
                fn main() void { helper(1); }"#,
         );
-        let main_chunk = chunks.iter().find(|c| c.name == "main").expect("no main chunk");
+        let main_chunk = chunks
+            .iter()
+            .find(|c| c.name == "main")
+            .expect("no main chunk");
         assert!(
-            main_chunk.code.iter().any(|i| i.opcode == Opcode::CallIdx as u8),
+            main_chunk
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::CallIdx as u8),
             "expected CallIdx in main"
         );
     }
@@ -1176,9 +1322,15 @@ mod tests {
     #[test]
     fn large_int_goes_to_constant_pool() {
         let chunks = compile("fn big() i32 { ret 100000; }");
-        assert!(!chunks[0].constants.is_empty(), "100000 should be in constant pool");
         assert!(
-            chunks[0].code.iter().any(|i| i.opcode == Opcode::MovConst as u8),
+            !chunks[0].constants.is_empty(),
+            "100000 should be in constant pool"
+        );
+        assert!(
+            chunks[0]
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::MovConst as u8),
             "expected MovConst for large literal"
         );
     }
@@ -1204,17 +1356,24 @@ mod tests {
         // const-folded 0 - 1 produces ConstValue::Int(-1) which must use MovConst not MovI
         let chunks = compile("fn neg() i32 { const x: i32 = 0 - 1; ret x; }");
         assert!(
-            chunks[0].code.iter().any(|i| i.opcode == Opcode::MovConst as u8),
+            chunks[0]
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::MovConst as u8),
             "negative constant should be in constant pool"
         );
     }
 
     #[test]
     fn syscall_attribute_emits_syscall_opcode() {
-        let chunks = compile(r#"@syscall("write") fn write(fd: i32, buf: str, len: usize) isize { }"#);
+        let chunks =
+            compile(r#"@syscall("write") fn write(fd: i32, buf: str, len: usize) isize { }"#);
         assert_eq!(chunks[0].name, "write");
         assert!(
-            chunks[0].code.iter().any(|i| i.opcode == Opcode::Syscall as u8),
+            chunks[0]
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::Syscall as u8),
             "expected Syscall instruction for @syscall fn"
         );
         assert_eq!(chunks[0].code.last().unwrap().opcode, Opcode::Ret as u8);
@@ -1231,7 +1390,10 @@ mod tests {
         // Numeric syscall id is stored in the const pool, ri16 gives the pool index.
         let (_, idx) = instr.ri16();
         assert!(
-            matches!(chunks[0].constants.get(idx as usize), Some(ConstPoolEntry::Int(60))),
+            matches!(
+                chunks[0].constants.get(idx as usize),
+                Some(ConstPoolEntry::Int(60))
+            ),
             "expected Int(60) in const pool at index {idx}"
         );
         assert_eq!(instr.flags, 1);
@@ -1248,7 +1410,10 @@ mod tests {
             "expected CallExt instruction for @api fn"
         );
         assert!(
-            chunk.constants.iter().any(|c| matches!(c, ConstPoolEntry::Str(s) if s == "WriteFile")),
+            chunk
+                .constants
+                .iter()
+                .any(|c| matches!(c, ConstPoolEntry::Str(s) if s == "WriteFile")),
             "expected WriteFile in constant pool"
         );
     }
@@ -1257,7 +1422,10 @@ mod tests {
     fn str_len_emits_strlen_opcode() {
         let chunks = compile(r#"fn f(s: str) any { ret s.len(); }"#);
         assert!(
-            chunks[0].code.iter().any(|i| i.opcode == Opcode::StrLen as u8),
+            chunks[0]
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::StrLen as u8),
             "s.len() should emit StrLen"
         );
     }
@@ -1272,11 +1440,17 @@ mod tests {
         );
         let main_chunk = chunks.iter().find(|c| c.name == "main").unwrap();
         assert!(
-            main_chunk.code.iter().any(|i| i.opcode == Opcode::CallArg as u8),
+            main_chunk
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::CallArg as u8),
             "method call with args should emit CallArg"
         );
         assert!(
-            main_chunk.code.iter().any(|i| i.opcode == Opcode::VtblLoad as u8),
+            main_chunk
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::VtblLoad as u8),
             "method call should emit VtblLoad"
         );
     }
@@ -1290,9 +1464,18 @@ mod tests {
                fn zombie_fn() void { dead_fn(1); }
                fn main() void { ret; }"#,
         );
-        assert!(!chunks.iter().any(|c| c.name == "dead_fn"), "dead_fn should be tree-shaken");
-        assert!(!chunks.iter().any(|c| c.name == "zombie_fn"), "zombie_fn should be tree-shaken");
-        assert!(chunks.iter().any(|c| c.name == "main"), "main must be present");
+        assert!(
+            !chunks.iter().any(|c| c.name == "dead_fn"),
+            "dead_fn should be tree-shaken"
+        );
+        assert!(
+            !chunks.iter().any(|c| c.name == "zombie_fn"),
+            "zombie_fn should be tree-shaken"
+        );
+        assert!(
+            chunks.iter().any(|c| c.name == "main"),
+            "main must be present"
+        );
     }
 
     #[test]
@@ -1305,18 +1488,34 @@ mod tests {
         );
         let code = &chunks[0].code;
         // With const-condition elimination, no conditional jump instruction.
-        let has_conditional_jump = code.iter().any(|i| matches!(
-            Opcode::from_u8(i.opcode),
-            Some(Opcode::Je | Opcode::Jne | Opcode::Jl | Opcode::Jle |
-                 Opcode::Jg | Opcode::Jge | Opcode::Jz | Opcode::Jnz)
-        ));
-        assert!(!has_conditional_jump, "const-true if should not emit a conditional jump");
+        let has_conditional_jump = code.iter().any(|i| {
+            matches!(
+                Opcode::from_u8(i.opcode),
+                Some(
+                    Opcode::Je
+                        | Opcode::Jne
+                        | Opcode::Jl
+                        | Opcode::Jle
+                        | Opcode::Jg
+                        | Opcode::Jge
+                        | Opcode::Jz
+                        | Opcode::Jnz
+                )
+            )
+        });
+        assert!(
+            !has_conditional_jump,
+            "const-true if should not emit a conditional jump"
+        );
         // Dead else branch must not emit MovI(2).
         let has_movi_2 = code.iter().any(|i| {
             let (_, imm) = i.ri16();
             i.opcode == Opcode::MovI as u8 && imm == 2
         });
-        assert!(!has_movi_2, "const-true if should not emit MovI(2) from dead else branch");
+        assert!(
+            !has_movi_2,
+            "const-true if should not emit MovI(2) from dead else branch"
+        );
     }
 
     #[test]
@@ -1332,7 +1531,10 @@ mod tests {
             let (_, imm) = i.ri16();
             i.opcode == Opcode::MovI as u8 && imm == 99
         });
-        assert!(!has_movi_99, "const-false if should not emit MovI(99) from dead then branch");
+        assert!(
+            !has_movi_99,
+            "const-false if should not emit MovI(99) from dead then branch"
+        );
     }
 
     #[test]

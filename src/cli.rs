@@ -30,6 +30,9 @@ pub enum Command {
         emit_object: bool,
         #[arg(short, long)]
         run: bool,
+        /// print loaded files and bytecode disassembly to stderr
+        #[arg(short = 'd', long = "debug")]
+        debug: bool,
         /// explicit linker binary (overrides VOID_LINKER env var)
         #[arg(long = "linker")]
         linker: Option<PathBuf>,
@@ -52,5 +55,10 @@ pub enum Command {
     Debug {
         #[arg(short = 'b', long = "bytecode")]
         emit_bytecode: bool,
+    },
+    /// start language server (stdio mode)
+    Lsp {
+        #[arg(long, default_value_t = true)]
+        stdio: bool,
     },
 }

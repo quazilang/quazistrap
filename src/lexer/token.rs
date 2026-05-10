@@ -88,20 +88,20 @@ pub enum TokenKind {
     Percent,   // %
 
     // operators
-    Eq,    // =
+    Eq,       // =
     FatArrow, // =>
-    Plus,  // +
-    Minus, // -
+    Plus,     // +
+    Minus,    // -
     Star,     // *
     StarStar, // **
-    Slash, // /
-    Lt,    // <
-    Gt,    // >
-    LtEq,  // <=
-    GtEq,  // >=
-    EqEq,  // ==
-    NotEq, // !=
-    Bang,  // !
+    Slash,    // /
+    Lt,       // <
+    Gt,       // >
+    LtEq,     // <=
+    GtEq,     // >=
+    EqEq,     // ==
+    NotEq,    // !=
+    Bang,     // !
 
     // compound assignment
     PlusEq,    // +=

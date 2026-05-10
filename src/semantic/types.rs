@@ -46,6 +46,7 @@ pub struct Symbol {
     pub const_value: Option<ConstValue>,
     pub variadic: bool,
     pub attributes: Vec<String>,
+    pub public: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +64,11 @@ impl SemanticError {
 
 impl std::fmt::Display for SemanticError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "error[{}]: {} at {}:{}", self.code, self.message, self.span.line, self.span.col)
+        write!(
+            f,
+            "error[{}]: {} at {}:{}",
+            self.code, self.message, self.span.line, self.span.col
+        )
     }
 }
 
@@ -78,10 +83,8 @@ pub struct SemanticWarning {
 impl SemanticWarning {
     pub fn render(&self, source: &str) -> String {
         let mut out = render_diag("warning", self.code, &self.message, self.span, source);
-        for suggestion in &self.suggestions {
-            out.push('\n');
-            out.push_str("  suggestion: ");
-            out.push_str(suggestion);
+        for s in &self.suggestions {
+            out.push_str(&format!("\n  \x1b[2m=\x1b[0m \x1b[36m{}\x1b[0m", s));
         }
         out
     }
@@ -89,23 +92,40 @@ impl SemanticWarning {
 
 impl std::fmt::Display for SemanticWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "warning[{}]: {} at {}:{}", self.code, self.message, self.span.line, self.span.col)
+        write!(
+            f,
+            "warning[{}]: {} at {}:{}",
+            self.code, self.message, self.span.line, self.span.col
+        )
     }
 }
 
 fn render_diag(label: &str, code: &str, message: &str, span: Span, source: &str) -> String {
-    let mut out = format!("{}[{}]: {}\nat {}:{}", label, code, message, span.line, span.col);
+    let (lc, cc) = match label {
+        "error" => ("\x1b[1;31m", "\x1b[1;31m"),
+        "warning" => ("\x1b[1;33m", "\x1b[1;33m"),
+        _ => ("\x1b[1m", "\x1b[1m"),
+    };
+    let mut out = format!(
+        "{lc}{label}\x1b[0m\x1b[1m[{code}]\x1b[0m: {message}\n  \x1b[1;34m-->\x1b[0m {line}:{col}",
+        line = span.line,
+        col = span.col
+    );
     if let Some(line_text) = source.lines().nth(span.line.saturating_sub(1)) {
-        let line_no_width = span.line.to_string().len();
-        let caret_offset = span.col.saturating_sub(1);
-        let caret_width = (span.end.saturating_sub(span.start)).max(1);
-        out.push('\n');
-        out.push_str(&format!("{} | {}", span.line, line_text));
-        out.push('\n');
-        out.push_str(&" ".repeat(line_no_width));
-        out.push_str(" | ");
-        out.push_str(&" ".repeat(caret_offset));
-        out.push_str(&"^".repeat(caret_width));
+        let lnum = span.line.to_string();
+        let w = lnum.len();
+        let blank = " ".repeat(w);
+        let caret_off = span.col.saturating_sub(1);
+        let caret_w = (span.end.saturating_sub(span.start)).max(1);
+        out.push_str(&format!("\n{blank} \x1b[1;34m|\x1b[0m"));
+        out.push_str(&format!(
+            "\n\x1b[1;34m{lnum}\x1b[0m \x1b[1;34m|\x1b[0m {line_text}"
+        ));
+        out.push_str(&format!(
+            "\n{blank} \x1b[1;34m|\x1b[0m {}{cc}{}\x1b[0m",
+            " ".repeat(caret_off),
+            "^".repeat(caret_w)
+        ));
     }
     out
 }

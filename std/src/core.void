@@ -6,49 +6,49 @@
 // ── I/O ──────────────────────────────────────────────────────────────────────
 
 @intrinsic("void.write")
-fn write(fd: i32, buf: str, count: usize) isize;
+pub fn write(fd: i32, buf: str, count: usize) isize;
 
 @intrinsic("void.read")
-fn read(fd: i32, buf: str, count: usize) isize;
+pub fn read(fd: i32, buf: str, count: usize) isize;
 
 @intrinsic("void.stderr_write")
-fn stderr_write(buf: str, len: usize) isize;
+pub fn stderr_write(buf: str, len: usize) isize;
 
 // ── Process ──────────────────────────────────────────────────────────────────
 
 @intrinsic("void.exit")
-fn exit(code: i32) i32;
+pub fn exit(code: i32) i32;
 
 @intrinsic("void.sleep_ms")
-fn sleep_ms(ms: u64) void;
+pub fn sleep_ms(ms: u64) void;
 
 @intrinsic("void.getenv")
-fn getenv(name: str) usize;
+pub fn getenv(name: str) usize;
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 
 @intrinsic("void.malloc")
-fn malloc(size: usize) usize;
+pub fn malloc(size: usize) usize;
 
 @intrinsic("void.free")
-fn free(ptr: usize) void;
+pub fn free(ptr: usize) void;
 
 @intrinsic("void.realloc")
-fn realloc(ptr: usize, size: usize) usize;
+pub fn realloc(ptr: usize, size: usize) usize;
 
 @intrinsic("void.memcpy")
-fn memcpy(dst: usize, src: usize, n: usize) usize;
+pub fn memcpy(dst: usize, src: usize, n: usize) usize;
 
 @intrinsic("void.memset")
-fn memset(ptr: usize, val: i32, n: usize) usize;
+pub fn memset(ptr: usize, val: i32, n: usize) usize;
 
 @intrinsic("void.memmove")
-fn memmove(dst: usize, src: usize, n: usize) usize;
+pub fn memmove(dst: usize, src: usize, n: usize) usize;
 
 @intrinsic("void.memcmp")
-fn memcmp(a: usize, b: usize, n: usize) i32;
+pub fn memcmp(a: usize, b: usize, n: usize) i32;
 
 // ── String ───────────────────────────────────────────────────────────────────
 
 @intrinsic("void.strlen")
-fn strlen(s: str) usize;
+pub fn strlen(s: str) usize;

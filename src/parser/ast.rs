@@ -58,9 +58,9 @@ pub enum Literal {
 
 #[derive(Debug, Clone)]
 pub enum UnaryOpKind {
-    Neg,  // -x
-    Not,  // !x
-    Ref,  // &x  (take address)
+    Neg,   // -x
+    Not,   // !x
+    Ref,   // &x  (take address)
     Deref, // *x (dereference)
 }
 
@@ -223,6 +223,8 @@ pub enum TypeKind {
     RawPtr {
         inner: Box<Type>,
     },
+    /// `!` — never type; function that never returns.
+    Never,
 }
 
 impl std::fmt::Display for TypeKind {
@@ -263,6 +265,7 @@ impl std::fmt::Display for TypeKind {
             TypeKind::Slice { elem_ty } => write!(f, "[{}]", elem_ty.node),
             TypeKind::Ref { inner } => write!(f, "&{}", inner.node),
             TypeKind::RawPtr { inner } => write!(f, "*{}", inner.node),
+            TypeKind::Never => write!(f, "!"),
         }
     }
 }
@@ -407,6 +410,7 @@ pub enum ItemKind {
         body: Option<Block>,
         attributes: Vec<Attribute>,
         unsafe_fn: bool,
+        pub_fn: bool,
     },
     Struct {
         name: String,

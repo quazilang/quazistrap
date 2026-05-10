@@ -77,13 +77,6 @@ impl TargetSpec {
         }
     }
 
-    pub fn dynamic_linker(&self) -> Option<&'static str> {
-        match self.os {
-            Os::Linux => Some("/lib64/ld-linux-x86-64.so.2"),
-            Os::MacOs | Os::Windows => None,
-        }
-    }
-
     pub fn without_start(mut self) -> Self {
         self.emit_start = false;
         self

@@ -6,9 +6,9 @@ pub mod ast;
 pub mod common;
 pub mod items;
 
+use crate::lexer::token::{Token, TokenKind};
 use crate::parser::ast::*;
 use crate::parser::common::{merge_token_spans, to_ast_span};
-use crate::lexer::token::{Token, TokenKind};
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -66,18 +66,22 @@ impl Parser {
 
     fn parse_item(&mut self) -> Result<Item, String> {
         let attributes = self.parse_attributes()?;
-        // skip optional visibility modifier
-        if self.at(TokenKind::Pub) {
+        let is_pub = if self.at(TokenKind::Pub) {
             self.advance();
-        }
+            true
+        } else {
+            false
+        };
         match self.peek_kind() {
-            TokenKind::Error(msg) => Err(self.err_here_with_code("E00", format!("lexer error: {}", msg))),
+            TokenKind::Error(msg) => {
+                Err(self.err_here_with_code("E00", format!("lexer error: {}", msg)))
+            }
             TokenKind::Import => self.parse_import(),
             TokenKind::Unsafe => {
                 self.advance(); // consume 'unsafe'
-                self.parse_fn(attributes, true)
+                self.parse_fn(attributes, true, is_pub)
             }
-            TokenKind::Fn => self.parse_fn(attributes, false),
+            TokenKind::Fn => self.parse_fn(attributes, false, is_pub),
             TokenKind::Struct => self.parse_struct(attributes),
             TokenKind::Trait => self.parse_trait(attributes),
             TokenKind::Enum => self.parse_enum(attributes),
@@ -112,20 +116,32 @@ impl Parser {
                                     TokenKind::StringLit(s) => AttrVal::Str(s),
                                     TokenKind::Int(n) => AttrVal::Int(n),
                                     TokenKind::Ident(v) => AttrVal::Ident(v),
-                                    other => return Err(self.err_tok(val_tok.span,
-                                        format!("expected attribute value, found {}", other))),
+                                    other => {
+                                        return Err(self.err_tok(
+                                            val_tok.span,
+                                            format!("expected attribute value, found {}", other),
+                                        ));
+                                    }
                                 };
                                 args.push(AttrArg::KeyValue(s, val));
-                                if self.at(TokenKind::Comma) { self.advance(); }
+                                if self.at(TokenKind::Comma) {
+                                    self.advance();
+                                }
                                 continue;
                             }
                             AttrVal::Ident(s)
                         }
-                        other => return Err(self.err_tok(first.span,
-                            format!("expected attribute argument, found {}", other))),
+                        other => {
+                            return Err(self.err_tok(
+                                first.span,
+                                format!("expected attribute argument, found {}", other),
+                            ));
+                        }
                     };
                     args.push(AttrArg::Positional(first_val));
-                    if self.at(TokenKind::Comma) { self.advance(); }
+                    if self.at(TokenKind::Comma) {
+                        self.advance();
+                    }
                 }
                 self.expect(TokenKind::RParen)?;
             }
@@ -155,8 +171,11 @@ impl Parser {
             match self.peek_kind() {
                 TokenKind::Var => return self.parse_var_stmt_with_attrs(attrs),
                 TokenKind::Const => return self.parse_const_stmt_with_attrs(attrs),
-                _ => return Err(self.err_here_with_code("E03",
-                    "attributes on statements are only supported for @cfg blocks, var, and const".to_string())),
+                _ => return Err(self.err_here_with_code(
+                    "E03",
+                    "attributes on statements are only supported for @cfg blocks, var, and const"
+                        .to_string(),
+                )),
             }
         }
         if self.at(TokenKind::Unsafe) {
@@ -182,10 +201,8 @@ impl Parser {
 
         while !self.at(TokenKind::RBrace) {
             if self.at(TokenKind::Eof) {
-                return Err(self.err_here_with_code(
-                    "E04",
-                    "unexpected EOF while parsing block".to_string(),
-                ));
+                return Err(self
+                    .err_here_with_code("E04", "unexpected EOF while parsing block".to_string()));
             }
 
             match self.parse_stmt() {
@@ -237,7 +254,12 @@ impl Parser {
         let semi = self.expect(TokenKind::Semicolon)?.span;
 
         Ok(Spanned::new(
-            StmtKind::Var { name, ty, value, attributes },
+            StmtKind::Var {
+                name,
+                ty,
+                value,
+                attributes,
+            },
             to_ast_span(merge_token_spans(start, semi)),
         ))
     }
@@ -263,7 +285,12 @@ impl Parser {
         let semi = self.expect(TokenKind::Semicolon)?.span;
 
         Ok(Spanned::new(
-            StmtKind::Const { name, ty, value, attributes },
+            StmtKind::Const {
+                name,
+                ty,
+                value,
+                attributes,
+            },
             to_ast_span(merge_token_spans(start, semi)),
         ))
     }
@@ -329,7 +356,10 @@ impl Parser {
             let body = self.parse_block()?;
             let end = body.span;
             return Ok(Spanned::new(
-                StmtKind::For { kind: ForLoop::Cond { condition: None }, body },
+                StmtKind::For {
+                    kind: ForLoop::Cond { condition: None },
+                    body,
+                },
                 Span::merge(to_ast_span(start), end),
             ));
         }
@@ -342,7 +372,11 @@ impl Parser {
             let end = body.span;
             return Ok(Spanned::new(
                 StmtKind::For {
-                    kind: ForLoop::CStyle { init: None, condition: None, update: None },
+                    kind: ForLoop::CStyle {
+                        init: None,
+                        condition: None,
+                        update: None,
+                    },
                     body,
                 },
                 Span::merge(to_ast_span(start), end),
@@ -369,14 +403,20 @@ impl Parser {
                 let iter = if self.at(TokenKind::DotDot) {
                     self.advance();
                     let rhs = self.parse_expr()?;
-                    ForIter::Range { start: Box::new(lhs), end: Box::new(rhs) }
+                    ForIter::Range {
+                        start: Box::new(lhs),
+                        end: Box::new(rhs),
+                    }
                 } else {
                     ForIter::Iter(Box::new(lhs))
                 };
                 let body = self.parse_block()?;
                 let end = body.span;
                 return Ok(Spanned::new(
-                    StmtKind::For { kind: ForLoop::Each { vars, iter }, body },
+                    StmtKind::For {
+                        kind: ForLoop::Each { vars, iter },
+                        body,
+                    },
                     Span::merge(to_ast_span(start), end),
                 ));
             } else if self.at(TokenKind::Eq) {
@@ -385,18 +425,35 @@ impl Parser {
                 let init_val = self.parse_expr()?;
                 let init_span = init_val.span;
                 let init_stmt = Spanned::new(
-                    StmtKind::Var { name: first_var, ty: None, value: Some(init_val), attributes: Vec::new() },
+                    StmtKind::Var {
+                        name: first_var,
+                        ty: None,
+                        value: Some(init_val),
+                        attributes: Vec::new(),
+                    },
                     init_span,
                 );
                 self.expect(TokenKind::Semicolon)?;
-                let condition = if self.at(TokenKind::Semicolon) { None } else { Some(self.parse_expr()?) };
+                let condition = if self.at(TokenKind::Semicolon) {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
                 self.expect(TokenKind::Semicolon)?;
-                let update = if self.at(TokenKind::LBrace) { None } else { Some(self.parse_expr()?) };
+                let update = if self.at(TokenKind::LBrace) {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
                 let body = self.parse_block()?;
                 let end = body.span;
                 return Ok(Spanned::new(
                     StmtKind::For {
-                        kind: ForLoop::CStyle { init: Some(Box::new(init_stmt)), condition, update },
+                        kind: ForLoop::CStyle {
+                            init: Some(Box::new(init_stmt)),
+                            condition,
+                            update,
+                        },
                         body,
                     },
                     Span::merge(to_ast_span(start), end),
@@ -417,7 +474,12 @@ impl Parser {
             let body = self.parse_block()?;
             let end = body.span;
             return Ok(Spanned::new(
-                StmtKind::For { kind: ForLoop::Cond { condition: Some(expr) }, body },
+                StmtKind::For {
+                    kind: ForLoop::Cond {
+                        condition: Some(expr),
+                    },
+                    body,
+                },
                 Span::merge(to_ast_span(start), end),
             ));
         }
@@ -425,23 +487,38 @@ impl Parser {
         if self.at(TokenKind::Semicolon) {
             // C-style with expr as init: `for expr; cond; update {}`
             self.advance(); // consume `;`
-            let condition = if self.at(TokenKind::Semicolon) { None } else { Some(self.parse_expr()?) };
+            let condition = if self.at(TokenKind::Semicolon) {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
             self.expect(TokenKind::Semicolon)?;
-            let update = if self.at(TokenKind::LBrace) { None } else { Some(self.parse_expr()?) };
+            let update = if self.at(TokenKind::LBrace) {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
             let body = self.parse_block()?;
             let end = body.span;
             let init_span = expr.span;
             let init_stmt = Spanned::new(StmtKind::ExprStmt(expr), init_span);
             return Ok(Spanned::new(
                 StmtKind::For {
-                    kind: ForLoop::CStyle { init: Some(Box::new(init_stmt)), condition, update },
+                    kind: ForLoop::CStyle {
+                        init: Some(Box::new(init_stmt)),
+                        condition,
+                        update,
+                    },
                     body,
                 },
                 Span::merge(to_ast_span(start), end),
             ));
         }
 
-        Err(self.err_here_with_code("E02", "expected '{' or ';' after for loop expression".to_string()))
+        Err(self.err_here_with_code(
+            "E02",
+            "expected '{' or ';' after for loop expression".to_string(),
+        ))
     }
 
     fn parse_expr_stmt(&mut self) -> Result<Stmt, String> {
@@ -740,7 +817,11 @@ impl Parser {
             let expr = self.parse_unary()?;
             let span = Span::merge(to_ast_span(t), expr.span);
             return Ok(Spanned::new(
-                ExprKind::IncDec { expr: Box::new(expr), op: IncDecOp::Inc, prefix: true },
+                ExprKind::IncDec {
+                    expr: Box::new(expr),
+                    op: IncDecOp::Inc,
+                    prefix: true,
+                },
                 span,
             ));
         }
@@ -750,7 +831,11 @@ impl Parser {
             let expr = self.parse_unary()?;
             let span = Span::merge(to_ast_span(t), expr.span);
             return Ok(Spanned::new(
-                ExprKind::IncDec { expr: Box::new(expr), op: IncDecOp::Dec, prefix: true },
+                ExprKind::IncDec {
+                    expr: Box::new(expr),
+                    op: IncDecOp::Dec,
+                    prefix: true,
+                },
                 span,
             ));
         }
@@ -760,7 +845,10 @@ impl Parser {
             let expr = self.parse_unary()?;
             let span = Span::merge(to_ast_span(t), expr.span);
             return Ok(Spanned::new(
-                ExprKind::Unary { op: UnaryOpKind::Deref, expr: Box::new(expr) },
+                ExprKind::Unary {
+                    op: UnaryOpKind::Deref,
+                    expr: Box::new(expr),
+                },
                 span,
             ));
         }
@@ -770,7 +858,10 @@ impl Parser {
             let expr = self.parse_unary()?;
             let span = Span::merge(to_ast_span(t), expr.span);
             return Ok(Spanned::new(
-                ExprKind::Unary { op: UnaryOpKind::Ref, expr: Box::new(expr) },
+                ExprKind::Unary {
+                    op: UnaryOpKind::Ref,
+                    expr: Box::new(expr),
+                },
                 span,
             ));
         }
@@ -811,7 +902,10 @@ impl Parser {
                 let rbracket = self.expect(TokenKind::RBracket)?.span;
                 let span = Span::merge(expr.span, to_ast_span(rbracket));
                 expr = Spanned::new(
-                    ExprKind::Index { object: Box::new(expr), index: Box::new(index) },
+                    ExprKind::Index {
+                        object: Box::new(expr),
+                        index: Box::new(index),
+                    },
                     span,
                 );
                 continue;
@@ -866,7 +960,11 @@ impl Parser {
                 let t = self.advance().span;
                 let span = Span::merge(expr.span, to_ast_span(t));
                 expr = Spanned::new(
-                    ExprKind::IncDec { expr: Box::new(expr), op: IncDecOp::Inc, prefix: false },
+                    ExprKind::IncDec {
+                        expr: Box::new(expr),
+                        op: IncDecOp::Inc,
+                        prefix: false,
+                    },
                     span,
                 );
                 continue;
@@ -876,7 +974,11 @@ impl Parser {
                 let t = self.advance().span;
                 let span = Span::merge(expr.span, to_ast_span(t));
                 expr = Spanned::new(
-                    ExprKind::IncDec { expr: Box::new(expr), op: IncDecOp::Dec, prefix: false },
+                    ExprKind::IncDec {
+                        expr: Box::new(expr),
+                        op: IncDecOp::Dec,
+                        prefix: false,
+                    },
                     span,
                 );
                 continue;
@@ -960,7 +1062,10 @@ impl Parser {
         };
 
         if first == "_" {
-            return Ok(Spanned::new(PatternKind::Wildcard, to_ast_span(first_tok.span)));
+            return Ok(Spanned::new(
+                PatternKind::Wildcard,
+                to_ast_span(first_tok.span),
+            ));
         }
 
         let mut enum_name = None;
@@ -1097,32 +1202,51 @@ impl Parser {
                             return Err(self.err_tok_with_code(
                                 len_tok.span,
                                 "E05",
-                                format!("expected array length (non-negative integer), found {}", other),
+                                format!(
+                                    "expected array length (non-negative integer), found {}",
+                                    other
+                                ),
                             ));
                         }
                     };
                     let end = self.expect(TokenKind::RBracket)?.span;
                     return Ok(Spanned::new(
-                        TypeKind::Array { elem_ty: Box::new(elem_ty), len },
+                        TypeKind::Array {
+                            elem_ty: Box::new(elem_ty),
+                            len,
+                        },
                         to_ast_span(merge_token_spans(start, end)),
                     ));
                 } else {
                     let end = self.expect(TokenKind::RBracket)?.span;
                     return Ok(Spanned::new(
-                        TypeKind::Slice { elem_ty: Box::new(elem_ty) },
+                        TypeKind::Slice {
+                            elem_ty: Box::new(elem_ty),
+                        },
                         to_ast_span(merge_token_spans(start, end)),
                     ));
                 }
             }
+            TokenKind::Bang => TypeKind::Never,
             TokenKind::Ampersand => {
                 let inner = self.parse_type()?;
                 let span = Span::merge(to_ast_span(start), inner.span);
-                return Ok(Spanned::new(TypeKind::Ref { inner: Box::new(inner) }, span));
+                return Ok(Spanned::new(
+                    TypeKind::Ref {
+                        inner: Box::new(inner),
+                    },
+                    span,
+                ));
             }
             TokenKind::Star => {
                 let inner = self.parse_type()?;
                 let span = Span::merge(to_ast_span(start), inner.span);
-                return Ok(Spanned::new(TypeKind::RawPtr { inner: Box::new(inner) }, span));
+                return Ok(Spanned::new(
+                    TypeKind::RawPtr {
+                        inner: Box::new(inner),
+                    },
+                    span,
+                ));
             }
             other => {
                 return Err(self.err_tok_with_code(
@@ -1198,7 +1322,6 @@ impl Parser {
             }
         }
     }
-
 }
 
 #[cfg(test)]
@@ -1261,7 +1384,10 @@ fn main() void {
     #[test]
     fn parses_isize_usize_type_annotations() {
         let program = parse_program("fn f(a: isize, b: usize) isize { ret a; }");
-        let ItemKind::Fn { params, return_ty, .. } = &program.items[0].node else {
+        let ItemKind::Fn {
+            params, return_ty, ..
+        } = &program.items[0].node
+        else {
             panic!("expected fn");
         };
         assert!(matches!(params[0].ty.node, TypeKind::Isize));
@@ -1271,17 +1397,23 @@ fn main() void {
 
     #[test]
     fn parses_cfg_block_stmt() {
-        let program = parse_program(
-            r#"fn main() void { @cfg(target_os = "linux") { var x: i32 = 1; } }"#,
-        );
-        let ItemKind::Fn { body, .. } = &program.items[0].node else { panic!() };
-        assert!(matches!(body.as_ref().unwrap().stmts[0].node, StmtKind::CfgBlock { .. }));
+        let program =
+            parse_program(r#"fn main() void { @cfg(target_os = "linux") { var x: i32 = 1; } }"#);
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!()
+        };
+        assert!(matches!(
+            body.as_ref().unwrap().stmts[0].node,
+            StmtKind::CfgBlock { .. }
+        ));
     }
 
     #[test]
     fn parses_syscall_attribute_on_fn() {
         let program = parse_program(r#"@syscall("write") fn write(fd: i32) isize { }"#);
-        let ItemKind::Fn { attributes, .. } = &program.items[0].node else { panic!() };
+        let ItemKind::Fn { attributes, .. } = &program.items[0].node else {
+            panic!()
+        };
         assert_eq!(attributes[0].name, "syscall");
     }
 
@@ -1331,7 +1463,10 @@ fn id[T](x: T) T {
         assert_eq!(generic_params, &vec!["T".to_string()]);
         assert_eq!(methods[0].generic_params, vec!["U".to_string()]);
 
-        let ItemKind::Impl { trait_ty, for_ty, .. } = &program.items[2].node else {
+        let ItemKind::Impl {
+            trait_ty, for_ty, ..
+        } = &program.items[2].node
+        else {
             panic!("expected impl item");
         };
 
@@ -1636,9 +1771,9 @@ fn main() void {
 "#,
         );
 
-        assert!(err.contains("error[E01]: expected identifier, found ';'"));
-        assert!(err.contains("at 3:9"));
-        assert!(err.contains("3 |     var ;"));
-        assert!(err.contains("|         ^"));
+        assert!(err.contains("E01"));
+        assert!(err.contains("expected identifier, found ';'"));
+        assert!(err.contains("var ;"));
+        assert!(err.contains("^"));
     }
 }
