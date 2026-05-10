@@ -1,7 +1,7 @@
 import std.core.write;
 
 fn main() i32 {
-    const msg: str = "hey!\n";
+    const msg: str = "Hello world!\n";
     write(1, msg, msg.len());
     ret 0;
 }

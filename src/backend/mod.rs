@@ -35,6 +35,9 @@ pub trait Backend {
     fn compile(&self, chunks: &[Chunk], target: &TargetSpec) -> Result<ObjectOutput, BackendError>;
 }
 
-pub fn select_backend(_target: &TargetSpec) -> Box<dyn Backend> {
-    Box::new(x86_64::ElfBackend)
+pub fn select_backend(target: &TargetSpec) -> Box<dyn Backend> {
+    match target.os {
+        target::Os::Windows => Box::new(x86_64::PeBackend),
+        _ => Box::new(x86_64::ElfBackend),
+    }
 }
