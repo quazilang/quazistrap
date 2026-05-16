@@ -5,15 +5,30 @@
 use std::collections::HashSet;
 
 use crate::parser::ast::Program;
-use crate::semantic::{Analyzer, SemanticReport};
+use crate::semantic::{Analyzer, SemanticReport, SourceFile};
 
 pub fn analyze_program(
-    _src: &str,
+    src: &str,
     program: &Program,
     library_fn_names: HashSet<String>,
 ) -> SemanticReport {
+    analyze_program_with_source_files(src, program, library_fn_names, library_char_ranges, Vec::new())
+}
+
+pub fn analyze_program_with_source_files(
+    _src: &str,
+    program: &Program,
+    library_fn_names: HashSet<String>,
+    library_char_ranges: Vec<std::ops::Range<usize>>,
+    source_files: Vec<SourceFile>,
+) -> SemanticReport {
     let mut analyzer = Analyzer::new();
     analyzer.set_library_fns(library_fn_names);
+<<<<<<< Updated upstream
+=======
+    analyzer.set_library_char_ranges(library_char_ranges);
+    analyzer.set_source_files(source_files);
+>>>>>>> Stashed changes
     analyzer.analyze_program(program)
 }
 

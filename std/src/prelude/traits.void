@@ -1,0 +1,95 @@
+// std.traits — core language traits
+
+// ── Display ──────────────────────────────────────────────────────────────────
+// Human-readable string representation.
+// to_str()    → &str   — borrowed view (may point to a static buffer)
+// to_string() → String — owned heap allocation
+pub trait Display {
+    fn to_str() &str;
+    fn to_string() str;
+}
+
+// ── Debug ────────────────────────────────────────────────────────────────────
+// Programmer-readable representation (includes type info, escapes, etc.).
+pub trait Debug {
+    fn debug_str() &str;
+}
+
+// ── Eq ───────────────────────────────────────────────────────────────────────
+pub trait Eq[T] {
+    fn eq(other: T) bool;
+    fn ne(other: T) bool;
+}
+
+// ── Ord ──────────────────────────────────────────────────────────────────────
+// cmp returns negative if self < other, 0 if equal, positive if self > other.
+pub trait Ord[T] {
+    fn cmp(other: T) i32;
+    fn lt(other: T) bool;
+    fn le(other: T) bool;
+    fn gt(other: T) bool;
+    fn ge(other: T) bool;
+}
+
+// ── Clone ────────────────────────────────────────────────────────────────────
+pub trait Clone {
+    fn clone() any;
+}
+
+// ── Default ──────────────────────────────────────────────────────────────────
+pub trait Default {
+    fn default() any;
+}
+
+// ── Hash ─────────────────────────────────────────────────────────────────────
+pub trait Hash {
+    fn hash() u64;
+}
+
+// ── Iterator ─────────────────────────────────────────────────────────────────
+pub trait Iterator[T] {
+    fn next() Option[T];
+    fn has_next() bool;
+}
+
+// ── Into / From ───────────────────────────────────────────────────────────────
+pub trait Into[T] {
+    fn into() T;
+}
+
+pub trait From[T] {
+    fn from(val: T) any;
+}
+
+// ── Drop ─────────────────────────────────────────────────────────────────────
+pub trait Drop {
+    fn drop() void;
+}
+
+// ── Index ────────────────────────────────────────────────────────────────────
+pub trait Index[I, O] {
+    fn index(i: I) O;
+}
+
+// ── Write ─────────────────────────────────────────────────────────────────────
+// Implemented by Stdout and Stderr. writef/writelnf accept a pre-formatted
+// string; the compiler auto-formats when called with multiple arguments.
+pub trait Write {
+    fn write(self: Self, s: str) void;
+    fn writeln(self: Self, s: str) void;
+    fn writef(self: Self, s: str) void;
+    fn writelnf(self: Self, s: str) void;
+}
+
+// ── Operator overloading ──────────────────────────────────────────────────────
+pub trait Add[T] { fn add(rhs: T) T; }
+pub trait Sub[T] { fn sub(rhs: T) T; }
+pub trait Mul[T] { fn mul(rhs: T) T; }
+pub trait Div[T] { fn div(rhs: T) T; }
+pub trait Rem[T] { fn rem(rhs: T) T; }
+pub trait Neg    { fn neg() any; }
+pub trait BitAnd[T] { fn bit_and(rhs: T) T; }
+pub trait BitOr[T]  { fn bit_or(rhs: T) T; }
+pub trait BitXor[T] { fn bit_xor(rhs: T) T; }
+pub trait Shl[T] { fn shl(n: T) T; }
+pub trait Shr[T] { fn shr(n: T) T; }

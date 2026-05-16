@@ -1,0 +1,101 @@
+// std.os — operating system abstractions
+// Cross-platform: uses core intrinsics (void.*) where possible,
+// falls back to unix.* for Linux-specific calls.
+import std.core;
+import std.unix;
+
+// ── Process ──────────────────────────────────────────────────────────────────
+
+// Terminate the process with the given exit code. Never returns.
+pub fn exit(code: i32) void {
+    core.exit(code);
+}
+
+// Suspend execution for ms milliseconds.
+pub fn sleep(ms: u64) void {
+    core.sleep_ms(ms);
+}
+
+// Yield the CPU to other threads/processes.
+pub fn yield_cpu() void {
+    unsafe { unix.sched_yield(); }
+}
+
+// Returns the PID of the current process.
+pub fn getpid() i32 {
+    var r: i32 = 0;
+    unsafe { r = unix.getpid(); }
+    ret r;
+}
+
+// Returns the PID of the parent process.
+pub fn getppid() i32 {
+    var r: i32 = 0;
+    unsafe { r = unix.getppid(); }
+    ret r;
+}
+
+// ── Environment variables ─────────────────────────────────────────────────────
+
+// Returns a pointer to the value of environment variable name, or null if not set.
+// Result is a null-terminated C string pointer — treat as unsafe.
+pub unsafe fn getenv(name: str) *u8 {
+    ret core.getenv(name);
+}
+
+// ── Current directory ─────────────────────────────────────────────────────────
+
+// Fill buf with the current working directory path (null-terminated).
+// Returns number of bytes written (including null) or negative on error.
+// buf must be at least size bytes long.
+pub unsafe fn cwd(buf: str, size: usize) isize {
+    ret unix.getcwd(buf, size);
+}
+
+// ── Identities ───────────────────────────────────────────────────────────────
+
+// Returns the user ID of the current process.
+pub fn getuid() u32 {
+    var r: u32 = 0;
+    unsafe { r = unix.getuid(); }
+    ret r;
+}
+
+// Returns the group ID of the current process.
+pub fn getgid() u32 {
+    var r: u32 = 0;
+    unsafe { r = unix.getgid(); }
+    ret r;
+}
+
+// Returns the effective user ID.
+pub fn geteuid() u32 {
+    var r: u32 = 0;
+    unsafe { r = unix.geteuid(); }
+    ret r;
+}
+
+// Returns the effective group ID.
+pub fn getegid() u32 {
+    var r: u32 = 0;
+    unsafe { r = unix.getegid(); }
+    ret r;
+}
+
+// ── Signals ───────────────────────────────────────────────────────────────────
+
+// Send signal sig to process pid. Common signals: SIGTERM=15, SIGKILL=9, SIGINT=2.
+pub fn kill(pid: i32, sig: i32) i32 {
+    var r: i32 = 0;
+    unsafe { r = unix.kill(pid, sig); }
+    ret r;
+}
+
+// ── Umask ────────────────────────────────────────────────────────────────────
+
+// Set process file-creation mask. Returns previous mask.
+pub fn umask(mask: u32) u32 {
+    var r: u32 = 0;
+    unsafe { r = unix.umask(mask); }
+    ret r;
+}

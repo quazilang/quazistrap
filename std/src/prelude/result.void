@@ -1,0 +1,55 @@
+// std.result — Result[T, E] methods
+// Result[T, E] is a builtin enum: Ok(T) = tag 1, Err(E) = tag 0.
+import std.core;
+
+impl Result[T, E] {
+    pub fn is_ok(self: Result[T, E]) bool {
+        ret match self {
+            Ok(_) => true,
+            Err(_) => false,
+        };
+    }
+
+    pub fn is_err(self: Result[T, E]) bool {
+        ret match self {
+            Ok(_) => false,
+            Err(_) => true,
+        };
+    }
+
+    // Returns true if Ok, false if Err.
+    pub fn ok(self: Result[T, E]) bool {
+        ret match self {
+            Ok(_) => true,
+            Err(_) => false,
+        };
+    }
+
+    pub fn unwrap(self: Result[T, E]) T {
+        ret match self {
+            Ok(v) => v,
+            Err(_) => panic("called unwrap() on an Err value"),
+        };
+    }
+
+    pub fn unwrap_err(self: Result[T, E]) E {
+        ret match self {
+            Ok(_) => panic("called unwrap_err() on an Ok value"),
+            Err(e) => e,
+        };
+    }
+
+    pub fn unwrap_or(self: Result[T, E], default: T) T {
+        ret match self {
+            Ok(v) => v,
+            Err(_) => default,
+        };
+    }
+
+    pub fn unwrap_err_or(self: Result[T, E], default: E) E {
+        ret match self {
+            Ok(_) => default,
+            Err(e) => e,
+        };
+    }
+}

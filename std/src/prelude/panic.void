@@ -1,0 +1,32 @@
+// std.panic — panic and panic handler
+//
+// Default: prints "thread 'main' panicked: <msg>\n" to stderr and exits 101.
+//
+// Override the handler by defining a function with @panic_handler:
+//   @panic_handler
+//   fn my_handler(info: PanicInfo) ! { ... }
+// The compiler replaces the default with your function automatically.
+
+import std.core;
+
+pub struct PanicInfo {
+    message: str,
+}
+
+impl PanicInfo {
+    pub fn message(self: PanicInfo) str {
+        ret self;
+    }
+}
+
+pub fn __void_panic_handler(msg: str) ! {
+    core.write(2, "thread 'main' panicked: ", 24);
+    core.write(2, msg, core.strlen(msg));
+    core.write(2, "\n", 1);
+    core.exit(101);
+}
+
+@format
+pub fn panic(msg: str, ...args: any) ! {
+    __void_panic_handler(msg);
+}

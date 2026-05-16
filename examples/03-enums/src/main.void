@@ -1,0 +1,54 @@
+import std.io.println;
+import std.option;
+import std.result;
+
+fn divide(a: i32, b: i32) Option[i32] {
+    if (b == 0) { ret Option.None; }
+    ret Option.Some(a / b);
+}
+
+enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Triangle(f64, f64),
+}
+
+fn area(s: Shape) f64 {
+    match s {
+        Shape.Circle(r)    => r * r * 3.14159,
+        Shape.Rect(w, h)   => w * h,
+        Shape.Triangle(b, h) => b * h * 0.5,
+    }
+}
+
+fn describe(s: Shape) str {
+    match s {
+        Shape.Circle(_)    => "circle",
+        Shape.Rect(_, _)   => "rectangle",
+        Shape.Triangle(_, _) => "triangle",
+    }
+}
+
+fn main() i32 {
+    var r = divide(10, 3);
+    if (r.is_some()) {
+        println("10 / 3 = {}", r.unwrap());
+    }
+
+    var bad = divide(5, 0);
+    if (bad.is_none()) {
+        println("5 / 0 = undefined");
+    }
+
+    var shapes: [Shape; 3] = [
+        Shape.Circle(5.0),
+        Shape.Rect(4.0, 6.0),
+        Shape.Triangle(3.0, 8.0),
+    ];
+
+    for s : shapes {
+        println("{}: area = {}", describe(s), area(s));
+    }
+
+    ret 0;
+}
