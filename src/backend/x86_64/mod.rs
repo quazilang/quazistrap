@@ -56,7 +56,18 @@ fn emit_native_object(
 
     let mut text_bytes: Vec<u8> = Vec::new();
     let mut all_relocs: Vec<(relocations::PendingReloc, Option<String>)> = Vec::new();
-    let fn_names: Vec<String> = chunks.iter().map(|c| safe_label(&c.name)).collect();
+    // Intrinsic wrappers get a private prefix so their call_ext targets (e.g. "malloc")
+    // resolve to the external CRT symbol, not back to the wrapper itself.
+    let fn_names: Vec<String> = chunks
+        .iter()
+        .map(|c| {
+            if c.intrinsic {
+                format!("__void_intr_{}", safe_label(&c.name))
+            } else {
+                safe_label(&c.name)
+            }
+        })
+        .collect();
 
     for (chunk_idx, chunk) in chunks.iter().enumerate() {
         let fn_offset = text_bytes.len();
@@ -74,9 +85,10 @@ fn emit_native_object(
         sym_table.define_function(
             &mut obj,
             section_acc.text_id,
-            &safe_label(&chunk.name),
+            &fn_names[chunk_idx],
             fn_offset as u64,
             fn_bytes.len() as u64,
+            chunk.intrinsic,
         );
 
         for reloc in fn_relocs {

@@ -14,13 +14,19 @@ fn should_ignore_warning(attributes: &[String], warning_code: &str) -> bool {
         // Check for specific ignore categories
         if warning_code == "W01" || warning_code == "W02" {
             // unused variable/parameter warnings
-            if attr == "ignore" || attr.contains("unused_vars") {
+            if attr == "ignore" || attr.contains("unused_vars") || attr == "format" {
                 return true;
             }
         }
         if warning_code == "W03" || warning_code == "W07" {
             // unused function / dead function warnings
-            if attr == "ignore" || attr.contains("dead_code") {
+            if attr == "ignore" || attr.contains("dead_code") || attr == "panic_handler" {
+                return true;
+            }
+        }
+        if warning_code == "W05" {
+            // any-type warnings
+            if attr == "ignore" || attr.contains("any_type") {
                 return true;
             }
         }
@@ -59,6 +65,23 @@ impl Analyzer {
 
             if symbol.is_import {
                 if include_imports {
+                    // Module import (e.g. `map`) is considered used if its conventionally-named
+                    // exported type (e.g. `Map`) is used — capitalise the first letter and check.
+                    let capitalized: String = {
+                        let mut chars = name.chars();
+                        match chars.next() {
+                            None => String::new(),
+                            Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+                        }
+                    };
+                    let type_used = self
+                        .scopes
+                        .first()
+                        .and_then(|s| s.get(&capitalized))
+                        .map_or(false, |sym| sym.used && matches!(sym.kind, SymbolKind::TypeName));
+                    if type_used {
+                        continue;
+                    }
                     let full = symbol.import_path.clone().unwrap_or_else(|| name.clone());
                     self.unused_import_paths.insert(full.clone());
                     self.push_warning_with_suggestion(

@@ -22,6 +22,8 @@ pub struct Chunk {
     pub name: String,
     pub param_count: usize,
     pub reg_count: u8,
+    pub intrinsic: bool,
+    pub variadic: bool,
 }
 
 impl Chunk {
@@ -236,6 +238,8 @@ pub fn deserialize_vbc(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             name,
             param_count,
             reg_count,
+            intrinsic: false,
+            variadic: false,
         });
     }
 

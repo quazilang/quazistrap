@@ -130,6 +130,11 @@ pub enum ExprKind {
         name: String,
     },
 
+    StructInit {
+        name: String,
+        fields: Vec<(String, Expr)>,
+    },
+
     MethodCall {
         object: Box<Expr>,
         method: String,
@@ -158,7 +163,12 @@ pub enum ExprKind {
 
     Index {
         object: Box<Expr>,
-        index: Box<Expr>,
+        indices: Vec<Expr>,
+    },
+
+    /// `expr?` — try operator: unwrap Ok/Some or early-return Err/None.
+    Try {
+        expr: Box<Expr>,
     },
 }
 
@@ -374,6 +384,10 @@ pub struct ImportPath {
     pub path: Vec<String>,
     pub items: ImportItems,
     pub span: Span,
+    pub pub_import: bool,
+    /// True when the import starts with `./` — forces local-only file resolution,
+    /// bypassing the module resolver. Resolves relative to the importing file's directory.
+    pub relative: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -431,7 +445,7 @@ pub enum ItemKind {
         attributes: Vec<Attribute>,
     },
     Impl {
-        trait_ty: Type,
+        trait_ty: Option<Type>, // None = inherent impl (`impl Type { }`)
         for_ty: Type,
         methods: Vec<Item>,
     },

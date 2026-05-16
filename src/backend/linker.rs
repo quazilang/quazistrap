@@ -89,6 +89,8 @@ impl LinkerInvocation {
                 args.push(self.output.as_os_str().into());
                 args.push(self.object.as_os_str().into());
                 args.push("-L/usr/lib".into());
+                args.push("-z".into());
+                args.push("max-page-size=0x1000".into()); // 4KB instead of default 2MB
             }
             Os::MacOs => {
                 args.push("-o".into());
@@ -104,8 +106,12 @@ impl LinkerInvocation {
                 args.push(self.object.as_os_str().into());
                 args.push("/subsystem:console".into());
                 args.push("/entry:mainCRTStartup".into());
+                args.push("/OPT:REF,ICF".into()); // dead-strip + fold identical functions
+                args.push("/MERGE:.rdata=.text".into()); // fold rodata into text — saves 512B PE alignment
                 args.push("kernel32.lib".into()); // ExitProcess
-                args.push("ucrt.lib".into()); // strlen, snprintf, atoll, strtod, pow
+                args.push("ucrt.lib".into()); // malloc, strlen, atoll, strtod, pow, calloc
+                args.push("vcruntime.lib".into()); // memset, memcpy, memmove, memcmp
+                args.push("legacy_stdio_definitions.lib".into()); // sprintf, printf (CRT stdio forwarders)
             }
         }
 

@@ -2,14 +2,24 @@
 // Import this for cross-platform I/O, memory, and process primitives.
 // These lower to the appropriate syscall/Win32/libc call per target at AOT time.
 // @no_std disables automatic std availability.
+//
+// UTF-8 contract:
+//   str / &str / String are ALWAYS valid UTF-8.
+//   Do NOT pass arbitrary bytes through str — use *u8 or [u8; N] for raw data.
 
 // ── I/O ──────────────────────────────────────────────────────────────────────
 
+// Write UTF-8 text to fd. Safe — buf is guaranteed valid UTF-8.
 @intrinsic("void.write")
 pub fn write(fd: i32, buf: str, count: usize) isize;
 
+// Write raw bytes to fd. Unsafe — buf may contain non-UTF-8 bytes.
+@intrinsic("void.write")
+pub unsafe fn write_bytes(fd: i32, buf: *u8, count: usize) isize;
+
+// Read raw bytes from fd into buf. Unsafe — caller must validate UTF-8 if converting to str.
 @intrinsic("void.read")
-pub fn read(fd: i32, buf: str, count: usize) isize;
+pub unsafe fn read(fd: i32, buf: *u8, count: usize) isize;
 
 @intrinsic("void.stderr_write")
 pub fn stderr_write(buf: str, len: usize) isize;
@@ -22,33 +32,50 @@ pub fn exit(code: i32) i32;
 @intrinsic("void.sleep_ms")
 pub fn sleep_ms(ms: u64) void;
 
+// Returns pointer to null-terminated C string, or null on not found.
 @intrinsic("void.getenv")
-pub fn getenv(name: str) usize;
+pub unsafe fn getenv(name: str) *u8;
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 
+// Returns pointer to allocated heap block, or null on failure.
 @intrinsic("void.malloc")
-pub fn malloc(size: usize) usize;
+pub unsafe fn malloc(size: usize) *u8;
 
 @intrinsic("void.free")
-pub fn free(ptr: usize) void;
+pub unsafe fn free(ptr: *u8) void;
 
+// Returns pointer to resized block (may differ from ptr), or null on failure.
 @intrinsic("void.realloc")
-pub fn realloc(ptr: usize, size: usize) usize;
+pub unsafe fn realloc(ptr: *u8, size: usize) *u8;
 
 @intrinsic("void.memcpy")
-pub fn memcpy(dst: usize, src: usize, n: usize) usize;
+pub unsafe fn memcpy(dst: *u8, src: *u8, n: usize) *u8;
 
 @intrinsic("void.memset")
-pub fn memset(ptr: usize, val: i32, n: usize) usize;
+pub unsafe fn memset(ptr: *u8, val: i32, n: usize) *u8;
 
 @intrinsic("void.memmove")
-pub fn memmove(dst: usize, src: usize, n: usize) usize;
+pub unsafe fn memmove(dst: *u8, src: *u8, n: usize) *u8;
 
 @intrinsic("void.memcmp")
-pub fn memcmp(a: usize, b: usize, n: usize) i32;
+pub unsafe fn memcmp(a: *u8, b: *u8, n: usize) i32;
 
 // ── String ───────────────────────────────────────────────────────────────────
 
+// Returns byte length of null-terminated C string. str is valid UTF-8 here.
 @intrinsic("void.strlen")
 pub fn strlen(s: str) usize;
+
+// Concatenate two strings into a new heap-allocated null-terminated string.
+// Caller is responsible for freeing the returned pointer with core.free.
+@intrinsic("void.str_concat")
+pub fn str_concat(s1: str, s2: str) str;
+
+// Convert i64 to heap-allocated decimal string. Caller must free with core.free.
+@intrinsic("void.int_to_str")
+pub fn int_to_str(n: i64) str;
+
+// Convert f64 to heap-allocated decimal string. Caller must free with core.free.
+@intrinsic("void.float_to_str")
+pub fn float_to_str(f: f64) str;

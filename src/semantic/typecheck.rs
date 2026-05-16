@@ -22,11 +22,60 @@ impl Analyzer {
                 let is_foreign = attributes
                     .iter()
                     .any(|a| a.name == "syscall" || a.name == "api" || a.name == "intrinsic");
+                // Functions with raw pointer params/return must be declared unsafe fn.
+                // @syscall/@api functions are exempt — they are implicitly unsafe via Symbol.unsafe_fn.
+                if !unsafe_fn && !is_foreign {
+                    let has_raw_ptr = params.iter().any(|p| type_contains_rawptr(&p.ty.node))
+                        || type_contains_rawptr(&return_ty.node);
+                    if has_raw_ptr {
+                        self.push_error(
+                            item.span,
+                            "S12",
+                            format!(
+                                "function `{}` with raw pointer types must be declared `unsafe fn`",
+                                name
+                            ),
+                        );
+                    }
+                }
+                // W05: warn when `any` appears in a non-variadic param or return type outside
+                // a trait definition (trait methods use `any` as a generic placeholder).
+                if self.trait_depth == 0 && !is_foreign {
+                    let attr_names = extract_attribute_names(attributes);
+                    if !attr_names.contains(&"ignore".to_string()) {
+                        for p in params {
+                            if !p.variadic && type_contains_any(&p.ty.node) {
+                                self.push_warning_with_suggestion(
+                                    p.ty.span,
+                                    "W05",
+                                    format!(
+                                        "parameter '{}' has type `any` — consider using a concrete type or generic",
+                                        p.name
+                                    ),
+                                    "replace `any` with a specific type, a generic parameter, or a trait bound".to_string(),
+                                );
+                            }
+                        }
+                        if type_contains_any(&return_ty.node) {
+                            self.push_warning_with_suggestion(
+                                return_ty.span,
+                                "W05",
+                                format!(
+                                    "function `{}` returns `any` — consider using a concrete type or generic",
+                                    name
+                                ),
+                                "replace `any` with a specific return type or generic".to_string(),
+                            );
+                        }
+                    }
+                }
                 if *unsafe_fn {
                     self.unsafe_depth += 1;
                 }
-                self.current_function.push(name.clone());
+                let fn_name = self.current_fn_name_override.take().unwrap_or_else(|| name.clone());
+                self.current_function.push(fn_name);
                 self.enter_scope();
+                let fn_has_format = attributes.iter().any(|a| a.name == "format");
                 for p in params {
                     let ty = unwrap_type(&p.ty);
                     let ty = if p.variadic {
@@ -41,6 +90,10 @@ impl Analyzer {
                     // If function has @syscall or @api, add @ignore to suppress unused warnings
                     if is_foreign {
                         param_attrs.push("ignore".to_string());
+                    }
+                    // @format functions: variadic args are consumed at call sites, not in body
+                    if p.variadic && fn_has_format {
+                        param_attrs.push("format".to_string());
                     }
                     self.declare(
                         p.name.clone(),
@@ -57,6 +110,7 @@ impl Analyzer {
                             variadic: false,
                             attributes: param_attrs,
                             public: false,
+                            unsafe_fn: false,
                         },
                     );
                 }
@@ -103,12 +157,19 @@ impl Analyzer {
                     self.unsafe_depth -= 1;
                 }
             }
-            ItemKind::Struct { .. }
-            | ItemKind::Trait { .. }
-            | ItemKind::Enum { .. }
-            | ItemKind::Import(_) => {}
-            ItemKind::Impl { methods, .. } => {
+            ItemKind::Struct { .. } | ItemKind::Enum { .. } | ItemKind::Import(_) => {}
+            ItemKind::Trait { .. } => {
+                // Trait method signatures are abstract — no body to type-check.
+                // trait_depth is not incremented here because TraitMethod never
+                // reaches ItemKind::Fn; W05 is naturally exempt for them.
+            }
+            ItemKind::Impl { for_ty, methods, .. } => {
+                let type_name = crate::semantic::declare::type_kind_base_name(&for_ty.node);
                 for method in methods {
+                    if let ItemKind::Fn { name, .. } = &method.node {
+                        self.current_fn_name_override =
+                            Some(format!("{}.{}", type_name, name));
+                    }
                     self.type_check_item(method);
                 }
             }
@@ -227,15 +288,6 @@ impl Analyzer {
                     }
                 }
 
-                if let Some(const_val) = &value_eval.const_value {
-                    self.push_suggestion(
-                        Some(stmt.span),
-                        format!(
-                            "initializer of '{}' is constant ({}) and can be folded",
-                            name, const_val
-                        ),
-                    );
-                }
 
                 self.declare(
                     name.clone(),
@@ -252,6 +304,7 @@ impl Analyzer {
                         variadic: false,
                         attributes: extract_attribute_names(attributes),
                         public: false,
+                        unsafe_fn: false,
                     },
                 );
                 false
@@ -291,6 +344,7 @@ impl Analyzer {
                         variadic: false,
                         attributes: extract_attribute_names(attributes),
                         public: false,
+                        unsafe_fn: false,
                     },
                 );
                 false
@@ -457,6 +511,7 @@ impl Analyzer {
                                     variadic: false,
                                     attributes: Vec::new(),
                                     public: false,
+                                    unsafe_fn: false,
                                 },
                             );
                         }
@@ -520,6 +575,16 @@ impl Analyzer {
                         );
                         ExprEval {
                             ty: sym.ty,
+                            const_value: None,
+                        }
+                    } else if matches!(sym.kind, SymbolKind::TypeName) {
+                        // Type name used as expression (e.g. Array.new(), Array.from(...)).
+                        // Return Named type so static method dispatch fires in method call handler.
+                        ExprEval {
+                            ty: Some(TypeKind::Named {
+                                name: name.clone(),
+                                type_args: vec![],
+                            }),
                             const_value: None,
                         }
                     } else {
@@ -657,7 +722,9 @@ impl Analyzer {
                     self.set_symbol_const_value(name, value_eval.const_value.clone());
                 }
 
-                value_eval
+                // Never propagate const_value from an assign expression — the assign
+                // has a side effect that must not be eliminated by const-folding.
+                ExprEval { ty: value_eval.ty, const_value: None }
             }
             ExprKind::Call {
                 callee,
@@ -694,8 +761,16 @@ impl Analyzer {
                     }
 
                     // Library functions require explicit import-by-name to be called unqualified.
+                    // Exception: library code calling other library code is always allowed
+                    // (stdlib functions call each other without import statements).
+                    let caller_is_library = self
+                        .current_function
+                        .last()
+                        .map(|f| self.library_fn_names.contains(f.as_str()))
+                        .unwrap_or(false);
                     if self.library_fn_names.contains(name.as_str())
                         && !self.explicitly_imported_fns.contains(name.as_str())
+                        && !caller_is_library
                     {
                         self.push_error(
                             callee.span,
@@ -770,68 +845,95 @@ impl Analyzer {
                     for arg in args {
                         self.type_check_expr(arg, reachable);
                     }
-                    let ref_str = TypeKind::Ref {
-                        inner: Box::new(Spanned::new(TypeKind::Str, expr.span)),
-                    };
-                    let builtin_ty = match method.as_str() {
-                        "len" => Some(TypeKind::Usize),
-                        "to_string" | "to_str" => match &object_eval.ty {
-                            Some(t)
-                                if Self::is_integer(t)
-                                    || Self::is_float(t)
-                                    || matches!(t, TypeKind::Str | TypeKind::Ref { .. }
-                                        | TypeKind::Bool) =>
-                            {
-                                Some(ref_str.clone())
+
+                    // For Named types: impl method resolution takes priority over builtins.
+                    // Returns Some(return_ty) when an impl method is found and side-effects recorded.
+                    let impl_resolved: Option<Option<TypeKind>> =
+                        if let Some(TypeKind::Named { name: type_name, .. }) = &object_eval.ty {
+                            let mangled = format!("{}.{}", type_name, method);
+                            if let Some(sym) = self.resolve_for_read(&mangled) {
+                                let from = self
+                                    .current_function
+                                    .last()
+                                    .cloned()
+                                    .unwrap_or_else(|| "__program__".to_string());
+                                self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
+                                if sym.unsafe_fn && self.unsafe_depth == 0 {
+                                    self.push_error(
+                                        expr.span,
+                                        "S11",
+                                        format!(
+                                            "call to unsafe method `{}.{}` requires unsafe block or unsafe fn context",
+                                            type_name, method
+                                        ),
+                                    );
+                                }
+                                Some(sym.ty)
+                            } else {
+                                None
                             }
-                            _ => Some(TypeKind::Named {
+                        } else {
+                            None
+                        };
+
+                    let ty = if let Some(impl_ty) = impl_resolved {
+                        impl_ty
+                    } else {
+                        let ref_str = TypeKind::Ref {
+                            inner: Box::new(Spanned::new(TypeKind::Str, expr.span)),
+                        };
+                        match method.as_str() {
+                            "len" => Some(TypeKind::Usize),
+                            "to_str" => Some(ref_str.clone()),
+                            "to_string" => Some(TypeKind::Named {
                                 name: "String".to_string(),
                                 type_args: vec![],
                             }),
-                        },
-                        "as_string" | "as_str" => match &object_eval.ty {
-                            Some(t)
-                                if matches!(t, TypeKind::Str | TypeKind::Ref { .. })
-                                    || matches!(t, TypeKind::Named { name, .. } if name == "String") =>
-                            {
-                                Some(ref_str.clone())
-                            }
-                            Some(other) => {
-                                self.push_error(expr.span, "S06",
-                                        format!("as_str() not valid for {} — use to_str() to convert primitives to string", other));
-                                None
-                            }
-                            None => None,
-                        },
-                        "parse" => type_args.first().map(|t| t.node.clone()),
-                        "abs" => match &object_eval.ty {
-                            Some(t) if Self::is_integer(t) || Self::is_float(t) => {
-                                object_eval.ty.clone()
-                            }
+                            "as_string" | "as_str" => match &object_eval.ty {
+                                Some(t)
+                                    if matches!(t, TypeKind::Str | TypeKind::Ref { .. })
+                                        || matches!(t, TypeKind::Named { name, .. } if name == "String") =>
+                                {
+                                    Some(ref_str.clone())
+                                }
+                                Some(other) => {
+                                    self.push_error(
+                                        expr.span,
+                                        "S06",
+                                        format!("as_str() not valid for {} — use to_str() to convert primitives to string", other),
+                                    );
+                                    None
+                                }
+                                None => None,
+                            },
+                            "parse" => type_args.first().map(|t| t.node.clone()),
+                            "abs" => match &object_eval.ty {
+                                Some(t) if Self::is_integer(t) || Self::is_float(t) => {
+                                    object_eval.ty.clone()
+                                }
+                                _ => None,
+                            },
+                            "min" | "max" => match &object_eval.ty {
+                                Some(t) if Self::is_integer(t) || Self::is_float(t) => {
+                                    object_eval.ty.clone()
+                                }
+                                _ => None,
+                            },
+                            "sqrt" | "floor" | "ceil" | "round" => match &object_eval.ty {
+                                Some(t) if Self::is_float(t) => object_eval.ty.clone(),
+                                _ => None,
+                            },
+                            "concat" => match &object_eval.ty {
+                                Some(t) if matches!(t, TypeKind::Str | TypeKind::Ref { .. }) => {
+                                    Some(ref_str.clone())
+                                }
+                                _ => None,
+                            },
                             _ => None,
-                        },
-                        "min" | "max" => match &object_eval.ty {
-                            Some(t) if Self::is_integer(t) || Self::is_float(t) => {
-                                object_eval.ty.clone()
-                            }
-                            _ => None,
-                        },
-                        "sqrt" | "floor" | "ceil" | "round" => match &object_eval.ty {
-                            Some(t) if Self::is_float(t) => object_eval.ty.clone(),
-                            _ => None,
-                        },
-                        "concat" => match &object_eval.ty {
-                            Some(t)
-                                if matches!(t, TypeKind::Str | TypeKind::Ref { .. }) =>
-                            {
-                                Some(ref_str.clone())
-                            }
-                            _ => None,
-                        },
-                        _ => None,
+                        }
                     };
                     ExprEval {
-                        ty: builtin_ty,
+                        ty,
                         const_value: None,
                     }
                 }
@@ -855,8 +957,59 @@ impl Analyzer {
                         }
                     }
                 }
-                self.type_check_expr(object, reachable);
-                ExprEval::default()
+                let obj_eval = self.type_check_expr(object, reachable);
+                // Resolve field type from struct_defs
+                let field_ty = match &obj_eval.ty {
+                    Some(TypeKind::Named { name: struct_name, .. }) => {
+                        self.struct_defs
+                            .get(struct_name)
+                            .and_then(|fields| fields.iter().find(|(fn_, _)| fn_ == name))
+                            .map(|(_, ty)| ty.clone())
+                    }
+                    _ => None,
+                };
+                ExprEval { ty: field_ty, const_value: None }
+            }
+            ExprKind::StructInit { name, fields } => {
+                if let Some(field_defs) = self.struct_defs.get(name).cloned() {
+                    for (fname, fval) in fields {
+                        let val_eval = self.type_check_expr(fval, reachable);
+                        if let Some((_, expected_ty)) =
+                            field_defs.iter().find(|(fn_, _)| fn_ == fname)
+                        {
+                            if let Some(got_ty) = &val_eval.ty {
+                                if !self.types_compatible(got_ty, expected_ty) {
+                                    self.push_error(
+                                        fval.span,
+                                        "S08",
+                                        format!(
+                                            "field '{}': expected {}, got {}",
+                                            fname, expected_ty, got_ty
+                                        ),
+                                    );
+                                }
+                            }
+                        } else {
+                            self.push_error(
+                                fval.span,
+                                "S07",
+                                format!("struct '{}' has no field '{}'", name, fname),
+                            );
+                        }
+                    }
+                } else {
+                    // Unknown struct — type-check all field values anyway
+                    for (_, fval) in fields {
+                        self.type_check_expr(fval, reachable);
+                    }
+                }
+                ExprEval {
+                    ty: Some(TypeKind::Named {
+                        name: name.clone(),
+                        type_args: vec![],
+                    }),
+                    const_value: None,
+                }
             }
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee_eval = self.type_check_expr(scrutinee, reachable);
@@ -888,6 +1041,7 @@ impl Analyzer {
                                 variadic: false,
                                 attributes: Vec::new(),
                                 public: false,
+                                unsafe_fn: false,
                             },
                         );
                     }
@@ -998,42 +1152,108 @@ impl Analyzer {
                     const_value: None,
                 }
             }
-            ExprKind::Index { object, index } => {
+            ExprKind::Index { object, indices } => {
                 let obj_eval = self.type_check_expr(object, reachable);
-                let idx_eval = self.type_check_expr(index, reachable);
+                let idx_evals: Vec<ExprEval> =
+                    indices.iter().map(|i| self.type_check_expr(i, reachable)).collect();
 
-                if let Some(idx_ty) = &idx_eval.ty {
-                    if !matches!(
-                        idx_ty,
-                        TypeKind::Int8
-                            | TypeKind::Int16
-                            | TypeKind::Int32
-                            | TypeKind::Int64
-                            | TypeKind::Uint8
-                            | TypeKind::Uint16
-                            | TypeKind::Uint32
-                            | TypeKind::Uint64
-                            | TypeKind::Isize
-                            | TypeKind::Usize
-                            | TypeKind::Any
-                    ) {
-                        self.push_error(
-                            index.span,
-                            "S06",
-                            format!("array index must be an integer, got {}", idx_ty),
-                        );
+                // Named type that explicitly implements the Index trait → dispatch to Type.index.
+                // Checks trait_impls registry so accidental `fn index` methods don't trigger [].
+                let maybe_index_mangled =
+                    if let Some(TypeKind::Named { name: tn, .. }) = &obj_eval.ty {
+                        let implements_index = self
+                            .trait_impls
+                            .get(tn.as_str())
+                            .map(|ts| ts.contains("Index"))
+                            .unwrap_or(false);
+                        if implements_index {
+                            let m = format!("{}.index", tn);
+                            if self.resolve_for_read(&m).is_some() { Some(m) } else { None }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                let elem_ty = if let Some(mangled) = maybe_index_mangled {
+                    let from = self
+                        .current_function
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| "__program__".to_string());
+                    self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
+                    if let Some(sym) = self.resolve_symbol(&mangled) {
+                        if sym.unsafe_fn && self.unsafe_depth == 0 {
+                            self.push_error(
+                                expr.span,
+                                "S11",
+                                format!(
+                                    "call to unsafe `[]` operator on `{}` requires unsafe block",
+                                    mangled
+                                ),
+                            );
+                        }
+                        sym.ty
+                    } else {
+                        None
                     }
-                }
-
-                let elem_ty = match &obj_eval.ty {
-                    Some(TypeKind::Array { elem_ty, .. }) => Some(elem_ty.node.clone()),
-                    Some(TypeKind::Slice { elem_ty }) => Some(elem_ty.node.clone()),
-                    _ => None,
+                } else {
+                    if let Some(first_eval) = idx_evals.first() {
+                        if let Some(idx_ty) = &first_eval.ty {
+                            if !matches!(
+                                idx_ty,
+                                TypeKind::Int8
+                                    | TypeKind::Int16
+                                    | TypeKind::Int32
+                                    | TypeKind::Int64
+                                    | TypeKind::Uint8
+                                    | TypeKind::Uint16
+                                    | TypeKind::Uint32
+                                    | TypeKind::Uint64
+                                    | TypeKind::Isize
+                                    | TypeKind::Usize
+                                    | TypeKind::Any
+                            ) {
+                                self.push_error(
+                                    indices[0].span,
+                                    "S06",
+                                    format!("array index must be an integer, got {}", idx_ty),
+                                );
+                            }
+                        }
+                    }
+                    match &obj_eval.ty {
+                        Some(TypeKind::Array { elem_ty, .. }) => Some(elem_ty.node.clone()),
+                        Some(TypeKind::Slice { elem_ty }) => Some(elem_ty.node.clone()),
+                        _ => None,
+                    }
                 };
                 ExprEval {
                     ty: elem_ty,
                     const_value: None,
                 }
+            }
+
+            ExprKind::Try { expr: inner } => {
+                let inner_eval = self.type_check_expr(inner, reachable);
+                // Validate the inner expression is Result or Option.
+                match &inner_eval.ty {
+                    Some(TypeKind::Named { name, .. })
+                        if name == "Result" || name == "Option" => {}
+                    Some(ty) => self.push_error(
+                        expr.span,
+                        "S14",
+                        format!(
+                            "`?` operator requires Result or Option, got {}",
+                            ty
+                        ),
+                    ),
+                    None => {}
+                }
+                // Result type of `?` is the unwrapped payload — can't resolve generics
+                // at this stage, so annotate as Any for now.
+                ExprEval { ty: Some(TypeKind::Any), const_value: None }
             }
         };
 
@@ -1064,6 +1284,25 @@ impl Analyzer {
             .unwrap_or_else(|| "__program__".to_string());
         *self.call_counts.entry(name.to_string()).or_insert(0) += 1;
         self.add_dependency_edge(DependencyKind::Call, &from, name);
+        // @format fns with >1 arg cause codegen to inject a call to "format".
+        let non_variadic_count = if sym.variadic {
+            sym.params.len().saturating_sub(1)
+        } else {
+            sym.params.len()
+        };
+        if sym.attributes.contains(&"format".to_string()) && args.len() > non_variadic_count {
+            self.add_dependency_edge(DependencyKind::Call, &from, "format");
+        }
+        if sym.unsafe_fn && self.unsafe_depth == 0 {
+            self.push_error(
+                callee_span,
+                "S11",
+                format!(
+                    "call to unsafe function `{}` requires unsafe block or unsafe fn context",
+                    name
+                ),
+            );
+        }
 
         let is_variadic = sym.variadic;
         let non_variadic_count = if is_variadic {
@@ -1459,9 +1698,11 @@ impl Analyzer {
                     }
                 }
             }
-            ExprKind::Index { object, index } => {
+            ExprKind::Index { object, indices } => {
                 self.type_check_expr(object, true);
-                self.type_check_expr(index, true);
+                for idx in indices {
+                    self.type_check_expr(idx, true);
+                }
             }
             _ => {
                 self.type_check_expr(target, true);
@@ -1473,6 +1714,8 @@ impl Analyzer {
     pub(super) fn types_compatible(&self, a: &TypeKind, b: &TypeKind) -> bool {
         match (a, b) {
             (TypeKind::Any, _) | (_, TypeKind::Any) => true,
+            // Never (!) is compatible with any type — diverging arms unify with anything
+            (TypeKind::Never, _) | (_, TypeKind::Never) => true,
             (TypeKind::Named { .. }, _) | (_, TypeKind::Named { .. }) => true,
             (a, b) if Self::is_integer(a) && Self::is_integer(b) => true,
             (a, b) if Self::is_float(a) && Self::is_float(b) => true,
@@ -1529,5 +1772,27 @@ impl Analyzer {
 
     pub(super) fn is_float(t: &TypeKind) -> bool {
         matches!(t, TypeKind::Float16 | TypeKind::Float32 | TypeKind::Float64)
+    }
+}
+
+fn type_contains_rawptr(ty: &TypeKind) -> bool {
+    match ty {
+        TypeKind::RawPtr { .. } => true,
+        TypeKind::Ref { inner } => type_contains_rawptr(&inner.node),
+        TypeKind::Array { elem_ty, .. } => type_contains_rawptr(&elem_ty.node),
+        TypeKind::Slice { elem_ty } => type_contains_rawptr(&elem_ty.node),
+        _ => false,
+    }
+}
+
+fn type_contains_any(ty: &TypeKind) -> bool {
+    match ty {
+        TypeKind::Any => true,
+        TypeKind::Ref { inner } => type_contains_any(&inner.node),
+        TypeKind::RawPtr { inner } => type_contains_any(&inner.node),
+        TypeKind::Array { elem_ty, .. } => type_contains_any(&elem_ty.node),
+        TypeKind::Slice { elem_ty } => type_contains_any(&elem_ty.node),
+        TypeKind::Named { type_args, .. } => type_args.iter().any(|a| type_contains_any(&a.node)),
+        _ => false,
     }
 }

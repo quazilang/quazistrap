@@ -52,7 +52,18 @@ pub enum Command {
     /// check project without compiling (reads void.toml)
     Check,
     /// create new project
-    New { name: String },
+    New {
+        name: String,
+        /// create a library project instead of a binary
+        #[arg(short = 'l', long = "lib")]
+        lib: bool,
+    },
+    /// initialize a project in the current directory
+    Init {
+        /// create a library project instead of a binary
+        #[arg(short = 'l', long = "lib")]
+        lib: bool,
+    },
     /// format source files
     Fmt,
     /// clean build artifacts

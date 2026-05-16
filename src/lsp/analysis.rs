@@ -81,12 +81,16 @@ fn std_symbols_for_source(
                 params,
                 attributes,
                 pub_fn,
+                unsafe_fn,
                 ..
             } = item.node
             {
                 if shadowed_names.contains(&name) {
                     continue;
                 }
+                let is_syscall_or_api = attributes
+                    .iter()
+                    .any(|a| matches!(a.name.as_str(), "syscall" | "api"));
                 names.insert(name.clone());
                 symbols.push((
                     name,
@@ -103,6 +107,7 @@ fn std_symbols_for_source(
                         variadic: false,
                         attributes: attributes.into_iter().map(|a| a.name).collect(),
                         public: pub_fn,
+                        unsafe_fn: unsafe_fn || is_syscall_or_api,
                     },
                 ));
             }
@@ -313,7 +318,7 @@ import std.core.write;
 import std;
 
 fn exit() void {
-    std.windows.exit_process(67);
+    unsafe { std.windows.exit_process(67); }
 }
 
 fn main() i32 {

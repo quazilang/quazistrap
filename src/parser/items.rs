@@ -270,9 +270,14 @@ impl Parser {
     pub fn parse_impl(&mut self) -> Result<Item, String> {
         let start = self.expect(TokenKind::Impl)?.span;
 
-        let trait_ty = self.parse_type()?;
-        self.expect(TokenKind::For)?;
-        let for_ty = self.parse_type()?;
+        let first_ty = self.parse_type()?;
+        let (trait_ty, for_ty) = if self.at(TokenKind::For) {
+            self.advance();
+            let for_ty = self.parse_type()?;
+            (Some(first_ty), for_ty)
+        } else {
+            (None, first_ty)
+        };
 
         self.expect(TokenKind::LBrace)?;
         let mut methods = Vec::new();
@@ -283,7 +288,20 @@ impl Parser {
             }
 
             let attrs = self.parse_attributes()?;
-            let item = self.parse_fn(attrs, false, false)?;
+            let mut is_pub = false;
+            let mut is_unsafe = false;
+            loop {
+                if self.at(TokenKind::Pub) {
+                    self.advance();
+                    is_pub = true;
+                } else if self.at(TokenKind::Unsafe) {
+                    self.advance();
+                    is_unsafe = true;
+                } else {
+                    break;
+                }
+            }
+            let item = self.parse_fn(attrs, is_unsafe, is_pub)?;
             methods.push(item);
         }
 
@@ -300,8 +318,19 @@ impl Parser {
         ))
     }
 
-    pub fn parse_import(&mut self) -> Result<Item, String> {
+    pub fn parse_import(&mut self, pub_import: bool) -> Result<Item, String> {
         let start = self.expect(TokenKind::Import)?.span;
+
+        // Detect `./` prefix: Dot + Slash → relative import (local-only, skips module resolver).
+        let relative = if self.at(TokenKind::Dot)
+            && matches!(self.peek_n(1).kind, TokenKind::Slash)
+        {
+            self.advance(); // consume '.'
+            self.advance(); // consume '/'
+            true
+        } else {
+            false
+        };
 
         let mut path: Vec<String> = Vec::new();
 
@@ -379,6 +408,8 @@ impl Parser {
             ItemKind::Import(ImportPath {
                 path,
                 items,
+                pub_import,
+                relative,
                 span: to_ast_span(span_tok),
             }),
             to_ast_span(span_tok),

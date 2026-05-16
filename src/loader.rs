@@ -15,10 +15,15 @@ pub struct LoadResult {
     pub program: Program,
     pub loaded_files: Vec<PathBuf>,
     /// Function names declared in dependency (library) files.
-    /// These require explicit import-by-name to be called unqualified.
     pub library_fn_names: HashSet<String>,
     /// Paths of files that were loaded from external modules (not user source).
     pub library_file_paths: Vec<PathBuf>,
+    /// Character-index ranges within `merged_source` that belong to library files.
+    pub library_char_ranges: Vec<std::ops::Range<usize>>,
+    /// (importer, importee) pairs from the final resolved pass — used for dep tree rendering.
+    pub dep_edges: Vec<(PathBuf, PathBuf)>,
+    /// Token count across user (non-library) source files.
+    pub token_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -73,13 +78,48 @@ pub fn load_programs_with_resolver(
 
     // Second pass: strict — std resolver available, errors on unresolved imports.
     let resolver_with_std = resolver_with_builtin_std(resolver);
-    collect_sources(entries, resolver_with_std.as_ref().or(resolver), true)
+    let effective_resolver = resolver_with_std.as_ref().or(resolver);
+
+    // Auto-inject std prelude before user entries (as a library file).
+    let prelude_path: Option<PathBuf> = effective_resolver
+        .and_then(|r| r.modules.get("std"))
+        .map(|spec| spec.src_dir.join("prelude.void"))
+        .filter(|p| p.exists());
+
+    collect_sources_with_prelude(entries, effective_resolver, prelude_path.as_deref(), true)
         .and_then(finalize_sources)
 }
 
 struct SourceCollection {
     sources: Vec<(PathBuf, String)>,
     library_paths: HashSet<PathBuf>,
+    dep_edges: Vec<(PathBuf, PathBuf)>,
+}
+
+fn collect_sources_with_prelude(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    prelude: Option<&Path>,
+    strict: bool,
+) -> Result<SourceCollection, String> {
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut sources: Vec<(PathBuf, String)> = Vec::new();
+    let mut library_paths: HashSet<PathBuf> = HashSet::new();
+    let mut dep_edges: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+    if let Some(p) = prelude {
+        collect(p, true, &mut visited, &mut sources, &mut library_paths, resolver, strict, &mut dep_edges)?;
+    }
+
+    for entry in entries {
+        collect(entry, false, &mut visited, &mut sources, &mut library_paths, resolver, strict, &mut dep_edges)?;
+    }
+
+    Ok(SourceCollection {
+        sources,
+        library_paths,
+        dep_edges,
+    })
 }
 
 fn collect_sources(
@@ -87,32 +127,14 @@ fn collect_sources(
     resolver: Option<&ModuleResolver>,
     strict: bool,
 ) -> Result<SourceCollection, String> {
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    let mut sources: Vec<(PathBuf, String)> = Vec::new();
-    let mut library_paths: HashSet<PathBuf> = HashSet::new();
-
-    for entry in entries {
-        collect(
-            entry,
-            false,
-            &mut visited,
-            &mut sources,
-            &mut library_paths,
-            resolver,
-            strict,
-        )?;
-    }
-
-    Ok(SourceCollection {
-        sources,
-        library_paths,
-    })
+    collect_sources_with_prelude(entries, resolver, None, strict)
 }
 
 fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> {
     let SourceCollection {
         mut sources,
         library_paths,
+        dep_edges,
     } = collection;
 
     let user_fn_names = collect_user_function_names(&sources, &library_paths);
@@ -148,19 +170,30 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         let mut pr = Parser::new(toks);
         if let Ok(prog) = pr.parse() {
             for item in &prog.items {
-                if let ItemKind::Fn { name, .. } = &item.node {
-                    library_fn_names.insert(name.clone());
+                if let ItemKind::Fn { name, pub_fn, .. } = &item.node {
+                    if *pub_fn {
+                        library_fn_names.insert(name.clone());
+                    }
                 }
             }
         }
     }
 
     let mut merged = String::new();
-    for (_, src) in &sources {
+    let mut library_char_ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut char_pos: usize = 0;
+
+    for (path, src) in &sources {
         if !merged.is_empty() {
             merged.push('\n');
+            char_pos += 1;
+        }
+        let src_char_len = src.chars().count();
+        if library_paths.contains(path) {
+            library_char_ranges.push(char_pos..char_pos + src_char_len);
         }
         merged.push_str(src);
+        char_pos += src_char_len;
     }
 
     let mut lexer = Lexer::new(&merged);
@@ -168,12 +201,28 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
     let mut parser = Parser::new_with_source(tokens, &merged);
     let program = parser.parse()?;
 
+    // Count tokens in user (non-library) source for progress display.
+    let token_count = sources
+        .iter()
+        .filter(|(p, _)| !library_paths.contains(p))
+        .map(|(_, src)| {
+            let mut lx = Lexer::new(src);
+            lx.tokenize()
+                .into_iter()
+                .filter(|t| !matches!(t.kind, TokenKind::Eof))
+                .count()
+        })
+        .sum();
+
     Ok(LoadResult {
         merged_source: merged,
         program,
         loaded_files,
         library_fn_names,
         library_file_paths,
+        library_char_ranges,
+        dep_edges,
+        token_count,
     })
 }
 
@@ -414,6 +463,7 @@ fn collect(
     library_paths: &mut HashSet<PathBuf>,
     resolver: Option<&ModuleResolver>,
     strict: bool,
+    dep_edges: &mut Vec<(PathBuf, PathBuf)>,
 ) -> Result<(), String> {
     let canonical = path
         .canonicalize()
@@ -427,6 +477,7 @@ fn collect(
         .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
 
     for (dep, dep_is_lib) in local_import_paths(path, &src, resolver, strict)? {
+        dep_edges.push((path.to_path_buf(), dep.clone()));
         collect(
             &dep,
             is_library || dep_is_lib,
@@ -435,6 +486,7 @@ fn collect(
             library_paths,
             resolver,
             strict,
+            dep_edges,
         )?;
     }
 
@@ -474,16 +526,25 @@ fn local_import_paths(
             continue;
         };
 
+        if !ip.relative {
         if let Some(mods) = resolver {
             if let Some(spec) = mods.modules.get(&base) {
                 if remainder.is_empty() && base == "std" {
                     // import std; — only load sub-modules actually used in source
                     for module in used_std_modules(src) {
                         let mut target = spec.src_dir.clone();
-                        target.push(module);
-                        target.set_extension("void");
-                        if target.exists() && seen.insert(target.clone()) {
-                            paths.push((target, true));
+                        target.push(&module);
+                        // Check for mod.void first (opaque module directory)
+                        let mod_void = target.join("mod.void");
+                        if mod_void.exists() {
+                            if seen.insert(mod_void.clone()) {
+                                paths.push((mod_void, true));
+                            }
+                        } else {
+                            target.set_extension("void");
+                            if target.exists() && seen.insert(target.clone()) {
+                                paths.push((target, true));
+                            }
                         }
                     }
                     continue;
@@ -492,31 +553,55 @@ fn local_import_paths(
                 let target = if remainder.is_empty() {
                     spec.entry.clone()
                 } else {
-                    // Try progressively shorter paths: the last segment(s) may be
-                    // function/symbol names rather than file path components.
-                    // e.g. `import std.core.write` → try core/write.void first,
-                    // then core.void (where `write` is the imported symbol name).
-                    let mut found: Option<PathBuf> = None;
-                    for len in (1..=remainder.len()).rev() {
-                        let mut candidate = spec.src_dir.clone();
-                        for seg in &remainder[..len] {
-                            candidate.push(seg);
+                    // mod.void opaque directory check: if first remainder segment is a
+                    // directory with mod.void, enforce opaqueness.
+                    let first = &remainder[0];
+                    let mod_void_path = spec.src_dir.join(first).join("mod.void");
+                    if mod_void_path.exists() {
+                        if remainder.len() > 1 {
+                            let sub = &remainder[1];
+                            if strict && !is_pub_exported_from_mod(&mod_void_path, sub)? {
+                                return Err(format!(
+                                    "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.void'",
+                                    sub, first, sub, first
+                                ));
+                            }
+                            // Targeted: load only the specific file, skip mod.void
+                            if let Some(specific) = find_pub_exported_file(&mod_void_path, sub) {
+                                if seen.insert(specific.clone()) {
+                                    paths.push((specific, true));
+                                }
+                                continue;
+                            }
                         }
-                        candidate.set_extension("void");
-                        if candidate.exists() {
-                            found = Some(candidate);
-                            break;
+                        mod_void_path
+                    } else {
+                        // Try progressively shorter paths: the last segment(s) may be
+                        // function/symbol names rather than file path components.
+                        // e.g. `import std.core.write` → try core/write.void first,
+                        // then core.void (where `write` is the imported symbol name).
+                        let mut found: Option<PathBuf> = None;
+                        for len in (1..=remainder.len()).rev() {
+                            let mut candidate = spec.src_dir.clone();
+                            for seg in &remainder[..len] {
+                                candidate.push(seg);
+                            }
+                            candidate.set_extension("void");
+                            if candidate.exists() {
+                                found = Some(candidate);
+                                break;
+                            }
                         }
+                        // If nothing found, use the full path so the error message is useful.
+                        found.unwrap_or_else(|| {
+                            let mut full = spec.src_dir.clone();
+                            for seg in &remainder {
+                                full.push(seg);
+                            }
+                            full.set_extension("void");
+                            full
+                        })
                     }
-                    // If nothing found, use the full path so the error message is useful.
-                    found.unwrap_or_else(|| {
-                        let mut full = spec.src_dir.clone();
-                        for seg in &remainder {
-                            full.push(seg);
-                        }
-                        full.set_extension("void");
-                        full
-                    })
                 };
 
                 if !target.exists() {
@@ -532,28 +617,48 @@ fn local_import_paths(
                 continue;
             }
         }
+        } // end !ip.relative
 
         let candidate = dir.join(format!("{}.void", base));
         if candidate.exists() && seen.insert(candidate.clone()) {
             paths.push((candidate, false)); // local file → not library
         } else if !remainder.is_empty() {
-            // Progressive subfile resolution under a directory namespace.
-            // e.g. `import a.y` → try `a/y.void`, `import a.y.method` → `a/y/method.void` then `a/y.void`
-            let mut found = false;
-            for len in (1..=remainder.len()).rev() {
-                let mut sub = dir.join(&base);
-                for seg in &remainder[..len] {
-                    sub.push(seg);
+            // mod.void opaque directory check for local imports
+            let base_dir = dir.join(&base);
+            let mod_void = base_dir.join("mod.void");
+            if mod_void.exists() {
+                let sub = &remainder[0];
+                if strict && !is_pub_exported_from_mod(&mod_void, sub)? {
+                    return Err(format!(
+                        "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.void'",
+                        sub, base, sub, base
+                    ));
                 }
-                sub.set_extension("void");
-                if sub.exists() && seen.insert(sub.clone()) {
-                    paths.push((sub, true)); // library = true
-                    found = true;
-                    break;
+                // Targeted: load only the specific file, skip mod.void
+                if let Some(specific) = find_pub_exported_file(&mod_void, sub) {
+                    if seen.insert(specific.clone()) {
+                        paths.push((specific, true));
+                    }
+                } else if seen.insert(mod_void.clone()) {
+                    paths.push((mod_void, true));
                 }
-            }
-            if !found {
-                if strict {
+            } else {
+                // Progressive subfile resolution under a directory namespace.
+                // e.g. `import a.y` → try `a/y.void`, `import a.y.method` → `a/y/method.void` then `a/y.void`
+                let mut found = false;
+                for len in (1..=remainder.len()).rev() {
+                    let mut sub = dir.join(&base);
+                    for seg in &remainder[..len] {
+                        sub.push(seg);
+                    }
+                    sub.set_extension("void");
+                    if sub.exists() && seen.insert(sub.clone()) {
+                        paths.push((sub, true)); // library = true
+                        found = true;
+                        break;
+                    }
+                }
+                if !found && strict {
                     return Err(format!(
                         "cannot resolve import '{}.{}': no such file",
                         base,
@@ -565,16 +670,24 @@ fn local_import_paths(
             // Directory namespace: import a; where a/ is a directory
             let ns_dir = dir.join(&base);
             if ns_dir.is_dir() {
-                let mut entries: Vec<_> = std::fs::read_dir(&ns_dir)
-                    .map_err(|e| format!("cannot read directory '{}': {}", ns_dir.display(), e))?
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|ext| ext == "void"))
-                    .collect();
-                entries.sort();
-                for f in entries {
-                    if seen.insert(f.clone()) {
-                        paths.push((f, true)); // library = true
+                let mod_void = ns_dir.join("mod.void");
+                if mod_void.exists() {
+                    // Opaque module: load only mod.void (it pub-imports what's needed)
+                    if seen.insert(mod_void.clone()) {
+                        paths.push((mod_void, true));
+                    }
+                } else {
+                    let mut entries: Vec<_> = std::fs::read_dir(&ns_dir)
+                        .map_err(|e| format!("cannot read directory '{}': {}", ns_dir.display(), e))?
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .filter(|p| p.extension().is_some_and(|ext| ext == "void"))
+                        .collect();
+                    entries.sort();
+                    for f in entries {
+                        if seen.insert(f.clone()) {
+                            paths.push((f, true)); // library = true
+                        }
                     }
                 }
             } else if strict {
@@ -587,6 +700,69 @@ fn local_import_paths(
     }
 
     Ok(paths)
+}
+
+/// Find the file that a `mod.void` pub-exports `name` from.
+/// e.g. `pub import map.Map` → returns `mod_void_dir/map.void`
+fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
+    let src = std::fs::read_to_string(mod_void).ok()?;
+    let prog = parse_source(&src).ok()?;
+    let mod_dir = mod_void.parent()?;
+
+    for item in &prog.items {
+        let ItemKind::Import(ip) = &item.node else { continue };
+        if !ip.pub_import { continue }
+
+        let exports_name = match &ip.items {
+            crate::parser::ast::ImportItems::Single(n)
+            | crate::parser::ast::ImportItems::Aliased(n, _) => n == name,
+            crate::parser::ast::ImportItems::Multiple(names) => names.iter().any(|n| n == name),
+            crate::parser::ast::ImportItems::All => true,
+        };
+        if !exports_name { continue }
+
+        // Resolve file: path segments + optional last segment from items
+        let mut file_path = mod_dir.to_path_buf();
+        for seg in &ip.path {
+            file_path.push(seg);
+        }
+        file_path.set_extension("void");
+        if file_path.exists() {
+            return Some(file_path);
+        }
+    }
+    None
+}
+
+fn is_pub_exported_from_mod(mod_void: &Path, name: &str) -> Result<bool, String> {
+    let src = std::fs::read_to_string(mod_void)
+        .map_err(|e| format!("cannot read '{}': {}", mod_void.display(), e))?;
+    let Ok(prog) = parse_source(&src) else {
+        return Ok(false);
+    };
+    for item in &prog.items {
+        let ItemKind::Import(ip) = &item.node else {
+            continue;
+        };
+        if !ip.pub_import {
+            continue;
+        }
+        match &ip.items {
+            crate::parser::ast::ImportItems::Single(n)
+            | crate::parser::ast::ImportItems::Aliased(n, _) => {
+                if n == name {
+                    return Ok(true);
+                }
+            }
+            crate::parser::ast::ImportItems::Multiple(names) => {
+                if names.iter().any(|n| n == name) {
+                    return Ok(true);
+                }
+            }
+            crate::parser::ast::ImportItems::All => return Ok(true),
+        }
+    }
+    Ok(false)
 }
 
 fn import_base_and_remainder(ip: &crate::parser::ast::ImportPath) -> Option<(String, Vec<String>)> {
@@ -727,18 +903,18 @@ mod tests {
         let main_path = root.join("main.void");
         fs::write(
             &main_path,
+            // Shadow sleep_ms — unlike exit, panic.void does not call sleep_ms,
+            // so there is no arity conflict from the prelude's __void_panic_handler.
             r#"
 import std.core.write;
 import std;
 
-fn exit() void {
-    std.windows.exit_process(67);
-}
+fn sleep_ms() void { }
 
 fn main() i32 {
     const msg: str = "hey!\n";
     write(1, msg, msg.len());
-    exit();
+    sleep_ms();
     ret 0;
 }
 "#,
@@ -751,13 +927,14 @@ fn main() i32 {
             "explicitly imported std.core.write should remain available"
         );
         assert!(
-            !result.library_fn_names.contains("exit"),
-            "unimported std.core.exit should be filtered when user defines exit"
+            !result.library_fn_names.contains("sleep_ms"),
+            "unimported std.core.sleep_ms should be filtered when user defines sleep_ms"
         );
         let report = crate::analysis::analyze_program(
             &result.merged_source,
             &result.program,
             result.library_fn_names,
+            result.library_char_ranges,
         );
         assert!(
             report.errors.is_empty(),

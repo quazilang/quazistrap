@@ -1,0 +1,13 @@
+// std.fmt — string formatting
+
+import std.core;
+
+// Concatenate two strings. Returns heap-allocated null-terminated str.
+pub fn concat(a: str, b: str) str {
+    ret core.str_concat(a, b);
+}
+
+// Format string with {} placeholders. Accepts any Display-compatible arg.
+// Args are auto-converted from primitive types by the compiler.
+@intrinsic("void.format")
+pub fn format(template: str, ...args: any) str;

@@ -67,6 +67,8 @@ pub enum TokenKind {
     Str,
     Void,
     Any,
+    True,
+    False,
 
     // symbols
     LParen,    // (
@@ -113,6 +115,9 @@ pub enum TokenKind {
     // increment / decrement
     PlusPlus,   // ++
     MinusMinus, // --
+
+    // try operator
+    Question, // ?
 
     // directives
     Platform, // platform
@@ -183,6 +188,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Str => write!(f, "str"),
             TokenKind::Void => write!(f, "void"),
             TokenKind::Any => write!(f, "any"),
+            TokenKind::True => write!(f, "true"),
+            TokenKind::False => write!(f, "false"),
 
             TokenKind::LParen => write!(f, "("),
             TokenKind::RParen => write!(f, ")"),
@@ -224,6 +231,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::PercentEq => write!(f, "%="),
             TokenKind::PlusPlus => write!(f, "++"),
             TokenKind::MinusMinus => write!(f, "--"),
+            TokenKind::Question => write!(f, "?"),
 
             TokenKind::Platform => write!(f, "platform"),
             TokenKind::Eof => write!(f, "EOF"),

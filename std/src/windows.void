@@ -1,6 +1,6 @@
 // std.windows — Windows Win32 API bindings via @api
 // All functions use Win64 calling convention (rcx, rdx, r8, r9).
-// Not available on Linux/macOS (@api emits no-op when target is not Windows).
+// All functions are implicitly unsafe — callers must wrap in unsafe {}.
 //
 // Required libs (add to void.toml [build].flags or linker invocation):
 //   kernel32.lib  — handles, process, memory, console, sync, registry
@@ -9,12 +9,13 @@
 //   ws2_32.lib    — WinSock2 networking
 //
 // Type conventions:
-//   HANDLE / HMODULE / HWND / HKEY etc. → usize (opaque pointer-sized)
+//   HANDLE / HMODULE / HWND / HKEY etc. → usize (opaque kernel handle, not dereffed)
 //   BOOL  → i32 (0 = FALSE, nonzero = TRUE)
 //   DWORD → u32
 //   WORD  → u16
-//   LPSTR / LPCSTR / char* → str (C string pointer)
-//   LPVOID / void* → usize
+//   LPSTR / LPCSTR / char* → str (C string pointer, read-only)
+//   void* / struct* → *u8 (raw byte pointer to heap/stack data)
+//   LPDWORD / DWORD* → *u32 (out-parameter pointer to DWORD)
 //   SIZE_T → usize
 //   UINT / int → i32 or u32 depending on signedness
 
@@ -29,32 +30,34 @@ pub fn get_std_handle(n_std_handle: u32) usize;
 @api("CloseHandle")
 pub fn close_handle(object: usize) i32;
 
+// dst: pointer to HANDLE output
 @api("DuplicateHandle")
-pub fn duplicate_handle(src_proc: usize, src: usize, dst_proc: usize, dst: usize, access: u32, inherit: i32, options: u32) i32;
+pub unsafe fn duplicate_handle(src_proc: usize, src: usize, dst_proc: usize, dst: *u8, access: u32, inherit: i32, options: u32) i32;
 
 // ── Console I/O ──────────────────────────────────────────────────────────────
 
-// WriteFile — works on files, pipes, consoles, and serial ports
-// overlapped: 0 for synchronous
+// n_written: pointer to DWORD output (bytes written); overlapped: pointer to OVERLAPPED or null
 @api("WriteFile")
-pub fn write_file(file: usize, buf: str, n_to_write: u32, n_written: usize, overlapped: usize) i32;
+pub unsafe fn write_file(file: usize, buf: str, n_to_write: u32, n_written: *u32, overlapped: *u8) i32;
 
+// n_read: pointer to DWORD output (bytes read); overlapped: pointer to OVERLAPPED or null
 @api("ReadFile")
-pub fn read_file(file: usize, buf: str, n_to_read: u32, n_read: usize, overlapped: usize) i32;
+pub unsafe fn read_file(file: usize, buf: str, n_to_read: u32, n_read: *u32, overlapped: *u8) i32;
 
-// WriteConsoleA — console-only; fails on redirected stdout
+// n_written: pointer to DWORD output; reserved: must be null
 @api("WriteConsoleA")
-pub fn write_console_a(console: usize, buf: str, n_chars: u32, n_written: usize, reserved: usize) i32;
+pub unsafe fn write_console_a(console: usize, buf: str, n_chars: u32, n_written: *u32, reserved: *u8) i32;
 
+// n_read: pointer to DWORD output; reserved: must be null
 @api("ReadConsoleA")
-pub fn read_console_a(console: usize, buf: str, n_chars: u32, n_read: usize, reserved: usize) i32;
+pub unsafe fn read_console_a(console: usize, buf: str, n_chars: u32, n_read: *u32, reserved: *u8) i32;
 
 @api("FlushFileBuffers")
 pub fn flush_file_buffers(file: usize) i32;
 
-// mode: ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, etc.
+// mode: pointer to DWORD output
 @api("GetConsoleMode")
-pub fn get_console_mode(console: usize, mode: usize) i32;
+pub unsafe fn get_console_mode(console: usize, mode: *u32) i32;
 
 @api("SetConsoleMode")
 pub fn set_console_mode(console: usize, mode: u32) i32;
@@ -77,25 +80,30 @@ pub fn get_console_window() usize;
 
 // ── File I/O ─────────────────────────────────────────────────────────────────
 
+// security: pointer to SECURITY_ATTRIBUTES or null; template: file handle or null
 // access: GENERIC_READ=0x80000000, GENERIC_WRITE=0x40000000
 // share: FILE_SHARE_READ=1, FILE_SHARE_WRITE=2
 // disposition: CREATE_NEW=1, CREATE_ALWAYS=2, OPEN_EXISTING=3, OPEN_ALWAYS=4, TRUNCATE_EXISTING=5
 // flags: FILE_ATTRIBUTE_NORMAL=128, FILE_FLAG_OVERLAPPED=0x40000000
 @api("CreateFileA")
-pub fn create_file_a(path: str, access: u32, share: u32, security: usize, disposition: u32, flags: u32, template: usize) usize;
+pub unsafe fn create_file_a(path: str, access: u32, share: u32, security: *u8, disposition: u32, flags: u32, template: usize) usize;
 
+// high: pointer to DWORD for high 32 bits of size (or null)
 @api("GetFileSize")
-pub fn get_file_size(file: usize, high: usize) u32;
+pub unsafe fn get_file_size(file: usize, high: *u32) u32;
 
+// size: pointer to LARGE_INTEGER (i64) output
 @api("GetFileSizeEx")
-pub fn get_file_size_ex(file: usize, size: usize) i32;
+pub unsafe fn get_file_size_ex(file: usize, size: *i64) i32;
 
 // method: FILE_BEGIN=0, FILE_CURRENT=1, FILE_END=2
+// dist_high: pointer to i32 high word (or null)
 @api("SetFilePointer")
-pub fn set_file_pointer(file: usize, dist_low: i32, dist_high: usize, method: u32) u32;
+pub unsafe fn set_file_pointer(file: usize, dist_low: i32, dist_high: *i32, method: u32) u32;
 
+// new_ptr: pointer to LARGE_INTEGER output for new position (or null)
 @api("SetFilePointerEx")
-pub fn set_file_pointer_ex(file: usize, dist: i64, new_ptr: usize, method: u32) i32;
+pub unsafe fn set_file_pointer_ex(file: usize, dist: i64, new_ptr: *i64, method: u32) i32;
 
 @api("DeleteFileA")
 pub fn delete_file_a(path: str) i32;
@@ -106,8 +114,9 @@ pub fn move_file_a(existing: str, new_path: str) i32;
 @api("CopyFileA")
 pub fn copy_file_a(existing: str, new_path: str, fail_if_exists: i32) i32;
 
+// security: pointer to SECURITY_ATTRIBUTES or null
 @api("CreateDirectoryA")
-pub fn create_directory_a(path: str, security: usize) i32;
+pub unsafe fn create_directory_a(path: str, security: *u8) i32;
 
 @api("RemoveDirectoryA")
 pub fn remove_directory_a(path: str) i32;
@@ -118,12 +127,12 @@ pub fn get_current_directory_a(buf_len: u32, buf: str) u32;
 @api("SetCurrentDirectoryA")
 pub fn set_current_directory_a(path: str) i32;
 
-// data: pointer to WIN32_FIND_DATAA struct
+// data: pointer to WIN32_FIND_DATAA struct output; returns search handle
 @api("FindFirstFileA")
-pub fn find_first_file_a(pattern: str, data: usize) usize;
+pub unsafe fn find_first_file_a(pattern: str, data: *u8) usize;
 
 @api("FindNextFileA")
-pub fn find_next_file_a(handle: usize, data: usize) i32;
+pub unsafe fn find_next_file_a(handle: usize, data: *u8) i32;
 
 @api("FindClose")
 pub fn find_close(handle: usize) i32;
@@ -154,10 +163,12 @@ pub fn get_current_thread_id() u32;
 @api("ExitProcess")
 pub fn exit_process(exit_code: u32) void;
 
-// startup_info: pointer to STARTUPINFOA; proc_info: pointer to PROCESS_INFORMATION
+// proc_sec/thread_sec: pointer to SECURITY_ATTRIBUTES or null
+// env: pointer to environment block or null (inherit parent)
+// startup: pointer to STARTUPINFOA; proc_info: pointer to PROCESS_INFORMATION output
 // creation_flags: CREATE_NEW_CONSOLE=0x10, CREATE_SUSPENDED=0x4, DETACHED_PROCESS=0x8
 @api("CreateProcessA")
-pub fn create_process_a(app: str, cmd: str, proc_sec: usize, thread_sec: usize, inherit: i32, flags: u32, env: usize, dir: str, startup: usize, proc_info: usize) i32;
+pub unsafe fn create_process_a(app: str, cmd: str, proc_sec: *u8, thread_sec: *u8, inherit: i32, flags: u32, env: *u8, dir: str, startup: *u8, proc_info: *u8) i32;
 
 // access: PROCESS_ALL_ACCESS=0x1FFFFF, PROCESS_QUERY_INFORMATION=0x400
 @api("OpenProcess")
@@ -166,24 +177,30 @@ pub fn open_process(access: u32, inherit: i32, pid: u32) usize;
 @api("TerminateProcess")
 pub fn terminate_process(proc: usize, exit_code: u32) i32;
 
+// exit_code: pointer to DWORD output
 @api("GetExitCodeProcess")
-pub fn get_exit_code_process(proc: usize, exit_code: usize) i32;
+pub unsafe fn get_exit_code_process(proc: usize, exit_code: *u32) i32;
 
 @api("GetExitCodeThread")
-pub fn get_exit_code_thread(thread: usize, exit_code: usize) i32;
+pub unsafe fn get_exit_code_thread(thread: usize, exit_code: *u32) i32;
 
 // milliseconds: INFINITE=0xFFFFFFFF
 @api("WaitForSingleObject")
 pub fn wait_for_single_object(handle: usize, ms: u32) u32;
 
+// handles: pointer to HANDLE[] array
 @api("WaitForMultipleObjects")
-pub fn wait_for_multiple_objects(count: u32, handles: usize, wait_all: i32, ms: u32) u32;
+pub unsafe fn wait_for_multiple_objects(count: u32, handles: *u8, wait_all: i32, ms: u32) u32;
 
 // ── Thread ───────────────────────────────────────────────────────────────────
 
-// stack_size: 0 = default; creation_flags: 0 = run immediately, CREATE_SUSPENDED=4
+// security: pointer to SECURITY_ATTRIBUTES or null
+// start_routine: function pointer (LPTHREAD_START_ROUTINE) — pass as usize until fn ptr support
+// param: pointer to thread parameter (or null)
+// thread_id: pointer to DWORD output for thread ID (or null)
+// creation_flags: 0 = run immediately, CREATE_SUSPENDED=4
 @api("CreateThread")
-pub fn create_thread(security: usize, stack_size: usize, start_routine: usize, param: usize, flags: u32, thread_id: usize) usize;
+pub unsafe fn create_thread(security: *u8, stack_size: usize, start_routine: usize, param: *u8, flags: u32, thread_id: *u32) usize;
 
 @api("ExitThread")
 pub fn exit_thread(exit_code: u32) void;
@@ -210,11 +227,13 @@ pub fn get_thread_priority(thread: usize) i32;
 @api("TlsAlloc")
 pub fn tls_alloc() u32;
 
+// Returns pointer to thread-local value
 @api("TlsGetValue")
-pub fn tls_get_value(index: u32) usize;
+pub unsafe fn tls_get_value(index: u32) *u8;
 
+// value: pointer to thread-local data
 @api("TlsSetValue")
-pub fn tls_set_value(index: u32, value: usize) i32;
+pub unsafe fn tls_set_value(index: u32, value: *u8) i32;
 
 @api("TlsFree")
 pub fn tls_free(index: u32) i32;
@@ -227,36 +246,43 @@ pub fn sleep_ex(ms: u32, alertable: i32) u32;
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 
+// addr: preferred base address or null for kernel choice; returns committed pointer or null
 // type: MEM_COMMIT=0x1000, MEM_RESERVE=0x2000, MEM_COMMIT|MEM_RESERVE=0x3000
-// protect: PAGE_READWRITE=4, PAGE_READONLY=2, PAGE_EXECUTE_READ=0x20, PAGE_EXECUTE_READWRITE=0x40, PAGE_NOACCESS=1
+// protect: PAGE_READWRITE=4, PAGE_READONLY=2, PAGE_EXECUTE_READ=0x20, PAGE_EXECUTE_READWRITE=0x40
 @api("VirtualAlloc")
-pub fn virtual_alloc(addr: usize, size: usize, alloc_type: u32, protect: u32) usize;
+pub unsafe fn virtual_alloc(addr: *u8, size: usize, alloc_type: u32, protect: u32) *u8;
 
-// type: MEM_RELEASE=0x8000, MEM_DECOMMIT=0x4000
+// addr: pointer returned by VirtualAlloc; type: MEM_RELEASE=0x8000, MEM_DECOMMIT=0x4000
 @api("VirtualFree")
-pub fn virtual_free(addr: usize, size: usize, free_type: u32) i32;
+pub unsafe fn virtual_free(addr: *u8, size: usize, free_type: u32) i32;
 
+// old_protect: pointer to DWORD output for previous protection flags
 @api("VirtualProtect")
-pub fn virtual_protect(addr: usize, size: usize, new_protect: u32, old_protect: usize) i32;
+pub unsafe fn virtual_protect(addr: *u8, size: usize, new_protect: u32, old_protect: *u32) i32;
 
+// buf: pointer to MEMORY_BASIC_INFORMATION output
 @api("VirtualQuery")
-pub fn virtual_query(addr: usize, buf: usize, len: usize) usize;
+pub unsafe fn virtual_query(addr: *u8, buf: *u8, len: usize) usize;
 
+// Returns process heap handle
 @api("GetProcessHeap")
 pub fn get_process_heap() usize;
 
-// flags: HEAP_ZERO_MEMORY=8
+// flags: HEAP_ZERO_MEMORY=8; returns pointer to allocated block or null
 @api("HeapAlloc")
-pub fn heap_alloc(heap: usize, flags: u32, size: usize) usize;
+pub unsafe fn heap_alloc(heap: usize, flags: u32, size: usize) *u8;
 
+// mem: pointer previously returned by HeapAlloc/HeapReAlloc
 @api("HeapFree")
-pub fn heap_free(heap: usize, flags: u32, mem: usize) i32;
+pub unsafe fn heap_free(heap: usize, flags: u32, mem: *u8) i32;
 
+// mem: pointer to reallocate; returns new pointer or null on failure
 @api("HeapReAlloc")
-pub fn heap_realloc(heap: usize, flags: u32, mem: usize, size: usize) usize;
+pub unsafe fn heap_realloc(heap: usize, flags: u32, mem: *u8, size: usize) *u8;
 
+// Returns size of allocated block
 @api("HeapSize")
-pub fn heap_size(heap: usize, flags: u32, mem: usize) usize;
+pub unsafe fn heap_size(heap: usize, flags: u32, mem: *u8) usize;
 
 @api("HeapCreate")
 pub fn heap_create(options: u32, initial: usize, maximum: usize) usize;
@@ -264,24 +290,25 @@ pub fn heap_create(options: u32, initial: usize, maximum: usize) usize;
 @api("HeapDestroy")
 pub fn heap_destroy(heap: usize) i32;
 
-// flags: LMEM_FIXED=0, LMEM_ZEROINIT=0x40
+// flags: LMEM_FIXED=0, LMEM_ZEROINIT=0x40; returns pointer to allocated block
 @api("LocalAlloc")
-pub fn local_alloc(flags: u32, size: usize) usize;
+pub unsafe fn local_alloc(flags: u32, size: usize) *u8;
 
+// mem: pointer returned by LocalAlloc; returns null on success, mem on failure
 @api("LocalFree")
-pub fn local_free(mem: usize) usize;
+pub unsafe fn local_free(mem: *u8) *u8;
 
 @api("GlobalAlloc")
-pub fn global_alloc(flags: u32, size: usize) usize;
+pub unsafe fn global_alloc(flags: u32, size: usize) *u8;
 
 @api("GlobalFree")
-pub fn global_free(mem: usize) usize;
+pub unsafe fn global_free(mem: *u8) *u8;
 
 // ── Synchronization ──────────────────────────────────────────────────────────
 
-// initial_owner: TRUE=1 if creating thread owns mutex
+// security: pointer to SECURITY_ATTRIBUTES or null; initial_owner: TRUE=1
 @api("CreateMutexA")
-pub fn create_mutex_a(security: usize, initial_owner: i32, name: str) usize;
+pub unsafe fn create_mutex_a(security: *u8, initial_owner: i32, name: str) usize;
 
 @api("OpenMutexA")
 pub fn open_mutex_a(access: u32, inherit: i32, name: str) usize;
@@ -289,9 +316,9 @@ pub fn open_mutex_a(access: u32, inherit: i32, name: str) usize;
 @api("ReleaseMutex")
 pub fn release_mutex(mutex: usize) i32;
 
-// manual_reset: TRUE=1 for manual, FALSE=0 for auto-reset
+// security: pointer to SECURITY_ATTRIBUTES or null; manual_reset: TRUE=1 for manual
 @api("CreateEventA")
-pub fn create_event_a(security: usize, manual_reset: i32, initial_state: i32, name: str) usize;
+pub unsafe fn create_event_a(security: *u8, manual_reset: i32, initial_state: i32, name: str) usize;
 
 @api("OpenEventA")
 pub fn open_event_a(access: u32, inherit: i32, name: str) usize;
@@ -305,27 +332,29 @@ pub fn reset_event(event: usize) i32;
 @api("PulseEvent")
 pub fn pulse_event(event: usize) i32;
 
+// security: pointer to SECURITY_ATTRIBUTES or null
 @api("CreateSemaphoreA")
-pub fn create_semaphore_a(security: usize, initial: i32, maximum: i32, name: str) usize;
+pub unsafe fn create_semaphore_a(security: *u8, initial: i32, maximum: i32, name: str) usize;
 
+// prev: pointer to LONG output for previous count (or null)
 @api("ReleaseSemaphore")
-pub fn release_semaphore(sem: usize, count: i32, prev: usize) i32;
+pub unsafe fn release_semaphore(sem: usize, count: i32, prev: *i32) i32;
 
 // cs: pointer to CRITICAL_SECTION (40 bytes on x86-64)
 @api("InitializeCriticalSection")
-pub fn initialize_critical_section(cs: usize) void;
+pub unsafe fn initialize_critical_section(cs: *u8) void;
 
 @api("EnterCriticalSection")
-pub fn enter_critical_section(cs: usize) void;
+pub unsafe fn enter_critical_section(cs: *u8) void;
 
 @api("TryEnterCriticalSection")
-pub fn try_enter_critical_section(cs: usize) i32;
+pub unsafe fn try_enter_critical_section(cs: *u8) i32;
 
 @api("LeaveCriticalSection")
-pub fn leave_critical_section(cs: usize) void;
+pub unsafe fn leave_critical_section(cs: *u8) void;
 
 @api("DeleteCriticalSection")
-pub fn delete_critical_section(cs: usize) void;
+pub unsafe fn delete_critical_section(cs: *u8) void;
 
 // ── Error ────────────────────────────────────────────────────────────────────
 
@@ -335,19 +364,22 @@ pub fn get_last_error() u32;
 @api("SetLastError")
 pub fn set_last_error(err: u32) void;
 
+// source: module handle (when FORMAT_MESSAGE_FROM_HMODULE) or null
+// args: pointer to va_list or array of insert strings (or null with IGNORE_INSERTS)
 // flags: FORMAT_MESSAGE_FROM_SYSTEM=0x1000, FORMAT_MESSAGE_IGNORE_INSERTS=0x200
-// lang: MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT) = 0x400
 @api("FormatMessageA")
-pub fn format_message_a(flags: u32, source: usize, msg_id: u32, lang: u32, buf: str, size: u32, args: usize) u32;
+pub unsafe fn format_message_a(flags: u32, source: *u8, msg_id: u32, lang: u32, buf: str, size: u32, args: *u8) u32;
 
 // ── Library ──────────────────────────────────────────────────────────────────
 
 @api("LoadLibraryA")
 pub fn load_library_a(name: str) usize;
 
+// file: reserved, pass null
 @api("LoadLibraryExA")
 pub fn load_library_ex_a(name: str, file: usize, flags: u32) usize;
 
+// Returns function pointer as usize (cast to fn type before calling)
 @api("GetProcAddress")
 pub fn get_proc_address(module: usize, name: str) usize;
 
@@ -371,47 +403,48 @@ pub fn set_environment_variable_a(name: str, value: str) i32;
 @api("GetCommandLineA")
 pub fn get_command_line_a() str;
 
-// returns pointer to null-terminated array of null-terminated strings
+// Returns pointer to null-terminated block of null-terminated strings
 @api("GetEnvironmentStringsA")
-pub fn get_environment_strings_a() usize;
+pub unsafe fn get_environment_strings_a() *u8;
 
+// env: pointer returned by GetEnvironmentStringsA
 @api("FreeEnvironmentStringsA")
-pub fn free_environment_strings_a(env: usize) i32;
+pub unsafe fn free_environment_strings_a(env: *u8) i32;
 
 // ── Time ─────────────────────────────────────────────────────────────────────
 
 // st: pointer to SYSTEMTIME { u16 year, month, dow, day, hour, min, sec, ms }
 @api("GetSystemTime")
-pub fn get_system_time(st: usize) void;
+pub unsafe fn get_system_time(st: *u8) void;
 
 @api("GetLocalTime")
-pub fn get_local_time(st: usize) void;
+pub unsafe fn get_local_time(st: *u8) void;
 
 @api("SetSystemTime")
-pub fn set_system_time(st: usize) i32;
+pub unsafe fn set_system_time(st: *u8) i32;
 
 @api("SetLocalTime")
-pub fn set_local_time(st: usize) i32;
+pub unsafe fn set_local_time(st: *u8) i32;
 
 // ft: pointer to FILETIME { u32 low, u32 high } — 100-nanosecond intervals since 1601-01-01
 @api("GetSystemTimeAsFileTime")
-pub fn get_system_time_as_file_time(ft: usize) void;
+pub unsafe fn get_system_time_as_file_time(ft: *u8) void;
 
 @api("FileTimeToSystemTime")
-pub fn file_time_to_system_time(ft: usize, st: usize) i32;
+pub unsafe fn file_time_to_system_time(ft: *u8, st: *u8) i32;
 
 @api("SystemTimeToFileTime")
-pub fn system_time_to_file_time(st: usize, ft: usize) i32;
+pub unsafe fn system_time_to_file_time(st: *u8, ft: *u8) i32;
 
 @api("FileTimeToLocalFileTime")
-pub fn file_time_to_local_file_time(utc: usize, local: usize) i32;
+pub unsafe fn file_time_to_local_file_time(utc: *u8, local: *u8) i32;
 
-// perf counter (use for high-res timing)
+// count/freq: pointer to LARGE_INTEGER (i64) output
 @api("QueryPerformanceCounter")
-pub fn query_performance_counter(count: usize) i32;
+pub unsafe fn query_performance_counter(count: *i64) i32;
 
 @api("QueryPerformanceFrequency")
-pub fn query_performance_frequency(freq: usize) i32;
+pub unsafe fn query_performance_frequency(freq: *i64) i32;
 
 @api("GetTickCount64")
 pub fn get_tick_count64() u64;
@@ -421,21 +454,27 @@ pub fn get_tick_count64() u64;
 //                  HKEY_CLASSES_ROOT=0x80000000, HKEY_USERS=0x80000003
 
 // access: KEY_READ=0x20019, KEY_WRITE=0x20006, KEY_ALL_ACCESS=0xF003F
+// result: pointer to HKEY output
 @api("RegOpenKeyExA")
-pub fn reg_open_key_ex_a(key: usize, sub_key: str, options: u32, access: u32, result: usize) i32;
+pub unsafe fn reg_open_key_ex_a(key: usize, sub_key: str, options: u32, access: u32, result: *u8) i32;
 
+// security: pointer to SECURITY_ATTRIBUTES or null
+// result: pointer to HKEY output; disposition: pointer to DWORD output (or null)
 @api("RegCreateKeyExA")
-pub fn reg_create_key_ex_a(key: usize, sub_key: str, reserved: u32, cls: str, options: u32, access: u32, security: usize, result: usize, disposition: usize) i32;
+pub unsafe fn reg_create_key_ex_a(key: usize, sub_key: str, reserved: u32, cls: str, options: u32, access: u32, security: *u8, result: *u8, disposition: *u32) i32;
 
 @api("RegCloseKey")
 pub fn reg_close_key(key: usize) i32;
 
 // type: REG_SZ=1, REG_DWORD=4, REG_BINARY=3, REG_EXPAND_SZ=2, REG_MULTI_SZ=7
+// reserved/reg_type: pointer to DWORD (reserved must be null); data: pointer to value buffer
+// cb_data: pointer to DWORD (size in/out)
 @api("RegQueryValueExA")
-pub fn reg_query_value_ex_a(key: usize, value: str, reserved: usize, reg_type: usize, data: usize, cb_data: usize) i32;
+pub unsafe fn reg_query_value_ex_a(key: usize, value: str, reserved: *u32, reg_type: *u32, data: *u8, cb_data: *u32) i32;
 
+// data: pointer to value buffer to write
 @api("RegSetValueExA")
-pub fn reg_set_value_ex_a(key: usize, value: str, reserved: u32, reg_type: u32, data: usize, cb_data: u32) i32;
+pub unsafe fn reg_set_value_ex_a(key: usize, value: str, reserved: u32, reg_type: u32, data: *u8, cb_data: u32) i32;
 
 @api("RegDeleteValueA")
 pub fn reg_delete_value_a(key: usize, value: str) i32;
@@ -443,63 +482,71 @@ pub fn reg_delete_value_a(key: usize, value: str) i32;
 @api("RegDeleteKeyA")
 pub fn reg_delete_key_a(key: usize, sub_key: str) i32;
 
+// name_size/cls_size: pointer to DWORD (in/out); reserved: pointer to DWORD (null)
+// last_write: pointer to FILETIME output
 @api("RegEnumKeyExA")
-pub fn reg_enum_key_ex_a(key: usize, index: u32, name: str, name_size: usize, reserved: usize, cls: str, cls_size: usize, last_write: usize) i32;
+pub unsafe fn reg_enum_key_ex_a(key: usize, index: u32, name: str, name_size: *u32, reserved: *u32, cls: str, cls_size: *u32, last_write: *u8) i32;
 
+// value_size/data_size: pointer to DWORD (in/out); reserved: pointer to DWORD (null)
+// reg_type: pointer to DWORD output; data: pointer to value buffer output
 @api("RegEnumValueA")
-pub fn reg_enum_value_a(key: usize, index: u32, value: str, value_size: usize, reserved: usize, reg_type: usize, data: usize, data_size: usize) i32;
+pub unsafe fn reg_enum_value_a(key: usize, index: u32, value: str, value_size: *u32, reserved: *u32, reg_type: *u32, data: *u8, data_size: *u32) i32;
 
 // ── Security & Privileges ────────────────────────────────────────────────────
 
 // access: TOKEN_ADJUST_PRIVILEGES|TOKEN_QUERY=0x28
+// token: pointer to HANDLE output
 @api("OpenProcessToken")
-pub fn open_process_token(proc: usize, access: u32, token: usize) i32;
+pub unsafe fn open_process_token(proc: usize, access: u32, token: *u8) i32;
 
+// token: pointer to HANDLE output
 @api("OpenThreadToken")
-pub fn open_thread_token(thread: usize, access: u32, open_as_self: i32, token: usize) i32;
+pub unsafe fn open_thread_token(thread: usize, access: u32, open_as_self: i32, token: *u8) i32;
 
-// luid: pointer to LUID struct (8 bytes)
+// luid: pointer to LUID struct (8 bytes) output
 @api("LookupPrivilegeValueA")
-pub fn lookup_privilege_value_a(system: str, name: str, luid: usize) i32;
+pub unsafe fn lookup_privilege_value_a(system: str, name: str, luid: *u8) i32;
 
-// privileges: pointer to TOKEN_PRIVILEGES struct
+// new_state/prev: pointer to TOKEN_PRIVILEGES struct; ret_len: pointer to DWORD output
 @api("AdjustTokenPrivileges")
-pub fn adjust_token_privileges(token: usize, disable_all: i32, new_state: usize, buf_len: u32, prev: usize, ret_len: usize) i32;
+pub unsafe fn adjust_token_privileges(token: usize, disable_all: i32, new_state: *u8, buf_len: u32, prev: *u8, ret_len: *u32) i32;
 
+// info: pointer to token information buffer; ret_len: pointer to DWORD output
 @api("GetTokenInformation")
-pub fn get_token_information(token: usize, info_class: i32, info: usize, info_len: u32, ret_len: usize) i32;
+pub unsafe fn get_token_information(token: usize, info_class: i32, info: *u8, info_len: u32, ret_len: *u32) i32;
 
 @api("IsUserAnAdmin")
 pub fn is_user_an_admin() i32;
 
 // ── System Info ──────────────────────────────────────────────────────────────
 
-// si: pointer to SYSTEM_INFO struct
+// si: pointer to SYSTEM_INFO struct output
 @api("GetSystemInfo")
-pub fn get_system_info(si: usize) void;
+pub unsafe fn get_system_info(si: *u8) void;
 
 @api("GetNativeSystemInfo")
-pub fn get_native_system_info(si: usize) void;
+pub unsafe fn get_native_system_info(si: *u8) void;
 
+// stat: pointer to MEMORYSTATUSEX struct output (must set dwLength first)
 @api("GlobalMemoryStatusEx")
-pub fn global_memory_status_ex(stat: usize) i32;
+pub unsafe fn global_memory_status_ex(stat: *u8) i32;
 
 @api("GetComputerNameA")
-pub fn get_computer_name_a(buf: str, size: usize) i32;
+pub unsafe fn get_computer_name_a(buf: str, size: *u32) i32;
 
 @api("GetUserNameA")
-pub fn get_user_name_a(buf: str, size: usize) i32;
+pub unsafe fn get_user_name_a(buf: str, size: *u32) i32;
 
+// os_ver: pointer to OSVERSIONINFOEXA struct output (set dwOSVersionInfoSize first)
 @api("GetVersionExA")
-pub fn get_version_ex_a(os_ver: usize) i32;
+pub unsafe fn get_version_ex_a(os_ver: *u8) i32;
 
 // ── WinSock2 ─────────────────────────────────────────────────────────────────
 // Link with ws2_32.lib.  Call ws_startup() before using any socket function.
-// data: pointer to WSADATA struct (at least 400 bytes)
-// version: MAKEWORD(2,2) = 0x0202
+// version: MAKEWORD(2,2) = 0x0202; data: pointer to WSADATA struct (at least 400 bytes)
 
 @api("WSAStartup")
-pub fn ws_startup(version: u16, data: usize) i32;
+pub unsafe fn ws_startup(version: u16, data: *u8) i32;
 
 @api("WSACleanup")
 pub fn ws_cleanup() i32;
@@ -507,24 +554,26 @@ pub fn ws_cleanup() i32;
 @api("WSAGetLastError")
 pub fn ws_get_last_error() i32;
 
-// af: AF_INET=2, AF_INET6=23; type: SOCK_STREAM=1, SOCK_DGRAM=2; proto: IPPROTO_TCP=6, IPPROTO_UDP=17
+// af: AF_INET=2, AF_INET6=23; type: SOCK_STREAM=1, SOCK_DGRAM=2; proto: IPPROTO_TCP=6
 @api("socket")
 pub fn socket(af: i32, stype: i32, protocol: i32) usize;
 
 @api("closesocket")
 pub fn closesocket(s: usize) i32;
 
+// addr: pointer to sockaddr variant
 @api("bind")
-pub fn bind(s: usize, addr: usize, addrlen: i32) i32;
+pub unsafe fn bind(s: usize, addr: *u8, addrlen: i32) i32;
 
 @api("listen")
 pub fn listen(s: usize, backlog: i32) i32;
 
+// addr: pointer to sockaddr output; addrlen: pointer to i32 (in/out)
 @api("accept")
-pub fn accept(s: usize, addr: usize, addrlen: usize) usize;
+pub unsafe fn accept(s: usize, addr: *u8, addrlen: *i32) usize;
 
 @api("connect")
-pub fn connect(s: usize, addr: usize, addrlen: i32) i32;
+pub unsafe fn connect(s: usize, addr: *u8, addrlen: i32) i32;
 
 @api("send")
 pub fn send(s: usize, buf: str, len: i32, flags: i32) i32;
@@ -532,51 +581,57 @@ pub fn send(s: usize, buf: str, len: i32, flags: i32) i32;
 @api("recv")
 pub fn recv(s: usize, buf: str, len: i32, flags: i32) i32;
 
+// to: pointer to destination sockaddr
 @api("sendto")
-pub fn sendto(s: usize, buf: str, len: i32, flags: i32, to: usize, tolen: i32) i32;
+pub unsafe fn sendto(s: usize, buf: str, len: i32, flags: i32, to: *u8, tolen: i32) i32;
 
+// from: pointer to sockaddr output; fromlen: pointer to i32 (in/out)
 @api("recvfrom")
-pub fn recvfrom(s: usize, buf: str, len: i32, flags: i32, from: usize, fromlen: usize) i32;
+pub unsafe fn recvfrom(s: usize, buf: str, len: i32, flags: i32, from: *u8, fromlen: *i32) i32;
 
+// optval: pointer to option value buffer
 @api("setsockopt")
-pub fn setsockopt(s: usize, level: i32, optname: i32, optval: usize, optlen: i32) i32;
+pub unsafe fn setsockopt(s: usize, level: i32, optname: i32, optval: *u8, optlen: i32) i32;
 
+// optval: pointer to option value output; optlen: pointer to i32 (in/out)
 @api("getsockopt")
-pub fn getsockopt(s: usize, level: i32, optname: i32, optval: usize, optlen: usize) i32;
+pub unsafe fn getsockopt(s: usize, level: i32, optname: i32, optval: *u8, optlen: *i32) i32;
 
+// addr: pointer to sockaddr output; addrlen: pointer to i32 (in/out)
 @api("getsockname")
-pub fn getsockname(s: usize, addr: usize, addrlen: usize) i32;
+pub unsafe fn getsockname(s: usize, addr: *u8, addrlen: *i32) i32;
 
 @api("getpeername")
-pub fn getpeername(s: usize, addr: usize, addrlen: usize) i32;
+pub unsafe fn getpeername(s: usize, addr: *u8, addrlen: *i32) i32;
 
-@api("shutdown")
-pub fn shutdown(s: usize, how: i32) i32;
-
-// fds: pointer to fd_set; timeout: pointer to TIMEVAL or null
+// readfds/writefds/exceptfds: pointer to fd_set; timeout: pointer to TIMEVAL or null
 @api("select")
-pub fn select(nfds: i32, readfds: usize, writefds: usize, exceptfds: usize, timeout: usize) i32;
+pub unsafe fn select(nfds: i32, readfds: *u8, writefds: *u8, exceptfds: *u8, timeout: *u8) i32;
 
+// argp: pointer to u_long output
 @api("ioctlsocket")
-pub fn ioctlsocket(s: usize, cmd: i32, argp: usize) i32;
+pub unsafe fn ioctlsocket(s: usize, cmd: i32, argp: *u32) i32;
 
-// hints: pointer to ADDRINFOA; result: pointer to ADDRINFOA*
+// hints: pointer to ADDRINFOA input; result: pointer to ADDRINFOA* output
 @api("getaddrinfo")
-pub fn getaddrinfo(node: str, service: str, hints: usize, result: usize) i32;
+pub unsafe fn getaddrinfo(node: str, service: str, hints: *u8, result: *u8) i32;
 
+// info: pointer returned by getaddrinfo
 @api("freeaddrinfo")
-pub fn freeaddrinfo(info: usize) void;
+pub unsafe fn freeaddrinfo(info: *u8) void;
 
 @api("getnameinfo")
-pub fn getnameinfo(addr: usize, addrlen: i32, host: str, host_len: u32, serv: str, serv_len: u32, flags: i32) i32;
+pub unsafe fn getnameinfo(addr: *u8, addrlen: i32, host: str, host_len: u32, serv: str, serv_len: u32, flags: i32) i32;
 
+// dst: pointer to in_addr or in6_addr output
 @api("inet_pton")
-pub fn inet_pton(af: i32, src: str, dst: usize) i32;
+pub unsafe fn inet_pton(af: i32, src: str, dst: *u8) i32;
 
+// src: pointer to in_addr or in6_addr input
 @api("inet_ntop")
-pub fn inet_ntop(af: i32, src: usize, dst: str, size: usize) str;
+pub unsafe fn inet_ntop(af: i32, src: *u8, dst: str, size: usize) str;
 
-// htons / ntohs — byte order conversion
+// htons / ntohs — byte order conversion (no pointers)
 @api("htons")
 pub fn htons(hostshort: u16) u16;
 

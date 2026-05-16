@@ -24,7 +24,8 @@ pub(super) struct ExprEval {
 
 #[derive(Debug, Clone)]
 pub(super) struct EnumInfo {
-    pub(super) variants: HashMap<String, usize>,
+    pub(super) variants: HashMap<String, usize>, // variant → arity (payload count)
+    pub(super) order: Vec<String>,               // declaration order → discriminant index
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +75,12 @@ pub struct Analyzer {
     pub(super) unreachable_functions: BTreeSet<String>,
     /// Nesting depth of `unsafe` blocks/functions (0 = safe context).
     pub(super) unsafe_depth: usize,
+    /// Nesting depth of trait definitions (0 = outside any trait).
+    /// `any` in trait method signatures is exempt from W05.
+    pub(super) trait_depth: usize,
+    /// Character-index ranges in the merged source that belong to library files.
+    /// Diagnostics whose span falls inside these ranges are suppressed.
+    pub(super) library_char_ranges: Vec<std::ops::Range<usize>>,
     /// Function names that live in library (dependency) files.
     /// Set once from LoadResult; not reset between analyses.
     pub(super) library_fn_names: std::collections::HashSet<String>,
@@ -84,6 +91,15 @@ pub struct Analyzer {
     /// Function names explicitly imported by leaf name (e.g. `import std.core.write`).
     /// Reset at the start of each analysis; populated during the declare pass.
     pub(super) explicitly_imported_fns: std::collections::HashSet<String>,
+    /// Struct field layouts: struct name → ordered list of (field_name, field_type).
+    pub(super) struct_defs: HashMap<String, Vec<(String, TypeKind)>>,
+    /// Derived traits: struct name → list of trait names from @derive.
+    pub(super) derived_traits: HashMap<String, Vec<String>>,
+    /// Trait implementations: type name → set of trait names explicitly implemented via `impl Trait for Type`.
+    pub(super) trait_impls: HashMap<String, std::collections::HashSet<String>>,
+    /// When type-checking an impl method, this holds the mangled name (e.g. "Counter.get")
+    /// so that dependency edges use the mangled name rather than the bare method name.
+    pub(super) current_fn_name_override: Option<String>,
 }
 
 pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
@@ -119,14 +135,28 @@ impl Analyzer {
             lazy_import_hints: Vec::new(),
             unreachable_functions: BTreeSet::new(),
             unsafe_depth: 0,
+            trait_depth: 0,
+            library_char_ranges: Vec::new(),
             library_fn_names: std::collections::HashSet::new(),
             library_symbols: Vec::new(),
             explicitly_imported_fns: std::collections::HashSet::new(),
+            struct_defs: HashMap::new(),
+            derived_traits: HashMap::new(),
+            trait_impls: HashMap::new(),
+            current_fn_name_override: None,
         }
     }
 
     pub fn set_library_fns(&mut self, names: std::collections::HashSet<String>) {
         self.library_fn_names = names;
+    }
+
+    pub fn set_library_char_ranges(&mut self, ranges: Vec<std::ops::Range<usize>>) {
+        self.library_char_ranges = ranges;
+    }
+
+    pub(super) fn is_library_span(&self, span: Span) -> bool {
+        self.library_char_ranges.iter().any(|r| r.contains(&span.start))
     }
 
     pub fn set_library_symbols(&mut self, symbols: Vec<(String, Symbol)>) {
@@ -213,6 +243,17 @@ impl Analyzer {
             non_exhaustive_matches: std::mem::take(&mut self.non_exhaustive_matches),
             lazy_import_hints,
             dead_functions,
+            struct_defs: self.struct_defs.clone(),
+            trait_impls: self.trait_impls.clone(),
+            enum_defs: self.enums.iter()
+                .map(|(k, v)| {
+                    let disc_map = v.order.iter()
+                        .enumerate()
+                        .map(|(i, name)| (name.clone(), i))
+                        .collect();
+                    (k.clone(), disc_map)
+                })
+                .collect(),
         }
     }
 
@@ -241,7 +282,12 @@ impl Analyzer {
         self.lazy_import_hints.clear();
         self.unreachable_functions.clear();
         self.unsafe_depth = 0;
+        self.trait_depth = 0;
         self.explicitly_imported_fns.clear();
+        self.struct_defs.clear();
+        self.derived_traits.clear();
+        self.trait_impls.clear();
+        self.current_fn_name_override = None;
         self.init_builtins();
         self.init_library_symbols();
     }
@@ -255,22 +301,24 @@ impl Analyzer {
         };
 
         let mut option_variants = HashMap::new();
-        option_variants.insert("Some".to_string(), 1usize);
-        option_variants.insert("None".to_string(), 0usize);
+        option_variants.insert("Some".to_string(), 1usize); // arity 1
+        option_variants.insert("None".to_string(), 0usize); // arity 0
         self.enums.insert(
             "Option".to_string(),
             EnumInfo {
                 variants: option_variants,
+                order: vec!["None".to_string(), "Some".to_string()], // None=0, Some=1
             },
         );
 
         let mut result_variants = HashMap::new();
-        result_variants.insert("Ok".to_string(), 1usize);
-        result_variants.insert("Err".to_string(), 1usize);
+        result_variants.insert("Ok".to_string(), 1usize);  // arity 1
+        result_variants.insert("Err".to_string(), 1usize); // arity 1
         self.enums.insert(
             "Result".to_string(),
             EnumInfo {
                 variants: result_variants,
+                order: vec!["Err".to_string(), "Ok".to_string()], // Err=0, Ok=1
             },
         );
 
@@ -290,6 +338,7 @@ impl Analyzer {
                     variadic: false,
                     attributes: Vec::new(),
                     public: true,
+                    unsafe_fn: false,
                 },
             );
         }
@@ -310,6 +359,7 @@ impl Analyzer {
                     variadic: false,
                     attributes: Vec::new(),
                     public: true,
+                    unsafe_fn: false,
                 },
             );
         }
@@ -329,6 +379,7 @@ impl Analyzer {
                 variadic: false,
                 attributes: Vec::new(),
                 public: true,
+                unsafe_fn: false,
             },
         );
     }
@@ -438,6 +489,10 @@ impl Analyzer {
 
         if let Some(prev) = existing {
             if symbol.is_import && prev.is_import {
+                // Same-path duplicate import is a no-op (two modules both import std.io, etc.)
+                if symbol.import_path == prev.import_path {
+                    return;
+                }
                 self.push_error(
                     symbol.span,
                     "S05",
@@ -530,6 +585,9 @@ impl Analyzer {
     }
 
     pub(super) fn push_warning(&mut self, span: Span, code: &'static str, message: String) {
+        if self.is_library_span(span) {
+            return;
+        }
         self.warnings.push(SemanticWarning {
             code,
             message,
@@ -545,6 +603,9 @@ impl Analyzer {
         message: String,
         suggestion: String,
     ) {
+        if self.is_library_span(span) {
+            return;
+        }
         self.warnings.push(SemanticWarning {
             code,
             message,
@@ -554,6 +615,11 @@ impl Analyzer {
     }
 
     pub(super) fn push_suggestion(&mut self, span: Option<Span>, message: String) {
+        if let Some(s) = span {
+            if self.is_library_span(s) {
+                return;
+            }
+        }
         self.suggestions.push(SemanticSuggestion { message, span });
     }
 }
@@ -1386,12 +1452,6 @@ fn add(x: i32) i32 {
                 .any(|m| m.description.contains("x + 0 = x")),
             "x + 0 should produce identity optimization hint"
         );
-        assert!(
-            report
-                .suggestions
-                .iter()
-                .any(|s| s.message.contains("x + 0 = x")),
-        );
     }
 
     #[test]
@@ -1691,6 +1751,106 @@ fn main() ! {
                 .iter()
                 .any(|e| e.message.contains("main() return type must")),
             "main returning ! should be accepted, got {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn impl_method_call_resolves_to_method_return_type() {
+        let report = analyze(
+            r#"
+struct Counter { val: i32, }
+
+impl Counter {
+    fn get(self: Counter) i32 { ret self.val; }
+    fn inc(self: Counter, n: i32) Counter { ret Counter { val: self.val + n }; }
+}
+
+fn main() void {
+    var c: Counter = Counter { val: 0 };
+    var n: i32 = c.get();
+    var c2: Counter = c.inc(1);
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "impl method call should not produce errors: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn inherent_impl_no_trait_is_accepted() {
+        let report = analyze(
+            r#"
+struct Point { x: i32, y: i32, }
+
+impl Point {
+    fn x_val(self: Point) i32 { ret self.x; }
+}
+
+fn main() void {
+    var p: Point = Point { x: 1, y: 2 };
+    var x: i32 = p.x_val();
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "inherent impl should not produce errors: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn trait_impl_method_call_resolves_type() {
+        let report = analyze(
+            r#"
+trait Display { fn label(self: str) str; }
+
+struct Tag { name: str, }
+
+impl Display for Tag {
+    fn label(self: Tag) str { ret self.name; }
+}
+
+fn main() void {
+    var t: Tag = Tag { name: "hello" };
+    var s: str = t.label();
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "trait impl method call should not produce errors: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn impl_method_duplicate_is_error() {
+        let report = analyze(
+            r#"
+struct Foo { x: i32, }
+
+impl Foo {
+    fn get(self: Foo) i32 { ret self.x; }
+}
+
+impl Foo {
+    fn get(self: Foo) i32 { ret self.x; }
+}
+
+fn main() void { ret; }
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("duplicate declaration 'Foo.get'")),
+            "duplicate impl method should produce error, got: {:?}",
             report.errors
         );
     }

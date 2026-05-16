@@ -76,7 +76,7 @@ impl Parser {
             TokenKind::Error(msg) => {
                 Err(self.err_here_with_code("E00", format!("lexer error: {}", msg)))
             }
-            TokenKind::Import => self.parse_import(),
+            TokenKind::Import => self.parse_import(is_pub),
             TokenKind::Unsafe => {
                 self.advance(); // consume 'unsafe'
                 self.parse_fn(attributes, true, is_pub)
@@ -895,16 +895,21 @@ impl Parser {
                 self.restore(call_checkpoint);
             }
 
-            // subscript: expr[index]
+            // subscript: expr[i] or expr[i, j, ...]
             if self.at(TokenKind::LBracket) {
                 self.advance();
-                let index = self.parse_expr()?;
+                let first = self.parse_expr()?;
+                let mut indices = vec![first];
+                while self.at(TokenKind::Comma) {
+                    self.advance();
+                    indices.push(self.parse_expr()?);
+                }
                 let rbracket = self.expect(TokenKind::RBracket)?.span;
                 let span = Span::merge(expr.span, to_ast_span(rbracket));
                 expr = Spanned::new(
                     ExprKind::Index {
                         object: Box::new(expr),
-                        index: Box::new(index),
+                        indices,
                     },
                     span,
                 );
@@ -981,6 +986,13 @@ impl Parser {
                     },
                     span,
                 );
+                continue;
+            }
+
+            if self.at(TokenKind::Question) {
+                let t = self.advance().span;
+                let span = Span::merge(expr.span, to_ast_span(t));
+                expr = Spanned::new(ExprKind::Try { expr: Box::new(expr) }, span);
                 continue;
             }
 
@@ -1128,8 +1140,45 @@ impl Parser {
                 ExprKind::Literal(Literal::String(s)),
                 to_ast_span(tok.span),
             )),
+            TokenKind::True => Ok(Spanned::new(
+                ExprKind::Literal(Literal::Bool(true)),
+                to_ast_span(tok.span),
+            )),
+            TokenKind::False => Ok(Spanned::new(
+                ExprKind::Literal(Literal::Bool(false)),
+                to_ast_span(tok.span),
+            )),
             TokenKind::Ident(name) => {
-                Ok(Spanned::new(ExprKind::Ident(name), to_ast_span(tok.span)))
+                let ident_span = to_ast_span(tok.span);
+                // Detect struct literal: Name { field: expr, ... }
+                if self.at(TokenKind::LBrace) {
+                    // Disambiguate: { } or { ident : ... } is a struct literal
+                    let is_struct_init = {
+                        let p0 = self.peek_n(1); // token after {
+                        matches!(p0.kind, TokenKind::RBrace)
+                            || (matches!(p0.kind, TokenKind::Ident(_))
+                                && matches!(self.peek_n(2).kind, TokenKind::Colon))
+                    };
+                    if is_struct_init {
+                        self.advance(); // consume {
+                        let mut fields = Vec::new();
+                        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+                            let fname = self.parse_ident()?;
+                            self.expect(TokenKind::Colon)?;
+                            let val = self.parse_expr()?;
+                            fields.push((fname, val));
+                            if self.at(TokenKind::Comma) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        let end = self.expect(TokenKind::RBrace)?.span;
+                        let span = Span::merge(ident_span, to_ast_span(end));
+                        return Ok(Spanned::new(ExprKind::StructInit { name, fields }, span));
+                    }
+                }
+                Ok(Spanned::new(ExprKind::Ident(name), ident_span))
             }
             TokenKind::LParen => {
                 let expr = self.parse_expr()?;
@@ -1470,6 +1519,7 @@ fn id[T](x: T) T {
             panic!("expected impl item");
         };
 
+        let trait_ty = trait_ty.as_ref().expect("expected trait impl (impl Trait for Type)");
         match &trait_ty.node {
             TypeKind::Named { name, type_args } => {
                 assert_eq!(name, "Iterable");

@@ -9,11 +9,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::loader::{ModuleResolver, ModuleSpec};
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProjectKind {
+    Bin,
+    Lib,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {
     pub root: PathBuf,
     pub name: String,
     pub version: Option<String>,
+    pub kind: ProjectKind,
     pub entry: PathBuf,
     pub src_dir: PathBuf,
     pub flags: Vec<String>,
@@ -45,6 +52,8 @@ struct RawConfig {
 struct RawPackage {
     name: String,
     version: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +77,7 @@ enum RawDependency {
 struct ProjectMeta {
     name: String,
     version: Option<String>,
+    kind: ProjectKind,
     entry: PathBuf,
     src_dir: PathBuf,
     flags: Vec<String>,
@@ -126,6 +136,7 @@ impl ProjectContext {
             root: root.to_path_buf(),
             name: meta.name.clone(),
             version: meta.version.clone(),
+            kind: meta.kind.clone(),
             entry: meta.entry.clone(),
             src_dir: meta.src_dir.clone(),
             flags: meta.flags.clone(),
@@ -166,10 +177,19 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
     };
 
     loop {
-        if dir.join("void.toml").exists() {
-            return Some(dir);
+        // Empty path (after popping single component) means CWD.
+        let check: &Path = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            &dir
+        };
+
+        if check.join("void.toml").exists() {
+            return check.canonicalize().ok().or_else(|| Some(check.to_path_buf()));
         }
-        if !dir.pop() {
+
+        // Can't go higher — empty dir means we already checked CWD.
+        if dir.as_os_str().is_empty() || !dir.pop() {
             return None;
         }
     }
@@ -182,6 +202,17 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         .package
         .ok_or_else(|| "void.toml missing [package] section".to_string())?;
 
+    let kind = match package.kind.as_deref() {
+        Some("lib") => ProjectKind::Lib,
+        Some("bin") | None => ProjectKind::Bin,
+        Some(other) => {
+            return Err(format!(
+                "void.toml: unknown package type '{}' (expected 'bin' or 'lib')",
+                other
+            ))
+        }
+    };
+
     let build = raw.build.unwrap_or(RawBuild {
         entry: None,
         src: None,
@@ -189,7 +220,11 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
     });
 
     let src_dir = root.join(build.src.unwrap_or_else(|| "src".to_string()));
-    let entry = root.join(build.entry.unwrap_or_else(|| "src/main.void".to_string()));
+    let default_entry = match kind {
+        ProjectKind::Lib => "src/lib.void",
+        ProjectKind::Bin => "src/main.void",
+    };
+    let entry = root.join(build.entry.unwrap_or_else(|| default_entry.to_string()));
 
     if !entry.exists() {
         return Err(format!("entry file not found: {}", entry.to_string_lossy()));
@@ -214,6 +249,7 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
     Ok(ProjectMeta {
         name: package.name,
         version: package.version,
+        kind,
         entry,
         src_dir,
         flags: build.flags.unwrap_or_default(),

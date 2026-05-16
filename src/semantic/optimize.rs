@@ -58,7 +58,6 @@ impl Analyzer {
                 description: desc.to_string(),
                 result_value: Some(val.clone()),
             });
-            self.push_suggestion(Some(span), format!("math optimization: {}", desc));
             // Return the folded value so ExprAnnotation.const_value carries it.
             return Some(val);
         }
@@ -90,7 +89,6 @@ impl Analyzer {
                 description: desc.to_string(),
                 result_value: None,
             });
-            self.push_suggestion(Some(span), format!("math optimization: {}", desc));
         }
 
         None
@@ -200,17 +198,14 @@ impl Analyzer {
                 .any(|(k, _, to)| *k == DependencyKind::Call && to == fn_name);
             if is_called_by_someone {
                 if let Some(sym) = global_scope.get(fn_name) {
-                    self.push_warning(
+                    self.push_warning_with_suggestion(
                         sym.span,
                         "W07",
                         format!(
                             "dead function '{}': only reachable from dead code, never from main",
                             fn_name
                         ),
-                    );
-                    self.push_suggestion(
-                        Some(sym.span),
-                        format!("function '{}' is transitively unreachable from main — remove or make it reachable", fn_name),
+                        format!("remove '{}' or make it reachable from main", fn_name),
                     );
                 }
             }
@@ -229,7 +224,8 @@ impl Analyzer {
                 } => {
                     self.maybe_add_inline_candidate(name, body, attributes, item.span);
                 }
-                ItemKind::Impl { methods, .. } => {
+                ItemKind::Impl { for_ty, methods, .. } => {
+                    let type_name = crate::semantic::declare::type_kind_base_name(&for_ty.node);
                     for method in methods {
                         if let ItemKind::Fn {
                             name,
@@ -238,7 +234,13 @@ impl Analyzer {
                             ..
                         } = &method.node
                         {
-                            self.maybe_add_inline_candidate(name, body, attributes, method.span);
+                            let mangled = format!("{}.{}", type_name, name);
+                            self.maybe_add_inline_candidate(
+                                &mangled,
+                                body,
+                                attributes,
+                                method.span,
+                            );
                         }
                     }
                 }
@@ -299,13 +301,6 @@ impl Analyzer {
             reason,
         };
         self.inline_candidates.push(candidate.clone());
-        self.push_suggestion(
-            Some(span),
-            format!(
-                "function '{}' is an inline candidate ({})",
-                candidate.name, candidate.reason
-            ),
-        );
     }
 
     fn is_small_inline_body(&self, body: &Block) -> bool {
@@ -314,13 +309,18 @@ impl Analyzer {
         }
 
         !body.stmts.iter().any(|stmt| {
-            matches!(
-                stmt.node,
+            match &stmt.node {
                 StmtKind::If { .. }
-                    | StmtKind::For { .. }
-                    | StmtKind::UnsafeBlock { .. }
-                    | StmtKind::CfgBlock { .. }
-            )
+                | StmtKind::For { .. }
+                | StmtKind::UnsafeBlock { .. }
+                | StmtKind::CfgBlock { .. } => true,
+                // match expressions compile to conditional jumps that are not
+                // remapped by the inline pass — exclude them from inlining.
+                StmtKind::Return(Some(expr)) | StmtKind::ExprStmt(expr) => {
+                    matches!(expr.node, ExprKind::Match { .. })
+                }
+                _ => false,
+            }
         })
     }
 
@@ -357,21 +357,8 @@ impl Analyzer {
     }
 
     pub(super) fn run_import_optimization_pass(&mut self) {
-        if self.unused_import_paths.is_empty() {
-            return;
-        }
-
-        let list = self
-            .unused_import_paths
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        self.push_suggestion(
-            None,
-            format!("import optimization: remove unused imports [{}]", list),
-        );
+        // Unused imports are already reported per-import via W03 warnings.
+        // No additional aggregate suggestion needed.
     }
 
     pub(super) fn run_exhaustiveness_pass(&mut self) {

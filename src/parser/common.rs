@@ -15,6 +15,14 @@ impl Parser {
         })
     }
 
+    pub(crate) fn peek_n(&self, n: usize) -> &Token {
+        self.tokens.get(self.pos + n).unwrap_or_else(|| {
+            self.tokens
+                .last()
+                .expect("parser requires at least EOF token")
+        })
+    }
+
     pub(crate) fn peek_kind(&self) -> &TokenKind {
         &self.peek().kind
     }

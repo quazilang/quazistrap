@@ -10,6 +10,7 @@ pub mod lexer;
 pub mod loader;
 mod lsp;
 pub mod parser;
+mod progress;
 mod project;
 pub mod semantic;
 
@@ -35,7 +36,7 @@ fn report_diagnostics(report: &semantic::SemanticReport, src: &str) -> bool {
         eprintln!("{}", warning.render(src));
     }
     for suggestion in &report.suggestions {
-        eprintln!("\x1b[35;1msuggestion:\x1b[0;1m {}\x1b[0m", suggestion.message);
+        eprintln!("\x1b[2mhint: {}\x1b[0m", suggestion.message);
     }
 
     if !report.errors.is_empty() {
@@ -51,13 +52,14 @@ fn run_pipeline(
     src: &str,
     program: &parser::ast::Program,
     library_fn_names: HashSet<String>,
+    library_char_ranges: Vec<std::ops::Range<usize>>,
     debug: bool,
     emit: EmitType,
     output_file_name: &str,
     link_flags: Option<&[String]>,
     explicit_linker: Option<&Path>,
 ) {
-    let sema_report = analyze_program(src, program, library_fn_names);
+    let sema_report = analyze_program(src, program, library_fn_names, library_char_ranges);
     if !report_diagnostics(&sema_report, src) {
         std::process::exit(1);
     }
@@ -179,19 +181,10 @@ fn strip_binary(path: &Path) {
 
     match found {
         Some(strip_path) => {
-            let status = std::process::Command::new(&strip_path)
-                .arg(path)
-                .status()
-                .unwrap_or_else(|e| {
-                    eprintln!("\x1b[33;1mwarning:\x1b[0m strip failed: {}", e);
-                    return std::process::ExitStatus::default();
-                });
-            if status.success() {
-                eprintln!("\x1b[2mstripped\x1b[0m  \x1b[1m{}\x1b[0m", path.display());
-            }
+            let _ = std::process::Command::new(&strip_path).arg(path).status();
         }
         None => {
-            eprintln!("\x1b[33;1mwarning:\x1b[0m no strip tool found; debug symbols retained");
+            eprintln!("\r\x1b[K\x1b[33;1mwarning:\x1b[0m no strip tool found; debug symbols retained");
         }
     }
 }
@@ -303,8 +296,8 @@ fn emit_chunks(
     }
 }
 
-fn run_check(src: &str, program: &parser::ast::Program, library_fn_names: HashSet<String>) {
-    let report = analyze_program(src, program, library_fn_names);
+fn run_check(src: &str, program: &parser::ast::Program, library_fn_names: HashSet<String>, library_char_ranges: Vec<std::ops::Range<usize>>) {
+    let report = analyze_program(src, program, library_fn_names, library_char_ranges);
     if !report_diagnostics(&report, src) {
         std::process::exit(1);
     }
@@ -367,18 +360,7 @@ fn write_file(path: &Path, contents: &str) {
     });
 }
 
-fn create_new_project(name: &str) {
-    let root = PathBuf::from(name);
-    if root.exists() {
-        eprintln!(
-            "\x1b[31;1merror:\x1b[0m path already exists: {}",
-            root.display()
-        );
-        std::process::exit(1);
-    }
-
-    let pkg_name = root.file_name().and_then(|n| n.to_str()).unwrap_or(name);
-
+fn scaffold_project(root: &PathBuf, pkg_name: &str, lib: bool) {
     let src_dir = root.join("src");
     std::fs::create_dir_all(&src_dir).unwrap_or_else(|e| {
         eprintln!(
@@ -389,24 +371,64 @@ fn create_new_project(name: &str) {
         std::process::exit(1);
     });
 
-    let toml = format!(
-        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[build]\nentry = \"src/main.void\"\nsrc = \"src\"\n",
-        pkg_name
-    );
-    write_file(&root.join("void.toml"), &toml);
+    if lib {
+        let toml = format!(
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\ntype = \"lib\"\n\n[build]\nentry = \"src/lib.void\"\nsrc = \"src\"\n",
+            pkg_name
+        );
+        write_file(&root.join("void.toml"), &toml);
 
-    let main_src = r#"@syscall("write")
-fn sys_write(fd: i32, buf: str, len: isize) isize { }
+        let lib_src = format!(
+            "// {name} — void library\n\npub fn add(a: i64, b: i64) i64 {{\n    ret a + b;\n}}\n",
+            name = pkg_name
+        );
+        write_file(&src_dir.join("lib.void"), &lib_src);
+    } else {
+        let toml = format!(
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[build]\nentry = \"src/main.void\"\nsrc = \"src\"\n",
+            pkg_name
+        );
+        write_file(&root.join("void.toml"), &toml);
 
-fn main() i32 {
-    var msg: str = "Hello World!\n";
-    sys_write(1, msg, 13);
-    ret 0;
+        let main_src = "import std.io;\n\nfn main() void {\n    io.println(\"Hello, World!\");\n    ret;\n}\n";
+        write_file(&src_dir.join("main.void"), main_src);
+    }
 }
-"#;
-    write_file(&src_dir.join("main.void"), main_src);
 
-    println!("created project '{}'", root.display());
+fn create_new_project(name: &str, lib: bool) {
+    let root = PathBuf::from(name);
+    if root.exists() {
+        eprintln!(
+            "\x1b[31;1merror:\x1b[0m path already exists: {}",
+            root.display()
+        );
+        std::process::exit(1);
+    }
+
+    let pkg_name = root.file_name().and_then(|n| n.to_str()).unwrap_or(name);
+    scaffold_project(&root, pkg_name, lib);
+    let kind = if lib { "library" } else { "binary" };
+    println!("created {} project '{}'", kind, root.display());
+}
+
+fn init_project(lib: bool) {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("\x1b[31;1merror:\x1b[0m cannot get current directory: {}", e);
+        std::process::exit(1);
+    });
+
+    if cwd.join("void.toml").exists() {
+        eprintln!("\x1b[31;1merror:\x1b[0m void.toml already exists in this directory");
+        std::process::exit(1);
+    }
+
+    let pkg_name = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
+    scaffold_project(&cwd, pkg_name, lib);
+    let kind = if lib { "library" } else { "binary" };
+    println!("initialized {} project '{}'", kind, pkg_name);
 }
 
 fn collect_void_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -505,6 +527,167 @@ fn print_debug_files(loaded: &[PathBuf], library_paths: &[PathBuf]) {
     }
 }
 
+fn build_with_progress(
+    files: &[PathBuf],
+    out: &str,
+    emit: EmitType,
+    debug: bool,
+    link_flags: Option<&[String]>,
+    explicit_linker: Option<&Path>,
+    do_strip: bool,
+) {
+    use progress::{BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count};
+
+    let mut prog = BuildProgress::new();
+
+    // Header line.
+    let input_name = files[0]
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("?");
+    let out_name = Path::new(out)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(out);
+    prog.header(input_name, out_name);
+
+    // ── Step 1: Lexing (load + lex + parse) ──────────────────────────────────
+    prog.begin("Lexing");
+    let result = load_with_optional_project(files);
+    let tok_info = format!(
+        "{} tokens · {} file{}",
+        fmt_count(result.token_count),
+        result.loaded_files.len(),
+        if result.loaded_files.len() == 1 { "" } else { "s" }
+    );
+    prog.done(&tok_info);
+
+    // Dependency tree (animated).
+    let lib_prefix = common_lib_prefix(&result.library_file_paths);
+    let tree_root = build_dep_tree(
+        &files[0],
+        &result.dep_edges,
+        &result.library_file_paths,
+        lib_prefix.as_deref(),
+    );
+    prog.dep_tree(&tree_root);
+
+    // ── Step 2: Codegen (analyze + bytecode) ─────────────────────────────────
+    prog.begin("Codegen");
+    let sema = analyze_program(
+        &result.merged_source,
+        &result.program,
+        result.library_fn_names,
+        result.library_char_ranges,
+    );
+    let has_errors = !sema.errors.is_empty();
+    let mut cg = bytecode::Codegen::new(&sema);
+    let chunks = cg.compile_program(&result.program);
+
+    if has_errors {
+        prog.fail();
+    } else {
+        prog.done(&codegen_stats(&chunks, prog.is_tty));
+    }
+
+    if debug {
+        for chunk in &chunks { eprint!("{}", chunk); }
+    }
+
+    // Print warnings + errors.
+    for w in &sema.warnings { eprintln!("{}", w.render(&result.merged_source)); }
+    for hint in &sema.suggestions { eprintln!("\x1b[2mhint: {}\x1b[0m", hint.message); }
+    if has_errors {
+        for e in &sema.errors { eprintln!("{}", e.render(&result.merged_source)); }
+        std::process::exit(1);
+    }
+
+    match emit {
+        EmitType::Bytecode => {
+            let bytes = bytecode::serialize_vbc(&chunks);
+            let mut f = std::fs::File::create(out).unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {}", out, e);
+                std::process::exit(1);
+            });
+            use std::io::Write as _;
+            f.write_all(&bytes).unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m write failed: {}", e);
+                std::process::exit(1);
+            });
+            prog.success(out, Some(bytes.len() as u64));
+        }
+
+        EmitType::Object => {
+            // ── Step 3: Native ────────────────────────────────────────────────
+            let arch = arch_label();
+            prog.begin(&format!("Native  {}", arch));
+            let obj_bytes = compile_to_object(&chunks, false);
+            std::fs::write(out, &obj_bytes).unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m cannot write {}: {}", out, e);
+                std::process::exit(1);
+            });
+            prog.done(&format!("{:.1} KB", obj_bytes.len() as f64 / 1024.0));
+            prog.success(out, Some(obj_bytes.len() as u64));
+        }
+
+        EmitType::Binary => {
+            // ── Step 3: Native ────────────────────────────────────────────────
+            let arch = arch_label();
+            prog.begin(&format!("Native  {}", arch));
+            let obj_bytes = compile_to_object(&chunks, true);
+            prog.done(&format!("{:.1} KB  object", obj_bytes.len() as f64 / 1024.0));
+
+            // ── Step 4: Linking ───────────────────────────────────────────────
+            prog.begin("Linking");
+            let stem = Path::new(out)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(out);
+            let tmp_obj = backend::linker::write_temp_object(&obj_bytes, stem).unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+                std::process::exit(1);
+            });
+
+            let flags = link_flags.unwrap_or(&[]);
+            let mut inv = backend::linker::LinkerInvocation::new(
+                tmp_obj.clone(),
+                PathBuf::from(out),
+                TargetSpec::host(),
+                flags.to_vec(),
+            )
+            .unwrap_or_else(|e| {
+                backend::linker::remove_temp(&tmp_obj);
+                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+                std::process::exit(1);
+            });
+            if let Some(lnk) = explicit_linker { inv.linker = lnk.to_path_buf(); }
+
+            inv.run().unwrap_or_else(|e| {
+                backend::linker::remove_temp(&tmp_obj);
+                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+                std::process::exit(1);
+            });
+            backend::linker::remove_temp(&tmp_obj);
+
+            let bin_size = std::fs::metadata(out).map(|m| m.len()).ok();
+            let link_info = match bin_size {
+                Some(b) => format!("{:.1} KB", b as f64 / 1024.0),
+                None => String::new(),
+            };
+            prog.done(&link_info);
+
+            if do_strip {
+                prog.begin("Stripping");
+                strip_binary(Path::new(out));
+                prog.done("");
+            }
+
+            let final_size = std::fs::metadata(out).map(|m| m.len()).ok();
+            prog.success(out, final_size);
+        }
+    }
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -537,34 +720,34 @@ fn main() {
                     std::process::exit(1);
                 });
 
-                let entry = ctx.config.entry.clone();
-                let result = loader::load_programs_with_resolver(&[entry], Some(&ctx.resolver))
-                    .unwrap_or_else(|e| {
-                        eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                        std::process::exit(1);
-                    });
+                // Library projects default to bytecode output; binaries default to native binary.
+                let is_lib = ctx.config.kind == project::ProjectKind::Lib;
+                let effective_emit = if is_lib && matches!(emit, EmitType::Binary) && !emit_bytecode && !emit_object {
+                    EmitType::Bytecode
+                } else {
+                    emit.clone()
+                };
+                let effective_strip = strip && matches!(effective_emit, EmitType::Binary);
 
-                if debug {
-                    print_debug_files(&result.loaded_files, &result.library_file_paths);
+                if is_lib && matches!(emit, EmitType::Binary) && !emit_bytecode && !emit_object {
+                    eprintln!("\x1b[33;1mnote:\x1b[0m library project — emitting bytecode (.vbc). Use -c for object file.");
                 }
 
+                let entry = ctx.config.entry.clone();
                 let out = output
                     .clone()
-                    .unwrap_or_else(|| project_output_name(&ctx.config.name, emit.clone()));
-                run_pipeline(
-                    &result.merged_source,
-                    &result.program,
-                    result.library_fn_names,
-                    debug,
-                    emit,
+                    .unwrap_or_else(|| project_output_name(&ctx.config.name, effective_emit.clone()));
+                let link_flags = ctx.config.flags.clone();
+                build_with_progress(
+                    &[entry],
                     &out,
-                    Some(&ctx.config.flags),
+                    effective_emit,
+                    debug,
+                    Some(&link_flags),
                     explicit_linker,
+                    effective_strip,
                 );
-
-                if do_strip {
-                    strip_binary(Path::new(&out));
-                }
+                let _ = (emit, do_strip);
 
                 if run && !emit_bytecode && !emit_object {
                     let status = std::process::Command::new(abs_path(&out))
@@ -647,9 +830,6 @@ fn main() {
                     }
                 }
             } else {
-                let result = load_with_optional_project(&files);
-                print_debug_files(&result.loaded_files, &result.library_file_paths);
-
                 let out = output.clone().unwrap_or_else(|| {
                     let stem = files[0]
                         .file_stem()
@@ -660,29 +840,21 @@ fn main() {
                         EmitType::Bytecode => format!("{}.vbc", stem),
                         EmitType::Object => format!("{}.o", stem),
                         EmitType::Binary => {
-                            if cfg!(target_os = "windows") {
-                                format!("{}.exe", stem)
-                            } else {
-                                stem
-                            }
+                            if cfg!(target_os = "windows") { format!("{}.exe", stem) }
+                            else { stem }
                         }
                     }
                 });
 
-                run_pipeline(
-                    &result.merged_source,
-                    &result.program,
-                    result.library_fn_names,
-                    debug,
-                    emit,
+                build_with_progress(
+                    &files,
                     &out,
+                    emit,
+                    debug,
                     None,
                     explicit_linker,
+                    do_strip,
                 );
-
-                if do_strip {
-                    strip_binary(Path::new(&out));
-                }
 
                 if run && !emit_bytecode && !emit_object {
                     let status = std::process::Command::new(abs_path(&out))
@@ -717,6 +889,7 @@ fn main() {
                 &result.merged_source,
                 &result.program,
                 result.library_fn_names,
+                result.library_char_ranges,
                 false,
                 EmitType::Binary,
                 &out,
@@ -751,11 +924,16 @@ fn main() {
                 &result.merged_source,
                 &result.program,
                 result.library_fn_names,
+                result.library_char_ranges,
             );
         }
 
-        CliCmd::New { name } => {
-            create_new_project(&name);
+        CliCmd::New { name, lib } => {
+            create_new_project(&name, lib);
+        }
+
+        CliCmd::Init { lib } => {
+            init_project(lib);
         }
 
         CliCmd::Fmt => {
@@ -805,6 +983,7 @@ fn main() void {
                     src,
                     &program,
                     HashSet::new(),
+                    Vec::new(),
                     false,
                     emit,
                     &output,

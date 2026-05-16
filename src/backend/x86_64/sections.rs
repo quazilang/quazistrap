@@ -44,17 +44,37 @@ impl SectionAccumulator {
         sym_table: &mut SymbolTable,
         chunks: &[Chunk],
     ) -> Vec<Vec<Option<String>>> {
-        let has_prim = chunks
-            .iter()
-            .any(|c| c.code.iter().any(|i| i.opcode == Opcode::PrimToStr as u8));
-
-        if has_prim {
+        let needs_fmt_ld = chunks.iter().any(|c| {
+            c.code.iter().any(|i| {
+                i.opcode == Opcode::PrimToStr as u8
+                    || (i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 15)
+            })
+        });
+        if needs_fmt_ld {
             let fmt = b"%ld\0";
             let offset = obj.append_section_data(self.rodata_id, fmt, 1);
             sym_table.define_data(
                 obj,
                 self.rodata_id,
                 "__void_fmt_ld",
+                offset,
+                fmt.len() as u64,
+            );
+        }
+
+        let needs_fmt_g = chunks.iter().any(|c| {
+            c.code.iter().any(|i| {
+                (i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 16)
+                    || (i.opcode == Opcode::PrimToStr as u8 && i.ops[2] == 1)
+            })
+        });
+        if needs_fmt_g {
+            let fmt = b"%g\0";
+            let offset = obj.append_section_data(self.rodata_id, fmt, 1);
+            sym_table.define_data(
+                obj,
+                self.rodata_id,
+                "__void_fmt_g",
                 offset,
                 fmt.len() as u64,
             );

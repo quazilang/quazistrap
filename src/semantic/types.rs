@@ -47,6 +47,7 @@ pub struct Symbol {
     pub variadic: bool,
     pub attributes: Vec<String>,
     pub public: bool,
+    pub unsafe_fn: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +85,7 @@ impl SemanticWarning {
     pub fn render(&self, source: &str) -> String {
         let mut out = render_diag("warning", self.code, &self.message, self.span, source);
         for s in &self.suggestions {
-            out.push_str(&format!("\n  \x1b[2m=\x1b[0m \x1b[36m{}\x1b[0m", s));
+            out.push_str(&format!("\n  \x1b[2mhint:\x1b[0m \x1b[36m{}\x1b[0m", s));
         }
         out
     }
@@ -257,4 +258,10 @@ pub struct SemanticReport {
     pub lazy_import_hints: Vec<LazyImportHint>,
     /// Functions that are defined and called, but not reachable from `main`.
     pub dead_functions: Vec<String>,
+    /// Struct field layouts: struct name → ordered list of (field_name, field_type).
+    pub struct_defs: HashMap<String, Vec<(String, TypeKind)>>,
+    /// Trait implementations: type name → set of trait names explicitly implemented.
+    pub trait_impls: HashMap<String, std::collections::HashSet<String>>,
+    /// Enum variant tags: enum name → variant name → discriminant index.
+    pub enum_defs: HashMap<String, HashMap<String, usize>>,
 }

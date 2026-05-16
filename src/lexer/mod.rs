@@ -199,6 +199,8 @@ impl Lexer {
             "str" => TokenKind::Str,
             "void" => TokenKind::Void,
             "any" => TokenKind::Any,
+            "true" => TokenKind::True,
+            "false" => TokenKind::False,
 
             _ => TokenKind::Ident(s),
         };
@@ -339,6 +341,7 @@ impl Lexer {
                             TokenKind::Bang
                         }
                     }
+                    '?' => TokenKind::Question,
 
                     '"' => return self.read_string(start, line, col),
 

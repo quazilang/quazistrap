@@ -1,0 +1,181 @@
+// std.collections.map — open-addressing hash map (linear probing, tombstone delete)
+// Keys are hashed as raw 64-bit values. Use integer or pointer-stable keys.
+// Resize at 75% load; initial capacity 16.
+import std.core;
+
+@intrinsic("void.array.store")
+fn __map_store(base: *u8, idx: usize, val: usize) void;
+
+@intrinsic("void.array.load")
+fn __map_load(base: *u8, idx: usize) usize;
+
+// flags slot values: 0 = empty, 1 = used, 2 = tombstone
+struct Map[K, V] {
+    keys:  *u8,
+    vals:  *u8,
+    flags: *u8,
+    len:   usize,
+    cap:   usize,
+}
+
+impl Map[K, V] {
+    pub fn new() Map[K, V] {
+        var keys:  *u8;
+        var vals:  *u8;
+        var flags: *u8;
+        unsafe {
+            keys  = core.malloc(128);
+            vals  = core.malloc(128);
+            flags = core.malloc(128);
+            core.memset(flags, 0, 128);
+        }
+        ret Map { keys: keys, vals: vals, flags: flags, len: 0, cap: 16 };
+    }
+
+    @ignore
+    fn __hash(self: Map[K, V], key: K) usize {
+        ret (key * 2654435761) % self.cap;
+    }
+
+    pub fn insert(self: Map[K, V], key: K, val: V) Map[K, V] {
+        if (self.len * 4 >= self.cap * 3) {
+            ret self.__grow().insert(key, val);
+        }
+        var idx: usize = self.__hash(key);
+        var probe: usize = 0;
+        var first_tomb: usize = self.cap;
+        for (probe < self.cap) {
+            var f: usize = __map_load(self.flags, idx);
+            if (f == 0) {
+                var target: usize = idx;
+                if (first_tomb < self.cap) {
+                    target = first_tomb;
+                }
+                __map_store(self.flags, target, 1);
+                __map_store(self.keys, target, key);
+                __map_store(self.vals, target, val);
+                ret Map { keys: self.keys, vals: self.vals, flags: self.flags, len: self.len + 1, cap: self.cap };
+            }
+            if (f == 1) {
+                var k: usize = __map_load(self.keys, idx);
+                if (k == key) {
+                    __map_store(self.vals, idx, val);
+                    ret self;
+                }
+            }
+            if (f == 2) {
+                if (first_tomb >= self.cap) {
+                    first_tomb = idx;
+                }
+            }
+            idx = (idx + 1) % self.cap;
+            probe = probe + 1;
+        }
+        if (first_tomb < self.cap) {
+            __map_store(self.flags, first_tomb, 1);
+            __map_store(self.keys, first_tomb, key);
+            __map_store(self.vals, first_tomb, val);
+            ret Map { keys: self.keys, vals: self.vals, flags: self.flags, len: self.len + 1, cap: self.cap };
+        }
+        ret self;
+    }
+
+    pub fn get(self: Map[K, V], key: K) V {
+        var idx: usize = self.__hash(key);
+        var probe: usize = 0;
+        for (probe < self.cap) {
+            var f: usize = __map_load(self.flags, idx);
+            if (f == 0) {
+                core.exit(1);
+            }
+            if (f == 1) {
+                var k: usize = __map_load(self.keys, idx);
+                if (k == key) {
+                    ret __map_load(self.vals, idx);
+                }
+            }
+            idx = (idx + 1) % self.cap;
+            probe = probe + 1;
+        }
+        core.exit(1);
+        ret __map_load(self.vals, 0);
+    }
+
+    pub fn contains(self: Map[K, V], key: K) bool {
+        var idx: usize = self.__hash(key);
+        var probe: usize = 0;
+        for (probe < self.cap) {
+            var f: usize = __map_load(self.flags, idx);
+            if (f == 0) { ret false; }
+            if (f == 1) {
+                var k: usize = __map_load(self.keys, idx);
+                if (k == key) { ret true; }
+            }
+            idx = (idx + 1) % self.cap;
+            probe = probe + 1;
+        }
+        ret false;
+    }
+
+    pub fn remove(self: Map[K, V], key: K) Map[K, V] {
+        var idx: usize = self.__hash(key);
+        var probe: usize = 0;
+        for (probe < self.cap) {
+            var f: usize = __map_load(self.flags, idx);
+            if (f == 0) { ret self; }
+            if (f == 1) {
+                var k: usize = __map_load(self.keys, idx);
+                if (k == key) {
+                    __map_store(self.flags, idx, 2);
+                    ret Map { keys: self.keys, vals: self.vals, flags: self.flags, len: self.len - 1, cap: self.cap };
+                }
+            }
+            idx = (idx + 1) % self.cap;
+            probe = probe + 1;
+        }
+        ret self;
+    }
+
+    pub fn len(self: Map[K, V]) usize {
+        ret self.len;
+    }
+
+    pub fn free(self: Map[K, V]) void {
+        unsafe {
+            core.free(self.keys);
+            core.free(self.vals);
+            core.free(self.flags);
+        }
+    }
+
+    @ignore
+    fn __grow(self: Map[K, V]) Map[K, V] {
+        var new_cap: usize = self.cap * 2;
+        var new_keys:  *u8;
+        var new_vals:  *u8;
+        var new_flags: *u8;
+        unsafe {
+            new_keys  = core.malloc(new_cap * 8);
+            new_vals  = core.malloc(new_cap * 8);
+            new_flags = core.malloc(new_cap * 8);
+            core.memset(new_flags, 0, new_cap * 8);
+        }
+        var new_map: Map[K, V] = Map { keys: new_keys, vals: new_vals, flags: new_flags, len: 0, cap: new_cap };
+        var i: usize = 0;
+        for (i < self.cap) {
+            var f: usize = __map_load(self.flags, i);
+            if (f == 1) {
+                var k: K = __map_load(self.keys, i);
+                var v: V = __map_load(self.vals, i);
+                new_map = new_map.insert(k, v);
+            }
+            i = i + 1;
+        }
+        unsafe {
+            core.free(self.keys);
+            core.free(self.vals);
+            core.free(self.flags);
+        }
+        ret new_map;
+    }
+}

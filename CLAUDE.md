@@ -31,7 +31,10 @@ void run --linker /path/to/ld       # build + run with explicit linker
 void run -s / --strip               # strip debug symbols before running
 void check                          # analyze project without emitting
 void debug [-b]                     # compile hardcoded demo source
-void new <name>                     # create a new project
+void new <name>                     # create a new binary project
+void new <name> --lib               # create a library project
+void init                           # initialize project in current directory
+void init --lib                     # initialize library project in current directory
 void fmt                            # trim trailing whitespace in .void files
 void clean                          # remove build artifacts
 ```
@@ -72,6 +75,21 @@ The GCC/GAS toolchain is no longer required or used.
 - `ProjectContext::discover(start)` is used by `void compile` to apply module resolution when a project config exists.
 - `void.toml` supports `[package]`, `[build]`, and `[dependencies]` (path + optional version).
 - `void.lock` is created on build/run when dependencies exist, and validated if present.
+- `ProjectKind::Bin` (default) vs `ProjectKind::Lib` — set via `type = "lib"` in `[package]`.
+- Lib projects default entry: `src/lib.void`. Lib builds default to `.vbc` output (bytecode), not a native binary.
+- `void new --lib` / `void init --lib` scaffold a library project with `type = "lib"` and `src/lib.void`.
+
+**Library `void.toml` template**:
+```toml
+[package]
+name = "mylib"
+version = "0.1.0"
+type = "lib"
+
+[build]
+entry = "src/lib.void"
+src = "src"
+```
 
 ### Lexer (`src/lexer/`)
 - `token.rs` — `Token`, `TokenKind`, `Span` (line, col, byte start/end).
@@ -169,7 +187,7 @@ and v2. `void build foo.vbc` reads any supported version.
 
 - **Pass 1**: assign each `fn` item a function-table index (order of appearance).
 - **Pass 2**: compile each function body via `FnCompiler` (virtual register allocator).
-- **Post-pass**: inline expansion — replaces `CallArg* + CallIdx` sequences for functions in `inline_candidates` with a register-remapped copy of the callee body (Ret stripped, args copied to callee param regs via base offset). Vtable calls (`CallReg`) are not inlined.
+- **Post-pass**: inline expansion — replaces `CallArg* + CallIdx` sequences for functions in `inline_candidates` with a register-remapped copy of the callee body (Ret stripped, args copied to callee param regs via base offset). Vtable calls (`CallReg`) are not inlined. **Critical**: after each `splice`, all absolute jump targets ≥ old splice end are adjusted by `delta = new_len - old_len` to prevent jump drift (fixed bug: jumps were looping back into inlined body).
 - `@syscall` functions: emit single `Syscall` (num from Linux x86-64 table or raw number) + `Ret`, skip body.
 - `@api` functions: emit single `CallExt` (symbol from attribute string in the constant pool) + `Ret`, flags store arg count.
 - Const-fold: expressions with a `ConstValue` in `const_map` (from semantic) emit `MovI`/`MovConst` directly.
@@ -177,6 +195,13 @@ and v2. `void build foo.vbc` reads any supported version.
 - Return value convention: always in virtual register 0 (`r0`).
 - Known method call builtins: `len()→StrLen`, `to_string()→PrimToStr`, `as_str()/as_string()→StrAsStr`, `parse[T]()→StrToInt` or `StrToFloat` depending on type arg.
 - `FnCompiler.next_reg` monotonically allocates virtual registers; stored in `Chunk.reg_count` for use by inline expansion and the backend.
+- **Zero-arg enum variant construction** in `ExprKind::Ident`: if name not in regs but matches `enum_ctor_tag`, emits `New(16) + MovI(tag) + FieldStore(tag,ptr,0) + Mov(dst,ptr)`. Fixes `None` / `Err(...)` used as bare identifiers.
+- **`coerce_to_display_str`**: converts format args to C string pointers for the format engine. `TypeKind::Any` and `None`/unresolved → treated as int (tag=0 → PrimToStr). `Str`/`Ref`/`Named`/`RawPtr`/`Slice` passed unchanged (already a pointer).
+- **Enum constructors**: `ExprKind::Call` with a name matching `enum_ctor_tag` → heap-allocates `New(size)`, stores discriminant at offset 0, payloads at offsets 8, 16, …
+- **Struct field access**: `ExprKind::Field { object, name }` → looks up field byte offset from `struct_defs`, emits `FieldLoad(dst, obj_ptr, offset)`.
+- **Struct construction**: `ExprKind::StructLit { name, fields }` → emits `New(size)` then `FieldStore` for each field in declaration order.
+- **Array intrinsics**: `void.array.store` (case 18), `void.array.load` (case 19) — args from consecutive registers starting at `slot(dst)`. Emitted by `@intrinsic("void.array.store/load")` stdlib wrappers.
+- **Static method dispatch**: for `Named` types, mangled to `TypeName.method`, looked up in `fn_index`. Works without vtables for concrete types. Falls back to VtblLoad+CallReg for truly dynamic dispatch.
 
 ### Backend (`src/backend/`)
 
@@ -230,7 +255,7 @@ impl TargetSpec {
 **`CallArg` + `CallIdx`**: pending arg list accumulated; on `CallIdx`, args moved to ABI regs (+ stack for Win64 args 5-6), `call target` with PLT32/REL32 reloc; result in `rax` moved to dst slot.  
 **`Syscall`**: Linux x86-64 only — `rax`=syscall number, args in `rdi, rsi, rdx, r10, r8, r9`. On Win64, emits `xor rax,rax` (no-op) since raw syscalls are unsafe on Windows.  
 **`CallExt`**: uses the target ABI (SysV on Linux/macOS, Win64 on Windows).  
-**Unimplemented**: `VtblLoad`, `CallReg`, `New`, `NewObj`, `FieldLoad`, `FieldStore` emit `xor rax,rax` placeholder.
+**Implemented opcodes** (encoder.rs): `New` (calloc heap alloc), `FieldLoad`/`FieldStore` (struct member read/write at byte offset), `VtblLoad` (reads vtable ptr from object[0] then slot from vtable[slot*8]), `CallReg` (indirect call through function pointer in register). `NewObj` still emits `xor rax,rax` placeholder.
 
 ### VBC → Object Lowering Design
 
@@ -329,6 +354,45 @@ All targets share the same `ElfBackend` (the `object` crate writes the correct b
 
 **Windows notes**: linking requires `lld-link` or `link.exe` with `LIB` pointing to Windows SDK + MSVC runtime directories. `@syscall` functions emit a no-op on Windows (raw syscalls are kernel-internal only). `@api("WinFn")` functions use Win64 ABI automatically.
 
+## Unsafe System
+
+Raw pointers and syscalls require explicit unsafe opt-in.
+
+**Rules:**
+1. A function with `*T` in any param or return type **must** be declared `unsafe fn` (error S12 otherwise). Exception: `@syscall` / `@api` functions are implicitly unsafe without the keyword.
+2. `@syscall` and `@api` functions are implicitly `unsafe fn` — the `Symbol.unsafe_fn` flag is set in the declare pass regardless of whether the source says `unsafe fn`.
+3. Calling an `unsafe fn` (including `@syscall`/`@api`) outside an `unsafe` context → error S11.
+4. Dereferencing `*T` or storing through `*T` outside an `unsafe` context → error S11.
+5. `@intrinsic` functions are **safe** — they are stdlib wrappers that handle unsafety internally.
+
+**Unsafe contexts:** `unsafe fn` body or `unsafe { }` block. Both increment `unsafe_depth`; checks fire when `unsafe_depth == 0`.
+
+```
+// safe wrapper — @intrinsic, no unsafe needed at call site
+import std.core.write;
+fn main() void { write(1, "hello\n", 6); }
+
+// raw syscall — unsafe at call site
+@syscall("write")
+fn raw_write(fd: i32, buf: str, len: usize) isize { }
+
+fn safe_wrapper(msg: str) void {
+    unsafe { raw_write(1, msg, 4); }   // OK — inside unsafe block
+}
+
+// raw pointer in signature — must be unsafe fn
+unsafe fn alloc_ptr(n: usize) *u8 { ... }
+
+fn use_ptr() void {
+    unsafe {
+        var p: *u8 = alloc_ptr(64);    // OK
+        var b: u8  = *p;               // OK — deref inside unsafe
+    }
+}
+```
+
+**Symbol tracking:** `Symbol.unsafe_fn: bool` — set in declare pass. `@syscall`/`@api` set it `true`; explicit `unsafe fn` sets it `true`; all others `false`.
+
 ## Language Syntax (current)
 
 ```
@@ -350,6 +414,8 @@ pub fn name[T](param: Type) ReturnType {  // pub is optional, ignored
     arr[0];                        // index
     ret expr;
 }
+unsafe fn ptr_fn(p: *u8) *u8 { ret p; }   // *T in sig → must be unsafe fn
+unsafe { var x = ptr_fn(p); *x = 1; }     // unsafe block for calls + deref
 
 struct Foo[T] { field: T, const flag: bool, }
 trait Bar[T] { fn method(x: T) T; }
@@ -392,6 +458,37 @@ RuneIterator.at(i)     -> Rune    // O(n)
 
 Mutability is a property of the binding (`var`/`const`), not the type. A `var s: &str` can be rebound; bytes viewed through `&str` are immutable.
 
+## Standard Library (`std/src/`)
+
+Source-based — `.void` files merged at compile time, no precompiled objects. Resolved via `VOID_STD_ROOT` env var or `~/.void/std` / `%USERPROFILE%/.void/std` or `CARGO_MANIFEST_DIR/std`.
+
+| File | Description |
+|------|-------------|
+| `core.void` | `write`, `read`, `exit`, `malloc`, `free`, `calloc`, `realloc`, `memcpy`, `memset`, `strlen`, `strcmp` — raw syscall/api wrappers (`@intrinsic`) |
+| `io.void` | `println`, `print`, `eprintln`, `eprint`, `read_line` — format-aware I/O |
+| `fmt.void` | `format` — variadic format intrinsic (`@intrinsic("void.format")`), processes `{}` placeholders |
+| `string.void` | `String` struct — owned heap string (`ptr+len+cap`), `new`, `push`, `push_str`, `len`, `bytes`, `as_str`, `from` |
+| `panic.void` | `PanicInfo`, `__void_panic_handler`, `panic` — unrecoverable error with message |
+| `result.void` | `Result[T,E]` enum — `ok()`, `is_ok()`, `is_err()`, `unwrap()`, `unwrap_err()`, `unwrap_or()`, `unwrap_err_or()` |
+| `option.void` | `Option[T]` enum — `ok()`, `is_some()`, `is_none()`, `unwrap()`, `unwrap_or()` |
+| `box.void` | `Box[T]` — heap-allocated owned pointer, `new`, `get`, `set` |
+| `traits.void` | Common trait definitions (`Display`, `Debug`, `Clone`, `Copy`, `Drop`, `Iterator`) |
+| `prelude.void` | Re-exports: `Option`, `Result`, `String`, `Box`, `panic`, `format`, `println` |
+| `collections/` | `vec.void` (`Vec[T]`), `map.void` (`HashMap[K,V]`) — WIP |
+| `unix.void` | Unix-specific syscall wrappers |
+| `windows.void` | Windows-specific Win32 API wrappers |
+
+**`@format` attribute**: marks a function as a format-aware variadic. At call sites, the compiler pre-formats all args (via `format` intrinsic) into a single string and passes that. Format template uses `{}` placeholders.
+
+**`@intrinsic("void.X")` dispatch** (encoder case numbers):
+| Intrinsic | Case | Effect |
+|-----------|------|--------|
+| `void.format` | 17 | format engine — all args must be C string pointers; `{}` replaced sequentially |
+| `void.array.store` | 18 | `arr[idx] = val` — writes u64 into heap array slot |
+| `void.array.load` | 19 | `val = arr[idx]` — reads u64 from heap array slot |
+
+**`?` operator**: desugars to match on Result/Option, short-circuit return Err/None on failure, unwrap value on success. End-to-end verified working.
+
 ## Attribute System
 
 Attributes annotate items and statements. Syntax: `@name` or `@name(args)`.
@@ -416,8 +513,8 @@ fn linux_only() void { ... }
 
 | Attribute | Target | Effect |
 |-----------|--------|--------|
-| `@syscall("name")` / `@syscall(number)` | `fn` | Body replaced by single `Syscall` instruction. Name is mapped via Linux x86-64 table or the number is used directly. Skips guaranteed-return check. |
-| `@api("FunctionName")` | `fn` | Body replaced by single `CallExt` instruction that calls an external symbol. Win64 ABI on Windows, SysV ABI on other targets. Skips guaranteed-return check. |
+| `@syscall("name")` / `@syscall(number)` | `fn` | Body replaced by single `Syscall` instruction. Name is mapped via Linux x86-64 table or the number is used directly. Skips guaranteed-return check. **Implicitly unsafe** — calling site requires `unsafe {}` or `unsafe fn`. |
+| `@api("FunctionName")` | `fn` | Body replaced by single `CallExt` instruction that calls an external symbol. Win64 ABI on Windows, SysV ABI on other targets. Skips guaranteed-return check. **Implicitly unsafe** — calling site requires `unsafe {}` or `unsafe fn`. |
 | `@cfg(key = "value")` | `fn`, `struct`, `enum`, `trait`, block | Conditional compilation. Currently compiled unconditionally; cfg evaluation deferred to AOT backend. |
 | `@inline` | `fn` | Forces inlining eligibility even when the call count is low (still excluded if recursive). |
 | `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)` | `fn`, `var`, `const`, parameter | Suppresses specific warnings. `@ignore` silences all; `unused_vars` silences W01/W02; `dead_code` silences W03/W07. Implemented in `unused.rs`. |
@@ -428,13 +525,139 @@ fn linux_only() void { ... }
 
 ## Syscall Example (Linux)
 
+`@syscall` functions are implicitly unsafe — call site must be inside `unsafe {}` or `unsafe fn`.
+
 ```void
 @syscall("write")
 fn write(fd: i32, buf: str, len: usize) isize { }
 
 fn main() void {
     const msg: str = "hello from syscall\n";
-    write(1, msg, msg.len());
+    unsafe {
+        write(1, msg, msg.len());
+    }
     ret;
 }
 ```
+
+## Ecosystem Roadmap
+
+The goal is a fully independent void toolchain — no LLVM, no GCC, no libc dependency.
+
+```
+void source
+    ↓
+VBC (platform-independent IR)  ←── serialize/deserialize (.vbc files)
+    ↓
+AOT backend (iced-x86)
+    ↓
+void link  (built-in linker — replaces lld-link / ld.lld)
+    ↓
+native binary  (ELF / PE / Mach-O)
+
+JIT VM: deferred to AOT-complete or self-host rewrite phase
+```
+
+### `void link` — Built-in Linker
+
+Subcommand (`void link`) replacing external linkers (lld-link, ld.lld, mold). Owned linker unlocks:
+
+- **ELF**: `p_align=1`, no `.note.gnu.build-id`, single PT_LOAD segment — target: hello world < 500 bytes
+- **PE**: import table packed inside `.text`, `FileAlignment=16`, no DOS stub — target: hello world < 700 bytes
+- No `LIB` env var requirement on Windows
+- Deterministic output (no timestamps, no build IDs)
+- Direct `.vbc` → binary path (no intermediate `.o` file)
+- Planned location: `src/linker/` inside this repo, invoked automatically by `void build`
+
+Until `void link` exists, external linker selection order: `VOID_LINKER` env var → `lld-link`/`ld.lld` → `mold` → `ld`.
+
+### JIT VM
+
+Deferred — planned for when AOT backend is feature-complete or during the self-hosted rewrite (void compiler written in void). VBC chunks are the natural JIT unit (platform-independent, already serializable). No separate JIT IR needed when the time comes.
+
+### Binary Size Status
+
+| Target | Current stripped hello world | Goal with `vld` |
+|--------|------------------------------|-----------------|
+| Linux x86-64 ELF | ~1.0 KB | < 500 bytes |
+| Windows x86-64 PE | ~1.5 KB | < 700 bytes |
+
+Current floor is set by external linker padding (FileAlignment=512 on PE, 2MB segment alignment on ELF with `-z max-page-size=0x1000` applied → 4KB). `vld` removes this ceiling entirely.
+
+### Philosophy
+
+- No LLVM — optimizations built into VBC passes (`optimize.rs`) and the backend directly
+- No libc — `@intrinsic` lowers to raw syscalls (Linux) or Win32 (Windows)
+- VBC is the stable serialization format — compile once, run on any void runtime
+- Linker (`vld`) and JIT are first-class parts of the void ecosystem, not external dependencies
+
+---
+
+## Feature Roadmap
+
+### Language
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Primitive types + arithmetic | Done | i8–i64, u8–u64, f32/f64, bool, str |
+| Control flow (if/while/for/match) | Done | Range loop, iterator loop, exhaustiveness check |
+| Functions + closures | Partial | Named functions done; closures/lambdas not yet |
+| Structs + field access | Done | `New` + `FieldLoad`/`FieldStore` in backend |
+| Enums + match | Done | Heap-allocated discriminant+payload; zero-arg variants in Ident path |
+| Traits + impl | Partial | Static dispatch for concrete Named types; vtable (trait objects / fat pointers) partial |
+| Generics | Partial | Parsed + type-checked with `Any` placeholder; not monomorphized — specialization TBD |
+| `?` operator | Done | Desugars to match/short-circuit; end-to-end verified |
+| `unsafe` blocks + raw pointers | Done | S11/S12 errors, unsafe depth tracking |
+| `@cfg` conditional compilation | Partial | Parsed; AOT stripping not yet evaluated |
+| Type aliases | Not started | `type Rune = u32` style |
+| Closures / first-class functions | Not started | Capture environments, `fn(T) -> U` type |
+| Pattern matching improvements | Not started | Nested patterns, tuple destructuring, guard clauses |
+| Lifetimes / borrow checker | Not started | Currently `@borrow` pass is stub; no enforcement |
+| `async`/`await` | Not started | — |
+| Remove hardcodes | Not started | Array intrinsic cases 18/19, method name strings (`len`/`to_string`/etc.), enum tag values (Ok=1/Err=0), struct sizes — replace with proper type-driven codegen |
+
+### Standard Library
+
+| Module | Status | Notes |
+|--------|--------|-------|
+| `core` (syscalls/api) | Done | write, read, exit, malloc, free, memcpy, strlen, etc. |
+| `io` (println/print/read_line) | Done | format-aware, cross-platform |
+| `fmt` (format intrinsic) | Done | `{}` placeholders, PrimToStr coercion |
+| `string` (String struct) | Done | heap string, push, as_str, len |
+| `result` / `option` | Done | full method surface, `?` operator |
+| `panic` | Done | panic handler, PanicInfo |
+| `box` (Box[T]) | Done | heap allocation wrapper |
+| `traits` | Partial | trait definitions, not all impls |
+| `prelude` | Done | re-exports common types |
+| `collections/vec` (Vec[T]) | WIP | push, get, len, iteration |
+| `collections/map` (HashMap[K,V]) | WIP | insert, get, contains |
+| `collections/set` (HashSet[T]) | Not started | — |
+| `fs` (file I/O) | Not started | open, read_to_string, write_all |
+| `net` (networking) | Not started | — |
+| `thread` / `sync` | Not started | Spawn opcode exists (0x5B), no high-level API |
+
+### Toolchain
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `void build` (AOT binary) | Done | Linux ELF, Windows PE, macOS Mach-O partial |
+| `void run` | Done | build + exec |
+| `void check` | Done | analyze without emit |
+| `void fmt` | Done | trailing whitespace trim |
+| `void new` / `void init` | Done | bin + lib variants |
+| `void lsp` | Partial | stdio mode; hover/completions basic |
+| `void link` (built-in linker) | Not started | replaces lld-link/ld.lld; ELF < 500 B, PE < 700 B |
+| JIT VM | Deferred | planned for AOT-complete phase or self-host rewrite |
+| Package registry | Not started | path deps work; version registry TBD |
+| `void doc` | Not started | doc comment extraction |
+| `void test` | Not started | built-in test runner (`@test` attribute) |
+
+### Backend
+
+| Target | Status | Notes |
+|--------|--------|-------|
+| Linux x86-64 (ELF) | Supported | Full |
+| Windows x86-64 (PE) | Supported | Requires `lld-link` + `LIB` env |
+| macOS x86-64 (Mach-O) | Partial | Object format works; dyld entry needs work |
+| aarch64 (Linux/macOS) | Not started | New `trait Backend` impl needed |
+| WASM | Not started | — |

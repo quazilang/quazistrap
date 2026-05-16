@@ -11,9 +11,11 @@ pub fn analyze_program(
     _src: &str,
     program: &Program,
     library_fn_names: HashSet<String>,
+    library_char_ranges: Vec<std::ops::Range<usize>>,
 ) -> SemanticReport {
     let mut analyzer = Analyzer::new();
     analyzer.set_library_fns(library_fn_names);
+    analyzer.set_library_char_ranges(library_char_ranges);
     analyzer.analyze_program(program)
 }
 

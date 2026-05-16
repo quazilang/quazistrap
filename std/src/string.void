@@ -1,0 +1,43 @@
+// std.string — owned heap string (null-terminated, heap-allocated copy)
+import std.core;
+
+pub struct String {
+    data: str,
+    len: usize,
+    cap: usize,
+}
+
+impl String {
+    pub fn new() String {
+        ret String { data: "", len: 0, cap: 0 };
+    }
+
+    pub fn from(s: str) String {
+        var n: usize = core.strlen(s);
+        var buf: str = core.str_concat(s, "");
+        ret String { data: buf, len: n, cap: n + 1 };
+    }
+
+    pub fn len(self: String) usize {
+        ret self.len;
+    }
+
+    pub fn is_empty(self: String) bool {
+        ret self.len == 0;
+    }
+
+    pub fn as_str(self: String) str {
+        ret self.data;
+    }
+
+    pub fn push_str(self: String, s: str) String {
+        var combined: str = core.str_concat(self.data, s);
+        var slen: usize = core.strlen(s);
+        var new_len: usize = self.len + slen;
+        ret String { data: combined, len: new_len, cap: new_len + 1 };
+    }
+
+    pub fn concat(a: String, b: String) String {
+        ret a.push_str(b.data);
+    }
+}

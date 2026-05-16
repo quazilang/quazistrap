@@ -1,0 +1,104 @@
+// std.io — console I/O
+// UTF-8 contract: all str/&str parameters are valid UTF-8.
+
+import std.core;
+
+// ── Writer types ──────────────────────────────────────────────────────────────
+
+pub struct Stdout { fd: i32, }
+pub struct Stderr { fd: i32, }
+
+pub fn stdout() Stdout { ret Stdout { fd: 1 }; }
+pub fn stderr() Stderr { ret Stderr { fd: 2 }; }
+
+impl Write for Stdout {
+    pub fn write(self: Stdout, s: str) void {
+        core.write(1, s, core.strlen(s));
+    }
+
+    pub fn writeln(self: Stdout, s: str) void {
+        core.write(1, s, core.strlen(s));
+        core.write(1, "\n", 1);
+    }
+
+    // @format: compiler pre-formats args at call sites, body receives single formatted string.
+    @format
+    pub fn writef(self: Stdout, s: str, ...args: any) void {
+        core.write(1, s, core.strlen(s));
+    }
+
+    @format
+    pub fn writelnf(self: Stdout, s: str, ...args: any) void {
+        core.write(1, s, core.strlen(s));
+        core.write(1, "\n", 1);
+    }
+}
+
+impl Write for Stderr {
+    pub fn write(self: Stderr, s: str) void {
+        core.stderr_write(s, core.strlen(s));
+    }
+
+    pub fn writeln(self: Stderr, s: str) void {
+        core.stderr_write(s, core.strlen(s));
+        core.stderr_write("\n", 1);
+    }
+
+    @format
+    pub fn writef(self: Stderr, s: str, ...args: any) void {
+        core.stderr_write(s, core.strlen(s));
+    }
+
+    @format
+    pub fn writelnf(self: Stderr, s: str, ...args: any) void {
+        core.stderr_write(s, core.strlen(s));
+        core.stderr_write("\n", 1);
+    }
+}
+
+// ── stdout convenience ────────────────────────────────────────────────────────
+// @format: compiler auto-formats when called with multiple args.
+// Single arg: raw write. Multiple args: format(template, args...) first.
+
+@format
+pub fn print(s: str, ...args: any) void {
+    core.write(1, s, core.strlen(s));
+}
+
+@format
+pub fn println(s: str, ...args: any) void {
+    core.write(1, s, core.strlen(s));
+    core.write(1, "\n", 1);
+}
+
+// ── stderr convenience ────────────────────────────────────────────────────────
+
+@format
+pub fn err(s: str, ...args: any) void {
+    core.stderr_write(s, core.strlen(s));
+}
+
+@format
+pub fn errln(s: str, ...args: any) void {
+    core.stderr_write(s, core.strlen(s));
+    core.stderr_write("\n", 1);
+}
+
+// ── arbitrary fd ─────────────────────────────────────────────────────────────
+
+pub fn writeln(fd: i32, s: str) void {
+    core.write(fd, s, core.strlen(s));
+    core.write(fd, "\n", 1);
+}
+
+// ── stdin ─────────────────────────────────────────────────────────────────────
+
+pub unsafe fn read_bytes(buf: *u8, n: usize) isize {
+    ret core.read(0, buf, n);
+}
+
+pub unsafe fn read_buf() *u8 {
+    var buf: *u8 = core.malloc(4096);
+    core.read(0, buf, 4095);
+    ret buf;
+}

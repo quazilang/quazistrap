@@ -178,7 +178,12 @@ impl Analyzer {
                 env.declare(name.clone(), var_ty);
             }
             StmtKind::Return(Some(expr)) => {
-                self.bc_expr(expr, env, true);
+                // Return exits the function; moves here don't affect post-return code.
+                // Use a cloned env with loop_depth=0 to suppress the "move in loop" error
+                // (the loop never runs again after a return) and don't apply back.
+                let mut ret_env = env.clone();
+                ret_env.loop_depth = 0;
+                self.bc_expr(expr, &mut ret_env, true);
             }
             StmtKind::Return(None) => {}
             StmtKind::ExprStmt(expr) => {
@@ -266,13 +271,23 @@ impl Analyzer {
     /// `consumed = true` means this expression is in move position (its value is
     /// taken by the surrounding construct). For non-Copy idents, this triggers a
     /// move and checks for move-in-loop and use-after-move.
+    /// Returns true only for Named types that are concrete user-defined structs/enums.
+    /// Generic type params (K, V, T, etc.) and unknown names are treated as Copy.
+    fn bc_is_move_type(&self, ty: &TypeKind) -> bool {
+        match ty {
+            TypeKind::Named { name, .. } => self.struct_defs.contains_key(name.as_str()),
+            _ => false,
+        }
+    }
+
     fn bc_expr(&mut self, expr: &Expr, env: &mut MoveEnv, consumed: bool) {
         match &expr.node {
             ExprKind::Ident(name) => {
                 let Some(var) = env.lookup(name) else { return };
-                if !var.is_move_type() {
+                let is_move = var.ty.as_ref().map_or(false, |t| self.bc_is_move_type(t));
+                if !is_move {
                     return;
-                } // Copy type: no tracking needed.
+                } // Copy type or unresolved generic: no tracking needed.
 
                 // Use-after-move check (both consuming and non-consuming reads).
                 if let Some(moved_at) = var.moved_at {
@@ -368,9 +383,11 @@ impl Analyzer {
                 self.bc_expr(object, env, false);
             }
 
-            ExprKind::Index { object, index } => {
+            ExprKind::Index { object, indices } => {
                 self.bc_expr(object, env, false);
-                self.bc_expr(index, env, false);
+                for idx in indices {
+                    self.bc_expr(idx, env, false);
+                }
             }
 
             ExprKind::ArrayLit(elems) => {
@@ -398,6 +415,17 @@ impl Analyzer {
             }
 
             ExprKind::Literal(_) => {}
+
+            ExprKind::StructInit { fields, .. } => {
+                // Struct construction consumes each field value.
+                for (_, fval) in fields {
+                    self.bc_expr(fval, env, true);
+                }
+            }
+
+            ExprKind::Try { expr: inner } => {
+                self.bc_expr(inner, env, consumed);
+            }
         }
     }
 }
