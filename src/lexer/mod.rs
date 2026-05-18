@@ -179,6 +179,7 @@ impl Lexer {
             "for" => TokenKind::For,
             "pub" => TokenKind::Pub,
             "unsafe" => TokenKind::Unsafe,
+            "type" => TokenKind::Type,
             "platform" => TokenKind::Platform,
 
             // primitive types

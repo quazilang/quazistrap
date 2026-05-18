@@ -89,6 +89,8 @@ impl Instruction {
                 ConstPoolEntry::Int(v) => format!("\x1b[33m{v}\x1b[0m"),
                 ConstPoolEntry::Float(v) => format!("\x1b[33m{v}\x1b[0m"),
                 ConstPoolEntry::Str(s) => format!("\x1b[32m{s:?}\x1b[0m"),
+                ConstPoolEntry::FnAddr(name) => format!("\x1b[36m{name}\x1b[0m"),
+                ConstPoolEntry::VtableAddr(tn, tr) => format!("\x1b[35mvtable({tn}::{tr})\x1b[0m"),
             }
         }
 
@@ -136,7 +138,7 @@ impl Instruction {
             | Opcode::Dup
             | Opcode::Move
             | Opcode::Drop => "\x1b[34m", // blue   – data movement
-            Opcode::Load | Opcode::Store | Opcode::Lea => "\x1b[35m",            // magenta – memory
+            Opcode::Load | Opcode::Store | Opcode::Lea | Opcode::ArrayStore | Opcode::ArrayLoad => "\x1b[35m",            // magenta – memory
             Opcode::New
             | Opcode::NewObj
             | Opcode::FieldLoad
@@ -209,6 +211,16 @@ impl Instruction {
             Opcode::FieldStore => {
                 let (val, obj, _) = self.rrr();
                 format!("{cop}[{}], {}", r(obj), r(val))
+            }
+
+            Opcode::ArrayStore => {
+                let (val, base, idx) = self.rrr();
+                format!("{cop}[{} + {}*8], {}", r(base), r(idx), r(val))
+            }
+
+            Opcode::ArrayLoad => {
+                let (dst, base, idx) = self.rrr();
+                format!("{cop}{}, [{} + {}*8]", r(dst), r(base), r(idx))
             }
 
             Opcode::CallReg | Opcode::Spawn => {
@@ -299,6 +311,8 @@ impl Instruction {
                         ConstPoolEntry::Str(s) => format!(" \x1b[32m{s:?}\x1b[0m"),
                         ConstPoolEntry::Int(n) => format!(" \x1b[33m{n}\x1b[0m"),
                         ConstPoolEntry::Float(f) => format!(" \x1b[33m{f}\x1b[0m"),
+                        ConstPoolEntry::FnAddr(name) => format!(" \x1b[36m{name}\x1b[0m"),
+                        ConstPoolEntry::VtableAddr(tn, tr) => format!(" vtable({tn}::{tr})"),
                     })
                     .unwrap_or_default();
                 format!(
@@ -326,6 +340,10 @@ impl Instruction {
                     11 => "void.stderr_write",
                     12 => "void.sleep_ms",
                     13 => "void.getenv",
+                    14 => "void.str_concat",
+                    15 => "void.int_to_str",
+                    16 => "void.float_to_str",
+                    17 => "void.format",
                     _ => "?",
                 };
                 format!(
@@ -367,8 +385,15 @@ impl Instruction {
 
 // ── Builders for common shapes ────────────────────────────────────────────────
 
+/// Flag bit: instruction operands are f64 (use SSE float ops in encoder).
+pub const FLOAT_FLAG: u8 = 0x01;
+
 pub fn rrr(op: Opcode, dst: u8, src1: u8, src2: u8) -> Instruction {
     Instruction::new(op, [dst, src1, src2, 0], 0)
+}
+
+pub fn rrr_f(op: Opcode, dst: u8, src1: u8, src2: u8) -> Instruction {
+    Instruction::new(op, [dst, src1, src2, 0], FLOAT_FLAG)
 }
 
 pub fn ri16(op: Opcode, dst: u8, imm: u16) -> Instruction {

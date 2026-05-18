@@ -119,6 +119,9 @@ pub enum TokenKind {
     // try operator
     Question, // ?
 
+    // type alias
+    Type,
+
     // directives
     Platform, // platform
 
@@ -233,6 +236,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::MinusMinus => write!(f, "--"),
             TokenKind::Question => write!(f, "?"),
 
+            TokenKind::Type => write!(f, "type"),
             TokenKind::Platform => write!(f, "platform"),
             TokenKind::Eof => write!(f, "EOF"),
         }

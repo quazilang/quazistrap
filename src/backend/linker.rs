@@ -64,17 +64,28 @@ impl LinkerInvocation {
 
     pub fn run(&self) -> Result<(), String> {
         let args = self.build_args();
-        let status = std::process::Command::new(&self.linker)
+        let output = std::process::Command::new(&self.linker)
             .args(&args)
-            .status()
+            .output()
             .map_err(|e| format!("failed to run linker {}: {}", self.linker.display(), e))?;
 
-        if !status.success() {
-            return Err(format!(
+        if !output.status.success() {
+            let mut msg = format!(
                 "linker {} failed with exit code {}",
                 self.linker.display(),
-                status.code().unwrap_or(-1)
-            ));
+                output.status.code().unwrap_or(-1)
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stderr.trim().is_empty() {
+                msg.push('\n');
+                msg.push_str(stderr.trim_end());
+            }
+            if !stdout.trim().is_empty() {
+                msg.push('\n');
+                msg.push_str(stdout.trim_end());
+            }
+            return Err(msg);
         }
         Ok(())
     }
@@ -85,10 +96,14 @@ impl LinkerInvocation {
 
         match self.target.os {
             Os::Linux => {
+                args.push("--gc-sections".into());
+                args.push("--build-id=none".into());
                 args.push("-o".into());
                 args.push(self.output.as_os_str().into());
                 args.push(self.object.as_os_str().into());
                 args.push("-L/usr/lib".into());
+                args.push("-z".into());
+                args.push("noseparate-code".into());
                 args.push("-z".into());
                 args.push("max-page-size=0x1000".into()); // 4KB instead of default 2MB
             }
@@ -154,4 +169,38 @@ pub fn write_temp_object(bytes: &[u8], stem: &str) -> Result<PathBuf, String> {
 /// Remove a path, silently ignoring errors.
 pub fn remove_temp(path: &Path) {
     let _ = std::fs::remove_file(path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::target::{Abi, Arch, Os};
+
+    #[test]
+    fn linux_link_args_strip_and_keep_small_page_alignment() {
+        let inv = LinkerInvocation {
+            output: PathBuf::from("hello"),
+            object: PathBuf::from("hello.o"),
+            linker: PathBuf::from("ld.lld"),
+            extra_flags: Vec::new(),
+            target: TargetSpec {
+                arch: Arch::X86_64,
+                os: Os::Linux,
+                abi: Abi::SysV,
+                emit_start: true,
+            },
+        };
+
+        let args: Vec<String> = inv
+            .build_args()
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(!args.contains(&"--strip-all".to_string()));
+        assert!(args.contains(&"--gc-sections".to_string()));
+        assert!(args.contains(&"--build-id=none".to_string()));
+        assert!(args.windows(2).any(|pair| pair == ["-z", "noseparate-code"]));
+        assert!(args.windows(2).any(|pair| pair == ["-z", "max-page-size=0x1000"]));
+    }
 }

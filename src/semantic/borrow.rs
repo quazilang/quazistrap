@@ -40,6 +40,9 @@ impl OwnedVar {
 struct MoveEnv {
     scopes: Vec<HashMap<String, OwnedVar>>,
     loop_depth: usize,
+    /// Variables currently being re-assigned (`x = f(x)`). Move-in-loop is
+    /// suppressed for these because the assignment immediately re-owns the value.
+    reassign_targets: std::collections::HashSet<String>,
 }
 
 impl MoveEnv {
@@ -47,6 +50,7 @@ impl MoveEnv {
         Self {
             scopes: vec![HashMap::new()],
             loop_depth: 0,
+            reassign_targets: std::collections::HashSet::new(),
         }
     }
 
@@ -118,6 +122,16 @@ impl MoveEnv {
 impl Analyzer {
     pub(super) fn run_borrow_check_pass(&mut self, program: &Program) {
         for item in &program.items {
+            // Skip @cfg-disabled items.
+            let attrs = match &item.node {
+                ItemKind::Fn { attributes, .. } => Some(attributes),
+                _ => None,
+            };
+            if let Some(attrs) = attrs {
+                if !super::item_should_include(attrs) {
+                    continue;
+                }
+            }
             match &item.node {
                 ItemKind::Fn {
                     params,
@@ -304,7 +318,11 @@ impl Analyzer {
 
                 if consumed {
                     // Moving inside a loop when the var was declared at a lower loop depth.
-                    if env.loop_depth > var.loop_depth_at_decl {
+                    // Suppressed when the variable is the target of the enclosing assignment
+                    // (x = f(x) pattern) — the reassignment immediately re-owns the value.
+                    if env.loop_depth > var.loop_depth_at_decl
+                        && !env.reassign_targets.contains(name.as_str())
+                    {
                         self.push_error(
                             expr.span,
                             "S10",
@@ -313,7 +331,6 @@ impl Analyzer {
                                 name
                             ),
                         );
-                        // Mark as moved anyway to suppress cascading errors.
                         env.mark_moved(name, expr.span);
                         return;
                     }
@@ -322,13 +339,16 @@ impl Analyzer {
             }
 
             ExprKind::Assign { target, value } => {
-                // RHS value is consumed (moved into the target binding).
-                self.bc_expr(value, env, true);
-                // Re-assignment re-owns the target variable — clear moved state.
+                // Mark target as being re-assigned so move-in-loop is suppressed
+                // for `x = f(x)` patterns (value is immediately re-owned).
                 if let ExprKind::Ident(name) = &target.node {
+                    env.reassign_targets.insert(name.clone());
+                }
+                self.bc_expr(value, env, true);
+                if let ExprKind::Ident(name) = &target.node {
+                    env.reassign_targets.remove(name.as_str());
                     env.reinit(name);
                 } else {
-                    // Field/index assignment: check the object is accessible.
                     self.bc_expr(target, env, false);
                 }
             }
@@ -344,20 +364,22 @@ impl Analyzer {
                 self.bc_expr(inner, env, false);
             }
 
-            ExprKind::Call { callee, args, .. } => {
-                // Just resolve the callee name — it's not an owned value.
+            ExprKind::Call { callee, args, named_args, .. } => {
                 self.bc_expr(callee, env, false);
-                // Each argument is consumed (moved into the callee's parameter).
                 for arg in args {
+                    self.bc_expr(arg, env, true);
+                }
+                for (_, arg) in named_args {
                     self.bc_expr(arg, env, true);
                 }
             }
 
-            ExprKind::MethodCall { object, args, .. } => {
-                // Method receiver: treated as borrowed (no reference types yet;
-                // receiver is neither moved nor requires explicit borrow).
+            ExprKind::MethodCall { object, args, named_args, .. } => {
                 self.bc_expr(object, env, false);
                 for arg in args {
+                    self.bc_expr(arg, env, true);
+                }
+                for (_, arg) in named_args {
                     self.bc_expr(arg, env, true);
                 }
             }
@@ -404,10 +426,12 @@ impl Analyzer {
                 let base_env = env.clone();
                 for arm in arms {
                     let mut arm_env = base_env.clone();
-                    if let PatternKind::Variant { bindings, .. } = &arm.pattern.node {
-                        for b in bindings {
-                            arm_env.declare(b.clone(), Some(TypeKind::Any));
-                        }
+                    for b in crate::parser::ast::pattern_all_bindings(&arm.pattern) {
+                        arm_env.declare(b, Some(TypeKind::Any));
+                    }
+                    // Guard expression is checked in the arm's scope (bindings available).
+                    if let Some(guard) = &arm.guard {
+                        self.bc_expr(guard, &mut arm_env, false);
                     }
                     self.bc_expr(&arm.expr, &mut arm_env, consumed);
                     env.apply_branch_moves(&arm_env);
@@ -425,6 +449,10 @@ impl Analyzer {
 
             ExprKind::Try { expr: inner } => {
                 self.bc_expr(inner, env, consumed);
+            }
+
+            ExprKind::Closure { body, .. } => {
+                self.bc_expr(body, env, consumed);
             }
         }
     }

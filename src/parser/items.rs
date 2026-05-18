@@ -318,8 +318,31 @@ impl Parser {
         ))
     }
 
-    pub fn parse_import(&mut self, pub_import: bool) -> Result<Item, String> {
-        let start = self.expect(TokenKind::Import)?.span;
+    pub fn parse_type_alias(&mut self, attributes: Vec<Attribute>) -> Result<Item, String> {
+        let start = self.expect(TokenKind::Type)?.span;
+        let name = self.parse_ident()?;
+        let generic_params = self.parse_optional_generic_params()?;
+        self.expect(TokenKind::Eq)?;
+        let aliased_type = self.parse_type()?;
+        let end = self.expect(TokenKind::Semicolon)?.span;
+        let span = to_ast_span(merge_token_spans(start, end));
+        Ok(Spanned::new(
+            ItemKind::TypeAlias {
+                name,
+                generic_params,
+                aliased_type,
+                attributes,
+            },
+            span,
+        ))
+    }
+
+    pub fn parse_import(&mut self, pub_import: bool, is_reexport: bool) -> Result<Item, String> {
+        let start = if is_reexport {
+            self.peek().span
+        } else {
+            self.expect(TokenKind::Import)?.span
+        };
 
         // Detect `./` prefix: Dot + Slash → relative import (local-only, skips module resolver).
         let relative = if self.at(TokenKind::Dot)
@@ -398,7 +421,13 @@ impl Parser {
             let last = path
                 .pop()
                 .ok_or_else(|| self.err_here("invalid import path".to_string()))?;
-            ImportItems::Single(last)
+            if self.at(TokenKind::As) {
+                self.advance();
+                let alias = self.parse_ident()?;
+                ImportItems::Aliased(last, alias)
+            } else {
+                ImportItems::Single(last)
+            }
         };
 
         let end = self.expect(TokenKind::Semicolon)?.span;
@@ -409,6 +438,7 @@ impl Parser {
                 path,
                 items,
                 pub_import,
+                is_reexport,
                 relative,
                 span: to_ast_span(span_tok),
             }),

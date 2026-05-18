@@ -10,6 +10,20 @@ use super::*;
 
 impl Analyzer {
     pub(super) fn declare_top_level_item(&mut self, item: &Item) {
+        // Skip items disabled by @cfg on this platform.
+        let attrs = match &item.node {
+            ItemKind::TypeAlias { attributes, .. }
+            | ItemKind::Fn { attributes, .. }
+            | ItemKind::Struct { attributes, .. }
+            | ItemKind::Trait { attributes, .. }
+            | ItemKind::Enum { attributes, .. } => Some(attributes),
+            _ => None,
+        };
+        if let Some(attrs) = attrs {
+            if !super::item_should_include(attrs) {
+                return;
+            }
+        }
         match &item.node {
             ItemKind::Fn {
                 name,
@@ -18,6 +32,7 @@ impl Analyzer {
                 attributes,
                 pub_fn,
                 unsafe_fn,
+                generic_params,
                 ..
             } => {
                 let mut attr_names = extract_attribute_names(attributes);
@@ -29,11 +44,28 @@ impl Analyzer {
                 if is_foreign && !attr_names.contains(&"ignore".to_string()) {
                     attr_names.push("ignore".to_string());
                 }
+                // Str-variadic fns: codegen coerces variadic args to str at call sites.
+                // Detected by: ...args: str/ref, OR ...args: any with a preceding str param
+                // (the any+str convention is how format-style fns like println are written).
+                let has_str_variadic_param = params.last().map(|p| {
+                    if !p.variadic { return false; }
+                    if matches!(&p.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }) { return true; }
+                    matches!(&p.ty.node, crate::parser::ast::TypeKind::Any) && params.iter()
+                        .filter(|q| !q.variadic)
+                        .any(|q| matches!(&q.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }))
+                }).unwrap_or(false);
+                if has_str_variadic_param {
+                    attr_names.push("str_variadic".to_string());
+                }
                 // @syscall and @api functions are implicitly unsafe — raw syscalls and FFI
                 // bypass OS/runtime safety guarantees, so callers must use unsafe {}.
                 let is_syscall_or_api = attr_names
                     .iter()
                     .any(|a| matches!(a.as_str(), "syscall" | "api"));
+                self.fn_param_names.insert(
+                    name.clone(),
+                    params.iter().filter(|p| p.name != "self").map(|p| p.name.clone()).collect(),
+                );
                 self.declare(
                     name.clone(),
                     Symbol {
@@ -50,6 +82,7 @@ impl Analyzer {
                         attributes: attr_names.clone(),
                         public: *pub_fn,
                         unsafe_fn: *unsafe_fn || is_syscall_or_api,
+                        generic_params: generic_params.clone(),
                     },
                 );
                 // @panic_handler validation: must take exactly one PanicInfo or str param,
@@ -102,8 +135,8 @@ impl Analyzer {
             ItemKind::Struct {
                 name,
                 fields,
+                generic_params,
                 attributes,
-                ..
             } => {
                 self.declare(
                     name.clone(),
@@ -121,6 +154,7 @@ impl Analyzer {
                         attributes: extract_attribute_names(attributes),
                         public: false,
                         unsafe_fn: false,
+                        generic_params: vec![],
                     },
                 );
                 // Register field layout for codegen
@@ -129,6 +163,9 @@ impl Analyzer {
                     .map(|(fname, ftype, _)| (fname.clone(), ftype.node.clone()))
                     .collect();
                 self.struct_defs.insert(name.clone(), field_defs);
+                if !generic_params.is_empty() {
+                    self.struct_generic_params.insert(name.clone(), generic_params.clone());
+                }
 
                 // @derive — register derived traits
                 let derives: Vec<String> = attributes
@@ -152,25 +189,33 @@ impl Analyzer {
                 }
             }
             ItemKind::Trait {
-                name, attributes, ..
-            } => self.declare(
-                name.clone(),
-                Symbol {
-                    kind: SymbolKind::TypeName,
-                    span: item.span,
-                    ty: None,
-                    params: vec![],
-                    used: false,
-                    initialized: true,
-                    is_import: false,
-                    import_path: None,
-                    const_value: None,
-                    variadic: false,
-                    attributes: extract_attribute_names(attributes),
-                    public: false,
-                    unsafe_fn: false,
-                },
-            ),
+                name, methods, attributes, ..
+            } => {
+                self.declare(
+                    name.clone(),
+                    Symbol {
+                        kind: SymbolKind::TypeName,
+                        span: item.span,
+                        ty: None,
+                        params: vec![],
+                        used: false,
+                        initialized: true,
+                        is_import: false,
+                        import_path: None,
+                        const_value: None,
+                        variadic: false,
+                        attributes: extract_attribute_names(attributes),
+                        public: false,
+                        unsafe_fn: false,
+                        generic_params: vec![],
+                    },
+                );
+                // Record vtable slot order: method declaration order = slot index.
+                let slots: Vec<String> = methods.iter().map(|m| m.name.clone()).collect();
+                if !slots.is_empty() {
+                    self.trait_method_slots.insert(name.clone(), slots);
+                }
+            }
             ItemKind::Enum {
                 name,
                 variants,
@@ -193,9 +238,40 @@ impl Analyzer {
                         attributes: extract_attribute_names(attributes),
                         public: false,
                         unsafe_fn: false,
+                        generic_params: vec![],
                     },
                 );
                 self.register_enum(name, variants, item.span);
+            }
+            ItemKind::TypeAlias {
+                name,
+                generic_params,
+                aliased_type,
+                attributes,
+            } => {
+                self.declare(
+                    name.clone(),
+                    Symbol {
+                        kind: SymbolKind::TypeName,
+                        span: item.span,
+                        ty: Some(aliased_type.node.clone()),
+                        params: vec![],
+                        used: false,
+                        initialized: true,
+                        is_import: false,
+                        import_path: None,
+                        const_value: None,
+                        variadic: false,
+                        attributes: extract_attribute_names(attributes),
+                        public: false,
+                        unsafe_fn: false,
+                        generic_params: generic_params.clone(),
+                    },
+                );
+                self.type_aliases.insert(
+                    name.clone(),
+                    (generic_params.clone(), aliased_type.node.clone()),
+                );
             }
             ItemKind::Import(import_path) => self.declare_import_item(import_path, item.span),
             ItemKind::Impl { for_ty, trait_ty, methods, .. } => {
@@ -215,9 +291,13 @@ impl Analyzer {
                         attributes,
                         unsafe_fn,
                         pub_fn,
+                        generic_params,
                         ..
                     } = &method.node
                     {
+                        if !super::item_should_include(attributes) {
+                            continue;
+                        }
                         let mangled = format!("{}.{}", type_name, name);
                         let mut attr_names = extract_attribute_names(attributes);
                         let is_foreign = attr_names
@@ -226,27 +306,42 @@ impl Analyzer {
                         if is_foreign && !attr_names.contains(&"ignore".to_string()) {
                             attr_names.push("ignore".to_string());
                         }
+                        let has_str_variadic_param2 = params.last().map(|p| {
+                            if !p.variadic { return false; }
+                            if matches!(&p.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }) { return true; }
+                            matches!(&p.ty.node, crate::parser::ast::TypeKind::Any) && params.iter()
+                                .filter(|q| !q.variadic)
+                                .any(|q| matches!(&q.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }))
+                        }).unwrap_or(false);
+                        if has_str_variadic_param2 {
+                            attr_names.push("str_variadic".to_string());
+                        }
                         let is_syscall_or_api = attr_names
                             .iter()
                             .any(|a| matches!(a.as_str(), "syscall" | "api"));
-                        self.declare(
-                            mangled,
-                            Symbol {
-                                kind: SymbolKind::Function,
-                                span: method.span,
-                                ty: Some(unwrap_type(return_ty)),
-                                params: params.iter().map(|p| unwrap_type(&p.ty)).collect(),
-                                used: false,
-                                initialized: true,
-                                is_import: false,
-                                import_path: None,
-                                const_value: None,
-                                variadic: params.last().map(|p| p.variadic).unwrap_or(false),
-                                attributes: attr_names,
-                                public: *pub_fn,
-                                unsafe_fn: *unsafe_fn || is_syscall_or_api,
-                            },
+                        self.fn_param_names.insert(
+                            mangled.clone(),
+                            params.iter().filter(|p| p.name != "self").map(|p| p.name.clone()).collect(),
                         );
+                    self.declare(
+                        mangled,
+                        Symbol {
+                            kind: SymbolKind::Function,
+                            span: method.span,
+                            ty: Some(unwrap_type(return_ty)),
+                            params: params.iter().map(|p| unwrap_type(&p.ty)).collect(),
+                            used: false,
+                            initialized: true,
+                            is_import: false,
+                            import_path: None,
+                            const_value: None,
+                            variadic: params.last().map(|p| p.variadic).unwrap_or(false),
+                            attributes: attr_names,
+                            public: *pub_fn,
+                            unsafe_fn: *unsafe_fn || is_syscall_or_api,
+                            generic_params: generic_params.clone(),
+                        },
+                    );
                     }
                 }
             }
@@ -256,6 +351,7 @@ impl Analyzer {
     pub(super) fn register_enum(&mut self, enum_name: &str, variants: &[EnumVariant], span: Span) {
         let mut map = HashMap::new();
         let mut order = Vec::new();
+        let mut variant_fields: HashMap<String, Vec<TypeKind>> = HashMap::new();
 
         for variant in variants {
             let arity = variant.payload_types.len();
@@ -270,6 +366,10 @@ impl Analyzer {
                 );
             } else {
                 order.push(variant.name.clone());
+                variant_fields.insert(
+                    variant.name.clone(),
+                    variant.payload_types.iter().map(|t| t.node.clone()).collect(),
+                );
             }
         }
 
@@ -278,7 +378,7 @@ impl Analyzer {
         }
 
         self.enums
-            .insert(enum_name.to_string(), EnumInfo { variants: map, order });
+            .insert(enum_name.to_string(), EnumInfo { variants: map, variant_fields, order });
     }
 
     pub(super) fn declare_import_item(&mut self, import_path: &ImportPath, span: Span) {
@@ -299,9 +399,10 @@ impl Analyzer {
             }
             ImportItems::All => {
                 // Wildcard: allow all library functions to be called unqualified.
+                // Value = "" to suppress conflict detection for wildcard entries.
                 let all: Vec<String> = self.library_fn_names.iter().cloned().collect();
                 for name in all {
-                    self.explicitly_imported_fns.insert(name);
+                    self.explicitly_imported_fns.entry(name).or_insert_with(String::new);
                 }
             }
         }
@@ -333,8 +434,51 @@ impl Analyzer {
                         );
                         return;
                     }
-                    self.explicitly_imported_fns.insert(local_name);
+                    // Conflict: same short name imported from two different modules.
+                    if let Some(existing_path) = self.explicitly_imported_fns.get(&local_name) {
+                        if !existing_path.is_empty() && existing_path != &full_path {
+                            self.push_error(
+                                span,
+                                "S15",
+                                format!(
+                                    "ambiguous import '{}': already imported from '{}'; \
+                                     use 'import {} as ...' to alias",
+                                    local_name, existing_path, full_path
+                                ),
+                            );
+                            return;
+                        }
+                    }
+                    self.explicitly_imported_fns.insert(local_name, full_path);
                 }
+                return;
+            }
+        }
+        // Alias import: the alias name didn't exist in scope. Check if full_path's
+        // leaf resolves to a library function and register the alias as Function.
+        let leaf = full_path.rsplit('.').next().unwrap_or(full_path.as_str()).to_string();
+        if let Some(original) = self.resolve_symbol(&leaf) {
+            if matches!(original.kind, SymbolKind::Function) {
+                self.explicitly_imported_fns.insert(local_name.clone(), full_path.clone());
+                self.declare(
+                    local_name,
+                    Symbol {
+                        kind: SymbolKind::Function,
+                        ty: original.ty,
+                        span,
+                        params: original.params,
+                        used: false,
+                        initialized: true,
+                        is_import: true,
+                        import_path: Some(full_path),
+                        const_value: None,
+                        variadic: original.variadic,
+                        attributes: original.attributes,
+                        public: false,
+                        unsafe_fn: original.unsafe_fn,
+                        generic_params: original.generic_params,
+                    },
+                );
                 return;
             }
         }
@@ -354,6 +498,7 @@ impl Analyzer {
                 attributes: Vec::new(),
                 public: false,
                 unsafe_fn: false,
+                generic_params: vec![],
             },
         );
     }

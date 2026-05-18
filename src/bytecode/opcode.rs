@@ -36,6 +36,8 @@ pub enum Opcode {
     Move = 0x23,  // ownership move — src invalidated after
     Drop = 0x24,  // drop value, run destructor (RAII scope exit)
     Dup = 0x25,   // copy if type allows (Copy types only)
+    ArrayStore = 0x26, // RRR: ops[0]=val, ops[1]=base, ops[2]=idx — base[idx] = val (scaled by 8)
+    ArrayLoad = 0x27,  // RRR: ops[0]=dst, ops[1]=base, ops[2]=idx — dst = base[idx] (scaled by 8)
 
     // 0x30–0x3F  Control flow
     Cmp = 0x30,
@@ -121,6 +123,8 @@ impl Opcode {
             0x23 => Some(Self::Move),
             0x24 => Some(Self::Drop),
             0x25 => Some(Self::Dup),
+            0x26 => Some(Self::ArrayStore),
+            0x27 => Some(Self::ArrayLoad),
             0x30 => Some(Self::Cmp),
             0x31 => Some(Self::Jmp),
             0x32 => Some(Self::Je),

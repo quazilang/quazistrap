@@ -128,14 +128,26 @@ impl Parser {
     }
 
     fn render_diagnostic(&self, code: &str, msg: String, span: TokenSpan) -> String {
+        // Resolve merged-source line to file:line:col when source_files are available.
+        let (display_loc, file_rel_line) = if let Some(sf) = self.source_files.iter().rev()
+            .find(|sf| sf.line_start <= span.line)
+        {
+            let rel_line = span.line - sf.line_start + 1;
+            let path = std::path::Path::new(&sf.path);
+            let short = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&sf.path);
+            (format!("{}:{}:{}", short, rel_line, span.col), rel_line)
+        } else {
+            (format!("{}:{}", span.line, span.col), span.line)
+        };
+
         let mut out = format!(
-            "\x1b[1;31merror\x1b[0m\x1b[1m[{code}]\x1b[0m: {msg}\n  \x1b[1;34m-->\x1b[0m {line}:{col}",
-            line = span.line,
-            col = span.col
+            "\x1b[1;31merror\x1b[0m\x1b[1m[{code}]\x1b[0m: {msg}\n  \x1b[1;34m-->\x1b[0m {display_loc}",
         );
         if let Some(source) = &self.source {
             if let Some(line_text) = source.lines().nth(span.line.saturating_sub(1)) {
-                let lnum = span.line.to_string();
+                let lnum = file_rel_line.to_string();
                 let w = lnum.len();
                 let blank = " ".repeat(w);
                 let caret_off = span.col.saturating_sub(1);

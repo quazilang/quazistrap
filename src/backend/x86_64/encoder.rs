@@ -76,7 +76,9 @@ fn max_reg_used(chunk: &Chunk) -> usize {
                 | Opcode::StrToFloat
                 | Opcode::PrimToStr
                 | Opcode::StrAsStr
-                | Opcode::Pow,
+                | Opcode::Pow
+                | Opcode::ArrayStore
+                | Opcode::ArrayLoad,
             ) => {
                 max = max.max(r0).max(r1).max(r2);
             }
@@ -443,6 +445,31 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(slot(dst), rax));
                         }
                     }
+                    Some(ConstPoolEntry::FnAddr(name)) => {
+                        // Look up the function symbol name. FnAddr stores the raw function name;
+                        // the symbol may have __void_intr_ prefix or safe-label mangling.
+                        let sym = self
+                            .fn_table
+                            .iter()
+                            .find(|s| {
+                                s == &name
+                                    || s.trim_start_matches("__void_intr_") == name
+                                    || s.trim_start_matches("__void_intr_") == safe_fn_label(name)
+                            })
+                            .cloned()
+                            .unwrap_or_else(|| safe_fn_label(name));
+                        lea_rip!(rax, sym);
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    Some(ConstPoolEntry::VtableAddr(type_name, trait_name)) => {
+                        let sym = format!(
+                            "__vtable_{}_{}",
+                            safe_fn_label(type_name),
+                            safe_fn_label(trait_name)
+                        );
+                        lea_rip!(rax, sym);
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     None => {
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
@@ -452,31 +479,59 @@ impl<'a> FnEncoder<'a> {
 
             Some(Opcode::Add) => {
                 let (dst, s1, s2) = instr.rrr();
-                emit!(asm.mov(rax, slot(s1)));
-                emit!(asm.add(rax, slot(s2)));
-                emit!(asm.mov(slot(dst), rax));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    emit!(asm.movq(xmm0, slot(s1)));
+                    emit!(asm.movq(xmm1, slot(s2)));
+                    emit!(asm.addsd(xmm0, xmm1));
+                    emit!(asm.movq(slot(dst), xmm0));
+                } else {
+                    emit!(asm.mov(rax, slot(s1)));
+                    emit!(asm.add(rax, slot(s2)));
+                    emit!(asm.mov(slot(dst), rax));
+                }
             }
 
             Some(Opcode::Sub) => {
                 let (dst, s1, s2) = instr.rrr();
-                emit!(asm.mov(rax, slot(s1)));
-                emit!(asm.sub(rax, slot(s2)));
-                emit!(asm.mov(slot(dst), rax));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    emit!(asm.movq(xmm0, slot(s1)));
+                    emit!(asm.movq(xmm1, slot(s2)));
+                    emit!(asm.subsd(xmm0, xmm1));
+                    emit!(asm.movq(slot(dst), xmm0));
+                } else {
+                    emit!(asm.mov(rax, slot(s1)));
+                    emit!(asm.sub(rax, slot(s2)));
+                    emit!(asm.mov(slot(dst), rax));
+                }
             }
 
             Some(Opcode::Mul) => {
                 let (dst, s1, s2) = instr.rrr();
-                emit!(asm.mov(rax, slot(s1)));
-                emit!(asm.imul_2(rax, slot(s2)));
-                emit!(asm.mov(slot(dst), rax));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    emit!(asm.movq(xmm0, slot(s1)));
+                    emit!(asm.movq(xmm1, slot(s2)));
+                    emit!(asm.mulsd(xmm0, xmm1));
+                    emit!(asm.movq(slot(dst), xmm0));
+                } else {
+                    emit!(asm.mov(rax, slot(s1)));
+                    emit!(asm.imul_2(rax, slot(s2)));
+                    emit!(asm.mov(slot(dst), rax));
+                }
             }
 
             Some(Opcode::Div) => {
                 let (dst, s1, s2) = instr.rrr();
-                emit!(asm.mov(rax, slot(s1)));
-                emit!(asm.cqo());
-                emit!(asm.idiv(slot(s2)));
-                emit!(asm.mov(slot(dst), rax));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    emit!(asm.movq(xmm0, slot(s1)));
+                    emit!(asm.movq(xmm1, slot(s2)));
+                    emit!(asm.divsd(xmm0, xmm1));
+                    emit!(asm.movq(slot(dst), xmm0));
+                } else {
+                    emit!(asm.mov(rax, slot(s1)));
+                    emit!(asm.cqo());
+                    emit!(asm.idiv(slot(s2)));
+                    emit!(asm.mov(slot(dst), rax));
+                }
             }
 
             Some(Opcode::Mod) => {
@@ -635,7 +690,7 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::Ret) => {
-                emit!(asm.mov(rax, slot(0)));
+                emit!(asm.mov(rax, slot(instr.ops[0])));
                 emit!(asm.mov(rsp, rbp));
                 emit!(asm.pop(rbp));
                 emit!(asm.ret());
@@ -669,6 +724,30 @@ impl<'a> FnEncoder<'a> {
                 }
                 emit!(asm.mov(rcx, slot(src)));
                 emit!(asm.mov(qword_ptr(rax), rcx));
+            }
+
+            Some(Opcode::ArrayStore) => {
+                // RRR: ops[0]=val, ops[1]=base_ptr, ops[2]=idx — base[idx*8] = val
+                let (val, base, idx) = instr.rrr();
+                emit!(asm.mov(rax, slot(base)));
+                emit!(asm.mov(rcx, slot(idx)));
+                emit!(asm.mov(rdx, 8i64));
+                emit!(asm.imul_2(rcx, rdx));
+                emit!(asm.add(rax, rcx));
+                emit!(asm.mov(rcx, slot(val)));
+                emit!(asm.mov(qword_ptr(rax), rcx));
+            }
+
+            Some(Opcode::ArrayLoad) => {
+                // RRR: ops[0]=dst, ops[1]=base_ptr, ops[2]=idx — dst = base[idx*8]
+                let (dst, base, idx) = instr.rrr();
+                emit!(asm.mov(rax, slot(base)));
+                emit!(asm.mov(rcx, slot(idx)));
+                emit!(asm.mov(rdx, 8i64));
+                emit!(asm.imul_2(rcx, rdx));
+                emit!(asm.add(rax, rcx));
+                emit!(asm.mov(rax, qword_ptr(rax)));
+                emit!(asm.mov(slot(dst), rax));
             }
 
             Some(Opcode::Syscall) => {
@@ -878,14 +957,20 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     10 => {
-                        // void.strlen(s) → usize
-                        if is_win64 {
-                            emit!(asm.mov(rcx, slot(dst)));
-                        } else {
-                            emit!(asm.mov(rdi, slot(dst)));
-                        }
-                        call_ext!("strlen".into(), RelocKind::Plt32);
-                        emit!(asm.mov(slot(dst), rax));
+                        // void.strlen(s) -> usize. Inline it so Linux stays libc-free.
+                        let mut loop_lbl = asm.create_label();
+                        let mut done_lbl = asm.create_label();
+                        emit!(asm.mov(rax, slot(dst)));
+                        emit!(asm.xor(rcx, rcx));
+                        emit!(asm.set_label(&mut loop_lbl));
+                        emit!(asm.movzx(rdx, byte_ptr(rax)));
+                        emit!(asm.test(rdx, rdx));
+                        emit!(asm.je(done_lbl));
+                        emit!(asm.inc(rax));
+                        emit!(asm.inc(rcx));
+                        emit!(asm.jmp(loop_lbl));
+                        emit!(asm.set_label(&mut done_lbl));
+                        emit!(asm.mov(slot(dst), rcx));
                     }
                     11 => {
                         // void.stderr_write(buf, len) → isize
@@ -949,19 +1034,32 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(r13));
                         emit!(asm.mov(r12, slot(dst)));     // r12 = s1
                         emit!(asm.mov(r13, slot(dst + 1))); // r13 = s2
-                        if is_win64 {
-                            emit!(asm.mov(rcx, r12));
-                        } else {
-                            emit!(asm.mov(rdi, r12));
-                        }
-                        call_ext!("strlen".into(), RelocKind::Plt32); // rax = len1
-                        emit!(asm.mov(rbx, rax));
-                        if is_win64 {
-                            emit!(asm.mov(rcx, r13));
-                        } else {
-                            emit!(asm.mov(rdi, r13));
-                        }
-                        call_ext!("strlen".into(), RelocKind::Plt32); // rax = len2
+                        let mut len1_loop = asm.create_label();
+                        let mut len1_done = asm.create_label();
+                        emit!(asm.mov(rax, r12));
+                        emit!(asm.xor(rbx, rbx));
+                        emit!(asm.set_label(&mut len1_loop));
+                        emit!(asm.movzx(rcx, byte_ptr(rax)));
+                        emit!(asm.test(rcx, rcx));
+                        emit!(asm.je(len1_done));
+                        emit!(asm.inc(rax));
+                        emit!(asm.inc(rbx));
+                        emit!(asm.jmp(len1_loop));
+                        emit!(asm.set_label(&mut len1_done));
+
+                        let mut len2_loop = asm.create_label();
+                        let mut len2_done = asm.create_label();
+                        emit!(asm.mov(rax, r13));
+                        emit!(asm.xor(rcx, rcx));
+                        emit!(asm.set_label(&mut len2_loop));
+                        emit!(asm.movzx(rdx, byte_ptr(rax)));
+                        emit!(asm.test(rdx, rdx));
+                        emit!(asm.je(len2_done));
+                        emit!(asm.inc(rax));
+                        emit!(asm.inc(rcx));
+                        emit!(asm.jmp(len2_loop));
+                        emit!(asm.set_label(&mut len2_done));
+                        emit!(asm.mov(rax, rcx));
                         emit!(asm.add(rax, rbx));
                         emit!(asm.inc(rax));
                         if is_win64 {
@@ -1049,157 +1147,172 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rax));
                         emit!(asm.pop(rbx));
                     }
-                    17 => {
-                        // void.format(template: str, ...args: str) → str (heap-allocated)
-                        // slot(dst) = template, slot(dst+1..dst+arg_count-1) = string args
-                        // {} placeholders substituted in order; extra {} copied literally
-                        if arg_count == 0 {
-                            emit!(asm.xor(rax, rax));
-                            emit!(asm.mov(slot(dst), rax));
-                        } else {
-                            // push callee-saved + rax for 16-byte alignment (6 * 8 = 48)
-                            emit!(asm.push(rbx));
-                            emit!(asm.push(r12));
-                            emit!(asm.push(r13));
-                            emit!(asm.push(r14));
-                            emit!(asm.push(r15));
-                            emit!(asm.push(rax));
-                            // Win64: create 32-byte shadow space below our register saves
-                            // so that strlen/malloc/sprintf don't corrupt pushed r15/r14/r13/r12.
-                            if is_win64 {
-                                emit!(asm.sub(rsp, 32i32));
-                            }
-
-                            emit!(asm.mov(r12, slot(dst))); // r12 = template read ptr
-                            emit!(asm.xor(r15, r15));       // r15 = arg index
-
-                            // strlen(template) → rbx (running total)
-                            if is_win64 {
-                                emit!(asm.mov(rcx, r12));
-                            } else {
-                                emit!(asm.mov(rdi, r12));
-                            }
-                            call_ext!("strlen".into(), RelocKind::Plt32);
-                            emit!(asm.mov(rbx, rax));
-
-                            // add strlen of each arg (compile-time unroll)
-                            for k in 0..(arg_count - 1) {
-                                let src = dst.wrapping_add(1 + k as u8);
-                                if is_win64 {
-                                    emit!(asm.mov(rcx, slot(src)));
-                                } else {
-                                    emit!(asm.mov(rdi, slot(src)));
-                                }
-                                call_ext!("strlen".into(), RelocKind::Plt32);
-                                emit!(asm.add(rbx, rax));
-                            }
-
-                            // malloc(total + 1)
-                            emit!(asm.inc(rbx));
-                            if is_win64 {
-                                emit!(asm.mov(rcx, rbx));
-                            } else {
-                                emit!(asm.mov(rdi, rbx));
-                            }
-                            call_ext!("malloc".into(), RelocKind::Plt32);
-                            emit!(asm.mov(r14, rax)); // r14 = buf start (return value)
-                            emit!(asm.mov(r13, rax)); // r13 = write ptr
-
-                            let mut lbl_scan = asm.create_label();
-                            let mut lbl_done = asm.create_label();
-                            let mut lbl_copy_char = asm.create_label();
-
-                            emit!(asm.set_label(&mut lbl_scan));
-                            emit!(asm.movzx(rax, byte_ptr(r12)));
-                            emit!(asm.test(rax, rax));
-                            emit!(asm.jz(lbl_done));
-                            emit!(asm.cmp(al, 0x7Bu8 as i32)); // '{'
-                            emit!(asm.jne(lbl_copy_char));
-                            emit!(asm.movzx(rbx, byte_ptr(r12 + 1i32)));
-                            emit!(asm.cmp(rbx, 0x7Di32)); // '}'
-                            emit!(asm.jne(lbl_copy_char));
-                            emit!(asm.cmp(r15, (arg_count - 1) as i32));
-                            emit!(asm.jge(lbl_copy_char));
-
-                            // dispatch: cmp r15, i → copy arg i → jmp lbl_scan
-                            // Last arm jumps to lbl_copy_char instead of lbl_next,
-                            // avoiding two consecutive set_label calls on the same instr.
-                            for k in 0..(arg_count - 1) {
-                                let src = dst.wrapping_add(1 + k as u8);
-                                let is_last = k == arg_count - 2;
-                                let mut lbl_next = asm.create_label();
-                                emit!(asm.cmp(r15, k as i32));
-                                if is_last {
-                                    emit!(asm.jne(lbl_copy_char));
-                                } else {
-                                    emit!(asm.jne(lbl_next));
-                                }
-                                // byte-by-byte copy of slot(src) to r13
-                                emit!(asm.mov(rbx, slot(src)));
-                                let mut lbl_cpy = asm.create_label();
-                                let mut lbl_cpy_done = asm.create_label();
-                                emit!(asm.set_label(&mut lbl_cpy));
-                                emit!(asm.movzx(rax, byte_ptr(rbx)));
-                                emit!(asm.test(rax, rax));
-                                emit!(asm.jz(lbl_cpy_done));
-                                emit!(asm.mov(byte_ptr(r13), al));
-                                emit!(asm.inc(rbx));
-                                emit!(asm.inc(r13));
-                                emit!(asm.jmp(lbl_cpy));
-                                emit!(asm.set_label(&mut lbl_cpy_done));
-                                emit!(asm.inc(r15));
-                                emit!(asm.add(r12, 2i32));
-                                emit!(asm.jmp(lbl_scan));
-                                if !is_last {
-                                    emit!(asm.set_label(&mut lbl_next));
-                                }
-                            }
-
-                            emit!(asm.set_label(&mut lbl_copy_char));
-                            emit!(asm.movzx(rax, byte_ptr(r12)));
-                            emit!(asm.mov(byte_ptr(r13), al));
-                            emit!(asm.inc(r12));
-                            emit!(asm.inc(r13));
-                            emit!(asm.jmp(lbl_scan));
-
-                            emit!(asm.set_label(&mut lbl_done));
-                            emit!(asm.mov(byte_ptr(r13), 0i32));
-                            emit!(asm.mov(slot(dst), r14));
-
-                            if is_win64 {
-                                emit!(asm.add(rsp, 32i32));
-                            }
-                            emit!(asm.pop(rax));
-                            emit!(asm.pop(r15));
-                            emit!(asm.pop(r14));
-                            emit!(asm.pop(r13));
-                            emit!(asm.pop(r12));
-                            emit!(asm.pop(rbx));
-                        }
-                    }
                     18 => {
-                        // void.array.store(base: *u8, idx: usize, val: usize) → void
-                        // slot(dst)=base, slot(dst+1)=idx, slot(dst+2)=val
-                        emit!(asm.mov(rax, slot(dst)));
-                        emit!(asm.mov(rcx, slot(dst + 1)));
-                        emit!(asm.mov(rdx, 8i64));
-                        emit!(asm.imul_2(rcx, rdx));
-                        emit!(asm.add(rax, rcx));
-                        emit!(asm.mov(rcx, slot(dst + 2)));
-                        emit!(asm.mov(qword_ptr(rax), rcx));
-                        emit!(asm.xor(rax, rax));
+                        // void.thread.spawn(f: any) → usize (thread handle)
+                        // slot(dst) = function pointer (address)
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(rax)); // align rsp to 16
+                        if is_win64 {
+                            // CreateThread(NULL, 0, fn_ptr, NULL, 0, NULL)
+                            emit!(asm.xor(rcx, rcx));
+                            emit!(asm.xor(rdx, rdx));
+                            emit!(asm.mov(r8, slot(dst)));
+                            emit!(asm.xor(r9, r9));
+                            emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32)); // flags
+                            emit!(asm.mov(qword_ptr(rsp + 40i32), 0i32)); // thread_id
+                            call_ext!("CreateThread".into(), RelocKind::Plt32);
+                        } else {
+                            // malloc(8) for pthread_t storage
+                            emit!(asm.mov(rdi, 8i64));
+                            call_ext!("malloc".into(), RelocKind::Plt32);
+                            emit!(asm.mov(rbx, rax)); // rbx = thread_storage_ptr
+                            // pthread_create(storage, NULL, fn_ptr, NULL)
+                            emit!(asm.mov(rdi, rbx));
+                            emit!(asm.xor(rsi, rsi));
+                            emit!(asm.mov(rdx, slot(dst)));
+                            emit!(asm.xor(rcx, rcx));
+                            call_ext!("pthread_create".into(), RelocKind::Plt32);
+                            emit!(asm.mov(rax, rbx));
+                        }
                         emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(rax));
+                        emit!(asm.pop(rbx));
                     }
                     19 => {
-                        // void.array.load(base: *u8, idx: usize) → usize
-                        // slot(dst)=base, slot(dst+1)=idx
-                        emit!(asm.mov(rax, slot(dst)));
-                        emit!(asm.mov(rcx, slot(dst + 1)));
-                        emit!(asm.mov(rdx, 8i64));
-                        emit!(asm.imul_2(rcx, rdx));
-                        emit!(asm.add(rax, rcx));
-                        emit!(asm.mov(rax, qword_ptr(rax)));
+                        // void.thread.join(handle: usize) → void
+                        // slot(dst) = thread handle
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(rax)); // align
+                        if is_win64 {
+                            emit!(asm.mov(rcx, slot(dst)));
+                            emit!(asm.mov(edx, u32::MAX as i32)); // INFINITE
+                            call_ext!("WaitForSingleObject".into(), RelocKind::Plt32);
+                            emit!(asm.mov(rcx, slot(dst)));
+                            call_ext!("CloseHandle".into(), RelocKind::Plt32);
+                        } else {
+                            // pthread_join(*(pthread_t*)handle, NULL)
+                            emit!(asm.mov(rbx, slot(dst))); // rbx = thread_storage_ptr
+                            emit!(asm.mov(rdi, qword_ptr(rbx))); // *rbx = actual pthread_t
+                            emit!(asm.xor(rsi, rsi));
+                            call_ext!("pthread_join".into(), RelocKind::Plt32);
+                            emit!(asm.mov(rdi, rbx));
+                            call_ext!("free".into(), RelocKind::Plt32);
+                        }
+                        emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(rax));
+                        emit!(asm.pop(rbx));
+                    }
+                    20 => {
+                        // void.net.bind_tcp(sockfd: i32, port: i32) → i32
+                        // Builds sockaddr_in on stack — void has no byte-level memory writes
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(rax)); // keep rsp 16-byte aligned
+                        emit!(asm.sub(rsp, 32i32)); // 16 bytes sockaddr_in + 16 shadow (Win64)
+                        emit!(asm.xor(rax, rax));
+                        emit!(asm.mov(qword_ptr(rsp), rax));     // zero first 8 bytes
+                        emit!(asm.mov(qword_ptr(rsp + 8i32), rax)); // zero last 8 bytes
+                        emit!(asm.mov(word_ptr(rsp), 2i32));     // sa_family = AF_INET
+                        // port: host→big-endian byte swap
+                        emit!(asm.mov(rax, slot(dst + 1)));
+                        emit!(asm.rol(ax, 8u32));
+                        emit!(asm.mov(word_ptr(rsp + 2i32), ax)); // sin_port (big-endian)
+                        // sin_addr = INADDR_ANY = 0 (already zeroed)
+                        if is_win64 {
+                            emit!(asm.mov(rcx, slot(dst)));       // sockfd
+                            emit!(asm.lea(rdx, qword_ptr(rsp)));  // &sockaddr_in
+                            emit!(asm.mov(r8d, 16i32));            // addrlen
+                            call_ext!("bind".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.mov(rdi, slot(dst)));        // sockfd
+                            emit!(asm.lea(rsi, qword_ptr(rsp)));  // &sockaddr_in
+                            emit!(asm.mov(edx, 16i32));            // addrlen
+                            emit!(asm.mov(rax, 49i64));            // bind syscall
+                            emit!(asm.syscall());
+                        }
+                        emit!(asm.add(rsp, 32i32));
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(rax));
+                        emit!(asm.pop(rbx));
+                    }
+                    21 => {
+                        // void.net.connect_tcp(sockfd: i32, ip: str, port: i32) → i32
+                        // Uses inet_pton to parse dotted-decimal IP, builds sockaddr_in
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        emit!(asm.push(rax));
+                        emit!(asm.push(rax)); // 4 pushes = 32 bytes, rsp stays 16-aligned
+                        emit!(asm.sub(rsp, 32i32)); // 16 sockaddr_in + 16 shadow
+                        emit!(asm.xor(rax, rax));
+                        emit!(asm.mov(qword_ptr(rsp), rax));
+                        emit!(asm.mov(qword_ptr(rsp + 8i32), rax));
+                        emit!(asm.mov(word_ptr(rsp), 2i32));       // sa_family = AF_INET
+                        emit!(asm.mov(rax, slot(dst + 2)));
+                        emit!(asm.rol(ax, 8u32));
+                        emit!(asm.mov(word_ptr(rsp + 2i32), ax)); // sin_port (big-endian)
+                        // inet_pton(AF_INET, ip_str, &sin_addr) — sin_addr at rsp+4
+                        emit!(asm.lea(r12, qword_ptr(rsp + 4i32)));
+                        if is_win64 {
+                            emit!(asm.mov(ecx, 2i32));
+                            emit!(asm.mov(rdx, slot(dst + 1)));
+                            emit!(asm.mov(r8, r12));
+                            call_ext!("inet_pton".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.mov(edi, 2i32));
+                            emit!(asm.mov(rsi, slot(dst + 1)));
+                            emit!(asm.mov(rdx, r12));
+                            call_ext!("inet_pton".into(), RelocKind::Plt32);
+                        }
+                        // connect(sockfd, &sockaddr_in, 16)
+                        if is_win64 {
+                            emit!(asm.mov(rcx, slot(dst)));
+                            emit!(asm.lea(rdx, qword_ptr(rsp)));
+                            emit!(asm.mov(r8d, 16i32));
+                            call_ext!("connect".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.mov(rdi, slot(dst)));
+                            emit!(asm.lea(rsi, qword_ptr(rsp)));
+                            emit!(asm.mov(edx, 16i32));
+                            emit!(asm.mov(rax, 42i64)); // connect syscall
+                            emit!(asm.syscall());
+                        }
+                        emit!(asm.add(rsp, 32i32));
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(rax));
+                        emit!(asm.pop(rax));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
+                    23 => {
+                        // void.str.byte_at(s: str, i: usize) u8
+                        // s is a char* pointer (str register = ptr portion).
+                        // Load byte at [s + i] with zero-extension.
+                        emit!(asm.mov(rax, slot(dst)));      // s (ptr)
+                        emit!(asm.mov(rcx, slot(dst + 1)));  // i
+                        emit!(asm.movzx(rax, byte_ptr(rax + rcx)));
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    24 => {
+                        // void.str.from_byte(b: u8) str
+                        // Allocates a 2-byte buffer [b, '\0'] on the heap and returns ptr.
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(rax));
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 32i32));
+                            emit!(asm.mov(rcx, 2i64));
+                            call_ext!("malloc".into(), RelocKind::Plt32);
+                            emit!(asm.add(rsp, 32i32));
+                        } else {
+                            emit!(asm.mov(rdi, 2i64));
+                            call_ext!("malloc".into(), RelocKind::Plt32);
+                        }
+                        // rax = allocated ptr; write b at [rax] and '\0' at [rax+1]
+                        emit!(asm.mov(rbx, slot(dst)));  // b
+                        emit!(asm.mov(byte_ptr(rax), bl));
+                        emit!(asm.mov(byte_ptr(rax + 1i32), 0i32));
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(rax));
+                        emit!(asm.pop(rbx));
                     }
                     _ => {
                         emit!(asm.xor(rax, rax));
@@ -1350,6 +1463,82 @@ impl<'a> FnEncoder<'a> {
                         }
                         emit!(asm.set_label(&mut lbl_end));
                     }
+                    // Integer hex/octal: sprintf(buf, fmt, val)
+                    3 | 4 | 5 => {
+                        let fmt_sym = match type_tag {
+                            3 => "__void_fmt_llx",
+                            4 => "__void_fmt_llX",
+                            _ => "__void_fmt_llo",
+                        };
+                        if is_win64 {
+                            lea_rip!(rcx, buf_sym.clone());
+                            lea_rip!(rdx, fmt_sym.into());
+                            emit!(asm.mov(r8, slot(src)));
+                        } else {
+                            lea_rip!(rdi, buf_sym.clone());
+                            lea_rip!(rsi, fmt_sym.into());
+                            emit!(asm.mov(rdx, slot(src)));
+                        }
+                        call_ext!("sprintf".into(), RelocKind::Plt32);
+                    }
+                    // Binary: inline bit-loop using BSR, no libc needed.
+                    // Output: strip leading zeros, write '0'/'1' chars, null-terminate.
+                    6 => {
+                        let mut lbl_nonzero = asm.create_label();
+                        let mut lbl_loop = asm.create_label();
+                        let mut lbl_last_bit = asm.create_label();
+                        let mut lbl_done = asm.create_label();
+
+                        emit!(asm.mov(rax, slot(src)));
+                        lea_rip!(r11, buf_sym.clone());
+
+                        // Zero shortcut: write "0\0"
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.jnz(lbl_nonzero));
+                        emit!(asm.mov(byte_ptr(r11), 48i32));       // '0'
+                        emit!(asm.mov(byte_ptr(r11 + 1i32), 0i32)); // '\0'
+                        emit!(asm.jmp(lbl_done));
+
+                        emit!(asm.set_label(&mut lbl_nonzero));
+                        emit!(asm.bsr(rcx, rax));   // rcx = index of highest set bit
+                        emit!(asm.mov(r10, r11));   // r10 = write pointer
+
+                        emit!(asm.set_label(&mut lbl_loop));
+                        emit!(asm.mov(r9, rax));
+                        emit!(asm.shr(r9, cl));     // r9 = rax >> rcx
+                        emit!(asm.and(r9, 1i32));
+                        emit!(asm.add(r9, 48i32));  // '0' or '1'
+                        emit!(asm.mov(byte_ptr(r10), r9b));
+                        emit!(asm.inc(r10));
+                        // If rcx == 0, this was the last (least significant) bit
+                        emit!(asm.test(rcx, rcx));
+                        emit!(asm.jz(lbl_last_bit));
+                        emit!(asm.dec(rcx));
+                        emit!(asm.jmp(lbl_loop));
+
+                        emit!(asm.set_label(&mut lbl_last_bit));
+                        emit!(asm.mov(byte_ptr(r10), 0i32)); // null terminator
+
+                        emit!(asm.set_label(&mut lbl_done));
+                    }
+                    // Float with precision: sprintf(buf, "%.Nf", val) where N = tag - 20
+                    t @ 20..=29 => {
+                        let prec = t - 20;
+                        let fmt_sym = format!("__void_fmt_prec_{}", prec);
+                        emit!(asm.mov(rax, slot(src)));
+                        if is_win64 {
+                            lea_rip!(rcx, buf_sym.clone());
+                            lea_rip!(rdx, fmt_sym);
+                            emit!(asm.movq(xmm2, rax));
+                            emit!(asm.mov(r8, rax));
+                        } else {
+                            lea_rip!(rdi, buf_sym.clone());
+                            lea_rip!(rsi, fmt_sym);
+                            emit!(asm.movq(xmm0, rax));
+                            emit!(asm.mov(eax, 1i32));
+                        }
+                        call_ext!("sprintf".into(), RelocKind::Plt32);
+                    }
                     _ => {
                         // int (type_tag=0 or any other): existing "%ld" path
                         if is_win64 {
@@ -1407,16 +1596,11 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::VtblLoad) => {
-                // Load a function pointer from an object's vtable.
-                // Layout: object[0] = vtable ptr, vtable[method_slot] = fn ptr.
-                let (dst, obj, method_slot) = instr.rrr();
-                emit!(asm.mov(rax, slot(obj)));
-                emit!(asm.mov(rax, qword_ptr(rax)));
-                if method_slot > 0 {
-                    emit!(asm.mov(rax, qword_ptr(rax + (method_slot as i64) * 8)));
-                } else {
-                    emit!(asm.mov(rax, qword_ptr(rax)));
-                }
+                // Load fn ptr from vtable. Operand is the vtable ptr itself (not the fat ptr).
+                // vtable[slot * 8] = fn ptr.
+                let (dst, vtbl_ptr, method_slot) = instr.rrr();
+                emit!(asm.mov(rax, slot(vtbl_ptr)));
+                emit!(asm.mov(rax, qword_ptr(rax + (method_slot as i64) * 8)));
                 emit!(asm.mov(slot(dst), rax));
             }
 

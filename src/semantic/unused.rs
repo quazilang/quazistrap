@@ -14,7 +14,7 @@ fn should_ignore_warning(attributes: &[String], warning_code: &str) -> bool {
         // Check for specific ignore categories
         if warning_code == "W01" || warning_code == "W02" {
             // unused variable/parameter warnings
-            if attr == "ignore" || attr.contains("unused_vars") || attr == "format" {
+            if attr == "ignore" || attr.contains("unused_vars") || attr == "str_variadic" {
                 return true;
             }
         }
@@ -136,6 +136,16 @@ impl Analyzer {
 
     pub(super) fn run_dead_code_pass(&mut self, program: &Program) {
         for item in &program.items {
+            // Skip @cfg-disabled items.
+            let attrs = match &item.node {
+                ItemKind::Fn { attributes, .. } => Some(attributes),
+                _ => None,
+            };
+            if let Some(attrs) = attrs {
+                if !super::item_should_include(attrs) {
+                    continue;
+                }
+            }
             match &item.node {
                 ItemKind::Fn {
                     body: Some(body), ..
@@ -213,8 +223,10 @@ impl Analyzer {
                 false
             }
             StmtKind::Var { .. } | StmtKind::Const { .. } | StmtKind::ExprStmt(_) => false,
-            StmtKind::CfgBlock { body, .. } => {
-                let _ = self.dead_code_block(body);
+            StmtKind::CfgBlock { body, condition } => {
+                if crate::semantic::item_should_include(std::slice::from_ref(condition)) {
+                    let _ = self.dead_code_block(body);
+                }
                 false
             }
         }

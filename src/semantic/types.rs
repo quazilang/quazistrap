@@ -6,6 +6,29 @@ use std::collections::HashMap;
 
 use crate::parser::ast::{Span, TypeKind};
 
+#[derive(Debug, Clone)]
+pub struct SourceFile {
+    pub path: String,
+    pub start: usize,
+    pub end: usize,
+    pub line_start: usize,
+}
+
+impl SourceFile {
+    pub fn contains(&self, span: Span) -> bool {
+        self.start <= span.start && span.start < self.end
+    }
+
+    pub fn line_col(&self, span: Span) -> (usize, usize) {
+        (span.line.saturating_sub(self.line_start) + 1, span.col)
+    }
+
+    pub fn label(&self, span: Span) -> String {
+        let (line, col) = self.line_col(span);
+        format!("{}:{}:{}", self.path, line, col)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
     Function,
@@ -48,6 +71,7 @@ pub struct Symbol {
     pub attributes: Vec<String>,
     pub public: bool,
     pub unsafe_fn: bool,
+    pub generic_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +84,10 @@ pub struct SemanticError {
 impl SemanticError {
     pub fn render(&self, source: &str) -> String {
         render_diag("error", self.code, &self.message, self.span, source)
+    }
+
+    pub fn render_with_source_files(&self, source: &str, files: &[SourceFile]) -> String {
+        render_diag_with_source_files("error", self.code, &self.message, self.span, source, files)
     }
 }
 
@@ -89,6 +117,21 @@ impl SemanticWarning {
         }
         out
     }
+
+    pub fn render_with_source_files(&self, source: &str, files: &[SourceFile]) -> String {
+        let mut out = render_diag_with_source_files(
+            "warning",
+            self.code,
+            &self.message,
+            self.span,
+            source,
+            files,
+        );
+        for s in &self.suggestions {
+            out.push_str(&format!("\n  \x1b[2mhint:\x1b[0m \x1b[36m{}\x1b[0m", s));
+        }
+        out
+    }
 }
 
 impl std::fmt::Display for SemanticWarning {
@@ -102,18 +145,52 @@ impl std::fmt::Display for SemanticWarning {
 }
 
 fn render_diag(label: &str, code: &str, message: &str, span: Span, source: &str) -> String {
+    render_diag_at(
+        label,
+        code,
+        message,
+        span,
+        source,
+        &format!("{}:{}", span.line, span.col),
+        span.line,
+    )
+}
+
+fn render_diag_with_source_files(
+    label: &str,
+    code: &str,
+    message: &str,
+    span: Span,
+    source: &str,
+    files: &[SourceFile],
+) -> String {
+    if let Some(file) = files.iter().find(|file| file.contains(span)) {
+        let (line, _) = file.line_col(span);
+        render_diag_at(label, code, message, span, source, &file.label(span), line)
+    } else {
+        render_diag(label, code, message, span, source)
+    }
+}
+
+fn render_diag_at(
+    label: &str,
+    code: &str,
+    message: &str,
+    span: Span,
+    source: &str,
+    location: &str,
+    display_line: usize,
+) -> String {
     let (lc, cc) = match label {
         "error" => ("\x1b[1;31m", "\x1b[1;31m"),
         "warning" => ("\x1b[1;33m", "\x1b[1;33m"),
         _ => ("\x1b[1m", "\x1b[1m"),
     };
     let mut out = format!(
-        "{lc}{label}\x1b[0m\x1b[1m[{code}]\x1b[0m: {message}\n  \x1b[1;34m-->\x1b[0m {line}:{col}",
-        line = span.line,
-        col = span.col
+        "{lc}{label}\x1b[0m\x1b[1m[{code}]\x1b[0m: {message}\n  \x1b[1;34m-->\x1b[0m {location}",
     );
     if let Some(line_text) = source.lines().nth(span.line.saturating_sub(1)) {
-        let lnum = span.line.to_string();
+        let lnum = display_line.to_string();
         let w = lnum.len();
         let blank = " ".repeat(w);
         let caret_off = span.col.saturating_sub(1);
@@ -260,8 +337,34 @@ pub struct SemanticReport {
     pub dead_functions: Vec<String>,
     /// Struct field layouts: struct name → ordered list of (field_name, field_type).
     pub struct_defs: HashMap<String, Vec<(String, TypeKind)>>,
+    /// Struct total byte sizes: struct name → total byte size.
+    pub struct_sizes: HashMap<String, usize>,
+    /// Struct field byte offsets: struct name → vec of (field_name, byte_offset).
+    pub struct_field_offsets: HashMap<String, Vec<(String, usize)>>,
     /// Trait implementations: type name → set of trait names explicitly implemented.
     pub trait_impls: HashMap<String, std::collections::HashSet<String>>,
+    /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
+    pub trait_method_slots: HashMap<String, Vec<String>>,
     /// Enum variant tags: enum name → variant name → discriminant index.
     pub enum_defs: HashMap<String, HashMap<String, usize>>,
+    /// Generic param names per struct: struct name → ordered generic param names.
+    pub struct_generic_params: HashMap<String, Vec<String>>,
+    /// Monomorphization requests: function name → list of concrete type args used at call sites.
+    pub monomorphizations: Vec<MonomorphizationInfo>,
+    /// Type aliases: alias name → (generic_params, aliased TypeKind).
+    pub type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
+    /// Ordered parameter names per function (mangled or plain): used for named-arg resolution.
+    pub fn_param_names: HashMap<String, Vec<String>>,
+}
+
+/// Records a call to a generic function with concrete type arguments.
+/// Used by codegen to create specialized function entries.
+#[derive(Debug, Clone)]
+pub struct MonomorphizationInfo {
+    /// The original generic function name.
+    pub fn_name: String,
+    /// The concrete type arguments supplied at the call site.
+    pub type_args: Vec<TypeKind>,
+    /// The mangled name for the specialized copy (computed during typecheck).
+    pub mangled_name: String,
 }

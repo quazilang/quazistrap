@@ -196,12 +196,21 @@ impl BuildProgress {
         }
     }
 
-    /// Overwrite spinner with "  ✗  label".
-    pub fn fail(&mut self) {
+    /// Overwrite spinner with "  ✗  label  ·  info".
+    pub fn fail(&mut self, info: &str) {
         if self.is_tty {
-            eprintln!("\r\x1b[K  \x1b[31m✗\x1b[0m  \x1b[1m{}\x1b[0m", self.current_label);
-        } else {
+            if info.is_empty() {
+                eprintln!("\r\x1b[K  \x1b[31m✗\x1b[0m  \x1b[1m{}\x1b[0m", self.current_label);
+            } else {
+                eprintln!(
+                    "\r\x1b[K  \x1b[31m✗\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m·\x1b[0m  \x1b[2m{}\x1b[0m",
+                    self.current_label, info
+                );
+            }
+        } else if info.is_empty() {
             eprintln!("✗  {}", self.current_label);
+        } else {
+            eprintln!("✗  {}  ·  {}", self.current_label, info);
         }
     }
 

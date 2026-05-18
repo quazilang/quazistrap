@@ -9,6 +9,7 @@ use crate::lexer::Lexer;
 use crate::lexer::token::TokenKind;
 use crate::parser::Parser;
 use crate::parser::ast::{ItemKind, Program};
+use crate::semantic::SourceFile;
 
 pub struct LoadResult {
     pub merged_source: String,
@@ -20,10 +21,14 @@ pub struct LoadResult {
     pub library_file_paths: Vec<PathBuf>,
     /// Character-index ranges within `merged_source` that belong to library files.
     pub library_char_ranges: Vec<std::ops::Range<usize>>,
+    /// Per-file ranges and starting lines within `merged_source`.
+    pub source_files: Vec<SourceFile>,
     /// (importer, importee) pairs from the final resolved pass — used for dep tree rendering.
     pub dep_edges: Vec<(PathBuf, PathBuf)>,
     /// Token count across user (non-library) source files.
     pub token_count: usize,
+    /// Parse error message, if parsing failed. IO errors are returned as `Err` from the loader.
+    pub parse_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,8 +88,14 @@ pub fn load_programs_with_resolver(
     // Auto-inject std prelude before user entries (as a library file).
     let prelude_path: Option<PathBuf> = effective_resolver
         .and_then(|r| r.modules.get("std"))
-        .map(|spec| spec.src_dir.join("prelude.void"))
-        .filter(|p| p.exists());
+        .and_then(|spec| {
+            let mod_void = spec.src_dir.join("prelude").join("mod.void");
+            if mod_void.exists() {
+                return Some(mod_void);
+            }
+            let flat = spec.src_dir.join("prelude.void");
+            if flat.exists() { Some(flat) } else { None }
+        });
 
     collect_sources_with_prelude(entries, effective_resolver, prelude_path.as_deref(), true)
         .and_then(finalize_sources)
@@ -181,28 +192,33 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
 
     let mut merged = String::new();
     let mut library_char_ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut source_files: Vec<SourceFile> = Vec::new();
     let mut char_pos: usize = 0;
+    let mut line_pos: usize = 1;
 
     for (path, src) in &sources {
         if !merged.is_empty() {
             merged.push('\n');
             char_pos += 1;
+            line_pos += 1;
         }
         let src_char_len = src.chars().count();
+        source_files.push(SourceFile {
+            path: path.to_string_lossy().into_owned(),
+            start: char_pos,
+            end: char_pos + src_char_len,
+            line_start: line_pos,
+        });
         if library_paths.contains(path) {
             library_char_ranges.push(char_pos..char_pos + src_char_len);
         }
         merged.push_str(src);
         char_pos += src_char_len;
+        line_pos += src.bytes().filter(|&b| b == b'\n').count();
     }
 
-    let mut lexer = Lexer::new(&merged);
-    let tokens = lexer.tokenize();
-    let mut parser = Parser::new_with_source(tokens, &merged);
-    let program = parser.parse()?;
-
-    // Count tokens in user (non-library) source for progress display.
-    let token_count = sources
+    // Count tokens before parsing so the count is available even on parse failure.
+    let token_count: usize = sources
         .iter()
         .filter(|(p, _)| !library_paths.contains(p))
         .map(|(_, src)| {
@@ -214,6 +230,14 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         })
         .sum();
 
+    let mut lexer = Lexer::new(&merged);
+    let tokens = lexer.tokenize();
+    let mut parser = Parser::new_with_source_files(tokens, &merged, source_files.clone());
+    let (program, parse_error) = match parser.parse() {
+        Ok(p) => (p, None),
+        Err(e) => (crate::parser::ast::Program { items: vec![], span: None }, Some(e)),
+    };
+
     Ok(LoadResult {
         merged_source: merged,
         program,
@@ -221,8 +245,10 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         library_fn_names,
         library_file_paths,
         library_char_ranges,
+        source_files,
         dep_edges,
         token_count,
+        parse_error,
     })
 }
 
@@ -522,6 +548,11 @@ fn local_import_paths(
             continue;
         };
 
+        // Lazy re-export declarations: just a gateway hint, don't load the file.
+        if ip.is_reexport {
+            continue;
+        }
+
         let Some((base, remainder)) = import_base_and_remainder(ip) else {
             continue;
         };
@@ -532,17 +563,8 @@ fn local_import_paths(
                 if remainder.is_empty() && base == "std" {
                     // import std; — only load sub-modules actually used in source
                     for module in used_std_modules(src) {
-                        let mut target = spec.src_dir.clone();
-                        target.push(&module);
-                        // Check for mod.void first (opaque module directory)
-                        let mod_void = target.join("mod.void");
-                        if mod_void.exists() {
-                            if seen.insert(mod_void.clone()) {
-                                paths.push((mod_void, true));
-                            }
-                        } else {
-                            target.set_extension("void");
-                            if target.exists() && seen.insert(target.clone()) {
+                        if let Some(target) = resolve_module_file(spec, &module) {
+                            if seen.insert(target.clone()) {
                                 paths.push((target, true));
                             }
                         }
@@ -553,6 +575,23 @@ fn local_import_paths(
                 let target = if remainder.is_empty() {
                     spec.entry.clone()
                 } else {
+                    let root_mod_void = spec.src_dir.join("mod.void");
+                    if root_mod_void.exists() {
+                        let exported = &remainder[0];
+                        if strict && !is_pub_exported_from_mod(&root_mod_void, exported)? {
+                            return Err(format!(
+                                "cannot access '{}' from '{}': '{}' is not pub-imported in mod.void",
+                                exported, base, exported
+                            ));
+                        }
+                        if let Some(specific) = find_pub_exported_file(&root_mod_void, exported) {
+                            if seen.insert(specific.clone()) {
+                                paths.push((specific, true));
+                            }
+                            continue;
+                        }
+                        root_mod_void
+                    } else {
                     // mod.void opaque directory check: if first remainder segment is a
                     // directory with mod.void, enforce opaqueness.
                     let first = &remainder[0];
@@ -592,6 +631,9 @@ fn local_import_paths(
                                 break;
                             }
                         }
+                        if found.is_none() {
+                            found = resolve_module_file(spec, &remainder[0]);
+                        }
                         // If nothing found, use the full path so the error message is useful.
                         found.unwrap_or_else(|| {
                             let mut full = spec.src_dir.clone();
@@ -601,6 +643,7 @@ fn local_import_paths(
                             full.set_extension("void");
                             full
                         })
+                    }
                     }
                 };
 
@@ -702,6 +745,26 @@ fn local_import_paths(
     Ok(paths)
 }
 
+fn resolve_module_file(spec: &ModuleSpec, module: &str) -> Option<PathBuf> {
+    let root_mod_void = spec.src_dir.join("mod.void");
+    if root_mod_void.exists() {
+        return find_pub_exported_file(&root_mod_void, module);
+    }
+
+    let target = spec.src_dir.join(module);
+    let mod_void = target.join("mod.void");
+    if mod_void.exists() {
+        return Some(mod_void);
+    }
+
+    let file = spec.src_dir.join(format!("{module}.void"));
+    if file.exists() {
+        return Some(file);
+    }
+
+    None
+}
+
 /// Find the file that a `mod.void` pub-exports `name` from.
 /// e.g. `pub import map.Map` → returns `mod_void_dir/map.void`
 fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
@@ -714,21 +777,72 @@ fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
         if !ip.pub_import { continue }
 
         let exports_name = match &ip.items {
-            crate::parser::ast::ImportItems::Single(n)
-            | crate::parser::ast::ImportItems::Aliased(n, _) => n == name,
+            crate::parser::ast::ImportItems::Single(n) => n == name,
+            crate::parser::ast::ImportItems::Aliased(_, alias) => alias == name,
             crate::parser::ast::ImportItems::Multiple(names) => names.iter().any(|n| n == name),
             crate::parser::ast::ImportItems::All => true,
         };
         if !exports_name { continue }
 
-        // Resolve file: path segments + optional last segment from items
-        let mut file_path = mod_dir.to_path_buf();
-        for seg in &ip.path {
-            file_path.push(seg);
+        let mut candidates = Vec::new();
+        match &ip.items {
+            crate::parser::ast::ImportItems::Single(n)
+            | crate::parser::ast::ImportItems::Aliased(n, _) => {
+                let mut path_with_item = mod_dir.to_path_buf();
+                for seg in &ip.path {
+                    path_with_item.push(seg);
+                }
+                path_with_item.push(n);
+                path_with_item.set_extension("void");
+                candidates.push(path_with_item);
+            }
+            crate::parser::ast::ImportItems::Multiple(names) => {
+                if names.iter().any(|n| n == name) {
+                    let mut path_with_item = mod_dir.to_path_buf();
+                    for seg in &ip.path {
+                        path_with_item.push(seg);
+                    }
+                    path_with_item.push(name);
+                    path_with_item.set_extension("void");
+                    candidates.push(path_with_item);
+                }
+            }
+            crate::parser::ast::ImportItems::All => {
+                // Wildcard: recurse into the sub-module's mod.void to find `name`.
+                if !ip.path.is_empty() {
+                    let mut sub_mod = mod_dir.to_path_buf();
+                    for seg in &ip.path {
+                        sub_mod.push(seg);
+                    }
+                    let sub_mod_void = sub_mod.join("mod.void");
+                    if sub_mod_void.exists() {
+                        if let Some(found) = find_pub_exported_file(&sub_mod_void, name) {
+                            return Some(found);
+                        }
+                    }
+                    // Also try direct file: path/name.void
+                    sub_mod.push(name);
+                    sub_mod.set_extension("void");
+                    if sub_mod.exists() {
+                        return Some(sub_mod);
+                    }
+                }
+            }
         }
-        file_path.set_extension("void");
-        if file_path.exists() {
-            return Some(file_path);
+
+        let mut path_only = mod_dir.to_path_buf();
+        for seg in &ip.path {
+            path_only.push(seg);
+        }
+        if !ip.path.is_empty() {
+            path_only.set_extension("void");
+            candidates.push(path_only);
+        }
+
+        for file_path in candidates {
+            if file_path.exists() {
+                return Some(file_path);
+            }
         }
     }
     None
@@ -748,9 +862,13 @@ fn is_pub_exported_from_mod(mod_void: &Path, name: &str) -> Result<bool, String>
             continue;
         }
         match &ip.items {
-            crate::parser::ast::ImportItems::Single(n)
-            | crate::parser::ast::ImportItems::Aliased(n, _) => {
+            crate::parser::ast::ImportItems::Single(n) => {
                 if n == name {
+                    return Ok(true);
+                }
+            }
+            crate::parser::ast::ImportItems::Aliased(_, alias) => {
+                if alias == name {
                     return Ok(true);
                 }
             }
@@ -856,6 +974,70 @@ mod tests {
             result.library_file_paths
         );
         assert!(result.library_fn_names.contains("write"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn std_prelude_directory_exports_resolve_as_std_modules() {
+        let root = temp_dir("void_loader_prelude_exports");
+        let main_path = root.join("main.void");
+        fs::write(
+            &main_path,
+            "import std.fmt.format;\nfn main() void { ret; }",
+        )
+        .expect("write main.void");
+
+        let result = load_programs(&[main_path]).expect("load programs");
+        assert!(
+            result
+                .library_file_paths
+                .iter()
+                .any(|p| p.ends_with(Path::new("prelude").join("fmt.void"))),
+            "expected std/src/prelude/fmt.void to be loaded, got {:?}",
+            result.library_file_paths
+        );
+        assert!(
+            result
+                .library_file_paths
+                .iter()
+                .any(|p| p.ends_with(Path::new("prelude").join("string.void"))),
+            "expected std/src/prelude/string.void to be loaded as fmt dependency, got {:?}",
+            result.library_file_paths
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mod_void_exports_flatten_child_imports() {
+        let root = temp_dir("void_loader_mod_exports");
+        let foo_dir = root.join("foo");
+        fs::create_dir_all(&foo_dir).expect("create foo dir");
+        fs::write(foo_dir.join("mod.void"), "pub import a.METHOD;").expect("write mod.void");
+        fs::write(foo_dir.join("a.void"), "pub fn METHOD() void { ret; }").expect("write a.void");
+
+        let ok_path = root.join("ok.void");
+        fs::write(&ok_path, "import foo.METHOD;\nfn main() void { ret; }")
+            .expect("write ok.void");
+        let result = load_programs(&[ok_path]).expect("load flattened import");
+        assert!(
+            result.loaded_files.iter().any(|p| p.ends_with(Path::new("foo").join("a.void"))),
+            "expected foo/a.void through flattened export, got {:?}",
+            result.loaded_files
+        );
+
+        let bad_path = root.join("bad.void");
+        fs::write(&bad_path, "import foo.a.METHOD;\nfn main() void { ret; }")
+            .expect("write bad.void");
+        let err = match load_programs(&[bad_path]) {
+            Ok(_) => panic!("nested access through opaque mod should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("cannot access 'a' from 'foo'"),
+            "expected opaque module access error, got {err}"
+        );
 
         let _ = fs::remove_dir_all(root);
     }

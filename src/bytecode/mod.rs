@@ -6,6 +6,7 @@ pub mod chunk;
 pub mod codegen;
 pub mod instruction;
 pub mod opcode;
+pub mod regalloc;
 
 pub use chunk::{Chunk, ConstPoolEntry, deserialize_vbc, serialize_vbc};
 pub use codegen::Codegen;

@@ -215,6 +215,16 @@ impl Analyzer {
 
     pub(super) fn run_inline_candidate_pass(&mut self, program: &Program) {
         for item in &program.items {
+            // Skip @cfg-disabled items.
+            let attrs = match &item.node {
+                ItemKind::Fn { attributes, .. } => Some(attributes),
+                _ => None,
+            };
+            if let Some(attrs) = attrs {
+                if !super::item_should_include(attrs) {
+                    continue;
+                }
+            }
             match &item.node {
                 ItemKind::Fn {
                     name,
@@ -287,7 +297,7 @@ impl Analyzer {
                 parts.push("direct main call".to_string());
             } else {
                 parts.push(format!(
-                    "hot call ({} call{})",
+                    "{} call{}",
                     call_count,
                     if call_count == 1 { "" } else { "s" }
                 ));
@@ -352,7 +362,7 @@ impl Analyzer {
             .dependency_edges
             .iter()
             .any(|(kind, from, to)| *kind == DependencyKind::Call && from == "main" && to == name);
-        let hot = call_count >= 2 || called_from_main;
+        let hot = call_count >= 1;
         (hot, call_count, called_from_main)
     }
 
@@ -385,22 +395,28 @@ impl Analyzer {
             for arm in &candidate.arms {
                 match &arm.kind {
                     MatchArmKindInfo::Wildcard => {
-                        if wildcard_seen {
+                        if arm.has_guard {
+                            // Guarded wildcard does not count as full coverage —
+                            // the guard may fail, so later arms are still reachable.
+                        } else if wildcard_seen {
                             self.push_warning(
                                 arm.span,
                                 "W05",
                                 "unreachable wildcard match arm".to_string(),
                             );
                         }
-                        wildcard_seen = true;
+                        if !arm.has_guard {
+                            wildcard_seen = true;
+                        }
                     }
                     MatchArmKindInfo::Variant { enum_name, variant } => {
-                        if wildcard_seen {
+                        let already_covered = wildcard_seen || covered.contains(variant.as_str());
+                        if already_covered && !arm.has_guard {
                             self.push_warning(
                                 arm.span,
                                 "W05",
                                 format!(
-                                    "unreachable match arm '{}', wildcard already covers it",
+                                    "unreachable match arm '{}', already covered",
                                     variant
                                 ),
                             );
@@ -434,22 +450,17 @@ impl Analyzer {
                             continue;
                         }
 
-                        if !covered.insert(variant.clone()) {
-                            self.push_warning(
-                                arm.span,
-                                "W05",
-                                format!(
-                                    "duplicate/unreachable match arm '{}.{}'",
-                                    scrutinee_enum, variant
-                                ),
-                            );
-                            self.push_suggestion(
-                                Some(arm.span),
-                                format!(
-                                    "remove duplicate match arm for '{}.{}'",
-                                    scrutinee_enum, variant
-                                ),
-                            );
+                        if !arm.has_guard {
+                            if !covered.insert(variant.clone()) {
+                                self.push_warning(
+                                    arm.span,
+                                    "W05",
+                                    format!(
+                                        "duplicate/unreachable match arm '{}.{}'",
+                                        scrutinee_enum, variant
+                                    ),
+                                );
+                            }
                         }
                     }
                 }

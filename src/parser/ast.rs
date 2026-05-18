@@ -123,6 +123,7 @@ pub enum ExprKind {
         callee: Box<Expr>,
         type_args: Vec<Type>,
         args: Vec<Expr>,
+        named_args: Vec<(String, Expr)>,
     },
 
     Field {
@@ -140,6 +141,7 @@ pub enum ExprKind {
         method: String,
         type_args: Vec<Type>,
         args: Vec<Expr>,
+        named_args: Vec<(String, Expr)>,
     },
 
     Match {
@@ -170,25 +172,66 @@ pub enum ExprKind {
     Try {
         expr: Box<Expr>,
     },
+
+    /// `|params| expr` — closure expression.
+    Closure {
+        params: Vec<String>,
+        body: Box<Expr>,
+    },
 }
 
 pub type Expr = Spanned<ExprKind>;
 
 #[derive(Debug, Clone)]
+pub enum LiteralValue {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+}
+
+#[derive(Debug, Clone)]
 pub enum PatternKind {
     Wildcard,
+    Bind(String),
+    Literal(LiteralValue),
     Variant {
         enum_name: Option<String>,
         variant: String,
-        bindings: Vec<String>,
+        sub_patterns: Vec<Pattern>,
     },
 }
 
 pub type Pattern = Spanned<PatternKind>;
 
+/// Collect all `Bind` names from a pattern tree (recursive).
+pub fn collect_pattern_bindings(sub_patterns: &[Pattern]) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in sub_patterns {
+        match &p.node {
+            PatternKind::Bind(name) => out.push(name.clone()),
+            PatternKind::Wildcard | PatternKind::Literal(_) => {}
+            PatternKind::Variant { sub_patterns: inner, .. } => {
+                out.extend(collect_pattern_bindings(inner));
+            }
+        }
+    }
+    out
+}
+
+pub fn pattern_all_bindings(pattern: &Pattern) -> Vec<String> {
+    match &pattern.node {
+        PatternKind::Bind(name) => vec![name.clone()],
+        PatternKind::Wildcard | PatternKind::Literal(_) => vec![],
+        PatternKind::Variant { sub_patterns, .. } => collect_pattern_bindings(sub_patterns),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pattern: Pattern,
+    /// Optional guard clause: `pattern if guard_expr => expr`
+    pub guard: Option<Expr>,
     pub expr: Expr,
     pub span: Span,
 }
@@ -235,6 +278,15 @@ pub enum TypeKind {
     },
     /// `!` — never type; function that never returns.
     Never,
+    /// `fn(T, U) -> V` — function pointer type.
+    Fn {
+        params: Vec<Type>,
+        return_ty: Box<Type>,
+    },
+    /// `dyn Trait` — fat pointer (data ptr + vtable ptr) for dynamic dispatch.
+    Dyn {
+        trait_name: String,
+    },
 }
 
 impl std::fmt::Display for TypeKind {
@@ -276,6 +328,15 @@ impl std::fmt::Display for TypeKind {
             TypeKind::Ref { inner } => write!(f, "&{}", inner.node),
             TypeKind::RawPtr { inner } => write!(f, "*{}", inner.node),
             TypeKind::Never => write!(f, "!"),
+            TypeKind::Fn { params, return_ty } => {
+                write!(f, "fn(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", p.node)?;
+                }
+                write!(f, ") -> {}", return_ty.node)
+            }
+            TypeKind::Dyn { trait_name } => write!(f, "dyn {}", trait_name),
         }
     }
 }
@@ -385,6 +446,9 @@ pub struct ImportPath {
     pub items: ImportItems,
     pub span: Span,
     pub pub_import: bool,
+    /// Lazy re-export declaration — does not load the file eagerly.
+    /// Used in mod.void gateway files: `pub reexport X.Y;`
+    pub is_reexport: bool,
     /// True when the import starts with `./` — forces local-only file resolution,
     /// bypassing the module resolver. Resolves relative to the importing file's directory.
     pub relative: bool,
@@ -450,6 +514,12 @@ pub enum ItemKind {
         methods: Vec<Item>,
     },
     Import(ImportPath),
+    TypeAlias {
+        name: String,
+        generic_params: Vec<String>,
+        aliased_type: Type,
+        attributes: Vec<Attribute>,
+    },
 }
 
 pub type Item = Spanned<ItemKind>;

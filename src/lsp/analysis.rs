@@ -108,6 +108,7 @@ fn std_symbols_for_source(
                         attributes: attributes.into_iter().map(|a| a.name).collect(),
                         public: pub_fn,
                         unsafe_fn: unsafe_fn || is_syscall_or_api,
+                        generic_params: vec![],
                     },
                 ));
             }

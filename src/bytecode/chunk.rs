@@ -12,6 +12,9 @@ pub enum ConstPoolEntry {
     Int(i64),
     Float(f64),
     Str(String),
+    FnAddr(String),
+    /// Address of a vtable for a (type, trait) pair — tag 4.
+    VtableAddr(String, String),
 }
 
 /// A single function's bytecode + its constant pool.
@@ -105,6 +108,21 @@ impl Chunk {
                     let sb = s.as_bytes();
                     buf.extend_from_slice(&(sb.len() as u16).to_le_bytes());
                     buf.extend_from_slice(sb);
+                }
+                ConstPoolEntry::FnAddr(name) => {
+                    buf.push(3);
+                    let nb = name.as_bytes();
+                    buf.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+                    buf.extend_from_slice(nb);
+                }
+                ConstPoolEntry::VtableAddr(type_name, trait_name) => {
+                    buf.push(4);
+                    let tn = type_name.as_bytes();
+                    buf.extend_from_slice(&(tn.len() as u16).to_le_bytes());
+                    buf.extend_from_slice(tn);
+                    let tr = trait_name.as_bytes();
+                    buf.extend_from_slice(&(tr.len() as u16).to_le_bytes());
+                    buf.extend_from_slice(tr);
                 }
             }
         }
@@ -210,6 +228,45 @@ pub fn deserialize_vbc(buf: &[u8]) -> Result<Vec<Chunk>, String> {
                     pos += str_len;
                     constants.push(ConstPoolEntry::Str(s));
                 }
+                3 => {
+                    if buf.len() < pos + 2 {
+                        return Err("truncated const fnaddr length".to_string());
+                    }
+                    let name_len = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+                    pos += 2;
+                    if buf.len() < pos + name_len {
+                        return Err("truncated const fnaddr data".to_string());
+                    }
+                    let name = String::from_utf8(buf[pos..pos + name_len].to_vec())
+                        .map_err(|_| "invalid UTF-8 in const fnaddr".to_string())?;
+                    pos += name_len;
+                    constants.push(ConstPoolEntry::FnAddr(name));
+                }
+                4 => {
+                    if buf.len() < pos + 2 {
+                        return Err("truncated const vtableaddr type length".to_string());
+                    }
+                    let tn_len = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+                    pos += 2;
+                    if buf.len() < pos + tn_len {
+                        return Err("truncated const vtableaddr type data".to_string());
+                    }
+                    let type_name = String::from_utf8(buf[pos..pos + tn_len].to_vec())
+                        .map_err(|_| "invalid UTF-8 in const vtableaddr type".to_string())?;
+                    pos += tn_len;
+                    if buf.len() < pos + 2 {
+                        return Err("truncated const vtableaddr trait length".to_string());
+                    }
+                    let tr_len = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+                    pos += 2;
+                    if buf.len() < pos + tr_len {
+                        return Err("truncated const vtableaddr trait data".to_string());
+                    }
+                    let trait_name = String::from_utf8(buf[pos..pos + tr_len].to_vec())
+                        .map_err(|_| "invalid UTF-8 in const vtableaddr trait".to_string())?;
+                    pos += tr_len;
+                    constants.push(ConstPoolEntry::VtableAddr(type_name, trait_name));
+                }
                 _ => return Err(format!("unknown const tag {}", tag)),
             }
         }
@@ -277,6 +334,8 @@ impl std::fmt::Display for Chunk {
                     ConstPoolEntry::Int(v) => format!("\x1b[33m{v}\x1b[0m"),
                     ConstPoolEntry::Float(v) => format!("\x1b[33m{v}\x1b[0m"),
                     ConstPoolEntry::Str(s) => format!("\x1b[32m{s:?}\x1b[0m"),
+                    ConstPoolEntry::FnAddr(name) => format!("\x1b[36m{name}\x1b[0m"),
+                    ConstPoolEntry::VtableAddr(tn, tr) => format!("\x1b[35mvtable({tn}::{tr})\x1b[0m"),
                 };
                 writeln!(f, "  \x1b[2m[{i:>2}]\x1b[0m  {val}")?;
             }

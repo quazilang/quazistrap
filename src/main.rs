@@ -14,14 +14,13 @@ mod progress;
 mod project;
 pub mod semantic;
 
-use analysis::{analyze_program, format_void_source};
+use analysis::{analyze_program_with_source_files, format_void_source};
 use backend::linker::{LinkerInvocation, remove_temp, write_temp_object};
 use backend::{TargetSpec, select_backend};
 use bytecode::{Codegen, serialize_vbc};
 use clap::Parser as ClapParser;
 use cli::Args;
 use lexer::Lexer;
-use loader::LoadResult;
 use parser::Parser;
 use std::collections::HashSet;
 use std::io::Write;
@@ -31,9 +30,13 @@ use cli::Command as CliCmd;
 use cli::EmitType;
 use project::ProjectContext;
 
-fn report_diagnostics(report: &semantic::SemanticReport, src: &str) -> bool {
+fn report_diagnostics(
+    report: &semantic::SemanticReport,
+    src: &str,
+    source_files: &[semantic::types::SourceFile],
+) -> bool {
     for warning in &report.warnings {
-        eprintln!("{}", warning.render(src));
+        eprintln!("{}", warning.render_with_source_files(src, source_files));
     }
     for suggestion in &report.suggestions {
         eprintln!("\x1b[2mhint: {}\x1b[0m", suggestion.message);
@@ -41,7 +44,7 @@ fn report_diagnostics(report: &semantic::SemanticReport, src: &str) -> bool {
 
     if !report.errors.is_empty() {
         for err in &report.errors {
-            eprintln!("{}", err.render(src));
+            eprintln!("{}", err.render_with_source_files(src, source_files));
         }
         return false;
     }
@@ -53,19 +56,23 @@ fn run_pipeline(
     program: &parser::ast::Program,
     library_fn_names: HashSet<String>,
     library_char_ranges: Vec<std::ops::Range<usize>>,
+    source_files: Vec<semantic::types::SourceFile>,
     debug: bool,
     emit: EmitType,
     output_file_name: &str,
     link_flags: Option<&[String]>,
     explicit_linker: Option<&Path>,
 ) {
-    let sema_report = analyze_program(src, program, library_fn_names, library_char_ranges);
-    if !report_diagnostics(&sema_report, src) {
+    let program = &semantic::strip_cfg(program);
+    let sema_report = analyze_program_with_source_files(
+        src, program, library_fn_names, library_char_ranges, source_files.clone(),
+    );
+    if !report_diagnostics(&sema_report, src, &source_files) {
         std::process::exit(1);
     }
 
     let mut cg = Codegen::new(&sema_report);
-    let chunks = cg.compile_program(program);
+    let chunks = cg.compile_program(program, &source_files);
 
     if debug {
         for chunk in &chunks {
@@ -97,7 +104,7 @@ fn run_pipeline(
         }
 
         EmitType::Object => {
-            let obj_bytes = compile_to_object(&chunks, false);
+            let obj_bytes = compile_to_object(&chunks, false, Some(&sema_report));
             std::fs::write(output_file_name, &obj_bytes).unwrap_or_else(|e| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot write {}: {}",
@@ -111,7 +118,7 @@ fn run_pipeline(
         }
 
         EmitType::Binary => {
-            let obj_bytes = compile_to_object(&chunks, true);
+            let obj_bytes = compile_to_object(&chunks, true, Some(&sema_report));
             let stem = Path::new(output_file_name)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -189,14 +196,18 @@ fn strip_binary(path: &Path) {
     }
 }
 
-fn compile_to_object(chunks: &[crate::bytecode::Chunk], emit_start: bool) -> Vec<u8> {
+fn compile_to_object(
+    chunks: &[crate::bytecode::Chunk],
+    emit_start: bool,
+    report: Option<&crate::semantic::SemanticReport>,
+) -> Vec<u8> {
     let mut target = TargetSpec::host();
     if !emit_start {
         target = target.without_start();
     }
     let backend = select_backend(&target);
     backend
-        .compile(chunks, &target)
+        .compile(chunks, &target, report)
         .unwrap_or_else(|e| {
             eprintln!("\x1b[31;1merror:\x1b[0m codegen failed: {}", e);
             std::process::exit(1);
@@ -243,7 +254,7 @@ fn emit_chunks(
         }
 
         EmitType::Object => {
-            let obj_bytes = compile_to_object(chunks, false);
+            let obj_bytes = compile_to_object(chunks, false, None);
             std::fs::write(output_file_name, &obj_bytes).unwrap_or_else(|e| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot write {}: {}",
@@ -257,7 +268,7 @@ fn emit_chunks(
         }
 
         EmitType::Binary => {
-            let obj_bytes = compile_to_object(chunks, true);
+            let obj_bytes = compile_to_object(chunks, true, None);
             let stem = Path::new(output_file_name)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -296,9 +307,18 @@ fn emit_chunks(
     }
 }
 
-fn run_check(src: &str, program: &parser::ast::Program, library_fn_names: HashSet<String>, library_char_ranges: Vec<std::ops::Range<usize>>) {
-    let report = analyze_program(src, program, library_fn_names, library_char_ranges);
-    if !report_diagnostics(&report, src) {
+fn run_check(
+    src: &str,
+    program: &parser::ast::Program,
+    library_fn_names: HashSet<String>,
+    library_char_ranges: Vec<std::ops::Range<usize>>,
+    source_files: Vec<semantic::types::SourceFile>,
+) {
+    let program = &semantic::strip_cfg(program);
+    let report = analyze_program_with_source_files(
+        src, program, library_fn_names, library_char_ranges, source_files.clone(),
+    );
+    if !report_diagnostics(&report, src, &source_files) {
         std::process::exit(1);
     }
 }
@@ -326,16 +346,10 @@ fn abs_path(name: &str) -> PathBuf {
     }
 }
 
-fn load_with_optional_project(files: &[PathBuf]) -> LoadResult {
-    let ctx = ProjectContext::discover(&files[0]).unwrap_or_else(|e| {
-        eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-        std::process::exit(1);
-    });
+fn load_with_optional_project(files: &[PathBuf]) -> Result<loader::LoadResult, String> {
+    let ctx = ProjectContext::discover(&files[0])?;
     let resolver_owned: Option<loader::ModuleResolver> = ctx.map(|c| c.resolver);
-    loader::load_programs_with_resolver(files, resolver_owned.as_ref()).unwrap_or_else(|e| {
-        eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-        std::process::exit(1);
-    })
+    loader::load_programs_with_resolver(files, resolver_owned.as_ref())
 }
 
 fn load_project_context() -> ProjectContext {
@@ -551,9 +565,16 @@ fn build_with_progress(
         .unwrap_or(out);
     prog.header(input_name, out_name);
 
-    // ── Step 1: Lexing (load + lex + parse) ──────────────────────────────────
+    // ── Step 1: Lexing (file I/O + tokenize) ─────────────────────────────────
     prog.begin("Lexing");
-    let result = load_with_optional_project(files);
+    let result = match load_with_optional_project(files) {
+        Ok(r) => r,
+        Err(e) => {
+            prog.fail("");
+            eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+            std::process::exit(1);
+        }
+    };
     let tok_info = format!(
         "{} tokens · {} file{}",
         fmt_count(result.token_count),
@@ -572,20 +593,33 @@ fn build_with_progress(
     );
     prog.dep_tree(&tree_root);
 
-    // ── Step 2: Codegen (analyze + bytecode) ─────────────────────────────────
+    // ── Step 2: Parsing ───────────────────────────────────────────────────────
+    prog.begin("Parsing");
+    if let Some(parse_err) = &result.parse_error {
+        prog.fail("");
+        eprintln!("{}", parse_err);
+        std::process::exit(1);
+    }
+    let user_items = result.program.items.iter()
+        .filter(|item| !result.library_char_ranges.iter().any(|r| r.contains(&item.span.start)))
+        .count();
+    prog.done(&format!("{} item{}", user_items, if user_items == 1 { "" } else { "s" }));
+
+    // ── Step 3: Codegen (analyze + bytecode) ─────────────────────────────────
     prog.begin("Codegen");
-    let sema = analyze_program(
+    let sema = analyze_program_with_source_files(
         &result.merged_source,
         &result.program,
         result.library_fn_names,
         result.library_char_ranges,
+        result.source_files.clone(),
     );
     let has_errors = !sema.errors.is_empty();
     let mut cg = bytecode::Codegen::new(&sema);
-    let chunks = cg.compile_program(&result.program);
+    let chunks = cg.compile_program(&result.program, &result.source_files);
 
     if has_errors {
-        prog.fail();
+        prog.fail("error");
     } else {
         prog.done(&codegen_stats(&chunks, prog.is_tty));
     }
@@ -595,10 +629,20 @@ fn build_with_progress(
     }
 
     // Print warnings + errors.
-    for w in &sema.warnings { eprintln!("{}", w.render(&result.merged_source)); }
+    for w in &sema.warnings {
+        eprintln!(
+            "{}",
+            w.render_with_source_files(&result.merged_source, &result.source_files)
+        );
+    }
     for hint in &sema.suggestions { eprintln!("\x1b[2mhint: {}\x1b[0m", hint.message); }
     if has_errors {
-        for e in &sema.errors { eprintln!("{}", e.render(&result.merged_source)); }
+        for e in &sema.errors {
+            eprintln!(
+                "{}",
+                e.render_with_source_files(&result.merged_source, &result.source_files)
+            );
+        }
         std::process::exit(1);
     }
 
@@ -621,7 +665,7 @@ fn build_with_progress(
             // ── Step 3: Native ────────────────────────────────────────────────
             let arch = arch_label();
             prog.begin(&format!("Native  {}", arch));
-            let obj_bytes = compile_to_object(&chunks, false);
+            let obj_bytes = compile_to_object(&chunks, false, Some(&sema));
             std::fs::write(out, &obj_bytes).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot write {}: {}", out, e);
                 std::process::exit(1);
@@ -634,7 +678,7 @@ fn build_with_progress(
             // ── Step 3: Native ────────────────────────────────────────────────
             let arch = arch_label();
             prog.begin(&format!("Native  {}", arch));
-            let obj_bytes = compile_to_object(&chunks, true);
+            let obj_bytes = compile_to_object(&chunks, true, Some(&sema));
             prog.done(&format!("{:.1} KB  object", obj_bytes.len() as f64 / 1024.0));
 
             // ── Step 4: Linking ───────────────────────────────────────────────
@@ -644,6 +688,7 @@ fn build_with_progress(
                 .and_then(|s| s.to_str())
                 .unwrap_or(out);
             let tmp_obj = backend::linker::write_temp_object(&obj_bytes, stem).unwrap_or_else(|e| {
+                prog.fail("error");
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
             });
@@ -657,6 +702,7 @@ fn build_with_progress(
             )
             .unwrap_or_else(|e| {
                 backend::linker::remove_temp(&tmp_obj);
+                prog.fail("error");
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
             });
@@ -664,6 +710,7 @@ fn build_with_progress(
 
             inv.run().unwrap_or_else(|e| {
                 backend::linker::remove_temp(&tmp_obj);
+                prog.fail("error");
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
             });
@@ -689,6 +736,13 @@ fn build_with_progress(
 }
 
 fn main() {
+    #[cfg(windows)]
+    {
+        unsafe extern "system" {
+            fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
+        }
+        unsafe { SetConsoleOutputCP(65001); }
+    }
     let args = Args::parse();
 
     match args.command {
@@ -883,6 +937,10 @@ fn main() {
                     eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                     std::process::exit(1);
                 });
+            if let Some(e) = &result.parse_error {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
 
             let out = project_output_name(&ctx.config.name, EmitType::Binary);
             run_pipeline(
@@ -890,6 +948,7 @@ fn main() {
                 &result.program,
                 result.library_fn_names,
                 result.library_char_ranges,
+                result.source_files,
                 false,
                 EmitType::Binary,
                 &out,
@@ -920,11 +979,16 @@ fn main() {
                     eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                     std::process::exit(1);
                 });
+            if let Some(e) = &result.parse_error {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
             run_check(
                 &result.merged_source,
                 &result.program,
                 result.library_fn_names,
                 result.library_char_ranges,
+                result.source_files,
             );
         }
 
@@ -983,6 +1047,7 @@ fn main() void {
                     src,
                     &program,
                     HashSet::new(),
+                    Vec::new(),
                     Vec::new(),
                     false,
                     emit,

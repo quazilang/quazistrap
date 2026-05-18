@@ -9,6 +9,7 @@ pub mod x86_64;
 pub use target::TargetSpec;
 
 use crate::bytecode::Chunk;
+use crate::semantic::SemanticReport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectFormat {
@@ -32,7 +33,12 @@ impl std::fmt::Display for BackendError {
 }
 
 pub trait Backend {
-    fn compile(&self, chunks: &[Chunk], target: &TargetSpec) -> Result<ObjectOutput, BackendError>;
+    fn compile(
+        &self,
+        chunks: &[Chunk],
+        target: &TargetSpec,
+        report: Option<&SemanticReport>,
+    ) -> Result<ObjectOutput, BackendError>;
 }
 
 pub fn select_backend(target: &TargetSpec) -> Box<dyn Backend> {

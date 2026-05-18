@@ -8,6 +8,20 @@ use super::*;
 
 impl Analyzer {
     pub(super) fn type_check_item(&mut self, item: &Item) {
+        // Skip items disabled by @cfg on this platform.
+        let attrs = match &item.node {
+            ItemKind::TypeAlias { attributes, .. }
+            | ItemKind::Fn { attributes, .. }
+            | ItemKind::Struct { attributes, .. }
+            | ItemKind::Trait { attributes, .. }
+            | ItemKind::Enum { attributes, .. } => Some(attributes),
+            _ => None,
+        };
+        if let Some(attrs) = attrs {
+            if !super::item_should_include(attrs) {
+                return;
+            }
+        }
         match &item.node {
             ItemKind::Fn {
                 name,
@@ -75,7 +89,9 @@ impl Analyzer {
                 let fn_name = self.current_fn_name_override.take().unwrap_or_else(|| name.clone());
                 self.current_function.push(fn_name);
                 self.enter_scope();
-                let fn_has_format = attributes.iter().any(|a| a.name == "format");
+                let fn_is_str_variadic = params.last().map(|p| {
+                    p.variadic && matches!(&p.ty.node, TypeKind::Str | TypeKind::Ref { .. })
+                }).unwrap_or(false);
                 for p in params {
                     let ty = unwrap_type(&p.ty);
                     let ty = if p.variadic {
@@ -91,9 +107,9 @@ impl Analyzer {
                     if is_foreign {
                         param_attrs.push("ignore".to_string());
                     }
-                    // @format functions: variadic args are consumed at call sites, not in body
-                    if p.variadic && fn_has_format {
-                        param_attrs.push("format".to_string());
+                    // str_variadic functions: variadic args are coerced at call sites, not in body
+                    if p.variadic && fn_is_str_variadic {
+                        param_attrs.push("str_variadic".to_string());
                     }
                     self.declare(
                         p.name.clone(),
@@ -111,6 +127,7 @@ impl Analyzer {
                             attributes: param_attrs,
                             public: false,
                             unsafe_fn: false,
+                            generic_params: vec![],
                         },
                     );
                 }
@@ -173,6 +190,8 @@ impl Analyzer {
                     self.type_check_item(method);
                 }
             }
+            // Type aliases are just name bindings — no code to type-check.
+            ItemKind::TypeAlias { .. } => {}
         }
     }
 
@@ -305,6 +324,7 @@ impl Analyzer {
                         attributes: extract_attribute_names(attributes),
                         public: false,
                         unsafe_fn: false,
+                        generic_params: vec![],
                     },
                 );
                 false
@@ -345,6 +365,7 @@ impl Analyzer {
                         attributes: extract_attribute_names(attributes),
                         public: false,
                         unsafe_fn: false,
+                        generic_params: vec![],
                     },
                 );
                 false
@@ -512,6 +533,7 @@ impl Analyzer {
                                     attributes: Vec::new(),
                                     public: false,
                                     unsafe_fn: false,
+                                    generic_params: vec![],
                                 },
                             );
                         }
@@ -533,8 +555,10 @@ impl Analyzer {
                 self.type_check_expr(expr, true);
                 false
             }
-            StmtKind::CfgBlock { body, .. } => {
-                self.type_check_block(body, expected_return);
+            StmtKind::CfgBlock { body, condition } => {
+                if super::item_should_include(std::slice::from_ref(condition)) {
+                    self.type_check_block(body, expected_return);
+                }
                 false
             }
         }
@@ -579,11 +603,33 @@ impl Analyzer {
                         }
                     } else if matches!(sym.kind, SymbolKind::TypeName) {
                         // Type name used as expression (e.g. Array.new(), Array.from(...)).
-                        // Return Named type so static method dispatch fires in method call handler.
+                        // For type aliases, return the aliased type.
+                        // For structs/enums/traits, return Named so static method dispatch works.
+                        let resolved = sym.ty.clone().unwrap_or(TypeKind::Named {
+                            name: name.clone(),
+                            type_args: vec![],
+                        });
                         ExprEval {
-                            ty: Some(TypeKind::Named {
-                                name: name.clone(),
-                                type_args: vec![],
+                            ty: Some(resolved),
+                            const_value: None,
+                        }
+                    } else if matches!(sym.kind, SymbolKind::Function) {
+                        // Function name used as value → fn pointer type.
+                        let return_ty = sym.ty.clone().unwrap_or(TypeKind::Void);
+                        let param_types: Vec<Type> = sym.params.iter().map(|p| {
+                            Spanned::new(p.clone(), expr.span)
+                        }).collect();
+                        // Ensure function is reachable even if never directly called.
+                        let from = self
+                            .current_function
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| "__program__".to_string());
+                        self.add_dependency_edge(DependencyKind::Call, &from, name);
+                        ExprEval {
+                            ty: Some(TypeKind::Fn {
+                                params: param_types,
+                                return_ty: Box::new(Spanned::new(return_ty, expr.span)),
                             }),
                             const_value: None,
                         }
@@ -728,11 +774,13 @@ impl Analyzer {
             }
             ExprKind::Call {
                 callee,
-                type_args: _,
+                type_args,
                 args,
+                named_args,
             } => {
                 let arg_evals: Vec<ExprEval> = args
                     .iter()
+                    .chain(named_args.iter().map(|(_, e)| e))
                     .map(|a| self.type_check_expr(a, reachable))
                     .collect();
 
@@ -746,47 +794,110 @@ impl Analyzer {
                         return ExprEval::default();
                     };
 
-                    if !matches!(sym.kind, SymbolKind::Function) {
-                        let msg = if let Some(ref path) = sym.import_path {
-                            let module_path = path
-                                .rsplit_once('.')
-                                .map(|(prefix, _)| prefix.to_string())
-                                .unwrap_or_else(|| path.clone());
-                            format!("'{}' is not exported by '{}'", name, module_path)
-                        } else {
-                            format!("function '{}' does not exist", name)
-                        };
-                        self.push_error(callee.span, "S04", msg);
-                        return ExprEval::default();
+                    if matches!(sym.kind, SymbolKind::Function) {
+                        // Library functions require explicit import-by-name to be called unqualified.
+                        // Exception: library code calling other library code is always allowed
+                        // (stdlib functions call each other without import statements).
+                        let caller_is_library = self
+                            .current_function
+                            .last()
+                            .map(|f| self.library_fn_names.contains(f.as_str()))
+                            .unwrap_or(false);
+                        if self.library_fn_names.contains(name.as_str())
+                            && !self.explicitly_imported_fns.contains_key(name.as_str())
+                            && !caller_is_library
+                        {
+                            self.push_error(
+                                callee.span,
+                                "S04",
+                                format!(
+                                    "'{}' is not in scope; use qualified access or add 'import ...{};'",
+                                    name, name
+                                ),
+                            );
+                            return ExprEval::default();
+                        }
+
+                        if !named_args.is_empty() {
+                            self.validate_named_args(callee.span, name, named_args, args.len(), &sym);
+                        }
+                        let eval = self.check_function_call(name, callee.span, args, &arg_evals, &sym, type_args);
+                        self.annotate_expr(expr, &eval, reachable);
+                        return eval;
                     }
 
-                    // Library functions require explicit import-by-name to be called unqualified.
-                    // Exception: library code calling other library code is always allowed
-                    // (stdlib functions call each other without import statements).
-                    let caller_is_library = self
-                        .current_function
-                        .last()
-                        .map(|f| self.library_fn_names.contains(f.as_str()))
-                        .unwrap_or(false);
-                    if self.library_fn_names.contains(name.as_str())
-                        && !self.explicitly_imported_fns.contains(name.as_str())
-                        && !caller_is_library
-                    {
-                        self.push_error(
-                            callee.span,
-                            "S04",
-                            format!(
-                                "'{}' is not in scope; use qualified access or add 'import ...{};'",
-                                name, name
-                            ),
-                        );
-                        return ExprEval::default();
+                    // Function pointer variable or other callable expression.
+                    if let Some(ref fn_ty) = sym.ty {
+                        if let TypeKind::Fn { params, return_ty } = self.resolve_type_aliases(fn_ty) {
+                            let expected_count = params.len();
+                            let actual_count = arg_evals.len();
+                            if actual_count != expected_count {
+                                self.push_error(
+                                    expr.span,
+                                    "S10",
+                                    format!(
+                                        "expected {} argument(s), got {}",
+                                        expected_count, actual_count
+                                    ),
+                                );
+                                return ExprEval::default();
+                            }
+                            let eval = ExprEval {
+                                ty: Some(return_ty.node.clone()),
+                                const_value: None,
+                            };
+                            self.annotate_expr(expr, &eval, reachable);
+                            return eval;
+                        }
                     }
 
-                    self.check_function_call(name, callee.span, args, &arg_evals, &sym)
+                    let msg = if let Some(ref path) = sym.import_path {
+                        let module_path = path
+                            .rsplit_once('.')
+                            .map(|(prefix, _)| prefix.to_string())
+                            .unwrap_or_else(|| path.clone());
+                        format!("'{}' is not exported by '{}'", name, module_path)
+                    } else {
+                        format!("cannot call '{}': not a function", name)
+                    };
+                    self.push_error(callee.span, "S04", msg);
+                    return ExprEval::default();
                 } else {
-                    self.type_check_expr(callee, reachable);
-                    ExprEval::default()
+                    let callee_eval = self.type_check_expr(callee, reachable);
+                    match callee_eval.ty.as_ref() {
+                        Some(TypeKind::Fn { params, return_ty }) => {
+                            let expected_count = params.len();
+                            let actual_count = arg_evals.len();
+                            if actual_count != expected_count {
+                                self.push_error(
+                                    expr.span,
+                                    "S10",
+                                    format!(
+                                        "expected {} argument(s), got {}",
+                                        expected_count, actual_count
+                                    ),
+                                );
+                                return ExprEval::default();
+                            }
+                            for (_i, arg_eval) in arg_evals.iter().enumerate() {
+                                // For now, skip detailed param type checking (params are often Any).
+                                let _ = arg_eval;
+                            }
+                            ExprEval {
+                                ty: Some(return_ty.node.clone()),
+                                const_value: None,
+                            }
+                        }
+                        Some(other) => {
+                            self.push_error(
+                                callee.span,
+                                "S10",
+                                format!("cannot call value of type {}", other),
+                            );
+                            ExprEval::default()
+                        }
+                        None => ExprEval::default(),
+                    }
                 }
             }
             ExprKind::MethodCall {
@@ -794,6 +905,7 @@ impl Analyzer {
                 method,
                 type_args,
                 args,
+                named_args,
             } => {
                 // For lazy import tracking: record the object chain path (not the method itself)
                 if let Some((base, path)) = Self::extract_field_chain(object) {
@@ -816,6 +928,7 @@ impl Analyzer {
                     self.type_check_expr(object, reachable);
                     let arg_evals: Vec<ExprEval> = args
                         .iter()
+                        .chain(named_args.iter().map(|(_, e)| e))
                         .map(|a| self.type_check_expr(a, reachable))
                         .collect();
                     if let Some(sym) = self.resolve_symbol(method) {
@@ -835,12 +948,77 @@ impl Analyzer {
                             let sym = self
                                 .resolve_for_read(method)
                                 .expect("symbol should resolve");
-                            self.check_function_call(method, expr.span, args, &arg_evals, &sym)
+                            if !named_args.is_empty() {
+                                self.validate_named_args(expr.span, method, named_args, args.len(), &sym);
+                            }
+                            self.check_function_call(method, expr.span, args, &arg_evals, &sym, type_args)
                         }
                     } else {
                         ExprEval::default()
                     }
                 } else {
+                    // Static generic struct namespace call: `Box.new(42)`, `Pair.make(a, b)`.
+                    // Object is a struct type name used as namespace, not a value.
+                    // Infer concrete type args from actual arg types so the return type
+                    // propagates correctly (e.g. `Box.new(42)` → `Box[i32]`).
+                    if let ExprKind::Ident(struct_name) = &object.node {
+                        let is_struct_ns = self.struct_defs.contains_key(struct_name.as_str())
+                            && !matches!(
+                                self.resolve_symbol(struct_name).map(|s| s.kind),
+                                Some(SymbolKind::Variable { .. }) | Some(SymbolKind::Parameter)
+                            );
+                        if is_struct_ns {
+                            let method_full = format!("{}.{}", struct_name, method);
+                            if let Some(sym) = self.resolve_for_read(&method_full) {
+                                let arg_evals: Vec<ExprEval> = args.iter()
+                                    .map(|a| self.type_check_expr(a, reachable))
+                                    .collect();
+                                for (_, a) in named_args {
+                                    self.type_check_expr(a, reachable);
+                                }
+                                let struct_params = self.struct_generic_params
+                                    .get(struct_name.as_str())
+                                    .cloned()
+                                    .unwrap_or_default();
+                                let from = self.current_function.last()
+                                    .cloned()
+                                    .unwrap_or_else(|| "__program__".to_string());
+                                let ret_ty = if !struct_params.is_empty() {
+                                    let mut subst: std::collections::HashMap<String, TypeKind> =
+                                        std::collections::HashMap::new();
+                                    for (param_ty, arg_eval) in sym.params.iter().zip(arg_evals.iter()) {
+                                        if let Some(arg_ty) = &arg_eval.ty {
+                                            infer_type_subst(param_ty, arg_ty, &struct_params, &mut subst);
+                                        }
+                                    }
+                                    if !subst.is_empty() {
+                                        let type_args: Vec<TypeKind> = struct_params.iter()
+                                            .filter_map(|p| subst.get(p).cloned())
+                                            .collect();
+                                        if type_args.len() == struct_params.len() {
+                                            let mono_name = mangle_monomorphized(&method_full, &type_args);
+                                            if !self.monomorphizations.iter().any(|m| m.mangled_name == mono_name) {
+                                                self.monomorphizations.push(MonomorphizationInfo {
+                                                    fn_name: method_full.clone(),
+                                                    type_args,
+                                                    mangled_name: mono_name.clone(),
+                                                });
+                                            }
+                                            self.add_dependency_edge(DependencyKind::Call, &from, &mono_name);
+                                        }
+                                    }
+                                    sym.ty.as_ref().map(|t| substitute_type_kind(t, &subst))
+                                } else {
+                                    sym.ty.clone()
+                                };
+                                self.add_dependency_edge(DependencyKind::Call, &from, &method_full);
+                                let eval = ExprEval { ty: ret_ty, const_value: None };
+                                self.annotate_expr(expr, &eval, reachable);
+                                return eval;
+                            }
+                        }
+                    }
+
                     let object_eval = self.type_check_expr(object, reachable);
                     for arg in args {
                         self.type_check_expr(arg, reachable);
@@ -849,7 +1027,7 @@ impl Analyzer {
                     // For Named types: impl method resolution takes priority over builtins.
                     // Returns Some(return_ty) when an impl method is found and side-effects recorded.
                     let impl_resolved: Option<Option<TypeKind>> =
-                        if let Some(TypeKind::Named { name: type_name, .. }) = &object_eval.ty {
+                        if let Some(TypeKind::Named { name: type_name, type_args }) = &object_eval.ty.clone() {
                             let mangled = format!("{}.{}", type_name, method);
                             if let Some(sym) = self.resolve_for_read(&mangled) {
                                 let from = self
@@ -857,6 +1035,19 @@ impl Analyzer {
                                     .last()
                                     .cloned()
                                     .unwrap_or_else(|| "__program__".to_string());
+                                // Record monomorphization for generic receiver types.
+                                if !type_args.is_empty() {
+                                    let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
+                                    let mono_name = mangle_monomorphized(&mangled, &type_kinds);
+                                    if !self.monomorphizations.iter().any(|m| m.mangled_name == mono_name) {
+                                        self.monomorphizations.push(MonomorphizationInfo {
+                                            fn_name: mangled.clone(),
+                                            type_args: type_kinds,
+                                            mangled_name: mono_name.clone(),
+                                        });
+                                    }
+                                    self.add_dependency_edge(DependencyKind::Call, &from, &mono_name);
+                                }
                                 self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
                                 if sym.unsafe_fn && self.unsafe_depth == 0 {
                                     self.push_error(
@@ -868,7 +1059,46 @@ impl Analyzer {
                                         ),
                                     );
                                 }
-                                Some(sym.ty)
+                                // Apply type substitution to return type for generic receivers.
+                                let ret_ty = if !type_args.is_empty() {
+                                    if let Some(struct_params) = self.struct_generic_params.get(type_name.as_str()) {
+                                        let subst: std::collections::HashMap<String, TypeKind> = struct_params.iter()
+                                            .zip(type_args.iter())
+                                            .map(|(p, t)| (p.clone(), t.node.clone()))
+                                            .collect();
+                                        sym.ty.map(|t| substitute_type_kind(&t, &subst))
+                                    } else {
+                                        sym.ty
+                                    }
+                                } else {
+                                    sym.ty
+                                };
+                                Some(ret_ty)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                    // For Dyn receivers: validate the method exists on the trait and return Any.
+                    let dyn_resolved: Option<Option<TypeKind>> =
+                        if impl_resolved.is_none() {
+                            if let Some(TypeKind::Dyn { trait_name }) = &object_eval.ty {
+                                if let Some(slots) = self.trait_method_slots.get(trait_name.as_str()) {
+                                    if slots.contains(method) {
+                                        Some(Some(TypeKind::Any))
+                                    } else {
+                                        self.push_error(
+                                            expr.span,
+                                            "S04",
+                                            format!("trait `{}` has no method `{}`", trait_name, method),
+                                        );
+                                        Some(None)
+                                    }
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             }
@@ -878,6 +1108,8 @@ impl Analyzer {
 
                     let ty = if let Some(impl_ty) = impl_resolved {
                         impl_ty
+                    } else if let Some(dyn_ty) = dyn_resolved {
+                        dyn_ty
                     } else {
                         let ref_str = TypeKind::Ref {
                             inner: Box::new(Spanned::new(TypeKind::Str, expr.span)),
@@ -958,13 +1190,27 @@ impl Analyzer {
                     }
                 }
                 let obj_eval = self.type_check_expr(object, reachable);
-                // Resolve field type from struct_defs
+                // Resolve field type from struct_defs, substituting generic params when present.
                 let field_ty = match &obj_eval.ty {
-                    Some(TypeKind::Named { name: struct_name, .. }) => {
-                        self.struct_defs
+                    Some(TypeKind::Named { name: struct_name, type_args }) => {
+                        let raw = self.struct_defs
                             .get(struct_name)
                             .and_then(|fields| fields.iter().find(|(fn_, _)| fn_ == name))
-                            .map(|(_, ty)| ty.clone())
+                            .map(|(_, ty)| ty.clone());
+                        if let Some(raw_ty) = raw {
+                            let gp = self.struct_generic_params.get(struct_name).cloned().unwrap_or_default();
+                            if !gp.is_empty() && !type_args.is_empty() {
+                                let subst: std::collections::HashMap<String, TypeKind> = gp.iter()
+                                    .zip(type_args.iter())
+                                    .map(|(p, a)| (p.clone(), a.node.clone()))
+                                    .collect();
+                                Some(substitute_type_kind(&raw_ty, &subst))
+                            } else {
+                                Some(raw_ty)
+                            }
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
                 };
@@ -1021,16 +1267,47 @@ impl Analyzer {
                 }
 
                 for arm in arms {
-                    let (arm_info, bindings) =
+                    let (mut arm_info, bindings) =
                         self.validate_match_pattern(&arm.pattern, &scrutinee_eval.ty);
+                    arm_info.has_guard = arm.guard.is_some();
 
                     self.enter_scope();
+                    // Build a map: binding_name → field type for Variant patterns.
+                    let binding_types: std::collections::HashMap<String, TypeKind> =
+                        if let PatternKind::Variant { enum_name, variant, sub_patterns } = &arm.pattern.node {
+                            let resolved_enum = enum_name.clone()
+                                .or_else(|| {
+                                    if let Some(TypeKind::Named { name, .. }) = &scrutinee_eval.ty {
+                                        Some(name.clone())
+                                    } else { None }
+                                });
+                            if let Some(ename) = resolved_enum {
+                                if let Some(info) = self.enums.get(&ename) {
+                                    if let Some(field_tys) = info.variant_fields.get(variant) {
+                                        let mut m = std::collections::HashMap::new();
+                                        let mut field_idx = 0;
+                                        for sub in sub_patterns {
+                                            if let PatternKind::Bind(bname) = &sub.node {
+                                                if let Some(ty) = field_tys.get(field_idx) {
+                                                    m.insert(bname.clone(), ty.clone());
+                                                }
+                                            }
+                                            if !matches!(sub.node, PatternKind::Wildcard) {
+                                                field_idx += 1;
+                                            }
+                                        }
+                                        m
+                                    } else { std::collections::HashMap::new() }
+                                } else { std::collections::HashMap::new() }
+                            } else { std::collections::HashMap::new() }
+                        } else { std::collections::HashMap::new() };
                     for binding in bindings {
+                        let ty = binding_types.get(&binding).cloned().unwrap_or(TypeKind::Any);
                         self.declare(
                             binding,
                             Symbol {
                                 kind: SymbolKind::Variable { mutable: false },
-                                ty: Some(TypeKind::Any),
+                                ty: Some(ty),
                                 span: arm.pattern.span,
                                 params: vec![],
                                 used: false,
@@ -1042,8 +1319,26 @@ impl Analyzer {
                                 attributes: Vec::new(),
                                 public: false,
                                 unsafe_fn: false,
+                                generic_params: vec![],
                             },
                         );
+                    }
+
+                    // Type-check the optional guard expression (inside binding scope).
+                    if let Some(guard) = &arm.guard {
+                        let guard_eval = self.type_check_expr(guard, reachable);
+                        if let Some(guard_ty) = guard_eval.ty {
+                            if !matches!(guard_ty, TypeKind::Bool) {
+                                self.push_error(
+                                    guard.span,
+                                    "S01",
+                                    format!(
+                                        "match guard must be bool, got {}",
+                                        guard_ty
+                                    ),
+                                );
+                            }
+                        }
                     }
 
                     let arm_eval = self.type_check_expr(&arm.expr, reachable);
@@ -1255,6 +1550,43 @@ impl Analyzer {
                 // at this stage, so annotate as Any for now.
                 ExprEval { ty: Some(TypeKind::Any), const_value: None }
             }
+
+            ExprKind::Closure { params, body } => {
+                // Enter a new scope for the closure's params.
+                self.enter_scope();
+                let mut param_types = Vec::new();
+                for pname in params {
+                    // Declare each param as Variable (unknown type for now).
+                    self.declare(
+                        pname.clone(),
+                        Symbol {
+                            kind: SymbolKind::Variable { mutable: false },
+                            ty: Some(TypeKind::Any),
+                            span: expr.span,
+                            params: vec![],
+                            used: false,
+                            initialized: true,
+                            is_import: false,
+                            import_path: None,
+                            const_value: None,
+                            variadic: false,
+                            attributes: vec![],
+                            public: false,
+                            unsafe_fn: false,
+                            generic_params: vec![],
+                        },
+                    );
+                    param_types.push(Spanned::new(TypeKind::Any, expr.span));
+                }
+                let body_eval = self.type_check_expr(body, reachable);
+                self.exit_scope_collect();
+                let return_ty = body_eval.ty.clone().unwrap_or(TypeKind::Void);
+                let fn_ty = TypeKind::Fn {
+                    params: param_types,
+                    return_ty: Box::new(Spanned::new(return_ty, expr.span)),
+                };
+                ExprEval { ty: Some(fn_ty), const_value: None }
+            }
         };
 
         self.annotate_expr(expr, &result, reachable);
@@ -1269,6 +1601,48 @@ impl Analyzer {
             .map_or(false, |sym| sym.is_import)
     }
 
+    fn validate_named_args(
+        &mut self,
+        span: Span,
+        fn_name: &str,
+        named_args: &[(String, Expr)],
+        positional_count: usize,
+        sym: &Symbol,
+    ) {
+        let param_names = self.fn_param_names.get(fn_name).cloned().unwrap_or_default();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (arg_name, arg_expr) in named_args {
+            if !seen.insert(arg_name.clone()) {
+                self.push_error(arg_expr.span, "S09", format!("duplicate named argument `{}`", arg_name));
+                continue;
+            }
+            let Some(pos) = param_names.iter().position(|p| p == arg_name) else {
+                self.push_error(
+                    arg_expr.span, "S09",
+                    format!("unknown parameter name `{}` for function `{}`", arg_name, fn_name),
+                );
+                continue;
+            };
+            if pos < positional_count {
+                self.push_error(
+                    arg_expr.span, "S09",
+                    format!("named argument `{}` conflicts with positional argument at position {}", arg_name, pos + 1),
+                );
+                continue;
+            }
+            // Type-check named arg against its param type.
+            let eval = self.type_check_expr(arg_expr, true);
+            if let (Some(param_ty), Some(arg_ty)) = (sym.params.get(pos), eval.ty) {
+                if !self.types_compatible(param_ty, &arg_ty) {
+                    self.push_error(
+                        arg_expr.span, "S09",
+                        format!("named argument `{}`: expected {}, got {}", arg_name, param_ty, arg_ty),
+                    );
+                }
+            }
+        }
+    }
+
     fn check_function_call(
         &mut self,
         name: &str,
@@ -1276,21 +1650,69 @@ impl Analyzer {
         args: &[Expr],
         arg_evals: &[ExprEval],
         sym: &Symbol,
+        type_args: &[Type],
     ) -> ExprEval {
         let from = self
             .current_function
             .last()
             .cloned()
             .unwrap_or_else(|| "__program__".to_string());
-        *self.call_counts.entry(name.to_string()).or_insert(0) += 1;
-        self.add_dependency_edge(DependencyKind::Call, &from, name);
-        // @format fns with >1 arg cause codegen to inject a call to "format".
-        let non_variadic_count = if sym.variadic {
-            sym.params.len().saturating_sub(1)
+        // Resolve alias imports to the original function name for call tracking.
+        // `import foo.bar as baz` → record counts and edges under "bar", not "baz".
+        let canonical = if sym.is_import {
+            sym.import_path.as_ref()
+                .and_then(|p| p.rsplit('.').next())
+                .unwrap_or(name)
         } else {
-            sym.params.len()
+            name
         };
-        if sym.attributes.contains(&"format".to_string()) && args.len() > non_variadic_count {
+        *self.call_counts.entry(canonical.to_string()).or_insert(0) += 1;
+
+        // Build substitution map if this is a generic function call with type arguments.
+        let subst: std::collections::HashMap<String, TypeKind> = if !sym.generic_params.is_empty()
+            && type_args.len() == sym.generic_params.len()
+        {
+            let mut map = std::collections::HashMap::new();
+            for (param, arg) in sym.generic_params.iter().zip(type_args.iter()) {
+                map.insert(param.clone(), arg.node.clone());
+            }
+            map
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        // Record monomorphization and add dependency edge.
+        if !subst.is_empty() {
+            let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
+            let mangled = mangle_monomorphized(name, &type_kinds);
+            if !self.monomorphizations.iter().any(|m| m.mangled_name == mangled) {
+                self.monomorphizations.push(MonomorphizationInfo {
+                    fn_name: name.to_string(),
+                    type_args: type_kinds.clone(),
+                    mangled_name: mangled.clone(),
+                });
+            }
+            self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
+        } else {
+            self.add_dependency_edge(DependencyKind::Call, &from, canonical);
+        }
+
+        // Apply substitution to param types for checking.
+        let substituted_params: Vec<TypeKind> = if !subst.is_empty() {
+            sym.params.iter()
+                .map(|p| substitute_type_kind(p, &subst))
+                .collect()
+        } else {
+            sym.params.clone()
+        };
+
+        // str_variadic fns with >1 arg cause codegen to inject a call to "format".
+        let non_variadic_count = if sym.variadic {
+            substituted_params.len().saturating_sub(1)
+        } else {
+            substituted_params.len()
+        };
+        if sym.attributes.contains(&"str_variadic".to_string()) && args.len() > non_variadic_count {
             self.add_dependency_edge(DependencyKind::Call, &from, "format");
         }
         if sym.unsafe_fn && self.unsafe_depth == 0 {
@@ -1306,37 +1728,40 @@ impl Analyzer {
 
         let is_variadic = sym.variadic;
         let non_variadic_count = if is_variadic {
-            sym.params.len().saturating_sub(1)
+            substituted_params.len().saturating_sub(1)
         } else {
-            sym.params.len()
+            substituted_params.len()
         };
-        if !is_variadic && sym.params.len() != args.len() {
+        // Use total arg count (positional + named, reflected in arg_evals).
+        let total_arg_count = arg_evals.len();
+        if !is_variadic && substituted_params.len() != total_arg_count {
             self.push_error(
                 callee_span,
                 "S08",
-                format!("expected {} args, got {}", sym.params.len(), args.len()),
+                format!("expected {} args, got {}", substituted_params.len(), total_arg_count),
             );
-        } else if is_variadic && args.len() < non_variadic_count {
+        } else if is_variadic && total_arg_count < non_variadic_count {
             self.push_error(
                 callee_span,
                 "S08",
                 format!(
                     "expected at least {} args, got {}",
                     non_variadic_count,
-                    args.len()
+                    total_arg_count
                 ),
             );
         } else {
             // Type-check non-variadic args.
-            for (i, (param_ty, arg_ty)) in sym.params[..non_variadic_count]
+            for (i, (param_ty, arg_ty)) in substituted_params[..non_variadic_count]
                 .iter()
                 .zip(arg_evals.iter().map(|e| &e.ty))
                 .enumerate()
             {
                 if let Some(at) = arg_ty {
                     if !self.types_compatible(param_ty, at) {
+                        let span = args.get(i).map(|a| a.span).unwrap_or(callee_span);
                         self.push_error(
-                            args[i].span,
+                            span,
                             "S08",
                             format!("arg {}: expected {}, got {}", i + 1, param_ty, at),
                         );
@@ -1345,7 +1770,7 @@ impl Analyzer {
             }
             // Variadic args checked against the element type.
             if is_variadic {
-                if let Some(elem_ty) = sym.params.last() {
+                if let Some(elem_ty) = substituted_params.last() {
                     for (i, arg_ty) in arg_evals[non_variadic_count..]
                         .iter()
                         .map(|e| &e.ty)
@@ -1353,8 +1778,9 @@ impl Analyzer {
                     {
                         if let Some(at) = arg_ty {
                             if !self.types_compatible(elem_ty, at) {
+                                let span = args.get(non_variadic_count + i).map(|a| a.span).unwrap_or(callee_span);
                                 self.push_error(
-                                    args[non_variadic_count + i].span,
+                                    span,
                                     "S08",
                                     format!(
                                         "variadic arg {}: expected {}, got {}",
@@ -1370,8 +1796,14 @@ impl Analyzer {
             }
         }
 
+        let return_ty = if !subst.is_empty() {
+            sym.ty.as_ref().map(|t| substitute_type_kind(t, &subst))
+        } else {
+            sym.ty.clone()
+        };
+
         ExprEval {
-            ty: sym.ty.clone(),
+            ty: return_ty,
             const_value: None,
         }
     }
@@ -1570,17 +2002,26 @@ impl Analyzer {
         scrutinee_ty: &Option<TypeKind>,
     ) -> (MatchArmInfo, Vec<String>) {
         match &pattern.node {
-            PatternKind::Wildcard => (
+            PatternKind::Wildcard | PatternKind::Literal(_) => (
                 MatchArmInfo {
                     span: pattern.span,
                     kind: MatchArmKindInfo::Wildcard,
+                    has_guard: false,
                 },
                 Vec::new(),
+            ),
+            PatternKind::Bind(name) => (
+                MatchArmInfo {
+                    span: pattern.span,
+                    kind: MatchArmKindInfo::Wildcard,
+                    has_guard: false,
+                },
+                vec![name.clone()],
             ),
             PatternKind::Variant {
                 enum_name,
                 variant,
-                bindings,
+                sub_patterns,
             } => {
                 if let Some(TypeKind::Named { name, .. }) = scrutinee_ty {
                     let target_enum = enum_name.clone().unwrap_or_else(|| name.clone());
@@ -1598,7 +2039,7 @@ impl Analyzer {
 
                     if let Some(info) = self.enums.get(&target_enum) {
                         if let Some(expected_arity) = info.variants.get(variant) {
-                            if *expected_arity != bindings.len() {
+                            if *expected_arity != sub_patterns.len() {
                                 self.push_error(
                                     pattern.span,
                                     "S09",
@@ -1607,7 +2048,7 @@ impl Analyzer {
                                         target_enum,
                                         variant,
                                         expected_arity,
-                                        bindings.len()
+                                        sub_patterns.len()
                                     ),
                                 );
                             }
@@ -1636,6 +2077,7 @@ impl Analyzer {
                     );
                 }
 
+                let bindings = crate::parser::ast::collect_pattern_bindings(sub_patterns);
                 (
                     MatchArmInfo {
                         span: pattern.span,
@@ -1643,8 +2085,9 @@ impl Analyzer {
                             enum_name: enum_name.clone(),
                             variant: variant.clone(),
                         },
+                        has_guard: false,
                     },
-                    bindings.clone(),
+                    bindings,
                 )
             }
         }
@@ -1712,13 +2155,17 @@ impl Analyzer {
     }
 
     pub(super) fn types_compatible(&self, a: &TypeKind, b: &TypeKind) -> bool {
-        match (a, b) {
+        let a = self.resolve_type_aliases(a);
+        let b = self.resolve_type_aliases(b);
+        match (&a, &b) {
             (TypeKind::Any, _) | (_, TypeKind::Any) => true,
             // Never (!) is compatible with any type — diverging arms unify with anything
             (TypeKind::Never, _) | (_, TypeKind::Never) => true,
             (TypeKind::Named { .. }, _) | (_, TypeKind::Named { .. }) => true,
             (a, b) if Self::is_integer(a) && Self::is_integer(b) => true,
             (a, b) if Self::is_float(a) && Self::is_float(b) => true,
+            // Integer literal passed where float expected (e.g. show[f64](2)) — implicit widening.
+            (a, b) if Self::is_float(a) && Self::is_integer(b) => true,
             (
                 TypeKind::Array {
                     elem_ty: a_e,
@@ -1739,8 +2186,16 @@ impl Analyzer {
             (TypeKind::Ref { inner: a }, TypeKind::Ref { inner: b }) => {
                 self.types_compatible(&a.node, &b.node)
             }
-            (TypeKind::RawPtr { inner: a }, TypeKind::RawPtr { inner: b }) => {
-                self.types_compatible(&a.node, &b.node)
+            // All raw pointers are mutually compatible in unsafe code — C-style void* semantics.
+            // Dereference still requires unsafe {}, so the programmer is responsible.
+            (TypeKind::RawPtr { .. }, TypeKind::RawPtr { .. }) => true,
+            // Integer ↔ *T: enables null pointer constants (var p: *u8 = 0) and
+            // address literals (var p: *u8 = some_usize). Dereference still requires
+            // unsafe {}, so the programmer is responsible for correctness.
+            (a, TypeKind::RawPtr { .. }) | (TypeKind::RawPtr { .. }, a)
+                if Self::is_integer(a) =>
+            {
+                true
             }
             (TypeKind::RawPtr { .. }, TypeKind::Ref { .. })
             | (TypeKind::Ref { .. }, TypeKind::RawPtr { .. }) => true,
@@ -1750,7 +2205,33 @@ impl Analyzer {
             {
                 true
             }
-            _ => std::mem::discriminant(a) == std::mem::discriminant(b),
+            (
+                TypeKind::Fn {
+                    params: a_params,
+                    return_ty: a_ret,
+                },
+                TypeKind::Fn {
+                    params: b_params,
+                    return_ty: b_ret,
+                },
+            ) => {
+                a_params.len() == b_params.len()
+                    && a_params
+                        .iter()
+                        .zip(b_params.iter())
+                        .all(|(ap, bp)| self.types_compatible(&ap.node, &bp.node))
+                    && self.types_compatible(&a_ret.node, &b_ret.node)
+            }
+            // Named type ↔ dyn Trait: compatible if the type implements the trait.
+            (TypeKind::Named { name, .. }, TypeKind::Dyn { trait_name })
+            | (TypeKind::Dyn { trait_name }, TypeKind::Named { name, .. }) => self
+                .trait_impls
+                .get(name.as_str())
+                .map(|ts| ts.contains(trait_name.as_str()))
+                .unwrap_or(false),
+            // dyn A ↔ dyn A
+            (TypeKind::Dyn { trait_name: a }, TypeKind::Dyn { trait_name: b }) => a == b,
+            _ => std::mem::discriminant(&a) == std::mem::discriminant(&b),
         }
     }
 
@@ -1795,4 +2276,88 @@ fn type_contains_any(ty: &TypeKind) -> bool {
         TypeKind::Named { type_args, .. } => type_args.iter().any(|a| type_contains_any(&a.node)),
         _ => false,
     }
+}
+
+/// Substitute generic type parameters with concrete types.
+/// Replaces `Named(name, [])` when `name` is a key in `subst`.
+pub(super) fn substitute_type_kind(ty: &TypeKind, subst: &std::collections::HashMap<String, TypeKind>) -> TypeKind {
+    match ty {
+        TypeKind::Named { name, type_args } if type_args.is_empty() => {
+            if let Some(concrete) = subst.get(name) {
+                concrete.clone()
+            } else {
+                ty.clone()
+            }
+        }
+        TypeKind::Named { name, type_args } => {
+            let new_args: Vec<Type> = type_args.iter()
+                .map(|a| {
+                    let new_node = substitute_type_kind(&a.node, subst);
+                    Spanned::new(new_node, a.span)
+                })
+                .collect();
+            TypeKind::Named { name: name.clone(), type_args: new_args }
+        }
+        TypeKind::Ref { inner } => TypeKind::Ref {
+            inner: Box::new(Spanned::new(
+                substitute_type_kind(&inner.node, subst),
+                inner.span,
+            )),
+        },
+        TypeKind::RawPtr { inner } => TypeKind::RawPtr {
+            inner: Box::new(Spanned::new(
+                substitute_type_kind(&inner.node, subst),
+                inner.span,
+            )),
+        },
+        TypeKind::Array { elem_ty, len } => TypeKind::Array {
+            elem_ty: Box::new(Spanned::new(
+                substitute_type_kind(&elem_ty.node, subst),
+                elem_ty.span,
+            )),
+            len: *len,
+        },
+        TypeKind::Slice { elem_ty } => TypeKind::Slice {
+            elem_ty: Box::new(Spanned::new(
+                substitute_type_kind(&elem_ty.node, subst),
+                elem_ty.span,
+            )),
+        },
+        other => other.clone(),
+    }
+}
+
+/// Infer a type substitution by matching a param type (possibly containing generic params)
+/// against a concrete arg type. Binds generic param names → concrete types in `subst`.
+fn infer_type_subst(
+    param_ty: &TypeKind,
+    arg_ty: &TypeKind,
+    generic_params: &[String],
+    subst: &mut std::collections::HashMap<String, TypeKind>,
+) {
+    match param_ty {
+        TypeKind::Named { name, type_args } if type_args.is_empty() => {
+            if generic_params.contains(name) {
+                subst.entry(name.clone()).or_insert_with(|| arg_ty.clone());
+            }
+        }
+        TypeKind::Named { name: pname, type_args: pargs } => {
+            if let TypeKind::Named { name: aname, type_args: aargs } = arg_ty {
+                if pname == aname {
+                    for (pa, aa) in pargs.iter().zip(aargs.iter()) {
+                        infer_type_subst(&pa.node, &aa.node, generic_params, subst);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Build a mangled name for a monomorphized function: `fn_name.<type1>.<type2>`
+pub(crate) fn mangle_monomorphized(name: &str, type_args: &[TypeKind]) -> String {
+    let type_suffix: Vec<String> = type_args.iter()
+        .map(|t| format!("{}", t).replace(|c: char| !c.is_alphanumeric(), "_"))
+        .collect();
+    format!("{}<{}>", name, type_suffix.join(","))
 }

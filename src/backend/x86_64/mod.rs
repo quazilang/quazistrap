@@ -14,6 +14,7 @@ use object::write::Object;
 use crate::backend::target;
 use crate::backend::{Backend, BackendError, ObjectFormat, ObjectOutput, TargetSpec};
 use crate::bytecode::Chunk;
+use crate::semantic::SemanticReport;
 
 use encoder::FnEncoder;
 use relocations::write_reloc;
@@ -41,6 +42,7 @@ fn emit_native_object(
     target: &TargetSpec,
     output_format: ObjectFormat,
     entry_name: &[u8],
+    report: Option<&SemanticReport>,
 ) -> Result<ObjectOutput, BackendError> {
     let mut obj = Object::new(
         target.binary_format(),
@@ -123,6 +125,24 @@ fn emit_native_object(
     }
 
     section_acc.write_text(&mut obj, &text_bytes);
+
+    // Collect VtableAddr refs from all chunks; only emit vtables actually used.
+    let used_vtables: std::collections::HashSet<(String, String)> = chunks
+        .iter()
+        .flat_map(|c| c.constants.iter())
+        .filter_map(|e| {
+            if let crate::bytecode::chunk::ConstPoolEntry::VtableAddr(tn, tr) = e {
+                Some((tn.clone(), tr.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if let Some(rep) = report {
+        section_acc.build_vtables(&mut obj, &mut sym_table, rep, &fn_names, &used_vtables);
+    }
+
     let bin_fmt = target.binary_format();
 
     for (reloc, _) in all_relocs {
@@ -149,13 +169,23 @@ fn emit_native_object(
 }
 
 impl Backend for ElfBackend {
-    fn compile(&self, chunks: &[Chunk], target: &TargetSpec) -> Result<ObjectOutput, BackendError> {
-        emit_native_object(chunks, target, ObjectFormat::Elf, b"_start")
+    fn compile(
+        &self,
+        chunks: &[Chunk],
+        target: &TargetSpec,
+        report: Option<&SemanticReport>,
+    ) -> Result<ObjectOutput, BackendError> {
+        emit_native_object(chunks, target, ObjectFormat::Elf, b"_start", report)
     }
 }
 
 impl Backend for PeBackend {
-    fn compile(&self, chunks: &[Chunk], target: &TargetSpec) -> Result<ObjectOutput, BackendError> {
-        emit_native_object(chunks, target, ObjectFormat::PeCoff, b"mainCRTStartup")
+    fn compile(
+        &self,
+        chunks: &[Chunk],
+        target: &TargetSpec,
+        report: Option<&SemanticReport>,
+    ) -> Result<ObjectOutput, BackendError> {
+        emit_native_object(chunks, target, ObjectFormat::PeCoff, b"mainCRTStartup", report)
     }
 }

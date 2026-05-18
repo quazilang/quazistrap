@@ -5,13 +5,14 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::parser::ast::*;
+use crate::semantic::typecheck::substitute_type_kind;
 
 pub mod types;
 pub use types::*;
 mod borrow;
 mod declare;
 mod optimize;
-mod typecheck;
+pub(crate) mod typecheck;
 mod unused;
 
 // Private internal types used across sub-modules via `use super::*;`
@@ -24,8 +25,9 @@ pub(super) struct ExprEval {
 
 #[derive(Debug, Clone)]
 pub(super) struct EnumInfo {
-    pub(super) variants: HashMap<String, usize>, // variant → arity (payload count)
-    pub(super) order: Vec<String>,               // declaration order → discriminant index
+    pub(super) variants: HashMap<String, usize>,              // variant → arity (payload count)
+    pub(super) variant_fields: HashMap<String, Vec<TypeKind>>, // variant → field types
+    pub(super) order: Vec<String>,                             // declaration order → discriminant index
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +43,7 @@ pub(super) enum MatchArmKindInfo {
 pub(super) struct MatchArmInfo {
     pub(super) span: Span,
     pub(super) kind: MatchArmKindInfo,
+    pub(super) has_guard: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +84,8 @@ pub struct Analyzer {
     /// Character-index ranges in the merged source that belong to library files.
     /// Diagnostics whose span falls inside these ranges are suppressed.
     pub(super) library_char_ranges: Vec<std::ops::Range<usize>>,
+    /// Per-file source map for merged sources.
+    pub(super) source_files: Vec<SourceFile>,
     /// Function names that live in library (dependency) files.
     /// Set once from LoadResult; not reset between analyses.
     pub(super) library_fn_names: std::collections::HashSet<String>,
@@ -88,18 +93,29 @@ pub struct Analyzer {
     /// Used by tooling paths such as the LSP, where open-buffer analysis should not
     /// merge dependency source and shift user spans.
     pub(super) library_symbols: Vec<(String, Symbol)>,
-    /// Function names explicitly imported by leaf name (e.g. `import std.core.write`).
+    /// Function names explicitly imported by leaf name → full import path.
+    /// Empty string value = wildcard import (no conflict detection).
     /// Reset at the start of each analysis; populated during the declare pass.
-    pub(super) explicitly_imported_fns: std::collections::HashSet<String>,
+    pub(super) explicitly_imported_fns: std::collections::HashMap<String, String>,
     /// Struct field layouts: struct name → ordered list of (field_name, field_type).
     pub(super) struct_defs: HashMap<String, Vec<(String, TypeKind)>>,
+    /// Generic params per struct: struct name → ordered generic param names.
+    pub(super) struct_generic_params: HashMap<String, Vec<String>>,
     /// Derived traits: struct name → list of trait names from @derive.
     pub(super) derived_traits: HashMap<String, Vec<String>>,
     /// Trait implementations: type name → set of trait names explicitly implemented via `impl Trait for Type`.
     pub(super) trait_impls: HashMap<String, std::collections::HashSet<String>>,
+    /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
+    pub(super) trait_method_slots: HashMap<String, Vec<String>>,
     /// When type-checking an impl method, this holds the mangled name (e.g. "Counter.get")
     /// so that dependency edges use the mangled name rather than the bare method name.
     pub(super) current_fn_name_override: Option<String>,
+    /// Monomorphization requests recorded during type checking.
+    pub(super) monomorphizations: Vec<MonomorphizationInfo>,
+    /// Type aliases: alias name → (generic_params, aliased TypeKind).
+    pub(super) type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
+    /// Ordered parameter names per function: fn name (or mangled) → param names (excl. self).
+    pub(super) fn_param_names: HashMap<String, Vec<String>>,
 }
 
 pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
@@ -108,6 +124,131 @@ pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
 
 pub(super) fn extract_attribute_names(attributes: &[Attribute]) -> Vec<String> {
     attributes.iter().map(|a| a.name.clone()).collect()
+}
+
+/// Returns `true` if the item should be included on this host based on @cfg attributes.
+pub fn item_should_include(attributes: &[Attribute]) -> bool {
+    use crate::parser::ast::{AttrArg, AttrVal};
+    for attr in attributes {
+        if attr.name == "cfg" {
+            let mut matched = true;
+            for arg in &attr.args {
+                match arg {
+                    AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_os" => {
+                        if val.as_str() != std::env::consts::OS {
+                            matched = false;
+                        }
+                    }
+                    AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_arch" => {
+                        if val.as_str() != std::env::consts::ARCH {
+                            matched = false;
+                        }
+                    }
+                    AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_abi" => {
+                        #[cfg(target_os = "windows")]
+                        let host_abi = "win64";
+                        #[cfg(not(target_os = "windows"))]
+                        let host_abi = "sysv";
+                        if val.as_str() != host_abi {
+                            matched = false;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !matched {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Strip @cfg-disabled items and CfgBlock statements from a Program before analysis.
+/// Called once after loading; all subsequent passes see the clean AST.
+pub fn strip_cfg(program: &Program) -> Program {
+    fn strip_block(block: &Block) -> Block {
+        let mut stmts = Vec::new();
+        for stmt in &block.stmts {
+            match &stmt.node {
+                StmtKind::CfgBlock { condition, body } => {
+                    if item_should_include(std::slice::from_ref(condition)) {
+                        stmts.extend(strip_block(body).stmts);
+                    }
+                }
+                StmtKind::If { condition, then_block, else_block } => {
+                    stmts.push(Spanned::new(StmtKind::If {
+                        condition: condition.clone(),
+                        then_block: strip_block(then_block),
+                        else_block: else_block.as_ref().map(strip_block),
+                    }, stmt.span));
+                }
+                StmtKind::For { kind, body } => {
+                    stmts.push(Spanned::new(StmtKind::For {
+                        kind: kind.clone(),
+                        body: strip_block(body),
+                    }, stmt.span));
+                }
+                StmtKind::UnsafeBlock { body } => {
+                    stmts.push(Spanned::new(StmtKind::UnsafeBlock {
+                        body: strip_block(body),
+                    }, stmt.span));
+                }
+                _ => stmts.push(stmt.clone()),
+            }
+        }
+        Block { stmts, span: block.span }
+    }
+
+    fn strip_fn(node: &ItemKind) -> ItemKind {
+        match node {
+            ItemKind::Fn { name, return_ty, params, body, attributes, pub_fn, unsafe_fn, generic_params } => {
+                ItemKind::Fn {
+                    name: name.clone(),
+                    return_ty: return_ty.clone(),
+                    params: params.clone(),
+                    body: body.as_ref().map(strip_block),
+                    attributes: attributes.clone(),
+                    pub_fn: *pub_fn,
+                    unsafe_fn: *unsafe_fn,
+                    generic_params: generic_params.clone(),
+                }
+            }
+            other => other.clone(),
+        }
+    }
+
+    let mut items = Vec::new();
+    for item in &program.items {
+        let attrs: Option<&[Attribute]> = match &item.node {
+            ItemKind::Fn { attributes, .. }
+            | ItemKind::Struct { attributes, .. }
+            | ItemKind::Trait { attributes, .. }
+            | ItemKind::Enum { attributes, .. }
+            | ItemKind::TypeAlias { attributes, .. } => Some(attributes),
+            _ => None,
+        };
+        if attrs.is_some_and(|a| !item_should_include(a)) {
+            continue;
+        }
+        let node = match &item.node {
+            ItemKind::Impl { trait_ty, for_ty, methods } => {
+                let methods: Vec<Item> = methods.iter()
+                    .filter(|m| {
+                        if let ItemKind::Fn { attributes, .. } = &m.node {
+                            item_should_include(attributes)
+                        } else { true }
+                    })
+                    .map(|m| Spanned::new(strip_fn(&m.node), m.span))
+                    .collect();
+                ItemKind::Impl { trait_ty: trait_ty.clone(), for_ty: for_ty.clone(), methods }
+            }
+            ItemKind::Fn { .. } => strip_fn(&item.node),
+            other => other.clone(),
+        };
+        items.push(Spanned::new(node, item.span));
+    }
+    Program { items, span: program.span }
 }
 
 impl Analyzer {
@@ -137,13 +278,19 @@ impl Analyzer {
             unsafe_depth: 0,
             trait_depth: 0,
             library_char_ranges: Vec::new(),
+            source_files: Vec::new(),
             library_fn_names: std::collections::HashSet::new(),
             library_symbols: Vec::new(),
-            explicitly_imported_fns: std::collections::HashSet::new(),
+            explicitly_imported_fns: std::collections::HashMap::new(),
             struct_defs: HashMap::new(),
+            struct_generic_params: HashMap::new(),
             derived_traits: HashMap::new(),
             trait_impls: HashMap::new(),
+            trait_method_slots: HashMap::new(),
             current_fn_name_override: None,
+            monomorphizations: Vec::new(),
+            type_aliases: std::collections::HashMap::new(),
+            fn_param_names: HashMap::new(),
         }
     }
 
@@ -155,8 +302,20 @@ impl Analyzer {
         self.library_char_ranges = ranges;
     }
 
+    pub fn set_source_files(&mut self, files: Vec<SourceFile>) {
+        self.source_files = files;
+    }
+
     pub(super) fn is_library_span(&self, span: Span) -> bool {
         self.library_char_ranges.iter().any(|r| r.contains(&span.start))
+    }
+
+    pub(super) fn describe_span(&self, span: Span) -> String {
+        self.source_files
+            .iter()
+            .find(|file| file.contains(span))
+            .map(|file| file.label(span))
+            .unwrap_or_else(|| format!("{}:{}", span.line, span.col))
     }
 
     pub fn set_library_symbols(&mut self, symbols: Vec<(String, Symbol)>) {
@@ -244,7 +403,18 @@ impl Analyzer {
             lazy_import_hints,
             dead_functions,
             struct_defs: self.struct_defs.clone(),
+            struct_sizes: self.struct_defs.iter().map(|(name, fields)| {
+                let size = fields.len() * 8;
+                (name.clone(), size)
+            }).collect(),
+            struct_field_offsets: self.struct_defs.iter().map(|(name, fields)| {
+                let offsets: Vec<(String, usize)> = fields.iter().enumerate()
+                    .map(|(i, (fname, _))| (fname.clone(), i * 8))
+                    .collect();
+                (name.clone(), offsets)
+            }).collect(),
             trait_impls: self.trait_impls.clone(),
+            trait_method_slots: self.trait_method_slots.clone(),
             enum_defs: self.enums.iter()
                 .map(|(k, v)| {
                     let disc_map = v.order.iter()
@@ -254,6 +424,10 @@ impl Analyzer {
                     (k.clone(), disc_map)
                 })
                 .collect(),
+            struct_generic_params: self.struct_generic_params.clone(),
+            monomorphizations: std::mem::take(&mut self.monomorphizations),
+            type_aliases: self.type_aliases.clone(),
+            fn_param_names: self.fn_param_names.clone(),
         }
     }
 
@@ -283,10 +457,15 @@ impl Analyzer {
         self.unreachable_functions.clear();
         self.unsafe_depth = 0;
         self.trait_depth = 0;
-        self.explicitly_imported_fns.clear();
+        self.explicitly_imported_fns.clear(); // HashMap::clear
         self.struct_defs.clear();
+        self.struct_generic_params.clear();
         self.derived_traits.clear();
         self.trait_impls.clear();
+        self.trait_method_slots.clear();
+        self.monomorphizations.clear();
+        self.type_aliases.clear();
+        self.fn_param_names.clear();
         self.current_fn_name_override = None;
         self.init_builtins();
         self.init_library_symbols();
@@ -307,6 +486,7 @@ impl Analyzer {
             "Option".to_string(),
             EnumInfo {
                 variants: option_variants,
+                variant_fields: HashMap::new(), // generic T — resolved at call site
                 order: vec!["None".to_string(), "Some".to_string()], // None=0, Some=1
             },
         );
@@ -318,6 +498,7 @@ impl Analyzer {
             "Result".to_string(),
             EnumInfo {
                 variants: result_variants,
+                variant_fields: HashMap::new(), // generic T/E — resolved at call site
                 order: vec!["Err".to_string(), "Ok".to_string()], // Err=0, Ok=1
             },
         );
@@ -339,6 +520,7 @@ impl Analyzer {
                     attributes: Vec::new(),
                     public: true,
                     unsafe_fn: false,
+                    generic_params: vec![],
                 },
             );
         }
@@ -360,6 +542,7 @@ impl Analyzer {
                     attributes: Vec::new(),
                     public: true,
                     unsafe_fn: false,
+                    generic_params: vec![],
                 },
             );
         }
@@ -380,6 +563,7 @@ impl Analyzer {
                 attributes: Vec::new(),
                 public: true,
                 unsafe_fn: false,
+                generic_params: vec![],
             },
         );
     }
@@ -497,19 +681,21 @@ impl Analyzer {
                     symbol.span,
                     "S05",
                     format!(
-                        "import name conflict for '{}' (previous import at {}:{} [{}..{}])",
-                        name, prev.span.line, prev.span.col, prev.span.start, prev.span.end
+                        "import name conflict for '{}' (previous import at {})",
+                        name,
+                        self.describe_span(prev.span)
                     ),
                 );
                 return;
             }
 
+            let prev_location = self.describe_span(prev.span);
             self.push_error(
                 symbol.span,
                 "S05",
                 format!(
-                    "duplicate declaration '{}' (previous at {}:{} [{}..{}])",
-                    name, prev.span.line, prev.span.col, prev.span.start, prev.span.end
+                    "duplicate declaration '{}' (previous declaration at {})",
+                    name, prev_location
                 ),
             );
             return;
@@ -520,6 +706,54 @@ impl Analyzer {
             .last_mut()
             .expect("semantic analyzer must always have at least one scope");
         current_scope.insert(name, symbol);
+    }
+
+    /// Recursively expand type aliases in a TypeKind.
+    pub(super) fn resolve_type_aliases(&self, ty: &TypeKind) -> TypeKind {
+        match ty {
+            TypeKind::Named { name, type_args } => {
+                if let Some((generic_params, aliased)) = self.type_aliases.get(name) {
+                    // Substitute generic params if this alias has type args
+                    if type_args.is_empty() || generic_params.is_empty() {
+                        let resolved = self.resolve_type_aliases(aliased);
+                        return self.resolve_type_aliases(&resolved);
+                    }
+                    let mut map = std::collections::HashMap::new();
+                    for (gp, ta) in generic_params.iter().zip(type_args.iter()) {
+                        map.insert(gp.clone(), self.resolve_type_aliases(&ta.node));
+                    }
+                    let substituted = substitute_type_kind(aliased, &map);
+                    self.resolve_type_aliases(&substituted)
+                } else {
+                    TypeKind::Named {
+                        name: name.clone(),
+                        type_args: type_args.iter()
+                            .map(|t| Spanned::new(self.resolve_type_aliases(&t.node), t.span))
+                            .collect(),
+                    }
+                }
+            }
+            TypeKind::Ref { inner } => TypeKind::Ref {
+                inner: Box::new(Spanned::new(self.resolve_type_aliases(&inner.node), inner.span)),
+            },
+            TypeKind::RawPtr { inner } => TypeKind::RawPtr {
+                inner: Box::new(Spanned::new(self.resolve_type_aliases(&inner.node), inner.span)),
+            },
+            TypeKind::Array { elem_ty, len } => TypeKind::Array {
+                elem_ty: Box::new(Spanned::new(self.resolve_type_aliases(&elem_ty.node), elem_ty.span)),
+                len: *len,
+            },
+            TypeKind::Slice { elem_ty } => TypeKind::Slice {
+                elem_ty: Box::new(Spanned::new(self.resolve_type_aliases(&elem_ty.node), elem_ty.span)),
+            },
+            TypeKind::Fn { params, return_ty } => TypeKind::Fn {
+                params: params.iter().map(|p| {
+                    Spanned::new(self.resolve_type_aliases(&p.node), p.span)
+                }).collect(),
+                return_ty: Box::new(Spanned::new(self.resolve_type_aliases(&return_ty.node), return_ty.span)),
+            },
+            other => other.clone(),
+        }
     }
 
     pub(super) fn resolve_symbol(&self, name: &str) -> Option<Symbol> {
@@ -1033,7 +1267,7 @@ fn color_value(c: Color) i32 {
             report
                 .warnings
                 .iter()
-                .any(|w| w.message.contains("duplicate/unreachable match arm"))
+                .any(|w| w.message.contains("already covered"))
         );
     }
 
@@ -1853,5 +2087,163 @@ fn main() void { ret; }
             "duplicate impl method should produce error, got: {:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn type_alias_expands_at_call_site() {
+        let report = analyze(
+            r#"
+type Rune = u32;
+
+fn main() void {
+    var x: Rune = 42;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "type alias Rune = u32 should accept assignments: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn type_alias_rejects_wrong_type() {
+        let report = analyze(
+            r#"
+type Rune = u32;
+
+fn main() void {
+    var x: Rune = "hello";
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.message.contains("type mismatch")),
+            "type alias should enforce underlying type: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn function_name_used_as_value_has_fn_type() {
+        let report = analyze(
+            r#"
+fn add(a: i32, b: i32) i32 { ret a + b; }
+
+fn main() void {
+    var f: fn(i32, i32) i32 = add;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "function name as value should type-check: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn function_pointer_call_checks_arg_count() {
+        let report = analyze(
+            r#"
+fn add(a: i32, b: i32) i32 { ret a + b; }
+
+fn main() void {
+    var f: fn(i32, i32) i32 = add;
+    var x = f(1, 2);
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "calling function pointer should type-check: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn closure_expression_parses_and_typechecks() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var f = |x, y| x + y;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "closure expression should type-check without errors: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn closure_has_fn_type() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var f = |x| x + 1;
+    var g: fn(i32) i32 = f;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "closure should have fn(i32) i32 type: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn generic_struct_field_access_returns_substituted_type() {
+        let report = analyze(
+            r#"
+struct Pair[A, B] { first: A, second: B, }
+
+fn main() void {
+    var p: Pair[i32, str] = Pair { first: 1, second: "hi" };
+    var x: i32 = p.first;
+    var y: str = p.second;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "generic struct field access should type-check: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn generic_struct_field_wrong_type_is_error() {
+        let report = analyze(
+            r#"
+struct Box[T] { val: T, }
+
+fn main() void {
+    var b: Box[i32] = Box { val: 1 };
+    var s: str = b.val;
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.message.contains("type mismatch")),
+            "accessing i32 field as str should be an error: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn trait_method_slots_are_recorded() {
+        let report = analyze(
+            r#"
+trait Drawable { fn draw(self: str) void; fn area(self: str) i32; }
+fn main() void { }
+"#,
+        );
+        let slots = report.trait_method_slots.get("Drawable").expect("Drawable slots must exist");
+        assert_eq!(slots[0], "draw", "draw should be slot 0");
+        assert_eq!(slots[1], "area", "area should be slot 1");
     }
 }
