@@ -1,5 +1,10 @@
 // std.string — owned heap string (null-terminated, heap-allocated copy)
-import std.core;
+
+@intrinsic("void.strlen")
+fn __string_strlen(s: str) usize;
+
+@intrinsic("void.str_concat")
+fn __string_str_concat(s1: str, s2: str) str;
 
 pub struct String {
     data: str,
@@ -13,8 +18,8 @@ impl String {
     }
 
     pub fn from(s: str) String {
-        var n: usize = core.strlen(s);
-        var buf: str = core.str_concat(s, "");
+        var n: usize = __string_strlen(s);
+        var buf: str = __string_str_concat(s, "");
         ret String { data: buf, len: n, cap: n + 1 };
     }
 
@@ -31,8 +36,8 @@ impl String {
     }
 
     pub fn push_str(self: String, s: str) String {
-        var combined: str = core.str_concat(self.data, s);
-        var slen: usize = core.strlen(s);
+        var combined: str = __string_str_concat(self.data, s);
+        var slen: usize = __string_strlen(s);
         var new_len: usize = self.len + slen;
         ret String { data: combined, len: new_len, cap: new_len + 1 };
     }

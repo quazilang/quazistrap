@@ -7,7 +7,14 @@
 //   fn my_handler(info: PanicInfo) ! { ... }
 // The compiler replaces the default with your function automatically.
 
-import std.core;
+@intrinsic("void.write")
+fn __panic_write(fd: i32, buf: str, count: usize) isize;
+
+@intrinsic("void.strlen")
+fn __panic_strlen(s: str) usize;
+
+@intrinsic("void.exit")
+fn __panic_exit(code: i32) i32;
 
 pub struct PanicInfo {
     message: str,
@@ -20,13 +27,12 @@ impl PanicInfo {
 }
 
 pub fn __void_panic_handler(msg: str) ! {
-    core.write(2, "thread 'main' panicked: ", 24);
-    core.write(2, msg, core.strlen(msg));
-    core.write(2, "\n", 1);
-    core.exit(101);
+    __panic_write(2, "thread 'main' panicked: ", 24);
+    __panic_write(2, msg, __panic_strlen(msg));
+    __panic_write(2, "\n", 1);
+    __panic_exit(101);
 }
 
-@format
-pub fn panic(msg: str, ...args: any) ! {
+pub fn panic(msg: str, ...args: str) ! {
     __void_panic_handler(msg);
 }

@@ -1,6 +1,5 @@
 // std.result — Result[T, E] methods
 // Result[T, E] is a builtin enum: Ok(T) = tag 1, Err(E) = tag 0.
-import std.core;
 
 impl Result[T, E] {
     pub fn is_ok(self: Result[T, E]) bool {

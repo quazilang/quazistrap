@@ -1,0 +1,150 @@
+// std.net — TCP/IP networking
+// Cross-platform: Linux uses raw syscalls via unix.*, Windows @cfg pending.
+// Only 3 ops genuinely need intrinsics (require sockaddr_in construction or
+// null-pointer passing impossible to express in void code):
+//   void.net.bind_tcp, void.net.connect_tcp, void.net.accept_tcp
+// Everything else delegates to unix.socket / unix.listen / unix.write /
+// unix.read / unix.close which already exist as @syscall wrappers.
+import std.core;
+import std.unix;
+
+// ── Intrinsics (only ops that need C-struct construction) ─────────────────────
+
+// Bind a socket to 0.0.0.0:port (constructs sockaddr_in on stack, byte-swaps
+// port to big-endian). Returns 0 on success or negative errno.
+@intrinsic("void.net.bind_tcp")
+unsafe fn __net_bind_tcp(sockfd: i32, port: i32) i32;
+
+// Connect sockfd to ip_str:port (uses inet_pton + constructs sockaddr_in).
+// Returns 0 on success or negative errno.
+@intrinsic("void.net.connect_tcp")
+unsafe fn __net_connect_tcp(sockfd: i32, ip: str, port: i32) i32;
+
+// ── TcpStream ────────────────────────────────────────────────────────────────
+
+pub struct TcpStream {
+    fd: i32,
+}
+
+impl TcpStream {
+    // Connect to ip:port (dotted-decimal IPv4, e.g. "127.0.0.1").
+    // Returns Ok(TcpStream) or Err(errno as i32).
+    pub fn connect(ip: str, port: i32) Result[TcpStream, i32] {
+        var fd: i32 = 0;
+        unsafe { fd = unix.socket(2, 1, 0); }  // AF_INET=2, SOCK_STREAM=1
+        if (fd < 0) { ret Err(fd); }
+        var r: i32 = 0;
+        unsafe { r = __net_connect_tcp(fd, ip, port); }
+        if (r < 0) {
+            unsafe { unix.close(fd); }
+            ret Err(r);
+        }
+        ret Ok(TcpStream { fd: fd });
+    }
+
+    // Send the string s over the connection. Returns bytes sent or negative errno.
+    pub fn send(self: TcpStream, s: str) isize {
+        var r: isize = 0;
+        unsafe { r = unix.write(self.fd, s, core.strlen(s)); }
+        ret r;
+    }
+
+    // Send len bytes from buf. Returns bytes sent or negative errno.
+    pub fn send_bytes(self: TcpStream, buf: str, len: usize) isize {
+        var r: isize = 0;
+        unsafe { r = unix.write(self.fd, buf, len); }
+        ret r;
+    }
+
+    // Receive up to len bytes into buf. Returns bytes received or negative errno.
+    // 0 means the connection was closed by the peer.
+    pub fn recv(self: TcpStream, buf: str, len: usize) isize {
+        var r: isize = 0;
+        unsafe { r = unix.read(self.fd, buf, len); }
+        ret r;
+    }
+
+    // Close the connection.
+    pub fn close(self: TcpStream) void {
+        unsafe { unix.close(self.fd); }
+    }
+
+    // Returns the underlying socket file descriptor.
+    pub fn fd(self: TcpStream) i32 { ret self.fd; }
+}
+
+// ── TcpListener ──────────────────────────────────────────────────────────────
+
+pub struct TcpListener {
+    fd: i32,
+}
+
+impl TcpListener {
+    // Bind to 0.0.0.0:port and start listening (backlog 128).
+    // Returns Ok(TcpListener) or Err(errno as i32).
+    pub fn bind(port: i32) Result[TcpListener, i32] {
+        var fd: i32 = 0;
+        unsafe { fd = unix.socket(2, 1, 0); }  // AF_INET=2, SOCK_STREAM=1
+        if (fd < 0) { ret Err(fd); }
+        var r: i32 = 0;
+        unsafe { r = __net_bind_tcp(fd, port); }
+        if (r < 0) {
+            unsafe { unix.close(fd); }
+            ret Err(r);
+        }
+        unsafe { r = unix.listen(fd, 128); }
+        if (r < 0) {
+            unsafe { unix.close(fd); }
+            ret Err(r);
+        }
+        ret Ok(TcpListener { fd: fd });
+    }
+
+    // Accept the next incoming connection. Blocks until a client connects.
+    // Returns Ok(TcpStream) or Err(errno as i32).
+    pub fn accept(self: TcpListener) Result[TcpStream, i32] {
+        var client: i32 = 0;
+        unsafe { client = unix.accept(self.fd, 0, 0); }
+        if (client < 0) { ret Err(client); }
+        ret Ok(TcpStream { fd: client });
+    }
+
+    // Close the listener socket.
+    pub fn close(self: TcpListener) void {
+        unsafe { unix.close(self.fd); }
+    }
+
+    // Returns the underlying socket file descriptor.
+    pub fn fd(self: TcpListener) i32 { ret self.fd; }
+}
+
+// ── UdpSocket ────────────────────────────────────────────────────────────────
+
+pub struct UdpSocket {
+    fd: i32,
+}
+
+impl UdpSocket {
+    // Bind a UDP socket to 0.0.0.0:port for receiving.
+    // Returns Ok(UdpSocket) or Err(errno as i32).
+    pub fn bind(port: i32) Result[UdpSocket, i32] {
+        var fd: i32 = 0;
+        unsafe { fd = unix.socket(2, 2, 0); }  // AF_INET=2, SOCK_DGRAM=2
+        if (fd < 0) { ret Err(fd); }
+        var r: i32 = 0;
+        unsafe { r = __net_bind_tcp(fd, port); }
+        if (r < 0) {
+            unsafe { unix.close(fd); }
+            ret Err(r);
+        }
+        ret Ok(UdpSocket { fd: fd });
+    }
+
+    // Close the socket.
+    pub fn close(self: UdpSocket) void {
+        unsafe { unix.close(self.fd); }
+    }
+
+    // Returns the underlying file descriptor.
+    pub fn fd(self: UdpSocket) i32 { ret self.fd; }
+}

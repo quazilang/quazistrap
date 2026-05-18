@@ -1,0 +1,59 @@
+// std.fmt — string formatting
+import std.string;
+
+@intrinsic("void.strlen")
+fn __fmt_strlen(s: str) usize;
+
+@intrinsic("void.str.byte_at")
+fn __fmt_str_byte_at(s: str, i: usize) u8;
+
+@intrinsic("void.str.from_byte")
+fn __fmt_str_from_byte(b: u8) str;
+
+@intrinsic("void.str_concat")
+fn __fmt_str_concat(a: str, b: str) str;
+
+// Concatenate two strings. Returns heap-allocated null-terminated str.
+pub fn concat(a: str, b: str) str {
+    ret __fmt_str_concat(a, b);
+}
+
+// Format string with {} placeholders.
+// Args are pre-converted to str by the compiler at each call site — @format fns
+// (println, print, etc.) call coerce_to_display_str on each argument before passing.
+// Direct callers must pass str-typed args.
+pub fn format(template: str, ...args: str) str {
+    if (args.len() == 0) {
+        ret template;
+    }
+    var result = String.new();
+    var tlen: usize = __fmt_strlen(template);
+    var i: usize = 0;
+    var arg_idx: usize = 0;
+    var alen: usize = args.len();
+    for (i < tlen) {
+        var b: u8 = __fmt_str_byte_at(template, i);
+        if (b == 123) {
+            if (i + 1 < tlen) {
+                var next: u8 = __fmt_str_byte_at(template, i + 1);
+                if (next == 125) {
+                    if (arg_idx < alen) {
+                        result = result.push_str(args[arg_idx]);
+                        arg_idx++;
+                    }
+                    i += 2;
+                } else {
+                    result = result.push_str(__fmt_str_from_byte(b));
+                    i++;
+                }
+            } else {
+                result = result.push_str(__fmt_str_from_byte(b));
+                i++;
+            }
+        } else {
+            result = result.push_str(__fmt_str_from_byte(b));
+            i++;
+        }
+    }
+    ret result.as_str();
+}

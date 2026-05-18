@@ -1,6 +1,5 @@
 // std.option — Option[T] methods
 // Option[T] is a builtin enum: Some(T) = tag 1, None = tag 0.
-import std.core;
 
 impl Option[T] {
     pub fn is_some(self: Option[T]) bool {

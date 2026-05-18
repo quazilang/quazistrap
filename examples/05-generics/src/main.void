@@ -1,0 +1,39 @@
+import std.io.println;
+
+fn max[T](a: T, b: T) T {
+    if (a > b) { ret a; }
+    ret b;
+}
+
+fn min[T](a: T, b: T) T {
+    if (a < b) { ret a; }
+    ret b;
+}
+
+fn clamp[T](val: T, lo: T, hi: T) T {
+    ret max[T](min[T](val, hi), lo);
+}
+
+fn swap[T](a: T, b: T) T {
+    ret b;
+}
+
+fn identity[T](x: T) T {
+    ret x;
+}
+
+fn main() i32 {
+    println("max(3, 7)        = {}", max[i32](3, 7));
+    println("min(3, 7)        = {}", min[i32](3, 7));
+    println("clamp(15, 0, 10) = {}", clamp[i32](15, 0, 10));
+    println("clamp(-5, 0, 10) = {}", clamp[i32](-5, 0, 10));
+    println("clamp(5, 0, 10)  = {}", clamp[i32](5, 0, 10));
+
+    println("max(1.5, 2.7)    = {}", max[f64](1.5, 2.7));
+    println("min(1.5, 2.7)    = {}", min[f64](1.5, 2.7));
+
+    println("identity(42)     = {}", identity[i32](42));
+    println("identity(true)   = {}", identity[bool](true));
+
+    ret 0;
+}

@@ -79,3 +79,12 @@ pub fn int_to_str(n: i64) str;
 // Convert f64 to heap-allocated decimal string. Caller must free with core.free.
 @intrinsic("void.float_to_str")
 pub fn float_to_str(f: f64) str;
+
+// Return the byte at index i in s (no bounds check — caller ensures i < strlen(s)).
+@intrinsic("void.str.byte_at")
+pub fn str_byte_at(s: str, i: usize) u8;
+
+// Allocate a 2-byte heap buffer containing byte b followed by '\0', returned as str.
+// Useful for building strings byte-by-byte. Caller must free with core.free.
+@intrinsic("void.str.from_byte")
+pub fn str_from_byte(b: u8) str;

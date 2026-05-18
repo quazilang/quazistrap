@@ -81,6 +81,23 @@ pub trait Write {
     fn writelnf(self: Self, s: str) void;
 }
 
+// ── Display impls for primitives ─────────────────────────────────────────────
+
+impl Display for i8   { pub fn to_str(self: i8)   str { ret self.to_string(); } pub fn to_string(self: i8)   str { ret self.to_string(); } }
+impl Display for i16  { pub fn to_str(self: i16)  str { ret self.to_string(); } pub fn to_string(self: i16)  str { ret self.to_string(); } }
+impl Display for i32  { pub fn to_str(self: i32)  str { ret self.to_string(); } pub fn to_string(self: i32)  str { ret self.to_string(); } }
+impl Display for i64  { pub fn to_str(self: i64)  str { ret self.to_string(); } pub fn to_string(self: i64)  str { ret self.to_string(); } }
+impl Display for u8   { pub fn to_str(self: u8)   str { ret self.to_string(); } pub fn to_string(self: u8)   str { ret self.to_string(); } }
+impl Display for u16  { pub fn to_str(self: u16)  str { ret self.to_string(); } pub fn to_string(self: u16)  str { ret self.to_string(); } }
+impl Display for u32  { pub fn to_str(self: u32)  str { ret self.to_string(); } pub fn to_string(self: u32)  str { ret self.to_string(); } }
+impl Display for u64  { pub fn to_str(self: u64)  str { ret self.to_string(); } pub fn to_string(self: u64)  str { ret self.to_string(); } }
+impl Display for isize { pub fn to_str(self: isize) str { ret self.to_string(); } pub fn to_string(self: isize) str { ret self.to_string(); } }
+impl Display for usize { pub fn to_str(self: usize) str { ret self.to_string(); } pub fn to_string(self: usize) str { ret self.to_string(); } }
+impl Display for f32  { pub fn to_str(self: f32)  str { ret self.to_string(); } pub fn to_string(self: f32)  str { ret self.to_string(); } }
+impl Display for f64  { pub fn to_str(self: f64)  str { ret self.to_string(); } pub fn to_string(self: f64)  str { ret self.to_string(); } }
+impl Display for bool { pub fn to_str(self: bool) str { ret self.to_string(); } pub fn to_string(self: bool) str { ret self.to_string(); } }
+impl Display for str  { pub fn to_str(self: str)  str { ret self; }            pub fn to_string(self: str)  str { ret self; } }
+
 // ── Operator overloading ──────────────────────────────────────────────────────
 pub trait Add[T] { fn add(rhs: T) T; }
 pub trait Sub[T] { fn sub(rhs: T) T; }

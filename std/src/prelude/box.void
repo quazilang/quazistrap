@@ -1,11 +1,16 @@
 // std.box — heap-allocated smart pointer Box[T]
-import std.core;
 
 @intrinsic("void.array.store")
 fn __box_write(base: *u8, idx: usize, val: usize) void;
 
 @intrinsic("void.array.load")
 fn __box_read(base: *u8, idx: usize) usize;
+
+@intrinsic("void.malloc")
+unsafe fn __box_malloc(size: usize) *u8;
+
+@intrinsic("void.free")
+unsafe fn __box_free(ptr: *u8) void;
 
 pub struct Box[T] {
     ptr: *u8,
@@ -14,7 +19,7 @@ pub struct Box[T] {
 impl Box[T] {
     pub fn new(val: T) Box[T] {
         var p: *u8;
-        unsafe { p = core.malloc(8); }
+        unsafe { p = __box_malloc(8); }
         __box_write(p, 0, val);
         ret Box { ptr: p };
     }
@@ -24,6 +29,6 @@ impl Box[T] {
     }
 
     pub fn free(self: Box[T]) void {
-        unsafe { core.free(self.ptr); }
+        unsafe { __box_free(self.ptr); }
     }
 }
