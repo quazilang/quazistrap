@@ -1,6 +1,6 @@
-import std.core;
+import std.io;
 
 fn main() i32 {
-    core.write(1, "Hello, world!\n", 14);
+    io.println("Hello, world!\n");
     ret 0;
 }

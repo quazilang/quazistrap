@@ -41,6 +41,14 @@ impl Color {
             b: (self.b + other.b) / 2,
         };
     }
+	
+	fn invert(self: Color) Color {
+		ret Color {
+			r: 255-self.r,
+			g: 255-self.g,
+			b: 255-self.b,
+		};
+	}
 }
 
 fn main() i32 {
@@ -58,7 +66,10 @@ fn main() i32 {
     var red   = Color.new(255, 0, 0);
     var blue  = Color.new(0, 0, 255);
     var mixed = red.blend(blue);
+	var white = Color.new(255,255,255);
+	var black = white.invert();
     println("red + blue = rgb({}, {}, {})", mixed.r, mixed.g, mixed.b);
+	println("white = rgb({},{},{}); inverted = rgb({},{},{}) (black)", white.r, white.g, white.b, black.r, black.g, black.b);
 
     ret 0;
 }

@@ -1,6 +1,4 @@
 import std.io.println;
-import std.option;
-import std.result;
 
 fn divide(a: i32, b: i32) Option[i32] {
     if (b == 0) { ret Option.None; }
@@ -14,19 +12,19 @@ enum Shape {
 }
 
 fn area(s: Shape) f64 {
-    match s {
+    ret match s {
         Shape.Circle(r)    => r * r * 3.14159,
         Shape.Rect(w, h)   => w * h,
         Shape.Triangle(b, h) => b * h * 0.5,
-    }
+    };
 }
 
 fn describe(s: Shape) str {
-    match s {
+    ret match s {
         Shape.Circle(_)    => "circle",
         Shape.Rect(_, _)   => "rectangle",
         Shape.Triangle(_, _) => "triangle",
-    }
+    };
 }
 
 fn main() i32 {

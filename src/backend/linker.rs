@@ -98,6 +98,7 @@ impl LinkerInvocation {
             Os::Linux => {
                 args.push("--gc-sections".into());
                 args.push("--build-id=none".into());
+                args.push("--strip-all".into());
                 args.push("-o".into());
                 args.push(self.output.as_os_str().into());
                 args.push(self.object.as_os_str().into());
@@ -121,6 +122,7 @@ impl LinkerInvocation {
                 args.push(self.object.as_os_str().into());
                 args.push("/subsystem:console".into());
                 args.push("/entry:mainCRTStartup".into());
+                args.push("/debug:none".into());
                 args.push("/OPT:REF,ICF".into()); // dead-strip + fold identical functions
                 args.push("/MERGE:.rdata=.text".into()); // fold rodata into text — saves 512B PE alignment
                 args.push("kernel32.lib".into()); // ExitProcess
@@ -197,7 +199,7 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
-        assert!(!args.contains(&"--strip-all".to_string()));
+        assert!(args.contains(&"--strip-all".to_string()));
         assert!(args.contains(&"--gc-sections".to_string()));
         assert!(args.contains(&"--build-id=none".to_string()));
         assert!(args.windows(2).any(|pair| pair == ["-z", "noseparate-code"]));

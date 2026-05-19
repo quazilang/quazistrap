@@ -109,14 +109,25 @@ fn emit_native_object(
 
         obj.add_symbol(object::write::Symbol {
             name: entry_name.to_vec(),
-            value: stub_offset as u64,
-            size: stub.bytes.len() as u64,
+            value: (stub_offset + stub.start_offset) as u64,
+            size: (stub.bytes.len() - stub.start_offset) as u64,
             kind: object::SymbolKind::Text,
             scope: object::SymbolScope::Linkage,
             weak: false,
             section: object::write::SymbolSection::Section(section_acc.text_id),
             flags: object::SymbolFlags::None,
         });
+
+        for (name, offset_in_stub, size) in &stub.extra_symbols {
+            sym_table.define_function(
+                &mut obj,
+                section_acc.text_id,
+                name,
+                (stub_offset + offset_in_stub) as u64,
+                *size as u64,
+                true,
+            );
+        }
 
         for reloc in stub.relocs {
             all_relocs.push((reloc, None));

@@ -10,6 +10,13 @@ use crate::semantic::SemanticReport;
 
 use super::symbols::SymbolTable;
 
+pub(super) const CRASH_MSG: &[u8] =
+    b"fatal: process received signal\nnote: run with VOID_TRACE=1 for a stack trace\n";
+
+// Windows crash handler format string (sprintf with %08X + %016llX).
+pub(super) const CRASH_FMT_WIN: &[u8] =
+    b"fatal: exception 0x%08X\nfault: 0x%016llX\nrip: 0x%016llX\nnote: run with VOID_TRACE=1 for a stack trace\n\0";
+
 fn safe_label(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -46,6 +53,24 @@ impl SectionAccumulator {
         sym_table: &mut SymbolTable,
         chunks: &[Chunk],
     ) -> Vec<Vec<Option<String>>> {
+        // Always emit — referenced by crash handler stub regardless of user code.
+        let crash_offset = obj.append_section_data(self.rodata_id, CRASH_MSG, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_crash_msg",
+            crash_offset,
+            CRASH_MSG.len() as u64,
+        );
+        let crash_fmt_offset = obj.append_section_data(self.rodata_id, CRASH_FMT_WIN, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_crash_fmt",
+            crash_fmt_offset,
+            CRASH_FMT_WIN.len() as u64,
+        );
+
         let needs_fmt_ld = chunks.iter().any(|c| {
             c.code.iter().any(|i| {
                 i.opcode == Opcode::PrimToStr as u8
