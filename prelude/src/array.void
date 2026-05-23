@@ -1,6 +1,6 @@
-// std.collections.array — safe generic dynamic array backed by heap memory
+// prelude.array — safe generic dynamic array backed by heap memory
 import std.core;
-import std.traits;
+import traits;
 
 // Internal: write val into base[idx * 8]. @intrinsic bypasses S12.
 @intrinsic("void.array.store")

@@ -1,0 +1,7 @@
+@intrinsic("void.write")
+pub fn write(fd: i32, buf: str, count: usize) isize;
+
+fn main() i32 {
+    write(1,"Hello, World!\n",14);
+    ret 0;
+}

@@ -1,0 +1,60 @@
+// prelude.panic — panic and panic handler
+//
+// Default: prints "thread 'main' panicked at '<msg>'\n  at <file>:<line>\n" to stderr and exits 101.
+//
+// Override the handler by defining a function with @panic_handler:
+//   @panic_handler
+//   fn my_handler(info: PanicInfo) ! { ... }
+// The compiler replaces the default with your function automatically.
+
+import std.core;
+
+@intrinsic("void.write")
+fn __panic_write(fd: i32, buf: str, count: usize) isize;
+
+@intrinsic("void.strlen")
+fn __panic_strlen(s: str) usize;
+
+@intrinsic("void.exit")
+fn __panic_exit(code: i32) i32;
+
+@intrinsic("void.print_backtrace")
+fn __void_print_backtrace() void;
+
+pub struct PanicInfo {
+    message: str,
+    file: str,
+    line: usize,
+}
+
+impl PanicInfo {
+    pub fn message(self: PanicInfo) str {
+        ret self.message;
+    }
+
+    pub fn file(self: PanicInfo) str {
+        ret self.file;
+    }
+
+    pub fn line(self: PanicInfo) usize {
+        ret self.line;
+    }
+}
+
+pub fn __void_panic_handler(info: PanicInfo) ! {
+    __panic_write(2, "thread 'main' panicked at '", 27);
+    __panic_write(2, info.message, __panic_strlen(info.message));
+    __panic_write(2, "'\n  at ", 7);
+    __panic_write(2, info.file, __panic_strlen(info.file));
+    __panic_write(2, ":", 1);
+    var line_str: str = core.int_to_str(info.line);
+    __panic_write(2, line_str, __panic_strlen(line_str));
+    __panic_write(2, "\n", 1);
+    __void_print_backtrace();
+    __panic_write(2, "\n", 1);
+    __panic_exit(101);
+}
+
+pub fn panic(msg: str, file: str, line: usize, ...args: str) ! {
+    __void_panic_handler(PanicInfo { message: msg, file: file, line: line });
+}

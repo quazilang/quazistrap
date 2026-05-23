@@ -11,6 +11,15 @@ use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
 use crate::semantic::{ConstValue, DependencyKind, SemanticReport};
 
+/// Find the source file path for a given span.
+fn source_file_for_span(span: Span, source_files: &[SourceFile]) -> String {
+    source_files
+        .iter()
+        .find(|sf| sf.contains(span))
+        .map(|sf| sf.path.clone())
+        .unwrap_or_else(|| "<unknown>".to_string())
+}
+
 /// Derive module name from a span's source file (e.g. "unix" from "std/src/unix.void").
 /// For "mod.void", uses the parent directory name (e.g. "prelude" from "prelude/mod.void").
 fn module_name_for_span(span: Span, source_files: &[SourceFile]) -> Option<String> {
@@ -52,6 +61,7 @@ pub struct Codegen<'a> {
     str_variadic_fns: HashSet<String>,
     /// Variadic @intrinsic functions: call with coerced args directly (no pre-format step).
     variadic_intrinsic_fns: HashSet<String>,
+    source_files: Vec<SourceFile>,
 }
 
 impl<'a> Codegen<'a> {
@@ -89,10 +99,12 @@ impl<'a> Codegen<'a> {
             variadic_fn_info,
             str_variadic_fns: HashSet::new(),
             variadic_intrinsic_fns: HashSet::new(),
+            source_files: Vec::new(),
         }
     }
 
     pub fn compile_program(&mut self, program: &Program, source_files: &[SourceFile]) -> Vec<Chunk> {
+        self.source_files = source_files.to_vec();
         // Pre-pass: collect str_variadic fns, variadic @intrinsic, and @panic_handler names.
         let mut user_panic_handler: Option<String> = None;
         for item in &program.items {
@@ -833,6 +845,7 @@ impl<'a> Codegen<'a> {
             next_closure_idx,
             type_subst,
             &self.report.fn_param_names,
+            &self.source_files,
         );
         for p in params {
             if p.variadic {
@@ -1031,6 +1044,7 @@ struct FnCompiler<'a> {
     type_subst: HashMap<String, TypeKind>,
     /// Ordered parameter names per function: used to resolve named arguments at call sites.
     fn_param_names: &'a HashMap<String, Vec<String>>,
+    source_files: &'a [SourceFile],
 }
 
 impl<'a> FnCompiler<'a> {
@@ -1055,6 +1069,7 @@ impl<'a> FnCompiler<'a> {
         next_closure_idx: &'a mut u16,
         type_subst: HashMap<String, TypeKind>,
         fn_param_names: &'a HashMap<String, Vec<String>>,
+        source_files: &'a [SourceFile],
     ) -> Self {
         Self {
             chunk: Chunk::with_params(name, param_count),
@@ -1079,6 +1094,7 @@ impl<'a> FnCompiler<'a> {
             closure_env_regs: HashSet::new(),
             type_subst,
             fn_param_names,
+            source_files,
         }
     }
 
@@ -1621,16 +1637,111 @@ impl<'a> FnCompiler<'a> {
                                 self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
                                 self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
                             } else {
-                                // Non-slice iterator (placeholder — not yet fully implemented).
-                                let r_iter = self.compile_expr(expr);
-                                for var in vars.iter() {
-                                    self.bind(var.clone());
-                                }
+                                // Non-slice iterator: call has_next() / next() protocol.
+                                let iter_reg = self.compile_expr(expr);
+                                let iter_key = (expr.span.start, expr.span.end);
+                                let iter_ty = self.type_of_span(iter_key);
+
+                                // Bind loop variable.
+                                let loop_var = vars.first().map(|s| s.as_str()).unwrap_or("_");
+                                let r_val = self.bind(loop_var.to_string());
+
                                 let loop_top = self.chunk.len() as u16;
-                                let jump_exit = self.chunk.emit(ri16(Opcode::Jz, r_iter, 0));
+
+                                // Call has_next()
+                                let r_has_next = self.alloc_reg();
+                                match &iter_ty {
+                                    Some(TypeKind::Named { name, type_args }) => {
+                                        let base = format!("{}.has_next", name);
+                                        let mangled = if type_args.is_empty() {
+                                            base.clone()
+                                        } else {
+                                            let type_kinds: Vec<TypeKind> =
+                                                type_args.iter().map(|t| t.node.clone()).collect();
+                                            crate::semantic::typecheck::mangle_monomorphized(
+                                                &base, &type_kinds,
+                                            )
+                                        };
+                                        let target = if self.fn_index.contains_key(&mangled) {
+                                            mangled
+                                        } else {
+                                            base
+                                        };
+                                        self.emit_call_by_name(&target, &[iter_reg], r_has_next);
+                                    }
+                                    Some(TypeKind::Dyn { trait_name }) => {
+                                        if let Some(slots) = self.trait_method_slots.get(trait_name) {
+                                            let slot_idx = slots.iter().position(|m| m == "has_next").unwrap_or(0) as u8;
+                                            let vtbl_ptr = self.alloc_reg();
+                                            self.chunk.emit(rrr(Opcode::FieldLoad, vtbl_ptr, iter_reg, 8));
+                                            let fn_ptr = self.alloc_reg();
+                                            self.chunk.emit(rrr(Opcode::VtblLoad, fn_ptr, vtbl_ptr, slot_idx));
+                                            let data_ptr = self.alloc_reg();
+                                            self.chunk.emit(rrr(Opcode::FieldLoad, data_ptr, iter_reg, 0));
+                                            self.chunk.emit(rrr(Opcode::CallArg, data_ptr, 0, 0));
+                                            self.chunk.emit(rrr(Opcode::CallReg, r_has_next, fn_ptr, 0));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+
+                                // Exit if no more elements.
+                                let jump_exit = self.chunk.emit(ri16(Opcode::Jz, r_has_next, 0));
+
+                                // Call next()
+                                let r_next_opt = self.alloc_reg();
+                                match &iter_ty {
+                                    Some(TypeKind::Named { name, type_args }) => {
+                                        let base = format!("{}.next", name);
+                                        let mangled = if type_args.is_empty() {
+                                            base.clone()
+                                        } else {
+                                            let type_kinds: Vec<TypeKind> =
+                                                type_args.iter().map(|t| t.node.clone()).collect();
+                                            crate::semantic::typecheck::mangle_monomorphized(
+                                                &base, &type_kinds,
+                                            )
+                                        };
+                                        let target = if self.fn_index.contains_key(&mangled) {
+                                            mangled
+                                        } else {
+                                            base
+                                        };
+                                        self.emit_call_by_name(&target, &[iter_reg], r_next_opt);
+                                    }
+                                    Some(TypeKind::Dyn { trait_name }) => {
+                                        if let Some(slots) = self.trait_method_slots.get(trait_name) {
+                                            let slot_idx = slots.iter().position(|m| m == "next").unwrap_or(0) as u8;
+                                            let vtbl_ptr = self.alloc_reg();
+                                            self.chunk.emit(rrr(Opcode::FieldLoad, vtbl_ptr, iter_reg, 8));
+                                            let fn_ptr = self.alloc_reg();
+                                            self.chunk.emit(rrr(Opcode::VtblLoad, fn_ptr, vtbl_ptr, slot_idx));
+                                            let data_ptr = self.alloc_reg();
+                                            self.chunk.emit(rrr(Opcode::FieldLoad, data_ptr, iter_reg, 0));
+                                            self.chunk.emit(rrr(Opcode::CallArg, data_ptr, 0, 0));
+                                            self.chunk.emit(rrr(Opcode::CallReg, r_next_opt, fn_ptr, 0));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+
+                                // Unwrap Option[T]: check discriminant (tag 1 = Some).
+                                let r_tag = self.alloc_reg();
+                                self.chunk.emit(rrr(Opcode::FieldLoad, r_tag, r_next_opt, ENUM_DISCRIM_OFFSET));
+                                let r_one = self.alloc_reg();
+                                self.chunk.emit(ri16(Opcode::MovI, r_one, 1));
+                                self.chunk.emit(rrr(Opcode::Cmp, 0, r_tag, r_one));
+                                let jump_none = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
+                                self.chunk.emit(rrr(Opcode::FieldLoad, r_val, r_next_opt, ENUM_PAYLOAD_OFFSET));
+
+                                // Loop body.
                                 self.compile_block(body);
                                 self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
-                                self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
+
+                                // Exit (shared by has_next=false and next=None).
+                                let exit_pos = self.chunk.len() as u16;
+                                self.chunk.patch_jump(jump_exit, exit_pos);
+                                self.chunk.patch_jump(jump_none, exit_pos);
                             }
                         }
                     },
@@ -2081,6 +2192,62 @@ impl<'a> FnCompiler<'a> {
                         merged_owned = self.merge_named_args(name, args, named_args);
                         &merged_owned
                     };
+                    // Panic calls: inject file/line constants from the call site span.
+                    if name == "panic" {
+                        let mut call_regs: Vec<u8> = Vec::new();
+                        // Compile msg arg (first user-provided fixed arg).
+                        if !args.is_empty() {
+                            call_regs.push(self.compile_expr(&args[0]));
+                        } else {
+                            let r = self.alloc_reg();
+                            self.chunk.emit(ri16(Opcode::MovI, r, 0));
+                            call_regs.push(r);
+                        }
+                        // Inject file path string constant.
+                        let file_path = source_file_for_span(expr.span, self.source_files);
+                        let file_idx = self.chunk.add_constant(ConstPoolEntry::Str(file_path));
+                        let file_reg = self.alloc_reg();
+                        self.chunk.emit(ri16(Opcode::MovConst, file_reg, file_idx));
+                        call_regs.push(file_reg);
+                        // Inject line number as integer constant (relative to source file).
+                        let line = self.source_files
+                            .iter()
+                            .find(|sf| sf.contains(expr.span))
+                            .map(|sf| sf.line_col(expr.span).0 as i64)
+                            .unwrap_or(expr.span.line as i64);
+                        let line_idx = self.chunk.add_constant(ConstPoolEntry::Int(line));
+                        let line_reg = self.alloc_reg();
+                        self.chunk.emit(ri16(Opcode::MovConst, line_reg, line_idx));
+                        call_regs.push(line_reg);
+                        // Compile remaining user args as variadic.
+                        let var_args = &args[1..];
+                        let (r_ptr, r_len) = if var_args.is_empty() {
+                            let rp = self.alloc_reg();
+                            self.chunk.emit(ri16(Opcode::MovI, rp, 0));
+                            let rl = self.alloc_reg();
+                            self.chunk.emit(ri16(Opcode::MovI, rl, 0));
+                            (rp, rl)
+                        } else {
+                            let var_regs: Vec<u8> =
+                                var_args.iter().map(|a| self.compile_expr(a)).collect();
+                            let first_slot = self.next_reg;
+                            for &r in &var_regs {
+                                let slot = self.alloc_reg();
+                                if r != slot {
+                                    self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
+                                }
+                            }
+                            let rp = self.alloc_reg();
+                            self.chunk.emit(mem_lea(first_slot, rp, 0));
+                            let rl = self.alloc_reg();
+                            self.chunk.emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
+                            (rp, rl)
+                        };
+                        call_regs.push(r_ptr);
+                        call_regs.push(r_len);
+                        self.emit_call_by_name(name, &call_regs, dst);
+                        return dst;
+                    }
                     // Monomorphized generic function: resolve to mangled name.
                     if !type_args.is_empty() {
                         if let Some(mono_name) = self.resolve_monomorphized_name(name, type_args) {
@@ -2841,6 +3008,7 @@ impl<'a> FnCompiler<'a> {
                     &mut temp_idx,
                     self.type_subst.clone(),
                     self.fn_param_names,
+                    self.source_files,
                 );
                 if captures.is_empty() {
                     // No-capture: r0 = env_ptr (ignored), user params at r1+.
@@ -3172,6 +3340,7 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> u16 {
         // String primitives needed to implement format in void
         m.insert("void.str.byte_at", 23);
         m.insert("void.str.from_byte", 24);
+        m.insert("void.print_backtrace", 25);
         m
     });
     let name = attr

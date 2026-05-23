@@ -10,12 +10,13 @@ use crate::semantic::SemanticReport;
 
 use super::symbols::SymbolTable;
 
-pub(super) const CRASH_MSG: &[u8] =
-    b"fatal: process received signal\nnote: run with VOID_TRACE=1 for a stack trace\n";
-
-// Windows crash handler format string (sprintf with %08X + %016llX).
-pub(super) const CRASH_FMT_WIN: &[u8] =
-    b"fatal: exception 0x%08X\nfault: 0x%016llX\nrip: 0x%016llX\nnote: run with VOID_TRACE=1 for a stack trace\n\0";
+// Windows crash handler strings.
+pub(super) const CRASH_HEADER: &[u8]  = b"== CRASHED ==\n";
+pub(super) const FATAL_EXC: &[u8]     = b"fatal: exception 0x";
+pub(super) const FAULT_PREFIX: &[u8]  = b"fault: 0x";
+pub(super) const RIP_PREFIX: &[u8]    = b"rip: 0x";
+pub(super) const TRACE_HINT: &[u8]    = b"use VOID_TRACE=1 to see full stack trace\n";
+pub(super) const ENV_VAR_NAME: &[u8]  = b"VOID_TRACE\0";
 
 fn safe_label(name: &str) -> String {
     name.chars()
@@ -53,22 +54,104 @@ impl SectionAccumulator {
         sym_table: &mut SymbolTable,
         chunks: &[Chunk],
     ) -> Vec<Vec<Option<String>>> {
-        // Always emit — referenced by crash handler stub regardless of user code.
-        let crash_offset = obj.append_section_data(self.rodata_id, CRASH_MSG, 1);
+        // Windows crash handler strings
+        let hdr_offset = obj.append_section_data(self.rodata_id, CRASH_HEADER, 1);
         sym_table.define_data(
             obj,
             self.rodata_id,
-            "__void_crash_msg",
-            crash_offset,
-            CRASH_MSG.len() as u64,
+            "__void_crash_header",
+            hdr_offset,
+            CRASH_HEADER.len() as u64,
         );
-        let crash_fmt_offset = obj.append_section_data(self.rodata_id, CRASH_FMT_WIN, 1);
+        let fatal_exc_offset = obj.append_section_data(self.rodata_id, FATAL_EXC, 1);
         sym_table.define_data(
             obj,
             self.rodata_id,
-            "__void_crash_fmt",
-            crash_fmt_offset,
-            CRASH_FMT_WIN.len() as u64,
+            "__void_fatal_exc",
+            fatal_exc_offset,
+            FATAL_EXC.len() as u64,
+        );
+        let fault_offset = obj.append_section_data(self.rodata_id, FAULT_PREFIX, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_fault",
+            fault_offset,
+            FAULT_PREFIX.len() as u64,
+        );
+        let rip_offset = obj.append_section_data(self.rodata_id, RIP_PREFIX, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_rip",
+            rip_offset,
+            RIP_PREFIX.len() as u64,
+        );
+        let hint_offset = obj.append_section_data(self.rodata_id, TRACE_HINT, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_trace_hint",
+            hint_offset,
+            TRACE_HINT.len() as u64,
+        );
+        let env_offset = obj.append_section_data(self.rodata_id, ENV_VAR_NAME, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_env_var_name",
+            env_offset,
+            ENV_VAR_NAME.len() as u64,
+        );
+
+        // Linux enhanced crash/panic handler strings
+        let proc_offset = obj.append_section_data(self.rodata_id, b"/proc/self/environ\0", 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_proc_self_environ",
+            proc_offset,
+            19,
+        );
+        let fatal_offset = obj.append_section_data(self.rodata_id, b"fatal: signal 0x ", 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_fatal_sig",
+            fatal_offset,
+            16,
+        );
+        let at_addr_offset = obj.append_section_data(self.rodata_id, b" at address 0x", 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_at_addr",
+            at_addr_offset,
+            14,
+        );
+        let bt_prefix_offset = obj.append_section_data(self.rodata_id, b"stack backtrace:\n", 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_bt_prefix",
+            bt_prefix_offset,
+            17,
+        );
+        let at_0x_offset = obj.append_section_data(self.rodata_id, b"  at 0x", 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_at_0x",
+            at_0x_offset,
+            7,
+        );
+        let nl_offset = obj.append_section_data(self.rodata_id, b"\n", 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__void_nl",
+            nl_offset,
+            1,
         );
 
         let needs_fmt_ld = chunks.iter().any(|c| {
@@ -173,6 +256,13 @@ impl SectionAccumulator {
         sym_table: &mut SymbolTable,
         chunks: &[Chunk],
     ) -> Vec<Vec<Option<String>>> {
+        // Hex buffer for crash handler inline formatting (16 bytes for 64-bit addr).
+        let hex_offset = obj.append_section_data(self.data_id, &[0u8; 16], 1);
+        sym_table.define_data(obj, self.data_id, "__void_hex_buf", hex_offset, 16);
+        // Trace-enable flag (set by _start when VOID_TRACE=1).
+        let trace_offset = obj.append_section_data(self.data_id, &[0u8], 1);
+        sym_table.define_data(obj, self.data_id, "__void_trace_enabled", trace_offset, 1);
+
         chunks
             .iter()
             .map(|chunk| {

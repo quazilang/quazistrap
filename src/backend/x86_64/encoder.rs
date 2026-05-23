@@ -1314,6 +1314,12 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rax));
                         emit!(asm.pop(rbx));
                     }
+                    25 => {
+                        // void.print_backtrace() → void
+                        call_ext!("__void_print_backtrace".into(), RelocKind::Plt32);
+                        emit!(asm.xor(rax, rax));
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     _ => {
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
@@ -1605,10 +1611,10 @@ impl<'a> FnEncoder<'a> {
             }
 
             _ => {
-                // Unimplemented: NewObj, Move, Drop, Dup, Spawn,
-                // AtomicAdd, AtomicCas, StrConcat, and any unknown opcode.
-                emit!(asm.xor(rax, rax));
-                emit!(asm.mov(slot(0), rax));
+                panic!(
+                    "encoder: unimplemented opcode {:?}",
+                    Opcode::from_u8(instr.opcode)
+                );
             }
         }
 

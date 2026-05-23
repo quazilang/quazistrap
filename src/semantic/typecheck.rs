@@ -1732,6 +1732,16 @@ impl Analyzer {
         } else {
             substituted_params.len()
         };
+        // Special case: panic() — codegen injects file/line hidden args after msg.
+        // User writes panic("msg") or panic("msg", "extra"); we type-check as if
+        // the signature were panic(msg: str, ...args: str).
+        let is_panic = name == "panic";
+        let effective_non_variadic_count = if is_panic { 1 } else { non_variadic_count };
+        let effective_variadic_elem = if is_panic {
+            substituted_params.first()
+        } else {
+            substituted_params.last()
+        };
         // Use total arg count (positional + named, reflected in arg_evals).
         let total_arg_count = arg_evals.len();
         if !is_variadic && substituted_params.len() != total_arg_count {
@@ -1740,19 +1750,24 @@ impl Analyzer {
                 "S08",
                 format!("expected {} args, got {}", substituted_params.len(), total_arg_count),
             );
-        } else if is_variadic && total_arg_count < non_variadic_count {
+        } else if is_variadic && total_arg_count < effective_non_variadic_count {
             self.push_error(
                 callee_span,
                 "S08",
                 format!(
                     "expected at least {} args, got {}",
-                    non_variadic_count,
+                    effective_non_variadic_count,
                     total_arg_count
                 ),
             );
         } else {
             // Type-check non-variadic args.
-            for (i, (param_ty, arg_ty)) in substituted_params[..non_variadic_count]
+            let check_count = if is_panic {
+                1usize.min(substituted_params.len())
+            } else {
+                non_variadic_count
+            };
+            for (i, (param_ty, arg_ty)) in substituted_params[..check_count]
                 .iter()
                 .zip(arg_evals.iter().map(|e| &e.ty))
                 .enumerate()
@@ -1770,15 +1785,16 @@ impl Analyzer {
             }
             // Variadic args checked against the element type.
             if is_variadic {
-                if let Some(elem_ty) = substituted_params.last() {
-                    for (i, arg_ty) in arg_evals[non_variadic_count..]
+                if let Some(elem_ty) = effective_variadic_elem {
+                    let var_start = effective_non_variadic_count;
+                    for (i, arg_ty) in arg_evals[var_start..]
                         .iter()
                         .map(|e| &e.ty)
                         .enumerate()
                     {
                         if let Some(at) = arg_ty {
                             if !self.types_compatible(elem_ty, at) {
-                                let span = args.get(non_variadic_count + i).map(|a| a.span).unwrap_or(callee_span);
+                                let span = args.get(var_start + i).map(|a| a.span).unwrap_or(callee_span);
                                 self.push_error(
                                     span,
                                     "S08",

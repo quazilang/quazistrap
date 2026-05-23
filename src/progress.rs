@@ -72,9 +72,10 @@ fn short_label(path: &Path, lib_prefix: Option<&Path>) -> String {
             let parts: Vec<String> = no_ext
                 .components()
                 .map(|c| c.as_os_str().to_str().unwrap_or("?").to_string())
+                .filter(|c| c != "src" && c != "mod")
                 .collect();
             if !parts.is_empty() {
-                return format!("std.{}", parts.join("."));
+                return parts.join(".");
             }
         }
     }

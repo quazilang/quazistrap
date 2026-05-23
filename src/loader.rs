@@ -77,19 +77,17 @@ pub fn load_programs_with_resolver(
 ) -> Result<LoadResult, String> {
     // First pass: lenient — only checks for @no_std, skips import errors.
     let initial = collect_sources(entries, resolver, false)?;
-    if sources_contain_no_std(&initial.sources) {
-        return finalize_sources(initial);
-    }
 
-    // Second pass: strict — std resolver available, errors on unresolved imports.
-    let resolver_with_std = resolver_with_builtin_std(resolver);
-    let effective_resolver = resolver_with_std.as_ref().or(resolver);
+    // Build resolver that always includes both prelude and std.
+    // @no_std does not disable prelude or std; both are always available.
+    let effective_resolver = resolver_with_builtin_modules(resolver, true);
 
-    // Auto-inject std prelude before user entries (as a library file).
+    // Auto-inject prelude before user entries (as a library file).
     let prelude_path: Option<PathBuf> = effective_resolver
-        .and_then(|r| r.modules.get("std"))
+        .as_ref()
+        .and_then(|r| r.modules.get("prelude"))
         .and_then(|spec| {
-            let mod_void = spec.src_dir.join("prelude").join("mod.void");
+            let mod_void = spec.src_dir.join("mod.void");
             if mod_void.exists() {
                 return Some(mod_void);
             }
@@ -97,7 +95,7 @@ pub fn load_programs_with_resolver(
             if flat.exists() { Some(flat) } else { None }
         });
 
-    collect_sources_with_prelude(entries, effective_resolver, prelude_path.as_deref(), true)
+    collect_sources_with_prelude(entries, effective_resolver.as_ref(), prelude_path.as_deref(), true)
         .and_then(finalize_sources)
 }
 
@@ -392,13 +390,27 @@ fn char_offset_to_byte(src: &str, char_offset: usize) -> usize {
         .unwrap_or(src.len())
 }
 
-fn resolver_with_builtin_std(resolver: Option<&ModuleResolver>) -> Option<ModuleResolver> {
-    let std_spec = builtin_std_module_spec()?;
+fn resolver_with_builtin_modules(
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+) -> Option<ModuleResolver> {
     let mut combined = resolver.cloned().unwrap_or_default();
-    if !combined.modules.contains_key("std") {
-        combined.modules.insert("std".to_string(), std_spec);
+
+    if let Some(prelude_spec) = builtin_prelude_module_spec() {
+        combined.modules.entry("prelude".to_string()).or_insert(prelude_spec);
     }
-    Some(combined)
+
+    if include_std {
+        if let Some(std_spec) = builtin_std_module_spec() {
+            combined.modules.entry("std".to_string()).or_insert(std_spec);
+        }
+    }
+
+    if combined.modules.is_empty() {
+        None
+    } else {
+        Some(combined)
+    }
 }
 
 fn builtin_std_module_spec() -> Option<ModuleSpec> {
@@ -410,6 +422,22 @@ fn builtin_std_module_spec() -> Option<ModuleSpec> {
     }
     Some(ModuleSpec {
         name: "std".to_string(),
+        root,
+        src_dir,
+        entry,
+        version: None,
+    })
+}
+
+fn builtin_prelude_module_spec() -> Option<ModuleSpec> {
+    let root = find_builtin_prelude_root()?;
+    let src_dir = root.join("src");
+    let entry = src_dir.join("mod.void");
+    if !entry.exists() {
+        return None;
+    }
+    Some(ModuleSpec {
+        name: "prelude".to_string(),
         root,
         src_dir,
         entry,
@@ -442,6 +470,36 @@ fn find_builtin_std_root() -> Option<PathBuf> {
 
     let cwd_path = std::env::current_dir().ok()?.join("std");
     if cwd_path.join("src").join("core.void").exists() {
+        return Some(cwd_path);
+    }
+
+    None
+}
+
+fn find_builtin_prelude_root() -> Option<PathBuf> {
+    if let Ok(root) = std::env::var("VOID_PRELUDE_ROOT") {
+        let path = PathBuf::from(root);
+        if path.join("src").join("mod.void").exists() {
+            return Some(path);
+        }
+    }
+
+    for home_var in &["HOME", "USERPROFILE"] {
+        if let Ok(home) = std::env::var(home_var) {
+            let home_path = PathBuf::from(home).join(".void").join("prelude");
+            if home_path.join("src").join("mod.void").exists() {
+                return Some(home_path);
+            }
+        }
+    }
+
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("prelude");
+    if manifest_path.join("src").join("mod.void").exists() {
+        return Some(manifest_path);
+    }
+
+    let cwd_path = std::env::current_dir().ok()?.join("prelude");
+    if cwd_path.join("src").join("mod.void").exists() {
         return Some(cwd_path);
     }
 
@@ -979,12 +1037,13 @@ mod tests {
     }
 
     #[test]
-    fn std_prelude_directory_exports_resolve_as_std_modules() {
+    fn prelude_directory_exports_resolve_as_modules() {
         let root = temp_dir("void_loader_prelude_exports");
         let main_path = root.join("main.void");
+        // Prelude contents are auto-imported; explicit module path uses prelude.* prefix.
         fs::write(
             &main_path,
-            "import std.fmt.format;\nfn main() void { ret; }",
+            "import prelude.fmt.format;\nfn main() void { ret; }",
         )
         .expect("write main.void");
 
@@ -993,16 +1052,16 @@ mod tests {
             result
                 .library_file_paths
                 .iter()
-                .any(|p| p.ends_with(Path::new("prelude").join("fmt.void"))),
-            "expected std/src/prelude/fmt.void to be loaded, got {:?}",
+                .any(|p| p.ends_with(Path::new("prelude").join("src").join("fmt.void"))),
+            "expected prelude/src/fmt.void to be loaded, got {:?}",
             result.library_file_paths
         );
         assert!(
             result
                 .library_file_paths
                 .iter()
-                .any(|p| p.ends_with(Path::new("prelude").join("string.void"))),
-            "expected std/src/prelude/string.void to be loaded as fmt dependency, got {:?}",
+                .any(|p| p.ends_with(Path::new("prelude").join("src").join("string.void"))),
+            "expected prelude/src/string.void to be loaded as fmt dependency, got {:?}",
             result.library_file_paths
         );
 
@@ -1043,18 +1102,34 @@ mod tests {
     }
 
     #[test]
-    fn no_std_disables_std_injection() {
+    fn no_std_keeps_prelude_and_std_resolver() {
         let root = temp_dir("void_loader_no_std");
         let main_path = root.join("main.void");
         fs::write(&main_path, "@no_std\nfn main() void { ret; }").expect("write main.void");
 
         let result = load_programs(&[main_path]).expect("load programs");
         assert!(
-            result.library_file_paths.is_empty(),
-            "expected no std library files, got {:?}",
+            !result.library_file_paths.is_empty(),
+            "expected prelude library files, got {:?}",
             result.library_file_paths
         );
-        assert!(result.library_fn_names.is_empty());
+        assert!(
+            result
+                .library_file_paths
+                .iter()
+                .any(|p| p.ends_with(Path::new("prelude").join("src").join("mod.void"))),
+            "expected prelude/src/mod.void to be loaded, got {:?}",
+            result.library_file_paths
+        );
+        // std is still available for imports even with @no_std.
+        assert!(
+            result
+                .library_file_paths
+                .iter()
+                .any(|p| p.ends_with(Path::new("std").join("src").join("core.void"))),
+            "expected std/src/core.void to be loaded as prelude dependency, got {:?}",
+            result.library_file_paths
+        );
 
         let _ = fs::remove_dir_all(root);
     }

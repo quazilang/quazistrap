@@ -1,0 +1,9 @@
+import std.io;
+
+fn main() {
+    io.println("triggering crash...");
+    unsafe {
+        var p: *i32 = 0;
+        *p = 42;
+    }
+}

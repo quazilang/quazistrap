@@ -1,5 +1,5 @@
 // std.fmt — string formatting
-import std.string;
+import string;
 
 @intrinsic("void.strlen")
 fn __fmt_strlen(s: str) usize;

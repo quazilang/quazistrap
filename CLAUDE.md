@@ -12,11 +12,13 @@ void build <file> [-b|-c] [-o out] [-r] [-s] [--linker path]
 void run / void check / void fmt / void clean
 void new <name> [--lib] / void init [--lib]
 void debug [-b]
+void lsp
 ```
 
 Output: `<stem>.vbc` (bytecode), `<stem>.o` (object), `<stem>`/`<stem>.exe` (binary).  
 `.vbc` as input: skips frontend, goes straight to backend.  
 Linker: `VOID_LINKER` env → `ld.lld` → `mold` → `ld` (Linux/macOS); `lld-link` → `link` (Windows).  
+`void build myprog.o` — planned built-in linker path (P1).  
 Rust edition 2024.
 
 ## Architecture
@@ -38,9 +40,9 @@ VBC (`-b`): Codegen → serialized chunks, no backend. Object (`-c`): backend on
 - `type = "lib"` → lib project; default entry `src/lib.void`; default output `.vbc`.
 
 ### Lexer (`src/lexer/`)
-- `&&`/`||` not dedicated tokens — synthesized by parser via `match_and_and()`/`match_or_or()`.
-- Generics use `[T]` square brackets. `pub` silently consumed (no effect).
-- `TokenKind::While` exists but is **not** handled in `parse_stmt` — use `for (cond) {}` instead.
+- `&&`/`||` synthesized by parser via `match_and_and()`/`match_or_or()`.
+- Generics use `[T]` square brackets.
+- `TokenKind::While` exists but is **not handled** — `for (cond) {}` is the only while-like loop.
 
 ### Parser (`src/parser/`)
 - `ast.rs`: all nodes are `Spanned<T>`. Two `Span` types; `to_ast_span` converts.
@@ -50,14 +52,15 @@ VBC (`-b`): Codegen → serialized chunks, no backend. Object (`-c`): backend on
 - Closure: `|params| expr` — `Pipe` in primary position. Params are bare idents (no type).
 - Fn pointer type: `fn(T, U) V` — greedy return type via `peek_is_type_start()`.
 - Variadics: `...args: T` in param list; inside fn body `args` is `Slice[T]` with `.len()`.
+- Pattern matching: wildcard, bind, literal, variant, **guards** (`pat if expr =>`).
 
 ### Semantic (`src/semantic/`)
 Five sequential passes:
 1. **Declare** — register fns, structs, traits, enums, imports. `@cfg`-disabled items skipped.
 2. **Typecheck** — scope, inference, compatibility, init checks, expression annotations.
 3. **Unused** — W01 unused var, W02 unused param, W03 unused fn/import.
-4. **Dead code** — reachability, W04 unreachable after return.
-5. **Optimize** — inline candidates, const folding, math identity reduction, lazy import hints.
+4. **Dead code** — reachability, W04 unreachable after return. (Merged into `unused.rs`.)
+5. **Optimize** — inline candidates, const folding, math identity reduction, lazy import hints, exhaustiveness checking.
 
 **`types_compatible` rules:**
 - `Any` ↔ everything.
@@ -70,9 +73,14 @@ Five sequential passes:
 - `Dyn { a }` ↔ `Dyn { b }` — compatible if `a == b`.
 
 **Warning suppression**: `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)`.  
-**`@cfg` evaluation**: `target_os`, `target_arch`, `target_abi` evaluated against `std::env::consts`. Applied in: declare pass (fn/impl methods), typecheck CfgBlock, unused CfgBlock.
+**`@cfg` evaluation**: `target_os`, `target_arch`, `target_abi` evaluated against `std::env::consts`. Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 
-**Borrow checker** (`borrow.rs`): move semantics for Named types (structs/enums). S10 = use-after-move / move-in-loop. `reassign_targets` set suppresses move-in-loop for `x = x.method()` patterns (value immediately re-owned).
+**Borrow checker** (`borrow.rs`): move semantics for Named types (structs/enums). S10 = use-after-move / move-in-loop. `reassign_targets` set suppresses move-in-loop for `x = x.method()` patterns (value immediately re-owned). No reference lifetimes yet.
+
+**`pub` visibility:**
+- **Functions**: enforced. Private fn imported cross-module emits S04 error.
+- **Structs, traits, enums, type aliases**: parsed but hardcoded `public: false`; not enforced.
+- **Re-exports**: `pub_import` stored but not read.
 
 ### Bytecode (`src/bytecode/`)
 VBC — platform-independent, AOT-only. **6 bytes/instruction**: `[opcode u8][operands 4B][flags u8]`.
@@ -107,11 +115,12 @@ Key: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_alloc_size(
 - Fn-name as value: `MovConst(FnAddr(name))`. Variable callee: `CallArg*+CallReg`.
 - Closure: `__void_closure_N` chunk; captures detected via `capture_ident_names`; env struct heap-allocated; fn ptr at `ENUM_DISCRIM_OFFSET`, captures at `ENUM_PAYLOAD_OFFSET+i*8`; hidden env ptr in r0 on call.
 - **Monomorphization**: top-level fn `id[T]` call → `id<i32>` mangled chunk. Impl method `Box[i32].get` → mangled `Box.get<i32>` chunk. Pre-pass searches both `ItemKind::Fn` and `ItemKind::Impl`. `struct_generic_params` in `SemanticReport` maps struct name → param names for subst. Mangled format: `name<type1,type2>`.
-- **Struct mono MethodCall**: receiver type `Named { type_args }` → mangle call target; falls back to unmangled if mangled not in fn_index.
+- **Struct mono MethodCall**: receiver type `Named { type_args }` → mangle call target; falls back to unmangled if mangled not in `fn_index`.
 - Intrinsic dispatch: `INTRINSIC_MAP` HashMap; array ops via `INTRINSIC_OPCODE_MAP` HashMap.
-- **Pattern matching**: `PatternKind` = `Wildcard | Bind(String) | Literal(LiteralValue) | Variant { enum_name, variant, sub_patterns }`. `compile_pattern_match` recurses into sub_patterns. String literal match: StrLen fast-path + byte loop via intrinsic ID 23 (consecutive regs required: r_a, r_a+1).
+- **Pattern matching**: `PatternKind` = `Wildcard | Bind(String) | Literal(LiteralValue) | Variant { enum_name, variant, sub_patterns }`. `compile_pattern_match` recurses into sub_patterns. String literal match: `StrLen` fast-path + byte loop via intrinsic ID 23 (consecutive regs required: r_a, r_a+1).
 - **Format specs**: `extract_format_specs(template)` parses `{:spec}` at compile time → `Vec<String>`. `strip_format_specs` rewrites `{:spec}` → `{}` for runtime `format()`. `coerce_with_spec(reg, spec, span)` applies int/float specs → extended `PrimToStr` tags. str_variadic fns use spec-aware coercion per arg slot.
-- **dyn Trait**: `coerce_to_dyn(obj_reg, type_name, trait_name)` allocates 16-byte fat pointer — `fat[0]=concrete_ptr`, `fat[8]=vtable_ptr` (via `MovConst(VtableAddr)`). MethodCall on `Dyn` receiver: `FieldLoad fat[8]→vtbl_ptr`, `VtblLoad vtbl_ptr[slot]→fn_ptr`, `FieldLoad fat[0]→data_ptr`, `CallArg*+CallReg`.
+- **`dyn Trait`**: `coerce_to_dyn(obj_reg, type_name, trait_name)` allocates 16-byte fat pointer — `fat[0]=concrete_ptr`, `fat[8]=vtable_ptr` (via `MovConst(VtableAddr)`). MethodCall on `Dyn` receiver: `FieldLoad fat[8]→vtbl_ptr`, `VtblLoad vtbl_ptr[slot]→fn_ptr`, `FieldLoad fat[0]→data_ptr`, `CallArg*+CallReg`.
+- **Non-slice iterator** (`ForLoop::Each` on non-slice): placeholder — emits broken infinite-loop fallback (P0 fix).
 
 ### Regalloc (`src/bytecode/regalloc.rs`)
 Two passes run on each chunk after inline expansion:
@@ -125,7 +134,7 @@ Key: `Ret` has `ops[0]` = return-value register (remapped by `remap_instr_regs`;
 src/backend/
 ├── mod.rs         # Backend trait, select_backend()
 ├── target.rs      # TargetSpec { arch, os, abi, emit_start }
-├── linker.rs      # find + exec linker
+├── linker.rs      # find + exec external linker
 └── x86_64/
     ├── encoder.rs # FnEncoder: Chunk → (bytes, PendingReloc[])
     ├── sections.rs / symbols.rs / relocations.rs / start.rs
@@ -134,19 +143,26 @@ src/backend/
 **Calling conventions**: SysV (Linux/macOS): `rdi,rsi,rdx,rcx,r8,r9`→`rax`. Win64: `rcx,rdx,r8,r9`→`rax`; args 5-6 at `[rsp+32/40]`.  
 **VBC reg N** → `[rbp-(N+1)*8]`. Frame: `round_to_16(regs*8)` SysV, `round_to_16(regs*8+48)` Win64.  
 **Relocs**: `Plt32` (calls), `Pc32` (RIP-relative data). Addend always `-4`.  
-**Encoder**: emits dummy `call fn_start` / `lea rax,[fn_start]`, records pending relocs, zeros displacement bytes after assembly.  
-**Implemented**: `New` (calloc), `FieldLoad/Store`, `VtblLoad`, `CallReg`. `NewObj` = placeholder.
+**Encoder**: emits dummy `call fn_start` / `lea rax,[fn_start]`, records pending relocs, zeros displacement bytes after assembly.
 
 **Entry stubs** (no CRT needed):
-- Linux `_start`: `xor rbp,rbp` → `call main` → `mov rdi,rax; mov rax,60; syscall`
-- Windows `mainCRTStartup`: `sub rsp,40` → `call main` → `mov rcx,rax; call ExitProcess`
+- Linux `_start`: `xor rbp,rbp` → zero sigaction struct → register handlers for `SIGSEGV`, `SIGABRT`, `SIGFPE`, `SIGBUS` → `call main` → `mov rdi,rax; mov rax,60; syscall`
+- Windows `mainCRTStartup`: `sub rsp,40` → `AddVectoredExceptionHandler` → `call main` → `ExitProcess`
+
+**Crash handler** (Linux): SA_SIGINFO signal handler. Prints signal number, fault address, and RIP as hex. Checks `__void_trace_enabled`; if set, calls `__void_print_backtrace` (RBP chain walk, up to 16 frames). Windows handler still prints fixed format string (enhancement pending).
+
+**Panic handler**: `PanicInfo` carries `message`, `file`, `line`. `__void_panic_handler` prints all three, then calls `__void_print_backtrace()` (intrinsic ID 25) before exiting 101. `panic("msg")` call sites get `file`/`line` injected by codegen.
+
+**`VOID_TRACE=1` detection**: Linux `_start` reads `/proc/self/environ` and searches for `VOID_TRACE=1`, setting `__void_trace_enabled` byte in `.data`. |
+
+**Encoder silent fallback** (`encoder.rs:1607–1612`): unimplemented opcodes (`NewObj`, `Move`, `Drop`, `Dup`, `Spawn`, `AtomicAdd`, `AtomicCas`, `StrConcat`) emit `xor rax,rax; mov slot(0), rax` — produces wrong code instead of crashing.
 
 **Target support**:
 | OS | Format | ABI | Status |
 |----|--------|-----|--------|
 | Linux x86-64 | ELF64 | SysV | Full |
 | Windows x86-64 | PE/COFF | Win64 | Full (needs `lld-link` + `LIB`) |
-| macOS x86-64 | Mach-O | SysV | Partial |
+| macOS x86-64 | ~~Mach-O~~ ELF | SysV | Broken — `select_backend()` maps macOS to `ElfBackend`, `emit_start: false`, no Mach-O relocations |
 
 ## Unsafe System
 
@@ -179,6 +195,7 @@ trait Bar[T] { fn method(x: T) T; }
 impl Bar[i32] for Foo[i32] { fn method(x: i32) i32 { ret x; } }
 enum Option[T] { Some(T), None, }
 match value { Some(v) => v, Option.None => 0, _ => default, }
+match value { Some(v) if v > 0 => v, _ => 0, }   // guards supported
 
 var f: fn(i32, i32) i32 = |x, y| x + y;   // closure
 var g: fn() i32 = my_func;                  // fn-name as value
@@ -187,13 +204,12 @@ fn takes_cb(cb: fn(i32) i32, v: i32) i32 { ret cb(v); }
 
 **Named arguments**: `foo(x=1, y=2)` — `name=value` pairs at call site. All positional args must precede named args. Named args resolved to param position at compile time; unknown name or position conflict = S09 error.
 
-Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`, `bool`, `str`, `void`, `any`.  
-**`while` keyword exists in lexer but is NOT parsed** — use `for (cond) {}` (`ForLoop::Cond`).
+Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`, `bool`, `str`, `void`, `any`.
 
 ## String Model
 
 - `str` / `&str` — interchangeable. Immutable, valid UTF-8, fat pointer internally.
-- `String` — owned heap string (`ptr+len+cap`). RAII.
+- `String` — owned heap string (`ptr+len+cap`). RAII (manual `free` currently required; no auto-drop).
 - `Rune = u32` — Unicode codepoint. `RuneIterator` iterates UTF-8 codepoints.
 
 Key API: `s.len()→StrLen`, `s.to_string()→PrimToStr`, `s.as_str()→StrAsStr`, `s.parse[i32]()→StrToInt`, `s.parse[f64]()→StrToFloat`.
@@ -206,21 +222,22 @@ Source-based `.void` files, merged at compile time.
 |--------|--------|-------|
 | `core` | Done | write, read, exit, malloc/free/realloc, memcpy/set/move/cmp, strlen, str_concat, int_to_str, float_to_str, str_byte_at, str_from_byte |
 | `io` | Done | println, print, eprintln, eprint, read_line — str_variadic (auto-coerces args) |
-| `fmt` | Done | `format(template, ...args: str) str` — pure void, `{}` placeholders, byte-by-byte parsing |
-| `string` | Done | String: new, push, push_str, len, as_str, bytes |
-| `panic` | Done | PanicInfo, __void_panic_handler, panic |
+| `fmt` | Done | `format(template, ...args: str) str` — pure void, `{}` placeholders, byte-by-byte parsing; spec-aware coercion (`{:x}`, `{:o}`, `{:.Nf}`) |
+| `string` | Done | `String`: new, push, push_str, len, as_str, bytes |
+| `panic` | Done | PanicInfo {message,file,line}, __void_panic_handler, panic. Codegen injects hidden `file`/`line` args at call sites. Typechecker special-cases `panic` to accept 1+ user args. |
 | `result` | Done | ok/is_ok/is_err/unwrap/unwrap_err/unwrap_or; `?` operator |
 | `option` | Done | is_some/is_none/unwrap/unwrap_or; `?` operator |
-| `box` | Done | Box[T]: new, get, set |
-| `traits` | Partial | Display, Debug, Clone, Copy, Drop, Iterator defined |
-| `prelude/mod.void` | Done | re-exports String, Box, option, result, traits, fmt, panic |
-| `collections/vec` | WIP | push, get, len, iteration |
-| `collections/map` | WIP | insert, get, contains |
+| `box` | Done | `Box[T]`: new, get, set, free |
+| `traits` | Done | Display, Debug, Clone, Copy, Drop, Iterator, Eq, Ord, Hash, Default, Into, From, Index, Write, Add/Sub/Mul/Div/Rem/Neg/BitAnd/BitOr/BitXor/Shl/Shr |
+| `prelude/mod.void` | Done | re-exports String, Box, Array, option, result, traits, fmt, panic. Prelude is **always** auto-injected; `@no_std` only disables `std`. |
+| `collections/array` | Done | `Array[T]`: push, get, len, free, from, Index impl |
+| `collections/map` | Done | open-addressing hash map with tombstones |
+| `collections/set` | Done | open-addressing hash set |
 | `unix` | Done | raw syscall wrappers |
 | `windows` | Done | Win32 API wrappers |
 | `fs` | Done | File open/create/read/write/close/seek/sync/truncate/exists/remove/mkdir/rmdir/rename/chmod |
-| `net` | Done | TcpListener, TcpStream, UdpSocket. 2 intrinsics: bind_tcp (20), connect_tcp (21). accept/send/recv/close via unix.* |
-| `os` | Done | exit, sleep, yield_cpu, getpid/ppid, getenv, cwd (via unix.getcwd), kill, umask |
+| `net` | Done | TcpListener, TcpStream, UdpSocket. 2 intrinsics: bind_tcp (20), connect_tcp (21) |
+| `os` | Done | exit, sleep, yield_cpu, getpid/ppid, getenv, cwd, kill, umask |
 | `thread` | Done | spawn/join. 2 intrinsics: thread_spawn (18), thread_join (19). No-capture only. |
 
 **Active `@intrinsic` dispatch** (encoder case IDs):
@@ -232,6 +249,7 @@ Source-based `.void` files, merged at compile time.
 | `void.net.connect_tcp` | 21 | inet_pton + connect |
 | `void.str.byte_at` | 23 | `movzx rax, byte[rax+rcx]` — byte at index |
 | `void.str.from_byte` | 24 | malloc 2 bytes, write byte+null, return ptr |
+| `void.print_backtrace` | 25 | `call __void_print_backtrace` — walks RBP chain (max 16 frames) when `__void_trace_enabled` is set |
 | `void.array.store` | — | ArrayStore opcode (HashMap dispatch) |
 | `void.array.load` | — | ArrayLoad opcode (HashMap dispatch) |
 
@@ -245,6 +263,8 @@ Source-based `.void` files, merged at compile time.
 | `@inline` | Force inline eligibility (still excluded if recursive). |
 | `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)` | Suppress W01/W02/W03/W07. |
 | `@intrinsic("void.X")` | Safe stdlib wrapper; dispatched by encoder case number. |
+| `@derive(Trait, ...)` | Register derived traits for struct. |
+| `@panic_handler` | Validate signature; mark as panic handler. |
 
 `StmtKind::CfgBlock { condition, body }` — statement-level `@cfg`. Condition evaluated; body compiled only if matching.
 
@@ -256,45 +276,81 @@ Source-based `.void` files, merged at compile time.
 - Variable callee: `CallArg*+CallReg`. No reloc needed.
 - `ConstPoolEntry::FnAddr` tag = `3`, serialized as u16 len + name bytes.
 
+## LSP Status
+
+Basic server is running. Capabilities:
+- ✅ Diagnostics (publish on open/change/save)
+- ✅ Hover (type + const value, fallback to symbol table)
+- ✅ Goto Definition (naïve: searches symbol table by name, no scoping)
+- ✅ Completion (trigger on `.` — **only** for `std.*` chains via filesystem scanning)
+- ✅ Document formatting
+
+Missing:
+- ❌ General identifier completion (non-std)
+- ❌ Scoped/resolving goto-definition
+- ❌ Find references
+- ❌ Rename symbol
+- ❌ Code actions / quick fixes
+- ❌ Inlay hints
+- ❌ Workspace symbols
+
 ## Roadmap
 
-### Main Goal: Optimisation
-Fast binaries, small output, zero runtime waste. Every language and toolchain decision should serve this goal.
+### Philosophy
+Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@intrinsic` → raw syscalls (Linux) or Win32 (Windows). VBC = stable portable IR.
 
-| Area | Target |
+---
+
+### P0 — Critical Bugs / Safety
+
+| Item | Problem |
+|------|---------|
+| ~~Enhanced Crash/Panic handler~~ | ✅ Done. Linux: signal info + hex formatting + RBP backtrace when `VOID_TRACE=1`. Panic: file/line injected at call sites + backtrace via intrinsic 25. |
+| ~~Fix encoder silent fallback~~ | ✅ Done. Unimplemented opcodes (`NewObj`, `Move`, `Drop`, `Dup`, `Spawn`, `AtomicAdd`, `AtomicCas`, `StrConcat`) now `panic!("encoder: unimplemented opcode {:?}", ...)` instead of emitting bogus `xor rax,rax; mov slot(0),rax`. |
+| ~~Fix non-slice iterator codegen~~ | ✅ Done. `ForLoop::Each` on non-slice collections now emits proper `has_next()` → `next()` → `Option` unwrap loop. Supports both `Named` static dispatch and `Dyn` vtable dispatch. |
+
+### P1 — High Impact
+
+| Item | Target |
 |------|--------|
-| Codegen quality | Dead reg elimination done; linear scan done; better const folding, strength reduction pending |
-| Inline expansion | Threshold-based auto-inline (currently `@inline` only) |
-| AOT `@cfg` stripping | Remove disabled branches before codegen, not just semantic |
-| Struct monomorphization | Done — static namespace calls infer type args via `infer_type_subst`; instance method mono via `MonomorphizationInfo` |
-| `void link` built-in linker | Eliminate external linker dep; goal ELF <500B, PE <700B |
-| Register allocation | Done — DRE + linear scan slot sharing in `src/bytecode/regalloc.rs` |
+| **Bitwise operators** | `&` `|` `^` `<<` `>>` are not parsed as binary ops. Encoder has `And`/`Or`/`Xor`/`Shl`/`Shr`/`Sar`; traits `BitAnd`/`BitOr`/`BitXor`/`Shl`/`Shr` exist in stdlib; codegen silently falls back to `Add` for unknown ops. Need: lexer tokens (`Caret`, `Shl`, `Shr`), parser `BinOpKind` variants + precedence, semantic typecheck (integers), codegen opcode mapping. Keep `&` prefix = ref, `|` primary = closure. |
+| **AOT `@cfg` stripping** | Prune dead `CfgBlock` AST nodes before codegen, not just skip them in semantic. Reduces binary bloat. |
+| **`void link` built-in linker** | Triggered when `void build` receives `.o` input (e.g. `void build myprog.o`). Eliminates external linker dependency. Goal: ELF <500B, PE <700B. |
+| **`void test` runner** | `@test` attribute + `void test` CLI command. Essential for ecosystem maturity. |
+| **`pub` on types** | Enforce `public` field for structs, traits, enums, type aliases during import resolution (same S04 pattern as functions). |
 
-### Language
+### P2 — Codegen Quality
+
+| Item | Target |
+|------|--------|
+| **Threshold-based auto-inline** | Heuristic inline (size < N instrs, no recursion) beyond current `@inline` only. |
+| **Cross-basic-block const folding** | Currently local expression only. |
+| **Strength reduction** | `x * 2` → `x << 1`, `x / pow2` → shift, etc. |
+
+### P3 — Platform / Runtime
+
+| Item | Target |
+|------|--------|
+| **macOS Mach-O backend** | Actually implement Mach-O object output, `__start` stub, Mach-O relocations. Currently broken (emits ELF). |
+| **Ownership / RAII bytecode** | Emit `Move`, `Drop`, `Dup` opcodes. Run destructors at scope exit. Unblocks `Drop` trait and fixes `Box`/`String` leaks. |
+| **Atomic opcodes in encoder** | Implement `AtomicAdd`, `AtomicCas` lowering. |
+
+### P4 — Language Features
+
 | Feature | Status |
 |---------|--------|
-| Primitives, arithmetic, control flow | Done |
-| Structs, enums, match | Done |
-| Functions, closures, fn pointers | Done |
-| Generics (fn + struct monomorphization) | Partial — static namespace constructor calls now infer concrete type args; instance method mono done; struct-level layout mono not needed (uniform 8B fields) |
-| Traits + impl | Partial — static dispatch done; vtable construction + fat ptr not yet |
-| `?` operator | Done |
-| Unsafe + raw pointers (`*T↔*U`, int↔`*T`) | Done |
-| `@cfg` conditional compilation | Partial — evaluated at semantic; AOT stripping not yet |
-| Type aliases | Done |
-| Borrow checker (move semantics) | Partial — use-after-move, move-in-loop, reassign-suppression done; lifetimes not yet |
-| Format specs (`{:.2}`, `{:#x}`, etc.) | Not started |
-| Pattern matching (nested, tuple, guard) | Not started |
-| `async`/`await` | Not started |
+| Format string literals | Not started — `"value = {x}"` compile-time interpolation |
+| Nested struct patterns | Not started — `Point { x, y }` in match arms |
+| `async`/`await` | Not started — defer until lifetimes done |
 
-### Toolchain
+### P5 — Tooling
+
 | Component | Status |
 |-----------|--------|
-| `void build/run/check/fmt/new/init` | Done |
-| `void lsp` | Partial |
-| `void link` (built-in linker) | Not started — goal: ELF <500B, PE <700B |
+| LSP improvements | Partial — see LSP Status section above |
+| `void doc` | Not started |
 | JIT VM | Deferred |
-| `void test` / `void doc` | Not started |
 
-### Philosophy
-No LLVM, no GCC, no libc. `@intrinsic` → raw syscalls (Linux) or Win32 (Windows). VBC = stable portable IR. `void link` + JIT are planned first-class ecosystem components.
+---
+
+**Test coverage**: 135 inline `#[cfg(test)]` unit tests. No integration test suite or `tests/` directory yet.

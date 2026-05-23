@@ -1,7 +1,6 @@
 // std root module gateway — lazy re-exports for all std.* imports.
 // Files are only loaded when explicitly imported (not eagerly).
 
-pub import prelude.*;
 pub reexport core;
 pub reexport io;
 pub reexport unix;

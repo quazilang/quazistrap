@@ -344,6 +344,7 @@ impl Instruction {
                     15 => "void.int_to_str",
                     16 => "void.float_to_str",
                     17 => "void.format",
+                    25 => "void.print_backtrace",
                     _ => "?",
                 };
                 format!(
