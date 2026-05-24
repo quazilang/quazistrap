@@ -3,11 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
-  push:
     tags:
       - '*'
+  pull_request:
+    branches: [main]
 
 jobs:
   test:
@@ -34,11 +33,41 @@ jobs:
       - name: Run tests
         run: cargo test
 
-  build-and-release:
-    name: Build and Create Release
+  build:
+    name: Build ${{ matrix.platform }}
     runs-on: codeberg-medium
     if: startsWith(github.ref, 'refs/tags/')
     needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+
+          - { target: x86_64-unknown-freebsd, platform: freebsd-x64 }
+          - { target: x86_64-unknown-openbsd, platform: openbsd-x64 }
+          - { target: x86_64-unknown-netbsd, platform: netbsd-x64 }
+          - { target: x86_64-unknown-linux-musl, platform: linux-musl-x64 }
+          - { target: x86_64-unknown-linux-gnu, platform: linux-glibc-x64 }
+          - { target: x86_64-linux-android, platform: linux-android-x64 }
+          - { target: x86_64-pc-windows-gnu, platform: windows-x64, ext: .exe }
+          - { target: x86_64-apple-darwin, platform: macos-x64 }
+
+          # aarch64
+          # - { target: aarch64-unknown-freebsd, platform: freebsd-aarch64 }
+          # - { target: aarch64-unknown-netbsd, platform: netbsd-aarch64 }
+          # - { target: aarch64-unknown-linux-musl, platform: linux-musl-aarch64 }
+          # - { target: aarch64-unknown-linux-gnu, platform: linux-glibc-aarch64 }
+          # - { target: aarch64-linux-android, platform: linux-android-aarch64 }
+          # - { target: aarch64-pc-windows-gnullvm, platform: windows-aarch64, ext: .exe }
+          # - { target: aarch64-apple-darwin, platform: macos-aarch64 }
+
+          # riscv64
+          # - { target: riscv64gc-unknown-freebsd, platform: freebsd-riscv64 }
+          # - { target: riscv64gc-unknown-netbsd, platform: netbsd-riscv64 }
+          # - { target: riscv64gc-unknown-linux-musl, platform: linux-musl-riscv64 }
+          # - { target: riscv64gc-unknown-linux-gnu, platform: linux-glibc-riscv64 }
+          # - { target: riscv64-linux-android, platform: linux-bionic-riscv64 }
+
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v3
 
@@ -48,22 +77,55 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin/cargo-zigbuild
             target
-          key: cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-
+          key: cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.target }}-
 
       - name: Install Rust stable
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+            --default-toolchain stable \
+            --target ${{ matrix.target }}
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
+      - name: Install cargo-zigbuild and Zig
+        run: |
+          python3 -m pip install ziglang --break-system-packages
+          which cargo-zigbuild || cargo install cargo-zigbuild
+
       - name: Build release binary
-        run: cargo build --release
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        run: |
+          EXT="${{ matrix.ext }}"
+          mv target/${{ matrix.target }}/release/void${EXT} void-${{ matrix.platform }}${EXT}
+
+      - name: Upload artifact
+        uses: https://code.forgejo.org/actions/upload-artifact@v3
+        with:
+          name: void-${{ matrix.platform }}${{ matrix.ext }}
+          path: void-${{ matrix.platform }}${{ matrix.ext }}
+
+  publish:
+    name: Publish Release
+    runs-on: codeberg-medium
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v3
+
+      - name: Download all artifacts
+        uses: https://code.forgejo.org/actions/download-artifact@v3
+        with:
+          path: artifacts
+
+      - name: Collect binaries
+        run: find artifacts -type f -exec mv {} . \;
 
       - name: Create Release
         uses: https://code.forgejo.org/actions/forgejo-release@v1
         with:
-          files: |
-            target/release/void
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: void-*
