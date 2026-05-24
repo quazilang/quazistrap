@@ -47,13 +47,29 @@ impl Analyzer {
                 // Str-variadic fns: codegen coerces variadic args to str at call sites.
                 // Detected by: ...args: str/ref, OR ...args: any with a preceding str param
                 // (the any+str convention is how format-style fns like println are written).
-                let has_str_variadic_param = params.last().map(|p| {
-                    if !p.variadic { return false; }
-                    if matches!(&p.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }) { return true; }
-                    matches!(&p.ty.node, crate::parser::ast::TypeKind::Any) && params.iter()
-                        .filter(|q| !q.variadic)
-                        .any(|q| matches!(&q.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }))
-                }).unwrap_or(false);
+                let has_str_variadic_param = params
+                    .last()
+                    .map(|p| {
+                        if !p.variadic {
+                            return false;
+                        }
+                        if matches!(
+                            &p.ty.node,
+                            crate::parser::ast::TypeKind::Str
+                                | crate::parser::ast::TypeKind::Ref { .. }
+                        ) {
+                            return true;
+                        }
+                        matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
+                            && params.iter().filter(|q| !q.variadic).any(|q| {
+                                matches!(
+                                    &q.ty.node,
+                                    crate::parser::ast::TypeKind::Str
+                                        | crate::parser::ast::TypeKind::Ref { .. }
+                                )
+                            })
+                    })
+                    .unwrap_or(false);
                 if has_str_variadic_param {
                     attr_names.push("str_variadic".to_string());
                 }
@@ -64,7 +80,11 @@ impl Analyzer {
                     .any(|a| matches!(a.as_str(), "syscall" | "api"));
                 self.fn_param_names.insert(
                     name.clone(),
-                    params.iter().filter(|p| p.name != "self").map(|p| p.name.clone()).collect(),
+                    params
+                        .iter()
+                        .filter(|p| p.name != "self")
+                        .map(|p| p.name.clone())
+                        .collect(),
                 );
                 self.declare(
                     name.clone(),
@@ -88,8 +108,7 @@ impl Analyzer {
                 // @panic_handler validation: must take exactly one PanicInfo or str param,
                 // return ! or void.
                 if attr_names.iter().any(|a| a == "panic_handler") {
-                    let non_variadic: Vec<_> =
-                        params.iter().filter(|p| !p.variadic).collect();
+                    let non_variadic: Vec<_> = params.iter().filter(|p| !p.variadic).collect();
                     if non_variadic.len() != 1 {
                         self.push_error(
                             item.span,
@@ -104,9 +123,7 @@ impl Analyzer {
                         let param_ty = unwrap_type(&non_variadic[0].ty);
                         let ok = matches!(
                             &param_ty,
-                            TypeKind::Str
-                                | TypeKind::Ref { .. }
-                                | TypeKind::Named { .. }
+                            TypeKind::Str | TypeKind::Ref { .. } | TypeKind::Named { .. }
                         );
                         if !ok {
                             self.push_error(
@@ -164,7 +181,8 @@ impl Analyzer {
                     .collect();
                 self.struct_defs.insert(name.clone(), field_defs);
                 if !generic_params.is_empty() {
-                    self.struct_generic_params.insert(name.clone(), generic_params.clone());
+                    self.struct_generic_params
+                        .insert(name.clone(), generic_params.clone());
                 }
 
                 // @derive — register derived traits
@@ -189,7 +207,10 @@ impl Analyzer {
                 }
             }
             ItemKind::Trait {
-                name, methods, attributes, ..
+                name,
+                methods,
+                attributes,
+                ..
             } => {
                 self.declare(
                     name.clone(),
@@ -274,7 +295,12 @@ impl Analyzer {
                 );
             }
             ItemKind::Import(import_path) => self.declare_import_item(import_path, item.span),
-            ItemKind::Impl { for_ty, trait_ty, methods, .. } => {
+            ItemKind::Impl {
+                for_ty,
+                trait_ty,
+                methods,
+                ..
+            } => {
                 let type_name = type_kind_base_name(&for_ty.node);
                 if let Some(t) = trait_ty {
                     let trait_name = type_kind_base_name(&t.node);
@@ -306,13 +332,29 @@ impl Analyzer {
                         if is_foreign && !attr_names.contains(&"ignore".to_string()) {
                             attr_names.push("ignore".to_string());
                         }
-                        let has_str_variadic_param2 = params.last().map(|p| {
-                            if !p.variadic { return false; }
-                            if matches!(&p.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }) { return true; }
-                            matches!(&p.ty.node, crate::parser::ast::TypeKind::Any) && params.iter()
-                                .filter(|q| !q.variadic)
-                                .any(|q| matches!(&q.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }))
-                        }).unwrap_or(false);
+                        let has_str_variadic_param2 = params
+                            .last()
+                            .map(|p| {
+                                if !p.variadic {
+                                    return false;
+                                }
+                                if matches!(
+                                    &p.ty.node,
+                                    crate::parser::ast::TypeKind::Str
+                                        | crate::parser::ast::TypeKind::Ref { .. }
+                                ) {
+                                    return true;
+                                }
+                                matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
+                                    && params.iter().filter(|q| !q.variadic).any(|q| {
+                                        matches!(
+                                            &q.ty.node,
+                                            crate::parser::ast::TypeKind::Str
+                                                | crate::parser::ast::TypeKind::Ref { .. }
+                                        )
+                                    })
+                            })
+                            .unwrap_or(false);
                         if has_str_variadic_param2 {
                             attr_names.push("str_variadic".to_string());
                         }
@@ -321,27 +363,31 @@ impl Analyzer {
                             .any(|a| matches!(a.as_str(), "syscall" | "api"));
                         self.fn_param_names.insert(
                             mangled.clone(),
-                            params.iter().filter(|p| p.name != "self").map(|p| p.name.clone()).collect(),
+                            params
+                                .iter()
+                                .filter(|p| p.name != "self")
+                                .map(|p| p.name.clone())
+                                .collect(),
                         );
-                    self.declare(
-                        mangled,
-                        Symbol {
-                            kind: SymbolKind::Function,
-                            span: method.span,
-                            ty: Some(unwrap_type(return_ty)),
-                            params: params.iter().map(|p| unwrap_type(&p.ty)).collect(),
-                            used: false,
-                            initialized: true,
-                            is_import: false,
-                            import_path: None,
-                            const_value: None,
-                            variadic: params.last().map(|p| p.variadic).unwrap_or(false),
-                            attributes: attr_names,
-                            public: *pub_fn,
-                            unsafe_fn: *unsafe_fn || is_syscall_or_api,
-                            generic_params: generic_params.clone(),
-                        },
-                    );
+                        self.declare(
+                            mangled,
+                            Symbol {
+                                kind: SymbolKind::Function,
+                                span: method.span,
+                                ty: Some(unwrap_type(return_ty)),
+                                params: params.iter().map(|p| unwrap_type(&p.ty)).collect(),
+                                used: false,
+                                initialized: true,
+                                is_import: false,
+                                import_path: None,
+                                const_value: None,
+                                variadic: params.last().map(|p| p.variadic).unwrap_or(false),
+                                attributes: attr_names,
+                                public: *pub_fn,
+                                unsafe_fn: *unsafe_fn || is_syscall_or_api,
+                                generic_params: generic_params.clone(),
+                            },
+                        );
                     }
                 }
             }
@@ -368,7 +414,11 @@ impl Analyzer {
                 order.push(variant.name.clone());
                 variant_fields.insert(
                     variant.name.clone(),
-                    variant.payload_types.iter().map(|t| t.node.clone()).collect(),
+                    variant
+                        .payload_types
+                        .iter()
+                        .map(|t| t.node.clone())
+                        .collect(),
                 );
             }
         }
@@ -377,8 +427,14 @@ impl Analyzer {
             self.push_warning(span, "W06", format!("enum '{}' has no variants", enum_name));
         }
 
-        self.enums
-            .insert(enum_name.to_string(), EnumInfo { variants: map, variant_fields, order });
+        self.enums.insert(
+            enum_name.to_string(),
+            EnumInfo {
+                variants: map,
+                variant_fields,
+                order,
+            },
+        );
     }
 
     pub(super) fn declare_import_item(&mut self, import_path: &ImportPath, span: Span) {
@@ -402,7 +458,9 @@ impl Analyzer {
                 // Value = "" to suppress conflict detection for wildcard entries.
                 let all: Vec<String> = self.library_fn_names.iter().cloned().collect();
                 for name in all {
-                    self.explicitly_imported_fns.entry(name).or_insert_with(String::new);
+                    self.explicitly_imported_fns
+                        .entry(name)
+                        .or_insert_with(String::new);
                 }
             }
         }
@@ -456,10 +514,15 @@ impl Analyzer {
         }
         // Alias import: the alias name didn't exist in scope. Check if full_path's
         // leaf resolves to a library function and register the alias as Function.
-        let leaf = full_path.rsplit('.').next().unwrap_or(full_path.as_str()).to_string();
+        let leaf = full_path
+            .rsplit('.')
+            .next()
+            .unwrap_or(full_path.as_str())
+            .to_string();
         if let Some(original) = self.resolve_symbol(&leaf) {
             if matches!(original.kind, SymbolKind::Function) {
-                self.explicitly_imported_fns.insert(local_name.clone(), full_path.clone());
+                self.explicitly_imported_fns
+                    .insert(local_name.clone(), full_path.clone());
                 self.declare(
                     local_name,
                     Symbol {

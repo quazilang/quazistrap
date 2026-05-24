@@ -912,7 +912,22 @@ impl<'a> Codegen<'a> {
             });
             if let Some(&op) = INTRINSIC_OPCODE_MAP.get(instr_name) {
                 // RRR: ops[0]=val/dst, ops[1]=base_ptr, ops[2]=idx
-                chunk.emit(rrr(op, 0, 0, 0));
+                // Params are bound to r0, r1, r2 in declaration order.
+                match op {
+                    Opcode::ArrayStore => {
+                        // fn __ptr_store(base: *u8, idx: usize, val: usize)
+                        // ArrayStore: val=ops[0], base=ops[1], idx=ops[2]
+                        chunk.emit(rrr(op, 2, 0, 1));
+                    }
+                    Opcode::ArrayLoad => {
+                        // fn __ptr_load(base: *u8, idx: usize) -> usize
+                        // ArrayLoad: dst=ops[0], base=ops[1], idx=ops[2]
+                        chunk.emit(rrr(op, 0, 0, 1));
+                    }
+                    _ => {
+                        chunk.emit(rrr(op, 0, 0, 0));
+                    }
+                }
                 chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
                 chunk.reg_count = params.len() as u8;
                 return chunk;
@@ -1634,6 +1649,34 @@ impl<'a> FnCompiler<'a> {
                                 }
                                 self.compile_block(body);
                                 self.chunk.emit(rrr(Opcode::Inc, r_counter, r_counter, 0));
+                                self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
+                                self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
+                            } else if matches!(&iter_ty, Some(TypeKind::Named { name, .. }) if name == "Array") {
+                                // Array[T] dynamic array: compile as index loop using len() + get().
+                                let arr_reg = self.compile_expr(expr);
+                                let len_reg = self.alloc_reg();
+                                self.emit_call_by_name("Array.len", &[arr_reg], len_reg);
+
+                                let (r_idx, r_val_opt) = match vars.as_slice() {
+                                    [] => (self.alloc_reg(), None),
+                                    [v] => (self.alloc_reg(), Some(self.bind(v.clone()))),
+                                    [i, v, ..] => {
+                                        let ri = self.bind(i.clone());
+                                        let rv = self.bind(v.clone());
+                                        (ri, Some(rv))
+                                    }
+                                };
+                                self.chunk.emit(ri16(Opcode::MovI, r_idx, 0));
+                                let loop_top = self.chunk.len() as u16;
+                                self.chunk.emit(rrr(Opcode::Cmp, 0, r_idx, len_reg));
+                                let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
+                                if let Some(r_val) = r_val_opt {
+                                    let elem_reg = self.alloc_reg();
+                                    self.emit_call_by_name("Array.get", &[arr_reg, r_idx], elem_reg);
+                                    self.chunk.emit(rrr(Opcode::Mov, r_val, elem_reg, 0));
+                                }
+                                self.compile_block(body);
+                                self.chunk.emit(rrr(Opcode::Inc, r_idx, r_idx, 0));
                                 self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
                                 self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
                             } else {
@@ -2463,7 +2506,29 @@ impl<'a> FnCompiler<'a> {
                             self.emit_call_by_name(&call_target, &coerced, dst);
                         } else {
                             let fmt_dst = self.alloc_reg();
-                            self.emit_call_by_name("format", &coerced, fmt_dst);
+                            // Pack coerced args (after template) into a slice for variadic format().
+                            let coerced_args = &coerced[1..];
+                            let (r_ptr, r_len) = if coerced_args.is_empty() {
+                                let rp = self.alloc_reg();
+                                self.chunk.emit(ri16(Opcode::MovI, rp, 0));
+                                let rl = self.alloc_reg();
+                                self.chunk.emit(ri16(Opcode::MovI, rl, 0));
+                                (rp, rl)
+                            } else {
+                                let first_slot = self.next_reg;
+                                for &r in coerced_args {
+                                    let slot = self.alloc_reg();
+                                    if r != slot {
+                                        self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
+                                    }
+                                }
+                                let rp = self.alloc_reg();
+                                self.chunk.emit(mem_lea(first_slot, rp, 0));
+                                let rl = self.alloc_reg();
+                                self.chunk.emit(ri16(Opcode::MovI, rl, coerced_args.len() as u16));
+                                (rp, rl)
+                            };
+                            self.emit_call_by_name("format", &[template_reg, r_ptr, r_len], fmt_dst);
                             self.emit_call_by_name(&call_target, &[fmt_dst], dst);
                         }
                     } else {
@@ -2559,13 +2624,11 @@ impl<'a> FnCompiler<'a> {
                                 self.emit_call_by_name(&format!("{}.new", type_name), &[obj], dst);
                                 for elem in &elems {
                                     let val = self.compile_expr(elem);
-                                    let new_dst = self.alloc_reg();
                                     self.emit_call_by_name(
                                         &format!("{}.push", type_name),
                                         &[dst, val],
-                                        new_dst,
+                                        0, // void return
                                     );
-                                    self.chunk.emit(rrr(Opcode::Mov, dst, new_dst, 0));
                                 }
                                 return dst;
                             }
@@ -4191,4 +4254,6 @@ mod tests {
             "expected CallArg for hidden env ptr"
         );
     }
+
+
 }

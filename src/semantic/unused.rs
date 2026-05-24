@@ -78,7 +78,9 @@ impl Analyzer {
                         .scopes
                         .first()
                         .and_then(|s| s.get(&capitalized))
-                        .map_or(false, |sym| sym.used && matches!(sym.kind, SymbolKind::TypeName));
+                        .map_or(false, |sym| {
+                            sym.used && matches!(sym.kind, SymbolKind::TypeName)
+                        });
                     if type_used {
                         continue;
                     }

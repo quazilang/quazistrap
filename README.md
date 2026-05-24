@@ -41,7 +41,6 @@ version = "0.1.0"
 [build]
 entry = "src/main.void"   # optional, defaults to src/main.void
 src = "src"               # optional, defaults to src
-flags = ["-O2"]           # optional, passed to gcc when emitting binaries
 
 [dependencies]
 utils = { path = "../utils", version = "0.1.0" }

@@ -17,7 +17,7 @@ void lsp
 
 Output: `<stem>.vbc` (bytecode), `<stem>.o` (object), `<stem>`/`<stem>.exe` (binary).  
 `.vbc` as input: skips frontend, goes straight to backend.  
-Linker: `VOID_LINKER` env → `ld.lld` → `mold` → `ld` (Linux/macOS); `lld-link` → `link` (Windows).  
+Linker: `VOID_LINKER` env → `ld.lld` → `mold` → `ld` (Linux/macOS); `lld-link` → `link` (Windows). Linux uses `-dynamic-linker` and links `libc.so.6` / `libm.so.6` by full path to avoid GNU linker scripts that `ld.lld` cannot parse.
 `void build myprog.o` — planned built-in linker path (P1).  
 Rust edition 2024.
 
@@ -75,7 +75,8 @@ Five sequential passes:
 **Warning suppression**: `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)`.  
 **`@cfg` evaluation**: `target_os`, `target_arch`, `target_abi` evaluated against `std::env::consts`. Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 
-**Borrow checker** (`borrow.rs`): move semantics for Named types (structs/enums). S10 = use-after-move / move-in-loop. `reassign_targets` set suppresses move-in-loop for `x = x.method()` patterns (value immediately re-owned). No reference lifetimes yet.
+**Borrow checker** (`borrow.rs`): move semantics for Named types (structs/enums). S10 = use-after-move / move-in-loop. `reassign_targets` set suppresses move-in-loop for `x = x.method()` patterns (value immediately re-owned). `for x : iterable` reads the iterable and must not mark it moved; array codegen keeps the value live for `len()`/`get()`. No reference lifetimes yet.
+**Generic receiver methods**: for `Named` receivers with concrete type args, substitute receiver generics into method params before checking args (`Array[i32].push("x")` must error because `T = i32`).
 
 **`pub` visibility:**
 - **Functions**: enforced. Private fn imported cross-module emits S04 error.
@@ -116,11 +117,13 @@ Key: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_alloc_size(
 - Closure: `__void_closure_N` chunk; captures detected via `capture_ident_names`; env struct heap-allocated; fn ptr at `ENUM_DISCRIM_OFFSET`, captures at `ENUM_PAYLOAD_OFFSET+i*8`; hidden env ptr in r0 on call.
 - **Monomorphization**: top-level fn `id[T]` call → `id<i32>` mangled chunk. Impl method `Box[i32].get` → mangled `Box.get<i32>` chunk. Pre-pass searches both `ItemKind::Fn` and `ItemKind::Impl`. `struct_generic_params` in `SemanticReport` maps struct name → param names for subst. Mangled format: `name<type1,type2>`.
 - **Struct mono MethodCall**: receiver type `Named { type_args }` → mangle call target; falls back to unmangled if mangled not in `fn_index`.
+- **Intrinsic dedicated-opcode params**: `compile_intrinsic_fn` for `ArrayStore`/`ArrayLoad` (and future dedicated-opcode intrinsics) must emit `rrr(op, param_reg, ...)` matching the callee param registers, not hardcoded `rrr(op, 0, 0, 0)`. The inline pass remaps registers via `base + r`, so hardcoded zeros become `base+0` for all operands — wrong.
+- **str_variadic module call**: `ExprKind::Field` path (e.g. `io.println("{}", x)`) must pack coerced args into `(ptr, len)` before calling `format`, just like the `ExprKind::Ident` path does. Passing raw coerced args causes `format` to interpret the first coerced string pointer as the variadic slice pointer, leading to an invalid dereference.
 - Intrinsic dispatch: `INTRINSIC_MAP` HashMap; array ops via `INTRINSIC_OPCODE_MAP` HashMap.
 - **Pattern matching**: `PatternKind` = `Wildcard | Bind(String) | Literal(LiteralValue) | Variant { enum_name, variant, sub_patterns }`. `compile_pattern_match` recurses into sub_patterns. String literal match: `StrLen` fast-path + byte loop via intrinsic ID 23 (consecutive regs required: r_a, r_a+1).
 - **Format specs**: `extract_format_specs(template)` parses `{:spec}` at compile time → `Vec<String>`. `strip_format_specs` rewrites `{:spec}` → `{}` for runtime `format()`. `coerce_with_spec(reg, spec, span)` applies int/float specs → extended `PrimToStr` tags. str_variadic fns use spec-aware coercion per arg slot.
 - **`dyn Trait`**: `coerce_to_dyn(obj_reg, type_name, trait_name)` allocates 16-byte fat pointer — `fat[0]=concrete_ptr`, `fat[8]=vtable_ptr` (via `MovConst(VtableAddr)`). MethodCall on `Dyn` receiver: `FieldLoad fat[8]→vtbl_ptr`, `VtblLoad vtbl_ptr[slot]→fn_ptr`, `FieldLoad fat[0]→data_ptr`, `CallArg*+CallReg`.
-- **Non-slice iterator** (`ForLoop::Each` on non-slice): placeholder — emits broken infinite-loop fallback (P0 fix).
+- **Non-slice iterator** (`ForLoop::Each` on non-slice): `Array[T]` is special-cased to compile as an index loop (`len()` + `get()`). Other `Named` types use `has_next()` / `next()` protocol with `Option[T]` unwrapping. `Dyn` trait objects use vtable dispatch.
 
 ### Regalloc (`src/bytecode/regalloc.rs`)
 Two passes run on each chunk after inline expansion:
@@ -149,11 +152,13 @@ src/backend/
 - Linux `_start`: `xor rbp,rbp` → zero sigaction struct → register handlers for `SIGSEGV`, `SIGABRT`, `SIGFPE`, `SIGBUS` → `call main` → `mov rdi,rax; mov rax,60; syscall`
 - Windows `mainCRTStartup`: `sub rsp,40` → `AddVectoredExceptionHandler` → `call main` → `ExitProcess`
 
-**Crash handler** (Linux): SA_SIGINFO signal handler. Prints signal number, fault address, and RIP as hex. Checks `__void_trace_enabled`; if set, calls `__void_print_backtrace` (RBP chain walk, up to 16 frames). Windows handler still prints fixed format string (enhancement pending).
+**Crash handler** (Linux & Windows): identical output format. Prints `== CRASHED ==\n`, then `fatal: signal 0x<hex>` / `fatal: exception 0x<hex>`, `fault: 0x<addr>`, `rip: 0x<rip>`. Checks `__void_trace_enabled`; if set, calls `__void_print_backtrace` (RBP chain walk, up to 16 frames). If not set, prints `use VOID_TRACE=1 to see full stack trace\n`. Both full and minimal Linux stubs, as well as both Windows stubs, are generated via `iced-x86` `CodeAssembler` — raw-byte stubs with hand-computed relocations were removed to eliminate relocation-offset bugs.
 
-**Panic handler**: `PanicInfo` carries `message`, `file`, `line`. `__void_panic_handler` prints all three, then calls `__void_print_backtrace()` (intrinsic ID 25) before exiting 101. `panic("msg")` call sites get `file`/`line` injected by codegen.
+**`@no_crash`**: File-level directive (like `@no_std`). When present, the entry stub omits crash-handler registration (Linux `sigaction`, Windows `AddVectoredExceptionHandler`). `__void_print_backtrace` is still emitted so panic backtraces work. Produces a smaller binary (~1 KB smaller).
 
-**`VOID_TRACE=1` detection**: Linux `_start` reads `/proc/self/environ` and searches for `VOID_TRACE=1`, setting `__void_trace_enabled` byte in `.data`. |
+**Panic handler**: `PanicInfo` carries `message`, `file`, `line`. `__void_panic_handler` prints all three, then calls `__void_print_backtrace()` (intrinsic ID 25) before exiting 101. `panic("msg")` call sites get `file`/`line` injected by codegen. `prelude/array.void` uses `panic("index out of bounds")` for `Array.get` / `Array.set` / `Index` OOB checks.
+
+**`VOID_TRACE=1` detection**: Windows `mainCRTStartup` uses `GetEnvironmentVariableA`; Linux `_start` calls `getenv` (libc is already linked, the dynamic linker initialises `environ` before entry). Both set the `__void_trace_enabled` byte in `.data`.
 
 **Encoder silent fallback** (`encoder.rs:1607–1612`): unimplemented opcodes (`NewObj`, `Move`, `Drop`, `Dup`, `Spawn`, `AtomicAdd`, `AtomicCas`, `StrConcat`) emit `xor rax,rax; mov slot(0), rax` — produces wrong code instead of crashing.
 
@@ -265,6 +270,7 @@ Source-based `.void` files, merged at compile time.
 | `@intrinsic("void.X")` | Safe stdlib wrapper; dispatched by encoder case number. |
 | `@derive(Trait, ...)` | Register derived traits for struct. |
 | `@panic_handler` | Validate signature; mark as panic handler. |
+| `@no_crash` | File-level: disable crash handler in entry stub (smaller binary, no signal/exception catching). |
 
 `StmtKind::CfgBlock { condition, body }` — statement-level `@cfg`. Condition evaluated; body compiled only if matching.
 

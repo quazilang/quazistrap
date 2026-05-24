@@ -25,9 +25,9 @@ pub(super) struct ExprEval {
 
 #[derive(Debug, Clone)]
 pub(super) struct EnumInfo {
-    pub(super) variants: HashMap<String, usize>,              // variant → arity (payload count)
+    pub(super) variants: HashMap<String, usize>, // variant → arity (payload count)
     pub(super) variant_fields: HashMap<String, Vec<TypeKind>>, // variant → field types
-    pub(super) order: Vec<String>,                             // declaration order → discriminant index
+    pub(super) order: Vec<String>,               // declaration order → discriminant index
 }
 
 #[derive(Debug, Clone)]
@@ -176,44 +176,67 @@ pub fn strip_cfg(program: &Program) -> Program {
                         stmts.extend(strip_block(body).stmts);
                     }
                 }
-                StmtKind::If { condition, then_block, else_block } => {
-                    stmts.push(Spanned::new(StmtKind::If {
-                        condition: condition.clone(),
-                        then_block: strip_block(then_block),
-                        else_block: else_block.as_ref().map(strip_block),
-                    }, stmt.span));
+                StmtKind::If {
+                    condition,
+                    then_block,
+                    else_block,
+                } => {
+                    stmts.push(Spanned::new(
+                        StmtKind::If {
+                            condition: condition.clone(),
+                            then_block: strip_block(then_block),
+                            else_block: else_block.as_ref().map(strip_block),
+                        },
+                        stmt.span,
+                    ));
                 }
                 StmtKind::For { kind, body } => {
-                    stmts.push(Spanned::new(StmtKind::For {
-                        kind: kind.clone(),
-                        body: strip_block(body),
-                    }, stmt.span));
+                    stmts.push(Spanned::new(
+                        StmtKind::For {
+                            kind: kind.clone(),
+                            body: strip_block(body),
+                        },
+                        stmt.span,
+                    ));
                 }
                 StmtKind::UnsafeBlock { body } => {
-                    stmts.push(Spanned::new(StmtKind::UnsafeBlock {
-                        body: strip_block(body),
-                    }, stmt.span));
+                    stmts.push(Spanned::new(
+                        StmtKind::UnsafeBlock {
+                            body: strip_block(body),
+                        },
+                        stmt.span,
+                    ));
                 }
                 _ => stmts.push(stmt.clone()),
             }
         }
-        Block { stmts, span: block.span }
+        Block {
+            stmts,
+            span: block.span,
+        }
     }
 
     fn strip_fn(node: &ItemKind) -> ItemKind {
         match node {
-            ItemKind::Fn { name, return_ty, params, body, attributes, pub_fn, unsafe_fn, generic_params } => {
-                ItemKind::Fn {
-                    name: name.clone(),
-                    return_ty: return_ty.clone(),
-                    params: params.clone(),
-                    body: body.as_ref().map(strip_block),
-                    attributes: attributes.clone(),
-                    pub_fn: *pub_fn,
-                    unsafe_fn: *unsafe_fn,
-                    generic_params: generic_params.clone(),
-                }
-            }
+            ItemKind::Fn {
+                name,
+                return_ty,
+                params,
+                body,
+                attributes,
+                pub_fn,
+                unsafe_fn,
+                generic_params,
+            } => ItemKind::Fn {
+                name: name.clone(),
+                return_ty: return_ty.clone(),
+                params: params.clone(),
+                body: body.as_ref().map(strip_block),
+                attributes: attributes.clone(),
+                pub_fn: *pub_fn,
+                unsafe_fn: *unsafe_fn,
+                generic_params: generic_params.clone(),
+            },
             other => other.clone(),
         }
     }
@@ -232,23 +255,37 @@ pub fn strip_cfg(program: &Program) -> Program {
             continue;
         }
         let node = match &item.node {
-            ItemKind::Impl { trait_ty, for_ty, methods } => {
-                let methods: Vec<Item> = methods.iter()
+            ItemKind::Impl {
+                trait_ty,
+                for_ty,
+                methods,
+            } => {
+                let methods: Vec<Item> = methods
+                    .iter()
                     .filter(|m| {
                         if let ItemKind::Fn { attributes, .. } = &m.node {
                             item_should_include(attributes)
-                        } else { true }
+                        } else {
+                            true
+                        }
                     })
                     .map(|m| Spanned::new(strip_fn(&m.node), m.span))
                     .collect();
-                ItemKind::Impl { trait_ty: trait_ty.clone(), for_ty: for_ty.clone(), methods }
+                ItemKind::Impl {
+                    trait_ty: trait_ty.clone(),
+                    for_ty: for_ty.clone(),
+                    methods,
+                }
             }
             ItemKind::Fn { .. } => strip_fn(&item.node),
             other => other.clone(),
         };
         items.push(Spanned::new(node, item.span));
     }
-    Program { items, span: program.span }
+    Program {
+        items,
+        span: program.span,
+    }
 }
 
 impl Analyzer {
@@ -307,7 +344,9 @@ impl Analyzer {
     }
 
     pub(super) fn is_library_span(&self, span: Span) -> bool {
-        self.library_char_ranges.iter().any(|r| r.contains(&span.start))
+        self.library_char_ranges
+            .iter()
+            .any(|r| r.contains(&span.start))
     }
 
     pub(super) fn describe_span(&self, span: Span) -> String {
@@ -403,21 +442,35 @@ impl Analyzer {
             lazy_import_hints,
             dead_functions,
             struct_defs: self.struct_defs.clone(),
-            struct_sizes: self.struct_defs.iter().map(|(name, fields)| {
-                let size = fields.len() * 8;
-                (name.clone(), size)
-            }).collect(),
-            struct_field_offsets: self.struct_defs.iter().map(|(name, fields)| {
-                let offsets: Vec<(String, usize)> = fields.iter().enumerate()
-                    .map(|(i, (fname, _))| (fname.clone(), i * 8))
-                    .collect();
-                (name.clone(), offsets)
-            }).collect(),
+            struct_sizes: self
+                .struct_defs
+                .iter()
+                .map(|(name, fields)| {
+                    let size = fields.len() * 8;
+                    (name.clone(), size)
+                })
+                .collect(),
+            struct_field_offsets: self
+                .struct_defs
+                .iter()
+                .map(|(name, fields)| {
+                    let offsets: Vec<(String, usize)> = fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (fname, _))| (fname.clone(), i * 8))
+                        .collect();
+                    (name.clone(), offsets)
+                })
+                .collect(),
             trait_impls: self.trait_impls.clone(),
             trait_method_slots: self.trait_method_slots.clone(),
-            enum_defs: self.enums.iter()
+            enum_defs: self
+                .enums
+                .iter()
                 .map(|(k, v)| {
-                    let disc_map = v.order.iter()
+                    let disc_map = v
+                        .order
+                        .iter()
                         .enumerate()
                         .map(|(i, name)| (name.clone(), i))
                         .collect();
@@ -492,7 +545,7 @@ impl Analyzer {
         );
 
         let mut result_variants = HashMap::new();
-        result_variants.insert("Ok".to_string(), 1usize);  // arity 1
+        result_variants.insert("Ok".to_string(), 1usize); // arity 1
         result_variants.insert("Err".to_string(), 1usize); // arity 1
         self.enums.insert(
             "Result".to_string(),
@@ -727,30 +780,47 @@ impl Analyzer {
                 } else {
                     TypeKind::Named {
                         name: name.clone(),
-                        type_args: type_args.iter()
+                        type_args: type_args
+                            .iter()
                             .map(|t| Spanned::new(self.resolve_type_aliases(&t.node), t.span))
                             .collect(),
                     }
                 }
             }
             TypeKind::Ref { inner } => TypeKind::Ref {
-                inner: Box::new(Spanned::new(self.resolve_type_aliases(&inner.node), inner.span)),
+                inner: Box::new(Spanned::new(
+                    self.resolve_type_aliases(&inner.node),
+                    inner.span,
+                )),
             },
             TypeKind::RawPtr { inner } => TypeKind::RawPtr {
-                inner: Box::new(Spanned::new(self.resolve_type_aliases(&inner.node), inner.span)),
+                inner: Box::new(Spanned::new(
+                    self.resolve_type_aliases(&inner.node),
+                    inner.span,
+                )),
             },
             TypeKind::Array { elem_ty, len } => TypeKind::Array {
-                elem_ty: Box::new(Spanned::new(self.resolve_type_aliases(&elem_ty.node), elem_ty.span)),
+                elem_ty: Box::new(Spanned::new(
+                    self.resolve_type_aliases(&elem_ty.node),
+                    elem_ty.span,
+                )),
                 len: *len,
             },
             TypeKind::Slice { elem_ty } => TypeKind::Slice {
-                elem_ty: Box::new(Spanned::new(self.resolve_type_aliases(&elem_ty.node), elem_ty.span)),
+                elem_ty: Box::new(Spanned::new(
+                    self.resolve_type_aliases(&elem_ty.node),
+                    elem_ty.span,
+                )),
             },
             TypeKind::Fn { params, return_ty } => TypeKind::Fn {
-                params: params.iter().map(|p| {
-                    Spanned::new(self.resolve_type_aliases(&p.node), p.span)
-                }).collect(),
-                return_ty: Box::new(Spanned::new(self.resolve_type_aliases(&return_ty.node), return_ty.span)),
+                params: params
+                    .iter()
+                    .map(|p| Spanned::new(self.resolve_type_aliases(&p.node), p.span))
+                    .collect(),
+                return_ty: Box::new(Spanned::new(
+                    self.resolve_type_aliases(&return_ty.node),
+                    return_ty.span,
+                )),
             },
             other => other.clone(),
         }
@@ -893,12 +963,10 @@ fn main() void {
 }
 "#,
         );
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|e| e.message.contains("type mismatch"))
-        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("type mismatch")));
     }
 
     #[test]
@@ -910,12 +978,10 @@ fn main() void {
 }
     "#,
         );
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|e| e.message.contains("type mismatch"))
-        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("type mismatch")));
     }
 
     #[test]
@@ -951,12 +1017,10 @@ fn main() void {
 "#,
         );
 
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|e| e.message.contains("unknown identifier 'x'"))
-        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("unknown identifier 'x'")));
     }
 
     #[test]
@@ -970,12 +1034,10 @@ fn main() void {
 "#,
         );
 
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|e| e.message.contains("duplicate declaration 'x'"))
-        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("duplicate declaration 'x'")));
     }
 
     #[test]
@@ -990,13 +1052,11 @@ fn main() void {
 "#,
         );
 
-        assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| w.message.contains("unused import 'stdout'")
-                    && w.message.contains("std.io.stdout"))
-        );
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("unused import 'stdout'")
+                && w.message.contains("std.io.stdout")));
         assert!(report.unused_imports.contains(&"std.io.stdout".to_string()));
     }
 
@@ -1046,12 +1106,10 @@ fn main() void {
 "#,
         );
 
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|e| e.message.contains("before initialization"))
-        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("before initialization")));
     }
 
     #[test]
@@ -1065,12 +1123,10 @@ fn main() void {
 "#,
         );
 
-        assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| w.message.contains("unreachable code"))
-        );
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("unreachable code")));
     }
 
     #[test]
@@ -1088,12 +1144,10 @@ fn main() void {
 "#,
         );
 
-        assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| w.message.contains("unreachable code"))
-        );
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("unreachable code")));
     }
 
     #[test]
@@ -1106,12 +1160,10 @@ fn main() void {
 "#,
         );
 
-        assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| w.message.contains("unused variable 'x'"))
-        );
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("unused variable 'x'")));
     }
 
     #[test]
@@ -1128,12 +1180,10 @@ fn main() void {
 "#,
         );
 
-        assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| w.message.contains("unused function 'helper'"))
-        );
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("unused function 'helper'")));
     }
 
     #[test]
@@ -1147,12 +1197,10 @@ fn main() void {
         );
 
         assert!(!report.annotated_exprs.is_empty());
-        assert!(
-            report
-                .constant_evaluations
-                .iter()
-                .any(|entry| entry.value == ConstValue::Int(3))
-        );
+        assert!(report
+            .constant_evaluations
+            .iter()
+            .any(|entry| entry.value == ConstValue::Int(3)));
     }
 
     #[test]
@@ -1207,12 +1255,10 @@ fn unwrap_or_fail(x: Option[i32]) i32 {
 "#,
         );
 
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|e| e.message.contains("non-exhaustive match"))
-        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("non-exhaustive match")));
         assert_eq!(report.exhaustiveness_checks, 1);
         assert_eq!(report.non_exhaustive_matches.len(), 1);
     }
@@ -1235,12 +1281,10 @@ fn unwrap_or_zero(x: Option[i32]) i32 {
 "#,
         );
 
-        assert!(
-            !report
-                .errors
-                .iter()
-                .any(|e| e.message.contains("non-exhaustive match"))
-        );
+        assert!(!report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("non-exhaustive match")));
         assert_eq!(report.exhaustiveness_checks, 1);
     }
 
@@ -1263,12 +1307,10 @@ fn color_value(c: Color) i32 {
 "#,
         );
 
-        assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| w.message.contains("already covered"))
-        );
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("already covered")));
     }
 
     #[test]
@@ -1294,13 +1336,11 @@ fn main() void {
             report.annotated_exprs.len()
         );
         assert!(!report.symbol_table.entries.is_empty());
-        assert!(
-            report
-                .symbol_table
-                .entries
-                .iter()
-                .any(|e| e.name == "helper")
-        );
+        assert!(report
+            .symbol_table
+            .entries
+            .iter()
+            .any(|e| e.name == "helper"));
 
         let import = report
             .used_imports_map
@@ -1309,22 +1349,18 @@ fn main() void {
         assert_eq!(import.local_name, "stdout");
         assert!(import.used);
 
-        assert!(
-            report
-                .optimization_hints
-                .inline_candidates
-                .iter()
-                .any(|c| c.name == "helper")
-        );
-        assert!(
-            report
-                .dependency_graph
-                .edges
-                .iter()
-                .any(|edge| edge.kind == DependencyKind::Import
-                    && edge.from == "__program__"
-                    && edge.to == "std.io.stdout")
-        );
+        assert!(report
+            .optimization_hints
+            .inline_candidates
+            .iter()
+            .any(|c| c.name == "helper"));
+        assert!(report
+            .dependency_graph
+            .edges
+            .iter()
+            .any(|edge| edge.kind == DependencyKind::Import
+                && edge.from == "__program__"
+                && edge.to == "std.io.stdout"));
         assert!(report.dependency_graph.edges.iter().any(|edge| {
             edge.kind == DependencyKind::Call && edge.from == "main" && edge.to == "helper"
         }));
@@ -1343,12 +1379,10 @@ fn main() void {
 "#,
         );
 
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|e| e.message.contains("import name conflict for 'stdout'"))
-        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("import name conflict for 'stdout'")));
     }
 
     #[test]
@@ -1625,13 +1659,11 @@ fn mul(x: i32) i32 {
                 .any(|a| a.const_value == Some(ConstValue::Int(0))),
             "x * 0 should fold to Int(0) in annotated tree"
         );
-        assert!(
-            report
-                .optimization_hints
-                .math_optimizations
-                .iter()
-                .any(|m| m.description.contains("x * 0 = 0")),
-        );
+        assert!(report
+            .optimization_hints
+            .math_optimizations
+            .iter()
+            .any(|m| m.description.contains("x * 0 = 0")),);
     }
 
     #[test]
@@ -1655,13 +1687,11 @@ fn scale(x: f64) f64 {
                 .any(|a| matches!(a.const_value, Some(ConstValue::Float(f)) if f == 0.0)),
             "0.0 * x should fold to Float(0.0) in annotated tree"
         );
-        assert!(
-            report
-                .optimization_hints
-                .math_optimizations
-                .iter()
-                .any(|m| m.description.contains("0.0 * x = 0.0")),
-        );
+        assert!(report
+            .optimization_hints
+            .math_optimizations
+            .iter()
+            .any(|m| m.description.contains("0.0 * x = 0.0")),);
     }
 
     #[test]
@@ -1706,13 +1736,11 @@ fn main() void {
             "expected lazy import hint for std -> std.io.stdout, got {:?}",
             report.lazy_import_hints
         );
-        assert!(
-            report
-                .optimization_hints
-                .lazy_import_hints
-                .iter()
-                .any(|h| h.broad_path == "std"),
-        );
+        assert!(report
+            .optimization_hints
+            .lazy_import_hints
+            .iter()
+            .any(|h| h.broad_path == "std"),);
     }
 
     #[test]
@@ -1944,6 +1972,57 @@ fn main() void {
     }
 
     #[test]
+    fn foreach_over_explicit_named_array_does_not_move_iterable() {
+        let report = analyze(
+            r#"
+struct Array[T] { ptr: i32, }
+
+fn consume(a: Array[i32]) void { ret; }
+
+fn main() void {
+    var arr: Array[i32];
+    for item : arr {
+        var x: i32 = 1;
+    }
+    consume(arr);
+}
+"#,
+        );
+        let borrow_errors: Vec<_> = report.errors.iter().filter(|e| e.code == "S10").collect();
+        assert!(
+            borrow_errors.is_empty(),
+            "foreach should not move explicitly typed Array[i32]: {:?}",
+            borrow_errors
+        );
+    }
+
+    #[test]
+    fn generic_receiver_method_checks_substituted_arg_type() {
+        let report = analyze(
+            r#"
+struct Array[T] { ptr: i32, }
+
+impl Array[T] {
+    fn push(self: Array[T], val: T) void { ret; }
+}
+
+fn main() void {
+    var arr: Array[i32];
+    arr.push("hello");
+}
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.code == "S08" && e.message.contains("expected i32, got &str")),
+            "Array[i32].push(str) should be rejected, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn move_in_if_branch_conservatively_blocks_later_use() {
         let report = analyze(
             r#"
@@ -2119,7 +2198,10 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.message.contains("type mismatch")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("type mismatch")),
             "type alias should enforce underlying type: {:?}",
             report.errors
         );
@@ -2228,7 +2310,10 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.message.contains("type mismatch")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("type mismatch")),
             "accessing i32 field as str should be an error: {:?}",
             report.errors
         );
@@ -2242,7 +2327,10 @@ trait Drawable { fn draw(self: str) void; fn area(self: str) i32; }
 fn main() void { }
 "#,
         );
-        let slots = report.trait_method_slots.get("Drawable").expect("Drawable slots must exist");
+        let slots = report
+            .trait_method_slots
+            .get("Drawable")
+            .expect("Drawable slots must exist");
         assert_eq!(slots[0], "draw", "draw should be slot 0");
         assert_eq!(slots[1], "area", "area should be slot 1");
     }

@@ -104,7 +104,8 @@ fn run_pipeline(
         }
 
         EmitType::Object => {
-            let obj_bytes = compile_to_object(&chunks, false, Some(&sema_report));
+            let no_crash = source_contains_no_crash(src);
+            let obj_bytes = compile_to_object(&chunks, false, no_crash, Some(&sema_report));
             std::fs::write(output_file_name, &obj_bytes).unwrap_or_else(|e| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot write {}: {}",
@@ -118,7 +119,8 @@ fn run_pipeline(
         }
 
         EmitType::Binary => {
-            let obj_bytes = compile_to_object(&chunks, true, Some(&sema_report));
+            let no_crash = source_contains_no_crash(src);
+            let obj_bytes = compile_to_object(&chunks, true, no_crash, Some(&sema_report));
             let stem = Path::new(output_file_name)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -196,14 +198,27 @@ fn strip_binary(path: &Path) {
     }
 }
 
+fn source_contains_no_crash(src: &str) -> bool {
+    let mut lexer = Lexer::new(src);
+    let tokens = lexer.tokenize();
+    tokens.windows(2).any(|pair| {
+        matches!(pair[0].kind, lexer::token::TokenKind::At)
+            && matches!(&pair[1].kind, lexer::token::TokenKind::Ident(name) if name == "no_crash")
+    })
+}
+
 fn compile_to_object(
     chunks: &[crate::bytecode::Chunk],
     emit_start: bool,
+    no_crash: bool,
     report: Option<&crate::semantic::SemanticReport>,
 ) -> Vec<u8> {
     let mut target = TargetSpec::host();
     if !emit_start {
         target = target.without_start();
+    }
+    if no_crash {
+        target = target.with_no_crash();
     }
     let backend = select_backend(&target);
     backend
@@ -254,7 +269,7 @@ fn emit_chunks(
         }
 
         EmitType::Object => {
-            let obj_bytes = compile_to_object(chunks, false, None);
+            let obj_bytes = compile_to_object(chunks, false, false, None);
             std::fs::write(output_file_name, &obj_bytes).unwrap_or_else(|e| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot write {}: {}",
@@ -268,7 +283,7 @@ fn emit_chunks(
         }
 
         EmitType::Binary => {
-            let obj_bytes = compile_to_object(chunks, true, None);
+            let obj_bytes = compile_to_object(chunks, true, false, None);
             let stem = Path::new(output_file_name)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -665,7 +680,8 @@ fn build_with_progress(
             // ── Step 3: Native ────────────────────────────────────────────────
             let arch = arch_label();
             prog.begin(&format!("Native  {}", arch));
-            let obj_bytes = compile_to_object(&chunks, false, Some(&sema));
+            let no_crash = source_contains_no_crash(&result.merged_source);
+            let obj_bytes = compile_to_object(&chunks, false, no_crash, Some(&sema));
             std::fs::write(out, &obj_bytes).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot write {}: {}", out, e);
                 std::process::exit(1);
@@ -678,7 +694,8 @@ fn build_with_progress(
             // ── Step 3: Native ────────────────────────────────────────────────
             let arch = arch_label();
             prog.begin(&format!("Native  {}", arch));
-            let obj_bytes = compile_to_object(&chunks, true, Some(&sema));
+            let no_crash = source_contains_no_crash(&result.merged_source);
+            let obj_bytes = compile_to_object(&chunks, true, no_crash, Some(&sema));
             prog.done(&format!("{:.1} KB  object", obj_bytes.len() as f64 / 1024.0));
 
             // ── Step 4: Linking ───────────────────────────────────────────────

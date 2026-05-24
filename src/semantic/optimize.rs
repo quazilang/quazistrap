@@ -234,7 +234,9 @@ impl Analyzer {
                 } => {
                     self.maybe_add_inline_candidate(name, body, attributes, item.span);
                 }
-                ItemKind::Impl { for_ty, methods, .. } => {
+                ItemKind::Impl {
+                    for_ty, methods, ..
+                } => {
                     let type_name = crate::semantic::declare::type_kind_base_name(&for_ty.node);
                     for method in methods {
                         if let ItemKind::Fn {
@@ -415,10 +417,7 @@ impl Analyzer {
                             self.push_warning(
                                 arm.span,
                                 "W05",
-                                format!(
-                                    "unreachable match arm '{}', already covered",
-                                    variant
-                                ),
+                                format!("unreachable match arm '{}', already covered", variant),
                             );
                             continue;
                         }

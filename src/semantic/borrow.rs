@@ -10,13 +10,6 @@ use super::*;
 
 // ── Copy / Move classification ────────────────────────────────────────────────
 
-/// Returns true if values of this type follow move semantics (i.e., are non-Copy).
-/// Only user-defined Named types (structs, enums) are non-Copy.
-/// All primitives, str, bool, void, any, arrays, and slices are Copy.
-fn is_move_type(ty: &TypeKind) -> bool {
-    matches!(ty, TypeKind::Named { .. })
-}
-
 // ── Per-variable ownership state ──────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -26,12 +19,6 @@ struct OwnedVar {
     moved_at: Option<Span>,
     /// Loop depth at declaration site (used to detect move-in-loop).
     loop_depth_at_decl: usize,
-}
-
-impl OwnedVar {
-    fn is_move_type(&self) -> bool {
-        self.ty.as_ref().map_or(false, |t| is_move_type(t))
-    }
 }
 
 // ── Scoped move environment ───────────────────────────────────────────────────
@@ -233,7 +220,10 @@ impl Analyzer {
                                 self.bc_expr(end, env, false);
                             }
                             ForIter::Iter(expr) => {
-                                self.bc_expr(expr, env, true);
+                                // `for x : iterable` only reads the iterable. Codegen keeps the
+                                // iterable value live across the loop for arrays and iterator
+                                // protocol calls, so ownership must not be consumed here.
+                                self.bc_expr(expr, env, false);
                             }
                         }
                         loop_env.enter_scope();
@@ -364,7 +354,12 @@ impl Analyzer {
                 self.bc_expr(inner, env, false);
             }
 
-            ExprKind::Call { callee, args, named_args, .. } => {
+            ExprKind::Call {
+                callee,
+                args,
+                named_args,
+                ..
+            } => {
                 self.bc_expr(callee, env, false);
                 for arg in args {
                     self.bc_expr(arg, env, true);
@@ -374,7 +369,12 @@ impl Analyzer {
                 }
             }
 
-            ExprKind::MethodCall { object, args, named_args, .. } => {
+            ExprKind::MethodCall {
+                object,
+                args,
+                named_args,
+                ..
+            } => {
                 self.bc_expr(object, env, false);
                 for arg in args {
                     self.bc_expr(arg, env, true);

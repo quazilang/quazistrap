@@ -101,10 +101,11 @@ fn emit_native_object(
 
     if target.emit_start {
         let stub_offset = text_bytes.len();
+        let no_crash = target.no_crash;
         let stub = if target.os == target::Os::Windows {
-            StartStub::generate_windows(stub_offset)
+            StartStub::generate_windows(stub_offset, no_crash)
         } else {
-            StartStub::generate(stub_offset)
+            StartStub::generate(stub_offset, no_crash)
         };
 
         obj.add_symbol(object::write::Symbol {

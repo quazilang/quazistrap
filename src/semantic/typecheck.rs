@@ -86,12 +86,18 @@ impl Analyzer {
                 if *unsafe_fn {
                     self.unsafe_depth += 1;
                 }
-                let fn_name = self.current_fn_name_override.take().unwrap_or_else(|| name.clone());
+                let fn_name = self
+                    .current_fn_name_override
+                    .take()
+                    .unwrap_or_else(|| name.clone());
                 self.current_function.push(fn_name);
                 self.enter_scope();
-                let fn_is_str_variadic = params.last().map(|p| {
-                    p.variadic && matches!(&p.ty.node, TypeKind::Str | TypeKind::Ref { .. })
-                }).unwrap_or(false);
+                let fn_is_str_variadic = params
+                    .last()
+                    .map(|p| {
+                        p.variadic && matches!(&p.ty.node, TypeKind::Str | TypeKind::Ref { .. })
+                    })
+                    .unwrap_or(false);
                 for p in params {
                     let ty = unwrap_type(&p.ty);
                     let ty = if p.variadic {
@@ -180,12 +186,13 @@ impl Analyzer {
                 // trait_depth is not incremented here because TraitMethod never
                 // reaches ItemKind::Fn; W05 is naturally exempt for them.
             }
-            ItemKind::Impl { for_ty, methods, .. } => {
+            ItemKind::Impl {
+                for_ty, methods, ..
+            } => {
                 let type_name = crate::semantic::declare::type_kind_base_name(&for_ty.node);
                 for method in methods {
                     if let ItemKind::Fn { name, .. } = &method.node {
-                        self.current_fn_name_override =
-                            Some(format!("{}.{}", type_name, name));
+                        self.current_fn_name_override = Some(format!("{}.{}", type_name, name));
                     }
                     self.type_check_item(method);
                 }
@@ -306,7 +313,6 @@ impl Analyzer {
                         );
                     }
                 }
-
 
                 self.declare(
                     name.clone(),
@@ -616,9 +622,11 @@ impl Analyzer {
                     } else if matches!(sym.kind, SymbolKind::Function) {
                         // Function name used as value → fn pointer type.
                         let return_ty = sym.ty.clone().unwrap_or(TypeKind::Void);
-                        let param_types: Vec<Type> = sym.params.iter().map(|p| {
-                            Spanned::new(p.clone(), expr.span)
-                        }).collect();
+                        let param_types: Vec<Type> = sym
+                            .params
+                            .iter()
+                            .map(|p| Spanned::new(p.clone(), expr.span))
+                            .collect();
                         // Ensure function is reachable even if never directly called.
                         let from = self
                             .current_function
@@ -770,7 +778,10 @@ impl Analyzer {
 
                 // Never propagate const_value from an assign expression — the assign
                 // has a side effect that must not be eliminated by const-folding.
-                ExprEval { ty: value_eval.ty, const_value: None }
+                ExprEval {
+                    ty: value_eval.ty,
+                    const_value: None,
+                }
             }
             ExprKind::Call {
                 callee,
@@ -819,16 +830,30 @@ impl Analyzer {
                         }
 
                         if !named_args.is_empty() {
-                            self.validate_named_args(callee.span, name, named_args, args.len(), &sym);
+                            self.validate_named_args(
+                                callee.span,
+                                name,
+                                named_args,
+                                args.len(),
+                                &sym,
+                            );
                         }
-                        let eval = self.check_function_call(name, callee.span, args, &arg_evals, &sym, type_args);
+                        let eval = self.check_function_call(
+                            name,
+                            callee.span,
+                            args,
+                            &arg_evals,
+                            &sym,
+                            type_args,
+                        );
                         self.annotate_expr(expr, &eval, reachable);
                         return eval;
                     }
 
                     // Function pointer variable or other callable expression.
                     if let Some(ref fn_ty) = sym.ty {
-                        if let TypeKind::Fn { params, return_ty } = self.resolve_type_aliases(fn_ty) {
+                        if let TypeKind::Fn { params, return_ty } = self.resolve_type_aliases(fn_ty)
+                        {
                             let expected_count = params.len();
                             let actual_count = arg_evals.len();
                             if actual_count != expected_count {
@@ -949,9 +974,17 @@ impl Analyzer {
                                 .resolve_for_read(method)
                                 .expect("symbol should resolve");
                             if !named_args.is_empty() {
-                                self.validate_named_args(expr.span, method, named_args, args.len(), &sym);
+                                self.validate_named_args(
+                                    expr.span,
+                                    method,
+                                    named_args,
+                                    args.len(),
+                                    &sym,
+                                );
                             }
-                            self.check_function_call(method, expr.span, args, &arg_evals, &sym, type_args)
+                            self.check_function_call(
+                                method, expr.span, args, &arg_evals, &sym, type_args,
+                            )
                         }
                     } else {
                         ExprEval::default()
@@ -970,41 +1003,62 @@ impl Analyzer {
                         if is_struct_ns {
                             let method_full = format!("{}.{}", struct_name, method);
                             if let Some(sym) = self.resolve_for_read(&method_full) {
-                                let arg_evals: Vec<ExprEval> = args.iter()
+                                let arg_evals: Vec<ExprEval> = args
+                                    .iter()
                                     .map(|a| self.type_check_expr(a, reachable))
                                     .collect();
                                 for (_, a) in named_args {
                                     self.type_check_expr(a, reachable);
                                 }
-                                let struct_params = self.struct_generic_params
+                                let struct_params = self
+                                    .struct_generic_params
                                     .get(struct_name.as_str())
                                     .cloned()
                                     .unwrap_or_default();
-                                let from = self.current_function.last()
+                                let from = self
+                                    .current_function
+                                    .last()
                                     .cloned()
                                     .unwrap_or_else(|| "__program__".to_string());
                                 let ret_ty = if !struct_params.is_empty() {
                                     let mut subst: std::collections::HashMap<String, TypeKind> =
                                         std::collections::HashMap::new();
-                                    for (param_ty, arg_eval) in sym.params.iter().zip(arg_evals.iter()) {
+                                    for (param_ty, arg_eval) in
+                                        sym.params.iter().zip(arg_evals.iter())
+                                    {
                                         if let Some(arg_ty) = &arg_eval.ty {
-                                            infer_type_subst(param_ty, arg_ty, &struct_params, &mut subst);
+                                            infer_type_subst(
+                                                param_ty,
+                                                arg_ty,
+                                                &struct_params,
+                                                &mut subst,
+                                            );
                                         }
                                     }
                                     if !subst.is_empty() {
-                                        let type_args: Vec<TypeKind> = struct_params.iter()
+                                        let type_args: Vec<TypeKind> = struct_params
+                                            .iter()
                                             .filter_map(|p| subst.get(p).cloned())
                                             .collect();
                                         if type_args.len() == struct_params.len() {
-                                            let mono_name = mangle_monomorphized(&method_full, &type_args);
-                                            if !self.monomorphizations.iter().any(|m| m.mangled_name == mono_name) {
+                                            let mono_name =
+                                                mangle_monomorphized(&method_full, &type_args);
+                                            if !self
+                                                .monomorphizations
+                                                .iter()
+                                                .any(|m| m.mangled_name == mono_name)
+                                            {
                                                 self.monomorphizations.push(MonomorphizationInfo {
                                                     fn_name: method_full.clone(),
                                                     type_args,
                                                     mangled_name: mono_name.clone(),
                                                 });
                                             }
-                                            self.add_dependency_edge(DependencyKind::Call, &from, &mono_name);
+                                            self.add_dependency_edge(
+                                                DependencyKind::Call,
+                                                &from,
+                                                &mono_name,
+                                            );
                                         }
                                     }
                                     sym.ty.as_ref().map(|t| substitute_type_kind(t, &subst))
@@ -1012,7 +1066,10 @@ impl Analyzer {
                                     sym.ty.clone()
                                 };
                                 self.add_dependency_edge(DependencyKind::Call, &from, &method_full);
-                                let eval = ExprEval { ty: ret_ty, const_value: None };
+                                let eval = ExprEval {
+                                    ty: ret_ty,
+                                    const_value: None,
+                                };
                                 self.annotate_expr(expr, &eval, reachable);
                                 return eval;
                             }
@@ -1020,37 +1077,179 @@ impl Analyzer {
                     }
 
                     let object_eval = self.type_check_expr(object, reachable);
-                    for arg in args {
-                        self.type_check_expr(arg, reachable);
-                    }
+                    let arg_evals: Vec<ExprEval> =
+                        args.iter().map(|arg| self.type_check_expr(arg, reachable)).collect();
+                    let named_arg_evals: Vec<(String, ExprEval)> = named_args
+                        .iter()
+                        .map(|(name, arg)| (name.clone(), self.type_check_expr(arg, reachable)))
+                        .collect();
 
                     // For Named types: impl method resolution takes priority over builtins.
                     // Returns Some(return_ty) when an impl method is found and side-effects recorded.
-                    let impl_resolved: Option<Option<TypeKind>> =
-                        if let Some(TypeKind::Named { name: type_name, type_args }) = &object_eval.ty.clone() {
-                            let mangled = format!("{}.{}", type_name, method);
-                            if let Some(sym) = self.resolve_for_read(&mangled) {
-                                let from = self
-                                    .current_function
-                                    .last()
-                                    .cloned()
-                                    .unwrap_or_else(|| "__program__".to_string());
-                                // Record monomorphization for generic receiver types.
+                    let impl_resolved: Option<Option<TypeKind>> = if let Some(TypeKind::Named {
+                        name: type_name,
+                        type_args,
+                    }) = &object_eval.ty.clone()
+                    {
+                        let mangled = format!("{}.{}", type_name, method);
+                        if let Some(sym) = self.resolve_for_read(&mangled) {
+                            let from = self
+                                .current_function
+                                .last()
+                                .cloned()
+                                .unwrap_or_else(|| "__program__".to_string());
+                            let subst: std::collections::HashMap<String, TypeKind> =
                                 if !type_args.is_empty() {
-                                    let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
-                                    let mono_name = mangle_monomorphized(&mangled, &type_kinds);
-                                    if !self.monomorphizations.iter().any(|m| m.mangled_name == mono_name) {
-                                        self.monomorphizations.push(MonomorphizationInfo {
-                                            fn_name: mangled.clone(),
-                                            type_args: type_kinds,
-                                            mangled_name: mono_name.clone(),
-                                        });
+                                    if let Some(struct_params) =
+                                        self.struct_generic_params.get(type_name.as_str())
+                                    {
+                                        struct_params
+                                            .iter()
+                                            .zip(type_args.iter())
+                                            .map(|(p, t)| (p.clone(), t.node.clone()))
+                                            .collect()
+                                    } else {
+                                        std::collections::HashMap::new()
                                     }
-                                    self.add_dependency_edge(DependencyKind::Call, &from, &mono_name);
+                                } else {
+                                    std::collections::HashMap::new()
+                                };
+                            let substituted_params: Vec<TypeKind> = sym
+                                .params
+                                .iter()
+                                .map(|p| substitute_type_kind(p, &subst))
+                                .collect();
+                            let method_params = substituted_params
+                                .get(1..)
+                                .unwrap_or(&[]);
+                            let positional_count = arg_evals.len();
+                            let total_arg_count = positional_count + named_arg_evals.len();
+                            let is_variadic = sym.variadic;
+                            let fixed_count = if is_variadic {
+                                method_params.len().saturating_sub(1)
+                            } else {
+                                method_params.len()
+                            };
+                            if !is_variadic && total_arg_count != method_params.len() {
+                                self.push_error(
+                                    expr.span,
+                                    "S08",
+                                    format!(
+                                        "expected {} args, got {}",
+                                        method_params.len(),
+                                        total_arg_count
+                                    ),
+                                );
+                            } else if is_variadic && total_arg_count < fixed_count {
+                                self.push_error(
+                                    expr.span,
+                                    "S08",
+                                    format!(
+                                        "expected at least {} args, got {}",
+                                        fixed_count, total_arg_count
+                                    ),
+                                );
+                            }
+                            for (i, arg_eval) in arg_evals.iter().enumerate() {
+                                let param_ty = if is_variadic && i >= fixed_count {
+                                    method_params.last()
+                                } else {
+                                    method_params.get(i)
+                                };
+                                if let (Some(param_ty), Some(arg_ty)) = (param_ty, &arg_eval.ty) {
+                                    if !self.types_compatible(param_ty, arg_ty) {
+                                        let span = args.get(i).map(|a| a.span).unwrap_or(expr.span);
+                                        self.push_error(
+                                            span,
+                                            "S08",
+                                            format!(
+                                                "arg {}: expected {}, got {}",
+                                                i + 1,
+                                                param_ty,
+                                                arg_ty
+                                            ),
+                                        );
+                                    }
                                 }
-                                self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
-                                if sym.unsafe_fn && self.unsafe_depth == 0 {
-                                    self.push_error(
+                            }
+                            if !named_arg_evals.is_empty() {
+                                let param_names = self
+                                    .fn_param_names
+                                    .get(&mangled)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                let mut seen: std::collections::HashSet<String> =
+                                    std::collections::HashSet::new();
+                                for (arg_name, arg_eval) in &named_arg_evals {
+                                    if !seen.insert(arg_name.clone()) {
+                                        self.push_error(
+                                            expr.span,
+                                            "S09",
+                                            format!("duplicate named argument `{}`", arg_name),
+                                        );
+                                        continue;
+                                    }
+                                    let Some(pos) = param_names.iter().position(|p| p == arg_name)
+                                    else {
+                                        self.push_error(
+                                            expr.span,
+                                            "S09",
+                                            format!(
+                                                "unknown parameter name `{}` for method `{}`",
+                                                arg_name, mangled
+                                            ),
+                                        );
+                                        continue;
+                                    };
+                                    if pos < positional_count {
+                                        self.push_error(
+                                            expr.span,
+                                            "S09",
+                                            format!(
+                                                "named argument `{}` conflicts with positional argument at position {}",
+                                                arg_name,
+                                                pos + 1
+                                            ),
+                                        );
+                                        continue;
+                                    }
+                                    if let (Some(param_ty), Some(arg_ty)) =
+                                        (method_params.get(pos), &arg_eval.ty)
+                                    {
+                                        if !self.types_compatible(param_ty, arg_ty) {
+                                            self.push_error(
+                                                expr.span,
+                                                "S09",
+                                                format!(
+                                                    "named argument `{}`: expected {}, got {}",
+                                                    arg_name, param_ty, arg_ty
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            // Record monomorphization for generic receiver types.
+                            if !type_args.is_empty() {
+                                let type_kinds: Vec<TypeKind> =
+                                    type_args.iter().map(|t| t.node.clone()).collect();
+                                let mono_name = mangle_monomorphized(&mangled, &type_kinds);
+                                if !self
+                                    .monomorphizations
+                                    .iter()
+                                    .any(|m| m.mangled_name == mono_name)
+                                {
+                                    self.monomorphizations.push(MonomorphizationInfo {
+                                        fn_name: mangled.clone(),
+                                        type_args: type_kinds,
+                                        mangled_name: mono_name.clone(),
+                                    });
+                                }
+                                self.add_dependency_edge(DependencyKind::Call, &from, &mono_name);
+                            }
+                            self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
+                            if sym.unsafe_fn && self.unsafe_depth == 0 {
+                                self.push_error(
                                         expr.span,
                                         "S11",
                                         format!(
@@ -1058,53 +1257,47 @@ impl Analyzer {
                                             type_name, method
                                         ),
                                     );
-                                }
-                                // Apply type substitution to return type for generic receivers.
-                                let ret_ty = if !type_args.is_empty() {
-                                    if let Some(struct_params) = self.struct_generic_params.get(type_name.as_str()) {
-                                        let subst: std::collections::HashMap<String, TypeKind> = struct_params.iter()
-                                            .zip(type_args.iter())
-                                            .map(|(p, t)| (p.clone(), t.node.clone()))
-                                            .collect();
-                                        sym.ty.map(|t| substitute_type_kind(&t, &subst))
-                                    } else {
-                                        sym.ty
-                                    }
-                                } else {
-                                    sym.ty
-                                };
-                                Some(ret_ty)
-                            } else {
-                                None
                             }
+                            // Apply type substitution to return type for generic receivers.
+                            let ret_ty = if !type_args.is_empty() {
+                                sym.ty.map(|t| substitute_type_kind(&t, &subst))
+                            } else {
+                                sym.ty
+                            };
+                            Some(ret_ty)
                         } else {
                             None
-                        };
+                        }
+                    } else {
+                        None
+                    };
 
                     // For Dyn receivers: validate the method exists on the trait and return Any.
-                    let dyn_resolved: Option<Option<TypeKind>> =
-                        if impl_resolved.is_none() {
-                            if let Some(TypeKind::Dyn { trait_name }) = &object_eval.ty {
-                                if let Some(slots) = self.trait_method_slots.get(trait_name.as_str()) {
-                                    if slots.contains(method) {
-                                        Some(Some(TypeKind::Any))
-                                    } else {
-                                        self.push_error(
-                                            expr.span,
-                                            "S04",
-                                            format!("trait `{}` has no method `{}`", trait_name, method),
-                                        );
-                                        Some(None)
-                                    }
+                    let dyn_resolved: Option<Option<TypeKind>> = if impl_resolved.is_none() {
+                        if let Some(TypeKind::Dyn { trait_name }) = &object_eval.ty {
+                            if let Some(slots) = self.trait_method_slots.get(trait_name.as_str()) {
+                                if slots.contains(method) {
+                                    Some(Some(TypeKind::Any))
                                 } else {
-                                    None
+                                    self.push_error(
+                                        expr.span,
+                                        "S04",
+                                        format!(
+                                            "trait `{}` has no method `{}`",
+                                            trait_name, method
+                                        ),
+                                    );
+                                    Some(None)
                                 }
                             } else {
                                 None
                             }
                         } else {
                             None
-                        };
+                        }
+                    } else {
+                        None
+                    };
 
                     let ty = if let Some(impl_ty) = impl_resolved {
                         impl_ty
@@ -1192,15 +1385,24 @@ impl Analyzer {
                 let obj_eval = self.type_check_expr(object, reachable);
                 // Resolve field type from struct_defs, substituting generic params when present.
                 let field_ty = match &obj_eval.ty {
-                    Some(TypeKind::Named { name: struct_name, type_args }) => {
-                        let raw = self.struct_defs
+                    Some(TypeKind::Named {
+                        name: struct_name,
+                        type_args,
+                    }) => {
+                        let raw = self
+                            .struct_defs
                             .get(struct_name)
                             .and_then(|fields| fields.iter().find(|(fn_, _)| fn_ == name))
                             .map(|(_, ty)| ty.clone());
                         if let Some(raw_ty) = raw {
-                            let gp = self.struct_generic_params.get(struct_name).cloned().unwrap_or_default();
+                            let gp = self
+                                .struct_generic_params
+                                .get(struct_name)
+                                .cloned()
+                                .unwrap_or_default();
                             if !gp.is_empty() && !type_args.is_empty() {
-                                let subst: std::collections::HashMap<String, TypeKind> = gp.iter()
+                                let subst: std::collections::HashMap<String, TypeKind> = gp
+                                    .iter()
                                     .zip(type_args.iter())
                                     .map(|(p, a)| (p.clone(), a.node.clone()))
                                     .collect();
@@ -1214,7 +1416,10 @@ impl Analyzer {
                     }
                     _ => None,
                 };
-                ExprEval { ty: field_ty, const_value: None }
+                ExprEval {
+                    ty: field_ty,
+                    const_value: None,
+                }
             }
             ExprKind::StructInit { name, fields } => {
                 if let Some(field_defs) = self.struct_defs.get(name).cloned() {
@@ -1274,13 +1479,19 @@ impl Analyzer {
                     self.enter_scope();
                     // Build a map: binding_name → field type for Variant patterns.
                     let binding_types: std::collections::HashMap<String, TypeKind> =
-                        if let PatternKind::Variant { enum_name, variant, sub_patterns } = &arm.pattern.node {
-                            let resolved_enum = enum_name.clone()
-                                .or_else(|| {
-                                    if let Some(TypeKind::Named { name, .. }) = &scrutinee_eval.ty {
-                                        Some(name.clone())
-                                    } else { None }
-                                });
+                        if let PatternKind::Variant {
+                            enum_name,
+                            variant,
+                            sub_patterns,
+                        } = &arm.pattern.node
+                        {
+                            let resolved_enum = enum_name.clone().or_else(|| {
+                                if let Some(TypeKind::Named { name, .. }) = &scrutinee_eval.ty {
+                                    Some(name.clone())
+                                } else {
+                                    None
+                                }
+                            });
                             if let Some(ename) = resolved_enum {
                                 if let Some(info) = self.enums.get(&ename) {
                                     if let Some(field_tys) = info.variant_fields.get(variant) {
@@ -1297,12 +1508,23 @@ impl Analyzer {
                                             }
                                         }
                                         m
-                                    } else { std::collections::HashMap::new() }
-                                } else { std::collections::HashMap::new() }
-                            } else { std::collections::HashMap::new() }
-                        } else { std::collections::HashMap::new() };
+                                    } else {
+                                        std::collections::HashMap::new()
+                                    }
+                                } else {
+                                    std::collections::HashMap::new()
+                                }
+                            } else {
+                                std::collections::HashMap::new()
+                            }
+                        } else {
+                            std::collections::HashMap::new()
+                        };
                     for binding in bindings {
-                        let ty = binding_types.get(&binding).cloned().unwrap_or(TypeKind::Any);
+                        let ty = binding_types
+                            .get(&binding)
+                            .cloned()
+                            .unwrap_or(TypeKind::Any);
                         self.declare(
                             binding,
                             Symbol {
@@ -1332,10 +1554,7 @@ impl Analyzer {
                                 self.push_error(
                                     guard.span,
                                     "S01",
-                                    format!(
-                                        "match guard must be bool, got {}",
-                                        guard_ty
-                                    ),
+                                    format!("match guard must be bool, got {}", guard_ty),
                                 );
                             }
                         }
@@ -1449,8 +1668,10 @@ impl Analyzer {
             }
             ExprKind::Index { object, indices } => {
                 let obj_eval = self.type_check_expr(object, reachable);
-                let idx_evals: Vec<ExprEval> =
-                    indices.iter().map(|i| self.type_check_expr(i, reachable)).collect();
+                let idx_evals: Vec<ExprEval> = indices
+                    .iter()
+                    .map(|i| self.type_check_expr(i, reachable))
+                    .collect();
 
                 // Named type that explicitly implements the Index trait → dispatch to Type.index.
                 // Checks trait_impls registry so accidental `fn index` methods don't trigger [].
@@ -1463,7 +1684,11 @@ impl Analyzer {
                             .unwrap_or(false);
                         if implements_index {
                             let m = format!("{}.index", tn);
-                            if self.resolve_for_read(&m).is_some() { Some(m) } else { None }
+                            if self.resolve_for_read(&m).is_some() {
+                                Some(m)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -1534,21 +1759,20 @@ impl Analyzer {
                 let inner_eval = self.type_check_expr(inner, reachable);
                 // Validate the inner expression is Result or Option.
                 match &inner_eval.ty {
-                    Some(TypeKind::Named { name, .. })
-                        if name == "Result" || name == "Option" => {}
+                    Some(TypeKind::Named { name, .. }) if name == "Result" || name == "Option" => {}
                     Some(ty) => self.push_error(
                         expr.span,
                         "S14",
-                        format!(
-                            "`?` operator requires Result or Option, got {}",
-                            ty
-                        ),
+                        format!("`?` operator requires Result or Option, got {}", ty),
                     ),
                     None => {}
                 }
                 // Result type of `?` is the unwrapped payload — can't resolve generics
                 // at this stage, so annotate as Any for now.
-                ExprEval { ty: Some(TypeKind::Any), const_value: None }
+                ExprEval {
+                    ty: Some(TypeKind::Any),
+                    const_value: None,
+                }
             }
 
             ExprKind::Closure { params, body } => {
@@ -1585,7 +1809,10 @@ impl Analyzer {
                     params: param_types,
                     return_ty: Box::new(Spanned::new(return_ty, expr.span)),
                 };
-                ExprEval { ty: Some(fn_ty), const_value: None }
+                ExprEval {
+                    ty: Some(fn_ty),
+                    const_value: None,
+                }
             }
         };
 
@@ -1609,24 +1836,41 @@ impl Analyzer {
         positional_count: usize,
         sym: &Symbol,
     ) {
-        let param_names = self.fn_param_names.get(fn_name).cloned().unwrap_or_default();
+        let param_names = self
+            .fn_param_names
+            .get(fn_name)
+            .cloned()
+            .unwrap_or_default();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for (arg_name, arg_expr) in named_args {
             if !seen.insert(arg_name.clone()) {
-                self.push_error(arg_expr.span, "S09", format!("duplicate named argument `{}`", arg_name));
+                self.push_error(
+                    arg_expr.span,
+                    "S09",
+                    format!("duplicate named argument `{}`", arg_name),
+                );
                 continue;
             }
             let Some(pos) = param_names.iter().position(|p| p == arg_name) else {
                 self.push_error(
-                    arg_expr.span, "S09",
-                    format!("unknown parameter name `{}` for function `{}`", arg_name, fn_name),
+                    arg_expr.span,
+                    "S09",
+                    format!(
+                        "unknown parameter name `{}` for function `{}`",
+                        arg_name, fn_name
+                    ),
                 );
                 continue;
             };
             if pos < positional_count {
                 self.push_error(
-                    arg_expr.span, "S09",
-                    format!("named argument `{}` conflicts with positional argument at position {}", arg_name, pos + 1),
+                    arg_expr.span,
+                    "S09",
+                    format!(
+                        "named argument `{}` conflicts with positional argument at position {}",
+                        arg_name,
+                        pos + 1
+                    ),
                 );
                 continue;
             }
@@ -1635,8 +1879,12 @@ impl Analyzer {
             if let (Some(param_ty), Some(arg_ty)) = (sym.params.get(pos), eval.ty) {
                 if !self.types_compatible(param_ty, &arg_ty) {
                     self.push_error(
-                        arg_expr.span, "S09",
-                        format!("named argument `{}`: expected {}, got {}", arg_name, param_ty, arg_ty),
+                        arg_expr.span,
+                        "S09",
+                        format!(
+                            "named argument `{}`: expected {}, got {}",
+                            arg_name, param_ty, arg_ty
+                        ),
                     );
                 }
             }
@@ -1660,7 +1908,8 @@ impl Analyzer {
         // Resolve alias imports to the original function name for call tracking.
         // `import foo.bar as baz` → record counts and edges under "bar", not "baz".
         let canonical = if sym.is_import {
-            sym.import_path.as_ref()
+            sym.import_path
+                .as_ref()
                 .and_then(|p| p.rsplit('.').next())
                 .unwrap_or(name)
         } else {
@@ -1669,23 +1918,26 @@ impl Analyzer {
         *self.call_counts.entry(canonical.to_string()).or_insert(0) += 1;
 
         // Build substitution map if this is a generic function call with type arguments.
-        let subst: std::collections::HashMap<String, TypeKind> = if !sym.generic_params.is_empty()
-            && type_args.len() == sym.generic_params.len()
-        {
-            let mut map = std::collections::HashMap::new();
-            for (param, arg) in sym.generic_params.iter().zip(type_args.iter()) {
-                map.insert(param.clone(), arg.node.clone());
-            }
-            map
-        } else {
-            std::collections::HashMap::new()
-        };
+        let subst: std::collections::HashMap<String, TypeKind> =
+            if !sym.generic_params.is_empty() && type_args.len() == sym.generic_params.len() {
+                let mut map = std::collections::HashMap::new();
+                for (param, arg) in sym.generic_params.iter().zip(type_args.iter()) {
+                    map.insert(param.clone(), arg.node.clone());
+                }
+                map
+            } else {
+                std::collections::HashMap::new()
+            };
 
         // Record monomorphization and add dependency edge.
         if !subst.is_empty() {
             let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
             let mangled = mangle_monomorphized(name, &type_kinds);
-            if !self.monomorphizations.iter().any(|m| m.mangled_name == mangled) {
+            if !self
+                .monomorphizations
+                .iter()
+                .any(|m| m.mangled_name == mangled)
+            {
                 self.monomorphizations.push(MonomorphizationInfo {
                     fn_name: name.to_string(),
                     type_args: type_kinds.clone(),
@@ -1699,7 +1951,8 @@ impl Analyzer {
 
         // Apply substitution to param types for checking.
         let substituted_params: Vec<TypeKind> = if !subst.is_empty() {
-            sym.params.iter()
+            sym.params
+                .iter()
                 .map(|p| substitute_type_kind(p, &subst))
                 .collect()
         } else {
@@ -1748,7 +2001,11 @@ impl Analyzer {
             self.push_error(
                 callee_span,
                 "S08",
-                format!("expected {} args, got {}", substituted_params.len(), total_arg_count),
+                format!(
+                    "expected {} args, got {}",
+                    substituted_params.len(),
+                    total_arg_count
+                ),
             );
         } else if is_variadic && total_arg_count < effective_non_variadic_count {
             self.push_error(
@@ -1756,8 +2013,7 @@ impl Analyzer {
                 "S08",
                 format!(
                     "expected at least {} args, got {}",
-                    effective_non_variadic_count,
-                    total_arg_count
+                    effective_non_variadic_count, total_arg_count
                 ),
             );
         } else {
@@ -1787,14 +2043,13 @@ impl Analyzer {
             if is_variadic {
                 if let Some(elem_ty) = effective_variadic_elem {
                     let var_start = effective_non_variadic_count;
-                    for (i, arg_ty) in arg_evals[var_start..]
-                        .iter()
-                        .map(|e| &e.ty)
-                        .enumerate()
-                    {
+                    for (i, arg_ty) in arg_evals[var_start..].iter().map(|e| &e.ty).enumerate() {
                         if let Some(at) = arg_ty {
                             if !self.types_compatible(elem_ty, at) {
-                                let span = args.get(var_start + i).map(|a| a.span).unwrap_or(callee_span);
+                                let span = args
+                                    .get(var_start + i)
+                                    .map(|a| a.span)
+                                    .unwrap_or(callee_span);
                                 self.push_error(
                                     span,
                                     "S08",
@@ -2208,9 +2463,7 @@ impl Analyzer {
             // Integer ↔ *T: enables null pointer constants (var p: *u8 = 0) and
             // address literals (var p: *u8 = some_usize). Dereference still requires
             // unsafe {}, so the programmer is responsible for correctness.
-            (a, TypeKind::RawPtr { .. }) | (TypeKind::RawPtr { .. }, a)
-                if Self::is_integer(a) =>
-            {
+            (a, TypeKind::RawPtr { .. }) | (TypeKind::RawPtr { .. }, a) if Self::is_integer(a) => {
                 true
             }
             (TypeKind::RawPtr { .. }, TypeKind::Ref { .. })
@@ -2296,7 +2549,10 @@ fn type_contains_any(ty: &TypeKind) -> bool {
 
 /// Substitute generic type parameters with concrete types.
 /// Replaces `Named(name, [])` when `name` is a key in `subst`.
-pub(super) fn substitute_type_kind(ty: &TypeKind, subst: &std::collections::HashMap<String, TypeKind>) -> TypeKind {
+pub(super) fn substitute_type_kind(
+    ty: &TypeKind,
+    subst: &std::collections::HashMap<String, TypeKind>,
+) -> TypeKind {
     match ty {
         TypeKind::Named { name, type_args } if type_args.is_empty() => {
             if let Some(concrete) = subst.get(name) {
@@ -2306,13 +2562,17 @@ pub(super) fn substitute_type_kind(ty: &TypeKind, subst: &std::collections::Hash
             }
         }
         TypeKind::Named { name, type_args } => {
-            let new_args: Vec<Type> = type_args.iter()
+            let new_args: Vec<Type> = type_args
+                .iter()
                 .map(|a| {
                     let new_node = substitute_type_kind(&a.node, subst);
                     Spanned::new(new_node, a.span)
                 })
                 .collect();
-            TypeKind::Named { name: name.clone(), type_args: new_args }
+            TypeKind::Named {
+                name: name.clone(),
+                type_args: new_args,
+            }
         }
         TypeKind::Ref { inner } => TypeKind::Ref {
             inner: Box::new(Spanned::new(
@@ -2357,8 +2617,15 @@ fn infer_type_subst(
                 subst.entry(name.clone()).or_insert_with(|| arg_ty.clone());
             }
         }
-        TypeKind::Named { name: pname, type_args: pargs } => {
-            if let TypeKind::Named { name: aname, type_args: aargs } = arg_ty {
+        TypeKind::Named {
+            name: pname,
+            type_args: pargs,
+        } => {
+            if let TypeKind::Named {
+                name: aname,
+                type_args: aargs,
+            } = arg_ty
+            {
                 if pname == aname {
                     for (pa, aa) in pargs.iter().zip(aargs.iter()) {
                         infer_type_subst(&pa.node, &aa.node, generic_params, subst);
@@ -2372,7 +2639,8 @@ fn infer_type_subst(
 
 /// Build a mangled name for a monomorphized function: `fn_name.<type1>.<type2>`
 pub(crate) fn mangle_monomorphized(name: &str, type_args: &[TypeKind]) -> String {
-    let type_suffix: Vec<String> = type_args.iter()
+    let type_suffix: Vec<String> = type_args
+        .iter()
         .map(|t| format!("{}", t).replace(|c: char| !c.is_alphanumeric(), "_"))
         .collect();
     format!("{}<{}>", name, type_suffix.join(","))

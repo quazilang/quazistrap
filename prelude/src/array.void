@@ -1,6 +1,7 @@
 // prelude.array — safe generic dynamic array backed by heap memory
 import std.core;
 import traits;
+import panic.panic;
 
 // Internal: write val into base[idx * 8]. @intrinsic bypasses S12.
 @intrinsic("void.array.store")
@@ -30,27 +31,35 @@ impl Array[T] {
         ret self;
     }
 
-    pub fn push(self: Array[T], val: T) Array[T] {
+    pub fn push(self: Array[T], val: T) void {
         if (self.len >= self.cap) {
-            var new_cap: usize = self.cap * 2;
-            var new_ptr: *u8;
-            unsafe { new_ptr = core.realloc(self.ptr, new_cap * 8); }
-            __ptr_store(new_ptr, self.len, val);
-            ret Array { ptr: new_ptr, len: self.len + 1, cap: new_cap };
+            self.cap = self.cap * 2;
+            unsafe { self.ptr = core.realloc(self.ptr, self.cap * 8); }
         }
         __ptr_store(self.ptr, self.len, val);
-        ret Array { ptr: self.ptr, len: self.len + 1, cap: self.cap };
+        self.len = self.len + 1;
     }
 
     pub fn get(self: Array[T], idx: usize) T {
         if (idx >= self.len) {
-            core.exit(1);
+            panic("index out of bounds");
         }
         ret __ptr_load(self.ptr, idx);
     }
 
+    pub fn set(self: Array[T], idx: usize, val: T) void {
+        if (idx >= self.len) {
+            panic("index out of bounds");
+        }
+        __ptr_store(self.ptr, idx, val);
+    }
+
     pub fn len(self: Array[T]) usize {
         ret self.len;
+    }
+
+    pub fn is_empty(self: Array[T]) bool {
+        ret self.len == 0;
     }
 
     pub fn free(self: Array[T]) void {

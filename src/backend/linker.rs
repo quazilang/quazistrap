@@ -98,15 +98,43 @@ impl LinkerInvocation {
             Os::Linux => {
                 args.push("--gc-sections".into());
                 args.push("--build-id=none".into());
-                args.push("--strip-all".into());
                 args.push("-o".into());
                 args.push(self.output.as_os_str().into());
                 args.push(self.object.as_os_str().into());
-                args.push("-L/usr/lib".into());
+                // Ensure dynamic linker is set up so PLT/GOT resolves correctly.
+                if let Some(interp) = find_dynamic_linker() {
+                    args.push("-dynamic-linker".into());
+                    args.push(interp.into());
+                }
+                // Common multiarch and legacy library directories.
+                for dir in &[
+                    "/usr/lib/x86_64-linux-gnu",
+                    "/lib/x86_64-linux-gnu",
+                    "/usr/lib64",
+                    "/lib64",
+                    "/usr/lib",
+                    "/lib",
+                ] {
+                    if Path::new(dir).is_dir() {
+                        args.push(format!("-L{}", dir).into());
+                    }
+                }
                 args.push("-z".into());
                 args.push("noseparate-code".into());
                 args.push("-z".into());
                 args.push("max-page-size=0x1000".into()); // 4KB instead of default 2MB
+                // ld.lld cannot parse GNU linker scripts, so link the actual
+                // ELF shared objects by full path.
+                if let Some(libc) = find_system_so("libc") {
+                    args.push(libc.into());
+                } else {
+                    args.push("-lc".into());
+                }
+                if let Some(libm) = find_system_so("libm") {
+                    args.push(libm.into());
+                } else {
+                    args.push("-lm".into());
+                }
             }
             Os::MacOs => {
                 args.push("-o".into());
@@ -139,6 +167,34 @@ impl LinkerInvocation {
 
         args
     }
+}
+
+/// Search common Linux directories for the dynamic linker (ld-linux.so).
+fn find_dynamic_linker() -> Option<PathBuf> {
+    let candidates: &[&str] = &[
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+    ];
+    candidates.iter().map(Path::new).find(|p| p.exists()).map(Path::to_path_buf)
+}
+
+/// Search common Linux directories for the actual ELF shared object of a system library
+/// (e.g. "libc" → /lib/x86_64-linux-gnu/libc.so.6).
+/// This avoids GNU linker scripts that ld.lld cannot parse.
+fn find_system_so(name: &str) -> Option<PathBuf> {
+    let candidates: Vec<PathBuf> = [
+        "/lib/x86_64-linux-gnu",
+        "/usr/lib/x86_64-linux-gnu",
+        "/lib64",
+        "/usr/lib64",
+        "/lib",
+        "/usr/lib",
+    ]
+    .iter()
+    .map(|dir| Path::new(dir).join(format!("{}.so.6", name)))
+    .collect();
+    candidates.into_iter().find(|p| p.exists())
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -190,6 +246,7 @@ mod tests {
                 os: Os::Linux,
                 abi: Abi::SysV,
                 emit_start: true,
+                no_crash: false,
             },
         };
 
@@ -199,7 +256,6 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
-        assert!(args.contains(&"--strip-all".to_string()));
         assert!(args.contains(&"--gc-sections".to_string()));
         assert!(args.contains(&"--build-id=none".to_string()));
         assert!(args.windows(2).any(|pair| pair == ["-z", "noseparate-code"]));

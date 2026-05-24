@@ -27,6 +27,8 @@ pub struct TargetSpec {
     pub abi: Abi,
     /// Whether to emit a _start stub (false for -c / shared lib).
     pub emit_start: bool,
+    /// Whether to omit crash-handler registration in the entry stub.
+    pub no_crash: bool,
 }
 
 impl TargetSpec {
@@ -37,6 +39,7 @@ impl TargetSpec {
             os: Os::Linux,
             abi: Abi::SysV,
             emit_start: true,
+            no_crash: false,
         };
 
         #[cfg(target_os = "macos")]
@@ -45,6 +48,7 @@ impl TargetSpec {
             os: Os::MacOs,
             abi: Abi::SysV,
             emit_start: false,
+            no_crash: false,
         };
 
         #[cfg(target_os = "windows")]
@@ -53,6 +57,7 @@ impl TargetSpec {
             os: Os::Windows,
             abi: Abi::Win64,
             emit_start: true, // emit mainCRTStartup stub
+            no_crash: false,
         };
 
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -61,6 +66,7 @@ impl TargetSpec {
             os: Os::Linux,
             abi: Abi::SysV,
             emit_start: true,
+            no_crash: false,
         };
     }
 
@@ -79,6 +85,11 @@ impl TargetSpec {
 
     pub fn without_start(mut self) -> Self {
         self.emit_start = false;
+        self
+    }
+
+    pub fn with_no_crash(mut self) -> Self {
+        self.no_crash = true;
         self
     }
 }
