@@ -138,7 +138,9 @@ impl Instruction {
             | Opcode::Dup
             | Opcode::Move
             | Opcode::Drop => "\x1b[34m", // blue   – data movement
-            Opcode::Load | Opcode::Store | Opcode::Lea | Opcode::ArrayStore | Opcode::ArrayLoad => "\x1b[35m",            // magenta – memory
+            Opcode::Load | Opcode::Store | Opcode::Lea | Opcode::ArrayStore | Opcode::ArrayLoad => {
+                "\x1b[35m"
+            } // magenta – memory
             Opcode::New
             | Opcode::NewObj
             | Opcode::FieldLoad
@@ -357,7 +359,7 @@ impl Instruction {
             Opcode::New | Opcode::NewObj => {
                 let (d, v) = self.ri16();
                 format!("{cop}{}, {}", r(d), imm(v))
-            },
+            }
             _ => todo!("disasm for {op:?}"),
         }
     }

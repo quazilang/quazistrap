@@ -514,9 +514,35 @@ impl Analyzer {
                             }
                             ForIter::Iter(expr) => {
                                 let iter_eval = self.type_check_expr(expr, true);
-                                match &iter_eval.ty {
+                                let iter_ty = iter_eval.ty.as_ref().map(|t| {
+                                    if let TypeKind::Ref { inner } = t {
+                                        &inner.node
+                                    } else {
+                                        t
+                                    }
+                                });
+                                match iter_ty {
                                     Some(TypeKind::Array { elem_ty, .. }) => elem_ty.node.clone(),
                                     Some(TypeKind::Slice { elem_ty }) => elem_ty.node.clone(),
+                                    Some(TypeKind::Named { name, type_args }) if name == "Array" => {
+                                        if !type_args.is_empty() {
+                                            let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
+                                            let from = self.current_function.last().cloned().unwrap_or_else(|| "__program__".to_string());
+                                            for method in ["Array.len", "Array.get"] {
+                                                let mangled = mangle_monomorphized(method, &type_kinds);
+                                                if !self.monomorphizations.iter().any(|m| m.mangled_name == mangled) {
+                                                    self.monomorphizations.push(MonomorphizationInfo {
+                                                        fn_name: method.to_string(),
+                                                        type_args: type_kinds.clone(),
+                                                        mangled_name: mangled.clone(),
+                                                    });
+                                                }
+                                                self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
+                                                self.add_dependency_edge(DependencyKind::Call, &from, method);
+                                            }
+                                        }
+                                        type_args.first().map(|t| t.node.clone()).unwrap_or(TypeKind::Any)
+                                    }
                                     _ => TypeKind::Any,
                                 }
                             }
@@ -1077,8 +1103,10 @@ impl Analyzer {
                     }
 
                     let object_eval = self.type_check_expr(object, reachable);
-                    let arg_evals: Vec<ExprEval> =
-                        args.iter().map(|arg| self.type_check_expr(arg, reachable)).collect();
+                    let arg_evals: Vec<ExprEval> = args
+                        .iter()
+                        .map(|arg| self.type_check_expr(arg, reachable))
+                        .collect();
                     let named_arg_evals: Vec<(String, ExprEval)> = named_args
                         .iter()
                         .map(|(name, arg)| (name.clone(), self.type_check_expr(arg, reachable)))
@@ -1119,9 +1147,7 @@ impl Analyzer {
                                 .iter()
                                 .map(|p| substitute_type_kind(p, &subst))
                                 .collect();
-                            let method_params = substituted_params
-                                .get(1..)
-                                .unwrap_or(&[]);
+                            let method_params = substituted_params.get(1..).unwrap_or(&[]);
                             let positional_count = arg_evals.len();
                             let total_arg_count = positional_count + named_arg_evals.len();
                             let is_variadic = sym.variadic;

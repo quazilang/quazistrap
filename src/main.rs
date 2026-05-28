@@ -65,7 +65,11 @@ fn run_pipeline(
 ) {
     let program = &semantic::strip_cfg(program);
     let sema_report = analyze_program_with_source_files(
-        src, program, library_fn_names, library_char_ranges, source_files.clone(),
+        src,
+        program,
+        library_fn_names,
+        library_char_ranges,
+        source_files.clone(),
     );
     if !report_diagnostics(&sema_report, src, &source_files) {
         std::process::exit(1);
@@ -171,15 +175,10 @@ fn strip_binary(path: &Path) {
         // Check PATH
         std::env::var_os("PATH")
             .and_then(|paths| {
-                std::env::split_paths(&paths)
-                    .find_map(|dir| {
-                        let full = dir.join(name);
-                        if full.is_file() {
-                            Some(full)
-                        } else {
-                            None
-                        }
-                    })
+                std::env::split_paths(&paths).find_map(|dir| {
+                    let full = dir.join(name);
+                    if full.is_file() { Some(full) } else { None }
+                })
             })
             .or_else(|| {
                 // Check current dir / common locations
@@ -193,7 +192,9 @@ fn strip_binary(path: &Path) {
             let _ = std::process::Command::new(&strip_path).arg(path).status();
         }
         None => {
-            eprintln!("\r\x1b[K\x1b[33;1mwarning:\x1b[0m no strip tool found; debug symbols retained");
+            eprintln!(
+                "\r\x1b[K\x1b[33;1mwarning:\x1b[0m no strip tool found; debug symbols retained"
+            );
         }
     }
 }
@@ -331,7 +332,11 @@ fn run_check(
 ) {
     let program = &semantic::strip_cfg(program);
     let report = analyze_program_with_source_files(
-        src, program, library_fn_names, library_char_ranges, source_files.clone(),
+        src,
+        program,
+        library_fn_names,
+        library_char_ranges,
+        source_files.clone(),
     );
     if !report_diagnostics(&report, src, &source_files) {
         std::process::exit(1);
@@ -419,7 +424,8 @@ fn scaffold_project(root: &PathBuf, pkg_name: &str, lib: bool) {
         );
         write_file(&root.join("void.toml"), &toml);
 
-        let main_src = "import std.io;\n\nfn main() void {\n    io.println(\"Hello, World!\");\n    ret;\n}\n";
+        let main_src =
+            "import std.io;\n\nfn main() void {\n    io.println(\"Hello, World!\");\n    ret;\n}\n";
         write_file(&src_dir.join("main.void"), main_src);
     }
 }
@@ -442,7 +448,10 @@ fn create_new_project(name: &str, lib: bool) {
 
 fn init_project(lib: bool) {
     let cwd = std::env::current_dir().unwrap_or_else(|e| {
-        eprintln!("\x1b[31;1merror:\x1b[0m cannot get current directory: {}", e);
+        eprintln!(
+            "\x1b[31;1merror:\x1b[0m cannot get current directory: {}",
+            e
+        );
         std::process::exit(1);
     });
 
@@ -565,15 +574,14 @@ fn build_with_progress(
     explicit_linker: Option<&Path>,
     do_strip: bool,
 ) {
-    use progress::{BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count};
+    use progress::{
+        BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count,
+    };
 
     let mut prog = BuildProgress::new();
 
     // Header line.
-    let input_name = files[0]
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("?");
+    let input_name = files[0].file_name().and_then(|s| s.to_str()).unwrap_or("?");
     let out_name = Path::new(out)
         .file_name()
         .and_then(|s| s.to_str())
@@ -594,7 +602,11 @@ fn build_with_progress(
         "{} tokens · {} file{}",
         fmt_count(result.token_count),
         result.loaded_files.len(),
-        if result.loaded_files.len() == 1 { "" } else { "s" }
+        if result.loaded_files.len() == 1 {
+            ""
+        } else {
+            "s"
+        }
     );
     prog.done(&tok_info);
 
@@ -615,10 +627,22 @@ fn build_with_progress(
         eprintln!("{}", parse_err);
         std::process::exit(1);
     }
-    let user_items = result.program.items.iter()
-        .filter(|item| !result.library_char_ranges.iter().any(|r| r.contains(&item.span.start)))
+    let user_items = result
+        .program
+        .items
+        .iter()
+        .filter(|item| {
+            !result
+                .library_char_ranges
+                .iter()
+                .any(|r| r.contains(&item.span.start))
+        })
         .count();
-    prog.done(&format!("{} item{}", user_items, if user_items == 1 { "" } else { "s" }));
+    prog.done(&format!(
+        "{} item{}",
+        user_items,
+        if user_items == 1 { "" } else { "s" }
+    ));
 
     // ── Step 3: Codegen (analyze + bytecode) ─────────────────────────────────
     prog.begin("Codegen");
@@ -640,7 +664,9 @@ fn build_with_progress(
     }
 
     if debug {
-        for chunk in &chunks { eprint!("{}", chunk); }
+        for chunk in &chunks {
+            eprint!("{}", chunk);
+        }
     }
 
     // Print warnings + errors.
@@ -650,7 +676,9 @@ fn build_with_progress(
             w.render_with_source_files(&result.merged_source, &result.source_files)
         );
     }
-    for hint in &sema.suggestions { eprintln!("\x1b[2mhint: {}\x1b[0m", hint.message); }
+    for hint in &sema.suggestions {
+        eprintln!("\x1b[2mhint: {}\x1b[0m", hint.message);
+    }
     if has_errors {
         for e in &sema.errors {
             eprintln!(
@@ -696,7 +724,10 @@ fn build_with_progress(
             prog.begin(&format!("Native  {}", arch));
             let no_crash = source_contains_no_crash(&result.merged_source);
             let obj_bytes = compile_to_object(&chunks, true, no_crash, Some(&sema));
-            prog.done(&format!("{:.1} KB  object", obj_bytes.len() as f64 / 1024.0));
+            prog.done(&format!(
+                "{:.1} KB  object",
+                obj_bytes.len() as f64 / 1024.0
+            ));
 
             // ── Step 4: Linking ───────────────────────────────────────────────
             prog.begin("Linking");
@@ -704,11 +735,12 @@ fn build_with_progress(
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or(out);
-            let tmp_obj = backend::linker::write_temp_object(&obj_bytes, stem).unwrap_or_else(|e| {
-                prog.fail("error");
-                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
-            });
+            let tmp_obj =
+                backend::linker::write_temp_object(&obj_bytes, stem).unwrap_or_else(|e| {
+                    prog.fail("error");
+                    eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+                    std::process::exit(1);
+                });
 
             let flags = link_flags.unwrap_or(&[]);
             let mut inv = backend::linker::LinkerInvocation::new(
@@ -723,7 +755,9 @@ fn build_with_progress(
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
             });
-            if let Some(lnk) = explicit_linker { inv.linker = lnk.to_path_buf(); }
+            if let Some(lnk) = explicit_linker {
+                inv.linker = lnk.to_path_buf();
+            }
 
             inv.run().unwrap_or_else(|e| {
                 backend::linker::remove_temp(&tmp_obj);
@@ -758,7 +792,9 @@ fn main() {
         unsafe extern "system" {
             fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
         }
-        unsafe { SetConsoleOutputCP(65001); }
+        unsafe {
+            SetConsoleOutputCP(65001);
+        }
     }
     let args = Args::parse();
 
@@ -793,21 +829,25 @@ fn main() {
 
                 // Library projects default to bytecode output; binaries default to native binary.
                 let is_lib = ctx.config.kind == project::ProjectKind::Lib;
-                let effective_emit = if is_lib && matches!(emit, EmitType::Binary) && !emit_bytecode && !emit_object {
-                    EmitType::Bytecode
-                } else {
-                    emit.clone()
-                };
+                let effective_emit =
+                    if is_lib && matches!(emit, EmitType::Binary) && !emit_bytecode && !emit_object
+                    {
+                        EmitType::Bytecode
+                    } else {
+                        emit.clone()
+                    };
                 let effective_strip = strip && matches!(effective_emit, EmitType::Binary);
 
                 if is_lib && matches!(emit, EmitType::Binary) && !emit_bytecode && !emit_object {
-                    eprintln!("\x1b[33;1mnote:\x1b[0m library project — emitting bytecode (.vbc). Use -c for object file.");
+                    eprintln!(
+                        "\x1b[33;1mnote:\x1b[0m library project — emitting bytecode (.vbc). Use -c for object file."
+                    );
                 }
 
                 let entry = ctx.config.entry.clone();
-                let out = output
-                    .clone()
-                    .unwrap_or_else(|| project_output_name(&ctx.config.name, effective_emit.clone()));
+                let out = output.clone().unwrap_or_else(|| {
+                    project_output_name(&ctx.config.name, effective_emit.clone())
+                });
                 let link_flags = ctx.config.flags.clone();
                 build_with_progress(
                     &[entry],
@@ -831,7 +871,10 @@ fn main() {
                         std::process::exit(status.code().unwrap_or(1));
                     }
                 }
-            } else if files.iter().any(|f| f.extension().map_or(false, |e| e == "vbc")) {
+            } else if files
+                .iter()
+                .any(|f| f.extension().map_or(false, |e| e == "vbc"))
+            {
                 // .vbc input — deserialize and compile to native directly.
                 for vbc_file in &files {
                     if vbc_file.extension().map_or(false, |e| e != "vbc") {
@@ -911,21 +954,16 @@ fn main() {
                         EmitType::Bytecode => format!("{}.vbc", stem),
                         EmitType::Object => format!("{}.o", stem),
                         EmitType::Binary => {
-                            if cfg!(target_os = "windows") { format!("{}.exe", stem) }
-                            else { stem }
+                            if cfg!(target_os = "windows") {
+                                format!("{}.exe", stem)
+                            } else {
+                                stem
+                            }
                         }
                     }
                 });
 
-                build_with_progress(
-                    &files,
-                    &out,
-                    emit,
-                    debug,
-                    None,
-                    explicit_linker,
-                    do_strip,
-                );
+                build_with_progress(&files, &out, emit, debug, None, explicit_linker, do_strip);
 
                 if run && !emit_bytecode && !emit_object {
                     let status = std::process::Command::new(abs_path(&out))

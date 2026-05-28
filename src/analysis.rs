@@ -13,7 +13,13 @@ pub fn analyze_program(
     library_fn_names: HashSet<String>,
     library_char_ranges: Vec<std::ops::Range<usize>>,
 ) -> SemanticReport {
-    analyze_program_with_source_files(src, program, library_fn_names, library_char_ranges, Vec::new())
+    analyze_program_with_source_files(
+        src,
+        program,
+        library_fn_names,
+        library_char_ranges,
+        Vec::new(),
+    )
 }
 
 pub fn analyze_program_with_source_files(

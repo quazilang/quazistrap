@@ -27,15 +27,19 @@ pub fn elim_dead_regs(chunk: &mut Chunk) {
 fn strip_nops_fix_jumps(chunk: &mut Chunk) {
     // Build old-index → new-index map (Nops map to usize::MAX = deleted).
     let mut new_idx = 0usize;
-    let old_to_new: Vec<usize> = chunk.code.iter().map(|ins| {
-        if ins.opcode == Opcode::Nop as u8 {
-            usize::MAX
-        } else {
-            let i = new_idx;
-            new_idx += 1;
-            i
-        }
-    }).collect();
+    let old_to_new: Vec<usize> = chunk
+        .code
+        .iter()
+        .map(|ins| {
+            if ins.opcode == Opcode::Nop as u8 {
+                usize::MAX
+            } else {
+                let i = new_idx;
+                new_idx += 1;
+                i
+            }
+        })
+        .collect();
 
     if new_idx == chunk.code.len() {
         return; // No Nops to strip.
@@ -44,11 +48,16 @@ fn strip_nops_fix_jumps(chunk: &mut Chunk) {
     // Fix jump targets before stripping.
     for instr in &mut chunk.code {
         let op = instr.opcode;
-        let is_jump = op == Opcode::Jmp as u8 || op == Opcode::Je as u8
-            || op == Opcode::Jne as u8 || op == Opcode::Jg as u8
-            || op == Opcode::Jge as u8 || op == Opcode::Jl as u8
-            || op == Opcode::Jle as u8 || op == Opcode::Ja as u8
-            || op == Opcode::Jb as u8 || op == Opcode::Jz as u8
+        let is_jump = op == Opcode::Jmp as u8
+            || op == Opcode::Je as u8
+            || op == Opcode::Jne as u8
+            || op == Opcode::Jg as u8
+            || op == Opcode::Jge as u8
+            || op == Opcode::Jl as u8
+            || op == Opcode::Jle as u8
+            || op == Opcode::Ja as u8
+            || op == Opcode::Jb as u8
+            || op == Opcode::Jz as u8
             || op == Opcode::Jnz as u8;
         if !is_jump {
             continue;
@@ -109,8 +118,12 @@ fn compute_use_set(code: &[Instruction]) -> HashSet<u8> {
 fn find_dead_defs(code: &[Instruction], use_set: &HashSet<u8>) -> Vec<usize> {
     let mut dead = Vec::new();
     for (i, instr) in code.iter().enumerate() {
-        let Some(op) = Opcode::from_u8(instr.opcode) else { continue };
-        let Some(dst) = instr_def(instr) else { continue };
+        let Some(op) = Opcode::from_u8(instr.opcode) else {
+            continue;
+        };
+        let Some(dst) = instr_def(instr) else {
+            continue;
+        };
         if !use_set.contains(&dst) && is_side_effect_free(op) {
             dead.push(i);
         }
@@ -163,10 +176,8 @@ pub fn linear_scan_alloc(chunk: &mut Chunk) {
     }
 
     // Sort intervals by start position.
-    let mut sorted: Vec<(usize, usize, u8)> = intervals
-        .iter()
-        .map(|(&r, &(s, e))| (s, e, r))
-        .collect();
+    let mut sorted: Vec<(usize, usize, u8)> =
+        intervals.iter().map(|(&r, &(s, e))| (s, e, r)).collect();
     sorted.sort_unstable();
 
     let mut slot_map: HashMap<u8, u8> = HashMap::new();
@@ -263,8 +274,7 @@ fn compute_pinned(chunk: &Chunk) -> HashSet<u8> {
             continue;
         }
         let base = instr.ops[1];
-        let n_after = if i + 1 < chunk.code.len()
-            && chunk.code[i + 1].opcode == Opcode::MovI as u8
+        let n_after = if i + 1 < chunk.code.len() && chunk.code[i + 1].opcode == Opcode::MovI as u8
         {
             u16::from_le_bytes([chunk.code[i + 1].ops[1], chunk.code[i + 1].ops[2]])
         } else {
@@ -295,13 +305,21 @@ fn compute_intervals(chunk: &Chunk) -> HashMap<u8, (usize, usize)> {
     for (i, instr) in chunk.code.iter().enumerate() {
         if let Some(dst) = instr_def(instr) {
             let e = intervals.entry(dst).or_insert((i, i));
-            if i < e.0 { e.0 = i; }
-            if i > e.1 { e.1 = i; }
+            if i < e.0 {
+                e.0 = i;
+            }
+            if i > e.1 {
+                e.1 = i;
+            }
         }
         for r in instr_uses(instr) {
             let e = intervals.entry(r).or_insert((i, i));
-            if i < e.0 { e.0 = i; }
-            if i > e.1 { e.1 = i; }
+            if i < e.0 {
+                e.0 = i;
+            }
+            if i > e.1 {
+                e.1 = i;
+            }
         }
     }
 
@@ -348,7 +366,9 @@ fn compute_intervals(chunk: &Chunk) -> HashMap<u8, (usize, usize)> {
 // ── Per-instruction def / use ─────────────────────────────────────────────────
 
 fn instr_def(instr: &Instruction) -> Option<u8> {
-    let Some(op) = Opcode::from_u8(instr.opcode) else { return None };
+    let Some(op) = Opcode::from_u8(instr.opcode) else {
+        return None;
+    };
     match op {
         Opcode::Nop
         | Opcode::Ret
@@ -375,7 +395,9 @@ fn instr_def(instr: &Instruction) -> Option<u8> {
 }
 
 fn instr_uses(instr: &Instruction) -> Vec<u8> {
-    let Some(op) = Opcode::from_u8(instr.opcode) else { return vec![] };
+    let Some(op) = Opcode::from_u8(instr.opcode) else {
+        return vec![];
+    };
     match op {
         Opcode::Ret => vec![instr.ops[0]],
 

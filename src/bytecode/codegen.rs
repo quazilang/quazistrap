@@ -23,15 +23,18 @@ fn source_file_for_span(span: Span, source_files: &[SourceFile]) -> String {
 /// Derive module name from a span's source file (e.g. "unix" from "std/src/unix.void").
 /// For "mod.void", uses the parent directory name (e.g. "prelude" from "prelude/mod.void").
 fn module_name_for_span(span: Span, source_files: &[SourceFile]) -> Option<String> {
-    source_files.iter().find(|sf| sf.contains(span)).and_then(|sf| {
-        let path = std::path::Path::new(&sf.path);
-        let stem = path.file_stem()?.to_str()?;
-        if stem == "mod" {
-            path.parent()?.file_name()?.to_str().map(|s| s.to_string())
-        } else {
-            Some(stem.to_string())
-        }
-    })
+    source_files
+        .iter()
+        .find(|sf| sf.contains(span))
+        .and_then(|sf| {
+            let path = std::path::Path::new(&sf.path);
+            let stem = path.file_stem()?.to_str()?;
+            if stem == "mod" {
+                path.parent()?.file_name()?.to_str().map(|s| s.to_string())
+            } else {
+                Some(stem.to_string())
+            }
+        })
 }
 
 // Enum heap layout invariants:
@@ -103,7 +106,11 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    pub fn compile_program(&mut self, program: &Program, source_files: &[SourceFile]) -> Vec<Chunk> {
+    pub fn compile_program(
+        &mut self,
+        program: &Program,
+        source_files: &[SourceFile],
+    ) -> Vec<Chunk> {
         self.source_files = source_files.to_vec();
         // Pre-pass: collect str_variadic fns, variadic @intrinsic, and @panic_handler names.
         let mut user_panic_handler: Option<String> = None;
@@ -115,14 +122,35 @@ impl<'a> Codegen<'a> {
                 }
             }
             match &item.node {
-                ItemKind::Fn { name, attributes, params, .. } => {
-                    let has_str_variadic_param = params.last().map(|p| {
-                        if !p.variadic { return false; }
-                        if matches!(&p.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }) { return true; }
-                        matches!(&p.ty.node, crate::parser::ast::TypeKind::Any) && params.iter()
-                            .filter(|q| !q.variadic)
-                            .any(|q| matches!(&q.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }))
-                    }).unwrap_or(false);
+                ItemKind::Fn {
+                    name,
+                    attributes,
+                    params,
+                    ..
+                } => {
+                    let has_str_variadic_param = params
+                        .last()
+                        .map(|p| {
+                            if !p.variadic {
+                                return false;
+                            }
+                            if matches!(
+                                &p.ty.node,
+                                crate::parser::ast::TypeKind::Str
+                                    | crate::parser::ast::TypeKind::Ref { .. }
+                            ) {
+                                return true;
+                            }
+                            matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
+                                && params.iter().filter(|q| !q.variadic).any(|q| {
+                                    matches!(
+                                        &q.ty.node,
+                                        crate::parser::ast::TypeKind::Str
+                                            | crate::parser::ast::TypeKind::Ref { .. }
+                                    )
+                                })
+                        })
+                        .unwrap_or(false);
                     if has_str_variadic_param {
                         self.str_variadic_fns.insert(name.clone());
                     }
@@ -135,19 +163,44 @@ impl<'a> Codegen<'a> {
                         user_panic_handler = Some(name.clone());
                     }
                 }
-                ItemKind::Impl { for_ty, methods, .. } => {
+                ItemKind::Impl {
+                    for_ty, methods, ..
+                } => {
                     let type_name = type_kind_base_name(&for_ty.node);
                     for method in methods {
-                        if let ItemKind::Fn { name, attributes, params, .. } = &method.node {
-                            let has_str_var = params.last().map(|p| {
-                                if !p.variadic { return false; }
-                                if matches!(&p.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }) { return true; }
-                                matches!(&p.ty.node, crate::parser::ast::TypeKind::Any) && params.iter()
-                                    .filter(|q| !q.variadic)
-                                    .any(|q| matches!(&q.ty.node, crate::parser::ast::TypeKind::Str | crate::parser::ast::TypeKind::Ref { .. }))
-                            }).unwrap_or(false);
+                        if let ItemKind::Fn {
+                            name,
+                            attributes: _,
+                            params,
+                            ..
+                        } = &method.node
+                        {
+                            let has_str_var = params
+                                .last()
+                                .map(|p| {
+                                    if !p.variadic {
+                                        return false;
+                                    }
+                                    if matches!(
+                                        &p.ty.node,
+                                        crate::parser::ast::TypeKind::Str
+                                            | crate::parser::ast::TypeKind::Ref { .. }
+                                    ) {
+                                        return true;
+                                    }
+                                    matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
+                                        && params.iter().filter(|q| !q.variadic).any(|q| {
+                                            matches!(
+                                                &q.ty.node,
+                                                crate::parser::ast::TypeKind::Str
+                                                    | crate::parser::ast::TypeKind::Ref { .. }
+                                            )
+                                        })
+                                })
+                                .unwrap_or(false);
                             if has_str_var {
-                                self.str_variadic_fns.insert(format!("{}.{}", type_name, name));
+                                self.str_variadic_fns
+                                    .insert(format!("{}.{}", type_name, name));
                             }
                         }
                     }
@@ -182,10 +235,14 @@ impl<'a> Codegen<'a> {
             .iter()
             .any(|item| matches!(&item.node, ItemKind::Fn { name, .. } if name == "main"));
 
+        let destructor_roots = collect_destructor_roots(program);
         let reachable: Option<std::collections::HashSet<String>> = if has_main {
             let mut set = std::collections::HashSet::new();
             set.insert("main".to_string());
-            let mut queue = vec!["main".to_string()];
+            for root in &destructor_roots {
+                set.insert(root.clone());
+            }
+            let mut queue = set.iter().cloned().collect::<Vec<_>>();
             while let Some(fn_name) = queue.pop() {
                 for edge in &self.report.dependency_graph.edges {
                     if edge.kind == DependencyKind::Call && edge.from == fn_name {
@@ -225,14 +282,21 @@ impl<'a> Codegen<'a> {
         // Pass 1: assign each live function a table index.
         let mut idx = 0u16;
         for item in &program.items {
-            if let ItemKind::Fn { name, attributes, .. } = &item.node {
+            if let ItemKind::Fn {
+                name, attributes, ..
+            } = &item.node
+            {
                 let is_ph = attributes.iter().any(|a| a.name == "panic_handler");
                 // When user has @panic_handler, skip the stdlib default.
                 if name == "__void_panic_handler" && user_panic_handler.is_some() {
                     continue;
                 }
                 // @panic_handler fn is registered under the handler slot name.
-                let index_name = if is_ph { "__void_panic_handler" } else { name.as_str() };
+                let index_name = if is_ph {
+                    "__void_panic_handler"
+                } else {
+                    name.as_str()
+                };
                 if is_live(index_name) || is_ph {
                     self.fn_index.insert(index_name.to_string(), idx);
                     // Also register module-qualified alias: "unix.write" alongside "write".
@@ -246,7 +310,10 @@ impl<'a> Codegen<'a> {
         }
         // Index live impl methods as "TypeName.method_name".
         for item in &program.items {
-            if let ItemKind::Impl { for_ty, methods, .. } = &item.node {
+            if let ItemKind::Impl {
+                for_ty, methods, ..
+            } = &item.node
+            {
                 let type_name = type_kind_base_name(&for_ty.node);
                 for method in methods {
                     if let ItemKind::Fn { name, .. } = &method.node {
@@ -277,7 +344,11 @@ impl<'a> Codegen<'a> {
 
         // Add alias entries to fn_index: `import foo.bar as baz` → baz → same idx as bar.
         // These are extra name entries; the primary chunk name stays unchanged.
-        let alias_entries: Vec<(String, u16)> = self.report.symbol_table.entries.iter()
+        let alias_entries: Vec<(String, u16)> = self
+            .report
+            .symbol_table
+            .entries
+            .iter()
             .filter_map(|entry| {
                 let sym = &entry.symbol;
                 if matches!(sym.kind, SymbolKind::Function) && sym.is_import {
@@ -309,7 +380,7 @@ impl<'a> Codegen<'a> {
                 body,
                 attributes,
                 ..
-                            } = &item.node
+            } = &item.node
             {
                 if !item_cfg_active(attributes) {
                     continue;
@@ -320,7 +391,11 @@ impl<'a> Codegen<'a> {
                     continue;
                 }
                 // @panic_handler fn is compiled under the handler slot name.
-                let compile_name = if is_ph { "__void_panic_handler" } else { name.as_str() };
+                let compile_name = if is_ph {
+                    "__void_panic_handler"
+                } else {
+                    name.as_str()
+                };
                 if is_live(compile_name) || is_ph {
                     if let Some(chunk) = self.compile_fn(
                         compile_name,
@@ -337,7 +412,10 @@ impl<'a> Codegen<'a> {
         }
         // Compile live impl methods.
         for item in &program.items {
-            if let ItemKind::Impl { for_ty, methods, .. } = &item.node {
+            if let ItemKind::Impl {
+                for_ty, methods, ..
+            } = &item.node
+            {
                 let type_name = type_kind_base_name(&for_ty.node);
                 for method in methods {
                     if let ItemKind::Fn {
@@ -386,18 +464,39 @@ impl<'a> Codegen<'a> {
                 let (type_part, method_part) = mono.fn_name.split_once('.').unwrap();
                 let mut found = false;
                 for item in &program.items {
-                    if let ItemKind::Impl { for_ty, methods, .. } = &item.node {
-                        if type_kind_base_name(&for_ty.node) != type_part { continue; }
+                    if let ItemKind::Impl {
+                        for_ty, methods, ..
+                    } = &item.node
+                    {
+                        if type_kind_base_name(&for_ty.node) != type_part {
+                            continue;
+                        }
                         for m in methods {
-                            if let ItemKind::Fn { name, params, body, attributes, generic_params, .. } = &m.node {
-                                if name != method_part { continue; }
+                            if let ItemKind::Fn {
+                                name,
+                                params,
+                                body,
+                                attributes,
+                                generic_params,
+                                ..
+                            } = &m.node
+                            {
+                                if name != method_part {
+                                    continue;
+                                }
                                 // Build substitution: struct-level generic params first, then method-level.
-                                let struct_params = self.report.struct_generic_params
-                                    .get(type_part).cloned().unwrap_or_default();
-                                let all_params: Vec<String> = struct_params.into_iter()
+                                let struct_params = self
+                                    .report
+                                    .struct_generic_params
+                                    .get(type_part)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                let all_params: Vec<String> = struct_params
+                                    .into_iter()
                                     .chain(generic_params.iter().cloned())
                                     .collect();
-                                let subst: HashMap<String, TypeKind> = all_params.iter()
+                                let subst: HashMap<String, TypeKind> = all_params
+                                    .iter()
                                     .zip(mono.type_args.iter())
                                     .map(|(p, t)| (p.clone(), t.clone()))
                                     .collect();
@@ -416,20 +515,30 @@ impl<'a> Codegen<'a> {
                                 break;
                             }
                         }
-                        if found { break; }
+                        if found {
+                            break;
+                        }
                     }
                 }
             } else {
                 // Top-level function.
-                let original = program.items.iter().find(|item| {
-                    matches!(&item.node, ItemKind::Fn { name, .. } if name == &mono.fn_name)
-                });
+                let original = program.items.iter().find(
+                    |item| matches!(&item.node, ItemKind::Fn { name, .. } if name == &mono.fn_name),
+                );
                 if let Some(Item {
-                    node: ItemKind::Fn { params, body, attributes, generic_params, .. },
+                    node:
+                        ItemKind::Fn {
+                            params,
+                            body,
+                            attributes,
+                            generic_params,
+                            ..
+                        },
                     ..
                 }) = original
                 {
-                    let subst: HashMap<String, TypeKind> = generic_params.iter()
+                    let subst: HashMap<String, TypeKind> = generic_params
+                        .iter()
                         .zip(mono.type_args.iter())
                         .map(|(p, t)| (p.clone(), t.clone()))
                         .collect();
@@ -524,9 +633,7 @@ impl<'a> Codegen<'a> {
                     let (call_start, arg_regs) = if callee.variadic {
                         // Variadic: scan backward for all consecutive CallArgs.
                         let mut start = i;
-                        while start > 0
-                            && chunk.code[start - 1].opcode == Opcode::CallArg as u8
-                        {
+                        while start > 0 && chunk.code[start - 1].opcode == Opcode::CallArg as u8 {
                             start -= 1;
                         }
                         let min_args = callee.param_count.saturating_sub(1);
@@ -681,13 +788,15 @@ impl<'a> Codegen<'a> {
         // same chunk (same idx value). We work on idx values, not names, so that
         // all aliases of a dead chunk are removed together.
         if !inline_set.is_empty() {
-            let live_idx: HashSet<u16> = chunks.iter()
+            let live_idx: HashSet<u16> = chunks
+                .iter()
                 .flat_map(|c| c.code.iter())
                 .filter(|ins| ins.opcode == Opcode::CallIdx as u8)
                 .map(|ins| u16::from_le_bytes([ins.ops[1], ins.ops[2]]))
                 .collect();
 
-            let fn_addr_refs: HashSet<&str> = chunks.iter()
+            let fn_addr_refs: HashSet<&str> = chunks
+                .iter()
                 .flat_map(|c| c.constants.iter())
                 .filter_map(|e| {
                     if let crate::bytecode::chunk::ConstPoolEntry::FnAddr(n) = e {
@@ -699,19 +808,24 @@ impl<'a> Codegen<'a> {
                 .collect();
 
             // Dead idx set: inline candidate, no remaining CallIdx, no FnAddr ref.
-            let dead_indices: HashSet<u16> = inline_set.iter()
+            let dead_indices: HashSet<u16> = inline_set
+                .iter()
                 .filter_map(|name| self.fn_index.get(name).copied())
                 .filter(|&idx| !live_idx.contains(&idx))
                 .filter(|idx| {
                     // Guard: no name mapping to this idx is referenced via fn-pointer.
-                    !self.fn_index.iter().any(|(n, &i)| i == *idx && fn_addr_refs.contains(n.as_str()))
+                    !self
+                        .fn_index
+                        .iter()
+                        .any(|(n, &i)| i == *idx && fn_addr_refs.contains(n.as_str()))
                 })
                 .collect();
 
             if !dead_indices.is_empty() {
                 // Drop dead chunks (by primary name lookup).
                 chunks.retain(|c| {
-                    self.fn_index.get(&c.name)
+                    self.fn_index
+                        .get(&c.name)
                         .map_or(true, |&idx| !dead_indices.contains(&idx))
                 });
 
@@ -721,12 +835,18 @@ impl<'a> Codegen<'a> {
                 // Build old→new mapping from unique live indices (deduplicates aliases).
                 let old_to_new: HashMap<u16, u16> = {
                     let mut seen = HashSet::new();
-                    let mut sorted: Vec<u16> = self.fn_index.values()
+                    let mut sorted: Vec<u16> = self
+                        .fn_index
+                        .values()
                         .copied()
                         .filter(|i| seen.insert(*i))
                         .collect();
                     sorted.sort_unstable();
-                    sorted.iter().enumerate().map(|(new, &old)| (old, new as u16)).collect()
+                    sorted
+                        .iter()
+                        .enumerate()
+                        .map(|(new, &old)| (old, new as u16))
+                        .collect()
                 };
 
                 // Patch all CallIdx operands.
@@ -765,7 +885,13 @@ impl<'a> Codegen<'a> {
         // Fix: place each chunk that has an fn_index entry at that position; append
         // all closure/anonymous chunks (no fn_index entry) at the end.
         {
-            let max_idx = self.fn_index.values().copied().max().map(|v| v as usize).unwrap_or(0);
+            let max_idx = self
+                .fn_index
+                .values()
+                .copied()
+                .max()
+                .map(|v| v as usize)
+                .unwrap_or(0);
             let mut ordered: Vec<Option<Chunk>> = (0..=max_idx).map(|_| None).collect();
             let mut closures: Vec<Chunk> = Vec::new();
             for chunk in chunks {
@@ -790,7 +916,15 @@ impl<'a> Codegen<'a> {
         output_chunks: &mut Vec<Chunk>,
         next_closure_idx: &mut u16,
     ) -> Option<Chunk> {
-        self.compile_fn_with_subst(name, params, body, attributes, output_chunks, next_closure_idx, HashMap::new())
+        self.compile_fn_with_subst(
+            name,
+            params,
+            body,
+            attributes,
+            output_chunks,
+            next_closure_idx,
+            HashMap::new(),
+        )
     }
 
     fn compile_fn_with_subst(
@@ -894,7 +1028,9 @@ impl<'a> Codegen<'a> {
         attr: &crate::parser::ast::Attribute,
     ) -> Chunk {
         let mut chunk = Chunk::with_params(name, params.len());
-        let instr_name = attr.args.first()
+        let instr_name = attr
+            .args
+            .first()
             .and_then(|a| match a {
                 crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => {
                     Some(s.as_str())
@@ -904,12 +1040,13 @@ impl<'a> Codegen<'a> {
             .unwrap_or("");
         // Intrinsics with dedicated opcodes (not routed through Intrinsic case_id).
         {
-            static INTRINSIC_OPCODE_MAP: LazyLock<HashMap<&'static str, Opcode>> = LazyLock::new(|| {
-                let mut m = HashMap::new();
-                m.insert("void.array.store", Opcode::ArrayStore);
-                m.insert("void.array.load", Opcode::ArrayLoad);
-                m
-            });
+            static INTRINSIC_OPCODE_MAP: LazyLock<HashMap<&'static str, Opcode>> =
+                LazyLock::new(|| {
+                    let mut m = HashMap::new();
+                    m.insert("void.array.store", Opcode::ArrayStore);
+                    m.insert("void.array.load", Opcode::ArrayLoad);
+                    m
+                });
             if let Some(&op) = INTRINSIC_OPCODE_MAP.get(instr_name) {
                 // RRR: ops[0]=val/dst, ops[1]=base_ptr, ops[2]=idx
                 // Params are bound to r0, r1, r2 in declaration order.
@@ -991,7 +1128,11 @@ fn extract_format_specs(template: &str) -> Vec<String> {
             while j < bytes.len() && bytes[j] != b'}' {
                 j += 1;
             }
-            specs.push(std::str::from_utf8(&bytes[spec_start..j]).unwrap_or("").to_string());
+            specs.push(
+                std::str::from_utf8(&bytes[spec_start..j])
+                    .unwrap_or("")
+                    .to_string(),
+            );
             i = j + 1;
         } else {
             i += 1;
@@ -1028,6 +1169,7 @@ struct FnCompiler<'a> {
     chunk: Chunk,
     regs: HashMap<String, u8>,
     next_reg: u8,
+    drop_scopes: Vec<Vec<DropLocal>>,
     fn_index: &'a HashMap<String, u16>,
     const_map: &'a HashMap<(usize, usize), ConstValue>,
     type_map: &'a HashMap<(usize, usize), TypeKind>,
@@ -1062,6 +1204,14 @@ struct FnCompiler<'a> {
     source_files: &'a [SourceFile],
 }
 
+#[derive(Clone)]
+struct DropLocal {
+    name: String,
+    reg: u8,
+    drop_fn: String,
+    active: bool,
+}
+
 impl<'a> FnCompiler<'a> {
     fn new(
         name: &str,
@@ -1090,6 +1240,7 @@ impl<'a> FnCompiler<'a> {
             chunk: Chunk::with_params(name, param_count),
             regs: HashMap::new(),
             next_reg: 0,
+            drop_scopes: Vec::new(),
             fn_index,
             const_map,
             type_map,
@@ -1122,15 +1273,21 @@ impl<'a> FnCompiler<'a> {
         named: &[(String, Expr)],
     ) -> Vec<Expr> {
         let param_names = self.fn_param_names.get(callee_name);
-        let total = param_names.map(|n| n.len()).unwrap_or(positional.len() + named.len());
+        let total = param_names
+            .map(|n| n.len())
+            .unwrap_or(positional.len() + named.len());
         let mut result: Vec<Option<Expr>> = vec![None; total];
         for (i, e) in positional.iter().enumerate() {
-            if i < total { result[i] = Some(e.clone()); }
+            if i < total {
+                result[i] = Some(e.clone());
+            }
         }
         if let Some(names) = param_names {
             for (arg_name, arg_expr) in named {
                 if let Some(pos) = names.iter().position(|n| n == arg_name) {
-                    if pos < total { result[pos] = Some(arg_expr.clone()); }
+                    if pos < total {
+                        result[pos] = Some(arg_expr.clone());
+                    }
                 }
             }
         } else {
@@ -1138,7 +1295,9 @@ impl<'a> FnCompiler<'a> {
             let start = positional.len();
             for (i, (_, arg_expr)) in named.iter().enumerate() {
                 let pos = start + i;
-                if pos < total { result[pos] = Some(arg_expr.clone()); }
+                if pos < total {
+                    result[pos] = Some(arg_expr.clone());
+                }
             }
         }
         result.into_iter().flatten().collect()
@@ -1148,14 +1307,20 @@ impl<'a> FnCompiler<'a> {
     /// Generic param references `T` → concrete type; all others pass through.
     fn resolve_type(&self, ty: &TypeKind) -> TypeKind {
         match ty {
-            TypeKind::Named { name, type_args } if type_args.is_empty() => {
-                self.type_subst.get(name).cloned().unwrap_or_else(|| ty.clone())
-            }
+            TypeKind::Named { name, type_args } if type_args.is_empty() => self
+                .type_subst
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| ty.clone()),
             TypeKind::Named { name, type_args } => {
-                let resolved_args: Vec<Type> = type_args.iter()
+                let resolved_args: Vec<Type> = type_args
+                    .iter()
                     .map(|a| Spanned::new(self.resolve_type(&a.node), a.span))
                     .collect();
-                TypeKind::Named { name: name.clone(), type_args: resolved_args }
+                TypeKind::Named {
+                    name: name.clone(),
+                    type_args: resolved_args,
+                }
             }
             TypeKind::Ref { inner } => TypeKind::Ref {
                 inner: Box::new(Spanned::new(self.resolve_type(&inner.node), inner.span)),
@@ -1181,7 +1346,10 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn is_float_span(&self, key: (usize, usize)) -> bool {
-        matches!(self.type_of_span(key), Some(TypeKind::Float16 | TypeKind::Float32 | TypeKind::Float64))
+        matches!(
+            self.type_of_span(key),
+            Some(TypeKind::Float16 | TypeKind::Float32 | TypeKind::Float64)
+        )
     }
 
     /// Look up the monomorphized name for a generic function call.
@@ -1190,7 +1358,9 @@ impl<'a> FnCompiler<'a> {
     fn resolve_monomorphized_name(&self, fn_name: &str, type_args: &[Type]) -> Option<String> {
         let raw_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
         // Fast path: exact match on raw type args.
-        if let Some(m) = self.monomorphizations.iter()
+        if let Some(m) = self
+            .monomorphizations
+            .iter()
             .find(|m| m.fn_name == fn_name && types_equal_slice(&m.type_args, &raw_kinds))
         {
             // Verify the raw match resolves to a live name; if so, return it.
@@ -1204,7 +1374,9 @@ impl<'a> FnCompiler<'a> {
                 raw_kinds.iter().map(|t| self.resolve_type(t)).collect();
             if !types_equal_slice(&subst_kinds, &raw_kinds) {
                 // Look for a concrete monomorphization with the substituted types.
-                if let Some(m) = self.monomorphizations.iter()
+                if let Some(m) = self
+                    .monomorphizations
+                    .iter()
                     .find(|m| m.fn_name == fn_name && types_equal_slice(&m.type_args, &subst_kinds))
                 {
                     return Some(m.mangled_name.clone());
@@ -1220,7 +1392,8 @@ impl<'a> FnCompiler<'a> {
         }
         // Fall back to raw match (may be in the mono list but not in fn_index — caller
         // will emit_call_by_name which silently no-ops for unknown names).
-        self.monomorphizations.iter()
+        self.monomorphizations
+            .iter()
             .find(|m| m.fn_name == fn_name && types_equal_slice(&m.type_args, &raw_kinds))
             .map(|m| m.mangled_name.clone())
     }
@@ -1274,7 +1447,10 @@ impl<'a> FnCompiler<'a> {
 
     fn field_offset(&self, object: &Expr, field_name: &str) -> u8 {
         let key = (object.span.start, object.span.end);
-        if let Some(TypeKind::Named { name: struct_name, .. }) = self.type_of_span(key) {
+        if let Some(TypeKind::Named {
+            name: struct_name, ..
+        }) = self.type_of_span(key)
+        {
             if let Some(offsets) = self.struct_field_offsets.get(&struct_name) {
                 for (fname, offset) in offsets {
                     if fname == field_name {
@@ -1382,10 +1558,15 @@ impl<'a> FnCompiler<'a> {
                     }
                 }
             }
-            PatternKind::Variant { enum_name, variant, sub_patterns } => {
+            PatternKind::Variant {
+                enum_name,
+                variant,
+                sub_patterns,
+            } => {
                 let tag = self.variant_tag(enum_name.as_deref(), &variant);
                 let disc = self.alloc_reg();
-                self.chunk.emit(rrr(Opcode::FieldLoad, disc, value_reg, ENUM_DISCRIM_OFFSET));
+                self.chunk
+                    .emit(rrr(Opcode::FieldLoad, disc, value_reg, ENUM_DISCRIM_OFFSET));
                 let tag_reg = self.alloc_reg();
                 self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
                 self.chunk.emit(rrr(Opcode::Cmp, 0, disc, tag_reg));
@@ -1393,7 +1574,8 @@ impl<'a> FnCompiler<'a> {
                 for (i, sub) in sub_patterns.iter().enumerate() {
                     let payload_reg = self.alloc_reg();
                     let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
-                    self.chunk.emit(rrr(Opcode::FieldLoad, payload_reg, value_reg, off));
+                    self.chunk
+                        .emit(rrr(Opcode::FieldLoad, payload_reg, value_reg, off));
                     self.compile_pattern_match(sub, payload_reg, skip_patches);
                 }
             }
@@ -1410,13 +1592,156 @@ impl<'a> FnCompiler<'a> {
         self.regs.get(name).copied().unwrap_or(0)
     }
 
+    fn drop_fn_for_type(&self, ty: &TypeKind) -> Option<String> {
+        let TypeKind::Named { name, type_args } = self.resolve_type(ty) else {
+            return None;
+        };
+        let base = format!("{}.free", name);
+        if !type_args.is_empty() {
+            let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
+            let mangled = crate::semantic::typecheck::mangle_monomorphized(&base, &type_kinds);
+            if self.fn_index.contains_key(&mangled) {
+                return Some(mangled);
+            }
+        }
+        self.fn_index.contains_key(&base).then_some(base)
+    }
+
+    fn register_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
+        let Some(drop_fn) = ty.as_ref().and_then(|t| self.drop_fn_for_type(t)) else {
+            return;
+        };
+        if let Some(scope) = self.drop_scopes.last_mut() {
+            scope.push(DropLocal {
+                name: name.to_string(),
+                reg,
+                drop_fn,
+                active: true,
+            });
+        }
+    }
+
+    fn deactivate_drop_local(&mut self, name: &str) {
+        for scope in self.drop_scopes.iter_mut().rev() {
+            if let Some(local) = scope.iter_mut().rev().find(|local| local.name == name) {
+                local.active = false;
+                return;
+            }
+        }
+    }
+
+    fn reactivate_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
+        let Some(drop_fn) = ty.as_ref().and_then(|t| self.drop_fn_for_type(t)) else {
+            return;
+        };
+        for scope in self.drop_scopes.iter_mut().rev() {
+            if let Some(local) = scope.iter_mut().rev().find(|local| local.name == name) {
+                local.reg = reg;
+                local.drop_fn = drop_fn;
+                local.active = true;
+                return;
+            }
+        }
+    }
+
+    fn drop_local_now(&mut self, name: &str) {
+        let mut to_drop: Option<(u8, String)> = None;
+        for scope in self.drop_scopes.iter_mut().rev() {
+            if let Some(local) = scope.iter_mut().rev().find(|local| local.name == name) {
+                if local.active {
+                    local.active = false;
+                    to_drop = Some((local.reg, local.drop_fn.clone()));
+                }
+                break;
+            }
+        }
+        if let Some((reg, drop_fn)) = to_drop {
+            let dst = self.alloc_reg();
+            self.emit_call_by_name(&drop_fn, &[reg], dst);
+        }
+    }
+
+    fn mark_consumed_expr(&mut self, expr: &Expr) {
+        match &expr.node {
+            ExprKind::Ident(name) => self.deactivate_drop_local(name),
+            ExprKind::Group(inner) | ExprKind::Try { expr: inner } => {
+                self.mark_consumed_expr(inner)
+            }
+            ExprKind::ArrayLit(elems) => {
+                for elem in elems {
+                    self.mark_consumed_expr(elem);
+                }
+            }
+            ExprKind::StructInit { fields, .. } => {
+                for (_, value) in fields {
+                    self.mark_consumed_expr(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn emit_scope_cleanup(&mut self) {
+        let Some(scope) = self.drop_scopes.last_mut() else {
+            return;
+        };
+        let drops = scope
+            .iter_mut()
+            .rev()
+            .filter_map(|local| {
+                if local.active {
+                    local.active = false;
+                    Some((local.reg, local.drop_fn.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        for (reg, drop_fn) in drops {
+            let dst = self.alloc_reg();
+            self.emit_call_by_name(&drop_fn, &[reg], dst);
+        }
+    }
+
+    fn emit_all_cleanup(&mut self) {
+        for depth in (0..self.drop_scopes.len()).rev() {
+            let drops = self.drop_scopes[depth]
+                .iter_mut()
+                .rev()
+                .filter_map(|local| {
+                    if local.active {
+                        local.active = false;
+                        Some((local.reg, local.drop_fn.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            for (reg, drop_fn) in drops {
+                let dst = self.alloc_reg();
+                self.emit_call_by_name(&drop_fn, &[reg], dst);
+            }
+        }
+    }
+
+    fn has_active_drops(&self) -> bool {
+        self.drop_scopes
+            .iter()
+            .any(|scope| scope.iter().any(|local| local.active))
+    }
+
     /// Emit an indirect call through a register, dispatching via env-wrapper convention
     /// when `callee_reg` is a closure environment struct pointer.
     fn emit_indirect_call(&mut self, dst: u8, callee_reg: u8, arg_regs: &[u8]) {
         // All fn-ptr values use env struct representation: {fn_ptr at offset 0, captures...}.
         // Always do env dispatch: load fn_ptr from env[0], pass env as hidden first arg.
         let fn_ptr_reg = self.alloc_reg();
-        self.chunk.emit(rrr(Opcode::FieldLoad, fn_ptr_reg, callee_reg, ENUM_DISCRIM_OFFSET));
+        self.chunk.emit(rrr(
+            Opcode::FieldLoad,
+            fn_ptr_reg,
+            callee_reg,
+            ENUM_DISCRIM_OFFSET,
+        ));
         self.chunk.emit(rrr(Opcode::CallArg, callee_reg, 0, 0));
         for &r in arg_regs {
             self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
@@ -1427,25 +1752,35 @@ impl<'a> FnCompiler<'a> {
     // ── Block / statement ──
 
     fn compile_block(&mut self, block: &Block) -> bool {
+        self.drop_scopes.push(Vec::new());
         for stmt in &block.stmts {
             if self.compile_stmt(stmt) {
+                self.drop_scopes.pop();
                 return true;
             }
         }
+        self.emit_scope_cleanup();
+        self.drop_scopes.pop();
         false
     }
 
     /// Returns true if the statement guarantees exit (return).
     fn compile_stmt(&mut self, stmt: &Stmt) -> bool {
         match &stmt.node {
-            StmtKind::Var { name, ty, value, .. } => {
+            StmtKind::Var {
+                name, ty, value, ..
+            } => {
                 if let Some(expr) = value {
+                    self.mark_consumed_expr(expr);
                     let src = self.compile_expr(expr);
                     // Coerce concrete Named type → dyn Trait fat pointer when declared type is Dyn.
                     let coerced = if let Some(ty_ann) = ty {
                         if let TypeKind::Dyn { trait_name } = &ty_ann.node {
                             let key = (expr.span.start, expr.span.end);
-                            if let Some(TypeKind::Named { name: type_name, .. }) = self.type_of_span(key) {
+                            if let Some(TypeKind::Named {
+                                name: type_name, ..
+                            }) = self.type_of_span(key)
+                            {
                                 self.coerce_to_dyn(src, &type_name, trait_name)
                             } else {
                                 src
@@ -1457,25 +1792,42 @@ impl<'a> FnCompiler<'a> {
                         src
                     };
                     self.regs.insert(name.clone(), coerced);
+                    let local_ty = ty
+                        .as_ref()
+                        .map(|t| self.resolve_type(&t.node))
+                        .or_else(|| self.type_of_span((expr.span.start, expr.span.end)));
+                    self.register_drop_local(name, coerced, local_ty);
                 } else {
-                    self.bind(name.clone());
+                    let reg = self.bind(name.clone());
+                    let local_ty = ty.as_ref().map(|t| self.resolve_type(&t.node));
+                    self.register_drop_local(name, reg, local_ty);
                 }
                 false
             }
             StmtKind::Const { name, value, .. } => {
+                self.mark_consumed_expr(value);
                 let src = self.compile_expr(value);
                 self.regs.insert(name.clone(), src);
+                let local_ty = self.type_of_span((value.span.start, value.span.end));
+                self.register_drop_local(name, src, local_ty);
                 false
             }
             StmtKind::Return(expr) => {
                 if let Some(expr) = expr {
+                    self.mark_consumed_expr(expr);
                     let src = self.compile_expr(expr);
-                    // Convention: return value in r0.
-                    if src != 0 {
+                    if self.has_active_drops() {
+                        let tmp = self.alloc_reg();
+                        self.chunk.emit(rrr(Opcode::Mov, tmp, src, 0));
+                        self.emit_all_cleanup();
+                        if tmp != 0 {
+                            self.chunk.emit(rrr(Opcode::Mov, 0, tmp, 0));
+                        }
+                    } else if src != 0 {
                         self.chunk.emit(rrr(Opcode::Mov, 0, src, 0));
                     }
                 } else {
-                    // void return — zero r0 so the exit code is 0.
+                    self.emit_all_cleanup();
                     self.chunk.emit(ri16(Opcode::MovI, 0, 0));
                 }
                 self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
@@ -1590,13 +1942,39 @@ impl<'a> FnCompiler<'a> {
                         }
                         ForIter::Iter(expr) => {
                             let iter_key = (expr.span.start, expr.span.end);
-                            let iter_ty = self.type_of_span(iter_key);
+                            let mut iter_ty = self.type_of_span(iter_key);
+                            let original_expr = expr.clone();
+                            let mut expr = expr;
+                            // Strip explicit `&` — `for i : &arr` iterates `arr`.
+                            let is_borrow = if let Some(TypeKind::Ref { inner }) = &iter_ty {
+                                if let ExprKind::Unary { op: UnaryOpKind::Ref, expr: inner_expr } = &expr.node {
+                                    expr = inner_expr;
+                                    iter_ty = Some(inner.node.clone());
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            // Move semantics: consume the iterable so the borrow checker
+                            // rejects use-after-move. Register a hidden drop local so the
+                            // value is cleaned up when the enclosing scope exits.
+                            if !is_borrow {
+                                self.mark_consumed_expr(&original_expr);
+                            }
                             let static_array_len: Option<u16> = match &iter_ty {
                                 Some(TypeKind::Array { len, .. }) => Some(*len as u16),
                                 _ => None,
                             };
-                            if matches!(iter_ty, Some(TypeKind::Slice { .. }) | Some(TypeKind::Array { .. })) {
+                            if matches!(
+                                iter_ty,
+                                Some(TypeKind::Slice { .. }) | Some(TypeKind::Array { .. })
+                            ) {
                                 let ptr = self.compile_expr(expr);
+                                if !is_borrow {
+                                    self.register_drop_local("__for_iter", ptr, iter_ty.clone());
+                                }
                                 let len_reg = if let Some(n) = static_array_len {
                                     // Fixed-size array: length known at compile time.
                                     let r = self.alloc_reg();
@@ -1651,11 +2029,32 @@ impl<'a> FnCompiler<'a> {
                                 self.chunk.emit(rrr(Opcode::Inc, r_counter, r_counter, 0));
                                 self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
                                 self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
-                            } else if matches!(&iter_ty, Some(TypeKind::Named { name, .. }) if name == "Array") {
+                            } else if matches!(&iter_ty, Some(TypeKind::Named { name, .. }) if name == "Array")
+                            {
                                 // Array[T] dynamic array: compile as index loop using len() + get().
+                                let type_kinds: Vec<TypeKind> = if let Some(TypeKind::Named { type_args, .. }) = &iter_ty {
+                                    type_args.iter().map(|t| t.node.clone()).collect()
+                                } else {
+                                    vec![]
+                                };
+                                let len_target = if type_kinds.is_empty() {
+                                    "Array.len".to_string()
+                                } else {
+                                    let mangled = crate::semantic::typecheck::mangle_monomorphized("Array.len", &type_kinds);
+                                    if self.fn_index.contains_key(&mangled) { mangled } else { "Array.len".to_string() }
+                                };
+                                let get_target = if type_kinds.is_empty() {
+                                    "Array.get".to_string()
+                                } else {
+                                    let mangled = crate::semantic::typecheck::mangle_monomorphized("Array.get", &type_kinds);
+                                    if self.fn_index.contains_key(&mangled) { mangled } else { "Array.get".to_string() }
+                                };
                                 let arr_reg = self.compile_expr(expr);
+                                if !is_borrow {
+                                    self.register_drop_local("__for_iter", arr_reg, iter_ty.clone());
+                                }
                                 let len_reg = self.alloc_reg();
-                                self.emit_call_by_name("Array.len", &[arr_reg], len_reg);
+                                self.emit_call_by_name(&len_target, &[arr_reg], len_reg);
 
                                 let (r_idx, r_val_opt) = match vars.as_slice() {
                                     [] => (self.alloc_reg(), None),
@@ -1672,7 +2071,11 @@ impl<'a> FnCompiler<'a> {
                                 let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
                                 if let Some(r_val) = r_val_opt {
                                     let elem_reg = self.alloc_reg();
-                                    self.emit_call_by_name("Array.get", &[arr_reg, r_idx], elem_reg);
+                                    self.emit_call_by_name(
+                                        &get_target,
+                                        &[arr_reg, r_idx],
+                                        elem_reg,
+                                    );
                                     self.chunk.emit(rrr(Opcode::Mov, r_val, elem_reg, 0));
                                 }
                                 self.compile_block(body);
@@ -1682,6 +2085,9 @@ impl<'a> FnCompiler<'a> {
                             } else {
                                 // Non-slice iterator: call has_next() / next() protocol.
                                 let iter_reg = self.compile_expr(expr);
+                                if !is_borrow {
+                                    self.register_drop_local("__for_iter", iter_reg, iter_ty.clone());
+                                }
                                 let iter_key = (expr.span.start, expr.span.end);
                                 let iter_ty = self.type_of_span(iter_key);
 
@@ -1702,7 +2108,8 @@ impl<'a> FnCompiler<'a> {
                                             let type_kinds: Vec<TypeKind> =
                                                 type_args.iter().map(|t| t.node.clone()).collect();
                                             crate::semantic::typecheck::mangle_monomorphized(
-                                                &base, &type_kinds,
+                                                &base,
+                                                &type_kinds,
                                             )
                                         };
                                         let target = if self.fn_index.contains_key(&mangled) {
@@ -1713,16 +2120,41 @@ impl<'a> FnCompiler<'a> {
                                         self.emit_call_by_name(&target, &[iter_reg], r_has_next);
                                     }
                                     Some(TypeKind::Dyn { trait_name }) => {
-                                        if let Some(slots) = self.trait_method_slots.get(trait_name) {
-                                            let slot_idx = slots.iter().position(|m| m == "has_next").unwrap_or(0) as u8;
+                                        if let Some(slots) = self.trait_method_slots.get(trait_name)
+                                        {
+                                            let slot_idx = slots
+                                                .iter()
+                                                .position(|m| m == "has_next")
+                                                .unwrap_or(0)
+                                                as u8;
                                             let vtbl_ptr = self.alloc_reg();
-                                            self.chunk.emit(rrr(Opcode::FieldLoad, vtbl_ptr, iter_reg, 8));
+                                            self.chunk.emit(rrr(
+                                                Opcode::FieldLoad,
+                                                vtbl_ptr,
+                                                iter_reg,
+                                                8,
+                                            ));
                                             let fn_ptr = self.alloc_reg();
-                                            self.chunk.emit(rrr(Opcode::VtblLoad, fn_ptr, vtbl_ptr, slot_idx));
+                                            self.chunk.emit(rrr(
+                                                Opcode::VtblLoad,
+                                                fn_ptr,
+                                                vtbl_ptr,
+                                                slot_idx,
+                                            ));
                                             let data_ptr = self.alloc_reg();
-                                            self.chunk.emit(rrr(Opcode::FieldLoad, data_ptr, iter_reg, 0));
+                                            self.chunk.emit(rrr(
+                                                Opcode::FieldLoad,
+                                                data_ptr,
+                                                iter_reg,
+                                                0,
+                                            ));
                                             self.chunk.emit(rrr(Opcode::CallArg, data_ptr, 0, 0));
-                                            self.chunk.emit(rrr(Opcode::CallReg, r_has_next, fn_ptr, 0));
+                                            self.chunk.emit(rrr(
+                                                Opcode::CallReg,
+                                                r_has_next,
+                                                fn_ptr,
+                                                0,
+                                            ));
                                         }
                                     }
                                     _ => {}
@@ -1742,7 +2174,8 @@ impl<'a> FnCompiler<'a> {
                                             let type_kinds: Vec<TypeKind> =
                                                 type_args.iter().map(|t| t.node.clone()).collect();
                                             crate::semantic::typecheck::mangle_monomorphized(
-                                                &base, &type_kinds,
+                                                &base,
+                                                &type_kinds,
                                             )
                                         };
                                         let target = if self.fn_index.contains_key(&mangled) {
@@ -1753,16 +2186,39 @@ impl<'a> FnCompiler<'a> {
                                         self.emit_call_by_name(&target, &[iter_reg], r_next_opt);
                                     }
                                     Some(TypeKind::Dyn { trait_name }) => {
-                                        if let Some(slots) = self.trait_method_slots.get(trait_name) {
-                                            let slot_idx = slots.iter().position(|m| m == "next").unwrap_or(0) as u8;
+                                        if let Some(slots) = self.trait_method_slots.get(trait_name)
+                                        {
+                                            let slot_idx =
+                                                slots.iter().position(|m| m == "next").unwrap_or(0)
+                                                    as u8;
                                             let vtbl_ptr = self.alloc_reg();
-                                            self.chunk.emit(rrr(Opcode::FieldLoad, vtbl_ptr, iter_reg, 8));
+                                            self.chunk.emit(rrr(
+                                                Opcode::FieldLoad,
+                                                vtbl_ptr,
+                                                iter_reg,
+                                                8,
+                                            ));
                                             let fn_ptr = self.alloc_reg();
-                                            self.chunk.emit(rrr(Opcode::VtblLoad, fn_ptr, vtbl_ptr, slot_idx));
+                                            self.chunk.emit(rrr(
+                                                Opcode::VtblLoad,
+                                                fn_ptr,
+                                                vtbl_ptr,
+                                                slot_idx,
+                                            ));
                                             let data_ptr = self.alloc_reg();
-                                            self.chunk.emit(rrr(Opcode::FieldLoad, data_ptr, iter_reg, 0));
+                                            self.chunk.emit(rrr(
+                                                Opcode::FieldLoad,
+                                                data_ptr,
+                                                iter_reg,
+                                                0,
+                                            ));
                                             self.chunk.emit(rrr(Opcode::CallArg, data_ptr, 0, 0));
-                                            self.chunk.emit(rrr(Opcode::CallReg, r_next_opt, fn_ptr, 0));
+                                            self.chunk.emit(rrr(
+                                                Opcode::CallReg,
+                                                r_next_opt,
+                                                fn_ptr,
+                                                0,
+                                            ));
                                         }
                                     }
                                     _ => {}
@@ -1770,12 +2226,22 @@ impl<'a> FnCompiler<'a> {
 
                                 // Unwrap Option[T]: check discriminant (tag 1 = Some).
                                 let r_tag = self.alloc_reg();
-                                self.chunk.emit(rrr(Opcode::FieldLoad, r_tag, r_next_opt, ENUM_DISCRIM_OFFSET));
+                                self.chunk.emit(rrr(
+                                    Opcode::FieldLoad,
+                                    r_tag,
+                                    r_next_opt,
+                                    ENUM_DISCRIM_OFFSET,
+                                ));
                                 let r_one = self.alloc_reg();
                                 self.chunk.emit(ri16(Opcode::MovI, r_one, 1));
                                 self.chunk.emit(rrr(Opcode::Cmp, 0, r_tag, r_one));
                                 let jump_none = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
-                                self.chunk.emit(rrr(Opcode::FieldLoad, r_val, r_next_opt, ENUM_PAYLOAD_OFFSET));
+                                self.chunk.emit(rrr(
+                                    Opcode::FieldLoad,
+                                    r_val,
+                                    r_next_opt,
+                                    ENUM_PAYLOAD_OFFSET,
+                                ));
 
                                 // Loop body.
                                 self.compile_block(body);
@@ -1846,7 +2312,11 @@ impl<'a> FnCompiler<'a> {
         if self.regs.contains_key(&base) {
             return None;
         }
-        if self.import_names.contains(&base) { Some(base) } else { None }
+        if self.import_names.contains(&base) {
+            Some(base)
+        } else {
+            None
+        }
     }
 
     // ── Expression ───────────────────────────────────────────────────────────
@@ -1869,7 +2339,7 @@ impl<'a> FnCompiler<'a> {
                 | TypeKind::Usize,
             ) => Some(0), // int
             Some(TypeKind::Float32 | TypeKind::Float64) => Some(1), // float
-            Some(TypeKind::Bool) => Some(2), // bool
+            Some(TypeKind::Bool) => Some(2),                        // bool
             Some(TypeKind::Str) | Some(TypeKind::Ref { .. }) => None, // str/&str — already a pointer
             // Known struct/enum Named types: pass as-is (pointer to heap object).
             // Unresolved generic type params (T, U, etc.) not in struct/enum defs: default to int.
@@ -1984,27 +2454,27 @@ impl<'a> FnCompiler<'a> {
                     if let Some(tag) = self.enum_ctor_tag(name) {
                         let dst = self.alloc_reg();
                         let ptr = self.alloc_reg();
-                        self.chunk.emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(0)));
+                        self.chunk
+                            .emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(0)));
                         let tag_reg = self.alloc_reg();
                         self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
-                        self.chunk.emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
+                        self.chunk
+                            .emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
                         self.chunk.emit(rrr(Opcode::Mov, dst, ptr, 0));
                         return dst;
                     }
                     // Function name used as a value → wrap in forwarder + env struct.
                     // All fn-ptr values use the env struct representation for uniform dispatch.
                     if let Some(&fn_idx) = self.fn_index.get(name.as_str()) {
-                        let user_param_count = if let Some(TypeKind::Fn { params, .. }) =
-                            self.type_map.get(&key)
-                        {
-                            params.len()
-                        } else {
-                            0
-                        };
+                        let user_param_count =
+                            if let Some(TypeKind::Fn { params, .. }) = self.type_map.get(&key) {
+                                params.len()
+                            } else {
+                                0
+                            };
                         // Forwarder chunk: (env_ptr_ignored, user_args...) → call named_fn(user_args...)
                         let fwd_name = format!("__void_fwd_{}", name);
-                        let mut fwd_chunk =
-                            Chunk::with_params(&fwd_name, user_param_count + 1);
+                        let mut fwd_chunk = Chunk::with_params(&fwd_name, user_param_count + 1);
                         for i in 0..user_param_count {
                             fwd_chunk.emit(rrr(Opcode::CallArg, (i + 1) as u8, 0, 0));
                         }
@@ -2015,8 +2485,7 @@ impl<'a> FnCompiler<'a> {
                         let env_ptr = self.alloc_reg();
                         self.chunk.emit(ri16(Opcode::New, env_ptr, 16));
                         let fn_addr_reg = self.alloc_reg();
-                        let cidx = self.chunk
-                            .add_constant(ConstPoolEntry::FnAddr(fwd_name));
+                        let cidx = self.chunk.add_constant(ConstPoolEntry::FnAddr(fwd_name));
                         self.chunk.emit(ri16(Opcode::MovConst, fn_addr_reg, cidx));
                         self.chunk.emit(rrr(
                             Opcode::FieldStore,
@@ -2139,13 +2608,17 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::Assign { target, value } => {
+                self.mark_consumed_expr(value);
                 let src = self.compile_expr(value);
                 match &target.node {
                     ExprKind::Ident(name) => {
+                        self.drop_local_now(name);
                         let dst = self.reg_of(name);
                         if dst != src {
                             self.chunk.emit(rrr(Opcode::Mov, dst, src, 0));
                         }
+                        let local_ty = self.type_of_span((value.span.start, value.span.end));
+                        self.reactivate_drop_local(name, dst, local_ty);
                         dst
                     }
                     ExprKind::Unary {
@@ -2162,8 +2635,67 @@ impl<'a> FnCompiler<'a> {
                     } => {
                         let byte_offset = self.field_offset(object, field_name);
                         let obj = self.compile_expr(object);
-                        self.chunk.emit(rrr(Opcode::FieldStore, src, obj, byte_offset));
+                        self.chunk
+                            .emit(rrr(Opcode::FieldStore, src, obj, byte_offset));
                         src
+                    }
+                    ExprKind::Index { object, indices } => {
+                        let obj_key = (object.span.start, object.span.end);
+                        let obj_ty = self.type_of_span(obj_key);
+                        let index = indices.first().expect("index must have at least one index");
+
+                        // Named type with Index trait → dispatch to Type.set if available.
+                        if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array")
+                        {
+                            let type_kinds: Vec<TypeKind> = if let Some(TypeKind::Named { type_args, .. }) = &obj_ty {
+                                type_args.iter().map(|t| t.node.clone()).collect()
+                            } else {
+                                vec![]
+                            };
+                            let set_target = if type_kinds.is_empty() {
+                                "Array.set".to_string()
+                            } else {
+                                let mangled = crate::semantic::typecheck::mangle_monomorphized("Array.set", &type_kinds);
+                                if self.fn_index.contains_key(&mangled) { mangled } else { "Array.set".to_string() }
+                            };
+                            let obj_reg = self.compile_expr(object);
+                            let idx_reg = self.compile_expr(index);
+                            let _dst = self.alloc_reg();
+                            self.emit_call_by_name(&set_target, &[obj_reg, idx_reg, src], _dst);
+                            src
+                        } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
+                            // Slice: store at stack address ptr - (idx * 8)
+                            let ptr = self.compile_expr(object);
+                            let idx_reg = self.compile_expr(index);
+                            let eight = self.alloc_reg();
+                            self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                            let offset = self.alloc_reg();
+                            self.chunk.emit(rrr(Opcode::Mul, offset, idx_reg, eight));
+                            let addr = self.alloc_reg();
+                            self.chunk.emit(rrr(Opcode::Sub, addr, ptr, offset));
+                            self.chunk.emit(mem_store(addr, src, 0));
+                            src
+                        } else {
+                            // Fixed-size array: store at base register or computed address.
+                            let base = self.compile_expr(object);
+                            if let ExprKind::Literal(Literal::Int(n)) = &index.node {
+                                if *n >= 0 {
+                                    let elem_reg = base + *n as u8;
+                                    self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
+                                    return src;
+                                }
+                            }
+                            let idx_reg = self.compile_expr(index);
+                            let ptr = self.alloc_reg();
+                            self.chunk.emit(mem_lea(base, ptr, 0));
+                            let eight = self.alloc_reg();
+                            self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                            let offset = self.alloc_reg();
+                            self.chunk.emit(rrr(Opcode::Mul, offset, idx_reg, eight));
+                            self.chunk.emit(rrr(Opcode::Sub, ptr, ptr, offset));
+                            self.chunk.emit(mem_store(ptr, src, 0));
+                            src
+                        }
                     }
                     _ => src,
                 }
@@ -2175,7 +2707,11 @@ impl<'a> FnCompiler<'a> {
                 } else {
                     fields.iter().map(|(fn_, _)| fn_.clone()).collect()
                 };
-                let struct_size = self.struct_sizes.get(name).copied().unwrap_or_else(|| field_order.len() * 8);
+                let struct_size = self
+                    .struct_sizes
+                    .get(name)
+                    .copied()
+                    .unwrap_or_else(|| field_order.len() * 8);
                 let dst = self.alloc_reg();
                 self.chunk.emit(ri16(Opcode::New, dst, struct_size as u16));
 
@@ -2224,7 +2760,13 @@ impl<'a> FnCompiler<'a> {
                 }
             }
 
-            ExprKind::Call { callee, type_args, args, named_args, .. } => {
+            ExprKind::Call {
+                callee,
+                type_args,
+                args,
+                named_args,
+                ..
+            } => {
                 let dst = self.alloc_reg();
                 if let ExprKind::Ident(name) = &callee.node {
                     // Merge positional + named args into correct param order if needed.
@@ -2253,7 +2795,8 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.emit(ri16(Opcode::MovConst, file_reg, file_idx));
                         call_regs.push(file_reg);
                         // Inject line number as integer constant (relative to source file).
-                        let line = self.source_files
+                        let line = self
+                            .source_files
                             .iter()
                             .find(|sf| sf.contains(expr.span))
                             .map(|sf| sf.line_col(expr.span).0 as i64)
@@ -2271,8 +2814,13 @@ impl<'a> FnCompiler<'a> {
                             self.chunk.emit(ri16(Opcode::MovI, rl, 0));
                             (rp, rl)
                         } else {
-                            let var_regs: Vec<u8> =
-                                var_args.iter().map(|a| self.compile_expr(a)).collect();
+                            let var_regs: Vec<u8> = var_args
+                                .iter()
+                                .map(|a| {
+                                    self.mark_consumed_expr(a);
+                                    self.compile_expr(a)
+                                })
+                                .collect();
                             let first_slot = self.next_reg;
                             for &r in &var_regs {
                                 let slot = self.alloc_reg();
@@ -2283,7 +2831,8 @@ impl<'a> FnCompiler<'a> {
                             let rp = self.alloc_reg();
                             self.chunk.emit(mem_lea(first_slot, rp, 0));
                             let rl = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
+                            self.chunk
+                                .emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
                             (rp, rl)
                         };
                         call_regs.push(r_ptr);
@@ -2294,8 +2843,13 @@ impl<'a> FnCompiler<'a> {
                     // Monomorphized generic function: resolve to mangled name.
                     if !type_args.is_empty() {
                         if let Some(mono_name) = self.resolve_monomorphized_name(name, type_args) {
-                            let arg_regs: Vec<u8> =
-                                args.iter().map(|a| self.compile_expr(a)).collect();
+                            let arg_regs: Vec<u8> = args
+                                .iter()
+                                .map(|a| {
+                                    self.mark_consumed_expr(a);
+                                    self.compile_expr(a)
+                                })
+                                .collect();
                             self.emit_call_by_name(&mono_name, &arg_regs, dst);
                             return dst;
                         }
@@ -2349,7 +2903,8 @@ impl<'a> FnCompiler<'a> {
                             let rp = self.alloc_reg();
                             self.chunk.emit(mem_lea(first_slot, rp, 0));
                             let rl = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
+                            self.chunk
+                                .emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
                             (rp, rl)
                         };
                         self.emit_call_by_name("format", &[template_reg, r_ptr, r_len], fmt_dst);
@@ -2371,7 +2926,10 @@ impl<'a> FnCompiler<'a> {
                         // consecutive stack slots, pass (ptr, len) as hidden trailing args.
                         let fixed_regs: Vec<u8> = args[..fixed_count.min(args.len())]
                             .iter()
-                            .map(|a| self.compile_expr(a))
+                            .map(|a| {
+                                self.mark_consumed_expr(a);
+                                self.compile_expr(a)
+                            })
                             .collect();
                         let var_args = &args[fixed_count.min(args.len())..];
                         let (r_ptr, r_len) = if var_args.is_empty() {
@@ -2383,8 +2941,13 @@ impl<'a> FnCompiler<'a> {
                             (rp, rl)
                         } else {
                             // Compile each variadic arg (may land in non-consecutive regs).
-                            let var_regs: Vec<u8> =
-                                var_args.iter().map(|a| self.compile_expr(a)).collect();
+                            let var_regs: Vec<u8> = var_args
+                                .iter()
+                                .map(|a| {
+                                    self.mark_consumed_expr(a);
+                                    self.compile_expr(a)
+                                })
+                                .collect();
                             // Copy into fresh consecutive slots so Lea gives a contiguous block.
                             let first_slot = self.next_reg;
                             for (i, &r) in var_regs.iter().enumerate() {
@@ -2398,7 +2961,8 @@ impl<'a> FnCompiler<'a> {
                             let rp = self.alloc_reg();
                             self.chunk.emit(mem_lea(first_slot, rp, 0));
                             let rl = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
+                            self.chunk
+                                .emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
                             (rp, rl)
                         };
                         let mut all_regs = fixed_regs;
@@ -2407,13 +2971,23 @@ impl<'a> FnCompiler<'a> {
                         self.emit_call_by_name(name, &all_regs, dst);
                     } else if let Some(tag) = self.enum_ctor_tag(name) {
                         // Enum variant constructor: allocate heap struct, store discriminant + payloads.
-                        let payload_regs: Vec<u8> =
-                            args.iter().map(|a| self.compile_expr(a)).collect();
+                        let payload_regs: Vec<u8> = args
+                            .iter()
+                            .map(|a| {
+                                self.mark_consumed_expr(a);
+                                self.compile_expr(a)
+                            })
+                            .collect();
                         let ptr = self.alloc_reg();
-                        self.chunk.emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(payload_regs.len())));
+                        self.chunk.emit(ri16(
+                            Opcode::New,
+                            ptr,
+                            enum_variant_alloc_size(payload_regs.len()),
+                        ));
                         let tag_reg = self.alloc_reg();
                         self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
-                        self.chunk.emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
+                        self.chunk
+                            .emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
                         for (i, &payload) in payload_regs.iter().enumerate() {
                             let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
                             self.chunk.emit(rrr(Opcode::FieldStore, payload, ptr, off));
@@ -2425,19 +2999,34 @@ impl<'a> FnCompiler<'a> {
                     } else if self.regs.contains_key(name.as_str()) {
                         // Local variable — fn pointer or closure env pointer.
                         let fn_reg = self.compile_expr(callee);
-                        let arg_regs: Vec<u8> =
-                            args.iter().map(|a| self.compile_expr(a)).collect();
+                        let arg_regs: Vec<u8> = args
+                            .iter()
+                            .map(|a| {
+                                self.mark_consumed_expr(a);
+                                self.compile_expr(a)
+                            })
+                            .collect();
                         self.emit_indirect_call(dst, fn_reg, &arg_regs);
                     } else {
-                        let arg_regs: Vec<u8> =
-                            args.iter().map(|a| self.compile_expr(a)).collect();
+                        let arg_regs: Vec<u8> = args
+                            .iter()
+                            .map(|a| {
+                                self.mark_consumed_expr(a);
+                                self.compile_expr(a)
+                            })
+                            .collect();
                         self.emit_call_by_name(name, &arg_regs, dst);
                     }
                 } else {
                     // Indirect call: callee is an expression (variable, closure, etc.)
                     let fn_reg = self.compile_expr(callee);
-                    let arg_regs: Vec<u8> =
-                        args.iter().map(|a| self.compile_expr(a)).collect();
+                    let arg_regs: Vec<u8> = args
+                        .iter()
+                        .map(|a| {
+                            self.mark_consumed_expr(a);
+                            self.compile_expr(a)
+                        })
+                        .collect();
                     self.emit_indirect_call(dst, fn_reg, &arg_regs);
                 }
                 dst
@@ -2469,7 +3058,8 @@ impl<'a> FnCompiler<'a> {
                         method.to_string()
                     };
                     let is_fmt_fn = self.str_variadic_fns.contains(method.as_str());
-                    let is_variadic_intrinsic = self.variadic_intrinsic_fns.contains(method.as_str());
+                    let is_variadic_intrinsic =
+                        self.variadic_intrinsic_fns.contains(method.as_str());
                     if (is_fmt_fn || is_variadic_intrinsic) && args.len() > 1 {
                         // Extract format specs if this is an @format call.
                         let specs = if let ExprKind::Literal(Literal::String(s)) = &args[0].node {
@@ -2525,14 +3115,25 @@ impl<'a> FnCompiler<'a> {
                                 let rp = self.alloc_reg();
                                 self.chunk.emit(mem_lea(first_slot, rp, 0));
                                 let rl = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovI, rl, coerced_args.len() as u16));
+                                self.chunk
+                                    .emit(ri16(Opcode::MovI, rl, coerced_args.len() as u16));
                                 (rp, rl)
                             };
-                            self.emit_call_by_name("format", &[template_reg, r_ptr, r_len], fmt_dst);
+                            self.emit_call_by_name(
+                                "format",
+                                &[template_reg, r_ptr, r_len],
+                                fmt_dst,
+                            );
                             self.emit_call_by_name(&call_target, &[fmt_dst], dst);
                         }
                     } else {
-                        let arg_regs: Vec<u8> = args.iter().map(|a| self.compile_expr(a)).collect();
+                        let arg_regs: Vec<u8> = args
+                            .iter()
+                            .map(|a| {
+                                self.mark_consumed_expr(a);
+                                self.compile_expr(a)
+                            })
+                            .collect();
                         self.emit_call_by_name(&call_target, &arg_regs, dst);
                     }
                     return dst;
@@ -2546,13 +3147,27 @@ impl<'a> FnCompiler<'a> {
                     if is_enum_ns {
                         if let Some(variants) = self.enum_defs.get(type_name.as_str()) {
                             if let Some(&tag) = variants.get(method.as_str()) {
-                                let payload_regs: Vec<u8> =
-                                    args.iter().map(|a| self.compile_expr(a)).collect();
+                                let payload_regs: Vec<u8> = args
+                                    .iter()
+                                    .map(|a| {
+                                        self.mark_consumed_expr(a);
+                                        self.compile_expr(a)
+                                    })
+                                    .collect();
                                 let ptr = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(payload_regs.len())));
+                                self.chunk.emit(ri16(
+                                    Opcode::New,
+                                    ptr,
+                                    enum_variant_alloc_size(payload_regs.len()),
+                                ));
                                 let tag_reg = self.alloc_reg();
                                 self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
-                                self.chunk.emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
+                                self.chunk.emit(rrr(
+                                    Opcode::FieldStore,
+                                    tag_reg,
+                                    ptr,
+                                    ENUM_DISCRIM_OFFSET,
+                                ));
                                 for (i, &payload) in payload_regs.iter().enumerate() {
                                     let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
                                     self.chunk.emit(rrr(Opcode::FieldStore, payload, ptr, off));
@@ -2588,7 +3203,11 @@ impl<'a> FnCompiler<'a> {
                                     &base_mangled,
                                     &type_kinds,
                                 );
-                                if self.fn_index.contains_key(&mono) { mono } else { base_mangled.clone() }
+                                if self.fn_index.contains_key(&mono) {
+                                    mono
+                                } else {
+                                    base_mangled.clone()
+                                }
                             } else {
                                 base_mangled.clone()
                             }
@@ -2596,8 +3215,13 @@ impl<'a> FnCompiler<'a> {
                             base_mangled.clone()
                         };
                         if self.fn_index.contains_key(&call_target) {
-                            let arg_regs: Vec<u8> =
-                                args.iter().map(|a| self.compile_expr(a)).collect();
+                            let arg_regs: Vec<u8> = args
+                                .iter()
+                                .map(|a| {
+                                    self.mark_consumed_expr(a);
+                                    self.compile_expr(a)
+                                })
+                                .collect();
                             let dst = self.alloc_reg();
                             self.emit_call_by_name(&call_target, &arg_regs, dst);
                             return dst;
@@ -2614,7 +3238,11 @@ impl<'a> FnCompiler<'a> {
 
                 // Static dispatch: Named type with a known impl method takes priority
                 // over built-in method dispatch so that user impls can override any name.
-                if let Some(TypeKind::Named { name: type_name, type_args: receiver_type_args }) = receiver_ty {
+                if let Some(TypeKind::Named {
+                    name: type_name,
+                    type_args: receiver_type_args,
+                }) = receiver_ty
+                {
                     // Special case: Type.from([e0, e1, ...]) → Type.new() + Type.push each element
                     if method == "from" {
                         if let Some(arg) = args.first() {
@@ -2675,12 +3303,22 @@ impl<'a> FnCompiler<'a> {
                         None
                     };
                     if let Some(call_target) = lookup {
-                        let arg_regs: Vec<u8> =
-                            args.iter().map(|a| self.compile_expr(a)).collect();
+                        let arg_regs: Vec<u8> = args
+                            .iter()
+                            .map(|a| {
+                                self.mark_consumed_expr(a);
+                                self.compile_expr(a)
+                            })
+                            .collect();
                         let dst = self.alloc_reg();
                         let mut all_args = vec![obj];
                         all_args.extend_from_slice(&arg_regs);
                         self.emit_call_by_name(&call_target, &all_args, dst);
+                        if method == "free" {
+                            if let ExprKind::Ident(name) = &object.node {
+                                self.deactivate_drop_local(name);
+                            }
+                        }
                         return dst;
                     }
                 }
@@ -2688,18 +3326,21 @@ impl<'a> FnCompiler<'a> {
                 // Dynamic dispatch: dyn Trait receiver → vtable lookup + CallReg.
                 if let Some(TypeKind::Dyn { trait_name }) = self.type_of_span(key) {
                     if let Some(slots) = self.trait_method_slots.get(&trait_name) {
-                        let slot_idx = slots.iter().position(|m: &String| m == method).unwrap_or(0) as u8;
+                        let slot_idx =
+                            slots.iter().position(|m: &String| m == method).unwrap_or(0) as u8;
                         // Load vtable ptr from fat_ptr[8], then fn ptr from vtable[slot*8].
                         let vtbl_ptr = self.alloc_reg();
                         self.chunk.emit(rrr(Opcode::FieldLoad, vtbl_ptr, obj, 8));
                         let fn_ptr = self.alloc_reg();
-                        self.chunk.emit(rrr(Opcode::VtblLoad, fn_ptr, vtbl_ptr, slot_idx));
+                        self.chunk
+                            .emit(rrr(Opcode::VtblLoad, fn_ptr, vtbl_ptr, slot_idx));
                         // Load concrete data ptr from fat_ptr[0].
                         let data_ptr = self.alloc_reg();
                         self.chunk.emit(rrr(Opcode::FieldLoad, data_ptr, obj, 0));
                         let dst = self.alloc_reg();
                         let mut all_args = vec![data_ptr];
                         for a in args {
+                            self.mark_consumed_expr(a);
                             all_args.push(self.compile_expr(a));
                         }
                         for &r in &all_args {
@@ -2712,9 +3353,8 @@ impl<'a> FnCompiler<'a> {
 
                 // Built-in methods for primitive and known types.
                 let resolved_receiver = self.type_of_span(key);
-                if let Some(pm) = resolve_primitive_method(
-                    method, args, resolved_receiver.as_ref(),
-                ) {
+                if let Some(pm) = resolve_primitive_method(method, args, resolved_receiver.as_ref())
+                {
                     match pm {
                         PrimitiveMethod::Len => {
                             // Slice: .len() returns the hidden __len register.
@@ -2754,8 +3394,7 @@ impl<'a> FnCompiler<'a> {
                         PrimitiveMethod::PrimToString { intrinsic_id } => {
                             let dst = self.alloc_reg();
                             self.chunk.emit(rrr(Opcode::Mov, dst, obj, 0));
-                            let mut instr =
-                                ri16(Opcode::Intrinsic, dst, intrinsic_id);
+                            let mut instr = ri16(Opcode::Intrinsic, dst, intrinsic_id);
                             instr.flags = 1;
                             self.chunk.emit(instr);
                             return dst;
@@ -2767,10 +3406,11 @@ impl<'a> FnCompiler<'a> {
                         }
                         PrimitiveMethod::Parse { is_float } => {
                             let dst = self.alloc_reg();
-                            let op = if is_float || matches!(
-                                type_args.first().map(|t| &t.node),
-                                Some(TypeKind::Float32 | TypeKind::Float64)
-                            ) {
+                            let op = if is_float
+                                || matches!(
+                                    type_args.first().map(|t| &t.node),
+                                    Some(TypeKind::Float32 | TypeKind::Float64)
+                                ) {
                                 Opcode::StrToFloat
                             } else {
                                 Opcode::StrToInt
@@ -2782,7 +3422,8 @@ impl<'a> FnCompiler<'a> {
                 }
                 // General vtable dispatch (fallback for dynamic/polymorphic calls).
                 // Determine method slot from trait_method_slots.
-                let method_slot: u8 = self.type_of_span(key)
+                let method_slot: u8 = self
+                    .type_of_span(key)
                     .and_then(|ty| {
                         let type_name = match &ty {
                             TypeKind::Named { name, .. } => Some(name.clone()),
@@ -2800,13 +3441,20 @@ impl<'a> FnCompiler<'a> {
                         None
                     })
                     .unwrap_or(0);
-                let arg_regs: Vec<u8> = args.iter().map(|a| self.compile_expr(a)).collect();
+                let arg_regs: Vec<u8> = args
+                    .iter()
+                    .map(|a| {
+                        self.mark_consumed_expr(a);
+                        self.compile_expr(a)
+                    })
+                    .collect();
                 for &r in &arg_regs {
                     self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
                 }
                 let vtbl = self.alloc_reg();
                 let dst = self.alloc_reg();
-                self.chunk.emit(rrr(Opcode::VtblLoad, vtbl, obj, method_slot));
+                self.chunk
+                    .emit(rrr(Opcode::VtblLoad, vtbl, obj, method_slot));
                 self.chunk.emit(rrr(Opcode::CallReg, dst, vtbl, 0));
                 dst
             }
@@ -2820,10 +3468,16 @@ impl<'a> FnCompiler<'a> {
                         if let Some(variants) = self.enum_defs.get(type_name.as_str()) {
                             if let Some(&tag) = variants.get(name.as_str()) {
                                 let ptr = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(0)));
+                                self.chunk
+                                    .emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(0)));
                                 let tag_reg = self.alloc_reg();
                                 self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
-                                self.chunk.emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
+                                self.chunk.emit(rrr(
+                                    Opcode::FieldStore,
+                                    tag_reg,
+                                    ptr,
+                                    ENUM_DISCRIM_OFFSET,
+                                ));
                                 let dst = self.alloc_reg();
                                 if dst != ptr {
                                     self.chunk.emit(rrr(Opcode::Mov, dst, ptr, 0));
@@ -2836,7 +3490,8 @@ impl<'a> FnCompiler<'a> {
                 let byte_offset = self.field_offset(object, name);
                 let obj = self.compile_expr(object);
                 let dst = self.alloc_reg();
-                self.chunk.emit(rrr(Opcode::FieldLoad, dst, obj, byte_offset));
+                self.chunk
+                    .emit(rrr(Opcode::FieldLoad, dst, obj, byte_offset));
                 dst
             }
 
@@ -2858,8 +3513,9 @@ impl<'a> FnCompiler<'a> {
                 // Named type that implements the Index trait → dispatch to Type.index.
                 // Checks trait_impls registry — no accidental dispatch from any "index" method.
                 let key = (object.span.start, object.span.end);
-                if let Some(TypeKind::Named { name: type_name, .. }) =
-                    self.type_of_span(key)
+                if let Some(TypeKind::Named {
+                    name: type_name, ..
+                }) = self.type_of_span(key)
                 {
                     let implements_index = self
                         .trait_impls
@@ -2880,7 +3536,9 @@ impl<'a> FnCompiler<'a> {
                         }
                     }
                 }
-                let index = indices.first().expect("index expr must have at least one index");
+                let index = indices
+                    .first()
+                    .expect("index expr must have at least one index");
                 let obj_key = (object.span.start, object.span.end);
                 // Slice (variadic param): ptr register holds caller's stack address.
                 if matches!(self.type_of_span(obj_key), Some(TypeKind::Slice { .. })) {
@@ -2985,24 +3643,31 @@ impl<'a> FnCompiler<'a> {
                     "Option" => ("Some", "None"),
                     _ => ("Ok", "Err"),
                 };
-                let success_tag = *self.enum_defs.get(enum_name)
+                let success_tag = *self
+                    .enum_defs
+                    .get(enum_name)
                     .and_then(|v| v.get(success_variant))
                     .expect("? operator: success variant not found in enum_defs");
-                let failure_tag = *self.enum_defs.get(enum_name)
+                let failure_tag = *self
+                    .enum_defs
+                    .get(enum_name)
                     .and_then(|v| v.get(failure_variant))
                     .expect("? operator: failure variant not found in enum_defs");
 
                 // Load discriminant and compare against success tag.
                 let disc = self.alloc_reg();
-                self.chunk.emit(rrr(Opcode::FieldLoad, disc, scr, ENUM_DISCRIM_OFFSET));
+                self.chunk
+                    .emit(rrr(Opcode::FieldLoad, disc, scr, ENUM_DISCRIM_OFFSET));
                 let tag_ok = self.alloc_reg();
-                self.chunk.emit(ri16(Opcode::MovI, tag_ok, success_tag as u16));
+                self.chunk
+                    .emit(ri16(Opcode::MovI, tag_ok, success_tag as u16));
                 self.chunk.emit(rrr(Opcode::Cmp, 0, disc, tag_ok));
                 let jne = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
 
                 // Success path: extract first payload.
                 let val = self.alloc_reg();
-                self.chunk.emit(rrr(Opcode::FieldLoad, val, scr, ENUM_PAYLOAD_OFFSET));
+                self.chunk
+                    .emit(rrr(Opcode::FieldLoad, val, scr, ENUM_PAYLOAD_OFFSET));
                 let jmp_end = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
 
                 // Failure path: build failure variant and early-return.
@@ -3010,23 +3675,47 @@ impl<'a> FnCompiler<'a> {
                 if enum_name == "Option" {
                     // Return None — zero-arg variant.
                     let none_ptr = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::New, none_ptr, enum_variant_alloc_size(0)));
+                    self.chunk
+                        .emit(ri16(Opcode::New, none_ptr, enum_variant_alloc_size(0)));
                     let tag_fail = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::MovI, tag_fail, failure_tag as u16));
-                    self.chunk.emit(rrr(Opcode::FieldStore, tag_fail, none_ptr, ENUM_DISCRIM_OFFSET));
+                    self.chunk
+                        .emit(ri16(Opcode::MovI, tag_fail, failure_tag as u16));
+                    self.chunk.emit(rrr(
+                        Opcode::FieldStore,
+                        tag_fail,
+                        none_ptr,
+                        ENUM_DISCRIM_OFFSET,
+                    ));
                     if none_ptr != 0 {
                         self.chunk.emit(rrr(Opcode::Mov, 0, none_ptr, 0));
                     }
                 } else {
                     // Return Err(payload) — copy scrutinee payload into new Err object.
                     let err_payload = self.alloc_reg();
-                    self.chunk.emit(rrr(Opcode::FieldLoad, err_payload, scr, ENUM_PAYLOAD_OFFSET));
+                    self.chunk.emit(rrr(
+                        Opcode::FieldLoad,
+                        err_payload,
+                        scr,
+                        ENUM_PAYLOAD_OFFSET,
+                    ));
                     let err_ptr = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::New, err_ptr, enum_variant_alloc_size(1)));
+                    self.chunk
+                        .emit(ri16(Opcode::New, err_ptr, enum_variant_alloc_size(1)));
                     let tag_fail = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::MovI, tag_fail, failure_tag as u16));
-                    self.chunk.emit(rrr(Opcode::FieldStore, tag_fail, err_ptr, ENUM_DISCRIM_OFFSET));
-                    self.chunk.emit(rrr(Opcode::FieldStore, err_payload, err_ptr, ENUM_PAYLOAD_OFFSET));
+                    self.chunk
+                        .emit(ri16(Opcode::MovI, tag_fail, failure_tag as u16));
+                    self.chunk.emit(rrr(
+                        Opcode::FieldStore,
+                        tag_fail,
+                        err_ptr,
+                        ENUM_DISCRIM_OFFSET,
+                    ));
+                    self.chunk.emit(rrr(
+                        Opcode::FieldStore,
+                        err_payload,
+                        err_ptr,
+                        ENUM_PAYLOAD_OFFSET,
+                    ));
                     if err_ptr != 0 {
                         self.chunk.emit(rrr(Opcode::Mov, 0, err_ptr, 0));
                     }
@@ -3112,8 +3801,12 @@ impl<'a> FnCompiler<'a> {
                     let fn_addr_reg = self.alloc_reg();
                     let cidx = self.chunk.add_constant(ConstPoolEntry::FnAddr(anon_name));
                     self.chunk.emit(ri16(Opcode::MovConst, fn_addr_reg, cidx));
-                    self.chunk
-                        .emit(rrr(Opcode::FieldStore, fn_addr_reg, env_ptr, ENUM_DISCRIM_OFFSET));
+                    self.chunk.emit(rrr(
+                        Opcode::FieldStore,
+                        fn_addr_reg,
+                        env_ptr,
+                        ENUM_DISCRIM_OFFSET,
+                    ));
                     self.closure_env_regs.insert(env_ptr);
                     env_ptr
                 } else {
@@ -3125,12 +3818,18 @@ impl<'a> FnCompiler<'a> {
                     let fn_addr_reg = self.alloc_reg();
                     let cidx = self.chunk.add_constant(ConstPoolEntry::FnAddr(anon_name));
                     self.chunk.emit(ri16(Opcode::MovConst, fn_addr_reg, cidx));
-                    self.chunk.emit(rrr(Opcode::FieldStore, fn_addr_reg, env_ptr, ENUM_DISCRIM_OFFSET));
+                    self.chunk.emit(rrr(
+                        Opcode::FieldStore,
+                        fn_addr_reg,
+                        env_ptr,
+                        ENUM_DISCRIM_OFFSET,
+                    ));
 
                     for (i, cap_name) in captures.iter().enumerate() {
                         let cap_reg = self.reg_of(cap_name);
                         let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
-                        self.chunk.emit(rrr(Opcode::FieldStore, cap_reg, env_ptr, off));
+                        self.chunk
+                            .emit(rrr(Opcode::FieldStore, cap_reg, env_ptr, off));
                     }
 
                     self.closure_env_regs.insert(env_ptr);
@@ -3342,19 +4041,19 @@ fn resolve_primitive_method(
         "len" if args.is_empty() => Some(PrimitiveMethod::Len),
         "to_str" if args.is_empty() => match receiver_ty {
             Some(TypeKind::Str) | Some(TypeKind::Ref { .. }) => Some(PrimitiveMethod::AsStr),
-            _ => Some(PrimitiveMethod::PrimToStr { tag: prim_to_str_tag(receiver_ty) }),
+            _ => Some(PrimitiveMethod::PrimToStr {
+                tag: prim_to_str_tag(receiver_ty),
+            }),
         },
-        "to_string" if args.is_empty() => {
-            match receiver_ty {
-                Some(TypeKind::Str) | Some(TypeKind::Ref { .. }) | None => {
-                    Some(PrimitiveMethod::StrToString)
-                }
-                Some(TypeKind::Bool) => Some(PrimitiveMethod::BoolToString),
-                _ => Some(PrimitiveMethod::PrimToString {
-                    intrinsic_id: prim_to_string_intrinsic_id(receiver_ty),
-                }),
+        "to_string" if args.is_empty() => match receiver_ty {
+            Some(TypeKind::Str) | Some(TypeKind::Ref { .. }) | None => {
+                Some(PrimitiveMethod::StrToString)
             }
-        }
+            Some(TypeKind::Bool) => Some(PrimitiveMethod::BoolToString),
+            _ => Some(PrimitiveMethod::PrimToString {
+                intrinsic_id: prim_to_string_intrinsic_id(receiver_ty),
+            }),
+        },
         "as_string" | "as_str" if args.is_empty() => Some(PrimitiveMethod::AsStr),
         "parse" => Some(PrimitiveMethod::Parse { is_float: false }),
         _ => None,
@@ -3466,6 +4165,31 @@ fn item_cfg_active(attributes: &[crate::parser::ast::Attribute]) -> bool {
     true
 }
 
+fn collect_destructor_roots(program: &Program) -> HashSet<String> {
+    let mut roots = HashSet::new();
+    for item in &program.items {
+        match &item.node {
+            ItemKind::Fn { name, .. } if name == "free" => {
+                roots.insert(name.clone());
+            }
+            ItemKind::Impl {
+                for_ty, methods, ..
+            } => {
+                let type_name = type_kind_base_name(&for_ty.node);
+                for method in methods {
+                    if let ItemKind::Fn { name, .. } = &method.node {
+                        if name == "free" {
+                            roots.insert(format!("{}.{}", type_name, name));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    roots
+}
+
 /// Recursively collect all `ExprKind::Ident` names from an expression tree.
 fn collect_idents(expr: &Expr, names: &mut Vec<String>) {
     match &expr.node {
@@ -3481,25 +4205,47 @@ fn collect_idents(expr: &Expr, names: &mut Vec<String>) {
             collect_idents(target, names);
             collect_idents(value, names);
         }
-        ExprKind::Call { callee, args, named_args, .. } => {
+        ExprKind::Call {
+            callee,
+            args,
+            named_args,
+            ..
+        } => {
             collect_idents(callee, names);
-            for a in args { collect_idents(a, names); }
-            for (_, a) in named_args { collect_idents(a, names); }
+            for a in args {
+                collect_idents(a, names);
+            }
+            for (_, a) in named_args {
+                collect_idents(a, names);
+            }
         }
         ExprKind::Field { object, .. } => collect_idents(object, names),
         ExprKind::StructInit { fields, .. } => {
-            for (_, f) in fields { collect_idents(f, names); }
+            for (_, f) in fields {
+                collect_idents(f, names);
+            }
         }
-        ExprKind::MethodCall { object, args, named_args, .. } => {
+        ExprKind::MethodCall {
+            object,
+            args,
+            named_args,
+            ..
+        } => {
             collect_idents(object, names);
-            for a in args { collect_idents(a, names); }
-            for (_, a) in named_args { collect_idents(a, names); }
+            for a in args {
+                collect_idents(a, names);
+            }
+            for (_, a) in named_args {
+                collect_idents(a, names);
+            }
         }
         ExprKind::Match { scrutinee, arms } => {
             collect_idents(scrutinee, names);
             for arm in arms {
                 collect_idents(&arm.expr, names);
-                if let Some(g) = &arm.guard { collect_idents(g, names); }
+                if let Some(g) = &arm.guard {
+                    collect_idents(g, names);
+                }
             }
         }
         ExprKind::CompoundAssign { target, value, .. } => {
@@ -3508,11 +4254,15 @@ fn collect_idents(expr: &Expr, names: &mut Vec<String>) {
         }
         ExprKind::IncDec { expr: inner, .. } => collect_idents(inner, names),
         ExprKind::ArrayLit(elems) => {
-            for e in elems { collect_idents(e, names); }
+            for e in elems {
+                collect_idents(e, names);
+            }
         }
         ExprKind::Index { object, indices } => {
             collect_idents(object, names);
-            for i in indices { collect_idents(i, names); }
+            for i in indices {
+                collect_idents(i, names);
+            }
         }
         ExprKind::Try { expr: inner } => collect_idents(inner, names),
         ExprKind::Closure { body, .. } => collect_idents(body, names),
@@ -3590,14 +4340,35 @@ fn types_equal(a: &TypeKind, b: &TypeKind) -> bool {
         (Isize, Isize) | (Usize, Usize) => true,
         (Float16, Float16) | (Float32, Float32) | (Float64, Float64) => true,
         (Bool, Bool) | (Str, Str) | (Void, Void) | (Any, Any) | (Never, Never) => true,
-        (Named { name: n1, type_args: a1 }, Named { name: n2, type_args: a2 }) => {
-            n1 == n2 && a1.len() == a2.len() && a1.iter().zip(a2).all(|(t1, t2)| types_equal(&t1.node, &t2.node))
+        (
+            Named {
+                name: n1,
+                type_args: a1,
+            },
+            Named {
+                name: n2,
+                type_args: a2,
+            },
+        ) => {
+            n1 == n2
+                && a1.len() == a2.len()
+                && a1
+                    .iter()
+                    .zip(a2)
+                    .all(|(t1, t2)| types_equal(&t1.node, &t2.node))
         }
         (Ref { inner: i1 }, Ref { inner: i2 }) => types_equal(&i1.node, &i2.node),
         (RawPtr { inner: i1 }, RawPtr { inner: i2 }) => types_equal(&i1.node, &i2.node),
-        (Array { elem_ty: e1, len: l1 }, Array { elem_ty: e2, len: l2 }) => {
-            l1 == l2 && types_equal(&e1.node, &e2.node)
-        }
+        (
+            Array {
+                elem_ty: e1,
+                len: l1,
+            },
+            Array {
+                elem_ty: e2,
+                len: l2,
+            },
+        ) => l1 == l2 && types_equal(&e1.node, &e2.node),
         (Slice { elem_ty: e1 }, Slice { elem_ty: e2 }) => types_equal(&e1.node, &e2.node),
         _ => false,
     }
@@ -3776,7 +4547,11 @@ mod tests {
         assert!(main_chunk.is_some(), "expected main chunk");
         // main should call the monomorphized function
         assert!(
-            main_chunk.unwrap().code.iter().any(|i| i.opcode == Opcode::CallIdx as u8),
+            main_chunk
+                .unwrap()
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::CallIdx as u8),
             "expected CallIdx in main"
         );
     }
@@ -3794,18 +4569,20 @@ mod tests {
         );
         // show<i32> should use Intrinsic(15) for int to_string
         let show_i32 = chunks.iter().find(|c| c.name == "show<i32>").unwrap();
-        let has_int_intrinsic = show_i32.code.iter().any(|i| {
-            i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 15
-        });
+        let has_int_intrinsic = show_i32
+            .code
+            .iter()
+            .any(|i| i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 15);
         assert!(
             has_int_intrinsic,
             "show<i32> should use Intrinsic(15) for int to_string"
         );
         // show<f64> should use Intrinsic(16) for float to_string
         let show_f64 = chunks.iter().find(|c| c.name == "show<f64>").unwrap();
-        let has_float_intrinsic = show_f64.code.iter().any(|i| {
-            i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 16
-        });
+        let has_float_intrinsic = show_f64
+            .code
+            .iter()
+            .any(|i| i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 16);
         assert!(
             has_float_intrinsic,
             "show<f64> should use Intrinsic(16) for float to_string"
@@ -4168,7 +4945,10 @@ mod tests {
         );
         let main_chunk = chunks.iter().find(|c| c.name == "main").unwrap();
         assert!(
-            !main_chunk.code.iter().any(|i| i.opcode == Opcode::VtblLoad as u8),
+            !main_chunk
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::VtblLoad as u8),
             "a.add(5) on Named type should NOT use VtblLoad"
         );
         let add_chunk = chunks.iter().find(|c| c.name == "Acc.add").unwrap();
@@ -4207,20 +4987,32 @@ mod tests {
             chunks.iter().any(|c| c.name == "__void_closure_0"),
             "expected anonymous closure chunk"
         );
-        let closure_chunk = chunks.iter().find(|c| c.name == "__void_closure_0").unwrap();
+        let closure_chunk = chunks
+            .iter()
+            .find(|c| c.name == "__void_closure_0")
+            .unwrap();
         assert_eq!(
             closure_chunk.code.last().unwrap().opcode,
             Opcode::Ret as u8,
             "closure chunk must end with Ret"
         );
-        assert_eq!(closure_chunk.param_count, 1, "no-capture closure has 1 param: hidden env ptr as r0");
+        assert_eq!(
+            closure_chunk.param_count, 1,
+            "no-capture closure has 1 param: hidden env ptr as r0"
+        );
         let main_chunk = chunks.iter().find(|c| c.name == "main").unwrap();
         assert!(
-            main_chunk.code.iter().any(|i| i.opcode == Opcode::MovConst as u8),
+            main_chunk
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::MovConst as u8),
             "expected MovConst for FnAddr in main"
         );
         assert!(
-            main_chunk.code.iter().any(|i| i.opcode == Opcode::CallReg as u8),
+            main_chunk
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::CallReg as u8),
             "expected CallReg for indirect call in main"
         );
     }
@@ -4234,26 +5026,39 @@ mod tests {
                 var r: i32 = f();
             }"#,
         );
-        let closure_chunk = chunks.iter().find(|c| c.name == "__void_closure_0").unwrap();
+        let closure_chunk = chunks
+            .iter()
+            .find(|c| c.name == "__void_closure_0")
+            .unwrap();
         // With one capture, param_count = 0 user params + 1 hidden env ptr = 1
-        assert_eq!(closure_chunk.param_count, 1, "closure should have hidden env ptr param");
+        assert_eq!(
+            closure_chunk.param_count, 1,
+            "closure should have hidden env ptr param"
+        );
         // The closure should load from the env struct (FieldLoad)
         assert!(
-            closure_chunk.code.iter().any(|i| i.opcode == Opcode::FieldLoad as u8),
+            closure_chunk
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::FieldLoad as u8),
             "expected FieldLoad for capture access in closure"
         );
         let main_chunk = chunks.iter().find(|c| c.name == "main").unwrap();
         // Main should allocate the env struct
         assert!(
-            main_chunk.code.iter().any(|i| i.opcode == Opcode::New as u8),
+            main_chunk
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::New as u8),
             "expected New for env struct allocation"
         );
         // Main should pass env ptr as hidden first arg (CallArg before fn_ptr load)
         assert!(
-            main_chunk.code.iter().any(|i| i.opcode == Opcode::CallArg as u8),
+            main_chunk
+                .code
+                .iter()
+                .any(|i| i.opcode == Opcode::CallArg as u8),
             "expected CallArg for hidden env ptr"
         );
     }
-
-
 }

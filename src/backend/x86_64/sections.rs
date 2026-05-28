@@ -11,12 +11,12 @@ use crate::semantic::SemanticReport;
 use super::symbols::SymbolTable;
 
 // Windows crash handler strings.
-pub(super) const CRASH_HEADER: &[u8]  = b"== CRASHED ==\n";
-pub(super) const FATAL_EXC: &[u8]     = b"fatal: exception 0x";
-pub(super) const FAULT_PREFIX: &[u8]  = b"fault: 0x";
-pub(super) const RIP_PREFIX: &[u8]    = b"rip: 0x";
-pub(super) const TRACE_HINT: &[u8]    = b"use VOID_TRACE=1 to see full stack trace\n";
-pub(super) const ENV_VAR_NAME: &[u8]  = b"VOID_TRACE\0";
+pub(super) const CRASH_HEADER: &[u8] = b"== CRASHED ==\n";
+pub(super) const FATAL_EXC: &[u8] = b"fatal: exception 0x";
+pub(super) const FAULT_PREFIX: &[u8] = b"fault: 0x";
+pub(super) const RIP_PREFIX: &[u8] = b"rip: 0x";
+pub(super) const TRACE_HINT: &[u8] = b"use VOID_TRACE=1 to see full stack trace\n";
+pub(super) const ENV_VAR_NAME: &[u8] = b"VOID_TRACE\0";
 
 fn safe_label(name: &str) -> String {
     name.chars()
@@ -114,21 +114,9 @@ impl SectionAccumulator {
             19,
         );
         let fatal_offset = obj.append_section_data(self.rodata_id, b"fatal: signal 0x ", 1);
-        sym_table.define_data(
-            obj,
-            self.rodata_id,
-            "__void_fatal_sig",
-            fatal_offset,
-            16,
-        );
+        sym_table.define_data(obj, self.rodata_id, "__void_fatal_sig", fatal_offset, 16);
         let at_addr_offset = obj.append_section_data(self.rodata_id, b" at address 0x", 1);
-        sym_table.define_data(
-            obj,
-            self.rodata_id,
-            "__void_at_addr",
-            at_addr_offset,
-            14,
-        );
+        sym_table.define_data(obj, self.rodata_id, "__void_at_addr", at_addr_offset, 14);
         let bt_prefix_offset = obj.append_section_data(self.rodata_id, b"stack backtrace:\n", 1);
         sym_table.define_data(
             obj,
@@ -138,21 +126,9 @@ impl SectionAccumulator {
             17,
         );
         let at_0x_offset = obj.append_section_data(self.rodata_id, b"  at 0x", 1);
-        sym_table.define_data(
-            obj,
-            self.rodata_id,
-            "__void_at_0x",
-            at_0x_offset,
-            7,
-        );
+        sym_table.define_data(obj, self.rodata_id, "__void_at_0x", at_0x_offset, 7);
         let nl_offset = obj.append_section_data(self.rodata_id, b"\n", 1);
-        sym_table.define_data(
-            obj,
-            self.rodata_id,
-            "__void_nl",
-            nl_offset,
-            1,
-        );
+        sym_table.define_data(obj, self.rodata_id, "__void_nl", nl_offset, 1);
 
         let needs_fmt_ld = chunks.iter().any(|c| {
             c.code.iter().any(|i| {
@@ -198,7 +174,9 @@ impl SectionAccumulator {
         ];
         for &(tag, fmt, sym) in fmt_specs {
             if chunks.iter().any(|c| {
-                c.code.iter().any(|i| i.opcode == Opcode::PrimToStr as u8 && i.ops[2] == tag)
+                c.code
+                    .iter()
+                    .any(|i| i.opcode == Opcode::PrimToStr as u8 && i.ops[2] == tag)
             }) {
                 let offset = obj.append_section_data(self.rodata_id, fmt, 1);
                 sym_table.define_data(obj, self.rodata_id, sym, offset, fmt.len() as u64);
@@ -207,7 +185,9 @@ impl SectionAccumulator {
         for prec in 0u8..=9 {
             let tag = 20 + prec;
             if chunks.iter().any(|c| {
-                c.code.iter().any(|i| i.opcode == Opcode::PrimToStr as u8 && i.ops[2] == tag)
+                c.code
+                    .iter()
+                    .any(|i| i.opcode == Opcode::PrimToStr as u8 && i.ops[2] == tag)
             }) {
                 let fmt = format!("%.{}f\0", prec);
                 let bytes = fmt.as_bytes().to_vec();
@@ -332,9 +312,9 @@ impl SectionAccumulator {
                         .find(|s| s.as_str() == safe_label(&impl_fn) || s.as_str() == impl_fn)
                         .cloned()
                         .unwrap_or_else(|| safe_label(&impl_fn));
-                    let sym_id = sym_table.get_defined(&fn_sym).unwrap_or_else(|| {
-                        sym_table.get_or_add_undef(obj, &fn_sym)
-                    });
+                    let sym_id = sym_table
+                        .get_defined(&fn_sym)
+                        .unwrap_or_else(|| sym_table.get_or_add_undef(obj, &fn_sym));
                     let abs_flags = if fmt == BinaryFormat::Coff {
                         RelocationFlags::Generic {
                             kind: RelocationKind::Absolute,

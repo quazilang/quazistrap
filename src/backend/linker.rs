@@ -176,7 +176,11 @@ fn find_dynamic_linker() -> Option<PathBuf> {
         "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
         "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
     ];
-    candidates.iter().map(Path::new).find(|p| p.exists()).map(Path::to_path_buf)
+    candidates
+        .iter()
+        .map(Path::new)
+        .find(|p| p.exists())
+        .map(Path::to_path_buf)
 }
 
 /// Search common Linux directories for the actual ELF shared object of a system library
@@ -258,7 +262,13 @@ mod tests {
 
         assert!(args.contains(&"--gc-sections".to_string()));
         assert!(args.contains(&"--build-id=none".to_string()));
-        assert!(args.windows(2).any(|pair| pair == ["-z", "noseparate-code"]));
-        assert!(args.windows(2).any(|pair| pair == ["-z", "max-page-size=0x1000"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-z", "noseparate-code"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-z", "max-page-size=0x1000"])
+        );
     }
 }

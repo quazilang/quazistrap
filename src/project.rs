@@ -185,7 +185,10 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
         };
 
         if check.join("void.toml").exists() {
-            return check.canonicalize().ok().or_else(|| Some(check.to_path_buf()));
+            return check
+                .canonicalize()
+                .ok()
+                .or_else(|| Some(check.to_path_buf()));
         }
 
         // Can't go higher — empty dir means we already checked CWD.
@@ -209,7 +212,7 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
             return Err(format!(
                 "void.toml: unknown package type '{}' (expected 'bin' or 'lib')",
                 other
-            ))
+            ));
         }
     };
 

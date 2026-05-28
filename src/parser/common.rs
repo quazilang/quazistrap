@@ -129,12 +129,16 @@ impl Parser {
 
     fn render_diagnostic(&self, code: &str, msg: String, span: TokenSpan) -> String {
         // Resolve merged-source line to file:line:col when source_files are available.
-        let (display_loc, file_rel_line) = if let Some(sf) = self.source_files.iter().rev()
+        let (display_loc, file_rel_line) = if let Some(sf) = self
+            .source_files
+            .iter()
+            .rev()
             .find(|sf| sf.line_start <= span.line)
         {
             let rel_line = span.line - sf.line_start + 1;
             let path = std::path::Path::new(&sf.path);
-            let short = path.file_name()
+            let short = path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(&sf.path);
             (format!("{}:{}:{}", short, rel_line, span.col), rel_line)

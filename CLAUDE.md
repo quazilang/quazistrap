@@ -75,7 +75,7 @@ Five sequential passes:
 **Warning suppression**: `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)`.  
 **`@cfg` evaluation**: `target_os`, `target_arch`, `target_abi` evaluated against `std::env::consts`. Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 
-**Borrow checker** (`borrow.rs`): move semantics for Named types (structs/enums). S10 = use-after-move / move-in-loop. `reassign_targets` set suppresses move-in-loop for `x = x.method()` patterns (value immediately re-owned). `for x : iterable` reads the iterable and must not mark it moved; array codegen keeps the value live for `len()`/`get()`. No reference lifetimes yet.
+**Borrow checker** (`borrow.rs`): move semantics for all non-primitive, non-reference types (structs, enums, arrays, slices, dyn Trait, etc.). S10 = use-after-move / move-in-loop. `reassign_targets` set suppresses move-in-loop for `x = x.method()` patterns (value immediately re-owned). `for x : iterable` **moves** the iterable (like Rust's `for x in collection`); borrow with `for x : &collection`. The iterable is consumed before the loop body so it does not trigger move-in-loop. Method receivers are borrowed (non-consuming). No explicit reference lifetimes yet.
 **Generic receiver methods**: for `Named` receivers with concrete type args, substitute receiver generics into method params before checking args (`Array[i32].push("x")` must error because `T = i32`).
 
 **`pub` visibility:**
@@ -123,7 +123,10 @@ Key: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_alloc_size(
 - **Pattern matching**: `PatternKind` = `Wildcard | Bind(String) | Literal(LiteralValue) | Variant { enum_name, variant, sub_patterns }`. `compile_pattern_match` recurses into sub_patterns. String literal match: `StrLen` fast-path + byte loop via intrinsic ID 23 (consecutive regs required: r_a, r_a+1).
 - **Format specs**: `extract_format_specs(template)` parses `{:spec}` at compile time → `Vec<String>`. `strip_format_specs` rewrites `{:spec}` → `{}` for runtime `format()`. `coerce_with_spec(reg, spec, span)` applies int/float specs → extended `PrimToStr` tags. str_variadic fns use spec-aware coercion per arg slot.
 - **`dyn Trait`**: `coerce_to_dyn(obj_reg, type_name, trait_name)` allocates 16-byte fat pointer — `fat[0]=concrete_ptr`, `fat[8]=vtable_ptr` (via `MovConst(VtableAddr)`). MethodCall on `Dyn` receiver: `FieldLoad fat[8]→vtbl_ptr`, `VtblLoad vtbl_ptr[slot]→fn_ptr`, `FieldLoad fat[0]→data_ptr`, `CallArg*+CallReg`.
-- **Non-slice iterator** (`ForLoop::Each` on non-slice): `Array[T]` is special-cased to compile as an index loop (`len()` + `get()`). Other `Named` types use `has_next()` / `next()` protocol with `Option[T]` unwrapping. `Dyn` trait objects use vtable dispatch.
+- **Non-slice iterator** (`ForLoop::Each` on non-slice): `Array[T]` is special-cased to compile as an index loop (`len()` + `get()`). The typechecker records `Array.len`/`Array.get` monomorphizations so the specialized chunks exist in `fn_index`; codegen falls back to the unmangled name if the mangled one is missing. `for i : &arr` strips the `Ref` and iterates the inner value directly. Other `Named` types use `has_next()` / `next()` protocol with `Option[T]` unwrapping. `Dyn` trait objects use vtable dispatch.
+- **For-loop move semantics**: `for x : collection` moves/consumes the collection. Codegen calls `mark_consumed_expr` on the iterable and registers a hidden `__for_iter` drop-local so the value is cleaned up when the enclosing scope exits (early returns included). `for x : &collection` borrows and leaves the original variable untouched.
+- **Index assignment**: `arr[i] = val` is supported for `Array[T]` (dispatches to `Array.set`), slices (direct stack store), and fixed-size arrays (register move for literal index, computed address store for dynamic index).
+- **Local RAII cleanup**: codegen tracks local variables whose resolved `Named` type has a `free(self)` method and emits destructor calls at block exits and before returns. Destructor roots are forced reachable so tree-shaking keeps `Type.free` and its dependencies. Values moved into returns/call args are deactivated to avoid double-free; method receivers remain non-consuming to match existing `self: Array[T]` APIs. `Array[T]` and `String` locals are auto-cleaned at scope exit. This is source-level cleanup, not `Drop` bytecode yet.
 
 ### Regalloc (`src/bytecode/regalloc.rs`)
 Two passes run on each chunk after inline expansion:
@@ -214,7 +217,7 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 ## String Model
 
 - `str` / `&str` — interchangeable. Immutable, valid UTF-8, fat pointer internally.
-- `String` — owned heap string (`ptr+len+cap`). RAII (manual `free` currently required; no auto-drop).
+- `String` — owned heap string (`ptr+len+cap`). Local variables auto-clean via `String.free`; empty strings (`cap == 0`) do not free static storage.
 - `Rune = u32` — Unicode codepoint. `RuneIterator` iterates UTF-8 codepoints.
 
 Key API: `s.len()→StrLen`, `s.to_string()→PrimToStr`, `s.as_str()→StrAsStr`, `s.parse[i32]()→StrToInt`, `s.parse[f64]()→StrToFloat`.
@@ -228,14 +231,14 @@ Source-based `.void` files, merged at compile time.
 | `core` | Done | write, read, exit, malloc/free/realloc, memcpy/set/move/cmp, strlen, str_concat, int_to_str, float_to_str, str_byte_at, str_from_byte |
 | `io` | Done | println, print, eprintln, eprint, read_line — str_variadic (auto-coerces args) |
 | `fmt` | Done | `format(template, ...args: str) str` — pure void, `{}` placeholders, byte-by-byte parsing; spec-aware coercion (`{:x}`, `{:o}`, `{:.Nf}`) |
-| `string` | Done | `String`: new, push, push_str, len, as_str, bytes |
+| `string` | Done | `String`: new, push, push_str, len, as_str, free |
 | `panic` | Done | PanicInfo {message,file,line}, __void_panic_handler, panic. Codegen injects hidden `file`/`line` args at call sites. Typechecker special-cases `panic` to accept 1+ user args. |
 | `result` | Done | ok/is_ok/is_err/unwrap/unwrap_err/unwrap_or; `?` operator |
 | `option` | Done | is_some/is_none/unwrap/unwrap_or; `?` operator |
 | `box` | Done | `Box[T]`: new, get, set, free |
 | `traits` | Done | Display, Debug, Clone, Copy, Drop, Iterator, Eq, Ord, Hash, Default, Into, From, Index, Write, Add/Sub/Mul/Div/Rem/Neg/BitAnd/BitOr/BitXor/Shl/Shr |
 | `prelude/mod.void` | Done | re-exports String, Box, Array, option, result, traits, fmt, panic. Prelude is **always** auto-injected; `@no_std` only disables `std`. |
-| `collections/array` | Done | `Array[T]`: push, get, len, free, from, Index impl |
+| `collections/array` | Done | `Array[T]`: push, get, set, len, free, from, Index impl. Index assignment `arr[i] = val` supported. Locals auto-clean at scope exit. |
 | `collections/map` | Done | open-addressing hash map with tombstones |
 | `collections/set` | Done | open-addressing hash set |
 | `unix` | Done | raw syscall wrappers |
@@ -314,6 +317,9 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | ~~Enhanced Crash/Panic handler~~ | ✅ Done. Linux: signal info + hex formatting + RBP backtrace when `VOID_TRACE=1`. Panic: file/line injected at call sites + backtrace via intrinsic 25. |
 | ~~Fix encoder silent fallback~~ | ✅ Done. Unimplemented opcodes (`NewObj`, `Move`, `Drop`, `Dup`, `Spawn`, `AtomicAdd`, `AtomicCas`, `StrConcat`) now `panic!("encoder: unimplemented opcode {:?}", ...)` instead of emitting bogus `xor rax,rax; mov slot(0),rax`. |
 | ~~Fix non-slice iterator codegen~~ | ✅ Done. `ForLoop::Each` on non-slice collections now emits proper `has_next()` → `next()` → `Option` unwrap loop. Supports both `Named` static dispatch and `Dyn` vtable dispatch. |
+| ~~For-loop move semantics~~ | ✅ Done. `for x : collection` now moves the iterable (Rust semantics). Borrow with `for x : &collection`. Borrow checker + codegen + drop cleanup all wired. |
+| ~~Index assignment~~ | ✅ Done. `arr[i] = val` works for `Array[T]`, slices, and fixed-size arrays. |
+| ~~Human-readable move errors~~ | ✅ Done. S10 use-after-move errors show `file:line:col` for the move site instead of raw merged-source coordinates. |
 
 ### P1 — High Impact
 
@@ -338,7 +344,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | Item | Target |
 |------|--------|
 | **macOS Mach-O backend** | Actually implement Mach-O object output, `__start` stub, Mach-O relocations. Currently broken (emits ELF). |
-| **Ownership / RAII bytecode** | Emit `Move`, `Drop`, `Dup` opcodes. Run destructors at scope exit. Unblocks `Drop` trait and fixes `Box`/`String` leaks. |
+| **Ownership / RAII bytecode** | Partially done via source-level codegen cleanup for locals with `free(self)`. Still need real `Move`/`Drop`/`Dup` opcodes, `Drop` trait dispatch, parameter/field/element recursive drops, and reference lifetimes. |
 | **Atomic opcodes in encoder** | Implement `AtomicAdd`, `AtomicCas` lowering. |
 
 ### P4 — Language Features

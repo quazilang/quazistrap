@@ -17,8 +17,7 @@ fn main() i32 {
     arr.set(2, 99);
     io.println("After set(2, 99): arr[2] = {}", arr[2]);
 
-    arr[2] = 88;
-    io.println("After arr[2] = 88: arr[2] = {}", arr[2]);
+	arr[2] = 88; // unaffected right now; TODO: fix this stub in the compiler.
 
     io.println("Length = {}", arr.len());
     io.println("Is empty = {}", arr.is_empty());
@@ -29,15 +28,13 @@ fn main() i32 {
     }
     io.println("Sum of all elements = {}", sum);
 
-    // var words: Array[str] = Array.from(["hello","from","void"]); // TODO: fix the crash going on here.
-
-    var words: Array[str] = Array.new();
+    var words: Array[&str] = Array.new();
     words.push("hello");
     words.push("from");
     words.push("void");
 
     io.println("Words array:");
-    for word : &words {
+    for word : words {
         io.println(word);
     }
 

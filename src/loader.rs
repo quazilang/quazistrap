@@ -95,8 +95,13 @@ pub fn load_programs_with_resolver(
             if flat.exists() { Some(flat) } else { None }
         });
 
-    collect_sources_with_prelude(entries, effective_resolver.as_ref(), prelude_path.as_deref(), true)
-        .and_then(finalize_sources)
+    collect_sources_with_prelude(
+        entries,
+        effective_resolver.as_ref(),
+        prelude_path.as_deref(),
+        true,
+    )
+    .and_then(finalize_sources)
 }
 
 struct SourceCollection {
@@ -117,11 +122,29 @@ fn collect_sources_with_prelude(
     let mut dep_edges: Vec<(PathBuf, PathBuf)> = Vec::new();
 
     if let Some(p) = prelude {
-        collect(p, true, &mut visited, &mut sources, &mut library_paths, resolver, strict, &mut dep_edges)?;
+        collect(
+            p,
+            true,
+            &mut visited,
+            &mut sources,
+            &mut library_paths,
+            resolver,
+            strict,
+            &mut dep_edges,
+        )?;
     }
 
     for entry in entries {
-        collect(entry, false, &mut visited, &mut sources, &mut library_paths, resolver, strict, &mut dep_edges)?;
+        collect(
+            entry,
+            false,
+            &mut visited,
+            &mut sources,
+            &mut library_paths,
+            resolver,
+            strict,
+            &mut dep_edges,
+        )?;
     }
 
     Ok(SourceCollection {
@@ -233,7 +256,13 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
     let mut parser = Parser::new_with_source_files(tokens, &merged, source_files.clone());
     let (program, parse_error) = match parser.parse() {
         Ok(p) => (p, None),
-        Err(e) => (crate::parser::ast::Program { items: vec![], span: None }, Some(e)),
+        Err(e) => (
+            crate::parser::ast::Program {
+                items: vec![],
+                span: None,
+            },
+            Some(e),
+        ),
     };
 
     Ok(LoadResult {
@@ -397,12 +426,18 @@ fn resolver_with_builtin_modules(
     let mut combined = resolver.cloned().unwrap_or_default();
 
     if let Some(prelude_spec) = builtin_prelude_module_spec() {
-        combined.modules.entry("prelude".to_string()).or_insert(prelude_spec);
+        combined
+            .modules
+            .entry("prelude".to_string())
+            .or_insert(prelude_spec);
     }
 
     if include_std {
         if let Some(std_spec) = builtin_std_module_spec() {
-            combined.modules.entry("std".to_string()).or_insert(std_spec);
+            combined
+                .modules
+                .entry("std".to_string())
+                .or_insert(std_spec);
         }
     }
 
@@ -616,108 +651,111 @@ fn local_import_paths(
         };
 
         if !ip.relative {
-        if let Some(mods) = resolver {
-            if let Some(spec) = mods.modules.get(&base) {
-                if remainder.is_empty() && base == "std" {
-                    // import std; — only load sub-modules actually used in source
-                    for module in used_std_modules(src) {
-                        if let Some(target) = resolve_module_file(spec, &module) {
-                            if seen.insert(target.clone()) {
-                                paths.push((target, true));
+            if let Some(mods) = resolver {
+                if let Some(spec) = mods.modules.get(&base) {
+                    if remainder.is_empty() && base == "std" {
+                        // import std; — only load sub-modules actually used in source
+                        for module in used_std_modules(src) {
+                            if let Some(target) = resolve_module_file(spec, &module) {
+                                if seen.insert(target.clone()) {
+                                    paths.push((target, true));
+                                }
                             }
                         }
+                        continue;
                     }
-                    continue;
-                }
 
-                let target = if remainder.is_empty() {
-                    spec.entry.clone()
-                } else {
-                    let root_mod_void = spec.src_dir.join("mod.void");
-                    if root_mod_void.exists() {
-                        let exported = &remainder[0];
-                        if strict && !is_pub_exported_from_mod(&root_mod_void, exported)? {
-                            return Err(format!(
-                                "cannot access '{}' from '{}': '{}' is not pub-imported in mod.void",
-                                exported, base, exported
-                            ));
-                        }
-                        if let Some(specific) = find_pub_exported_file(&root_mod_void, exported) {
-                            if seen.insert(specific.clone()) {
-                                paths.push((specific, true));
-                            }
-                            continue;
-                        }
-                        root_mod_void
+                    let target = if remainder.is_empty() {
+                        spec.entry.clone()
                     } else {
-                    // mod.void opaque directory check: if first remainder segment is a
-                    // directory with mod.void, enforce opaqueness.
-                    let first = &remainder[0];
-                    let mod_void_path = spec.src_dir.join(first).join("mod.void");
-                    if mod_void_path.exists() {
-                        if remainder.len() > 1 {
-                            let sub = &remainder[1];
-                            if strict && !is_pub_exported_from_mod(&mod_void_path, sub)? {
+                        let root_mod_void = spec.src_dir.join("mod.void");
+                        if root_mod_void.exists() {
+                            let exported = &remainder[0];
+                            if strict && !is_pub_exported_from_mod(&root_mod_void, exported)? {
                                 return Err(format!(
-                                    "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.void'",
-                                    sub, first, sub, first
+                                    "cannot access '{}' from '{}': '{}' is not pub-imported in mod.void",
+                                    exported, base, exported
                                 ));
                             }
-                            // Targeted: load only the specific file, skip mod.void
-                            if let Some(specific) = find_pub_exported_file(&mod_void_path, sub) {
+                            if let Some(specific) = find_pub_exported_file(&root_mod_void, exported)
+                            {
                                 if seen.insert(specific.clone()) {
                                     paths.push((specific, true));
                                 }
                                 continue;
                             }
-                        }
-                        mod_void_path
-                    } else {
-                        // Try progressively shorter paths: the last segment(s) may be
-                        // function/symbol names rather than file path components.
-                        // e.g. `import std.core.write` → try core/write.void first,
-                        // then core.void (where `write` is the imported symbol name).
-                        let mut found: Option<PathBuf> = None;
-                        for len in (1..=remainder.len()).rev() {
-                            let mut candidate = spec.src_dir.clone();
-                            for seg in &remainder[..len] {
-                                candidate.push(seg);
+                            root_mod_void
+                        } else {
+                            // mod.void opaque directory check: if first remainder segment is a
+                            // directory with mod.void, enforce opaqueness.
+                            let first = &remainder[0];
+                            let mod_void_path = spec.src_dir.join(first).join("mod.void");
+                            if mod_void_path.exists() {
+                                if remainder.len() > 1 {
+                                    let sub = &remainder[1];
+                                    if strict && !is_pub_exported_from_mod(&mod_void_path, sub)? {
+                                        return Err(format!(
+                                            "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.void'",
+                                            sub, first, sub, first
+                                        ));
+                                    }
+                                    // Targeted: load only the specific file, skip mod.void
+                                    if let Some(specific) =
+                                        find_pub_exported_file(&mod_void_path, sub)
+                                    {
+                                        if seen.insert(specific.clone()) {
+                                            paths.push((specific, true));
+                                        }
+                                        continue;
+                                    }
+                                }
+                                mod_void_path
+                            } else {
+                                // Try progressively shorter paths: the last segment(s) may be
+                                // function/symbol names rather than file path components.
+                                // e.g. `import std.core.write` → try core/write.void first,
+                                // then core.void (where `write` is the imported symbol name).
+                                let mut found: Option<PathBuf> = None;
+                                for len in (1..=remainder.len()).rev() {
+                                    let mut candidate = spec.src_dir.clone();
+                                    for seg in &remainder[..len] {
+                                        candidate.push(seg);
+                                    }
+                                    candidate.set_extension("void");
+                                    if candidate.exists() {
+                                        found = Some(candidate);
+                                        break;
+                                    }
+                                }
+                                if found.is_none() {
+                                    found = resolve_module_file(spec, &remainder[0]);
+                                }
+                                // If nothing found, use the full path so the error message is useful.
+                                found.unwrap_or_else(|| {
+                                    let mut full = spec.src_dir.clone();
+                                    for seg in &remainder {
+                                        full.push(seg);
+                                    }
+                                    full.set_extension("void");
+                                    full
+                                })
                             }
-                            candidate.set_extension("void");
-                            if candidate.exists() {
-                                found = Some(candidate);
-                                break;
-                            }
                         }
-                        if found.is_none() {
-                            found = resolve_module_file(spec, &remainder[0]);
-                        }
-                        // If nothing found, use the full path so the error message is useful.
-                        found.unwrap_or_else(|| {
-                            let mut full = spec.src_dir.clone();
-                            for seg in &remainder {
-                                full.push(seg);
-                            }
-                            full.set_extension("void");
-                            full
-                        })
-                    }
-                    }
-                };
+                    };
 
-                if !target.exists() {
-                    return Err(format!(
-                        "cannot resolve module import '{}' (expected {})",
-                        base,
-                        target.to_string_lossy()
-                    ));
+                    if !target.exists() {
+                        return Err(format!(
+                            "cannot resolve module import '{}' (expected {})",
+                            base,
+                            target.to_string_lossy()
+                        ));
+                    }
+                    if seen.insert(target.clone()) {
+                        paths.push((target, true)); // from module resolver → library
+                    }
+                    continue;
                 }
-                if seen.insert(target.clone()) {
-                    paths.push((target, true)); // from module resolver → library
-                }
-                continue;
             }
-        }
         } // end !ip.relative
 
         let candidate = dir.join(format!("{}.void", base));
@@ -779,7 +817,9 @@ fn local_import_paths(
                     }
                 } else {
                     let mut entries: Vec<_> = std::fs::read_dir(&ns_dir)
-                        .map_err(|e| format!("cannot read directory '{}': {}", ns_dir.display(), e))?
+                        .map_err(|e| {
+                            format!("cannot read directory '{}': {}", ns_dir.display(), e)
+                        })?
                         .filter_map(|e| e.ok())
                         .map(|e| e.path())
                         .filter(|p| p.extension().is_some_and(|ext| ext == "void"))
@@ -831,8 +871,12 @@ fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
     let mod_dir = mod_void.parent()?;
 
     for item in &prog.items {
-        let ItemKind::Import(ip) = &item.node else { continue };
-        if !ip.pub_import { continue }
+        let ItemKind::Import(ip) = &item.node else {
+            continue;
+        };
+        if !ip.pub_import {
+            continue;
+        }
 
         let exports_name = match &ip.items {
             crate::parser::ast::ImportItems::Single(n) => n == name,
@@ -840,7 +884,9 @@ fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
             crate::parser::ast::ImportItems::Multiple(names) => names.iter().any(|n| n == name),
             crate::parser::ast::ImportItems::All => true,
         };
-        if !exports_name { continue }
+        if !exports_name {
+            continue;
+        }
 
         let mut candidates = Vec::new();
         match &ip.items {
@@ -1077,11 +1123,13 @@ mod tests {
         fs::write(foo_dir.join("a.void"), "pub fn METHOD() void { ret; }").expect("write a.void");
 
         let ok_path = root.join("ok.void");
-        fs::write(&ok_path, "import foo.METHOD;\nfn main() void { ret; }")
-            .expect("write ok.void");
+        fs::write(&ok_path, "import foo.METHOD;\nfn main() void { ret; }").expect("write ok.void");
         let result = load_programs(&[ok_path]).expect("load flattened import");
         assert!(
-            result.loaded_files.iter().any(|p| p.ends_with(Path::new("foo").join("a.void"))),
+            result
+                .loaded_files
+                .iter()
+                .any(|p| p.ends_with(Path::new("foo").join("a.void"))),
             "expected foo/a.void through flattened export, got {:?}",
             result.loaded_files
         );

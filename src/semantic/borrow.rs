@@ -210,22 +210,26 @@ impl Analyzer {
                 }
             }
             StmtKind::For { kind, body } => {
+                // Evaluate iterable/range bounds BEFORE entering the loop scope so
+                // that moves of the iterable happen at the outer loop depth (matching
+                // Rust's `for x in collection` semantics).
+                if let ForLoop::Each { iter, .. } = kind {
+                    match iter {
+                        ForIter::Range { start, end } => {
+                            self.bc_expr(start, env, false);
+                            self.bc_expr(end, env, false);
+                        }
+                        ForIter::Iter(expr) => {
+                            // `for x : iterable` moves the iterable (like Rust's
+                            // `for x in collection`). Borrow with `for x : &collection`.
+                            self.bc_expr(expr, env, true);
+                        }
+                    }
+                }
                 env.loop_depth += 1;
                 let mut loop_env = env.clone();
                 match kind {
-                    ForLoop::Each { vars, iter } => {
-                        match iter {
-                            ForIter::Range { start, end } => {
-                                self.bc_expr(start, env, false);
-                                self.bc_expr(end, env, false);
-                            }
-                            ForIter::Iter(expr) => {
-                                // `for x : iterable` only reads the iterable. Codegen keeps the
-                                // iterable value live across the loop for arrays and iterator
-                                // protocol calls, so ownership must not be consumed here.
-                                self.bc_expr(expr, env, false);
-                            }
-                        }
+                    ForLoop::Each { vars, .. } => {
                         loop_env.enter_scope();
                         for var in vars {
                             loop_env.declare(var.clone(), None);
@@ -279,9 +283,35 @@ impl Analyzer {
     /// Generic type params (K, V, T, etc.) and unknown names are treated as Copy.
     fn bc_is_move_type(&self, ty: &TypeKind) -> bool {
         match ty {
-            TypeKind::Named { name, .. } => self.struct_defs.contains_key(name.as_str()),
-            _ => false,
+            // Primitives and references are Copy — no move tracking needed.
+            TypeKind::Bool
+            | TypeKind::Int8
+            | TypeKind::Int16
+            | TypeKind::Int32
+            | TypeKind::Int64
+            | TypeKind::Uint8
+            | TypeKind::Uint16
+            | TypeKind::Uint32
+            | TypeKind::Uint64
+            | TypeKind::Isize
+            | TypeKind::Usize
+            | TypeKind::Float32
+            | TypeKind::Float64
+            | TypeKind::Str
+            | TypeKind::RawPtr { .. }
+            | TypeKind::Ref { .. } => false,
+            // All other types (structs, enums, arrays, slices, dyn Trait, etc.) are move types.
+            _ => true,
         }
+    }
+
+    /// Resolve a span to a human-readable `file:line:col` label using source_files.
+    fn span_label(&self, span: Span) -> String {
+        self.source_files
+            .iter()
+            .find(|f| f.contains(span))
+            .map(|f| f.label(span))
+            .unwrap_or_else(|| format!("{}:{}", span.line, span.col))
     }
 
     fn bc_expr(&mut self, expr: &Expr, env: &mut MoveEnv, consumed: bool) {
@@ -299,8 +329,9 @@ impl Analyzer {
                         expr.span,
                         "S10",
                         format!(
-                            "use of moved value '{}' (moved at {}:{})",
-                            name, moved_at.line, moved_at.col
+                            "use of moved value '{}' (moved at {})",
+                            name,
+                            self.span_label(moved_at)
                         ),
                     );
                     return;

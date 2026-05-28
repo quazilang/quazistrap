@@ -6,6 +6,9 @@ fn __string_strlen(s: str) usize;
 @intrinsic("void.str_concat")
 fn __string_str_concat(s1: str, s2: str) str;
 
+@intrinsic("void.free")
+fn __string_free(s: str) void;
+
 pub struct String {
     data: str,
     len: usize,
@@ -44,5 +47,11 @@ impl String {
 
     pub fn concat(a: String, b: String) String {
         ret a.push_str(b.data);
+    }
+
+    pub fn free(self: String) void {
+        if (self.cap > 0) {
+            __string_free(self.data);
+        }
     }
 }

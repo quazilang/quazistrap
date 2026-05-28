@@ -55,5 +55,10 @@ pub fn format(template: str, ...args: str) str {
             i++;
         }
     }
-    ret result.as_str();
+    // Prevent use-after-free: the compiler will drop `result` after we return,
+    // which frees result.data. Since we return a borrow of result.data, we
+    // must ensure the drop does not free the buffer.
+    var s = result.data;
+    result.cap = 0;
+    ret s;
 }

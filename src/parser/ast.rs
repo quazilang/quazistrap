@@ -211,7 +211,10 @@ pub fn collect_pattern_bindings(sub_patterns: &[Pattern]) -> Vec<String> {
         match &p.node {
             PatternKind::Bind(name) => out.push(name.clone()),
             PatternKind::Wildcard | PatternKind::Literal(_) => {}
-            PatternKind::Variant { sub_patterns: inner, .. } => {
+            PatternKind::Variant {
+                sub_patterns: inner,
+                ..
+            } => {
                 out.extend(collect_pattern_bindings(inner));
             }
         }
@@ -331,7 +334,9 @@ impl std::fmt::Display for TypeKind {
             TypeKind::Fn { params, return_ty } => {
                 write!(f, "fn(")?;
                 for (i, p) in params.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", p.node)?;
                 }
                 write!(f, ") -> {}", return_ty.node)

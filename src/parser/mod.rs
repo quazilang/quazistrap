@@ -6,10 +6,10 @@ pub mod ast;
 pub mod common;
 pub mod items;
 
+use crate::lexer::token::Span as TokenSpan;
 use crate::lexer::token::{Token, TokenKind};
 use crate::parser::ast::*;
 use crate::parser::common::{merge_token_spans, to_ast_span};
-use crate::lexer::token::Span as TokenSpan;
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -228,8 +228,12 @@ impl Parser {
             }
 
             // Skip empty statements (extra semicolons).
-            while self.at(TokenKind::Semicolon) { self.advance(); }
-            if self.at(TokenKind::RBrace) || self.at(TokenKind::Eof) { break; }
+            while self.at(TokenKind::Semicolon) {
+                self.advance();
+            }
+            if self.at(TokenKind::RBrace) || self.at(TokenKind::Eof) {
+                break;
+            }
 
             match self.parse_stmt() {
                 Ok(stmt) => stmts.push(stmt),
@@ -958,7 +962,9 @@ impl Parser {
 
             if self.at(TokenKind::LParen) {
                 let (args, named_args) = self.parse_call_args()?;
-                let end = named_args.last().map(|(_, e)| e.span)
+                let end = named_args
+                    .last()
+                    .map(|(_, e)| e.span)
                     .or_else(|| args.last().map(|a| a.span))
                     .unwrap_or(expr.span);
                 let span = Span::merge(expr.span, end);
@@ -1012,7 +1018,9 @@ impl Parser {
 
                 if self.at(TokenKind::LParen) {
                     let (args, named_args) = self.parse_call_args()?;
-                    let end = named_args.last().map(|(_, e)| e.span)
+                    let end = named_args
+                        .last()
+                        .map(|(_, e)| e.span)
                         .or_else(|| args.last().map(|a| a.span))
                         .unwrap_or(to_ast_span(name_tok.span));
                     let span = Span::merge(expr.span, end);
@@ -1075,7 +1083,12 @@ impl Parser {
             if self.at(TokenKind::Question) {
                 let t = self.advance().span;
                 let span = Span::merge(expr.span, to_ast_span(t));
-                expr = Spanned::new(ExprKind::Try { expr: Box::new(expr) }, span);
+                expr = Spanned::new(
+                    ExprKind::Try {
+                        expr: Box::new(expr),
+                    },
+                    span,
+                );
                 continue;
             }
 
@@ -1102,9 +1115,9 @@ impl Parser {
                     named_args.push((name, val));
                 } else {
                     if !named_args.is_empty() {
-                        return Err(self.err_here(
-                            "positional argument after named argument".to_string(),
-                        ));
+                        return Err(
+                            self.err_here("positional argument after named argument".to_string())
+                        );
                     }
                     args.push(self.parse_expr()?);
                 }
@@ -1181,29 +1194,44 @@ impl Parser {
         // Integer literal
         if let TokenKind::Int(n) = tok.kind {
             self.advance();
-            return Ok(Spanned::new(PatternKind::Literal(LiteralValue::Int(n)), to_ast_span(tok_span)));
+            return Ok(Spanned::new(
+                PatternKind::Literal(LiteralValue::Int(n)),
+                to_ast_span(tok_span),
+            ));
         }
 
         // Float literal
         if let TokenKind::Float(f) = tok.kind {
             self.advance();
-            return Ok(Spanned::new(PatternKind::Literal(LiteralValue::Float(f)), to_ast_span(tok_span)));
+            return Ok(Spanned::new(
+                PatternKind::Literal(LiteralValue::Float(f)),
+                to_ast_span(tok_span),
+            ));
         }
 
         // String literal
         if let TokenKind::StringLit(ref s) = tok.kind.clone() {
             self.advance();
-            return Ok(Spanned::new(PatternKind::Literal(LiteralValue::Str(s.clone())), to_ast_span(tok_span)));
+            return Ok(Spanned::new(
+                PatternKind::Literal(LiteralValue::Str(s.clone())),
+                to_ast_span(tok_span),
+            ));
         }
 
         // Boolean literals
         if matches!(tok.kind, TokenKind::True) {
             self.advance();
-            return Ok(Spanned::new(PatternKind::Literal(LiteralValue::Bool(true)), to_ast_span(tok_span)));
+            return Ok(Spanned::new(
+                PatternKind::Literal(LiteralValue::Bool(true)),
+                to_ast_span(tok_span),
+            ));
         }
         if matches!(tok.kind, TokenKind::False) {
             self.advance();
-            return Ok(Spanned::new(PatternKind::Literal(LiteralValue::Bool(false)), to_ast_span(tok_span)));
+            return Ok(Spanned::new(
+                PatternKind::Literal(LiteralValue::Bool(false)),
+                to_ast_span(tok_span),
+            ));
         }
 
         // Identifier-based patterns
@@ -1215,7 +1243,10 @@ impl Parser {
 
         // Wildcard
         if first == "_" {
-            return Ok(Spanned::new(PatternKind::Wildcard, to_ast_span(first_tok.span)));
+            return Ok(Spanned::new(
+                PatternKind::Wildcard,
+                to_ast_span(first_tok.span),
+            ));
         }
 
         let mut enum_name = None;
@@ -1250,20 +1281,37 @@ impl Parser {
             }
             end = self.expect(TokenKind::RParen)?.span;
             return Ok(Spanned::new(
-                PatternKind::Variant { enum_name, variant, sub_patterns },
+                PatternKind::Variant {
+                    enum_name,
+                    variant,
+                    sub_patterns,
+                },
                 to_ast_span(merge_token_spans(first_tok.span, end)),
             ));
         }
 
         // No parens: uppercase first char → zero-arg Variant; lowercase → Bind
         // Qualified names (enum_name set) are always Variant.
-        if enum_name.is_some() || variant.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+        if enum_name.is_some()
+            || variant
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
+        {
             Ok(Spanned::new(
-                PatternKind::Variant { enum_name, variant, sub_patterns: vec![] },
+                PatternKind::Variant {
+                    enum_name,
+                    variant,
+                    sub_patterns: vec![],
+                },
                 to_ast_span(merge_token_spans(first_tok.span, end)),
             ))
         } else {
-            Ok(Spanned::new(PatternKind::Bind(variant), to_ast_span(first_tok.span)))
+            Ok(Spanned::new(
+                PatternKind::Bind(variant),
+                to_ast_span(first_tok.span),
+            ))
         }
     }
 
@@ -1365,7 +1413,13 @@ impl Parser {
                 let _pipe2 = self.expect(TokenKind::Pipe)?.span;
                 let body = self.parse_expr()?;
                 let span = Span::merge(to_ast_span(start), body.span);
-                Ok(Spanned::new(ExprKind::Closure { params, body: Box::new(body) }, span))
+                Ok(Spanned::new(
+                    ExprKind::Closure {
+                        params,
+                        body: Box::new(body),
+                    },
+                    span,
+                ))
             }
             TokenKind::Error(msg) => {
                 Err(self.err_tok_with_code(tok.span, "E00", format!("lexer error: {}", msg)))
@@ -1494,13 +1548,28 @@ impl Parser {
     fn peek_is_type_start(&mut self) -> bool {
         matches!(
             self.peek_kind(),
-            TokenKind::Int8 | TokenKind::Int16 | TokenKind::Int32 | TokenKind::Int64
-                | TokenKind::Uint8 | TokenKind::Uint16 | TokenKind::Uint32 | TokenKind::Uint64
-                | TokenKind::Isize | TokenKind::Usize
-                | TokenKind::Float16 | TokenKind::Float32 | TokenKind::Float64
-                | TokenKind::Bool | TokenKind::Str | TokenKind::Void | TokenKind::Any
-                | TokenKind::Ident(_) | TokenKind::LBracket
-                | TokenKind::Ampersand | TokenKind::Star | TokenKind::Bang
+            TokenKind::Int8
+                | TokenKind::Int16
+                | TokenKind::Int32
+                | TokenKind::Int64
+                | TokenKind::Uint8
+                | TokenKind::Uint16
+                | TokenKind::Uint32
+                | TokenKind::Uint64
+                | TokenKind::Isize
+                | TokenKind::Usize
+                | TokenKind::Float16
+                | TokenKind::Float32
+                | TokenKind::Float64
+                | TokenKind::Bool
+                | TokenKind::Str
+                | TokenKind::Void
+                | TokenKind::Any
+                | TokenKind::Ident(_)
+                | TokenKind::LBracket
+                | TokenKind::Ampersand
+                | TokenKind::Star
+                | TokenKind::Bang
                 | TokenKind::Fn
         )
     }
@@ -1744,7 +1813,9 @@ fn id[T](x: T) T {
             panic!("expected impl item");
         };
 
-        let trait_ty = trait_ty.as_ref().expect("expected trait impl (impl Trait for Type)");
+        let trait_ty = trait_ty
+            .as_ref()
+            .expect("expected trait impl (impl Trait for Type)");
         match &trait_ty.node {
             TypeKind::Named { name, type_args } => {
                 assert_eq!(name, "Iterable");

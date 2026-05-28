@@ -40,7 +40,7 @@ impl Option[T] {
 
     pub fn or_else(self: Option[T], other: Option[T]) Option[T] {
         ret match self {
-            Some(_) => self,
+            Some(v) => Some(v),
             None => other,
         };
     }

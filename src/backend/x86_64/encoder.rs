@@ -1032,7 +1032,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(rbx));
                         emit!(asm.push(r12));
                         emit!(asm.push(r13));
-                        emit!(asm.mov(r12, slot(dst)));     // r12 = s1
+                        emit!(asm.mov(r12, slot(dst))); // r12 = s1
                         emit!(asm.mov(r13, slot(dst + 1))); // r13 = s2
                         let mut len1_loop = asm.create_label();
                         let mut len1_done = asm.create_label();
@@ -1068,7 +1068,7 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdi, rax));
                         }
                         call_ext!("malloc".into(), RelocKind::Plt32); // rax = buf
-                        emit!(asm.mov(rbx, rax));                     // rbx = buf
+                        emit!(asm.mov(rbx, rax)); // rbx = buf
                         if is_win64 {
                             emit!(asm.mov(rcx, rbx));
                             emit!(asm.mov(rdx, r12));
@@ -1210,24 +1210,24 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(rax)); // keep rsp 16-byte aligned
                         emit!(asm.sub(rsp, 32i32)); // 16 bytes sockaddr_in + 16 shadow (Win64)
                         emit!(asm.xor(rax, rax));
-                        emit!(asm.mov(qword_ptr(rsp), rax));     // zero first 8 bytes
+                        emit!(asm.mov(qword_ptr(rsp), rax)); // zero first 8 bytes
                         emit!(asm.mov(qword_ptr(rsp + 8i32), rax)); // zero last 8 bytes
-                        emit!(asm.mov(word_ptr(rsp), 2i32));     // sa_family = AF_INET
+                        emit!(asm.mov(word_ptr(rsp), 2i32)); // sa_family = AF_INET
                         // port: host→big-endian byte swap
                         emit!(asm.mov(rax, slot(dst + 1)));
                         emit!(asm.rol(ax, 8u32));
                         emit!(asm.mov(word_ptr(rsp + 2i32), ax)); // sin_port (big-endian)
                         // sin_addr = INADDR_ANY = 0 (already zeroed)
                         if is_win64 {
-                            emit!(asm.mov(rcx, slot(dst)));       // sockfd
-                            emit!(asm.lea(rdx, qword_ptr(rsp)));  // &sockaddr_in
-                            emit!(asm.mov(r8d, 16i32));            // addrlen
+                            emit!(asm.mov(rcx, slot(dst))); // sockfd
+                            emit!(asm.lea(rdx, qword_ptr(rsp))); // &sockaddr_in
+                            emit!(asm.mov(r8d, 16i32)); // addrlen
                             call_ext!("bind".into(), RelocKind::Plt32);
                         } else {
-                            emit!(asm.mov(rdi, slot(dst)));        // sockfd
-                            emit!(asm.lea(rsi, qword_ptr(rsp)));  // &sockaddr_in
-                            emit!(asm.mov(edx, 16i32));            // addrlen
-                            emit!(asm.mov(rax, 49i64));            // bind syscall
+                            emit!(asm.mov(rdi, slot(dst))); // sockfd
+                            emit!(asm.lea(rsi, qword_ptr(rsp))); // &sockaddr_in
+                            emit!(asm.mov(edx, 16i32)); // addrlen
+                            emit!(asm.mov(rax, 49i64)); // bind syscall
                             emit!(asm.syscall());
                         }
                         emit!(asm.add(rsp, 32i32));
@@ -1246,7 +1246,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(qword_ptr(rsp), rax));
                         emit!(asm.mov(qword_ptr(rsp + 8i32), rax));
-                        emit!(asm.mov(word_ptr(rsp), 2i32));       // sa_family = AF_INET
+                        emit!(asm.mov(word_ptr(rsp), 2i32)); // sa_family = AF_INET
                         emit!(asm.mov(rax, slot(dst + 2)));
                         emit!(asm.rol(ax, 8u32));
                         emit!(asm.mov(word_ptr(rsp + 2i32), ax)); // sin_port (big-endian)
@@ -1287,8 +1287,8 @@ impl<'a> FnEncoder<'a> {
                         // void.str.byte_at(s: str, i: usize) u8
                         // s is a char* pointer (str register = ptr portion).
                         // Load byte at [s + i] with zero-extension.
-                        emit!(asm.mov(rax, slot(dst)));      // s (ptr)
-                        emit!(asm.mov(rcx, slot(dst + 1)));  // i
+                        emit!(asm.mov(rax, slot(dst))); // s (ptr)
+                        emit!(asm.mov(rcx, slot(dst + 1))); // i
                         emit!(asm.movzx(rax, byte_ptr(rax + rcx)));
                         emit!(asm.mov(slot(dst), rax));
                     }
@@ -1307,7 +1307,7 @@ impl<'a> FnEncoder<'a> {
                             call_ext!("malloc".into(), RelocKind::Plt32);
                         }
                         // rax = allocated ptr; write b at [rax] and '\0' at [rax+1]
-                        emit!(asm.mov(rbx, slot(dst)));  // b
+                        emit!(asm.mov(rbx, slot(dst))); // b
                         emit!(asm.mov(byte_ptr(rax), bl));
                         emit!(asm.mov(byte_ptr(rax + 1i32), 0i32));
                         emit!(asm.mov(slot(dst), rax));
@@ -1361,22 +1361,22 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::StrLen) => {
-    let (dst, src, _) = instr.rrr();
-    // inline strlen: scan bytes until null
-    let mut loop_lbl = asm.create_label();
-    let mut done_lbl = asm.create_label();
-    emit!(asm.mov(rax, slot(src)));         // rax = pointer
-    emit!(asm.xor(rcx, rcx));               // rcx = length = 0
-    emit!(asm.set_label(&mut loop_lbl));
-    emit!(asm.movzx(rdx, byte_ptr(rax)));   // rdx = *rax
-    emit!(asm.test(rdx, rdx));              // null?
-    emit!(asm.je(done_lbl));
-    emit!(asm.inc(rax));
-    emit!(asm.inc(rcx));
-    emit!(asm.jmp(loop_lbl));
-    emit!(asm.set_label(&mut done_lbl));
-    emit!(asm.mov(slot(dst), rcx));
-}
+                let (dst, src, _) = instr.rrr();
+                // inline strlen: scan bytes until null
+                let mut loop_lbl = asm.create_label();
+                let mut done_lbl = asm.create_label();
+                emit!(asm.mov(rax, slot(src))); // rax = pointer
+                emit!(asm.xor(rcx, rcx)); // rcx = length = 0
+                emit!(asm.set_label(&mut loop_lbl));
+                emit!(asm.movzx(rdx, byte_ptr(rax))); // rdx = *rax
+                emit!(asm.test(rdx, rdx)); // null?
+                emit!(asm.je(done_lbl));
+                emit!(asm.inc(rax));
+                emit!(asm.inc(rcx));
+                emit!(asm.jmp(loop_lbl));
+                emit!(asm.set_label(&mut done_lbl));
+                emit!(asm.mov(slot(dst), rcx));
+            }
 
             Some(Opcode::StrToInt) => {
                 let (dst, src, _) = instr.rrr();
@@ -1501,19 +1501,19 @@ impl<'a> FnEncoder<'a> {
                         // Zero shortcut: write "0\0"
                         emit!(asm.test(rax, rax));
                         emit!(asm.jnz(lbl_nonzero));
-                        emit!(asm.mov(byte_ptr(r11), 48i32));       // '0'
+                        emit!(asm.mov(byte_ptr(r11), 48i32)); // '0'
                         emit!(asm.mov(byte_ptr(r11 + 1i32), 0i32)); // '\0'
                         emit!(asm.jmp(lbl_done));
 
                         emit!(asm.set_label(&mut lbl_nonzero));
-                        emit!(asm.bsr(rcx, rax));   // rcx = index of highest set bit
-                        emit!(asm.mov(r10, r11));   // r10 = write pointer
+                        emit!(asm.bsr(rcx, rax)); // rcx = index of highest set bit
+                        emit!(asm.mov(r10, r11)); // r10 = write pointer
 
                         emit!(asm.set_label(&mut lbl_loop));
                         emit!(asm.mov(r9, rax));
-                        emit!(asm.shr(r9, cl));     // r9 = rax >> rcx
+                        emit!(asm.shr(r9, cl)); // r9 = rax >> rcx
                         emit!(asm.and(r9, 1i32));
-                        emit!(asm.add(r9, 48i32));  // '0' or '1'
+                        emit!(asm.add(r9, 48i32)); // '0' or '1'
                         emit!(asm.mov(byte_ptr(r10), r9b));
                         emit!(asm.inc(r10));
                         // If rcx == 0, this was the last (least significant) bit

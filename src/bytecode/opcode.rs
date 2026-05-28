@@ -30,12 +30,12 @@ pub enum Opcode {
     Pow = 0x1F, // dst = src1 ** src2 (calls pow/powi at AOT)
 
     // 0x20–0x2F  Memory & ownership
-    Load = 0x20,  // dst = *(base + offset16)
-    Store = 0x21, // *(base + offset16) = src
-    Lea = 0x22,   // dst = &(base + offset)
-    Move = 0x23,  // ownership move — src invalidated after
-    Drop = 0x24,  // drop value, run destructor (RAII scope exit)
-    Dup = 0x25,   // copy if type allows (Copy types only)
+    Load = 0x20,       // dst = *(base + offset16)
+    Store = 0x21,      // *(base + offset16) = src
+    Lea = 0x22,        // dst = &(base + offset)
+    Move = 0x23,       // ownership move — src invalidated after
+    Drop = 0x24,       // drop value, run destructor (RAII scope exit)
+    Dup = 0x25,        // copy if type allows (Copy types only)
     ArrayStore = 0x26, // RRR: ops[0]=val, ops[1]=base, ops[2]=idx — base[idx] = val (scaled by 8)
     ArrayLoad = 0x27,  // RRR: ops[0]=dst, ops[1]=base, ops[2]=idx — dst = base[idx] (scaled by 8)
 
@@ -73,22 +73,22 @@ pub enum Opcode {
     Syscall = 0x5E, // syscall — RI16: ops[0]=dst, ops[1..2]=const_pool_idx (name or raw num); flags=arg_count
 
     // 0x60–0x6F  String & numeric operations
-    StrLen = 0x60,    // dst = len(src) — RRR: ops[0]=dst, ops[1]=src
-    StrConcat = 0x61, // dst = concat(src1, src2) → heap buf — RRR
-    StrToInt = 0x62,  // parse str → i64  — RRR: ops[0]=dst ops[1]=src
+    StrLen = 0x60,     // dst = len(src) — RRR: ops[0]=dst, ops[1]=src
+    StrConcat = 0x61,  // dst = concat(src1, src2) → heap buf — RRR
+    StrToInt = 0x62,   // parse str → i64  — RRR: ops[0]=dst ops[1]=src
     StrToFloat = 0x63, // parse str → f64 — RRR
-    PrimToStr = 0x64, // primitive → &str (static buf) — RRR
-    StrAsStr = 0x65,  // String → &str view — RRR
-    IntAbs = 0x66,    // dst = |src| signed integer — RRR: ops[0]=dst, ops[1]=src
-    IntMin = 0x67,    // dst = min(src1, src2) signed — RRR
-    IntMax = 0x68,    // dst = max(src1, src2) signed — RRR
-    FloatAbs = 0x69,  // dst = fabs(src) — RRR
-    FloatSqrt = 0x6A, // dst = sqrt(src) — RRR
+    PrimToStr = 0x64,  // primitive → &str (static buf) — RRR
+    StrAsStr = 0x65,   // String → &str view — RRR
+    IntAbs = 0x66,     // dst = |src| signed integer — RRR: ops[0]=dst, ops[1]=src
+    IntMin = 0x67,     // dst = min(src1, src2) signed — RRR
+    IntMax = 0x68,     // dst = max(src1, src2) signed — RRR
+    FloatAbs = 0x69,   // dst = fabs(src) — RRR
+    FloatSqrt = 0x6A,  // dst = sqrt(src) — RRR
     FloatFloor = 0x6B, // dst = floor(src) — RRR
-    FloatCeil = 0x6C, // dst = ceil(src) — RRR
+    FloatCeil = 0x6C,  // dst = ceil(src) — RRR
     FloatRound = 0x6D, // dst = round(src) — RRR
-    FloatMin = 0x6E,  // dst = fmin(src1, src2) — RRR
-    FloatMax = 0x6F,  // dst = fmax(src1, src2) — RRR
+    FloatMin = 0x6E,   // dst = fmin(src1, src2) — RRR
+    FloatMax = 0x6F,   // dst = fmax(src1, src2) — RRR
 
     // 0x70–0x7F  Intrinsics (stdlib runtime, platform-neutral VBC)
     Intrinsic = 0x70, // platform intrinsic — RI16: ops[0]=dst, ops[1..2]=intrinsic_id; flags=arg_count

@@ -37,12 +37,16 @@ pub fn stderr_is_tty() -> bool {
     #[cfg(unix)]
     {
         unsafe {
-            unsafe extern "C" { fn isatty(fd: i32) -> i32; }
+            unsafe extern "C" {
+                fn isatty(fd: i32) -> i32;
+            }
             return isatty(2) != 0;
         }
     }
     #[cfg(not(any(windows, unix)))]
-    { false }
+    {
+        false
+    }
 }
 
 // ── Dependency tree ────────────────────────────────────────────────────────────
@@ -55,11 +59,15 @@ pub struct TreeNode {
 }
 
 pub fn common_lib_prefix(lib_files: &[PathBuf]) -> Option<PathBuf> {
-    if lib_files.is_empty() { return None; }
+    if lib_files.is_empty() {
+        return None;
+    }
     let mut prefix = lib_files[0].parent()?.to_path_buf();
     for path in &lib_files[1..] {
         while !path.starts_with(&prefix) {
-            if !prefix.pop() { return None; }
+            if !prefix.pop() {
+                return None;
+            }
         }
     }
     Some(prefix)
@@ -79,7 +87,10 @@ fn short_label(path: &Path, lib_prefix: Option<&Path>) -> String {
             }
         }
     }
-    path.file_stem().and_then(|s| s.to_str()).unwrap_or("?").to_string()
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("?")
+        .to_string()
 }
 
 fn build_inner(
@@ -92,14 +103,24 @@ fn build_inner(
     let is_lib = lib_files.iter().any(|l| l == file);
     let label = short_label(file, if is_lib { lib_prefix } else { None });
     if !visited.insert(file.to_path_buf()) {
-        return TreeNode { label, is_lib, is_dup: true, children: vec![] };
+        return TreeNode {
+            label,
+            is_lib,
+            is_dup: true,
+            children: vec![],
+        };
     }
     let children = edges
         .iter()
         .filter(|(from, _)| from == file)
         .map(|(_, to)| build_inner(to, edges, lib_files, lib_prefix, visited))
         .collect();
-    TreeNode { label, is_lib, is_dup: false, children }
+    TreeNode {
+        label,
+        is_lib,
+        is_dup: false,
+        children,
+    }
 }
 
 pub fn build_dep_tree(
@@ -137,9 +158,13 @@ fn render_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool, is_t
     }
 
     if !node.is_dup {
-        let cp = if is_root { String::new() }
-                 else if is_last { format!("{}   ", prefix) }
-                 else { format!("{}\x1b[2m│\x1b[0m  ", prefix) };
+        let cp = if is_root {
+            String::new()
+        } else if is_last {
+            format!("{}   ", prefix)
+        } else {
+            format!("{}\x1b[2m│\x1b[0m  ", prefix)
+        };
         for (i, child) in node.children.iter().enumerate() {
             render_node(child, &cp, false, i == node.children.len() - 1, is_tty);
         }
@@ -155,7 +180,10 @@ pub struct BuildProgress {
 
 impl BuildProgress {
     pub fn new() -> Self {
-        Self { is_tty: stderr_is_tty(), current_label: String::new() }
+        Self {
+            is_tty: stderr_is_tty(),
+            current_label: String::new(),
+        }
     }
 
     /// Print header: `  void  ›  input → output`
@@ -183,7 +211,10 @@ impl BuildProgress {
     pub fn done(&mut self, info: &str) {
         if self.is_tty {
             if info.is_empty() {
-                eprintln!("\r\x1b[K  \x1b[32m✓\x1b[0m  \x1b[1m{}\x1b[0m", self.current_label);
+                eprintln!(
+                    "\r\x1b[K  \x1b[32m✓\x1b[0m  \x1b[1m{}\x1b[0m",
+                    self.current_label
+                );
             } else {
                 eprintln!(
                     "\r\x1b[K  \x1b[32m✓\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m·\x1b[0m  \x1b[2m{}\x1b[0m",
@@ -201,7 +232,10 @@ impl BuildProgress {
     pub fn fail(&mut self, info: &str) {
         if self.is_tty {
             if info.is_empty() {
-                eprintln!("\r\x1b[K  \x1b[31m✗\x1b[0m  \x1b[1m{}\x1b[0m", self.current_label);
+                eprintln!(
+                    "\r\x1b[K  \x1b[31m✗\x1b[0m  \x1b[1m{}\x1b[0m",
+                    self.current_label
+                );
             } else {
                 eprintln!(
                     "\r\x1b[K  \x1b[31m✗\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m·\x1b[0m  \x1b[2m{}\x1b[0m",
@@ -241,7 +275,8 @@ impl BuildProgress {
             match size_bytes {
                 Some(b) => eprintln!(
                     "  \x1b[32m✓\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m({:.1} KB)\x1b[0m",
-                    name, b as f64 / 1024.0
+                    name,
+                    b as f64 / 1024.0
                 ),
                 None => eprintln!("  \x1b[32m✓\x1b[0m  \x1b[1m{}\x1b[0m", name),
             }
@@ -261,7 +296,9 @@ pub fn fmt_count(n: usize) -> String {
     let s = n.to_string();
     let mut result = String::new();
     for (i, ch) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 { result.push(','); }
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
         result.push(ch);
     }
     result.chars().rev().collect()
@@ -291,8 +328,13 @@ pub fn codegen_stats(chunks: &[crate::bytecode::Chunk], is_tty: bool) -> String 
 }
 
 pub fn arch_label() -> &'static str {
-    if cfg!(target_arch = "x86_64") && cfg!(target_os = "windows") { "x86_64·windows" }
-    else if cfg!(target_arch = "x86_64") && cfg!(target_os = "linux") { "x86_64·linux"   }
-    else if cfg!(target_arch = "x86_64") && cfg!(target_os = "macos") { "x86_64·macos"   }
-    else { "unknown" }
+    if cfg!(target_arch = "x86_64") && cfg!(target_os = "windows") {
+        "x86_64·windows"
+    } else if cfg!(target_arch = "x86_64") && cfg!(target_os = "linux") {
+        "x86_64·linux"
+    } else if cfg!(target_arch = "x86_64") && cfg!(target_os = "macos") {
+        "x86_64·macos"
+    } else {
+        "unknown"
+    }
 }

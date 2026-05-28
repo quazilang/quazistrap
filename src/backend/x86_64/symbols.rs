@@ -37,7 +37,11 @@ impl SymbolTable {
             value: text_offset,
             size,
             kind: SymbolKind::Text,
-            scope: if local { SymbolScope::Compilation } else { SymbolScope::Linkage },
+            scope: if local {
+                SymbolScope::Compilation
+            } else {
+                SymbolScope::Linkage
+            },
             weak: false,
             section: SymbolSection::Section(text_id),
             flags: SymbolFlags::None,

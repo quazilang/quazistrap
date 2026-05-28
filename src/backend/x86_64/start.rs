@@ -382,11 +382,11 @@ impl StartStub {
 
         emit!(asm.mov(rdi, 11i64)); // SIGSEGV
         emit!(asm.syscall());
-        emit!(asm.mov(rdi, 6i64));  // SIGABRT
+        emit!(asm.mov(rdi, 6i64)); // SIGABRT
         emit!(asm.syscall());
-        emit!(asm.mov(rdi, 8i64));  // SIGFPE
+        emit!(asm.mov(rdi, 8i64)); // SIGFPE
         emit!(asm.syscall());
-        emit!(asm.mov(rdi, 7i64));  // SIGBUS
+        emit!(asm.mov(rdi, 7i64)); // SIGBUS
         emit!(asm.syscall());
 
         // getenv("VOID_TRACE") — libc is already linked, dynamic linker has
@@ -412,12 +412,7 @@ impl StartStub {
 
         let offsets: Vec<usize> = {
             let mut out = Vec::with_capacity(asm.instructions().len());
-            let mut dec = iced_x86::Decoder::with_ip(
-                64,
-                &bytes,
-                0,
-                iced_x86::DecoderOptions::NONE,
-            );
+            let mut dec = iced_x86::Decoder::with_ip(64, &bytes, 0, iced_x86::DecoderOptions::NONE);
             let mut tmp = iced_x86::Instruction::default();
             while dec.can_decode() {
                 out.push(dec.ip() as usize);
@@ -454,7 +449,11 @@ impl StartStub {
             relocs,
             extra_symbols: vec![
                 ("__void_sigreturn".into(), sigreturn_off, sigreturn_size),
-                ("__void_crash_handler".into(), crash_handler_off, crash_handler_size),
+                (
+                    "__void_crash_handler".into(),
+                    crash_handler_off,
+                    crash_handler_size,
+                ),
                 ("__void_print_backtrace".into(), print_bt_off, print_bt_size),
             ],
             start_offset: startup_off,
@@ -657,12 +656,7 @@ impl StartStub {
 
         let offsets: Vec<usize> = {
             let mut out = Vec::with_capacity(asm.instructions().len());
-            let mut dec = iced_x86::Decoder::with_ip(
-                64,
-                &bytes,
-                0,
-                iced_x86::DecoderOptions::NONE,
-            );
+            let mut dec = iced_x86::Decoder::with_ip(64, &bytes, 0, iced_x86::DecoderOptions::NONE);
             let mut tmp = iced_x86::Instruction::default();
             while dec.can_decode() {
                 out.push(dec.ip() as usize);
@@ -693,9 +687,7 @@ impl StartStub {
         Self {
             bytes,
             relocs,
-            extra_symbols: vec![
-                ("__void_print_backtrace".into(), print_bt_off, print_bt_size),
-            ],
+            extra_symbols: vec![("__void_print_backtrace".into(), print_bt_off, print_bt_size)],
             start_offset: startup_off,
         }
     }
@@ -1153,12 +1145,7 @@ impl StartStub {
 
         let offsets: Vec<usize> = {
             let mut out = Vec::with_capacity(asm.instructions().len());
-            let mut dec = iced_x86::Decoder::with_ip(
-                64,
-                &bytes,
-                0,
-                iced_x86::DecoderOptions::NONE,
-            );
+            let mut dec = iced_x86::Decoder::with_ip(64, &bytes, 0, iced_x86::DecoderOptions::NONE);
             let mut tmp = iced_x86::Instruction::default();
             while dec.can_decode() {
                 out.push(dec.ip() as usize);
@@ -1192,7 +1179,11 @@ impl StartStub {
             bytes,
             relocs,
             extra_symbols: vec![
-                ("__void_crash_handler_win".into(), crash_handler_off, crash_handler_size),
+                (
+                    "__void_crash_handler_win".into(),
+                    crash_handler_off,
+                    crash_handler_size,
+                ),
                 ("__void_print_backtrace".into(), print_bt_off, print_bt_size),
             ],
             start_offset: startup_off,
@@ -1371,12 +1362,7 @@ impl StartStub {
 
         let offsets: Vec<usize> = {
             let mut out = Vec::with_capacity(asm.instructions().len());
-            let mut dec = iced_x86::Decoder::with_ip(
-                64,
-                &bytes,
-                0,
-                iced_x86::DecoderOptions::NONE,
-            );
+            let mut dec = iced_x86::Decoder::with_ip(64, &bytes, 0, iced_x86::DecoderOptions::NONE);
             let mut tmp = iced_x86::Instruction::default();
             while dec.can_decode() {
                 out.push(dec.ip() as usize);
@@ -1407,9 +1393,7 @@ impl StartStub {
         Self {
             bytes,
             relocs,
-            extra_symbols: vec![
-                ("__void_print_backtrace".into(), print_bt_off, print_bt_size),
-            ],
+            extra_symbols: vec![("__void_print_backtrace".into(), print_bt_off, print_bt_size)],
             start_offset: startup_off,
         }
     }

@@ -345,8 +345,7 @@ impl Parser {
         };
 
         // Detect `./` prefix: Dot + Slash → relative import (local-only, skips module resolver).
-        let relative = if self.at(TokenKind::Dot)
-            && matches!(self.peek_n(1).kind, TokenKind::Slash)
+        let relative = if self.at(TokenKind::Dot) && matches!(self.peek_n(1).kind, TokenKind::Slash)
         {
             self.advance(); // consume '.'
             self.advance(); // consume '/'

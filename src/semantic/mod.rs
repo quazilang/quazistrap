@@ -963,10 +963,12 @@ fn main() void {
 }
 "#,
         );
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| e.message.contains("type mismatch")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("type mismatch"))
+        );
     }
 
     #[test]
@@ -978,10 +980,12 @@ fn main() void {
 }
     "#,
         );
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| e.message.contains("type mismatch")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("type mismatch"))
+        );
     }
 
     #[test]
@@ -1017,10 +1021,12 @@ fn main() void {
 "#,
         );
 
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| e.message.contains("unknown identifier 'x'")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("unknown identifier 'x'"))
+        );
     }
 
     #[test]
@@ -1034,10 +1040,12 @@ fn main() void {
 "#,
         );
 
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| e.message.contains("duplicate declaration 'x'")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("duplicate declaration 'x'"))
+        );
     }
 
     #[test]
@@ -1052,11 +1060,13 @@ fn main() void {
 "#,
         );
 
-        assert!(report
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("unused import 'stdout'")
-                && w.message.contains("std.io.stdout")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("unused import 'stdout'")
+                    && w.message.contains("std.io.stdout"))
+        );
         assert!(report.unused_imports.contains(&"std.io.stdout".to_string()));
     }
 
@@ -1106,10 +1116,12 @@ fn main() void {
 "#,
         );
 
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| e.message.contains("before initialization")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("before initialization"))
+        );
     }
 
     #[test]
@@ -1123,10 +1135,12 @@ fn main() void {
 "#,
         );
 
-        assert!(report
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("unreachable code")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("unreachable code"))
+        );
     }
 
     #[test]
@@ -1144,10 +1158,12 @@ fn main() void {
 "#,
         );
 
-        assert!(report
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("unreachable code")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("unreachable code"))
+        );
     }
 
     #[test]
@@ -1160,10 +1176,12 @@ fn main() void {
 "#,
         );
 
-        assert!(report
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("unused variable 'x'")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("unused variable 'x'"))
+        );
     }
 
     #[test]
@@ -1180,10 +1198,12 @@ fn main() void {
 "#,
         );
 
-        assert!(report
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("unused function 'helper'")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("unused function 'helper'"))
+        );
     }
 
     #[test]
@@ -1197,10 +1217,12 @@ fn main() void {
         );
 
         assert!(!report.annotated_exprs.is_empty());
-        assert!(report
-            .constant_evaluations
-            .iter()
-            .any(|entry| entry.value == ConstValue::Int(3)));
+        assert!(
+            report
+                .constant_evaluations
+                .iter()
+                .any(|entry| entry.value == ConstValue::Int(3))
+        );
     }
 
     #[test]
@@ -1255,10 +1277,12 @@ fn unwrap_or_fail(x: Option[i32]) i32 {
 "#,
         );
 
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| e.message.contains("non-exhaustive match")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("non-exhaustive match"))
+        );
         assert_eq!(report.exhaustiveness_checks, 1);
         assert_eq!(report.non_exhaustive_matches.len(), 1);
     }
@@ -1281,10 +1305,12 @@ fn unwrap_or_zero(x: Option[i32]) i32 {
 "#,
         );
 
-        assert!(!report
-            .errors
-            .iter()
-            .any(|e| e.message.contains("non-exhaustive match")));
+        assert!(
+            !report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("non-exhaustive match"))
+        );
         assert_eq!(report.exhaustiveness_checks, 1);
     }
 
@@ -1307,10 +1333,12 @@ fn color_value(c: Color) i32 {
 "#,
         );
 
-        assert!(report
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("already covered")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("already covered"))
+        );
     }
 
     #[test]
@@ -1336,11 +1364,13 @@ fn main() void {
             report.annotated_exprs.len()
         );
         assert!(!report.symbol_table.entries.is_empty());
-        assert!(report
-            .symbol_table
-            .entries
-            .iter()
-            .any(|e| e.name == "helper"));
+        assert!(
+            report
+                .symbol_table
+                .entries
+                .iter()
+                .any(|e| e.name == "helper")
+        );
 
         let import = report
             .used_imports_map
@@ -1349,18 +1379,22 @@ fn main() void {
         assert_eq!(import.local_name, "stdout");
         assert!(import.used);
 
-        assert!(report
-            .optimization_hints
-            .inline_candidates
-            .iter()
-            .any(|c| c.name == "helper"));
-        assert!(report
-            .dependency_graph
-            .edges
-            .iter()
-            .any(|edge| edge.kind == DependencyKind::Import
-                && edge.from == "__program__"
-                && edge.to == "std.io.stdout"));
+        assert!(
+            report
+                .optimization_hints
+                .inline_candidates
+                .iter()
+                .any(|c| c.name == "helper")
+        );
+        assert!(
+            report
+                .dependency_graph
+                .edges
+                .iter()
+                .any(|edge| edge.kind == DependencyKind::Import
+                    && edge.from == "__program__"
+                    && edge.to == "std.io.stdout")
+        );
         assert!(report.dependency_graph.edges.iter().any(|edge| {
             edge.kind == DependencyKind::Call && edge.from == "main" && edge.to == "helper"
         }));
@@ -1379,10 +1413,12 @@ fn main() void {
 "#,
         );
 
-        assert!(report
-            .errors
-            .iter()
-            .any(|e| e.message.contains("import name conflict for 'stdout'")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("import name conflict for 'stdout'"))
+        );
     }
 
     #[test]
@@ -1659,11 +1695,13 @@ fn mul(x: i32) i32 {
                 .any(|a| a.const_value == Some(ConstValue::Int(0))),
             "x * 0 should fold to Int(0) in annotated tree"
         );
-        assert!(report
-            .optimization_hints
-            .math_optimizations
-            .iter()
-            .any(|m| m.description.contains("x * 0 = 0")),);
+        assert!(
+            report
+                .optimization_hints
+                .math_optimizations
+                .iter()
+                .any(|m| m.description.contains("x * 0 = 0")),
+        );
     }
 
     #[test]
@@ -1687,11 +1725,13 @@ fn scale(x: f64) f64 {
                 .any(|a| matches!(a.const_value, Some(ConstValue::Float(f)) if f == 0.0)),
             "0.0 * x should fold to Float(0.0) in annotated tree"
         );
-        assert!(report
-            .optimization_hints
-            .math_optimizations
-            .iter()
-            .any(|m| m.description.contains("0.0 * x = 0.0")),);
+        assert!(
+            report
+                .optimization_hints
+                .math_optimizations
+                .iter()
+                .any(|m| m.description.contains("0.0 * x = 0.0")),
+        );
     }
 
     #[test]
@@ -1736,11 +1776,13 @@ fn main() void {
             "expected lazy import hint for std -> std.io.stdout, got {:?}",
             report.lazy_import_hints
         );
-        assert!(report
-            .optimization_hints
-            .lazy_import_hints
-            .iter()
-            .any(|h| h.broad_path == "std"),);
+        assert!(
+            report
+                .optimization_hints
+                .lazy_import_hints
+                .iter()
+                .any(|h| h.broad_path == "std"),
+        );
     }
 
     #[test]
@@ -1972,7 +2014,7 @@ fn main() void {
     }
 
     #[test]
-    fn foreach_over_explicit_named_array_does_not_move_iterable() {
+    fn foreach_over_explicit_named_array_moves_iterable() {
         let report = analyze(
             r#"
 struct Array[T] { ptr: i32, }
@@ -1990,8 +2032,8 @@ fn main() void {
         );
         let borrow_errors: Vec<_> = report.errors.iter().filter(|e| e.code == "S10").collect();
         assert!(
-            borrow_errors.is_empty(),
-            "foreach should not move explicitly typed Array[i32]: {:?}",
+            !borrow_errors.is_empty(),
+            "foreach should move explicitly typed Array[i32]: {:?}",
             borrow_errors
         );
     }

@@ -198,6 +198,12 @@ impl Backend for PeBackend {
         target: &TargetSpec,
         report: Option<&SemanticReport>,
     ) -> Result<ObjectOutput, BackendError> {
-        emit_native_object(chunks, target, ObjectFormat::PeCoff, b"mainCRTStartup", report)
+        emit_native_object(
+            chunks,
+            target,
+            ObjectFormat::PeCoff,
+            b"mainCRTStartup",
+            report,
+        )
     }
 }
