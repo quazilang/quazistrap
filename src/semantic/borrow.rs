@@ -425,6 +425,10 @@ impl Analyzer {
                 self.bc_expr(inner, env, false);
             }
 
+            ExprKind::Cast { expr: inner, .. } => {
+                self.bc_expr(inner, env, consumed);
+            }
+
             ExprKind::Group(inner) => {
                 // Transparent wrapper: propagate consumed flag.
                 self.bc_expr(inner, env, consumed);

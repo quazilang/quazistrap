@@ -183,9 +183,11 @@ src/backend/
 
 ```void
 import std.io.stdout;
+import std.io as io;
 pub fn name[T](param: Type, ...rest: str) ReturnType {
     const x: i32 = 1 + 2;
     var y: &str = "hello";
+    var n: u64 = 42 as u64;
     x += 1; x -= 1; x++; x--;
     if (cond) { ... } else { ... }
     for (cond) { ... }                  // while-loop: ForLoop::Cond
@@ -208,6 +210,12 @@ match value { Some(v) if v > 0 => v, _ => 0, }   // guards supported
 var f: fn(i32, i32) i32 = |x, y| x + y;   // closure
 var g: fn() i32 = my_func;                  // fn-name as value
 fn takes_cb(cb: fn(i32) i32, v: i32) i32 { ret cb(v); }
+
+fn choose_value(a: i32) i32 {
+    if a > 5 { ret 67; }
+    else if a < 5 { ret 52; }
+    else { ret 42; }
+}
 ```
 
 **Named arguments**: `foo(x=1, y=2)` — `name=value` pairs at call site. All positional args must precede named args. Named args resolved to param position at compile time; unknown name or position conflict = S09 error.

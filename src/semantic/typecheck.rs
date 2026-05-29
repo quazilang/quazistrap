@@ -763,6 +763,34 @@ impl Analyzer {
                         .and_then(|value| Self::const_from_unary(op, value)),
                 }
             }
+            ExprKind::Cast { expr: inner, ty } => {
+                let inner_eval = self.type_check_expr(inner, reachable);
+                let target_ty = self.resolve_type_aliases(&ty.node);
+                let allowed = match inner_eval.ty.as_ref() {
+                    Some(src) if Self::is_integer(src) && Self::is_integer(&target_ty) => true,
+                    Some(src) if Self::is_float(src) && Self::is_float(&target_ty) => true,
+                    Some(src) if std::mem::discriminant(src) == std::mem::discriminant(&target_ty) => {
+                        true
+                    }
+                    _ => false,
+                };
+                if !allowed {
+                    let src_name = inner_eval
+                        .ty
+                        .as_ref()
+                        .map(|t| format!("{}", t))
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    self.push_error(
+                        expr.span,
+                        "S06",
+                        format!("invalid cast from {} to {}", src_name, target_ty),
+                    );
+                }
+                ExprEval {
+                    ty: Some(target_ty),
+                    const_value: inner_eval.const_value,
+                }
+            }
             ExprKind::Binary { left, op, right } => {
                 let left_eval = self.type_check_expr(left, reachable);
                 let right_eval = self.type_check_expr(right, reachable);

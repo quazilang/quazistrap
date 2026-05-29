@@ -108,6 +108,11 @@ pub enum ExprKind {
         expr: Box<Expr>,
     },
 
+    Cast {
+        expr: Box<Expr>,
+        ty: Type,
+    },
+
     Binary {
         left: Box<Expr>,
         op: BinOpKind,

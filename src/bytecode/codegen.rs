@@ -58,6 +58,7 @@ pub struct Codegen<'a> {
     const_map: HashMap<(usize, usize), ConstValue>,
     type_map: HashMap<(usize, usize), TypeKind>,
     import_names: HashSet<String>,
+    import_aliases: HashMap<String, String>,
     /// Maps variadic function name → number of fixed (non-variadic) params.
     variadic_fn_info: HashMap<String, usize>,
     /// Variadic-str functions: compiler auto-coerces args to str at call sites.
@@ -81,9 +82,16 @@ impl<'a> Codegen<'a> {
             }
         }
         let mut import_names = HashSet::new();
+        let mut import_aliases = HashMap::new();
         for entry in &report.symbol_table.entries {
             if entry.symbol.is_import {
                 import_names.insert(entry.name.clone());
+                if !matches!(entry.symbol.kind, SymbolKind::Function) {
+                    if let Some(path) = &entry.symbol.import_path {
+                        let leaf = path.rsplit('.').next().unwrap_or(path.as_str());
+                        import_aliases.insert(entry.name.clone(), leaf.to_string());
+                    }
+                }
             }
         }
         let mut variadic_fn_info = HashMap::new();
@@ -99,6 +107,7 @@ impl<'a> Codegen<'a> {
             const_map,
             type_map,
             import_names,
+            import_aliases,
             variadic_fn_info,
             str_variadic_fns: HashSet::new(),
             variadic_intrinsic_fns: HashSet::new(),
@@ -965,6 +974,7 @@ impl<'a> Codegen<'a> {
             &self.const_map,
             &self.type_map,
             &self.import_names,
+            &self.import_aliases,
             &self.report.struct_defs,
             &self.report.struct_sizes,
             &self.report.struct_field_offsets,
@@ -1174,6 +1184,7 @@ struct FnCompiler<'a> {
     const_map: &'a HashMap<(usize, usize), ConstValue>,
     type_map: &'a HashMap<(usize, usize), TypeKind>,
     import_names: &'a HashSet<String>,
+    import_aliases: &'a HashMap<String, String>,
     struct_defs: &'a HashMap<String, Vec<(String, TypeKind)>>,
     struct_sizes: &'a HashMap<String, usize>,
     struct_field_offsets: &'a HashMap<String, Vec<(String, usize)>>,
@@ -1220,6 +1231,7 @@ impl<'a> FnCompiler<'a> {
         const_map: &'a HashMap<(usize, usize), ConstValue>,
         type_map: &'a HashMap<(usize, usize), TypeKind>,
         import_names: &'a HashSet<String>,
+        import_aliases: &'a HashMap<String, String>,
         struct_defs: &'a HashMap<String, Vec<(String, TypeKind)>>,
         struct_sizes: &'a HashMap<String, usize>,
         struct_field_offsets: &'a HashMap<String, Vec<(String, usize)>>,
@@ -1245,6 +1257,7 @@ impl<'a> FnCompiler<'a> {
             const_map,
             type_map,
             import_names,
+            import_aliases,
             struct_defs,
             struct_sizes,
             struct_field_offsets,
@@ -2312,11 +2325,13 @@ impl<'a> FnCompiler<'a> {
         if self.regs.contains_key(&base) {
             return None;
         }
-        if self.import_names.contains(&base) {
-            Some(base)
-        } else {
-            None
+        if !self.import_names.contains(&base) {
+            return None;
         }
+        if let Some(leaf) = self.import_aliases.get(&base) {
+            return Some(leaf.clone());
+        }
+        Some(base)
     }
 
     // ── Expression ───────────────────────────────────────────────────────────
@@ -2501,6 +2516,8 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::Group(inner) => self.compile_expr(inner),
+
+            ExprKind::Cast { expr: inner, .. } => self.compile_expr(inner),
 
             ExprKind::Unary { op, expr: inner } => match op {
                 UnaryOpKind::Ref => {
@@ -3193,21 +3210,60 @@ impl<'a> FnCompiler<'a> {
                     if is_type_ns {
                         let base_mangled = format!("{}.{}", type_name, method);
                         let expr_key = (expr.span.start, expr.span.end);
-                        let call_target = if let Some(TypeKind::Named { type_args, .. }) =
-                            self.type_map.get(&expr_key)
-                        {
-                            if !type_args.is_empty() {
-                                let type_kinds: Vec<TypeKind> =
-                                    type_args.iter().map(|t| t.node.clone()).collect();
-                                let mono = crate::semantic::typecheck::mangle_monomorphized(
-                                    &base_mangled,
-                                    &type_kinds,
-                                );
-                                if self.fn_index.contains_key(&mono) {
-                                    mono
-                                } else {
-                                    base_mangled.clone()
+                        let type_kinds: Vec<TypeKind> = match self.type_map.get(&expr_key) {
+                            Some(TypeKind::Named { type_args, .. }) => {
+                                type_args.iter().map(|t| t.node.clone()).collect()
+                            }
+                            _ => vec![],
+                        };
+                        if method == "from" {
+                            if let Some(arg) = args.first() {
+                                if let ExprKind::ArrayLit(elems) = &arg.node {
+                                    let new_base = format!("{}.new", type_name);
+                                    let push_base = format!("{}.push", type_name);
+                                    let new_target = if type_kinds.is_empty() {
+                                        new_base
+                                    } else {
+                                        let mono = crate::semantic::typecheck::mangle_monomorphized(
+                                            &new_base,
+                                            &type_kinds,
+                                        );
+                                        if self.fn_index.contains_key(&mono) {
+                                            mono
+                                        } else {
+                                            new_base
+                                        }
+                                    };
+                                    let push_target = if type_kinds.is_empty() {
+                                        push_base
+                                    } else {
+                                        let mono = crate::semantic::typecheck::mangle_monomorphized(
+                                            &push_base,
+                                            &type_kinds,
+                                        );
+                                        if self.fn_index.contains_key(&mono) {
+                                            mono
+                                        } else {
+                                            push_base
+                                        }
+                                    };
+                                    let dst = self.alloc_reg();
+                                    self.emit_call_by_name(&new_target, &[], dst);
+                                    for elem in elems {
+                                        let val = self.compile_expr(elem);
+                                        self.emit_call_by_name(&push_target, &[dst, val], 0);
+                                    }
+                                    return dst;
                                 }
+                            }
+                        }
+                        let call_target = if !type_kinds.is_empty() {
+                            let mono = crate::semantic::typecheck::mangle_monomorphized(
+                                &base_mangled,
+                                &type_kinds,
+                            );
+                            if self.fn_index.contains_key(&mono) {
+                                mono
                             } else {
                                 base_mangled.clone()
                             }
@@ -3247,16 +3303,47 @@ impl<'a> FnCompiler<'a> {
                     if method == "from" {
                         if let Some(arg) = args.first() {
                             if let ExprKind::ArrayLit(elems) = &arg.node {
-                                let elems = elems.clone();
-                                let dst = self.alloc_reg();
-                                self.emit_call_by_name(&format!("{}.new", type_name), &[obj], dst);
-                                for elem in &elems {
-                                    let val = self.compile_expr(elem);
-                                    self.emit_call_by_name(
-                                        &format!("{}.push", type_name),
-                                        &[dst, val],
-                                        0, // void return
+                                let new_base = format!("{}.new", type_name);
+                                let push_base = format!("{}.push", type_name);
+                                let new_target = if receiver_type_args.is_empty() {
+                                    new_base
+                                } else {
+                                    let type_kinds: Vec<TypeKind> = receiver_type_args
+                                        .iter()
+                                        .map(|t| t.node.clone())
+                                        .collect();
+                                    let mono = crate::semantic::typecheck::mangle_monomorphized(
+                                        &new_base,
+                                        &type_kinds,
                                     );
+                                    if self.fn_index.contains_key(&mono) {
+                                        mono
+                                    } else {
+                                        new_base
+                                    }
+                                };
+                                let push_target = if receiver_type_args.is_empty() {
+                                    push_base
+                                } else {
+                                    let type_kinds: Vec<TypeKind> = receiver_type_args
+                                        .iter()
+                                        .map(|t| t.node.clone())
+                                        .collect();
+                                    let mono = crate::semantic::typecheck::mangle_monomorphized(
+                                        &push_base,
+                                        &type_kinds,
+                                    );
+                                    if self.fn_index.contains_key(&mono) {
+                                        mono
+                                    } else {
+                                        push_base
+                                    }
+                                };
+                                let dst = self.alloc_reg();
+                                self.emit_call_by_name(&new_target, &[], dst);
+                                for elem in elems {
+                                    let val = self.compile_expr(elem);
+                                    self.emit_call_by_name(&push_target, &[dst, val], 0);
                                 }
                                 return dst;
                             }
@@ -3746,6 +3833,7 @@ impl<'a> FnCompiler<'a> {
                     self.const_map,
                     self.type_map,
                     self.import_names,
+                    self.import_aliases,
                     self.struct_defs,
                     self.struct_sizes,
                     self.struct_field_offsets,
@@ -4197,6 +4285,7 @@ fn collect_idents(expr: &Expr, names: &mut Vec<String>) {
         ExprKind::Literal(_) => {}
         ExprKind::Group(inner) => collect_idents(inner, names),
         ExprKind::Unary { expr: inner, .. } => collect_idents(inner, names),
+        ExprKind::Cast { expr: inner, .. } => collect_idents(inner, names),
         ExprKind::Binary { left, right, .. } => {
             collect_idents(left, names);
             collect_idents(right, names);

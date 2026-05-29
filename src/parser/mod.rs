@@ -1092,6 +1092,20 @@ impl Parser {
                 continue;
             }
 
+            if self.at(TokenKind::As) {
+                self.advance();
+                let ty = self.parse_type()?;
+                let span = Span::merge(expr.span, ty.span);
+                expr = Spanned::new(
+                    ExprKind::Cast {
+                        expr: Box::new(expr),
+                        ty,
+                    },
+                    span,
+                );
+                continue;
+            }
+
             break;
         }
 

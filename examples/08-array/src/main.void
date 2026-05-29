@@ -1,5 +1,15 @@
 import std.io;
 
+fn choose_value(a: i32) i32 {
+    if a > 5 {
+        ret 67;
+    } else if a < 5 {
+        ret 52;
+    } else {
+        ret 42;
+    }
+}
+
 fn main() i32 {
     var arr: Array[i32] = Array.new();
     arr.push(10);
@@ -29,12 +39,7 @@ fn main() i32 {
     }
     io.println("Sum of all elements = {}", sum);
 
-    // var words: Array[str] = Array.from(["hello","from","void"]); // TODO: fix the crash going on here.
-
-    var words: Array[str] = Array.new();
-    words.push("hello");
-    words.push("from");
-    words.push("void");
+    var words: Array[str] = Array.from(["hello", "from", "void"]);
 
     io.println("Words array:");
     for word : &words {
@@ -42,6 +47,13 @@ fn main() i32 {
     }
 
     io.println("{}", words.len());
+
+    var n: u64 = 42 as u64;
+    io.println("42 as u64 = {}", n);
+
+    io.println("choose(4) = {}", choose_value(4));
+    io.println("choose(6) = {}", choose_value(6));
+    io.println("choose(5) = {}", choose_value(5));
 
     io.println("Done!");
     ret 0;
