@@ -1,0 +1,10 @@
+# Example: 08-array
+
+Demonstrates the `Array[T]` collection type.
+
+- `Array.new()`, `push`, `get`, `set`, `len`, `is_empty`
+- Index assignment: `arr[2] = 88`
+- Iteration: `for i : arr { ... }`
+- Borrowed iteration: `for word : &words { ... }`
+- `Array.from([...])` for array literals
+- `choose_value` shows `if/else if/else` with `ret` in each branch
