@@ -150,22 +150,23 @@ impl Parser {
             "\x1b[1;31merror\x1b[0m\x1b[1m[{code}]\x1b[0m: {msg}\n  \x1b[1;34m-->\x1b[0m {display_loc}",
         );
         if let Some(source) = &self.source
-            && let Some(line_text) = source.lines().nth(span.line.saturating_sub(1)) {
-                let lnum = file_rel_line.to_string();
-                let w = lnum.len();
-                let blank = " ".repeat(w);
-                let caret_off = span.col.saturating_sub(1);
-                let caret_w = (span.end.saturating_sub(span.start)).max(1);
-                out.push_str(&format!("\n{blank} \x1b[1;34m|\x1b[0m"));
-                out.push_str(&format!(
-                    "\n\x1b[1;34m{lnum}\x1b[0m \x1b[1;34m|\x1b[0m {line_text}"
-                ));
-                out.push_str(&format!(
-                    "\n{blank} \x1b[1;34m|\x1b[0m {}\x1b[1;31m{}\x1b[0m",
-                    " ".repeat(caret_off),
-                    "^".repeat(caret_w)
-                ));
-            }
+            && let Some(line_text) = source.lines().nth(span.line.saturating_sub(1))
+        {
+            let lnum = file_rel_line.to_string();
+            let w = lnum.len();
+            let blank = " ".repeat(w);
+            let caret_off = span.col.saturating_sub(1);
+            let caret_w = (span.end.saturating_sub(span.start)).max(1);
+            out.push_str(&format!("\n{blank} \x1b[1;34m|\x1b[0m"));
+            out.push_str(&format!(
+                "\n\x1b[1;34m{lnum}\x1b[0m \x1b[1;34m|\x1b[0m {line_text}"
+            ));
+            out.push_str(&format!(
+                "\n{blank} \x1b[1;34m|\x1b[0m {}\x1b[1;31m{}\x1b[0m",
+                " ".repeat(caret_off),
+                "^".repeat(caret_w)
+            ));
+        }
         out
     }
 

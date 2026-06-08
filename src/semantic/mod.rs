@@ -893,9 +893,10 @@ impl Analyzer {
             if let Some(symbol) = scope.get_mut(name) {
                 symbol.used = true;
                 if symbol.is_import
-                    && let Some(path) = &symbol.import_path {
-                        self.used_import_paths.insert(path.clone());
-                    }
+                    && let Some(path) = &symbol.import_path
+                {
+                    self.used_import_paths.insert(path.clone());
+                }
                 return Some(symbol.clone());
             }
         }
@@ -972,9 +973,10 @@ impl Analyzer {
 
     pub(super) fn push_suggestion(&mut self, span: Option<Span>, message: String) {
         if let Some(s) = span
-            && self.is_library_span(s) {
-                return;
-            }
+            && self.is_library_span(s)
+        {
+            return;
+        }
         self.suggestions.push(SemanticSuggestion { message, span });
     }
 }

@@ -115,9 +115,10 @@ impl<'a> Codegen<'a> {
         }
         if let Some(sf) = self.source_files.iter().find(|f| f.contains(span))
             && self.report.namespaced_paths.contains(&sf.path)
-                && let Some(module) = module_name_for_span(span, &self.source_files) {
-                    return format!("{}.{}", module, name);
-                }
+            && let Some(module) = module_name_for_span(span, &self.source_files)
+        {
+            return format!("{}.{}", module, name);
+        }
         name.to_string()
     }
 
@@ -132,9 +133,10 @@ impl<'a> Codegen<'a> {
         for item in &program.items {
             // Skip @cfg-disabled items.
             if let ItemKind::Fn { attributes, .. } = &item.node
-                && !item_cfg_active(attributes) {
-                    continue;
-                }
+                && !item_cfg_active(attributes)
+            {
+                continue;
+            }
             match &item.node {
                 ItemKind::Fn {
                     name,
@@ -229,16 +231,18 @@ impl<'a> Codegen<'a> {
         // module-qualified target name (e.g. "core.write"), so look up by that.
         for entry in &self.report.symbol_table.entries {
             let sym = &entry.symbol;
-            if matches!(sym.kind, SymbolKind::Function) && sym.is_import
+            if matches!(sym.kind, SymbolKind::Function)
+                && sym.is_import
                 && let Some(path) = &sym.import_path
-                    && path != &entry.name {
-                        if self.str_variadic_fns.contains(path) {
-                            self.str_variadic_fns.insert(entry.name.clone());
-                        }
-                        if let Some(&fixed) = self.variadic_fn_info.get(path) {
-                            self.variadic_fn_info.insert(entry.name.clone(), fixed);
-                        }
-                    }
+                && path != &entry.name
+            {
+                if self.str_variadic_fns.contains(path) {
+                    self.str_variadic_fns.insert(entry.name.clone());
+                }
+                if let Some(&fixed) = self.variadic_fn_info.get(path) {
+                    self.variadic_fn_info.insert(entry.name.clone(), fixed);
+                }
+            }
         }
 
         // Compute the set of functions reachable from main via the call graph.
@@ -258,10 +262,12 @@ impl<'a> Codegen<'a> {
             let mut queue = set.iter().cloned().collect::<Vec<_>>();
             while let Some(fn_name) = queue.pop() {
                 for edge in &self.report.dependency_graph.edges {
-                    if edge.kind == DependencyKind::Call && edge.from == fn_name
-                        && set.insert(edge.to.clone()) {
-                            queue.push(edge.to.clone());
-                        }
+                    if edge.kind == DependencyKind::Call
+                        && edge.from == fn_name
+                        && set.insert(edge.to.clone())
+                    {
+                        queue.push(edge.to.clone());
+                    }
                 }
             }
             // @panic_handler: the user's function is compiled under __void_panic_handler but
@@ -269,24 +275,26 @@ impl<'a> Codegen<'a> {
             // from the original name so its dependencies are included.
             if set.contains("__void_panic_handler")
                 && let Some(ph_name) = &user_panic_handler
-                    && set.insert(ph_name.clone()) {
-                        let mut q2 = vec![ph_name.clone()];
-                        while let Some(fn_name) = q2.pop() {
-                            for edge in &self.report.dependency_graph.edges {
-                                if edge.kind == DependencyKind::Call && edge.from == fn_name
-                                    && set.insert(edge.to.clone()) {
-                                        q2.push(edge.to.clone());
-                                    }
-                            }
+                && set.insert(ph_name.clone())
+            {
+                let mut q2 = vec![ph_name.clone()];
+                while let Some(fn_name) = q2.pop() {
+                    for edge in &self.report.dependency_graph.edges {
+                        if edge.kind == DependencyKind::Call
+                            && edge.from == fn_name
+                            && set.insert(edge.to.clone())
+                        {
+                            q2.push(edge.to.clone());
                         }
                     }
+                }
+            }
             Some(set)
         } else {
             None
         };
 
-        let is_live =
-            |name: &str| -> bool { reachable.as_ref().is_none_or(|r| r.contains(name)) };
+        let is_live = |name: &str| -> bool { reachable.as_ref().is_none_or(|r| r.contains(name)) };
 
         // Pass 1: assign each live function a table index.
         // Namespaced modules use `module.name`; entry files keep the bare name.
@@ -351,25 +359,28 @@ impl<'a> Codegen<'a> {
             .iter()
             .filter_map(|entry| {
                 let sym = &entry.symbol;
-                if matches!(sym.kind, SymbolKind::Function) && sym.is_import
-                    && let Some(path) = &sym.import_path {
-                        let leaf = path.rsplit('.').next().unwrap_or(path.as_str());
-                        if leaf != entry.name {
-                            // Namespaced imports live under their module-qualified name.
-                            let lookup = {
-                                let segs: Vec<&str> = path.split('.').collect();
-                                if segs.len() >= 2 {
-                                    format!("{}.{}", segs[segs.len() - 2], segs[segs.len() - 1])
-                                } else {
-                                    leaf.to_string()
-                                }
-                            };
-                            if let Some(&orig_idx) = self.fn_index.get(&lookup)
-                                && !self.fn_index.contains_key(&entry.name) {
-                                    return Some((entry.name.clone(), orig_idx));
-                                }
+                if matches!(sym.kind, SymbolKind::Function)
+                    && sym.is_import
+                    && let Some(path) = &sym.import_path
+                {
+                    let leaf = path.rsplit('.').next().unwrap_or(path.as_str());
+                    if leaf != entry.name {
+                        // Namespaced imports live under their module-qualified name.
+                        let lookup = {
+                            let segs: Vec<&str> = path.split('.').collect();
+                            if segs.len() >= 2 {
+                                format!("{}.{}", segs[segs.len() - 2], segs[segs.len() - 1])
+                            } else {
+                                leaf.to_string()
+                            }
+                        };
+                        if let Some(&orig_idx) = self.fn_index.get(&lookup)
+                            && !self.fn_index.contains_key(&entry.name)
+                        {
+                            return Some((entry.name.clone(), orig_idx));
                         }
                     }
+                }
                 None
             })
             .collect();
@@ -411,9 +422,10 @@ impl<'a> Codegen<'a> {
                         attributes,
                         &mut chunks,
                         &mut next_closure_idx,
-                    ) {
-                        chunks.push(chunk);
-                    }
+                    )
+                {
+                    chunks.push(chunk);
+                }
             }
         }
         // Compile live impl methods.
@@ -444,9 +456,10 @@ impl<'a> Codegen<'a> {
                                 attributes,
                                 &mut chunks,
                                 &mut next_closure_idx,
-                            ) {
-                                chunks.push(chunk);
-                            }
+                            )
+                        {
+                            chunks.push(chunk);
+                        }
                     }
                 }
             }
@@ -1295,9 +1308,10 @@ impl<'a> FnCompiler<'a> {
         if let Some(names) = param_names {
             for (arg_name, arg_expr) in named {
                 if let Some(pos) = names.iter().position(|n| n == arg_name)
-                    && pos < total {
-                        result[pos] = Some(arg_expr.clone());
-                    }
+                    && pos < total
+                {
+                    result[pos] = Some(arg_expr.clone());
+                }
             }
         } else {
             // Unknown function — append named args after positional.
@@ -1427,9 +1441,10 @@ impl<'a> FnCompiler<'a> {
     fn variant_tag(&self, enum_name: Option<&str>, variant: &str) -> usize {
         if let Some(ename) = enum_name
             && let Some(variants) = self.enum_defs.get(ename)
-                && let Some(&tag) = variants.get(variant) {
-                    return tag;
-                }
+            && let Some(&tag) = variants.get(variant)
+        {
+            return tag;
+        }
         for variants in self.enum_defs.values() {
             if let Some(&tag) = variants.get(variant) {
                 return tag;
@@ -1465,13 +1480,14 @@ impl<'a> FnCompiler<'a> {
         if let Some(TypeKind::Named {
             name: struct_name, ..
         }) = self.type_of_span(key)
-            && let Some(offsets) = self.struct_field_offsets.get(&struct_name) {
-                for (fname, offset) in offsets {
-                    if fname == field_name {
-                        return *offset as u8;
-                    }
+            && let Some(offsets) = self.struct_field_offsets.get(&struct_name)
+        {
+            for (fname, offset) in offsets {
+                if fname == field_name {
+                    return *offset as u8;
                 }
             }
+        }
         0
     }
 
@@ -1922,7 +1938,9 @@ impl<'a> FnCompiler<'a> {
                             self.compile_stmt(init_stmt);
                         }
                         let loop_top = self.chunk.len() as u16;
-                        let jump_exit = condition.as_ref().map(|cond| self.compile_condition_jump(cond, true));
+                        let jump_exit = condition
+                            .as_ref()
+                            .map(|cond| self.compile_condition_jump(cond, true));
                         self.compile_block(body);
                         if let Some(upd) = update {
                             self.compile_expr(upd);
@@ -2475,9 +2493,10 @@ impl<'a> FnCompiler<'a> {
         // Skip Ident (value already in a register) and Literal (emits directly below).
         let key = (expr.span.start, expr.span.end);
         if !matches!(expr.node, ExprKind::Ident(_) | ExprKind::Literal(_))
-            && let Some(cv) = self.const_map.get(&key).cloned() {
-                return self.emit_const_value(cv);
-            }
+            && let Some(cv) = self.const_map.get(&key).cloned()
+        {
+            return self.emit_const_value(cv);
+        }
 
         match &expr.node {
             ExprKind::Literal(lit) => self.emit_literal(lit),
@@ -2733,11 +2752,12 @@ impl<'a> FnCompiler<'a> {
                             // Fixed-size array: store at base register or computed address.
                             let base = self.compile_expr(object);
                             if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                                && *n >= 0 {
-                                    let elem_reg = base + *n as u8;
-                                    self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
-                                    return src;
-                                }
+                                && *n >= 0
+                            {
+                                let elem_reg = base + *n as u8;
+                                self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
+                                return src;
+                            }
                             let idx_reg = self.compile_expr(index);
                             let ptr = self.alloc_reg();
                             self.chunk.emit(mem_lea(base, ptr, 0));
@@ -2904,17 +2924,17 @@ impl<'a> FnCompiler<'a> {
                     if !type_args.is_empty()
                         && let Some(mono_name) =
                             self.resolve_monomorphized_name(&call_name, type_args)
-                        {
-                            let arg_regs: Vec<u8> = args
-                                .iter()
-                                .map(|a| {
-                                    self.mark_consumed_expr(a);
-                                    self.compile_expr(a)
-                                })
-                                .collect();
-                            self.emit_call_by_name(&mono_name, &arg_regs, dst);
-                            return dst;
-                        }
+                    {
+                        let arg_regs: Vec<u8> = args
+                            .iter()
+                            .map(|a| {
+                                self.mark_consumed_expr(a);
+                                self.compile_expr(a)
+                            })
+                            .collect();
+                        self.emit_call_by_name(&mono_name, &arg_regs, dst);
+                        return dst;
+                    }
                     // str_variadic dispatch: auto-coerce args to str at call sites.
                     if self.str_variadic_fns.contains(call_name.as_str()) && args.len() > 1 {
                         // Extract format specs from the template literal (compile-time).
@@ -3204,38 +3224,35 @@ impl<'a> FnCompiler<'a> {
                         && !self.regs.contains_key(type_name.as_str());
                     if is_enum_ns
                         && let Some(variants) = self.enum_defs.get(type_name.as_str())
-                            && let Some(&tag) = variants.get(method.as_str()) {
-                                let payload_regs: Vec<u8> = args
-                                    .iter()
-                                    .map(|a| {
-                                        self.mark_consumed_expr(a);
-                                        self.compile_expr(a)
-                                    })
-                                    .collect();
-                                let ptr = self.alloc_reg();
-                                self.chunk.emit(ri16(
-                                    Opcode::New,
-                                    ptr,
-                                    enum_variant_alloc_size(payload_regs.len()),
-                                ));
-                                let tag_reg = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
-                                self.chunk.emit(rrr(
-                                    Opcode::FieldStore,
-                                    tag_reg,
-                                    ptr,
-                                    ENUM_DISCRIM_OFFSET,
-                                ));
-                                for (i, &payload) in payload_regs.iter().enumerate() {
-                                    let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
-                                    self.chunk.emit(rrr(Opcode::FieldStore, payload, ptr, off));
-                                }
-                                let dst = self.alloc_reg();
-                                if dst != ptr {
-                                    self.chunk.emit(rrr(Opcode::Mov, dst, ptr, 0));
-                                }
-                                return dst;
-                            }
+                        && let Some(&tag) = variants.get(method.as_str())
+                    {
+                        let payload_regs: Vec<u8> = args
+                            .iter()
+                            .map(|a| {
+                                self.mark_consumed_expr(a);
+                                self.compile_expr(a)
+                            })
+                            .collect();
+                        let ptr = self.alloc_reg();
+                        self.chunk.emit(ri16(
+                            Opcode::New,
+                            ptr,
+                            enum_variant_alloc_size(payload_regs.len()),
+                        ));
+                        let tag_reg = self.alloc_reg();
+                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
+                        self.chunk
+                            .emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
+                        for (i, &payload) in payload_regs.iter().enumerate() {
+                            let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
+                            self.chunk.emit(rrr(Opcode::FieldStore, payload, ptr, off));
+                        }
+                        let dst = self.alloc_reg();
+                        if dst != ptr {
+                            self.chunk.emit(rrr(Opcode::Mov, dst, ptr, 0));
+                        }
+                        return dst;
+                    }
                 }
 
                 // Static type-namespace call: `String.from(...)`, `Box.new(...)`, etc.
@@ -3349,39 +3366,41 @@ impl<'a> FnCompiler<'a> {
                         all_args.extend_from_slice(&arg_regs);
                         self.emit_call_by_name(&call_target, &all_args, dst);
                         if method == "free"
-                            && let ExprKind::Ident(name) = &object.node {
-                                self.deactivate_drop_local(name);
-                            }
+                            && let ExprKind::Ident(name) = &object.node
+                        {
+                            self.deactivate_drop_local(name);
+                        }
                         return dst;
                     }
                 }
 
                 // Dynamic dispatch: dyn Trait receiver → vtable lookup + CallReg.
                 if let Some(TypeKind::Dyn { trait_name }) = self.type_of_span(key)
-                    && let Some(slots) = self.trait_method_slots.get(&trait_name) {
-                        let slot_idx =
-                            slots.iter().position(|m: &String| m == method).unwrap_or(0) as u8;
-                        // Load vtable ptr from fat_ptr[8], then fn ptr from vtable[slot*8].
-                        let vtbl_ptr = self.alloc_reg();
-                        self.chunk.emit(rrr(Opcode::FieldLoad, vtbl_ptr, obj, 8));
-                        let fn_ptr = self.alloc_reg();
-                        self.chunk
-                            .emit(rrr(Opcode::VtblLoad, fn_ptr, vtbl_ptr, slot_idx));
-                        // Load concrete data ptr from fat_ptr[0].
-                        let data_ptr = self.alloc_reg();
-                        self.chunk.emit(rrr(Opcode::FieldLoad, data_ptr, obj, 0));
-                        let dst = self.alloc_reg();
-                        let mut all_args = vec![data_ptr];
-                        for a in args {
-                            self.mark_consumed_expr(a);
-                            all_args.push(self.compile_expr(a));
-                        }
-                        for &r in &all_args {
-                            self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
-                        }
-                        self.chunk.emit(rrr(Opcode::CallReg, dst, fn_ptr, 0));
-                        return dst;
+                    && let Some(slots) = self.trait_method_slots.get(&trait_name)
+                {
+                    let slot_idx =
+                        slots.iter().position(|m: &String| m == method).unwrap_or(0) as u8;
+                    // Load vtable ptr from fat_ptr[8], then fn ptr from vtable[slot*8].
+                    let vtbl_ptr = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::FieldLoad, vtbl_ptr, obj, 8));
+                    let fn_ptr = self.alloc_reg();
+                    self.chunk
+                        .emit(rrr(Opcode::VtblLoad, fn_ptr, vtbl_ptr, slot_idx));
+                    // Load concrete data ptr from fat_ptr[0].
+                    let data_ptr = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::FieldLoad, data_ptr, obj, 0));
+                    let dst = self.alloc_reg();
+                    let mut all_args = vec![data_ptr];
+                    for a in args {
+                        self.mark_consumed_expr(a);
+                        all_args.push(self.compile_expr(a));
                     }
+                    for &r in &all_args {
+                        self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
+                    }
+                    self.chunk.emit(rrr(Opcode::CallReg, dst, fn_ptr, 0));
+                    return dst;
+                }
 
                 // Built-in methods for primitive and known types.
                 let resolved_receiver = self.type_of_span(key);
@@ -3465,9 +3484,10 @@ impl<'a> FnCompiler<'a> {
                         let traits = self.trait_impls.get(type_name.as_str())?;
                         for trait_name in traits {
                             if let Some(slots) = self.trait_method_slots.get(trait_name)
-                                && let Some(idx) = slots.iter().position(|m| m == method) {
-                                    return Some(idx as u8);
-                                }
+                                && let Some(idx) = slots.iter().position(|m| m == method)
+                            {
+                                return Some(idx as u8);
+                            }
                         }
                         None
                     })
@@ -3532,24 +3552,21 @@ impl<'a> FnCompiler<'a> {
                         && !self.regs.contains_key(type_name.as_str());
                     if is_enum_ns
                         && let Some(variants) = self.enum_defs.get(type_name.as_str())
-                            && let Some(&tag) = variants.get(name.as_str()) {
-                                let ptr = self.alloc_reg();
-                                self.chunk
-                                    .emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(0)));
-                                let tag_reg = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
-                                self.chunk.emit(rrr(
-                                    Opcode::FieldStore,
-                                    tag_reg,
-                                    ptr,
-                                    ENUM_DISCRIM_OFFSET,
-                                ));
-                                let dst = self.alloc_reg();
-                                if dst != ptr {
-                                    self.chunk.emit(rrr(Opcode::Mov, dst, ptr, 0));
-                                }
-                                return dst;
-                            }
+                        && let Some(&tag) = variants.get(name.as_str())
+                    {
+                        let ptr = self.alloc_reg();
+                        self.chunk
+                            .emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(0)));
+                        let tag_reg = self.alloc_reg();
+                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
+                        self.chunk
+                            .emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
+                        let dst = self.alloc_reg();
+                        if dst != ptr {
+                            self.chunk.emit(rrr(Opcode::Mov, dst, ptr, 0));
+                        }
+                        return dst;
+                    }
                 }
                 let byte_offset = self.field_offset(object, name);
                 let obj = self.compile_expr(object);
@@ -3621,9 +3638,10 @@ impl<'a> FnCompiler<'a> {
                 // Fallback: raw static-array register arithmetic (single index only).
                 let base = self.compile_expr(object);
                 if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                    && *n >= 0 {
-                        return base + *n as u8;
-                    }
+                    && *n >= 0
+                {
+                    return base + *n as u8;
+                }
                 // Dynamic index: Lea + scale + Sub + Load
                 let idx = self.compile_expr(index);
                 let ptr = self.alloc_reg();
@@ -4220,10 +4238,9 @@ fn cfg_condition_matches(attr: &crate::parser::ast::Attribute) -> bool {
 /// Check whether an item's @cfg attributes (if any) evaluate to true on this host.
 fn item_cfg_active(attributes: &[crate::parser::ast::Attribute]) -> bool {
     for attr in attributes {
-        if attr.name == "cfg"
-            && !cfg_condition_matches(attr) {
-                return false;
-            }
+        if attr.name == "cfg" && !cfg_condition_matches(attr) {
+            return false;
+        }
     }
     true
 }
@@ -4241,9 +4258,10 @@ fn collect_destructor_roots(program: &Program) -> HashSet<String> {
                 let type_name = type_kind_base_name(&for_ty.node);
                 for method in methods {
                     if let ItemKind::Fn { name, .. } = &method.node
-                        && name == "free" {
-                            roots.insert(format!("{}.{}", type_name, name));
-                        }
+                        && name == "free"
+                    {
+                        roots.insert(format!("{}.{}", type_name, name));
+                    }
                 }
             }
             _ => {}

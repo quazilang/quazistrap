@@ -15,20 +15,21 @@ pub fn hover_at(report: &SemanticReport, source: &str, pos: Position) -> Option<
         .min_by_key(|a| a.span.end - a.span.start);
 
     if let Some(ann) = best
-        && let Some(ty) = &ann.ty {
-            let range = span_to_range(ann.span, source);
-            let value = match &ann.const_value {
-                Some(cv) => format!("```void\n{ty} = {cv}\n```"),
-                None => format!("```void\n{ty}\n```"),
-            };
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value,
-                }),
-                range: Some(range),
-            });
-        }
+        && let Some(ty) = &ann.ty
+    {
+        let range = span_to_range(ann.span, source);
+        let value = match &ann.const_value {
+            Some(cv) => format!("```void\n{ty} = {cv}\n```"),
+            None => format!("```void\n{ty}\n```"),
+        };
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: Some(range),
+        });
+    }
 
     // Fallback: identifier word → symbol table
     let word = word_at_offset(source, offset)?;

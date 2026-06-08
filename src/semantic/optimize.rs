@@ -196,18 +196,17 @@ impl Analyzer {
                 .dependency_edges
                 .iter()
                 .any(|(k, _, to)| *k == DependencyKind::Call && to == fn_name);
-            if is_called_by_someone
-                && let Some(sym) = global_scope.get(fn_name) {
-                    self.push_warning_with_suggestion(
-                        sym.span,
-                        "W07",
-                        format!(
-                            "dead function '{}': only reachable from dead code, never from main",
-                            fn_name
-                        ),
-                        format!("remove '{}' or make it reachable from main", fn_name),
-                    );
-                }
+            if is_called_by_someone && let Some(sym) = global_scope.get(fn_name) {
+                self.push_warning_with_suggestion(
+                    sym.span,
+                    "W07",
+                    format!(
+                        "dead function '{}': only reachable from dead code, never from main",
+                        fn_name
+                    ),
+                    format!("remove '{}' or make it reachable from main", fn_name),
+                );
+            }
             self.unreachable_functions.insert(fn_name.clone());
         }
     }
@@ -220,9 +219,10 @@ impl Analyzer {
                 _ => None,
             };
             if let Some(attrs) = attrs
-                && !super::item_should_include(attrs) {
-                    continue;
-                }
+                && !super::item_should_include(attrs)
+            {
+                continue;
+            }
             match &item.node {
                 ItemKind::Fn {
                     name,
@@ -447,17 +447,16 @@ impl Analyzer {
                             continue;
                         }
 
-                        if !arm.has_guard
-                            && !covered.insert(variant.clone()) {
-                                self.push_warning(
-                                    arm.span,
-                                    "W05",
-                                    format!(
-                                        "duplicate/unreachable match arm '{}.{}'",
-                                        scrutinee_enum, variant
-                                    ),
-                                );
-                            }
+                        if !arm.has_guard && !covered.insert(variant.clone()) {
+                            self.push_warning(
+                                arm.span,
+                                "W05",
+                                format!(
+                                    "duplicate/unreachable match arm '{}.{}'",
+                                    scrutinee_enum, variant
+                                ),
+                            );
+                        }
                     }
                 }
             }

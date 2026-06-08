@@ -78,9 +78,7 @@ impl Analyzer {
                         .scopes
                         .first()
                         .and_then(|s| s.get(&capitalized))
-                        .is_some_and(|sym| {
-                            sym.used && matches!(sym.kind, SymbolKind::TypeName)
-                        });
+                        .is_some_and(|sym| sym.used && matches!(sym.kind, SymbolKind::TypeName));
                     if type_used {
                         continue;
                     }
@@ -144,9 +142,10 @@ impl Analyzer {
                 _ => None,
             };
             if let Some(attrs) = attrs
-                && !super::item_should_include(attrs) {
-                    continue;
-                }
+                && !super::item_should_include(attrs)
+            {
+                continue;
+            }
             match &item.node {
                 ItemKind::Fn {
                     body: Some(body), ..

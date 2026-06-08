@@ -75,17 +75,18 @@ pub fn common_lib_prefix(lib_files: &[PathBuf]) -> Option<PathBuf> {
 
 fn short_label(path: &Path, lib_prefix: Option<&Path>) -> String {
     if let Some(prefix) = lib_prefix
-        && let Ok(rel) = path.strip_prefix(prefix) {
-            let no_ext = rel.with_extension("");
-            let parts: Vec<String> = no_ext
-                .components()
-                .map(|c| c.as_os_str().to_str().unwrap_or("?").to_string())
-                .filter(|c| c != "src" && c != "mod")
-                .collect();
-            if !parts.is_empty() {
-                return parts.join(".");
-            }
+        && let Ok(rel) = path.strip_prefix(prefix)
+    {
+        let no_ext = rel.with_extension("");
+        let parts: Vec<String> = no_ext
+            .components()
+            .map(|c| c.as_os_str().to_str().unwrap_or("?").to_string())
+            .filter(|c| c != "src" && c != "mod")
+            .collect();
+        if !parts.is_empty() {
+            return parts.join(".");
         }
+    }
     path.file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("?")

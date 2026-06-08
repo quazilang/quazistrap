@@ -113,12 +113,13 @@ impl LanguageServer for VoidLanguageServer {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let docs = self.documents.read().await;
         if let Some(doc) = docs.get(&params.text_document.uri)
-            && let Some(report) = &doc.report {
-                let diags = diagnostics::to_lsp_diagnostics(report, &doc.source);
-                self.client
-                    .publish_diagnostics(params.text_document.uri.clone(), diags, None)
-                    .await;
-            }
+            && let Some(report) = &doc.report
+        {
+            let diags = diagnostics::to_lsp_diagnostics(report, &doc.source);
+            self.client
+                .publish_diagnostics(params.text_document.uri.clone(), diags, None)
+                .await;
+        }
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -126,9 +127,10 @@ impl LanguageServer for VoidLanguageServer {
         let uri = &params.text_document_position_params.text_document.uri;
         let docs = self.documents.read().await;
         if let Some(doc) = docs.get(uri)
-            && let Some(report) = &doc.report {
-                return Ok(hover::hover_at(report, &doc.source, pos));
-            }
+            && let Some(report) = &doc.report
+        {
+            return Ok(hover::hover_at(report, &doc.source, pos));
+        }
         Ok(None)
     }
 
@@ -140,9 +142,10 @@ impl LanguageServer for VoidLanguageServer {
         let uri = &params.text_document_position_params.text_document.uri;
         let docs = self.documents.read().await;
         if let Some(doc) = docs.get(uri)
-            && let Some(report) = &doc.report {
-                return Ok(goto_def::goto_definition(report, &doc.source, uri, pos));
-            }
+            && let Some(report) = &doc.report
+        {
+            return Ok(goto_def::goto_definition(report, &doc.source, uri, pos));
+        }
         Ok(None)
     }
 

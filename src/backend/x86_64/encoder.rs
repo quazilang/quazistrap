@@ -116,18 +116,19 @@ fn jump_targets(chunk: &Chunk) -> std::collections::HashSet<u16> {
     let mut set = std::collections::HashSet::new();
     for instr in &chunk.code {
         if let Some(
-                Opcode::Jmp
-                | Opcode::Je
-                | Opcode::Jne
-                | Opcode::Jg
-                | Opcode::Jge
-                | Opcode::Jl
-                | Opcode::Jle
-                | Opcode::Ja
-                | Opcode::Jb
-                | Opcode::Jz
-                | Opcode::Jnz,
-            ) = Opcode::from_u8(instr.opcode) {
+            Opcode::Jmp
+            | Opcode::Je
+            | Opcode::Jne
+            | Opcode::Jg
+            | Opcode::Jge
+            | Opcode::Jl
+            | Opcode::Jle
+            | Opcode::Ja
+            | Opcode::Jb
+            | Opcode::Jz
+            | Opcode::Jnz,
+        ) = Opcode::from_u8(instr.opcode)
+        {
             let (_, target) = instr.ri16();
             set.insert(target);
         }

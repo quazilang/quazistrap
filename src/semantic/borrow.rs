@@ -115,9 +115,10 @@ impl Analyzer {
                 _ => None,
             };
             if let Some(attrs) = attrs
-                && !super::item_should_include(attrs) {
-                    continue;
-                }
+                && !super::item_should_include(attrs)
+            {
+                continue;
+            }
             match &item.node {
                 ItemKind::Fn {
                     params,

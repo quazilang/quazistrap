@@ -229,9 +229,10 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         if let Ok(prog) = pr.parse() {
             for item in &prog.items {
                 if let ItemKind::Fn { name, pub_fn, .. } = &item.node
-                    && *pub_fn {
-                        library_fn_names.insert(format!("{}.{}", module_name, name));
-                    }
+                    && *pub_fn
+                {
+                    library_fn_names.insert(format!("{}.{}", module_name, name));
+                }
             }
         }
     }
@@ -453,9 +454,9 @@ fn path_module_name(path: &Path) -> String {
                 .parent()
                 .and_then(|p| p.file_name())
                 .and_then(|s| s.to_str())
-            {
-                return parent.to_string();
-            }
+        {
+            return parent.to_string();
+        }
         return stem.to_string();
     }
     path.to_string_lossy().into_owned()
@@ -481,13 +482,12 @@ fn resolver_with_builtin_modules(
             .or_insert(prelude_spec);
     }
 
-    if include_std
-        && let Some(std_spec) = builtin_std_module_spec() {
-            combined
-                .modules
-                .entry("std".to_string())
-                .or_insert(std_spec);
-        }
+    if include_std && let Some(std_spec) = builtin_std_module_spec() {
+        combined
+            .modules
+            .entry("std".to_string())
+            .or_insert(std_spec);
+    }
 
     if combined.modules.is_empty() {
         None
@@ -612,9 +612,10 @@ fn used_std_modules(src: &str) -> HashSet<String> {
             && matches!(window[1].kind, TokenKind::Dot)
             && matches!(&window[2].kind, TokenKind::Ident(_))
             && matches!(window[3].kind, TokenKind::Dot)
-            && let TokenKind::Ident(module) = &window[2].kind {
-                modules.insert(module.clone());
-            }
+            && let TokenKind::Ident(module) = &window[2].kind
+        {
+            modules.insert(module.clone());
+        }
     }
 
     modules
@@ -698,108 +699,107 @@ fn local_import_paths(
 
         if !ip.relative
             && let Some(mods) = resolver
-                && let Some(spec) = mods.modules.get(&base) {
-                    if remainder.is_empty() && base == "std" {
-                        // import std; — only load sub-modules actually used in source
-                        for module in used_std_modules(src) {
-                            if let Some(target) = resolve_module_file(spec, &module)
-                                && seen.insert(target.clone()) {
-                                    paths.push((target, true));
-                                }
+            && let Some(spec) = mods.modules.get(&base)
+        {
+            if remainder.is_empty() && base == "std" {
+                // import std; — only load sub-modules actually used in source
+                for module in used_std_modules(src) {
+                    if let Some(target) = resolve_module_file(spec, &module)
+                        && seen.insert(target.clone())
+                    {
+                        paths.push((target, true));
+                    }
+                }
+                continue;
+            }
+
+            let target = if remainder.is_empty() {
+                spec.entry.clone()
+            } else {
+                let root_mod_void = spec.src_dir.join("mod.void");
+                if root_mod_void.exists() {
+                    let exported = &remainder[0];
+                    if strict && !is_pub_exported_from_mod(&root_mod_void, exported)? {
+                        return Err(format!(
+                            "cannot access '{}' from '{}': '{}' is not pub-imported in mod.void",
+                            exported, base, exported
+                        ));
+                    }
+                    if let Some(specific) = find_pub_exported_file(&root_mod_void, exported) {
+                        if seen.insert(specific.clone()) {
+                            paths.push((specific, true));
                         }
                         continue;
                     }
-
-                    let target = if remainder.is_empty() {
-                        spec.entry.clone()
-                    } else {
-                        let root_mod_void = spec.src_dir.join("mod.void");
-                        if root_mod_void.exists() {
-                            let exported = &remainder[0];
-                            if strict && !is_pub_exported_from_mod(&root_mod_void, exported)? {
+                    root_mod_void
+                } else {
+                    // mod.void opaque directory check: if first remainder segment is a
+                    // directory with mod.void, enforce opaqueness.
+                    let first = &remainder[0];
+                    let mod_void_path = spec.src_dir.join(first).join("mod.void");
+                    if mod_void_path.exists() {
+                        if remainder.len() > 1 {
+                            let sub = &remainder[1];
+                            if strict && !is_pub_exported_from_mod(&mod_void_path, sub)? {
                                 return Err(format!(
-                                    "cannot access '{}' from '{}': '{}' is not pub-imported in mod.void",
-                                    exported, base, exported
+                                    "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.void'",
+                                    sub, first, sub, first
                                 ));
                             }
-                            if let Some(specific) = find_pub_exported_file(&root_mod_void, exported)
-                            {
+                            // Targeted: load only the specific file, skip mod.void
+                            if let Some(specific) = find_pub_exported_file(&mod_void_path, sub) {
                                 if seen.insert(specific.clone()) {
                                     paths.push((specific, true));
                                 }
                                 continue;
                             }
-                            root_mod_void
-                        } else {
-                            // mod.void opaque directory check: if first remainder segment is a
-                            // directory with mod.void, enforce opaqueness.
-                            let first = &remainder[0];
-                            let mod_void_path = spec.src_dir.join(first).join("mod.void");
-                            if mod_void_path.exists() {
-                                if remainder.len() > 1 {
-                                    let sub = &remainder[1];
-                                    if strict && !is_pub_exported_from_mod(&mod_void_path, sub)? {
-                                        return Err(format!(
-                                            "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.void'",
-                                            sub, first, sub, first
-                                        ));
-                                    }
-                                    // Targeted: load only the specific file, skip mod.void
-                                    if let Some(specific) =
-                                        find_pub_exported_file(&mod_void_path, sub)
-                                    {
-                                        if seen.insert(specific.clone()) {
-                                            paths.push((specific, true));
-                                        }
-                                        continue;
-                                    }
-                                }
-                                mod_void_path
-                            } else {
-                                // Try progressively shorter paths: the last segment(s) may be
-                                // function/symbol names rather than file path components.
-                                // e.g. `import std.core.write` → try core/write.void first,
-                                // then core.void (where `write` is the imported symbol name).
-                                let mut found: Option<PathBuf> = None;
-                                for len in (1..=remainder.len()).rev() {
-                                    let mut candidate = spec.src_dir.clone();
-                                    for seg in &remainder[..len] {
-                                        candidate.push(seg);
-                                    }
-                                    candidate.set_extension("void");
-                                    if candidate.exists() {
-                                        found = Some(candidate);
-                                        break;
-                                    }
-                                }
-                                if found.is_none() {
-                                    found = resolve_module_file(spec, &remainder[0]);
-                                }
-                                // If nothing found, use the full path so the error message is useful.
-                                found.unwrap_or_else(|| {
-                                    let mut full = spec.src_dir.clone();
-                                    for seg in &remainder {
-                                        full.push(seg);
-                                    }
-                                    full.set_extension("void");
-                                    full
-                                })
+                        }
+                        mod_void_path
+                    } else {
+                        // Try progressively shorter paths: the last segment(s) may be
+                        // function/symbol names rather than file path components.
+                        // e.g. `import std.core.write` → try core/write.void first,
+                        // then core.void (where `write` is the imported symbol name).
+                        let mut found: Option<PathBuf> = None;
+                        for len in (1..=remainder.len()).rev() {
+                            let mut candidate = spec.src_dir.clone();
+                            for seg in &remainder[..len] {
+                                candidate.push(seg);
+                            }
+                            candidate.set_extension("void");
+                            if candidate.exists() {
+                                found = Some(candidate);
+                                break;
                             }
                         }
-                    };
+                        if found.is_none() {
+                            found = resolve_module_file(spec, &remainder[0]);
+                        }
+                        // If nothing found, use the full path so the error message is useful.
+                        found.unwrap_or_else(|| {
+                            let mut full = spec.src_dir.clone();
+                            for seg in &remainder {
+                                full.push(seg);
+                            }
+                            full.set_extension("void");
+                            full
+                        })
+                    }
+                }
+            };
 
-                    if !target.exists() {
-                        return Err(format!(
-                            "cannot resolve module import '{}' (expected {})",
-                            base,
-                            target.to_string_lossy()
-                        ));
-                    }
-                    if seen.insert(target.clone()) {
-                        paths.push((target, true)); // from module resolver → library
-                    }
-                    continue;
-                } // end !ip.relative
+            if !target.exists() {
+                return Err(format!(
+                    "cannot resolve module import '{}' (expected {})",
+                    base,
+                    target.to_string_lossy()
+                ));
+            }
+            if seen.insert(target.clone()) {
+                paths.push((target, true)); // from module resolver → library
+            }
+            continue;
+        } // end !ip.relative
 
         let candidate = dir.join(format!("{}.void", base));
         if candidate.exists() && seen.insert(candidate.clone()) {
@@ -963,9 +963,10 @@ fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
                     }
                     let sub_mod_void = sub_mod.join("mod.void");
                     if sub_mod_void.exists()
-                        && let Some(found) = find_pub_exported_file(&sub_mod_void, name) {
-                            return Some(found);
-                        }
+                        && let Some(found) = find_pub_exported_file(&sub_mod_void, name)
+                    {
+                        return Some(found);
+                    }
                     // Also try direct file: path/name.void
                     sub_mod.push(name);
                     sub_mod.set_extension("void");

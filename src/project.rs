@@ -290,14 +290,15 @@ fn collect_modules(
             ));
         }
         if let Some(expect_ver) = expect_version
-            && meta.version.as_deref() != Some(expect_ver) {
-                return Err(format!(
-                    "dependency '{}' version mismatch: expected {}, got {}",
-                    meta.name,
-                    expect_ver,
-                    meta.version.clone().unwrap_or_else(|| "<none>".to_string())
-                ));
-            }
+            && meta.version.as_deref() != Some(expect_ver)
+        {
+            return Err(format!(
+                "dependency '{}' version mismatch: expected {}, got {}",
+                meta.name,
+                expect_ver,
+                meta.version.clone().unwrap_or_else(|| "<none>".to_string())
+            ));
+        }
     }
 
     let spec = ModuleSpec {

@@ -20,9 +20,10 @@ impl Analyzer {
             _ => None,
         };
         if let Some(attrs) = attrs
-            && !super::item_should_include(attrs) {
-                return;
-            }
+            && !super::item_should_include(attrs)
+        {
+            return;
+        }
         match &item.node {
             ItemKind::Fn {
                 name,
@@ -519,33 +520,35 @@ impl Analyzer {
         // (LSP pre-load or wildcard alias). Record the explicit import and return.
         if let Some(existing) = self.resolve_symbol(&local_name)
             && matches!(existing.kind, SymbolKind::Function)
-                && (existing.is_import || self.library_fn_names.contains(&local_name))
-            {
-                if !existing.public && !existing.is_import {
-                    self.push_error(
-                        span,
-                        "S04",
-                        format!("'{}' is private and cannot be imported", local_name),
-                    );
-                    return;
-                }
-                if let Some(existing_path) = self.explicitly_imported_fns.get(&local_name)
-                    && !existing_path.is_empty() && existing_path != &full_path {
-                        self.push_error(
-                            span,
-                            "S15",
-                            format!(
-                                "ambiguous import '{}': already imported from '{}'; \
-                                 use 'import {} as ...' to alias",
-                                local_name, existing_path, full_path
-                            ),
-                        );
-                        return;
-                    }
-                self.explicitly_imported_fns
-                    .insert(local_name.clone(), full_path.clone());
+            && (existing.is_import || self.library_fn_names.contains(&local_name))
+        {
+            if !existing.public && !existing.is_import {
+                self.push_error(
+                    span,
+                    "S04",
+                    format!("'{}' is private and cannot be imported", local_name),
+                );
                 return;
             }
+            if let Some(existing_path) = self.explicitly_imported_fns.get(&local_name)
+                && !existing_path.is_empty()
+                && existing_path != &full_path
+            {
+                self.push_error(
+                    span,
+                    "S15",
+                    format!(
+                        "ambiguous import '{}': already imported from '{}'; \
+                                 use 'import {} as ...' to alias",
+                        local_name, existing_path, full_path
+                    ),
+                );
+                return;
+            }
+            self.explicitly_imported_fns
+                .insert(local_name.clone(), full_path.clone());
+            return;
+        }
 
         // Module-namespace import (e.g. `import bar`, `import std.core`): no mangled
         // item target; just register the local name as a module namespace symbol.
@@ -665,18 +668,20 @@ impl Analyzer {
             if matches!(existing.kind, SymbolKind::Function) && existing.is_import {
                 // Already imported from somewhere else — ambiguous unless same target.
                 if let Some(existing_path) = self.explicitly_imported_fns.get(&local_name)
-                    && !existing_path.is_empty() && existing_path != &full_path {
-                        self.push_error(
-                            span,
-                            "S15",
-                            format!(
-                                "ambiguous import '{}': already imported from '{}'; \
+                    && !existing_path.is_empty()
+                    && existing_path != &full_path
+                {
+                    self.push_error(
+                        span,
+                        "S15",
+                        format!(
+                            "ambiguous import '{}': already imported from '{}'; \
                                  use 'import {} as ...' to alias",
-                                local_name, existing_path, full_path
-                            ),
-                        );
-                        return;
-                    }
+                            local_name, existing_path, full_path
+                        ),
+                    );
+                    return;
+                }
             }
         }
 
