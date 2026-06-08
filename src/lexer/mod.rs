@@ -308,7 +308,10 @@ impl Lexer {
                     }
 
                     '<' => {
-                        if self.peek() == Some('=') {
+                        if self.peek() == Some('<') {
+                            self.advance();
+                            TokenKind::Shl
+                        } else if self.peek() == Some('=') {
                             self.advance();
                             TokenKind::LtEq
                         } else {
@@ -316,13 +319,17 @@ impl Lexer {
                         }
                     }
                     '>' => {
-                        if self.peek() == Some('=') {
+                        if self.peek() == Some('>') {
+                            self.advance();
+                            TokenKind::Shr
+                        } else if self.peek() == Some('=') {
                             self.advance();
                             TokenKind::GtEq
                         } else {
                             TokenKind::Gt
                         }
                     }
+                    '^' => TokenKind::Caret,
                     '=' => {
                         if self.peek() == Some('=') {
                             self.advance();

@@ -83,6 +83,7 @@ pub enum TokenKind {
     Comma,     // ,
     Ampersand, // &
     Pipe,      // |
+    Caret,     // ^
     Hash,      // #
     At,        // @
     DotDot,    // ..
@@ -99,6 +100,8 @@ pub enum TokenKind {
     Slash,    // /
     Lt,       // <
     Gt,       // >
+    Shl,      // <<
+    Shr,      // >>
     LtEq,     // <=
     GtEq,     // >=
     EqEq,     // ==
@@ -206,6 +209,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Comma => write!(f, ","),
             TokenKind::Ampersand => write!(f, "&"),
             TokenKind::Pipe => write!(f, "|"),
+            TokenKind::Caret => write!(f, "^"),
             TokenKind::Hash => write!(f, "#"),
             TokenKind::At => write!(f, "@"),
             TokenKind::DotDot => write!(f, ".."),
@@ -221,6 +225,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Slash => write!(f, "/"),
             TokenKind::Lt => write!(f, "<"),
             TokenKind::Gt => write!(f, ">"),
+            TokenKind::Shl => write!(f, "<<"),
+            TokenKind::Shr => write!(f, ">>"),
             TokenKind::LtEq => write!(f, "<="),
             TokenKind::GtEq => write!(f, ">="),
             TokenKind::EqEq => write!(f, "=="),

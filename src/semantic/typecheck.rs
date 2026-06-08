@@ -2378,6 +2378,34 @@ impl Analyzer {
 
                 Some(TypeKind::Bool)
             }
+            BinOpKind::BitAnd | BinOpKind::BitOr | BinOpKind::BitXor => match (left, right) {
+                (Some(l), Some(r)) if self.types_compatible(l, r) => Some(l.clone()),
+                (Some(l), Some(r)) => {
+                    self.push_error(
+                        span,
+                        "S01",
+                        format!("type mismatch in binary op: {} vs {}", l, r),
+                    );
+                    None
+                }
+                (Some(l), None) => Some(l.clone()),
+                (None, Some(r)) => Some(r.clone()),
+                (None, None) => None,
+            },
+            BinOpKind::Shl | BinOpKind::Shr => match (left, right) {
+                (Some(l), Some(r)) if self.types_compatible(l, r) => Some(l.clone()),
+                (Some(l), Some(r)) => {
+                    self.push_error(
+                        span,
+                        "S01",
+                        format!("type mismatch in binary op: {} vs {}", l, r),
+                    );
+                    None
+                }
+                (Some(l), None) => Some(l.clone()),
+                (None, Some(r)) => Some(r.clone()),
+                (None, None) => None,
+            },
             BinOpKind::Pow => match (left, right) {
                 (Some(l), Some(r)) if self.types_compatible(l, r) => Some(l.clone()),
                 (Some(l), _) => Some(l.clone()),
@@ -2474,6 +2502,31 @@ impl Analyzer {
 
             (BinOpKind::EqEq, a, b) => Some(ConstValue::Bool(a == b)),
             (BinOpKind::NotEq, a, b) => Some(ConstValue::Bool(a != b)),
+
+            (BinOpKind::BitAnd, ConstValue::Int(a), ConstValue::Int(b)) => {
+                Some(ConstValue::Int(a & b))
+            }
+            (BinOpKind::BitOr, ConstValue::Int(a), ConstValue::Int(b)) => {
+                Some(ConstValue::Int(a | b))
+            }
+            (BinOpKind::BitXor, ConstValue::Int(a), ConstValue::Int(b)) => {
+                Some(ConstValue::Int(a ^ b))
+            }
+            (BinOpKind::Shl, ConstValue::Int(a), ConstValue::Int(b)) => {
+                Some(ConstValue::Int(a << b))
+            }
+            (BinOpKind::Shr, ConstValue::Int(a), ConstValue::Int(b)) => {
+                Some(ConstValue::Int(a >> b))
+            }
+            (BinOpKind::BitAnd, ConstValue::Bool(a), ConstValue::Bool(b)) => {
+                Some(ConstValue::Bool(*a && *b))
+            }
+            (BinOpKind::BitOr, ConstValue::Bool(a), ConstValue::Bool(b)) => {
+                Some(ConstValue::Bool(*a || *b))
+            }
+            (BinOpKind::BitXor, ConstValue::Bool(a), ConstValue::Bool(b)) => {
+                Some(ConstValue::Bool(*a ^ *b))
+            }
 
             (BinOpKind::AndAnd, ConstValue::Bool(a), ConstValue::Bool(b)) => {
                 Some(ConstValue::Bool(*a && *b))

@@ -79,6 +79,11 @@ pub enum BinOpKind {
     NotEq,
     AndAnd,
     OrOr,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
     Pow,
 }
 

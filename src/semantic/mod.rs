@@ -1260,6 +1260,55 @@ fn main() void {
     }
 
     #[test]
+    fn accepts_bitwise_operators_on_integers() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var a: i32 = 1 & 2;
+    var b: i32 = 3 | 4;
+    var c: i32 = 5 ^ 6;
+    var d: i32 = 7 << 1;
+    var e: i32 = 8 >> 1;
+    ret;
+}
+"#,
+        );
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn accepts_bitwise_operators_on_bools() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var a: bool = true & false;
+    var b: bool = true | false;
+    var c: bool = true ^ false;
+    ret;
+}
+"#,
+        );
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn reports_type_mismatch_in_bitwise_op() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var a: i32 = 1 & true;
+}
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("type mismatch"))
+        );
+    }
+
+    #[test]
     fn records_expression_annotations_and_const_eval() {
         let report = analyze(
             r#"

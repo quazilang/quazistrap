@@ -2664,6 +2664,21 @@ impl<'a> FnCompiler<'a> {
                     BinOpKind::Pow => {
                         self.chunk.emit(rrr(Opcode::Pow, dst, r1, r2));
                     }
+                    BinOpKind::BitAnd => {
+                        self.chunk.emit(rrr(Opcode::And, dst, r1, r2));
+                    }
+                    BinOpKind::BitOr => {
+                        self.chunk.emit(rrr(Opcode::Or, dst, r1, r2));
+                    }
+                    BinOpKind::BitXor => {
+                        self.chunk.emit(rrr(Opcode::Xor, dst, r1, r2));
+                    }
+                    BinOpKind::Shl => {
+                        self.chunk.emit(rrr(Opcode::Shl, dst, r1, r2));
+                    }
+                    BinOpKind::Shr => {
+                        self.chunk.emit(rrr(Opcode::Shr, dst, r1, r2));
+                    }
                     BinOpKind::AndAnd | BinOpKind::OrOr => unreachable!(),
                     _ => {
                         self.chunk.emit(rrr(Opcode::Add, dst, r1, r2));

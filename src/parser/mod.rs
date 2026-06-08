@@ -740,7 +740,7 @@ impl Parser {
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_term()?;
+        let mut expr = self.parse_bitwise_or()?;
 
         loop {
             let op = match self.peek_kind() {
@@ -765,12 +765,84 @@ impl Parser {
 
             let Some(op) = op else { break };
 
-            let right = self.parse_term()?;
+            let right = self.parse_bitwise_or()?;
             let span = Span::merge(expr.span, right.span);
             expr = Spanned::new(
                 ExprKind::Binary {
                     left: Box::new(expr),
                     op,
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_or(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_bitwise_xor()?;
+
+        while self.at(TokenKind::Pipe) {
+            let save = self.pos;
+            self.advance();
+            // `||` is handled at the logical-or level; backtrack if we see `||`.
+            if self.at(TokenKind::Pipe) {
+                self.pos = save;
+                break;
+            }
+            let right = self.parse_bitwise_xor()?;
+            let span = Span::merge(expr.span, right.span);
+            expr = Spanned::new(
+                ExprKind::Binary {
+                    left: Box::new(expr),
+                    op: BinOpKind::BitOr,
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_bitwise_and()?;
+
+        while self.at(TokenKind::Caret) {
+            self.advance();
+            let right = self.parse_bitwise_and()?;
+            let span = Span::merge(expr.span, right.span);
+            expr = Spanned::new(
+                ExprKind::Binary {
+                    left: Box::new(expr),
+                    op: BinOpKind::BitXor,
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_and(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_shift()?;
+
+        while self.at(TokenKind::Ampersand) {
+            let save = self.pos;
+            self.advance();
+            // `&&` is handled at the logical-and level; backtrack if we see `&&`.
+            if self.at(TokenKind::Ampersand) {
+                self.pos = save;
+                break;
+            }
+            let right = self.parse_shift()?;
+            let span = Span::merge(expr.span, right.span);
+            expr = Spanned::new(
+                ExprKind::Binary {
+                    left: Box::new(expr),
+                    op: BinOpKind::BitAnd,
                     right: Box::new(right),
                 },
                 span,
@@ -799,6 +871,39 @@ impl Parser {
             let Some(op) = op else { break };
 
             let right = self.parse_factor()?;
+            let span = Span::merge(expr.span, right.span);
+            expr = Spanned::new(
+                ExprKind::Binary {
+                    left: Box::new(expr),
+                    op,
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_term()?;
+
+        loop {
+            let op = match self.peek_kind() {
+                TokenKind::Shl => {
+                    self.advance();
+                    Some(BinOpKind::Shl)
+                }
+                TokenKind::Shr => {
+                    self.advance();
+                    Some(BinOpKind::Shr)
+                }
+                _ => None,
+            };
+
+            let Some(op) = op else { break };
+
+            let right = self.parse_term()?;
             let span = Span::merge(expr.span, right.span);
             expr = Spanned::new(
                 ExprKind::Binary {
@@ -1736,6 +1841,84 @@ fn main() void {
             panic!("expected left side to be binary");
         };
         assert!(matches!(left_op, BinOpKind::Mod));
+    }
+
+    #[test]
+    fn parses_bitwise_operators() {
+        let program = parse_program(
+            r#"
+fn main() void {
+    var a: i32 = 1 & 2 | 3 ^ 4;
+    var b: i32 = 5 << 1 >> 2;
+    var c: bool = true & false | true;
+}
+"#,
+        );
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+        let stmts = &body.as_ref().unwrap().stmts;
+        assert_eq!(stmts.len(), 3);
+    }
+
+    #[test]
+    fn parses_bitwise_precedence() {
+        let program = parse_program(
+            r#"
+fn main() void {
+    var x: i32 = 1 + 2 << 3;
+    var y: i32 = 1 & 2 == 0;
+}
+"#,
+        );
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+        let stmts = &body.as_ref().unwrap().stmts;
+
+        // x = (1 + 2) << 3  → + binds tighter than <<
+        let StmtKind::Var {
+            value: Some(x_expr),
+            ..
+        } = &stmts[0].node
+        else {
+            panic!("expected var");
+        };
+        let ExprKind::Binary {
+            op: x_op,
+            left: x_left,
+            ..
+        } = &x_expr.node
+        else {
+            panic!("expected binary");
+        };
+        assert!(matches!(x_op, BinOpKind::Shl));
+        let ExprKind::Binary { op: add_op, .. } = &x_left.node else {
+            panic!("expected left binary");
+        };
+        assert!(matches!(add_op, BinOpKind::Add));
+
+        // y = (1 & 2) == 0  → bitwise binds tighter than equality
+        let StmtKind::Var {
+            value: Some(y_expr),
+            ..
+        } = &stmts[1].node
+        else {
+            panic!("expected var");
+        };
+        let ExprKind::Binary {
+            op: y_op,
+            left: y_left,
+            ..
+        } = &y_expr.node
+        else {
+            panic!("expected binary");
+        };
+        assert!(matches!(y_op, BinOpKind::EqEq));
+        let ExprKind::Binary { op: and_op, .. } = &y_left.node else {
+            panic!("expected left binary");
+        };
+        assert!(matches!(and_op, BinOpKind::BitAnd));
     }
 
     #[test]

@@ -191,6 +191,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **Bitwise operators** | `&` `|` `^` `<<` `>>` — need lexer tokens, parser variants, semantic typecheck, codegen mapping. |
 | **Loop control (`break`, `continue`)** | Need lexer tokens, parser `StmtKind`, semantic reachability, codegen loop targets. |
 | **`else if` chains** | Parser `else_if: Vec<(Expr, Block)>` on `If` node; codegen chained jumps. |
+| **`unsafe` block sugar** | `fn a() void unsafe { ... }` — safe fn with unsafe body (treated as unsafe fn). Also `@cfg(...) unsafe { ... }` parser desugar. Closures too. |
 | **AOT `@cfg` stripping** | Prune dead `CfgBlock` AST nodes before codegen. |
 | **`void link` built-in linker** | ELF <500B, PE <700B. Triggered on `.o` input. |
 | **`void test` runner** | `@test` attribute + `void test` CLI. |
