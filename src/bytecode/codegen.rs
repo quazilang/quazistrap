@@ -58,7 +58,6 @@ pub struct Codegen<'a> {
     const_map: HashMap<(usize, usize), ConstValue>,
     type_map: HashMap<(usize, usize), TypeKind>,
     import_names: HashSet<String>,
-    import_aliases: HashMap<String, String>,
     /// Maps variadic function name → number of fixed (non-variadic) params.
     variadic_fn_info: HashMap<String, usize>,
     /// Variadic-str functions: compiler auto-coerces args to str at call sites.
@@ -82,16 +81,9 @@ impl<'a> Codegen<'a> {
             }
         }
         let mut import_names = HashSet::new();
-        let mut import_aliases = HashMap::new();
         for entry in &report.symbol_table.entries {
             if entry.symbol.is_import {
                 import_names.insert(entry.name.clone());
-                if !matches!(entry.symbol.kind, SymbolKind::Function) {
-                    if let Some(path) = &entry.symbol.import_path {
-                        let leaf = path.rsplit('.').next().unwrap_or(path.as_str());
-                        import_aliases.insert(entry.name.clone(), leaf.to_string());
-                    }
-                }
             }
         }
         let mut variadic_fn_info = HashMap::new();
@@ -107,12 +99,26 @@ impl<'a> Codegen<'a> {
             const_map,
             type_map,
             import_names,
-            import_aliases,
             variadic_fn_info,
             str_variadic_fns: HashSet::new(),
             variadic_intrinsic_fns: HashSet::new(),
             source_files: Vec::new(),
         }
+    }
+
+    /// Return the resolved symbol name for a top-level item defined at `span`.
+    /// Namespaced files use `module.name`; entry files use the bare `name`.
+    /// Internal runtime symbols (`__void_*`) keep their bare names.
+    fn resolve_item_name(&self, span: Span, name: &str) -> String {
+        if name.starts_with("__void_") {
+            return name.to_string();
+        }
+        if let Some(sf) = self.source_files.iter().find(|f| f.contains(span))
+            && self.report.namespaced_paths.contains(&sf.path)
+                && let Some(module) = module_name_for_span(span, &self.source_files) {
+                    return format!("{}.{}", module, name);
+                }
+        name.to_string()
     }
 
     pub fn compile_program(
@@ -125,11 +131,10 @@ impl<'a> Codegen<'a> {
         let mut user_panic_handler: Option<String> = None;
         for item in &program.items {
             // Skip @cfg-disabled items.
-            if let ItemKind::Fn { attributes, .. } = &item.node {
-                if !item_cfg_active(attributes) {
+            if let ItemKind::Fn { attributes, .. } = &item.node
+                && !item_cfg_active(attributes) {
                     continue;
                 }
-            }
             match &item.node {
                 ItemKind::Fn {
                     name,
@@ -160,16 +165,17 @@ impl<'a> Codegen<'a> {
                                 })
                         })
                         .unwrap_or(false);
+                    let resolved_name = self.resolve_item_name(item.span, name);
                     if has_str_variadic_param {
-                        self.str_variadic_fns.insert(name.clone());
+                        self.str_variadic_fns.insert(resolved_name.clone());
                     }
                     if attributes.iter().any(|a| a.name == "intrinsic")
                         && params.last().map(|p| p.variadic).unwrap_or(false)
                     {
-                        self.variadic_intrinsic_fns.insert(name.clone());
+                        self.variadic_intrinsic_fns.insert(resolved_name.clone());
                     }
                     if attributes.iter().any(|a| a.name == "panic_handler") {
-                        user_panic_handler = Some(name.clone());
+                        user_panic_handler = Some(resolved_name.clone());
                     }
                 }
                 ItemKind::Impl {
@@ -219,22 +225,20 @@ impl<'a> Codegen<'a> {
         }
 
         // Propagate alias imports: `import foo.bar as baz` → add baz to str_variadic_fns
-        // and variadic_fn_info if the original is there.
+        // and variadic_fn_info if the original is there. The import_path stores the
+        // module-qualified target name (e.g. "core.write"), so look up by that.
         for entry in &self.report.symbol_table.entries {
             let sym = &entry.symbol;
-            if matches!(sym.kind, SymbolKind::Function) && sym.is_import {
-                if let Some(path) = &sym.import_path {
-                    let leaf = path.rsplit('.').next().unwrap_or(path.as_str());
-                    if leaf != entry.name {
-                        if self.str_variadic_fns.contains(leaf) {
+            if matches!(sym.kind, SymbolKind::Function) && sym.is_import
+                && let Some(path) = &sym.import_path
+                    && path != &entry.name {
+                        if self.str_variadic_fns.contains(path) {
                             self.str_variadic_fns.insert(entry.name.clone());
                         }
-                        if let Some(&fixed) = self.variadic_fn_info.get(leaf) {
+                        if let Some(&fixed) = self.variadic_fn_info.get(path) {
                             self.variadic_fn_info.insert(entry.name.clone(), fixed);
                         }
                     }
-                }
-            }
         }
 
         // Compute the set of functions reachable from main via the call graph.
@@ -254,41 +258,38 @@ impl<'a> Codegen<'a> {
             let mut queue = set.iter().cloned().collect::<Vec<_>>();
             while let Some(fn_name) = queue.pop() {
                 for edge in &self.report.dependency_graph.edges {
-                    if edge.kind == DependencyKind::Call && edge.from == fn_name {
-                        if set.insert(edge.to.clone()) {
+                    if edge.kind == DependencyKind::Call && edge.from == fn_name
+                        && set.insert(edge.to.clone()) {
                             queue.push(edge.to.clone());
                         }
-                    }
                 }
             }
             // @panic_handler: the user's function is compiled under __void_panic_handler but
             // its own body's Call edges are indexed by the original function name. Seed BFS
             // from the original name so its dependencies are included.
-            if set.contains("__void_panic_handler") {
-                if let Some(ph_name) = &user_panic_handler {
-                    if set.insert(ph_name.clone()) {
+            if set.contains("__void_panic_handler")
+                && let Some(ph_name) = &user_panic_handler
+                    && set.insert(ph_name.clone()) {
                         let mut q2 = vec![ph_name.clone()];
                         while let Some(fn_name) = q2.pop() {
                             for edge in &self.report.dependency_graph.edges {
-                                if edge.kind == DependencyKind::Call && edge.from == fn_name {
-                                    if set.insert(edge.to.clone()) {
+                                if edge.kind == DependencyKind::Call && edge.from == fn_name
+                                    && set.insert(edge.to.clone()) {
                                         q2.push(edge.to.clone());
                                     }
-                                }
                             }
                         }
                     }
-                }
-            }
             Some(set)
         } else {
             None
         };
 
         let is_live =
-            |name: &str| -> bool { reachable.as_ref().map_or(true, |r| r.contains(name)) };
+            |name: &str| -> bool { reachable.as_ref().is_none_or(|r| r.contains(name)) };
 
         // Pass 1: assign each live function a table index.
+        // Namespaced modules use `module.name`; entry files keep the bare name.
         let mut idx = 0u16;
         for item in &program.items {
             if let ItemKind::Fn {
@@ -302,17 +303,12 @@ impl<'a> Codegen<'a> {
                 }
                 // @panic_handler fn is registered under the handler slot name.
                 let index_name = if is_ph {
-                    "__void_panic_handler"
+                    "__void_panic_handler".to_string()
                 } else {
-                    name.as_str()
+                    self.resolve_item_name(item.span, name)
                 };
-                if is_live(index_name) || is_ph {
-                    self.fn_index.insert(index_name.to_string(), idx);
-                    // Also register module-qualified alias: "unix.write" alongside "write".
-                    if let Some(module) = module_name_for_span(item.span, source_files) {
-                        let qualified = format!("{}.{}", module, index_name);
-                        self.fn_index.entry(qualified).or_insert(idx);
-                    }
+                if is_live(&index_name) || is_ph {
+                    self.fn_index.insert(index_name.clone(), idx);
                     idx += 1;
                 }
             }
@@ -329,11 +325,6 @@ impl<'a> Codegen<'a> {
                         let mangled = format!("{}.{}", type_name, name);
                         if is_live(&mangled) {
                             self.fn_index.insert(mangled.clone(), idx);
-                            // Module-qualified alias for impl methods.
-                            if let Some(module) = module_name_for_span(method.span, source_files) {
-                                let qualified = format!("{}.{}", module, mangled);
-                                self.fn_index.entry(qualified).or_insert(idx);
-                            }
                             idx += 1;
                         }
                     }
@@ -360,18 +351,25 @@ impl<'a> Codegen<'a> {
             .iter()
             .filter_map(|entry| {
                 let sym = &entry.symbol;
-                if matches!(sym.kind, SymbolKind::Function) && sym.is_import {
-                    if let Some(path) = &sym.import_path {
+                if matches!(sym.kind, SymbolKind::Function) && sym.is_import
+                    && let Some(path) = &sym.import_path {
                         let leaf = path.rsplit('.').next().unwrap_or(path.as_str());
                         if leaf != entry.name {
-                            if let Some(&orig_idx) = self.fn_index.get(leaf) {
-                                if !self.fn_index.contains_key(&entry.name) {
+                            // Namespaced imports live under their module-qualified name.
+                            let lookup = {
+                                let segs: Vec<&str> = path.split('.').collect();
+                                if segs.len() >= 2 {
+                                    format!("{}.{}", segs[segs.len() - 2], segs[segs.len() - 1])
+                                } else {
+                                    leaf.to_string()
+                                }
+                            };
+                            if let Some(&orig_idx) = self.fn_index.get(&lookup)
+                                && !self.fn_index.contains_key(&entry.name) {
                                     return Some((entry.name.clone(), orig_idx));
                                 }
-                            }
                         }
                     }
-                }
                 None
             })
             .collect();
@@ -401,13 +399,13 @@ impl<'a> Codegen<'a> {
                 }
                 // @panic_handler fn is compiled under the handler slot name.
                 let compile_name = if is_ph {
-                    "__void_panic_handler"
+                    "__void_panic_handler".to_string()
                 } else {
-                    name.as_str()
+                    self.resolve_item_name(item.span, name)
                 };
-                if is_live(compile_name) || is_ph {
-                    if let Some(chunk) = self.compile_fn(
-                        compile_name,
+                if (is_live(&compile_name) || is_ph)
+                    && let Some(chunk) = self.compile_fn(
+                        &compile_name,
                         params,
                         body.as_ref().map(|b| b as &Block),
                         attributes,
@@ -416,7 +414,6 @@ impl<'a> Codegen<'a> {
                     ) {
                         chunks.push(chunk);
                     }
-                }
             }
         }
         // Compile live impl methods.
@@ -439,8 +436,8 @@ impl<'a> Codegen<'a> {
                             continue;
                         }
                         let mangled = format!("{}.{}", type_name, name);
-                        if is_live(&mangled) {
-                            if let Some(chunk) = self.compile_fn(
+                        if is_live(&mangled)
+                            && let Some(chunk) = self.compile_fn(
                                 &mangled,
                                 params,
                                 body.as_ref().map(|b| b as &Block),
@@ -450,7 +447,6 @@ impl<'a> Codegen<'a> {
                             ) {
                                 chunks.push(chunk);
                             }
-                        }
                     }
                 }
             }
@@ -835,7 +831,7 @@ impl<'a> Codegen<'a> {
                 chunks.retain(|c| {
                     self.fn_index
                         .get(&c.name)
-                        .map_or(true, |&idx| !dead_indices.contains(&idx))
+                        .is_none_or(|&idx| !dead_indices.contains(&idx))
                 });
 
                 // Remove ALL fn_index entries (primaries + aliases) for dead indices.
@@ -974,7 +970,6 @@ impl<'a> Codegen<'a> {
             &self.const_map,
             &self.type_map,
             &self.import_names,
-            &self.import_aliases,
             &self.report.struct_defs,
             &self.report.struct_sizes,
             &self.report.struct_field_offsets,
@@ -990,6 +985,7 @@ impl<'a> Codegen<'a> {
             type_subst,
             &self.report.fn_param_names,
             &self.source_files,
+            &self.report.annotated_exprs,
         );
         for p in params {
             if p.variadic {
@@ -1184,7 +1180,6 @@ struct FnCompiler<'a> {
     const_map: &'a HashMap<(usize, usize), ConstValue>,
     type_map: &'a HashMap<(usize, usize), TypeKind>,
     import_names: &'a HashSet<String>,
-    import_aliases: &'a HashMap<String, String>,
     struct_defs: &'a HashMap<String, Vec<(String, TypeKind)>>,
     struct_sizes: &'a HashMap<String, usize>,
     struct_field_offsets: &'a HashMap<String, Vec<(String, usize)>>,
@@ -1213,6 +1208,8 @@ struct FnCompiler<'a> {
     /// Ordered parameter names per function: used to resolve named arguments at call sites.
     fn_param_names: &'a HashMap<String, Vec<String>>,
     source_files: &'a [SourceFile],
+    /// Expression annotations from semantic analysis (resolved function names, types, etc.)
+    annotated_exprs: &'a [crate::semantic::ExprAnnotation],
 }
 
 #[derive(Clone)]
@@ -1231,7 +1228,6 @@ impl<'a> FnCompiler<'a> {
         const_map: &'a HashMap<(usize, usize), ConstValue>,
         type_map: &'a HashMap<(usize, usize), TypeKind>,
         import_names: &'a HashSet<String>,
-        import_aliases: &'a HashMap<String, String>,
         struct_defs: &'a HashMap<String, Vec<(String, TypeKind)>>,
         struct_sizes: &'a HashMap<String, usize>,
         struct_field_offsets: &'a HashMap<String, Vec<(String, usize)>>,
@@ -1247,6 +1243,7 @@ impl<'a> FnCompiler<'a> {
         type_subst: HashMap<String, TypeKind>,
         fn_param_names: &'a HashMap<String, Vec<String>>,
         source_files: &'a [SourceFile],
+        annotated_exprs: &'a [crate::semantic::ExprAnnotation],
     ) -> Self {
         Self {
             chunk: Chunk::with_params(name, param_count),
@@ -1257,7 +1254,6 @@ impl<'a> FnCompiler<'a> {
             const_map,
             type_map,
             import_names,
-            import_aliases,
             struct_defs,
             struct_sizes,
             struct_field_offsets,
@@ -1274,6 +1270,7 @@ impl<'a> FnCompiler<'a> {
             type_subst,
             fn_param_names,
             source_files,
+            annotated_exprs,
         }
     }
 
@@ -1297,11 +1294,10 @@ impl<'a> FnCompiler<'a> {
         }
         if let Some(names) = param_names {
             for (arg_name, arg_expr) in named {
-                if let Some(pos) = names.iter().position(|n| n == arg_name) {
-                    if pos < total {
+                if let Some(pos) = names.iter().position(|n| n == arg_name)
+                    && pos < total {
                         result[pos] = Some(arg_expr.clone());
                     }
-                }
             }
         } else {
             // Unknown function — append named args after positional.
@@ -1343,7 +1339,7 @@ impl<'a> FnCompiler<'a> {
             },
             TypeKind::Array { elem_ty, len } => TypeKind::Array {
                 elem_ty: Box::new(Spanned::new(self.resolve_type(&elem_ty.node), elem_ty.span)),
-                len: len.clone(),
+                len: *len,
             },
             TypeKind::Slice { elem_ty } => TypeKind::Slice {
                 elem_ty: Box::new(Spanned::new(self.resolve_type(&elem_ty.node), elem_ty.span)),
@@ -1356,6 +1352,14 @@ impl<'a> FnCompiler<'a> {
     /// the monomorphization substitution map.
     fn type_of_span(&self, key: (usize, usize)) -> Option<TypeKind> {
         self.type_map.get(&key).map(|ty| self.resolve_type(ty))
+    }
+
+    /// Look up the resolved function name annotation for a span, if any.
+    fn resolved_fn_for_span(&self, span: crate::parser::ast::Span) -> Option<String> {
+        self.annotated_exprs
+            .iter()
+            .find(|ann| ann.span.start == span.start && ann.span.end == span.end)
+            .and_then(|ann| ann.resolved_fn.clone())
     }
 
     fn is_float_span(&self, key: (usize, usize)) -> bool {
@@ -1421,13 +1425,11 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn variant_tag(&self, enum_name: Option<&str>, variant: &str) -> usize {
-        if let Some(ename) = enum_name {
-            if let Some(variants) = self.enum_defs.get(ename) {
-                if let Some(&tag) = variants.get(variant) {
+        if let Some(ename) = enum_name
+            && let Some(variants) = self.enum_defs.get(ename)
+                && let Some(&tag) = variants.get(variant) {
                     return tag;
                 }
-            }
-        }
         for variants in self.enum_defs.values() {
             if let Some(&tag) = variants.get(variant) {
                 return tag;
@@ -1463,15 +1465,13 @@ impl<'a> FnCompiler<'a> {
         if let Some(TypeKind::Named {
             name: struct_name, ..
         }) = self.type_of_span(key)
-        {
-            if let Some(offsets) = self.struct_field_offsets.get(&struct_name) {
+            && let Some(offsets) = self.struct_field_offsets.get(&struct_name) {
                 for (fname, offset) in offsets {
                     if fname == field_name {
                         return *offset as u8;
                     }
                 }
             }
-        }
         0
     }
 
@@ -1576,7 +1576,7 @@ impl<'a> FnCompiler<'a> {
                 variant,
                 sub_patterns,
             } => {
-                let tag = self.variant_tag(enum_name.as_deref(), &variant);
+                let tag = self.variant_tag(enum_name.as_deref(), variant);
                 let disc = self.alloc_reg();
                 self.chunk
                     .emit(rrr(Opcode::FieldLoad, disc, value_reg, ENUM_DISCRIM_OFFSET));
@@ -1922,11 +1922,7 @@ impl<'a> FnCompiler<'a> {
                             self.compile_stmt(init_stmt);
                         }
                         let loop_top = self.chunk.len() as u16;
-                        let jump_exit = if let Some(cond) = condition {
-                            Some(self.compile_condition_jump(cond, true))
-                        } else {
-                            None
-                        };
+                        let jump_exit = condition.as_ref().map(|cond| self.compile_condition_jump(cond, true));
                         self.compile_block(body);
                         if let Some(upd) = update {
                             self.compile_expr(upd);
@@ -1960,7 +1956,11 @@ impl<'a> FnCompiler<'a> {
                             let mut expr = expr;
                             // Strip explicit `&` — `for i : &arr` iterates `arr`.
                             let is_borrow = if let Some(TypeKind::Ref { inner }) = &iter_ty {
-                                if let ExprKind::Unary { op: UnaryOpKind::Ref, expr: inner_expr } = &expr.node {
+                                if let ExprKind::Unary {
+                                    op: UnaryOpKind::Ref,
+                                    expr: inner_expr,
+                                } = &expr.node
+                                {
                                     expr = inner_expr;
                                     iter_ty = Some(inner.node.clone());
                                     true
@@ -2045,26 +2045,45 @@ impl<'a> FnCompiler<'a> {
                             } else if matches!(&iter_ty, Some(TypeKind::Named { name, .. }) if name == "Array")
                             {
                                 // Array[T] dynamic array: compile as index loop using len() + get().
-                                let type_kinds: Vec<TypeKind> = if let Some(TypeKind::Named { type_args, .. }) = &iter_ty {
-                                    type_args.iter().map(|t| t.node.clone()).collect()
-                                } else {
-                                    vec![]
-                                };
+                                let type_kinds: Vec<TypeKind> =
+                                    if let Some(TypeKind::Named { type_args, .. }) = &iter_ty {
+                                        type_args.iter().map(|t| t.node.clone()).collect()
+                                    } else {
+                                        vec![]
+                                    };
                                 let len_target = if type_kinds.is_empty() {
                                     "Array.len".to_string()
                                 } else {
-                                    let mangled = crate::semantic::typecheck::mangle_monomorphized("Array.len", &type_kinds);
-                                    if self.fn_index.contains_key(&mangled) { mangled } else { "Array.len".to_string() }
+                                    let mangled = crate::semantic::typecheck::mangle_monomorphized(
+                                        "Array.len",
+                                        &type_kinds,
+                                    );
+                                    if self.fn_index.contains_key(&mangled) {
+                                        mangled
+                                    } else {
+                                        "Array.len".to_string()
+                                    }
                                 };
                                 let get_target = if type_kinds.is_empty() {
                                     "Array.get".to_string()
                                 } else {
-                                    let mangled = crate::semantic::typecheck::mangle_monomorphized("Array.get", &type_kinds);
-                                    if self.fn_index.contains_key(&mangled) { mangled } else { "Array.get".to_string() }
+                                    let mangled = crate::semantic::typecheck::mangle_monomorphized(
+                                        "Array.get",
+                                        &type_kinds,
+                                    );
+                                    if self.fn_index.contains_key(&mangled) {
+                                        mangled
+                                    } else {
+                                        "Array.get".to_string()
+                                    }
                                 };
                                 let arr_reg = self.compile_expr(expr);
                                 if !is_borrow {
-                                    self.register_drop_local("__for_iter", arr_reg, iter_ty.clone());
+                                    self.register_drop_local(
+                                        "__for_iter",
+                                        arr_reg,
+                                        iter_ty.clone(),
+                                    );
                                 }
                                 let len_reg = self.alloc_reg();
                                 self.emit_call_by_name(&len_target, &[arr_reg], len_reg);
@@ -2099,7 +2118,11 @@ impl<'a> FnCompiler<'a> {
                                 // Non-slice iterator: call has_next() / next() protocol.
                                 let iter_reg = self.compile_expr(expr);
                                 if !is_borrow {
-                                    self.register_drop_local("__for_iter", iter_reg, iter_ty.clone());
+                                    self.register_drop_local(
+                                        "__for_iter",
+                                        iter_reg,
+                                        iter_ty.clone(),
+                                    );
                                 }
                                 let iter_key = (expr.span.start, expr.span.end);
                                 let iter_ty = self.type_of_span(iter_key);
@@ -2325,13 +2348,11 @@ impl<'a> FnCompiler<'a> {
         if self.regs.contains_key(&base) {
             return None;
         }
-        if !self.import_names.contains(&base) {
-            return None;
+        if self.import_names.contains(&base) {
+            Some(base)
+        } else {
+            None
         }
-        if let Some(leaf) = self.import_aliases.get(&base) {
-            return Some(leaf.clone());
-        }
-        Some(base)
     }
 
     // ── Expression ───────────────────────────────────────────────────────────
@@ -2453,20 +2474,23 @@ impl<'a> FnCompiler<'a> {
         // expression, emit it directly instead of computing it at runtime.
         // Skip Ident (value already in a register) and Literal (emits directly below).
         let key = (expr.span.start, expr.span.end);
-        if !matches!(expr.node, ExprKind::Ident(_) | ExprKind::Literal(_)) {
-            if let Some(cv) = self.const_map.get(&key).cloned() {
+        if !matches!(expr.node, ExprKind::Ident(_) | ExprKind::Literal(_))
+            && let Some(cv) = self.const_map.get(&key).cloned() {
                 return self.emit_const_value(cv);
             }
-        }
 
         match &expr.node {
             ExprKind::Literal(lit) => self.emit_literal(lit),
 
             ExprKind::Ident(name) => {
+                // Use sema-resolved name when available (handles namespacing).
+                let resolved_name = self
+                    .resolved_fn_for_span(expr.span)
+                    .unwrap_or_else(|| name.clone());
                 // Zero-arg enum variant used as a value (e.g. `None`).
                 // Only if not bound as a local variable.
-                if !self.regs.contains_key(name.as_str()) {
-                    if let Some(tag) = self.enum_ctor_tag(name) {
+                if !self.regs.contains_key(resolved_name.as_str()) {
+                    if let Some(tag) = self.enum_ctor_tag(&resolved_name) {
                         let dst = self.alloc_reg();
                         let ptr = self.alloc_reg();
                         self.chunk
@@ -2480,7 +2504,7 @@ impl<'a> FnCompiler<'a> {
                     }
                     // Function name used as a value → wrap in forwarder + env struct.
                     // All fn-ptr values use the env struct representation for uniform dispatch.
-                    if let Some(&fn_idx) = self.fn_index.get(name.as_str()) {
+                    if let Some(&fn_idx) = self.fn_index.get(resolved_name.as_str()) {
                         let user_param_count =
                             if let Some(TypeKind::Fn { params, .. }) = self.type_map.get(&key) {
                                 params.len()
@@ -2488,7 +2512,7 @@ impl<'a> FnCompiler<'a> {
                                 0
                             };
                         // Forwarder chunk: (env_ptr_ignored, user_args...) → call named_fn(user_args...)
-                        let fwd_name = format!("__void_fwd_{}", name);
+                        let fwd_name = format!("__void_fwd_{}", resolved_name);
                         let mut fwd_chunk = Chunk::with_params(&fwd_name, user_param_count + 1);
                         for i in 0..user_param_count {
                             fwd_chunk.emit(rrr(Opcode::CallArg, (i + 1) as u8, 0, 0));
@@ -2517,7 +2541,12 @@ impl<'a> FnCompiler<'a> {
 
             ExprKind::Group(inner) => self.compile_expr(inner),
 
-            ExprKind::Cast { expr: inner, .. } => self.compile_expr(inner),
+            ExprKind::Cast { expr: inner, ty: _ } => {
+                // VBC uses 64-bit slots for all values. Integer size changes and
+                // float size changes are no-ops at this level; the encoder and ABI
+                // handle the actual width. The typechecker has already validated.
+                self.compile_expr(inner)
+            }
 
             ExprKind::Unary { op, expr: inner } => match op {
                 UnaryOpKind::Ref => {
@@ -2664,16 +2693,24 @@ impl<'a> FnCompiler<'a> {
                         // Named type with Index trait → dispatch to Type.set if available.
                         if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array")
                         {
-                            let type_kinds: Vec<TypeKind> = if let Some(TypeKind::Named { type_args, .. }) = &obj_ty {
-                                type_args.iter().map(|t| t.node.clone()).collect()
-                            } else {
-                                vec![]
-                            };
+                            let type_kinds: Vec<TypeKind> =
+                                if let Some(TypeKind::Named { type_args, .. }) = &obj_ty {
+                                    type_args.iter().map(|t| t.node.clone()).collect()
+                                } else {
+                                    vec![]
+                                };
                             let set_target = if type_kinds.is_empty() {
                                 "Array.set".to_string()
                             } else {
-                                let mangled = crate::semantic::typecheck::mangle_monomorphized("Array.set", &type_kinds);
-                                if self.fn_index.contains_key(&mangled) { mangled } else { "Array.set".to_string() }
+                                let mangled = crate::semantic::typecheck::mangle_monomorphized(
+                                    "Array.set",
+                                    &type_kinds,
+                                );
+                                if self.fn_index.contains_key(&mangled) {
+                                    mangled
+                                } else {
+                                    "Array.set".to_string()
+                                }
                             };
                             let obj_reg = self.compile_expr(object);
                             let idx_reg = self.compile_expr(index);
@@ -2695,13 +2732,12 @@ impl<'a> FnCompiler<'a> {
                         } else {
                             // Fixed-size array: store at base register or computed address.
                             let base = self.compile_expr(object);
-                            if let ExprKind::Literal(Literal::Int(n)) = &index.node {
-                                if *n >= 0 {
+                            if let ExprKind::Literal(Literal::Int(n)) = &index.node
+                                && *n >= 0 {
                                     let elem_reg = base + *n as u8;
                                     self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
                                     return src;
                                 }
-                            }
                             let idx_reg = self.compile_expr(index);
                             let ptr = self.alloc_reg();
                             self.chunk.emit(mem_lea(base, ptr, 0));
@@ -2786,16 +2822,23 @@ impl<'a> FnCompiler<'a> {
             } => {
                 let dst = self.alloc_reg();
                 if let ExprKind::Ident(name) = &callee.node {
+                    // Use the sema-resolved name when available (handles namespacing).
+                    let call_name = self
+                        .resolved_fn_for_span(expr.span)
+                        .unwrap_or_else(|| name.clone());
                     // Merge positional + named args into correct param order if needed.
                     let merged_owned: Vec<Expr>;
                     let args: &[Expr] = if named_args.is_empty() {
                         args
                     } else {
-                        merged_owned = self.merge_named_args(name, args, named_args);
+                        merged_owned = self.merge_named_args(&call_name, args, named_args);
                         &merged_owned
                     };
                     // Panic calls: inject file/line constants from the call site span.
-                    if name == "panic" {
+                    // Only use the builtin panic path when the resolved name is the bare
+                    // builtin "panic"; a user-defined `fn panic` in a module keeps the
+                    // resolved module-qualified name and falls through to normal dispatch.
+                    if call_name.rsplit('.').next() == Some("panic") {
                         let mut call_regs: Vec<u8> = Vec::new();
                         // Compile msg arg (first user-provided fixed arg).
                         if !args.is_empty() {
@@ -2854,12 +2897,14 @@ impl<'a> FnCompiler<'a> {
                         };
                         call_regs.push(r_ptr);
                         call_regs.push(r_len);
-                        self.emit_call_by_name(name, &call_regs, dst);
+                        self.emit_call_by_name(&call_name, &call_regs, dst);
                         return dst;
                     }
                     // Monomorphized generic function: resolve to mangled name.
-                    if !type_args.is_empty() {
-                        if let Some(mono_name) = self.resolve_monomorphized_name(name, type_args) {
+                    if !type_args.is_empty()
+                        && let Some(mono_name) =
+                            self.resolve_monomorphized_name(&call_name, type_args)
+                        {
                             let arg_regs: Vec<u8> = args
                                 .iter()
                                 .map(|a| {
@@ -2870,9 +2915,8 @@ impl<'a> FnCompiler<'a> {
                             self.emit_call_by_name(&mono_name, &arg_regs, dst);
                             return dst;
                         }
-                    }
                     // str_variadic dispatch: auto-coerce args to str at call sites.
-                    if self.str_variadic_fns.contains(name.as_str()) && args.len() > 1 {
+                    if self.str_variadic_fns.contains(call_name.as_str()) && args.len() > 1 {
                         // Extract format specs from the template literal (compile-time).
                         let specs = if let ExprKind::Literal(Literal::String(s)) = &args[0].node {
                             extract_format_specs(s)
@@ -2927,7 +2971,7 @@ impl<'a> FnCompiler<'a> {
                         self.emit_call_by_name("format", &[template_reg, r_ptr, r_len], fmt_dst);
                         // Call the actual @format function with the single formatted string.
                         let mut call_args = vec![fmt_dst];
-                        if self.variadic_fn_info.contains_key(name.as_str()) {
+                        if self.variadic_fn_info.contains_key(call_name.as_str()) {
                             let rp = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovI, rp, 0));
                             let rl = self.alloc_reg();
@@ -2935,10 +2979,10 @@ impl<'a> FnCompiler<'a> {
                             call_args.push(rp);
                             call_args.push(rl);
                         }
-                        self.emit_call_by_name(name, &call_args, dst);
+                        self.emit_call_by_name(&call_name, &call_args, dst);
                         return dst;
                     }
-                    if let Some(&fixed_count) = self.variadic_fn_info.get(name.as_str()) {
+                    if let Some(&fixed_count) = self.variadic_fn_info.get(call_name.as_str()) {
                         // Variadic call: compile fixed args, pack variadic args into
                         // consecutive stack slots, pass (ptr, len) as hidden trailing args.
                         let fixed_regs: Vec<u8> = args[..fixed_count.min(args.len())]
@@ -2985,8 +3029,8 @@ impl<'a> FnCompiler<'a> {
                         let mut all_regs = fixed_regs;
                         all_regs.push(r_ptr);
                         all_regs.push(r_len);
-                        self.emit_call_by_name(name, &all_regs, dst);
-                    } else if let Some(tag) = self.enum_ctor_tag(name) {
+                        self.emit_call_by_name(&call_name, &all_regs, dst);
+                    } else if let Some(tag) = self.enum_ctor_tag(&call_name) {
                         // Enum variant constructor: allocate heap struct, store discriminant + payloads.
                         let payload_regs: Vec<u8> = args
                             .iter()
@@ -3013,7 +3057,7 @@ impl<'a> FnCompiler<'a> {
                             self.chunk.emit(rrr(Opcode::Mov, dst, ptr, 0));
                         }
                         return dst;
-                    } else if self.regs.contains_key(name.as_str()) {
+                    } else if self.regs.contains_key(call_name.as_str()) {
                         // Local variable — fn pointer or closure env pointer.
                         let fn_reg = self.compile_expr(callee);
                         let arg_regs: Vec<u8> = args
@@ -3032,7 +3076,7 @@ impl<'a> FnCompiler<'a> {
                                 self.compile_expr(a)
                             })
                             .collect();
-                        self.emit_call_by_name(name, &arg_regs, dst);
+                        self.emit_call_by_name(&call_name, &arg_regs, dst);
                     }
                 } else {
                     // Indirect call: callee is an expression (variable, closure, etc.)
@@ -3066,17 +3110,14 @@ impl<'a> FnCompiler<'a> {
                 };
                 if let Some(module_base) = self.module_import_base(object) {
                     let dst = self.alloc_reg();
-                    // Prefer module-qualified name ("unix.write") for disambiguation;
-                    // fall back to bare name for backward compat with single-module imports.
-                    let qualified = format!("{}.{}", module_base, method);
-                    let call_target = if self.fn_index.contains_key(&qualified) {
-                        qualified
-                    } else {
-                        method.to_string()
-                    };
-                    let is_fmt_fn = self.str_variadic_fns.contains(method.as_str());
+                    // Use sema-resolved name when available; otherwise form the target from
+                    // the module chain. The resolved name already accounts for namespacing.
+                    let call_target = self
+                        .resolved_fn_for_span(expr.span)
+                        .unwrap_or_else(|| format!("{}.{}", module_base, method));
+                    let is_fmt_fn = self.str_variadic_fns.contains(call_target.as_str());
                     let is_variadic_intrinsic =
-                        self.variadic_intrinsic_fns.contains(method.as_str());
+                        self.variadic_intrinsic_fns.contains(call_target.as_str());
                     if (is_fmt_fn || is_variadic_intrinsic) && args.len() > 1 {
                         // Extract format specs if this is an @format call.
                         let specs = if let ExprKind::Literal(Literal::String(s)) = &args[0].node {
@@ -3161,9 +3202,9 @@ impl<'a> FnCompiler<'a> {
                 if let ExprKind::Ident(type_name) = &object.node {
                     let is_enum_ns = self.enum_defs.contains_key(type_name.as_str())
                         && !self.regs.contains_key(type_name.as_str());
-                    if is_enum_ns {
-                        if let Some(variants) = self.enum_defs.get(type_name.as_str()) {
-                            if let Some(&tag) = variants.get(method.as_str()) {
+                    if is_enum_ns
+                        && let Some(variants) = self.enum_defs.get(type_name.as_str())
+                            && let Some(&tag) = variants.get(method.as_str()) {
                                 let payload_regs: Vec<u8> = args
                                     .iter()
                                     .map(|a| {
@@ -3195,8 +3236,6 @@ impl<'a> FnCompiler<'a> {
                                 }
                                 return dst;
                             }
-                        }
-                    }
                 }
 
                 // Static type-namespace call: `String.from(...)`, `Box.new(...)`, etc.
@@ -3216,47 +3255,6 @@ impl<'a> FnCompiler<'a> {
                             }
                             _ => vec![],
                         };
-                        if method == "from" {
-                            if let Some(arg) = args.first() {
-                                if let ExprKind::ArrayLit(elems) = &arg.node {
-                                    let new_base = format!("{}.new", type_name);
-                                    let push_base = format!("{}.push", type_name);
-                                    let new_target = if type_kinds.is_empty() {
-                                        new_base
-                                    } else {
-                                        let mono = crate::semantic::typecheck::mangle_monomorphized(
-                                            &new_base,
-                                            &type_kinds,
-                                        );
-                                        if self.fn_index.contains_key(&mono) {
-                                            mono
-                                        } else {
-                                            new_base
-                                        }
-                                    };
-                                    let push_target = if type_kinds.is_empty() {
-                                        push_base
-                                    } else {
-                                        let mono = crate::semantic::typecheck::mangle_monomorphized(
-                                            &push_base,
-                                            &type_kinds,
-                                        );
-                                        if self.fn_index.contains_key(&mono) {
-                                            mono
-                                        } else {
-                                            push_base
-                                        }
-                                    };
-                                    let dst = self.alloc_reg();
-                                    self.emit_call_by_name(&new_target, &[], dst);
-                                    for elem in elems {
-                                        let val = self.compile_expr(elem);
-                                        self.emit_call_by_name(&push_target, &[dst, val], 0);
-                                    }
-                                    return dst;
-                                }
-                            }
-                        }
                         let call_target = if !type_kinds.is_empty() {
                             let mono = crate::semantic::typecheck::mangle_monomorphized(
                                 &base_mangled,
@@ -3299,57 +3297,6 @@ impl<'a> FnCompiler<'a> {
                     type_args: receiver_type_args,
                 }) = receiver_ty
                 {
-                    // Special case: Type.from([e0, e1, ...]) → Type.new() + Type.push each element
-                    if method == "from" {
-                        if let Some(arg) = args.first() {
-                            if let ExprKind::ArrayLit(elems) = &arg.node {
-                                let new_base = format!("{}.new", type_name);
-                                let push_base = format!("{}.push", type_name);
-                                let new_target = if receiver_type_args.is_empty() {
-                                    new_base
-                                } else {
-                                    let type_kinds: Vec<TypeKind> = receiver_type_args
-                                        .iter()
-                                        .map(|t| t.node.clone())
-                                        .collect();
-                                    let mono = crate::semantic::typecheck::mangle_monomorphized(
-                                        &new_base,
-                                        &type_kinds,
-                                    );
-                                    if self.fn_index.contains_key(&mono) {
-                                        mono
-                                    } else {
-                                        new_base
-                                    }
-                                };
-                                let push_target = if receiver_type_args.is_empty() {
-                                    push_base
-                                } else {
-                                    let type_kinds: Vec<TypeKind> = receiver_type_args
-                                        .iter()
-                                        .map(|t| t.node.clone())
-                                        .collect();
-                                    let mono = crate::semantic::typecheck::mangle_monomorphized(
-                                        &push_base,
-                                        &type_kinds,
-                                    );
-                                    if self.fn_index.contains_key(&mono) {
-                                        mono
-                                    } else {
-                                        push_base
-                                    }
-                                };
-                                let dst = self.alloc_reg();
-                                self.emit_call_by_name(&new_target, &[], dst);
-                                for elem in elems {
-                                    let val = self.compile_expr(elem);
-                                    self.emit_call_by_name(&push_target, &[dst, val], 0);
-                                }
-                                return dst;
-                            }
-                        }
-                    }
-
                     // @format instance methods: pre-format args, call method with single string.
                     {
                         let mangled_check = format!("{}.{}", type_name, method);
@@ -3401,18 +3348,17 @@ impl<'a> FnCompiler<'a> {
                         let mut all_args = vec![obj];
                         all_args.extend_from_slice(&arg_regs);
                         self.emit_call_by_name(&call_target, &all_args, dst);
-                        if method == "free" {
-                            if let ExprKind::Ident(name) = &object.node {
+                        if method == "free"
+                            && let ExprKind::Ident(name) = &object.node {
                                 self.deactivate_drop_local(name);
                             }
-                        }
                         return dst;
                     }
                 }
 
                 // Dynamic dispatch: dyn Trait receiver → vtable lookup + CallReg.
-                if let Some(TypeKind::Dyn { trait_name }) = self.type_of_span(key) {
-                    if let Some(slots) = self.trait_method_slots.get(&trait_name) {
+                if let Some(TypeKind::Dyn { trait_name }) = self.type_of_span(key)
+                    && let Some(slots) = self.trait_method_slots.get(&trait_name) {
                         let slot_idx =
                             slots.iter().position(|m: &String| m == method).unwrap_or(0) as u8;
                         // Load vtable ptr from fat_ptr[8], then fn ptr from vtable[slot*8].
@@ -3436,7 +3382,6 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.emit(rrr(Opcode::CallReg, dst, fn_ptr, 0));
                         return dst;
                     }
-                }
 
                 // Built-in methods for primitive and known types.
                 let resolved_receiver = self.type_of_span(key);
@@ -3519,11 +3464,10 @@ impl<'a> FnCompiler<'a> {
                         // Find a trait implemented by this type that defines the method.
                         let traits = self.trait_impls.get(type_name.as_str())?;
                         for trait_name in traits {
-                            if let Some(slots) = self.trait_method_slots.get(trait_name) {
-                                if let Some(idx) = slots.iter().position(|m| m == method) {
+                            if let Some(slots) = self.trait_method_slots.get(trait_name)
+                                && let Some(idx) = slots.iter().position(|m| m == method) {
                                     return Some(idx as u8);
                                 }
-                            }
                         }
                         None
                     })
@@ -3547,13 +3491,48 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::Field { object, name } => {
+                // Module namespace field used as a function value: `bar.foo`.
+                // Sema already resolved the target name; emit a fn-pointer value.
+                if let Some(resolved) = self.resolved_fn_for_span(expr.span) {
+                    let key = (expr.span.start, expr.span.end);
+                    if let Some(&fn_idx) = self.fn_index.get(resolved.as_str()) {
+                        let user_param_count =
+                            if let Some(TypeKind::Fn { params, .. }) = self.type_map.get(&key) {
+                                params.len()
+                            } else {
+                                0
+                            };
+                        let fwd_name = format!("__void_fwd_{}", resolved);
+                        let mut fwd_chunk = Chunk::with_params(&fwd_name, user_param_count + 1);
+                        for i in 0..user_param_count {
+                            fwd_chunk.emit(rrr(Opcode::CallArg, (i + 1) as u8, 0, 0));
+                        }
+                        fwd_chunk.emit(ri16(Opcode::CallIdx, 0, fn_idx));
+                        fwd_chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+                        self.output_chunks.push(fwd_chunk);
+                        let env_ptr = self.alloc_reg();
+                        self.chunk.emit(ri16(Opcode::New, env_ptr, 16));
+                        let fn_addr_reg = self.alloc_reg();
+                        let cidx = self.chunk.add_constant(ConstPoolEntry::FnAddr(fwd_name));
+                        self.chunk.emit(ri16(Opcode::MovConst, fn_addr_reg, cidx));
+                        self.chunk.emit(rrr(
+                            Opcode::FieldStore,
+                            fn_addr_reg,
+                            env_ptr,
+                            ENUM_DISCRIM_OFFSET,
+                        ));
+                        self.closure_env_regs.insert(env_ptr);
+                        return env_ptr;
+                    }
+                }
+
                 // Enum namespace: `Option.None`, `Result.Err(...)` zero-arg variants.
                 if let ExprKind::Ident(type_name) = &object.node {
                     let is_enum_ns = self.enum_defs.contains_key(type_name.as_str())
                         && !self.regs.contains_key(type_name.as_str());
-                    if is_enum_ns {
-                        if let Some(variants) = self.enum_defs.get(type_name.as_str()) {
-                            if let Some(&tag) = variants.get(name.as_str()) {
+                    if is_enum_ns
+                        && let Some(variants) = self.enum_defs.get(type_name.as_str())
+                            && let Some(&tag) = variants.get(name.as_str()) {
                                 let ptr = self.alloc_reg();
                                 self.chunk
                                     .emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(0)));
@@ -3571,8 +3550,6 @@ impl<'a> FnCompiler<'a> {
                                 }
                                 return dst;
                             }
-                        }
-                    }
                 }
                 let byte_offset = self.field_offset(object, name);
                 let obj = self.compile_expr(object);
@@ -3643,11 +3620,10 @@ impl<'a> FnCompiler<'a> {
                 }
                 // Fallback: raw static-array register arithmetic (single index only).
                 let base = self.compile_expr(object);
-                if let ExprKind::Literal(Literal::Int(n)) = &index.node {
-                    if *n >= 0 {
+                if let ExprKind::Literal(Literal::Int(n)) = &index.node
+                    && *n >= 0 {
                         return base + *n as u8;
                     }
-                }
                 // Dynamic index: Lea + scale + Sub + Load
                 let idx = self.compile_expr(index);
                 let ptr = self.alloc_reg();
@@ -3833,7 +3809,6 @@ impl<'a> FnCompiler<'a> {
                     self.const_map,
                     self.type_map,
                     self.import_names,
-                    self.import_aliases,
                     self.struct_defs,
                     self.struct_sizes,
                     self.struct_field_offsets,
@@ -3849,6 +3824,7 @@ impl<'a> FnCompiler<'a> {
                     self.type_subst.clone(),
                     self.fn_param_names,
                     self.source_files,
+                    self.annotated_exprs,
                 );
                 if captures.is_empty() {
                     // No-capture: r0 = env_ptr (ignored), user params at r1+.
@@ -3957,7 +3933,7 @@ impl<'a> FnCompiler<'a> {
     fn emit_const_value(&mut self, cv: ConstValue) -> u8 {
         let dst = self.alloc_reg();
         match cv {
-            ConstValue::Int(n) if n >= 0 && n <= 0xFFFF => {
+            ConstValue::Int(n) if (0..=0xFFFF).contains(&n) => {
                 self.chunk.emit(ri16(Opcode::MovI, dst, n as u16));
             }
             ConstValue::Int(n) => {
@@ -4244,11 +4220,10 @@ fn cfg_condition_matches(attr: &crate::parser::ast::Attribute) -> bool {
 /// Check whether an item's @cfg attributes (if any) evaluate to true on this host.
 fn item_cfg_active(attributes: &[crate::parser::ast::Attribute]) -> bool {
     for attr in attributes {
-        if attr.name == "cfg" {
-            if !cfg_condition_matches(attr) {
+        if attr.name == "cfg"
+            && !cfg_condition_matches(attr) {
                 return false;
             }
-        }
     }
     true
 }
@@ -4265,11 +4240,10 @@ fn collect_destructor_roots(program: &Program) -> HashSet<String> {
             } => {
                 let type_name = type_kind_base_name(&for_ty.node);
                 for method in methods {
-                    if let ItemKind::Fn { name, .. } = &method.node {
-                        if name == "free" {
+                    if let ItemKind::Fn { name, .. } = &method.node
+                        && name == "free" {
                             roots.insert(format!("{}.{}", type_name, name));
                         }
-                    }
                 }
             }
             _ => {}

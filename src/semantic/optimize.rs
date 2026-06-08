@@ -196,8 +196,8 @@ impl Analyzer {
                 .dependency_edges
                 .iter()
                 .any(|(k, _, to)| *k == DependencyKind::Call && to == fn_name);
-            if is_called_by_someone {
-                if let Some(sym) = global_scope.get(fn_name) {
+            if is_called_by_someone
+                && let Some(sym) = global_scope.get(fn_name) {
                     self.push_warning_with_suggestion(
                         sym.span,
                         "W07",
@@ -208,7 +208,6 @@ impl Analyzer {
                         format!("remove '{}' or make it reachable from main", fn_name),
                     );
                 }
-            }
             self.unreachable_functions.insert(fn_name.clone());
         }
     }
@@ -220,11 +219,10 @@ impl Analyzer {
                 ItemKind::Fn { attributes, .. } => Some(attributes),
                 _ => None,
             };
-            if let Some(attrs) = attrs {
-                if !super::item_should_include(attrs) {
+            if let Some(attrs) = attrs
+                && !super::item_should_include(attrs) {
                     continue;
                 }
-            }
             match &item.node {
                 ItemKind::Fn {
                     name,
@@ -449,8 +447,8 @@ impl Analyzer {
                             continue;
                         }
 
-                        if !arm.has_guard {
-                            if !covered.insert(variant.clone()) {
+                        if !arm.has_guard
+                            && !covered.insert(variant.clone()) {
                                 self.push_warning(
                                     arm.span,
                                     "W05",
@@ -460,7 +458,6 @@ impl Analyzer {
                                     ),
                                 );
                             }
-                        }
                     }
                 }
             }

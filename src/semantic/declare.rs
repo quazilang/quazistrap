@@ -19,11 +19,10 @@ impl Analyzer {
             | ItemKind::Enum { attributes, .. } => Some(attributes),
             _ => None,
         };
-        if let Some(attrs) = attrs {
-            if !super::item_should_include(attrs) {
+        if let Some(attrs) = attrs
+            && !super::item_should_include(attrs) {
                 return;
             }
-        }
         match &item.node {
             ItemKind::Fn {
                 name,
@@ -78,8 +77,17 @@ impl Analyzer {
                 let is_syscall_or_api = attr_names
                     .iter()
                     .any(|a| matches!(a.as_str(), "syscall" | "api"));
+                // Internal runtime symbols (e.g. __void_panic_handler) keep their bare
+                // names so the runtime stub can find them.
+                let register_name = if name.starts_with("__void_") {
+                    name.clone()
+                } else if let Some(module) = self.module_path_for_span(item.span) {
+                    format!("{}.{}", module, name)
+                } else {
+                    name.clone()
+                };
                 self.fn_param_names.insert(
-                    name.clone(),
+                    register_name.clone(),
                     params
                         .iter()
                         .filter(|p| p.name != "self")
@@ -87,7 +95,7 @@ impl Analyzer {
                         .collect(),
                 );
                 self.declare(
-                    name.clone(),
+                    register_name,
                     Symbol {
                         kind: SymbolKind::Function,
                         span: item.span,
@@ -440,27 +448,59 @@ impl Analyzer {
     pub(super) fn declare_import_item(&mut self, import_path: &ImportPath, span: Span) {
         match &import_path.items {
             ImportItems::Single(name) => {
-                let full = Self::build_import_path(&import_path.path, name);
-                self.declare_import_binding(name.clone(), full, span);
+                let full = build_import_path(&import_path.path, name);
+                let mangled = mangle_import_path(&full);
+                self.declare_import_binding(name.clone(), full, mangled, span);
             }
             ImportItems::Aliased(name, alias) => {
-                let full = Self::build_import_path(&import_path.path, name);
-                self.declare_import_binding(alias.clone(), full, span);
+                let full = build_import_path(&import_path.path, name);
+                let mangled = mangle_import_path(&full);
+                self.declare_import_binding(alias.clone(), full, mangled, span);
             }
             ImportItems::Multiple(names) => {
                 for name in names {
-                    let full = Self::build_import_path(&import_path.path, name);
-                    self.declare_import_binding(name.clone(), full, span);
+                    let full = build_import_path(&import_path.path, name);
+                    let mangled = mangle_import_path(&full);
+                    self.declare_import_binding(name.clone(), full, mangled, span);
                 }
             }
             ImportItems::All => {
-                // Wildcard: allow all library functions to be called unqualified.
-                // Value = "" to suppress conflict detection for wildcard entries.
+                // Wildcard: bring library functions into scope as bare aliases when
+                // there is no name collision. Each alias points to the module-qualified
+                // target so codegen uses the real mangled name.
                 let all: Vec<String> = self.library_fn_names.iter().cloned().collect();
-                for name in all {
-                    self.explicitly_imported_fns
-                        .entry(name)
-                        .or_insert_with(String::new);
+                for mangled in all {
+                    let leaf = mangled.rsplit('.').next().unwrap_or(&mangled).to_string();
+                    if self.resolve_symbol(&leaf).is_some() {
+                        continue;
+                    }
+                    if let Some(original) = self.resolve_symbol(&mangled) {
+                        if !matches!(original.kind, SymbolKind::Function) {
+                            continue;
+                        }
+                        self.explicitly_imported_fns
+                            .entry(leaf.clone())
+                            .or_default();
+                        self.declare(
+                            leaf,
+                            Symbol {
+                                kind: SymbolKind::Function,
+                                ty: original.ty,
+                                span,
+                                params: original.params.clone(),
+                                used: false,
+                                initialized: true,
+                                is_import: true,
+                                import_path: Some(mangled),
+                                const_value: None,
+                                variadic: original.variadic,
+                                attributes: original.attributes.clone(),
+                                public: false,
+                                unsafe_fn: original.unsafe_fn,
+                                generic_params: original.generic_params.clone(),
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -470,108 +510,218 @@ impl Analyzer {
         &mut self,
         local_name: String,
         full_path: String,
+        mangled: Option<String>,
         span: Span,
     ) {
         self.add_dependency_edge(DependencyKind::Import, "__program__", &full_path);
-        // If the name is already declared as a function (loaded from a library file),
-        // this is an explicit by-name import — record it and skip the redundant binding.
-        if let Some(existing) = self.resolve_symbol(&local_name) {
-            if matches!(existing.kind, SymbolKind::TypeName) {
-                // TypeName already in scope (e.g. from a library file loaded via mod.void
-                // pub-import). Re-importing is a no-op — mark the existing symbol used so
-                // it doesn't trigger an unused-import warning.
-                return;
-            }
-            if matches!(existing.kind, SymbolKind::Function) {
-                if self.library_fn_names.contains(&local_name) {
-                    if !existing.public {
+
+        // Short-circuit: local_name already names a library function in scope
+        // (LSP pre-load or wildcard alias). Record the explicit import and return.
+        if let Some(existing) = self.resolve_symbol(&local_name)
+            && matches!(existing.kind, SymbolKind::Function)
+                && (existing.is_import || self.library_fn_names.contains(&local_name))
+            {
+                if !existing.public && !existing.is_import {
+                    self.push_error(
+                        span,
+                        "S04",
+                        format!("'{}' is private and cannot be imported", local_name),
+                    );
+                    return;
+                }
+                if let Some(existing_path) = self.explicitly_imported_fns.get(&local_name)
+                    && !existing_path.is_empty() && existing_path != &full_path {
                         self.push_error(
                             span,
-                            "S04",
-                            format!("'{}' is private and cannot be imported", local_name),
+                            "S15",
+                            format!(
+                                "ambiguous import '{}': already imported from '{}'; \
+                                 use 'import {} as ...' to alias",
+                                local_name, existing_path, full_path
+                            ),
                         );
                         return;
                     }
-                    // Conflict: same short name imported from two different modules.
-                    if let Some(existing_path) = self.explicitly_imported_fns.get(&local_name) {
-                        if !existing_path.is_empty() && existing_path != &full_path {
-                            self.push_error(
-                                span,
-                                "S15",
-                                format!(
-                                    "ambiguous import '{}': already imported from '{}'; \
-                                     use 'import {} as ...' to alias",
-                                    local_name, existing_path, full_path
-                                ),
-                            );
-                            return;
-                        }
-                    }
-                    self.explicitly_imported_fns.insert(local_name, full_path);
-                }
-                return;
-            }
-        }
-        // Alias import: the alias name didn't exist in scope. Check if full_path's
-        // leaf resolves to a library function and register the alias as Function.
-        let leaf = full_path
-            .rsplit('.')
-            .next()
-            .unwrap_or(full_path.as_str())
-            .to_string();
-        if let Some(original) = self.resolve_symbol(&leaf) {
-            if matches!(original.kind, SymbolKind::Function) {
                 self.explicitly_imported_fns
                     .insert(local_name.clone(), full_path.clone());
-                self.declare(
-                    local_name,
-                    Symbol {
-                        kind: SymbolKind::Function,
-                        ty: original.ty,
-                        span,
-                        params: original.params,
-                        used: false,
-                        initialized: true,
-                        is_import: true,
-                        import_path: Some(full_path),
-                        const_value: None,
-                        variadic: original.variadic,
-                        attributes: original.attributes,
-                        public: false,
-                        unsafe_fn: original.unsafe_fn,
-                        generic_params: original.generic_params,
-                    },
+                return;
+            }
+
+        // Module-namespace import (e.g. `import bar`, `import std.core`): no mangled
+        // item target; just register the local name as a module namespace symbol.
+        let Some(mangled_target) = mangled else {
+            self.declare(
+                local_name,
+                Symbol {
+                    kind: SymbolKind::Variable { mutable: false },
+                    ty: None,
+                    span,
+                    params: vec![],
+                    used: false,
+                    initialized: true,
+                    is_import: true,
+                    import_path: Some(full_path),
+                    const_value: None,
+                    variadic: false,
+                    attributes: Vec::new(),
+                    public: false,
+                    unsafe_fn: false,
+                    generic_params: vec![],
+                },
+            );
+            return;
+        };
+
+        // Look up the actual mangled function symbol in the global table.
+        // If namespacing is not in effect (e.g. LSP mode), fall back to the bare leaf name.
+        let leaf = mangled_target
+            .rsplit('.')
+            .next()
+            .unwrap_or(&mangled_target)
+            .to_string();
+        let original = self
+            .resolve_symbol(&mangled_target)
+            .or_else(|| self.resolve_symbol(&leaf));
+        let Some(original) = original else {
+            // Target doesn't exist yet — possibly a type/constant import or the file
+            // hasn't been loaded. Fall back to a namespace variable.
+            self.declare(
+                local_name,
+                Symbol {
+                    kind: SymbolKind::Variable { mutable: false },
+                    ty: None,
+                    span,
+                    params: vec![],
+                    used: false,
+                    initialized: true,
+                    is_import: true,
+                    import_path: Some(full_path),
+                    const_value: None,
+                    variadic: false,
+                    attributes: Vec::new(),
+                    public: false,
+                    unsafe_fn: false,
+                    generic_params: vec![],
+                },
+            );
+            return;
+        };
+
+        if !matches!(original.kind, SymbolKind::Function) {
+            // Type re-import is a no-op (e.g. `pub import array.Array` when
+            // `struct Array` is already declared in the same merged source).
+            if matches!(original.kind, SymbolKind::TypeName) && local_name == leaf {
+                return;
+            }
+            // Not a function import — treat as namespace/variable reference.
+            self.declare(
+                local_name,
+                Symbol {
+                    kind: SymbolKind::Variable { mutable: false },
+                    ty: None,
+                    span,
+                    params: vec![],
+                    used: false,
+                    initialized: true,
+                    is_import: true,
+                    import_path: Some(full_path),
+                    const_value: None,
+                    variadic: false,
+                    attributes: Vec::new(),
+                    public: false,
+                    unsafe_fn: false,
+                    generic_params: vec![],
+                },
+            );
+            return;
+        }
+
+        if !original.public {
+            self.push_error(
+                span,
+                "S04",
+                format!(
+                    "'{}' is private and cannot be imported",
+                    mangled_target.rsplit('.').next().unwrap_or(&mangled_target)
+                ),
+            );
+            return;
+        }
+
+        // Conflict: a function with the same local name already exists in this module.
+        if let Some(existing) = self.resolve_symbol(&local_name) {
+            if matches!(existing.kind, SymbolKind::Function) && !existing.is_import {
+                self.push_error(
+                    span,
+                    "S15",
+                    format!(
+                        "import '{}' conflicts with existing function definition; \
+                         use 'import ... as ...' to alias",
+                        local_name
+                    ),
                 );
                 return;
             }
+            if matches!(existing.kind, SymbolKind::Function) && existing.is_import {
+                // Already imported from somewhere else — ambiguous unless same target.
+                if let Some(existing_path) = self.explicitly_imported_fns.get(&local_name)
+                    && !existing_path.is_empty() && existing_path != &full_path {
+                        self.push_error(
+                            span,
+                            "S15",
+                            format!(
+                                "ambiguous import '{}': already imported from '{}'; \
+                                 use 'import {} as ...' to alias",
+                                local_name, existing_path, full_path
+                            ),
+                        );
+                        return;
+                    }
+            }
         }
+
+        self.explicitly_imported_fns
+            .insert(local_name.clone(), full_path.clone());
         self.declare(
             local_name,
             Symbol {
-                kind: SymbolKind::Variable { mutable: false },
-                ty: None,
+                kind: SymbolKind::Function,
+                ty: original.ty,
                 span,
-                params: vec![],
+                params: original.params.clone(),
                 used: false,
                 initialized: true,
                 is_import: true,
                 import_path: Some(full_path),
                 const_value: None,
-                variadic: false,
-                attributes: Vec::new(),
+                variadic: original.variadic,
+                attributes: original.attributes.clone(),
                 public: false,
-                unsafe_fn: false,
-                generic_params: vec![],
+                unsafe_fn: original.unsafe_fn,
+                generic_params: original.generic_params.clone(),
             },
         );
     }
+}
 
-    pub(super) fn build_import_path(prefix: &[String], leaf: &str) -> String {
-        if prefix.is_empty() {
-            leaf.to_string()
-        } else {
-            format!("{}.{}", prefix.join("."), leaf)
-        }
+/// Convert an import path to the mangled function name it references.
+/// The file module is the second-to-last segment: `std.core.write` → `core.write`.
+/// Single-segment paths are returned unchanged and treated as module namespaces.
+pub(super) fn mangle_import_path(full_path: &str) -> Option<String> {
+    let segments: Vec<&str> = full_path.split('.').collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let module = segments[segments.len() - 2];
+    let item = segments[segments.len() - 1];
+    Some(format!("{}.{}", module, item))
+}
+
+pub(super) fn build_import_path(prefix: &[String], leaf: &str) -> String {
+    if prefix.is_empty() {
+        leaf.to_string()
+    } else {
+        format!("{}.{}", prefix.join("."), leaf)
     }
 }
 

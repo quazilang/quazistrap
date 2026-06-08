@@ -173,11 +173,9 @@ fn used_std_modules(source: &str) -> HashSet<String> {
             && matches!(window[1].kind, TokenKind::Dot)
             && matches!(&window[2].kind, TokenKind::Ident(_))
             && matches!(window[3].kind, TokenKind::Dot)
-        {
-            if let TokenKind::Ident(module) = &window[2].kind {
+            && let TokenKind::Ident(module) = &window[2].kind {
                 modules.insert(module.clone());
             }
-        }
     }
 
     modules

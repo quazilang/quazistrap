@@ -24,11 +24,12 @@ impl Array[T] {
         ret Array { ptr: buf, len: 0, cap: 8 };
     }
 
-    // Array.from([e0, e1, ...]) is handled by the codegen as new() + push each element.
-    // This declaration exists for the type checker; its body is never called.
-    @ignore
-    pub fn from(self: Array[T], items: any) Array[T] {
-        ret self;
+    pub fn from(...items: T) Array[T] {
+        var result = Array.new();
+        for item : items {
+            result.push(item);
+        }
+        ret result;
     }
 
     pub fn push(self: Array[T], val: T) void {

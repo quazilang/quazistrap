@@ -149,8 +149,8 @@ impl Parser {
         let mut out = format!(
             "\x1b[1;31merror\x1b[0m\x1b[1m[{code}]\x1b[0m: {msg}\n  \x1b[1;34m-->\x1b[0m {display_loc}",
         );
-        if let Some(source) = &self.source {
-            if let Some(line_text) = source.lines().nth(span.line.saturating_sub(1)) {
+        if let Some(source) = &self.source
+            && let Some(line_text) = source.lines().nth(span.line.saturating_sub(1)) {
                 let lnum = file_rel_line.to_string();
                 let w = lnum.len();
                 let blank = " ".repeat(w);
@@ -166,7 +166,6 @@ impl Parser {
                     "^".repeat(caret_w)
                 ));
             }
-        }
         out
     }
 

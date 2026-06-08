@@ -17,11 +17,10 @@ impl Analyzer {
             | ItemKind::Enum { attributes, .. } => Some(attributes),
             _ => None,
         };
-        if let Some(attrs) = attrs {
-            if !super::item_should_include(attrs) {
+        if let Some(attrs) = attrs
+            && !super::item_should_include(attrs) {
                 return;
             }
-        }
         match &item.node {
             ItemKind::Fn {
                 name,
@@ -86,10 +85,25 @@ impl Analyzer {
                 if *unsafe_fn {
                     self.unsafe_depth += 1;
                 }
-                let fn_name = self
-                    .current_fn_name_override
-                    .take()
-                    .unwrap_or_else(|| name.clone());
+                let fn_name = {
+                    let base = self
+                        .current_fn_name_override
+                        .take()
+                        .unwrap_or_else(|| name.clone());
+                    // Impl methods already have their mangled name ("TypeName.method") via
+                    // the override; don't add a module prefix. Runtime __void_* symbols and
+                    // ordinary top-level fns in namespaced files get the module prefix to
+                    // match the declare pass.
+                    if base.contains('.') || base.starts_with("__void_") {
+                        base
+                    } else if let Some(module) = self.module_path_for_span(item.span) {
+                        format!("{}.{}", module, base)
+                    } else {
+                        base
+                    }
+                };
+                let prev_module_path = self.current_module_path.clone();
+                self.current_module_path = self.module_path_for_span(item.span);
                 self.current_function.push(fn_name);
                 self.enter_scope();
                 let fn_is_str_variadic = params
@@ -176,6 +190,7 @@ impl Analyzer {
                 }
                 self.exit_scope_collect();
                 let _ = self.current_function.pop();
+                self.current_module_path = prev_module_path;
                 if *unsafe_fn {
                     self.unsafe_depth -= 1;
                 }
@@ -304,15 +319,14 @@ impl Analyzer {
                     .unwrap_or_default();
 
                 let declared_ty = ty.as_ref().map(|t| t.node.clone());
-                if let (Some(ann), Some(val)) = (&declared_ty, &value_eval.ty) {
-                    if !self.types_compatible(ann, val) {
+                if let (Some(ann), Some(val)) = (&declared_ty, &value_eval.ty)
+                    && !self.types_compatible(ann, val) {
                         self.push_error(
                             stmt.span,
                             "S01",
                             format!("type mismatch: declared {}, got {}", ann, val),
                         );
                     }
-                }
 
                 self.declare(
                     name.clone(),
@@ -345,15 +359,14 @@ impl Analyzer {
                 let value_eval = self.type_check_expr(value, true);
                 let declared_ty = ty.as_ref().map(|t| t.node.clone());
 
-                if let (Some(ann), Some(val)) = (&declared_ty, &value_eval.ty) {
-                    if !self.types_compatible(ann, val) {
+                if let (Some(ann), Some(val)) = (&declared_ty, &value_eval.ty)
+                    && !self.types_compatible(ann, val) {
                         self.push_error(
                             stmt.span,
                             "S01",
                             format!("type mismatch: declared {}, got {}", ann, val),
                         );
                     }
-                }
 
                 self.declare(
                     name.clone(),
@@ -380,8 +393,8 @@ impl Analyzer {
                 match (expected_return, expr) {
                     (Some(expected), Some(return_expr)) => {
                         let actual = self.type_check_expr(return_expr, true).ty;
-                        if let Some(actual) = actual {
-                            if !self.types_compatible(expected, &actual) {
+                        if let Some(actual) = actual
+                            && !self.types_compatible(expected, &actual) {
                                 self.push_error(
                                     stmt.span,
                                     "S01",
@@ -391,7 +404,6 @@ impl Analyzer {
                                     ),
                                 );
                             }
-                        }
                     }
                     (Some(expected), None) => {
                         if !matches!(expected, TypeKind::Void) {
@@ -415,15 +427,14 @@ impl Analyzer {
                 else_block,
             } => {
                 let condition_eval = self.type_check_expr(condition, true);
-                if let Some(condition_ty) = condition_eval.ty {
-                    if !matches!(condition_ty, TypeKind::Bool | TypeKind::Any) {
+                if let Some(condition_ty) = condition_eval.ty
+                    && !matches!(condition_ty, TypeKind::Bool | TypeKind::Any) {
                         self.push_error(
                             condition.span,
                             "S01",
                             format!("if condition must be bool, got {}", condition_ty),
                         );
                     }
-                }
 
                 let then_returns = self.type_check_block(then_block, expected_return);
                 let else_returns = if let Some(else_block) = else_block {
@@ -440,15 +451,14 @@ impl Analyzer {
                         condition: Some(cond),
                     } => {
                         let cond_eval = self.type_check_expr(cond, true);
-                        if let Some(cond_ty) = cond_eval.ty {
-                            if !matches!(cond_ty, TypeKind::Bool | TypeKind::Any) {
+                        if let Some(cond_ty) = cond_eval.ty
+                            && !matches!(cond_ty, TypeKind::Bool | TypeKind::Any) {
                                 self.push_error(
                                     cond.span,
                                     "S01",
                                     format!("for condition must be bool, got {}", cond_ty),
                                 );
                             }
-                        }
                         let _ = self.type_check_block(body, expected_return);
                     }
                     ForLoop::Cond { condition: None } => {
@@ -465,15 +475,14 @@ impl Analyzer {
                         }
                         if let Some(cond) = condition {
                             let cond_eval = self.type_check_expr(cond, true);
-                            if let Some(cond_ty) = cond_eval.ty {
-                                if !matches!(cond_ty, TypeKind::Bool | TypeKind::Any) {
+                            if let Some(cond_ty) = cond_eval.ty
+                                && !matches!(cond_ty, TypeKind::Bool | TypeKind::Any) {
                                     self.push_error(
                                         cond.span,
                                         "S01",
                                         format!("for condition must be bool, got {}", cond_ty),
                                     );
                                 }
-                            }
                         }
                         if let Some(upd) = update {
                             self.type_check_expr(upd, true);
@@ -486,8 +495,8 @@ impl Analyzer {
                             ForIter::Range { start, end } => {
                                 let start_eval = self.type_check_expr(start, true);
                                 let end_eval = self.type_check_expr(end, true);
-                                if let Some(t) = &start_eval.ty {
-                                    if !Self::is_integer(t) {
+                                if let Some(t) = &start_eval.ty
+                                    && !Self::is_integer(t) {
                                         self.push_error(
                                             start.span,
                                             "S01",
@@ -497,9 +506,8 @@ impl Analyzer {
                                             ),
                                         );
                                     }
-                                }
-                                if let Some(t) = &end_eval.ty {
-                                    if !Self::is_integer(t) {
+                                if let Some(t) = &end_eval.ty
+                                    && !Self::is_integer(t) {
                                         self.push_error(
                                             end.span,
                                             "S01",
@@ -509,7 +517,6 @@ impl Analyzer {
                                             ),
                                         );
                                     }
-                                }
                                 start_eval.ty.or(end_eval.ty).unwrap_or(TypeKind::Int32)
                             }
                             ForIter::Iter(expr) => {
@@ -524,24 +531,49 @@ impl Analyzer {
                                 match iter_ty {
                                     Some(TypeKind::Array { elem_ty, .. }) => elem_ty.node.clone(),
                                     Some(TypeKind::Slice { elem_ty }) => elem_ty.node.clone(),
-                                    Some(TypeKind::Named { name, type_args }) if name == "Array" => {
+                                    Some(TypeKind::Named { name, type_args })
+                                        if name == "Array" =>
+                                    {
                                         if !type_args.is_empty() {
-                                            let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
-                                            let from = self.current_function.last().cloned().unwrap_or_else(|| "__program__".to_string());
+                                            let type_kinds: Vec<TypeKind> =
+                                                type_args.iter().map(|t| t.node.clone()).collect();
+                                            let from = self
+                                                .current_function
+                                                .last()
+                                                .cloned()
+                                                .unwrap_or_else(|| "__program__".to_string());
                                             for method in ["Array.len", "Array.get"] {
-                                                let mangled = mangle_monomorphized(method, &type_kinds);
-                                                if !self.monomorphizations.iter().any(|m| m.mangled_name == mangled) {
-                                                    self.monomorphizations.push(MonomorphizationInfo {
-                                                        fn_name: method.to_string(),
-                                                        type_args: type_kinds.clone(),
-                                                        mangled_name: mangled.clone(),
-                                                    });
+                                                let mangled =
+                                                    mangle_monomorphized(method, &type_kinds);
+                                                if !self
+                                                    .monomorphizations
+                                                    .iter()
+                                                    .any(|m| m.mangled_name == mangled)
+                                                {
+                                                    self.monomorphizations.push(
+                                                        MonomorphizationInfo {
+                                                            fn_name: method.to_string(),
+                                                            type_args: type_kinds.clone(),
+                                                            mangled_name: mangled.clone(),
+                                                        },
+                                                    );
                                                 }
-                                                self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
-                                                self.add_dependency_edge(DependencyKind::Call, &from, method);
+                                                self.add_dependency_edge(
+                                                    DependencyKind::Call,
+                                                    &from,
+                                                    &mangled,
+                                                );
+                                                self.add_dependency_edge(
+                                                    DependencyKind::Call,
+                                                    &from,
+                                                    method,
+                                                );
                                             }
                                         }
-                                        type_args.first().map(|t| t.node.clone()).unwrap_or(TypeKind::Any)
+                                        type_args
+                                            .first()
+                                            .map(|t| t.node.clone())
+                                            .unwrap_or(TypeKind::Any)
                                     }
                                     _ => TypeKind::Any,
                                 }
@@ -613,68 +645,98 @@ impl Analyzer {
                     const_value: Self::const_from_literal(lit),
                 }
             }
-            ExprKind::Ident(name) => match self.resolve_for_read(name) {
-                None => {
-                    self.push_error(expr.span, "S04", format!("unknown identifier '{}'", name));
-                    ExprEval::default()
+            ExprKind::Ident(name) => {
+                // Prefer the module-qualified resolution when in a namespaced module.
+                if let Some(resolved) = self.resolve_bare_fn_name(name) {
+                    let sym = self
+                        .resolve_for_read(&resolved)
+                        .expect("resolved function should exist");
+                    let return_ty = sym.ty.clone().unwrap_or(TypeKind::Void);
+                    let param_types: Vec<Type> = sym
+                        .params
+                        .iter()
+                        .map(|p| Spanned::new(p.clone(), expr.span))
+                        .collect();
+                    let from = self
+                        .current_function
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| "__program__".to_string());
+                    self.add_dependency_edge(DependencyKind::Call, &from, &resolved);
+                    let eval = ExprEval {
+                        ty: Some(TypeKind::Fn {
+                            params: param_types,
+                            return_ty: Box::new(Spanned::new(return_ty, expr.span)),
+                        }),
+                        const_value: None,
+                    };
+                    self.annotate_expr(expr, &eval, reachable, Some(resolved));
+                    return eval;
                 }
-                Some(sym) => {
-                    if matches!(
-                        sym.kind,
-                        SymbolKind::Variable { .. } | SymbolKind::Parameter
-                    ) && !sym.initialized
-                    {
-                        self.push_error(
-                            expr.span,
-                            "S02",
-                            format!("use of '{}' before initialization", name),
-                        );
-                        ExprEval {
-                            ty: sym.ty,
-                            const_value: None,
-                        }
-                    } else if matches!(sym.kind, SymbolKind::TypeName) {
-                        // Type name used as expression (e.g. Array.new(), Array.from(...)).
-                        // For type aliases, return the aliased type.
-                        // For structs/enums/traits, return Named so static method dispatch works.
-                        let resolved = sym.ty.clone().unwrap_or(TypeKind::Named {
-                            name: name.clone(),
-                            type_args: vec![],
-                        });
-                        ExprEval {
-                            ty: Some(resolved),
-                            const_value: None,
-                        }
-                    } else if matches!(sym.kind, SymbolKind::Function) {
-                        // Function name used as value → fn pointer type.
-                        let return_ty = sym.ty.clone().unwrap_or(TypeKind::Void);
-                        let param_types: Vec<Type> = sym
-                            .params
-                            .iter()
-                            .map(|p| Spanned::new(p.clone(), expr.span))
-                            .collect();
-                        // Ensure function is reachable even if never directly called.
-                        let from = self
-                            .current_function
-                            .last()
-                            .cloned()
-                            .unwrap_or_else(|| "__program__".to_string());
-                        self.add_dependency_edge(DependencyKind::Call, &from, name);
-                        ExprEval {
-                            ty: Some(TypeKind::Fn {
-                                params: param_types,
-                                return_ty: Box::new(Spanned::new(return_ty, expr.span)),
-                            }),
-                            const_value: None,
-                        }
-                    } else {
-                        ExprEval {
-                            ty: sym.ty,
-                            const_value: sym.const_value,
+
+                match self.resolve_for_read(name) {
+                    None => {
+                        self.push_error(expr.span, "S04", format!("unknown identifier '{}'", name));
+                        ExprEval::default()
+                    }
+                    Some(sym) => {
+                        if matches!(
+                            sym.kind,
+                            SymbolKind::Variable { .. } | SymbolKind::Parameter
+                        ) && !sym.initialized
+                        {
+                            self.push_error(
+                                expr.span,
+                                "S02",
+                                format!("use of '{}' before initialization", name),
+                            );
+                            ExprEval {
+                                ty: sym.ty,
+                                const_value: None,
+                            }
+                        } else if matches!(sym.kind, SymbolKind::TypeName) {
+                            // Type name used as expression (e.g. Array.new(), Array.from(...)).
+                            // For type aliases, return the aliased type.
+                            // For structs/enums/traits, return Named so static method dispatch works.
+                            let resolved = sym.ty.clone().unwrap_or(TypeKind::Named {
+                                name: name.clone(),
+                                type_args: vec![],
+                            });
+                            ExprEval {
+                                ty: Some(resolved),
+                                const_value: None,
+                            }
+                        } else if matches!(sym.kind, SymbolKind::Function) {
+                            // Function name used as value → fn pointer type.
+                            let return_ty = sym.ty.clone().unwrap_or(TypeKind::Void);
+                            let param_types: Vec<Type> = sym
+                                .params
+                                .iter()
+                                .map(|p| Spanned::new(p.clone(), expr.span))
+                                .collect();
+                            // Ensure function is reachable even if never directly called.
+                            let from = self
+                                .current_function
+                                .last()
+                                .cloned()
+                                .unwrap_or_else(|| "__program__".to_string());
+                            self.add_dependency_edge(DependencyKind::Call, &from, name);
+                            ExprEval {
+                                ty: Some(TypeKind::Fn {
+                                    params: param_types,
+                                    return_ty: Box::new(Spanned::new(return_ty, expr.span)),
+                                }),
+                                const_value: None,
+                            }
+                        } else {
+                            ExprEval {
+                                ty: sym.ty,
+                                const_value: sym.const_value,
+                            }
                         }
                     }
                 }
-            },
+            }
             ExprKind::Group(inner) => self.type_check_expr(inner, reachable),
             ExprKind::Unary { expr: inner, op } => {
                 let inner_eval = self.type_check_expr(inner, reachable);
@@ -689,7 +751,7 @@ impl Analyzer {
                             ty: ref_ty,
                             const_value: None,
                         };
-                        self.annotate_expr(expr, &result, reachable);
+                        self.annotate_expr(expr, &result, reachable, None);
                         return result;
                     }
                     UnaryOpKind::Deref => {
@@ -723,23 +785,22 @@ impl Analyzer {
                             }
                             None => ExprEval::default(),
                         };
-                        self.annotate_expr(expr, &result, reachable);
+                        self.annotate_expr(expr, &result, reachable, None);
                         return result;
                     }
                     UnaryOpKind::Not => {
-                        if let Some(t) = &inner_eval.ty {
-                            if !matches!(t, TypeKind::Bool | TypeKind::Any) {
+                        if let Some(t) = &inner_eval.ty
+                            && !matches!(t, TypeKind::Bool | TypeKind::Any) {
                                 self.push_error(
                                     inner.span,
                                     "S06",
                                     format!("! requires bool, got {}", t),
                                 );
                             }
-                        }
                     }
                     UnaryOpKind::Neg => {
-                        if let Some(t) = &inner_eval.ty {
-                            if matches!(
+                        if let Some(t) = &inner_eval.ty
+                            && matches!(
                                 t,
                                 TypeKind::Str
                                     | TypeKind::Bool
@@ -752,7 +813,6 @@ impl Analyzer {
                                     format!("unary - not valid for {}", t),
                                 );
                             }
-                        }
                     }
                 }
 
@@ -769,7 +829,9 @@ impl Analyzer {
                 let allowed = match inner_eval.ty.as_ref() {
                     Some(src) if Self::is_integer(src) && Self::is_integer(&target_ty) => true,
                     Some(src) if Self::is_float(src) && Self::is_float(&target_ty) => true,
-                    Some(src) if std::mem::discriminant(src) == std::mem::discriminant(&target_ty) => {
+                    Some(src)
+                        if std::mem::discriminant(src) == std::mem::discriminant(&target_ty) =>
+                    {
                         true
                     }
                     _ => false,
@@ -811,9 +873,9 @@ impl Analyzer {
                 let value_eval = self.type_check_expr(value, reachable);
 
                 if let ExprKind::Ident(name) = &target.node {
-                    if let Some(sym) = self.resolve_symbol(name) {
-                        if let (Some(var_ty), Some(val_ty)) = (&sym.ty, &value_eval.ty) {
-                            if !self.types_compatible(var_ty, val_ty) {
+                    if let Some(sym) = self.resolve_symbol(name)
+                        && let (Some(var_ty), Some(val_ty)) = (&sym.ty, &value_eval.ty)
+                            && !self.types_compatible(var_ty, val_ty) {
                                 self.push_error(
                                     target.span,
                                     "S01",
@@ -823,8 +885,6 @@ impl Analyzer {
                                     ),
                                 );
                             }
-                        }
-                    }
 
                     self.mark_initialized(name);
                     self.set_symbol_const_value(name, value_eval.const_value.clone());
@@ -850,25 +910,22 @@ impl Analyzer {
                     .collect();
 
                 if let ExprKind::Ident(name) = &callee.node {
-                    let Some(sym) = self.resolve_for_read(name) else {
-                        self.push_error(
-                            callee.span,
-                            "S04",
-                            format!("unknown identifier '{}'", name),
-                        );
-                        return ExprEval::default();
-                    };
+                    // Resolve the name, taking into account namespacing for the current module.
+                    let resolved_name = self.resolve_bare_fn_name(name);
 
-                    if matches!(sym.kind, SymbolKind::Function) {
+                    if let Some(resolved) = &resolved_name {
+                        let sym = self
+                            .resolve_for_read(resolved)
+                            .expect("resolved function should exist");
+
                         // Library functions require explicit import-by-name to be called unqualified.
-                        // Exception: library code calling other library code is always allowed
-                        // (stdlib functions call each other without import statements).
+                        // Exception: library code calling other library code is always allowed.
                         let caller_is_library = self
                             .current_function
                             .last()
                             .map(|f| self.library_fn_names.contains(f.as_str()))
                             .unwrap_or(false);
-                        if self.library_fn_names.contains(name.as_str())
+                        if self.library_fn_names.contains(resolved.as_str())
                             && !self.explicitly_imported_fns.contains_key(name.as_str())
                             && !caller_is_library
                         {
@@ -886,27 +943,38 @@ impl Analyzer {
                         if !named_args.is_empty() {
                             self.validate_named_args(
                                 callee.span,
-                                name,
+                                resolved,
                                 named_args,
                                 args.len(),
                                 &sym,
                             );
                         }
                         let eval = self.check_function_call(
-                            name,
+                            resolved,
                             callee.span,
                             args,
                             &arg_evals,
                             &sym,
                             type_args,
                         );
-                        self.annotate_expr(expr, &eval, reachable);
+                        self.annotate_expr(expr, &eval, reachable, Some(resolved.clone()));
                         return eval;
                     }
 
+                    // Not resolved as a function — fall through to generic symbol lookup
+                    // for variables, parameters, function-pointer values, etc.
+                    let Some(sym) = self.resolve_for_read(name) else {
+                        self.push_error(
+                            callee.span,
+                            "S04",
+                            format!("unknown identifier '{}'", name),
+                        );
+                        return ExprEval::default();
+                    };
+
                     // Function pointer variable or other callable expression.
-                    if let Some(ref fn_ty) = sym.ty {
-                        if let TypeKind::Fn { params, return_ty } = self.resolve_type_aliases(fn_ty)
+                    if let Some(ref fn_ty) = sym.ty
+                        && let TypeKind::Fn { params, return_ty } = self.resolve_type_aliases(fn_ty)
                         {
                             let expected_count = params.len();
                             let actual_count = arg_evals.len();
@@ -925,10 +993,9 @@ impl Analyzer {
                                 ty: Some(return_ty.node.clone()),
                                 const_value: None,
                             };
-                            self.annotate_expr(expr, &eval, reachable);
+                            self.annotate_expr(expr, &eval, reachable, None);
                             return eval;
                         }
-                    }
 
                     let msg = if let Some(ref path) = sym.import_path {
                         let module_path = path
@@ -958,7 +1025,7 @@ impl Analyzer {
                                 );
                                 return ExprEval::default();
                             }
-                            for (_i, arg_eval) in arg_evals.iter().enumerate() {
+                            for arg_eval in arg_evals.iter() {
                                 // For now, skip detailed param type checking (params are often Any).
                                 let _ = arg_eval;
                             }
@@ -987,9 +1054,9 @@ impl Analyzer {
                 named_args,
             } => {
                 // For lazy import tracking: record the object chain path (not the method itself)
-                if let Some((base, path)) = Self::extract_field_chain(object) {
-                    if let Some(sym) = self.resolve_symbol(&base) {
-                        if sym.is_import {
+                if let Some((base, path)) = Self::extract_field_chain(object)
+                    && let Some(sym) = self.resolve_symbol(&base)
+                        && sym.is_import {
                             let import_base = sym.import_path.as_deref().unwrap_or(&base);
                             let full_access = if path.is_empty() {
                                 import_base.to_string()
@@ -1001,8 +1068,6 @@ impl Analyzer {
                                 .or_default()
                                 .insert(full_access);
                         }
-                    }
-                }
                 if self.is_module_import_receiver(object) {
                     self.type_check_expr(object, reachable);
                     let arg_evals: Vec<ExprEval> = args
@@ -1010,35 +1075,44 @@ impl Analyzer {
                         .chain(named_args.iter().map(|(_, e)| e))
                         .map(|a| self.type_check_expr(a, reachable))
                         .collect();
-                    if let Some(sym) = self.resolve_symbol(method) {
-                        if !matches!(sym.kind, SymbolKind::Function) {
-                            let msg = if let Some(ref path) = sym.import_path {
-                                let module_path = path
-                                    .rsplit_once('.')
-                                    .map(|(prefix, _)| prefix.to_string())
-                                    .unwrap_or_else(|| path.clone());
-                                format!("'{}' is not exported by '{}'", method, module_path)
+                    let resolved_method = self.resolve_module_method(object, method);
+                    if let Some(resolved) = &resolved_method {
+                        if let Some(sym) = self.resolve_symbol(resolved) {
+                            if !matches!(sym.kind, SymbolKind::Function) {
+                                let msg = if let Some(ref path) = sym.import_path {
+                                    let module_path = path
+                                        .rsplit_once('.')
+                                        .map(|(prefix, _)| prefix.to_string())
+                                        .unwrap_or_else(|| path.clone());
+                                    format!("'{}' is not exported by '{}'", method, module_path)
+                                } else {
+                                    format!("function '{}' does not exist", resolved)
+                                };
+                                self.push_error(expr.span, "S04", msg);
+                                ExprEval::default()
                             } else {
-                                format!("function '{}' does not exist", method)
-                            };
-                            self.push_error(expr.span, "S04", msg);
-                            ExprEval::default()
-                        } else {
-                            let sym = self
-                                .resolve_for_read(method)
-                                .expect("symbol should resolve");
-                            if !named_args.is_empty() {
-                                self.validate_named_args(
-                                    expr.span,
-                                    method,
-                                    named_args,
-                                    args.len(),
-                                    &sym,
+                                let sym = self
+                                    .resolve_for_read(resolved)
+                                    .expect("symbol should resolve");
+                                if !named_args.is_empty() {
+                                    self.validate_named_args(
+                                        expr.span,
+                                        resolved,
+                                        named_args,
+                                        args.len(),
+                                        &sym,
+                                    );
+                                }
+                                let eval = self.check_function_call(
+                                    resolved, expr.span, args, &arg_evals, &sym, type_args,
                                 );
+                                self.annotate_expr(expr, &eval, reachable, Some(resolved.clone()));
+                                eval
                             }
-                            self.check_function_call(
-                                method, expr.span, args, &arg_evals, &sym, type_args,
-                            )
+                        } else {
+                            // Target not loaded yet (e.g. test without loader). Stay lenient
+                            // and match the old behavior of silently returning default.
+                            ExprEval::default()
                         }
                     } else {
                         ExprEval::default()
@@ -1089,6 +1163,20 @@ impl Analyzer {
                                             );
                                         }
                                     }
+                                    // For variadic methods, also infer from args beyond the fixed params.
+                                    if sym.variadic && arg_evals.len() > sym.params.len()
+                                        && let Some(param_ty) = sym.params.last() {
+                                            for arg_eval in &arg_evals[sym.params.len()..] {
+                                                if let Some(arg_ty) = &arg_eval.ty {
+                                                    infer_type_subst(
+                                                        param_ty,
+                                                        arg_ty,
+                                                        &struct_params,
+                                                        &mut subst,
+                                                    );
+                                                }
+                                            }
+                                        }
                                     if !subst.is_empty() {
                                         let type_args: Vec<TypeKind> = struct_params
                                             .iter()
@@ -1124,7 +1212,7 @@ impl Analyzer {
                                     ty: ret_ty,
                                     const_value: None,
                                 };
-                                self.annotate_expr(expr, &eval, reachable);
+                                self.annotate_expr(expr, &eval, reachable, None);
                                 return eval;
                             }
                         }
@@ -1210,8 +1298,8 @@ impl Analyzer {
                                 } else {
                                     method_params.get(i)
                                 };
-                                if let (Some(param_ty), Some(arg_ty)) = (param_ty, &arg_eval.ty) {
-                                    if !self.types_compatible(param_ty, arg_ty) {
+                                if let (Some(param_ty), Some(arg_ty)) = (param_ty, &arg_eval.ty)
+                                    && !self.types_compatible(param_ty, arg_ty) {
                                         let span = args.get(i).map(|a| a.span).unwrap_or(expr.span);
                                         self.push_error(
                                             span,
@@ -1224,7 +1312,6 @@ impl Analyzer {
                                             ),
                                         );
                                     }
-                                }
                             }
                             if !named_arg_evals.is_empty() {
                                 let param_names = self
@@ -1269,8 +1356,7 @@ impl Analyzer {
                                     }
                                     if let (Some(param_ty), Some(arg_ty)) =
                                         (method_params.get(pos), &arg_eval.ty)
-                                    {
-                                        if !self.types_compatible(param_ty, arg_ty) {
+                                        && !self.types_compatible(param_ty, arg_ty) {
                                             self.push_error(
                                                 expr.span,
                                                 "S09",
@@ -1280,7 +1366,6 @@ impl Analyzer {
                                                 ),
                                             );
                                         }
-                                    }
                                 }
                             }
                             // Record monomorphization for generic receiver types.
@@ -1419,9 +1504,9 @@ impl Analyzer {
             }
             ExprKind::Field { object, name } => {
                 // For lazy import tracking: record the full chain including this field
-                if let Some((base, mut path)) = Self::extract_field_chain(object) {
-                    if let Some(sym) = self.resolve_symbol(&base) {
-                        if sym.is_import {
+                if let Some((base, mut path)) = Self::extract_field_chain(object)
+                    && let Some(sym) = self.resolve_symbol(&base)
+                        && sym.is_import {
                             path.push(name.clone());
                             let import_base = sym.import_path.as_deref().unwrap_or(&base);
                             let full_access = if path.is_empty() {
@@ -1434,8 +1519,34 @@ impl Analyzer {
                                 .or_default()
                                 .insert(full_access);
                         }
-                    }
-                }
+                // Module namespace field referencing a function: `bar.foo` as a value.
+                if self.is_module_import_receiver(object)
+                    && let Some(resolved) = self.resolve_module_method(object, name)
+                        && let Some(sym) = self.resolve_for_read(&resolved)
+                            && matches!(sym.kind, SymbolKind::Function) {
+                                let return_ty = sym.ty.clone().unwrap_or(TypeKind::Void);
+                                let param_types: Vec<Type> = sym
+                                    .params
+                                    .iter()
+                                    .map(|p| Spanned::new(p.clone(), expr.span))
+                                    .collect();
+                                let from = self
+                                    .current_function
+                                    .last()
+                                    .cloned()
+                                    .unwrap_or_else(|| "__program__".to_string());
+                                self.add_dependency_edge(DependencyKind::Call, &from, &resolved);
+                                let eval = ExprEval {
+                                    ty: Some(TypeKind::Fn {
+                                        params: param_types,
+                                        return_ty: Box::new(Spanned::new(return_ty, expr.span)),
+                                    }),
+                                    const_value: None,
+                                };
+                                self.annotate_expr(expr, &eval, reachable, Some(resolved));
+                                return eval;
+                            }
+
                 let obj_eval = self.type_check_expr(object, reachable);
                 // Resolve field type from struct_defs, substituting generic params when present.
                 let field_ty = match &obj_eval.ty {
@@ -1482,8 +1593,8 @@ impl Analyzer {
                         if let Some((_, expected_ty)) =
                             field_defs.iter().find(|(fn_, _)| fn_ == fname)
                         {
-                            if let Some(got_ty) = &val_eval.ty {
-                                if !self.types_compatible(got_ty, expected_ty) {
+                            if let Some(got_ty) = &val_eval.ty
+                                && !self.types_compatible(got_ty, expected_ty) {
                                     self.push_error(
                                         fval.span,
                                         "S08",
@@ -1493,7 +1604,6 @@ impl Analyzer {
                                         ),
                                     );
                                 }
-                            }
                         } else {
                             self.push_error(
                                 fval.span,
@@ -1552,11 +1662,10 @@ impl Analyzer {
                                         let mut m = std::collections::HashMap::new();
                                         let mut field_idx = 0;
                                         for sub in sub_patterns {
-                                            if let PatternKind::Bind(bname) = &sub.node {
-                                                if let Some(ty) = field_tys.get(field_idx) {
+                                            if let PatternKind::Bind(bname) = &sub.node
+                                                && let Some(ty) = field_tys.get(field_idx) {
                                                     m.insert(bname.clone(), ty.clone());
                                                 }
-                                            }
                                             if !matches!(sub.node, PatternKind::Wildcard) {
                                                 field_idx += 1;
                                             }
@@ -1603,15 +1712,14 @@ impl Analyzer {
                     // Type-check the optional guard expression (inside binding scope).
                     if let Some(guard) = &arm.guard {
                         let guard_eval = self.type_check_expr(guard, reachable);
-                        if let Some(guard_ty) = guard_eval.ty {
-                            if !matches!(guard_ty, TypeKind::Bool) {
+                        if let Some(guard_ty) = guard_eval.ty
+                            && !matches!(guard_ty, TypeKind::Bool) {
                                 self.push_error(
                                     guard.span,
                                     "S01",
                                     format!("match guard must be bool, got {}", guard_ty),
                                 );
                             }
-                        }
                     }
 
                     let arm_eval = self.type_check_expr(&arm.expr, reachable);
@@ -1671,8 +1779,8 @@ impl Analyzer {
                 self.analyze_assign_target(inner);
                 let inner_eval = self.type_check_expr(inner, reachable);
 
-                if let Some(ty) = &inner_eval.ty {
-                    if matches!(
+                if let Some(ty) = &inner_eval.ty
+                    && matches!(
                         ty,
                         TypeKind::Str
                             | TypeKind::Bool
@@ -1682,7 +1790,6 @@ impl Analyzer {
                     ) {
                         self.push_error(inner.span, "S06", format!("++ / -- not valid for {}", ty));
                     }
-                }
                 ExprEval {
                     ty: inner_eval.ty,
                     const_value: None,
@@ -1773,9 +1880,9 @@ impl Analyzer {
                         None
                     }
                 } else {
-                    if let Some(first_eval) = idx_evals.first() {
-                        if let Some(idx_ty) = &first_eval.ty {
-                            if !matches!(
+                    if let Some(first_eval) = idx_evals.first()
+                        && let Some(idx_ty) = &first_eval.ty
+                            && !matches!(
                                 idx_ty,
                                 TypeKind::Int8
                                     | TypeKind::Int16
@@ -1795,8 +1902,6 @@ impl Analyzer {
                                     format!("array index must be an integer, got {}", idx_ty),
                                 );
                             }
-                        }
-                    }
                     match &obj_eval.ty {
                         Some(TypeKind::Array { elem_ty, .. }) => Some(elem_ty.node.clone()),
                         Some(TypeKind::Slice { elem_ty }) => Some(elem_ty.node.clone()),
@@ -1870,7 +1975,7 @@ impl Analyzer {
             }
         };
 
-        self.annotate_expr(expr, &result, reachable);
+        self.annotate_expr(expr, &result, reachable, None);
         result
     }
 
@@ -1879,12 +1984,77 @@ impl Analyzer {
             return false;
         };
         self.resolve_symbol(&base)
-            .map_or(false, |sym| sym.is_import)
+            .is_some_and(|sym| sym.is_import)
+    }
+
+    /// Resolve a bare function name used in the current function body.
+    /// If the current module is namespaced, prefer the module-qualified name
+    /// (`bar.foo`) when it exists. Import aliases are followed through to the
+    /// actual mangled target so codegen can use the real function name. Returns
+    /// `None` if the name is shadowed by a local variable/parameter or does not
+    /// name a function.
+    fn resolve_bare_fn_name(&self, name: &str) -> Option<String> {
+        // Check local scopes (skip the global scope at index 0) for non-function
+        // shadowing. If a local variable or parameter uses this name, the identifier
+        // refers to that local, not a top-level function.
+        for scope in self.scopes.iter().skip(1).rev() {
+            if let Some(sym) = scope.get(name)
+                && !matches!(sym.kind, SymbolKind::Function) {
+                    return None;
+                }
+        }
+
+        if let Some(module) = &self.current_module_path {
+            let qualified = format!("{}.{}", module, name);
+            if let Some(sym) = self.resolve_symbol(&qualified)
+                && matches!(sym.kind, SymbolKind::Function) {
+                    return Some(qualified);
+                }
+        }
+
+        if let Some(sym) = self.resolve_symbol(name)
+            && matches!(sym.kind, SymbolKind::Function) {
+                // Import aliases: follow to the mangled target name.
+                if sym.is_import
+                    && let Some(path) = &sym.import_path
+                        && let Some(mangled) = super::declare::mangle_import_path(path)
+                            && self.resolve_symbol(&mangled).is_some() {
+                                return Some(mangled);
+                            }
+                return Some(name.to_string());
+            }
+
+        None
+    }
+
+    /// Resolve a module-qualified method call like `bar.foo()` or `std.write()`.
+    /// The object chain identifies the imported module namespace; the method is
+    /// resolved as `<module_file>.<method>` where `<module_file>` is the last
+    /// segment of the chain or the last segment of the import path (i.e. the
+    /// actual source file module).
+    fn resolve_module_method(&self, object: &Expr, method: &str) -> Option<String> {
+        let (base, path) = Self::extract_field_chain(object)?;
+        let sym = self.resolve_symbol(&base)?;
+        if !sym.is_import {
+            return None;
+        }
+        let import_base = sym.import_path.as_deref().unwrap_or(&base);
+        let segments: Vec<&str> = import_base.split('.').collect();
+        let module_file = if let Some(last) = path.last() {
+            // Multi-level chain like `std.core.write()` → file module is the last
+            // object-chain segment (`core`).
+            last.as_str()
+        } else {
+            // Single-level like `bar.foo()` → file module is the last segment of
+            // the import path (`bar` from `bar` or `foo.bar`).
+            segments.last().copied().unwrap_or(&base)
+        };
+        Some(format!("{}.{}", module_file, method))
     }
 
     fn validate_named_args(
         &mut self,
-        span: Span,
+        _span: Span,
         fn_name: &str,
         named_args: &[(String, Expr)],
         positional_count: usize,
@@ -1930,8 +2100,8 @@ impl Analyzer {
             }
             // Type-check named arg against its param type.
             let eval = self.type_check_expr(arg_expr, true);
-            if let (Some(param_ty), Some(arg_ty)) = (sym.params.get(pos), eval.ty) {
-                if !self.types_compatible(param_ty, &arg_ty) {
+            if let (Some(param_ty), Some(arg_ty)) = (sym.params.get(pos), eval.ty)
+                && !self.types_compatible(param_ty, &arg_ty) {
                     self.push_error(
                         arg_expr.span,
                         "S09",
@@ -1941,7 +2111,6 @@ impl Analyzer {
                         ),
                     );
                 }
-            }
         }
     }
 
@@ -2042,7 +2211,7 @@ impl Analyzer {
         // Special case: panic() — codegen injects file/line hidden args after msg.
         // User writes panic("msg") or panic("msg", "extra"); we type-check as if
         // the signature were panic(msg: str, ...args: str).
-        let is_panic = name == "panic";
+        let is_panic = name.rsplit('.').next() == Some("panic");
         let effective_non_variadic_count = if is_panic { 1 } else { non_variadic_count };
         let effective_variadic_elem = if is_panic {
             substituted_params.first()
@@ -2082,8 +2251,8 @@ impl Analyzer {
                 .zip(arg_evals.iter().map(|e| &e.ty))
                 .enumerate()
             {
-                if let Some(at) = arg_ty {
-                    if !self.types_compatible(param_ty, at) {
+                if let Some(at) = arg_ty
+                    && !self.types_compatible(param_ty, at) {
                         let span = args.get(i).map(|a| a.span).unwrap_or(callee_span);
                         self.push_error(
                             span,
@@ -2091,15 +2260,14 @@ impl Analyzer {
                             format!("arg {}: expected {}, got {}", i + 1, param_ty, at),
                         );
                     }
-                }
             }
             // Variadic args checked against the element type.
-            if is_variadic {
-                if let Some(elem_ty) = effective_variadic_elem {
+            if is_variadic
+                && let Some(elem_ty) = effective_variadic_elem {
                     let var_start = effective_non_variadic_count;
                     for (i, arg_ty) in arg_evals[var_start..].iter().map(|e| &e.ty).enumerate() {
-                        if let Some(at) = arg_ty {
-                            if !self.types_compatible(elem_ty, at) {
+                        if let Some(at) = arg_ty
+                            && !self.types_compatible(elem_ty, at) {
                                 let span = args
                                     .get(var_start + i)
                                     .map(|a| a.span)
@@ -2115,10 +2283,8 @@ impl Analyzer {
                                     ),
                                 );
                             }
-                        }
                     }
                 }
-            }
         }
 
         let return_ty = if !subst.is_empty() {
@@ -2163,37 +2329,34 @@ impl Analyzer {
             | BinOpKind::GtEq
             | BinOpKind::EqEq
             | BinOpKind::NotEq => {
-                if let (Some(l), Some(r)) = (left, right) {
-                    if !self.types_compatible(l, r) {
+                if let (Some(l), Some(r)) = (left, right)
+                    && !self.types_compatible(l, r) {
                         self.push_error(
                             span,
                             "S01",
                             format!("type mismatch in binary op: {} vs {}", l, r),
                         );
                     }
-                }
                 Some(TypeKind::Bool)
             }
             BinOpKind::AndAnd | BinOpKind::OrOr => {
-                if let Some(l) = left {
-                    if !matches!(l, TypeKind::Bool | TypeKind::Any) {
+                if let Some(l) = left
+                    && !matches!(l, TypeKind::Bool | TypeKind::Any) {
                         self.push_error(
                             span,
                             "S06",
                             format!("logical op requires bool, got {}", l),
                         );
                     }
-                }
 
-                if let Some(r) = right {
-                    if !matches!(r, TypeKind::Bool | TypeKind::Any) {
+                if let Some(r) = right
+                    && !matches!(r, TypeKind::Bool | TypeKind::Any) {
                         self.push_error(
                             span,
                             "S06",
                             format!("logical op requires bool, got {}", r),
                         );
                     }
-                }
 
                 Some(TypeKind::Bool)
             }
@@ -2305,12 +2468,19 @@ impl Analyzer {
         }
     }
 
-    pub(super) fn annotate_expr(&mut self, expr: &Expr, eval: &ExprEval, reachable: bool) {
+    pub(super) fn annotate_expr(
+        &mut self,
+        expr: &Expr,
+        eval: &ExprEval,
+        reachable: bool,
+        resolved_fn: Option<String>,
+    ) {
         self.annotated_exprs.push(ExprAnnotation {
             span: expr.span,
             ty: eval.ty.clone(),
             const_value: eval.const_value.clone(),
             reachable,
+            resolved_fn,
         });
 
         if let Some(value) = &eval.const_value {
@@ -2486,6 +2656,14 @@ impl Analyzer {
             (TypeKind::Any, _) | (_, TypeKind::Any) => true,
             // Never (!) is compatible with any type — diverging arms unify with anything
             (TypeKind::Never, _) | (_, TypeKind::Never) => true,
+            // Named type ↔ dyn Trait: specific check before the broad Named fallback.
+            (TypeKind::Named { name, .. }, TypeKind::Dyn { trait_name })
+            | (TypeKind::Dyn { trait_name }, TypeKind::Named { name, .. }) => self
+                .trait_impls
+                .get(name.as_str())
+                .map(|ts| ts.contains(trait_name.as_str()))
+                .unwrap_or(false),
+            // Broad Named fallback — any other Named combination is considered compatible.
             (TypeKind::Named { .. }, _) | (_, TypeKind::Named { .. }) => true,
             (a, b) if Self::is_integer(a) && Self::is_integer(b) => true,
             (a, b) if Self::is_float(a) && Self::is_float(b) => true,
@@ -2545,13 +2723,6 @@ impl Analyzer {
                         .all(|(ap, bp)| self.types_compatible(&ap.node, &bp.node))
                     && self.types_compatible(&a_ret.node, &b_ret.node)
             }
-            // Named type ↔ dyn Trait: compatible if the type implements the trait.
-            (TypeKind::Named { name, .. }, TypeKind::Dyn { trait_name })
-            | (TypeKind::Dyn { trait_name }, TypeKind::Named { name, .. }) => self
-                .trait_impls
-                .get(name.as_str())
-                .map(|ts| ts.contains(trait_name.as_str()))
-                .unwrap_or(false),
             // dyn A ↔ dyn A
             (TypeKind::Dyn { trait_name: a }, TypeKind::Dyn { trait_name: b }) => a == b,
             _ => std::mem::discriminant(&a) == std::mem::discriminant(&b),
@@ -2679,12 +2850,22 @@ fn infer_type_subst(
                 name: aname,
                 type_args: aargs,
             } = arg_ty
-            {
-                if pname == aname {
+                && pname == aname {
                     for (pa, aa) in pargs.iter().zip(aargs.iter()) {
                         infer_type_subst(&pa.node, &aa.node, generic_params, subst);
                     }
                 }
+        }
+        TypeKind::Slice { elem_ty } => {
+            // Variadic param: Slice { elem_ty: T } matched against individual arg types.
+            infer_type_subst(&elem_ty.node, arg_ty, generic_params, subst);
+        }
+        TypeKind::Array { elem_ty, .. } => {
+            infer_type_subst(&elem_ty.node, arg_ty, generic_params, subst);
+        }
+        TypeKind::Ref { inner } => {
+            if let TypeKind::Ref { inner: arg_inner } = arg_ty {
+                infer_type_subst(&inner.node, &arg_inner.node, generic_params, subst);
             }
         }
         _ => {}

@@ -39,7 +39,7 @@ fn main() i32 {
     }
     io.println("Sum of all elements = {}", sum);
 
-    var words: Array[str] = Array.from(["hello", "from", "void"]);
+    var words: Array[str] = Array.from("hello", "from", "void");
 
     io.println("Words array:");
     for word : &words {

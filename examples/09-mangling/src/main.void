@@ -1,0 +1,18 @@
+import std.core;
+import std.unix;
+import std.io;
+// mangling demo example
+// mangling is a new feature coming to void
+// it fixes conflicts when importing, due to the functions being the same name and coded literally the same in the code.
+
+fn main() i32 {
+    io.println("You are on..");
+    @cfg(target_os = "linux") {
+    	unsafe {
+	    unix.write(1,"linux\n",7);
+    	    ret 0;
+	}
+    }
+    core.write(1,"other\n",7);
+    ret 0;
+}

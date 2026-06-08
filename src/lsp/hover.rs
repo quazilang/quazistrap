@@ -14,8 +14,8 @@ pub fn hover_at(report: &SemanticReport, source: &str, pos: Position) -> Option<
         .filter(|a| a.span.start <= offset && offset < a.span.end)
         .min_by_key(|a| a.span.end - a.span.start);
 
-    if let Some(ann) = best {
-        if let Some(ty) = &ann.ty {
+    if let Some(ann) = best
+        && let Some(ty) = &ann.ty {
             let range = span_to_range(ann.span, source);
             let value = match &ann.const_value {
                 Some(cv) => format!("```void\n{ty} = {cv}\n```"),
@@ -29,7 +29,6 @@ pub fn hover_at(report: &SemanticReport, source: &str, pos: Position) -> Option<
                 range: Some(range),
             });
         }
-    }
 
     // Fallback: identifier word → symbol table
     let word = word_at_offset(source, offset)?;

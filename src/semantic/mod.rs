@@ -86,6 +86,9 @@ pub struct Analyzer {
     pub(super) library_char_ranges: Vec<std::ops::Range<usize>>,
     /// Per-file source map for merged sources.
     pub(super) source_files: Vec<SourceFile>,
+    /// Files whose top-level definitions are mangled with their module name.
+    /// Populated from LoadResult; empty when analyzing raw source without a loader.
+    pub(super) namespaced_paths: std::collections::HashSet<String>,
     /// Function names that live in library (dependency) files.
     /// Set once from LoadResult; not reset between analyses.
     pub(super) library_fn_names: std::collections::HashSet<String>,
@@ -110,6 +113,9 @@ pub struct Analyzer {
     /// When type-checking an impl method, this holds the mangled name (e.g. "Counter.get")
     /// so that dependency edges use the mangled name rather than the bare method name.
     pub(super) current_fn_name_override: Option<String>,
+    /// Module path of the function whose body is currently being type-checked.
+    /// `None` for entry-file functions that keep their bare names.
+    pub(super) current_module_path: Option<String>,
     /// Monomorphization requests recorded during type checking.
     pub(super) monomorphizations: Vec<MonomorphizationInfo>,
     /// Type aliases: alias name → (generic_params, aliased TypeKind).
@@ -316,6 +322,7 @@ impl Analyzer {
             trait_depth: 0,
             library_char_ranges: Vec::new(),
             source_files: Vec::new(),
+            namespaced_paths: std::collections::HashSet::new(),
             library_fn_names: std::collections::HashSet::new(),
             library_symbols: Vec::new(),
             explicitly_imported_fns: std::collections::HashMap::new(),
@@ -325,6 +332,7 @@ impl Analyzer {
             trait_impls: HashMap::new(),
             trait_method_slots: HashMap::new(),
             current_fn_name_override: None,
+            current_module_path: None,
             monomorphizations: Vec::new(),
             type_aliases: std::collections::HashMap::new(),
             fn_param_names: HashMap::new(),
@@ -343,6 +351,10 @@ impl Analyzer {
         self.source_files = files;
     }
 
+    pub fn set_namespaced_paths(&mut self, paths: std::collections::HashSet<String>) {
+        self.namespaced_paths = paths;
+    }
+
     pub(super) fn is_library_span(&self, span: Span) -> bool {
         self.library_char_ranges
             .iter()
@@ -355,6 +367,45 @@ impl Analyzer {
             .find(|file| file.contains(span))
             .map(|file| file.label(span))
             .unwrap_or_else(|| format!("{}:{}", span.line, span.col))
+    }
+
+    /// Derive the module name for a source file path, matching the loader's
+    /// `path_module_name`: `bar.void` → `bar`, `mod.void` → parent dir name.
+    pub(super) fn module_name_for_path(&self, path: &str) -> Option<String> {
+        let p = std::path::Path::new(path);
+        let stem = p.file_stem().and_then(|s| s.to_str())?;
+        if stem == "mod" {
+            p.parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        } else {
+            Some(stem.to_string())
+        }
+    }
+
+    /// Return the module path for the source file containing `span`, if that
+    /// file is marked as namespaced.
+    pub(super) fn module_path_for_span(&self, span: Span) -> Option<String> {
+        let path = self
+            .source_files
+            .iter()
+            .find(|f| f.contains(span))?
+            .path
+            .clone();
+        if !self.namespaced_paths.contains(&path) {
+            return None;
+        }
+        self.module_name_for_path(&path)
+    }
+
+    /// Return true if the source file containing `span` is a namespaced module.
+    pub(super) fn is_namespaced_span(&self, span: Span) -> bool {
+        self.source_files
+            .iter()
+            .find(|f| f.contains(span))
+            .map(|f| self.namespaced_paths.contains(&f.path))
+            .unwrap_or(false)
     }
 
     pub fn set_library_symbols(&mut self, symbols: Vec<(String, Symbol)>) {
@@ -481,6 +532,7 @@ impl Analyzer {
             monomorphizations: std::mem::take(&mut self.monomorphizations),
             type_aliases: self.type_aliases.clone(),
             fn_param_names: self.fn_param_names.clone(),
+            namespaced_paths: self.namespaced_paths.clone(),
         }
     }
 
@@ -520,6 +572,7 @@ impl Analyzer {
         self.type_aliases.clear();
         self.fn_param_names.clear();
         self.current_fn_name_override = None;
+        self.current_module_path = None;
         self.init_builtins();
         self.init_library_symbols();
     }
@@ -839,11 +892,10 @@ impl Analyzer {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(symbol) = scope.get_mut(name) {
                 symbol.used = true;
-                if symbol.is_import {
-                    if let Some(path) = &symbol.import_path {
+                if symbol.is_import
+                    && let Some(path) = &symbol.import_path {
                         self.used_import_paths.insert(path.clone());
                     }
-                }
                 return Some(symbol.clone());
             }
         }
@@ -919,11 +971,10 @@ impl Analyzer {
     }
 
     pub(super) fn push_suggestion(&mut self, span: Option<Span>, message: String) {
-        if let Some(s) = span {
-            if self.is_library_span(s) {
+        if let Some(s) = span
+            && self.is_library_span(s) {
                 return;
             }
-        }
         self.suggestions.push(SemanticSuggestion { message, span });
     }
 }

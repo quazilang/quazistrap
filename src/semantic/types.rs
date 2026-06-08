@@ -220,6 +220,9 @@ pub struct ExprAnnotation {
     pub ty: Option<TypeKind>,
     pub const_value: Option<ConstValue>,
     pub reachable: bool,
+    /// If the expression resolves to a specific function name (e.g. a module-qualified
+    /// mangled name), codegen should use this instead of the raw AST identifier.
+    pub resolved_fn: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -355,6 +358,8 @@ pub struct SemanticReport {
     pub type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
     /// Ordered parameter names per function (mangled or plain): used for named-arg resolution.
     pub fn_param_names: HashMap<String, Vec<String>>,
+    /// Files whose top-level definitions were mangled with their module name.
+    pub namespaced_paths: std::collections::HashSet<String>,
 }
 
 /// Records a call to a generic function with concrete type arguments.

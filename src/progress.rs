@@ -40,7 +40,7 @@ pub fn stderr_is_tty() -> bool {
             unsafe extern "C" {
                 fn isatty(fd: i32) -> i32;
             }
-            return isatty(2) != 0;
+            isatty(2) != 0
         }
     }
     #[cfg(not(any(windows, unix)))]
@@ -74,8 +74,8 @@ pub fn common_lib_prefix(lib_files: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn short_label(path: &Path, lib_prefix: Option<&Path>) -> String {
-    if let Some(prefix) = lib_prefix {
-        if let Ok(rel) = path.strip_prefix(prefix) {
+    if let Some(prefix) = lib_prefix
+        && let Ok(rel) = path.strip_prefix(prefix) {
             let no_ext = rel.with_extension("");
             let parts: Vec<String> = no_ext
                 .components()
@@ -86,7 +86,6 @@ fn short_label(path: &Path, lib_prefix: Option<&Path>) -> String {
                 return parts.join(".");
             }
         }
-    }
     path.file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("?")
@@ -137,9 +136,9 @@ fn render_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool, is_t
         format!("  \x1b[1m{}\x1b[0m", node.label)
     } else {
         let conn = if is_last {
-            format!("\x1b[2m└─\x1b[0m ")
+            "\x1b[2m└─\x1b[0m ".to_string()
         } else {
-            format!("\x1b[2m├─\x1b[0m ")
+            "\x1b[2m├─\x1b[0m ".to_string()
         };
         format!("  {}{}{}", prefix, conn, node.label)
     };

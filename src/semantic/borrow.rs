@@ -114,11 +114,10 @@ impl Analyzer {
                 ItemKind::Fn { attributes, .. } => Some(attributes),
                 _ => None,
             };
-            if let Some(attrs) = attrs {
-                if !super::item_should_include(attrs) {
+            if let Some(attrs) = attrs
+                && !super::item_should_include(attrs) {
                     continue;
                 }
-            }
             match &item.node {
                 ItemKind::Fn {
                     params,
@@ -318,7 +317,7 @@ impl Analyzer {
         match &expr.node {
             ExprKind::Ident(name) => {
                 let Some(var) = env.lookup(name) else { return };
-                let is_move = var.ty.as_ref().map_or(false, |t| self.bc_is_move_type(t));
+                let is_move = var.ty.as_ref().is_some_and(|t| self.bc_is_move_type(t));
                 if !is_move {
                     return;
                 } // Copy type or unresolved generic: no tracking needed.

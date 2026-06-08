@@ -57,6 +57,7 @@ fn run_pipeline(
     library_fn_names: HashSet<String>,
     library_char_ranges: Vec<std::ops::Range<usize>>,
     source_files: Vec<semantic::types::SourceFile>,
+    namespaced_paths: HashSet<String>,
     debug: bool,
     emit: EmitType,
     output_file_name: &str,
@@ -70,6 +71,7 @@ fn run_pipeline(
         library_fn_names,
         library_char_ranges,
         source_files.clone(),
+        namespaced_paths,
     );
     if !report_diagnostics(&sema_report, src, &source_files) {
         std::process::exit(1);
@@ -329,6 +331,7 @@ fn run_check(
     library_fn_names: HashSet<String>,
     library_char_ranges: Vec<std::ops::Range<usize>>,
     source_files: Vec<semantic::types::SourceFile>,
+    namespaced_paths: HashSet<String>,
 ) {
     let program = &semantic::strip_cfg(program);
     let report = analyze_program_with_source_files(
@@ -337,6 +340,7 @@ fn run_check(
         library_fn_names,
         library_char_ranges,
         source_files.clone(),
+        namespaced_paths,
     );
     if !report_diagnostics(&report, src, &source_files) {
         std::process::exit(1);
@@ -646,12 +650,18 @@ fn build_with_progress(
 
     // ── Step 3: Codegen (analyze + bytecode) ─────────────────────────────────
     prog.begin("Codegen");
+    let namespaced_paths: HashSet<String> = result
+        .namespaced_paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     let sema = analyze_program_with_source_files(
         &result.merged_source,
         &result.program,
         result.library_fn_names,
         result.library_char_ranges,
         result.source_files.clone(),
+        namespaced_paths,
     );
     let has_errors = !sema.errors.is_empty();
     let mut cg = bytecode::Codegen::new(&sema);
@@ -873,11 +883,11 @@ fn main() {
                 }
             } else if files
                 .iter()
-                .any(|f| f.extension().map_or(false, |e| e == "vbc"))
+                .any(|f| f.extension().is_some_and(|e| e == "vbc"))
             {
                 // .vbc input — deserialize and compile to native directly.
                 for vbc_file in &files {
-                    if vbc_file.extension().map_or(false, |e| e != "vbc") {
+                    if vbc_file.extension().is_some_and(|e| e != "vbc") {
                         eprintln!(
                             "\x1b[31;1merror:\x1b[0m cannot mix .vbc and source files: {}",
                             vbc_file.display()
@@ -998,12 +1008,18 @@ fn main() {
             }
 
             let out = project_output_name(&ctx.config.name, EmitType::Binary);
+            let namespaced_paths: HashSet<String> = result
+                .namespaced_paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
             run_pipeline(
                 &result.merged_source,
                 &result.program,
                 result.library_fn_names,
                 result.library_char_ranges,
                 result.source_files,
+                namespaced_paths,
                 false,
                 EmitType::Binary,
                 &out,
@@ -1038,12 +1054,18 @@ fn main() {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }
+            let namespaced_paths: HashSet<String> = result
+                .namespaced_paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
             run_check(
                 &result.merged_source,
                 &result.program,
                 result.library_fn_names,
                 result.library_char_ranges,
                 result.source_files,
+                namespaced_paths,
             );
         }
 
@@ -1104,6 +1126,7 @@ fn main() void {
                     HashSet::new(),
                     Vec::new(),
                     Vec::new(),
+                    HashSet::new(),
                     false,
                     emit,
                     &output,

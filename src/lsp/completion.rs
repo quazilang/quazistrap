@@ -101,11 +101,10 @@ fn module_items_from_dir(dir: &Path, base: &str, relative: &[String]) -> Vec<Com
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
                 names.insert(name.to_string());
             }
-        } else if path.extension().and_then(|s| s.to_str()) == Some("void") {
-            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+        } else if path.extension().and_then(|s| s.to_str()) == Some("void")
+            && let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                 names.insert(name.to_string());
             }
-        }
     }
 
     names

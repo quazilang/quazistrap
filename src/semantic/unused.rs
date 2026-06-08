@@ -78,7 +78,7 @@ impl Analyzer {
                         .scopes
                         .first()
                         .and_then(|s| s.get(&capitalized))
-                        .map_or(false, |sym| {
+                        .is_some_and(|sym| {
                             sym.used && matches!(sym.kind, SymbolKind::TypeName)
                         });
                     if type_used {
@@ -143,11 +143,10 @@ impl Analyzer {
                 ItemKind::Fn { attributes, .. } => Some(attributes),
                 _ => None,
             };
-            if let Some(attrs) = attrs {
-                if !super::item_should_include(attrs) {
+            if let Some(attrs) = attrs
+                && !super::item_should_include(attrs) {
                     continue;
                 }
-            }
             match &item.node {
                 ItemKind::Fn {
                     body: Some(body), ..

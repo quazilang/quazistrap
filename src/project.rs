@@ -289,8 +289,8 @@ fn collect_modules(
                 expect_name, meta.name
             ));
         }
-        if let Some(expect_ver) = expect_version {
-            if meta.version.as_deref() != Some(expect_ver) {
+        if let Some(expect_ver) = expect_version
+            && meta.version.as_deref() != Some(expect_ver) {
                 return Err(format!(
                     "dependency '{}' version mismatch: expected {}, got {}",
                     meta.name,
@@ -298,7 +298,6 @@ fn collect_modules(
                     meta.version.clone().unwrap_or_else(|| "<none>".to_string())
                 ));
             }
-        }
     }
 
     let spec = ModuleSpec {

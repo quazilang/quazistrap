@@ -115,8 +115,7 @@ fn max_reg_used(chunk: &Chunk) -> usize {
 fn jump_targets(chunk: &Chunk) -> std::collections::HashSet<u16> {
     let mut set = std::collections::HashSet::new();
     for instr in &chunk.code {
-        match Opcode::from_u8(instr.opcode) {
-            Some(
+        if let Some(
                 Opcode::Jmp
                 | Opcode::Je
                 | Opcode::Jne
@@ -128,11 +127,9 @@ fn jump_targets(chunk: &Chunk) -> std::collections::HashSet<u16> {
                 | Opcode::Jb
                 | Opcode::Jz
                 | Opcode::Jnz,
-            ) => {
-                let (_, target) = instr.ri16();
-                set.insert(target);
-            }
-            _ => {}
+            ) = Opcode::from_u8(instr.opcode) {
+            let (_, target) = instr.ri16();
+            set.insert(target);
         }
     }
     set
@@ -1470,7 +1467,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.set_label(&mut lbl_end));
                     }
                     // Integer hex/octal: sprintf(buf, fmt, val)
-                    3 | 4 | 5 => {
+                    3..=5 => {
                         let fmt_sym = match type_tag {
                             3 => "__void_fmt_llx",
                             4 => "__void_fmt_llX",

@@ -29,6 +29,10 @@ pub struct LoadResult {
     pub token_count: usize,
     /// Parse error message, if parsing failed. IO errors are returned as `Err` from the loader.
     pub parse_error: Option<String>,
+    /// Paths of files that are treated as separate modules and whose top-level
+    /// definitions are namespaced/mangled. This is every loaded file except the
+    /// original entry files passed to the loader.
+    pub namespaced_paths: HashSet<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +80,7 @@ pub fn load_programs_with_resolver(
     resolver: Option<&ModuleResolver>,
 ) -> Result<LoadResult, String> {
     // First pass: lenient — only checks for @no_std, skips import errors.
-    let initial = collect_sources(entries, resolver, false)?;
+    let _initial = collect_sources(entries, resolver, false)?;
 
     // Build resolver that always includes both prelude and std.
     // @no_std does not disable prelude or std; both are always available.
@@ -108,6 +112,9 @@ struct SourceCollection {
     sources: Vec<(PathBuf, String)>,
     library_paths: HashSet<PathBuf>,
     dep_edges: Vec<(PathBuf, PathBuf)>,
+    /// Canonicalized paths of the original entry files; everything else is a
+    /// dependency and gets namespaced/mangled.
+    entry_paths: HashSet<PathBuf>,
 }
 
 fn collect_sources_with_prelude(
@@ -120,6 +127,7 @@ fn collect_sources_with_prelude(
     let mut sources: Vec<(PathBuf, String)> = Vec::new();
     let mut library_paths: HashSet<PathBuf> = HashSet::new();
     let mut dep_edges: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut entry_paths: HashSet<PathBuf> = HashSet::new();
 
     if let Some(p) = prelude {
         collect(
@@ -135,6 +143,10 @@ fn collect_sources_with_prelude(
     }
 
     for entry in entries {
+        let canonical = entry
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve '{}': {}", entry.display(), e))?;
+        entry_paths.insert(canonical);
         collect(
             entry,
             false,
@@ -151,6 +163,7 @@ fn collect_sources_with_prelude(
         sources,
         library_paths,
         dep_edges,
+        entry_paths,
     })
 }
 
@@ -167,9 +180,17 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         mut sources,
         library_paths,
         dep_edges,
+        entry_paths,
     } = collection;
 
-    let user_fn_names = collect_user_function_names(&sources, &library_paths);
+    let namespaced_paths: HashSet<PathBuf> = sources
+        .iter()
+        .map(|(p, _)| p)
+        .filter(|p| !entry_paths.contains(*p))
+        .cloned()
+        .collect();
+
+    let user_fn_names = collect_user_function_names(&sources, &library_paths, &entry_paths);
     let explicitly_imported_names = collect_explicit_library_import_names(&sources, &library_paths);
     let shadowed_library_fn_names: HashSet<String> = user_fn_names
         .difference(&explicitly_imported_names)
@@ -178,7 +199,9 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
 
     if !shadowed_library_fn_names.is_empty() {
         for (path, src) in &mut sources {
-            if library_paths.contains(path) {
+            // Namespaced (library) files use module-qualified function names,
+            // so bare-name shadowing is no longer a concern there.
+            if library_paths.contains(path) && !namespaced_paths.contains(path) {
                 *src = remove_shadowed_library_functions(src, &shadowed_library_fn_names);
             }
         }
@@ -191,22 +214,24 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         .map(|(p, _)| p.clone())
         .collect();
 
-    // Collect function names declared in library (dependency) files.
+    // Collect function names declared in namespaced (dependency) files.
+    // These are registered under their module-qualified names so collisions
+    // across modules are impossible.
     let mut library_fn_names: HashSet<String> = HashSet::new();
     for (path, src) in &sources {
-        if !library_paths.contains(path) {
+        if !namespaced_paths.contains(path) {
             continue;
         }
+        let module_name = path_module_name(path);
         let mut lx = Lexer::new(src);
         let toks = lx.tokenize();
         let mut pr = Parser::new(toks);
         if let Ok(prog) = pr.parse() {
             for item in &prog.items {
-                if let ItemKind::Fn { name, pub_fn, .. } = &item.node {
-                    if *pub_fn {
-                        library_fn_names.insert(name.clone());
+                if let ItemKind::Fn { name, pub_fn, .. } = &item.node
+                    && *pub_fn {
+                        library_fn_names.insert(format!("{}.{}", module_name, name));
                     }
-                }
             }
         }
     }
@@ -276,16 +301,23 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         dep_edges,
         token_count,
         parse_error,
+        namespaced_paths,
     })
 }
 
 fn collect_user_function_names(
     sources: &[(PathBuf, String)],
     library_paths: &HashSet<PathBuf>,
+    entry_paths: &HashSet<PathBuf>,
 ) -> HashSet<String> {
     let mut names = HashSet::new();
     for (path, src) in sources {
         if library_paths.contains(path) {
+            continue;
+        }
+        // Dependency files are namespaced, so their bare function names cannot
+        // collide with library functions.
+        if !entry_paths.contains(path) {
             continue;
         }
         for name in function_names_in_source(src) {
@@ -412,6 +444,23 @@ fn line_start(src: &str, offset: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// Derive the module name for a source file path.
+/// `src/bar.void` → `bar`; `src/foo/mod.void` → `foo`.
+fn path_module_name(path: &Path) -> String {
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+        if stem == "mod"
+            && let Some(parent) = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+            {
+                return parent.to_string();
+            }
+        return stem.to_string();
+    }
+    path.to_string_lossy().into_owned()
+}
+
 fn char_offset_to_byte(src: &str, char_offset: usize) -> usize {
     src.char_indices()
         .nth(char_offset)
@@ -432,14 +481,13 @@ fn resolver_with_builtin_modules(
             .or_insert(prelude_spec);
     }
 
-    if include_std {
-        if let Some(std_spec) = builtin_std_module_spec() {
+    if include_std
+        && let Some(std_spec) = builtin_std_module_spec() {
             combined
                 .modules
                 .entry("std".to_string())
                 .or_insert(std_spec);
         }
-    }
 
     if combined.modules.is_empty() {
         None
@@ -564,11 +612,9 @@ fn used_std_modules(src: &str) -> HashSet<String> {
             && matches!(window[1].kind, TokenKind::Dot)
             && matches!(&window[2].kind, TokenKind::Ident(_))
             && matches!(window[3].kind, TokenKind::Dot)
-        {
-            if let TokenKind::Ident(module) = &window[2].kind {
+            && let TokenKind::Ident(module) = &window[2].kind {
                 modules.insert(module.clone());
             }
-        }
     }
 
     modules
@@ -650,17 +696,16 @@ fn local_import_paths(
             continue;
         };
 
-        if !ip.relative {
-            if let Some(mods) = resolver {
-                if let Some(spec) = mods.modules.get(&base) {
+        if !ip.relative
+            && let Some(mods) = resolver
+                && let Some(spec) = mods.modules.get(&base) {
                     if remainder.is_empty() && base == "std" {
                         // import std; — only load sub-modules actually used in source
                         for module in used_std_modules(src) {
-                            if let Some(target) = resolve_module_file(spec, &module) {
-                                if seen.insert(target.clone()) {
+                            if let Some(target) = resolve_module_file(spec, &module)
+                                && seen.insert(target.clone()) {
                                     paths.push((target, true));
                                 }
-                            }
                         }
                         continue;
                     }
@@ -754,9 +799,7 @@ fn local_import_paths(
                         paths.push((target, true)); // from module resolver → library
                     }
                     continue;
-                }
-            }
-        } // end !ip.relative
+                } // end !ip.relative
 
         let candidate = dir.join(format!("{}.void", base));
         if candidate.exists() && seen.insert(candidate.clone()) {
@@ -919,11 +962,10 @@ fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
                         sub_mod.push(seg);
                     }
                     let sub_mod_void = sub_mod.join("mod.void");
-                    if sub_mod_void.exists() {
-                        if let Some(found) = find_pub_exported_file(&sub_mod_void, name) {
+                    if sub_mod_void.exists()
+                        && let Some(found) = find_pub_exported_file(&sub_mod_void, name) {
                             return Some(found);
                         }
-                    }
                     // Also try direct file: path/name.void
                     sub_mod.push(name);
                     sub_mod.set_extension("void");
@@ -1077,7 +1119,7 @@ mod tests {
             "expected std/src/core.void to be loaded via explicit import, got {:?}",
             result.library_file_paths
         );
-        assert!(result.library_fn_names.contains("write"));
+        assert!(result.library_fn_names.contains("core.write"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1203,16 +1245,13 @@ mod tests {
     }
 
     #[test]
-    fn user_function_can_shadow_unimported_std_function() {
-        let root = temp_dir("void_loader_shadow_std");
+    fn user_function_does_not_collide_with_namespaced_std_function() {
+        let root = temp_dir("void_loader_namespace_std");
         let main_path = root.join("main.void");
         fs::write(
             &main_path,
-            // Shadow sleep_ms — unlike exit, panic.void does not call sleep_ms,
-            // so there is no arity conflict from the prelude's __void_panic_handler.
             r#"
 import std.core.write;
-import std;
 
 fn sleep_ms() void { }
 
@@ -1228,22 +1267,29 @@ fn main() i32 {
 
         let result = load_programs(&[main_path]).expect("load programs");
         assert!(
-            result.library_fn_names.contains("write"),
+            result.library_fn_names.contains("core.write"),
             "explicitly imported std.core.write should remain available"
         );
         assert!(
-            !result.library_fn_names.contains("sleep_ms"),
-            "unimported std.core.sleep_ms should be filtered when user defines sleep_ms"
+            result.library_fn_names.contains("core.sleep_ms"),
+            "std.core.sleep_ms should remain available under its mangled name"
         );
-        let report = crate::analysis::analyze_program(
+        let namespaced_paths: HashSet<String> = result
+            .namespaced_paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let report = crate::analysis::analyze_program_with_source_files(
             &result.merged_source,
             &result.program,
             result.library_fn_names,
             result.library_char_ranges,
+            result.source_files,
+            namespaced_paths,
         );
         assert!(
             report.errors.is_empty(),
-            "expected shadowed std exit program to analyze cleanly, got {:?}",
+            "expected namespaced std program to analyze cleanly, got {:?}",
             report.errors
         );
 
