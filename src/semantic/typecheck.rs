@@ -428,6 +428,7 @@ impl Analyzer {
             StmtKind::If {
                 condition,
                 then_block,
+                else_if,
                 else_block,
             } => {
                 let condition_eval = self.type_check_expr(condition, true);
@@ -441,7 +442,21 @@ impl Analyzer {
                     );
                 }
 
-                let then_returns = self.type_check_block(then_block, expected_return);
+                let mut then_returns = self.type_check_block(then_block, expected_return);
+                for (else_if_cond, else_if_block) in else_if {
+                    let else_if_eval = self.type_check_expr(else_if_cond, true);
+                    if let Some(ty) = else_if_eval.ty
+                        && !matches!(ty, TypeKind::Bool | TypeKind::Any)
+                    {
+                        self.push_error(
+                            else_if_cond.span,
+                            "S01",
+                            format!("if condition must be bool, got {}", ty),
+                        );
+                    }
+                    then_returns =
+                        self.type_check_block(else_if_block, expected_return) && then_returns;
+                }
                 let else_returns = if let Some(else_block) = else_block {
                     self.type_check_block(else_block, expected_return)
                 } else {

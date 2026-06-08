@@ -185,12 +185,17 @@ pub fn strip_cfg(program: &Program) -> Program {
                 StmtKind::If {
                     condition,
                     then_block,
+                    else_if,
                     else_block,
                 } => {
                     stmts.push(Spanned::new(
                         StmtKind::If {
                             condition: condition.clone(),
                             then_block: strip_block(then_block),
+                            else_if: else_if
+                                .iter()
+                                .map(|(c, b)| (c.clone(), strip_block(b)))
+                                .collect(),
                             else_block: else_block.as_ref().map(strip_block),
                         },
                         stmt.span,
@@ -1305,6 +1310,46 @@ fn main() void {
                 .errors
                 .iter()
                 .any(|e| e.message.contains("type mismatch"))
+        );
+    }
+
+    #[test]
+    fn accepts_else_if_chain() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var x: i32 = 1;
+    if (x == 1) {
+        x = 2;
+    } else if (x == 2) {
+        x = 3;
+    } else {
+        x = 4;
+    }
+}
+"#,
+        );
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn reports_non_bool_else_if_condition() {
+        let report = analyze(
+            r#"
+fn main() void {
+    if (true) {
+        ret;
+    } else if (1) {
+        ret;
+    }
+}
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("if condition must be bool"))
         );
     }
 

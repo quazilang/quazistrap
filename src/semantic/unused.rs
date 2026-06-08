@@ -196,10 +196,14 @@ impl Analyzer {
             StmtKind::Return(_) => true,
             StmtKind::If {
                 then_block,
+                else_if,
                 else_block,
                 ..
             } => {
-                let then_returns = self.dead_code_block(then_block);
+                let mut then_returns = self.dead_code_block(then_block);
+                for (_, else_if_block) in else_if {
+                    then_returns = self.dead_code_block(else_if_block) && then_returns;
+                }
                 let else_returns = if let Some(else_block) = else_block {
                     self.dead_code_block(else_block)
                 } else {

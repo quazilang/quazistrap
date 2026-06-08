@@ -1780,6 +1780,43 @@ impl<'a> FnCompiler<'a> {
 
     // ── Block / statement ──
 
+    /// Compile an else-if / else chain.  `end_jumps` collects the `Jmp`
+    /// instructions emitted after each branch's then-block; they are all
+    /// patched to the final end-of-chain address by the caller.
+    fn compile_else_if_chain(
+        &mut self,
+        else_if: &[(Expr, Block)],
+        else_block: &Option<Block>,
+        end_jumps: &mut Vec<usize>,
+    ) -> bool {
+        if else_if.is_empty() {
+            return if let Some(eb) = else_block {
+                self.compile_block(eb)
+            } else {
+                false
+            };
+        }
+        let (cond, block) = &else_if[0];
+        let rest = &else_if[1..];
+        let cond_key = (cond.span.start, cond.span.end);
+        if let Some(ConstValue::Bool(b)) = self.const_map.get(&cond_key).cloned() {
+            if b {
+                let returns = self.compile_block(block);
+                let jmp = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
+                end_jumps.push(jmp);
+                return returns;
+            }
+            return self.compile_else_if_chain(rest, else_block, end_jumps);
+        }
+        let jump_else = self.compile_condition_jump(cond, true);
+        let block_returns = self.compile_block(block);
+        let jmp = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
+        end_jumps.push(jmp);
+        self.chunk.patch_jump(jump_else, self.chunk.len() as u16);
+        let rest_returns = self.compile_else_if_chain(rest, else_block, end_jumps);
+        block_returns && rest_returns
+    }
+
     fn compile_block(&mut self, block: &Block) -> bool {
         self.drop_scopes.push(Vec::new());
         for stmt in &block.stmts {
@@ -1876,34 +1913,34 @@ impl<'a> FnCompiler<'a> {
             StmtKind::If {
                 condition,
                 then_block,
+                else_if,
                 else_block,
             } => {
                 // Constant-condition elimination: skip the dead branch entirely.
                 let cond_key = (condition.span.start, condition.span.end);
                 if let Some(ConstValue::Bool(b)) = self.const_map.get(&cond_key).cloned() {
-                    return if b {
-                        self.compile_block(then_block)
-                    } else if let Some(eb) = else_block {
-                        self.compile_block(eb)
-                    } else {
-                        false
-                    };
+                    if b {
+                        return self.compile_block(then_block);
+                    }
+                    let mut end_jumps = Vec::new();
+                    let returns = self.compile_else_if_chain(else_if, else_block, &mut end_jumps);
+                    for jmp in end_jumps {
+                        self.chunk.patch_jump(jmp, self.chunk.len() as u16);
+                    }
+                    return returns;
                 }
 
                 // Emit condition + jump-if-false past the then block.
                 let jump_else = self.compile_condition_jump(condition, true);
                 let then_returns = self.compile_block(then_block);
+                let mut end_jumps = vec![self.chunk.emit(ri16(Opcode::Jmp, 0, 0))];
+                self.chunk.patch_jump(jump_else, self.chunk.len() as u16);
 
-                if let Some(else_block) = else_block {
-                    let jump_end = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
-                    self.chunk.patch_jump(jump_else, self.chunk.len() as u16);
-                    let else_returns = self.compile_block(else_block);
-                    self.chunk.patch_jump(jump_end, self.chunk.len() as u16);
-                    then_returns && else_returns
-                } else {
-                    self.chunk.patch_jump(jump_else, self.chunk.len() as u16);
-                    false
+                let chain_returns = self.compile_else_if_chain(else_if, else_block, &mut end_jumps);
+                for jmp in end_jumps {
+                    self.chunk.patch_jump(jmp, self.chunk.len() as u16);
                 }
+                then_returns && chain_returns
             }
             StmtKind::For { kind, body } => {
                 match kind {

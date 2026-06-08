@@ -193,20 +193,27 @@ impl Analyzer {
             StmtKind::If {
                 condition,
                 then_block,
+                else_if,
                 else_block,
             } => {
                 self.bc_expr(condition, env, false);
                 let mut then_env = env.clone();
                 self.bc_block(then_block, &mut then_env);
+                let mut all_envs = vec![then_env];
+                for (else_if_cond, else_if_block) in else_if {
+                    self.bc_expr(else_if_cond, env, false);
+                    let mut ei_env = env.clone();
+                    self.bc_block(else_if_block, &mut ei_env);
+                    all_envs.push(ei_env);
+                }
                 if let Some(eb) = else_block {
                     let mut else_env = env.clone();
                     self.bc_block(eb, &mut else_env);
-                    // Conservative: moved in either branch → moved after.
-                    env.apply_branch_moves(&then_env);
-                    env.apply_branch_moves(&else_env);
-                } else {
-                    // No else: conservatively treat then-branch moves as possible.
-                    env.apply_branch_moves(&then_env);
+                    all_envs.push(else_env);
+                }
+                // Conservative: moved in any branch → moved after.
+                for branch_env in &all_envs {
+                    env.apply_branch_moves(branch_env);
                 }
             }
             StmtKind::For { kind, body } => {

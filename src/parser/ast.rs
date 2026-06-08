@@ -428,6 +428,7 @@ pub enum StmtKind {
     If {
         condition: Expr,
         then_block: Block,
+        else_if: Vec<(Expr, Block)>,
         else_block: Option<Block>,
     },
     /// Unified `for` loop — all loop forms.

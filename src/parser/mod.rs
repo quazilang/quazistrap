@@ -356,22 +356,40 @@ impl Parser {
 
         let then_block = self.parse_block()?;
 
-        let else_block = if self.at(TokenKind::Else) {
+        let mut else_if = Vec::new();
+        let mut else_block = None;
+
+        while self.at(TokenKind::Else) {
             self.advance();
-            Some(self.parse_block()?)
-        } else {
-            None
-        };
+            if self.at(TokenKind::If) {
+                self.advance(); // consume `if`
+                let else_if_condition = if self.at(TokenKind::LParen) {
+                    self.advance();
+                    let c = self.parse_expr()?;
+                    self.expect(TokenKind::RParen)?;
+                    c
+                } else {
+                    self.parse_expr()?
+                };
+                let else_if_then = self.parse_block()?;
+                else_if.push((else_if_condition, else_if_then));
+            } else {
+                else_block = Some(self.parse_block()?);
+                break;
+            }
+        }
 
         let end_span = else_block
             .as_ref()
             .map(|b| b.span)
+            .or_else(|| else_if.last().map(|(_, b)| b.span))
             .unwrap_or(then_block.span);
 
         Ok(Spanned::new(
             StmtKind::If {
                 condition,
                 then_block,
+                else_if,
                 else_block,
             },
             Span::merge(to_ast_span(start), end_span),
@@ -1919,6 +1937,69 @@ fn main() void {
             panic!("expected left binary");
         };
         assert!(matches!(and_op, BinOpKind::BitAnd));
+    }
+
+    #[test]
+    fn parses_else_if_chain() {
+        let program = parse_program(
+            r#"
+fn main() void {
+    if (x) {
+        a;
+    } else if (y) {
+        b;
+    } else if (z) {
+        c;
+    } else {
+        d;
+    }
+}
+"#,
+        );
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+        let stmts = &body.as_ref().unwrap().stmts;
+        assert_eq!(stmts.len(), 1);
+        let StmtKind::If {
+            else_if,
+            else_block,
+            ..
+        } = &stmts[0].node
+        else {
+            panic!("expected if statement");
+        };
+        assert_eq!(else_if.len(), 2);
+        assert!(else_block.is_some());
+    }
+
+    #[test]
+    fn parses_else_if_without_else() {
+        let program = parse_program(
+            r#"
+fn main() void {
+    if (x) {
+        a;
+    } else if (y) {
+        b;
+    }
+}
+"#,
+        );
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+        let stmts = &body.as_ref().unwrap().stmts;
+        let StmtKind::If {
+            else_if,
+            else_block,
+            ..
+        } = &stmts[0].node
+        else {
+            panic!("expected if statement");
+        };
+        assert_eq!(else_if.len(), 1);
+        assert!(else_block.is_none());
     }
 
     #[test]
