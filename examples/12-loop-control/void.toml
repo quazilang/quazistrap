@@ -1,0 +1,7 @@
+[package]
+name = "loop-control"
+version = "0.1.0"
+
+[build]
+entry = "src/main.void"
+src = "src"

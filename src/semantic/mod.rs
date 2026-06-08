@@ -78,6 +78,8 @@ pub struct Analyzer {
     pub(super) unreachable_functions: BTreeSet<String>,
     /// Nesting depth of `unsafe` blocks/functions (0 = safe context).
     pub(super) unsafe_depth: usize,
+    /// Nesting depth of loops (0 = outside any loop).
+    pub(super) loop_depth: usize,
     /// Nesting depth of trait definitions (0 = outside any trait).
     /// `any` in trait method signatures is exempt from W05.
     pub(super) trait_depth: usize,
@@ -324,6 +326,7 @@ impl Analyzer {
             lazy_import_hints: Vec::new(),
             unreachable_functions: BTreeSet::new(),
             unsafe_depth: 0,
+            loop_depth: 0,
             trait_depth: 0,
             library_char_ranges: Vec::new(),
             source_files: Vec::new(),

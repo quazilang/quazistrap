@@ -272,6 +272,7 @@ impl Analyzer {
                 env.loop_depth -= 1;
                 env.apply_branch_moves(&loop_env);
             }
+            StmtKind::Break | StmtKind::Continue => {}
             StmtKind::UnsafeBlock { body } => {
                 self.bc_block(body, env);
             }

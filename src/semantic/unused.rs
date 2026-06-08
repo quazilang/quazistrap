@@ -227,6 +227,7 @@ impl Analyzer {
                 false
             }
             StmtKind::Var { .. } | StmtKind::Const { .. } | StmtKind::ExprStmt(_) => false,
+            StmtKind::Break | StmtKind::Continue => true,
             StmtKind::CfgBlock { body, condition } => {
                 if crate::semantic::item_should_include(std::slice::from_ref(condition)) {
                     let _ = self.dead_code_block(body);

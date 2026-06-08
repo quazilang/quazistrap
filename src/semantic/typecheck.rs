@@ -480,10 +480,14 @@ impl Analyzer {
                                 format!("for condition must be bool, got {}", cond_ty),
                             );
                         }
+                        self.loop_depth += 1;
                         let _ = self.type_check_block(body, expected_return);
+                        self.loop_depth -= 1;
                     }
                     ForLoop::Cond { condition: None } => {
+                        self.loop_depth += 1;
                         let _ = self.type_check_block(body, expected_return);
+                        self.loop_depth -= 1;
                     }
                     ForLoop::CStyle {
                         init,
@@ -509,7 +513,9 @@ impl Analyzer {
                         if let Some(upd) = update {
                             self.type_check_expr(upd, true);
                         }
+                        self.loop_depth += 1;
                         self.type_check_block(body, expected_return);
+                        self.loop_depth -= 1;
                         self.exit_scope_collect();
                     }
                     ForLoop::Each { vars, iter } => {
@@ -622,13 +628,190 @@ impl Analyzer {
                                 },
                             );
                         }
+                        self.loop_depth += 1;
                         for s in &body.stmts {
                             self.type_check_stmt(s, expected_return);
                         }
+                        self.loop_depth -= 1;
                         self.exit_scope_collect();
                     }
                 }
                 false
+            }
+            StmtKind::For { kind, body } => {
+                self.enter_scope();
+                match kind {
+                    ForLoop::Cond {
+                        condition: Some(cond),
+                    } => {
+                        let cond_eval = self.type_check_expr(cond, true);
+                        if let Some(cond_ty) = cond_eval.ty
+                            && !matches!(cond_ty, TypeKind::Bool | TypeKind::Any)
+                        {
+                            self.push_error(
+                                cond.span,
+                                "S01",
+                                format!("for condition must be bool, got {}", cond_ty),
+                            );
+                        }
+                        self.loop_depth += 1;
+                        let _ = self.type_check_block(body, expected_return);
+                        self.loop_depth -= 1;
+                        self.exit_scope_collect();
+                        return false;
+                    }
+                    ForLoop::Cond { condition: None } => {
+                        self.loop_depth += 1;
+                        let _ = self.type_check_block(body, expected_return);
+                        self.loop_depth -= 1;
+                        self.exit_scope_collect();
+                        return false;
+                    }
+                    ForLoop::CStyle {
+                        init,
+                        condition,
+                        update,
+                    } => {
+                        if let Some(init_stmt) = init {
+                            self.type_check_stmt(init_stmt, expected_return);
+                        }
+                        if let Some(cond) = condition {
+                            let cond_eval = self.type_check_expr(cond, true);
+                            if let Some(cond_ty) = cond_eval.ty
+                                && !matches!(cond_ty, TypeKind::Bool | TypeKind::Any)
+                            {
+                                self.push_error(
+                                    cond.span,
+                                    "S01",
+                                    format!("for condition must be bool, got {}", cond_ty),
+                                );
+                            }
+                        }
+                        if let Some(upd) = update {
+                            self.type_check_expr(upd, true);
+                        }
+                        self.loop_depth += 1;
+                        self.type_check_block(body, expected_return);
+                        self.loop_depth -= 1;
+                        self.exit_scope_collect();
+                        return false;
+                    }
+                    ForLoop::Each { vars, iter } => {
+                        let loop_var_ty = match iter {
+                            ForIter::Range { start, end } => {
+                                let start_eval = self.type_check_expr(start, true);
+                                let end_eval = self.type_check_expr(end, true);
+                                if let Some(t) = &start_eval.ty
+                                    && !Self::is_integer(t)
+                                {
+                                    self.push_error(
+                                        start.span,
+                                        "S01",
+                                        format!(
+                                            "for range start must be an integer type, got {}",
+                                            t
+                                        ),
+                                    );
+                                }
+                                if let Some(t) = &end_eval.ty
+                                    && !Self::is_integer(t)
+                                {
+                                    self.push_error(
+                                        end.span,
+                                        "S01",
+                                        format!("for range end must be an integer type, got {}", t),
+                                    );
+                                }
+                                start_eval.ty.or(end_eval.ty).unwrap_or(TypeKind::Int32)
+                            }
+                            ForIter::Iter(expr) => {
+                                let iter_eval = self.type_check_expr(expr, true);
+                                let iter_ty = iter_eval.ty.as_ref().map(|t| {
+                                    if let TypeKind::Ref { inner } = t {
+                                        &inner.node
+                                    } else {
+                                        t
+                                    }
+                                });
+                                match iter_ty {
+                                    Some(TypeKind::Array { elem_ty, .. }) => elem_ty.node.clone(),
+                                    Some(TypeKind::Slice { elem_ty }) => elem_ty.node.clone(),
+                                    Some(t) => {
+                                        self.push_error(
+                                            expr.span,
+                                            "S01",
+                                            format!(
+                                                "cannot iterate over type '{}'; expected array or slice",
+                                                t
+                                            ),
+                                        );
+                                        TypeKind::Any
+                                    }
+                                    None => TypeKind::Any,
+                                }
+                            }
+                        };
+                        if let Some(name) = vars.first() {
+                            self.declare(
+                                name.clone(),
+                                Symbol {
+                                    kind: SymbolKind::Variable { mutable: true },
+                                    ty: Some(loop_var_ty.clone()),
+                                    span: stmt.span,
+                                    params: vec![],
+                                    used: false,
+                                    initialized: true,
+                                    is_import: false,
+                                    import_path: None,
+                                    const_value: None,
+                                    variadic: false,
+                                    attributes: Vec::new(),
+                                    public: false,
+                                    unsafe_fn: false,
+                                    generic_params: vec![],
+                                },
+                            );
+                        }
+                        if let Some(name) = vars.get(1) {
+                            self.declare(
+                                name.clone(),
+                                Symbol {
+                                    kind: SymbolKind::Variable { mutable: true },
+                                    ty: Some(TypeKind::Usize),
+                                    span: stmt.span,
+                                    params: vec![],
+                                    used: false,
+                                    initialized: true,
+                                    is_import: false,
+                                    import_path: None,
+                                    const_value: None,
+                                    variadic: false,
+                                    attributes: Vec::new(),
+                                    public: false,
+                                    unsafe_fn: false,
+                                    generic_params: vec![],
+                                },
+                            );
+                        }
+                        self.loop_depth += 1;
+                        self.type_check_block(body, expected_return);
+                        self.loop_depth -= 1;
+                        self.exit_scope_collect();
+                        return false;
+                    }
+                }
+            }
+            StmtKind::Break => {
+                if self.loop_depth == 0 {
+                    self.push_error(stmt.span, "S11", "break outside of loop".to_string());
+                }
+                true
+            }
+            StmtKind::Continue => {
+                if self.loop_depth == 0 {
+                    self.push_error(stmt.span, "S11", "continue outside of loop".to_string());
+                }
+                true
             }
             StmtKind::UnsafeBlock { body } => {
                 self.unsafe_depth += 1;

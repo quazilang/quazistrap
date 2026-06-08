@@ -436,6 +436,8 @@ pub enum StmtKind {
         kind: ForLoop,
         body: Block,
     },
+    Break,
+    Continue,
     ExprStmt(Expr),
     /// `@cfg(key = "value") { ... }` — compile-time conditional block.
     CfgBlock {

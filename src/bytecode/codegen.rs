@@ -1223,6 +1223,7 @@ struct FnCompiler<'a> {
     source_files: &'a [SourceFile],
     /// Expression annotations from semantic analysis (resolved function names, types, etc.)
     annotated_exprs: &'a [crate::semantic::ExprAnnotation],
+    loop_stack: Vec<LoopFrame>,
 }
 
 #[derive(Clone)]
@@ -1231,6 +1232,20 @@ struct DropLocal {
     reg: u8,
     drop_fn: String,
     active: bool,
+}
+
+struct LoopFrame {
+    break_jumps: Vec<usize>,
+    continue_jumps: Vec<usize>,
+}
+
+impl LoopFrame {
+    fn new() -> Self {
+        Self {
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+        }
+    }
 }
 
 impl<'a> FnCompiler<'a> {
@@ -1284,6 +1299,7 @@ impl<'a> FnCompiler<'a> {
             fn_param_names,
             source_files,
             annotated_exprs,
+            loop_stack: Vec::new(),
         }
     }
 
@@ -1942,18 +1958,39 @@ impl<'a> FnCompiler<'a> {
                 }
                 then_returns && chain_returns
             }
+            StmtKind::Break => {
+                if let Some(frame) = self.loop_stack.last_mut() {
+                    let jmp = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
+                    frame.break_jumps.push(jmp);
+                }
+                true
+            }
+            StmtKind::Continue => {
+                if let Some(frame) = self.loop_stack.last_mut() {
+                    let jmp = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
+                    frame.continue_jumps.push(jmp);
+                }
+                true
+            }
             StmtKind::For { kind, body } => {
                 match kind {
                     ForLoop::Cond { condition: None } => {
-                        // Infinite loop.
                         let loop_top = self.chunk.len() as u16;
+                        self.loop_stack.push(LoopFrame::new());
                         self.compile_block(body);
+                        let frame = self.loop_stack.pop().unwrap();
+                        for jmp in &frame.continue_jumps {
+                            self.chunk.patch_jump(*jmp, loop_top);
+                        }
                         self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
+                        let exit_pos = self.chunk.len() as u16;
+                        for jmp in &frame.break_jumps {
+                            self.chunk.patch_jump(*jmp, exit_pos);
+                        }
                     }
                     ForLoop::Cond {
                         condition: Some(condition),
                     } => {
-                        // While-like loop.
                         let cond_key = (condition.span.start, condition.span.end);
                         if let Some(ConstValue::Bool(false)) =
                             self.const_map.get(&cond_key).cloned()
@@ -1962,9 +1999,18 @@ impl<'a> FnCompiler<'a> {
                         }
                         let loop_top = self.chunk.len() as u16;
                         let jump_exit = self.compile_condition_jump(condition, true);
+                        self.loop_stack.push(LoopFrame::new());
                         self.compile_block(body);
+                        let frame = self.loop_stack.pop().unwrap();
+                        for jmp in &frame.continue_jumps {
+                            self.chunk.patch_jump(*jmp, loop_top);
+                        }
                         self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
-                        self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
+                        let exit_pos = self.chunk.len() as u16;
+                        self.chunk.patch_jump(jump_exit, exit_pos);
+                        for jmp in &frame.break_jumps {
+                            self.chunk.patch_jump(*jmp, exit_pos);
+                        }
                     }
                     ForLoop::CStyle {
                         init,
@@ -1978,13 +2024,23 @@ impl<'a> FnCompiler<'a> {
                         let jump_exit = condition
                             .as_ref()
                             .map(|cond| self.compile_condition_jump(cond, true));
+                        self.loop_stack.push(LoopFrame::new());
                         self.compile_block(body);
+                        let frame = self.loop_stack.pop().unwrap();
+                        let continue_pos = self.chunk.len() as u16;
+                        for jmp in &frame.continue_jumps {
+                            self.chunk.patch_jump(*jmp, continue_pos);
+                        }
                         if let Some(upd) = update {
                             self.compile_expr(upd);
                         }
                         self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
+                        let exit_pos = self.chunk.len() as u16;
                         if let Some(je) = jump_exit {
-                            self.chunk.patch_jump(je, self.chunk.len() as u16);
+                            self.chunk.patch_jump(je, exit_pos);
+                        }
+                        for jmp in &frame.break_jumps {
+                            self.chunk.patch_jump(*jmp, exit_pos);
                         }
                     }
                     ForLoop::Each { vars, iter } => match iter {
@@ -1999,17 +2055,26 @@ impl<'a> FnCompiler<'a> {
                             let loop_top = self.chunk.len() as u16;
                             self.chunk.emit(rrr(Opcode::Cmp, 0, r_i, r_end));
                             let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
+                            self.loop_stack.push(LoopFrame::new());
                             self.compile_block(body);
+                            let frame = self.loop_stack.pop().unwrap();
+                            let continue_pos = self.chunk.len() as u16;
+                            for jmp in &frame.continue_jumps {
+                                self.chunk.patch_jump(*jmp, continue_pos);
+                            }
                             self.chunk.emit(rrr(Opcode::Inc, r_i, r_i, 0));
                             self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
-                            self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
+                            let exit_pos = self.chunk.len() as u16;
+                            self.chunk.patch_jump(jump_exit, exit_pos);
+                            for jmp in &frame.break_jumps {
+                                self.chunk.patch_jump(*jmp, exit_pos);
+                            }
                         }
                         ForIter::Iter(expr) => {
                             let iter_key = (expr.span.start, expr.span.end);
                             let mut iter_ty = self.type_of_span(iter_key);
                             let original_expr = expr.clone();
                             let mut expr = expr;
-                            // Strip explicit `&` — `for i : &arr` iterates `arr`.
                             let is_borrow = if let Some(TypeKind::Ref { inner }) = &iter_ty {
                                 if let ExprKind::Unary {
                                     op: UnaryOpKind::Ref,
@@ -2025,9 +2090,6 @@ impl<'a> FnCompiler<'a> {
                             } else {
                                 false
                             };
-                            // Move semantics: consume the iterable so the borrow checker
-                            // rejects use-after-move. Register a hidden drop local so the
-                            // value is cleaned up when the enclosing scope exits.
                             if !is_borrow {
                                 self.mark_consumed_expr(&original_expr);
                             }
@@ -2044,12 +2106,10 @@ impl<'a> FnCompiler<'a> {
                                     self.register_drop_local("__for_iter", ptr, iter_ty.clone());
                                 }
                                 let len_reg = if let Some(n) = static_array_len {
-                                    // Fixed-size array: length known at compile time.
                                     let r = self.alloc_reg();
                                     self.chunk.emit(ri16(Opcode::MovI, r, n));
                                     r
                                 } else {
-                                    // Slice: length in __len_<name> register or ptr+1.
                                     if let ExprKind::Ident(vname) = &expr.node {
                                         self.regs
                                             .get(&format!("__len_{}", vname))
@@ -2059,9 +2119,6 @@ impl<'a> FnCompiler<'a> {
                                         ptr + 1
                                     }
                                 };
-                                // For fixed-size arrays, `ptr` is the base register index. We need the
-                                // stack address of that register so Load/Sub arithmetic works correctly.
-                                // Slices already hold a stack address from Lea at construction.
                                 let base_addr = if static_array_len.is_some() {
                                     let r = self.alloc_reg();
                                     self.chunk.emit(mem_lea(ptr, r, 0));
@@ -2069,7 +2126,6 @@ impl<'a> FnCompiler<'a> {
                                 } else {
                                     ptr
                                 };
-                                // Bind loop variables: single var gets element value; two vars get (index, element).
                                 let (r_counter, r_val_opt) = match vars.as_slice() {
                                     [] => (self.alloc_reg(), None),
                                     [v] => (self.alloc_reg(), Some(self.bind(v.clone()))),
@@ -2083,7 +2139,6 @@ impl<'a> FnCompiler<'a> {
                                 let loop_top = self.chunk.len() as u16;
                                 self.chunk.emit(rrr(Opcode::Cmp, 0, r_counter, len_reg));
                                 let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
-                                // Elements at base_addr-(counter*8): stack regs grow downward.
                                 if let Some(r_val) = r_val_opt {
                                     let eight = self.alloc_reg();
                                     self.chunk.emit(ri16(Opcode::MovI, eight, 8));
@@ -2093,13 +2148,22 @@ impl<'a> FnCompiler<'a> {
                                     self.chunk.emit(rrr(Opcode::Sub, addr, base_addr, offset));
                                     self.chunk.emit(mem_load(addr, r_val, 0));
                                 }
+                                self.loop_stack.push(LoopFrame::new());
                                 self.compile_block(body);
+                                let frame = self.loop_stack.pop().unwrap();
+                                let continue_pos = self.chunk.len() as u16;
+                                for jmp in &frame.continue_jumps {
+                                    self.chunk.patch_jump(*jmp, continue_pos);
+                                }
                                 self.chunk.emit(rrr(Opcode::Inc, r_counter, r_counter, 0));
                                 self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
-                                self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
+                                let exit_pos = self.chunk.len() as u16;
+                                self.chunk.patch_jump(jump_exit, exit_pos);
+                                for jmp in &frame.break_jumps {
+                                    self.chunk.patch_jump(*jmp, exit_pos);
+                                }
                             } else if matches!(&iter_ty, Some(TypeKind::Named { name, .. }) if name == "Array")
                             {
-                                // Array[T] dynamic array: compile as index loop using len() + get().
                                 let type_kinds: Vec<TypeKind> =
                                     if let Some(TypeKind::Named { type_args, .. }) = &iter_ty {
                                         type_args.iter().map(|t| t.node.clone()).collect()
@@ -2165,12 +2229,21 @@ impl<'a> FnCompiler<'a> {
                                     );
                                     self.chunk.emit(rrr(Opcode::Mov, r_val, elem_reg, 0));
                                 }
+                                self.loop_stack.push(LoopFrame::new());
                                 self.compile_block(body);
+                                let frame = self.loop_stack.pop().unwrap();
+                                let continue_pos = self.chunk.len() as u16;
+                                for jmp in &frame.continue_jumps {
+                                    self.chunk.patch_jump(*jmp, continue_pos);
+                                }
                                 self.chunk.emit(rrr(Opcode::Inc, r_idx, r_idx, 0));
                                 self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
-                                self.chunk.patch_jump(jump_exit, self.chunk.len() as u16);
+                                let exit_pos = self.chunk.len() as u16;
+                                self.chunk.patch_jump(jump_exit, exit_pos);
+                                for jmp in &frame.break_jumps {
+                                    self.chunk.patch_jump(*jmp, exit_pos);
+                                }
                             } else {
-                                // Non-slice iterator: call has_next() / next() protocol.
                                 let iter_reg = self.compile_expr(expr);
                                 if !is_borrow {
                                     self.register_drop_local(
@@ -2182,13 +2255,11 @@ impl<'a> FnCompiler<'a> {
                                 let iter_key = (expr.span.start, expr.span.end);
                                 let iter_ty = self.type_of_span(iter_key);
 
-                                // Bind loop variable.
                                 let loop_var = vars.first().map(|s| s.as_str()).unwrap_or("_");
                                 let r_val = self.bind(loop_var.to_string());
 
                                 let loop_top = self.chunk.len() as u16;
 
-                                // Call has_next()
                                 let r_has_next = self.alloc_reg();
                                 match &iter_ty {
                                     Some(TypeKind::Named { name, type_args }) => {
@@ -2251,10 +2322,8 @@ impl<'a> FnCompiler<'a> {
                                     _ => {}
                                 }
 
-                                // Exit if no more elements.
                                 let jump_exit = self.chunk.emit(ri16(Opcode::Jz, r_has_next, 0));
 
-                                // Call next()
                                 let r_next_opt = self.alloc_reg();
                                 match &iter_ty {
                                     Some(TypeKind::Named { name, type_args }) => {
@@ -2315,7 +2384,6 @@ impl<'a> FnCompiler<'a> {
                                     _ => {}
                                 }
 
-                                // Unwrap Option[T]: check discriminant (tag 1 = Some).
                                 let r_tag = self.alloc_reg();
                                 self.chunk.emit(rrr(
                                     Opcode::FieldLoad,
@@ -2334,14 +2402,20 @@ impl<'a> FnCompiler<'a> {
                                     ENUM_PAYLOAD_OFFSET,
                                 ));
 
-                                // Loop body.
+                                self.loop_stack.push(LoopFrame::new());
                                 self.compile_block(body);
+                                let frame = self.loop_stack.pop().unwrap();
+                                for jmp in &frame.continue_jumps {
+                                    self.chunk.patch_jump(*jmp, loop_top);
+                                }
                                 self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
 
-                                // Exit (shared by has_next=false and next=None).
                                 let exit_pos = self.chunk.len() as u16;
                                 self.chunk.patch_jump(jump_exit, exit_pos);
                                 self.chunk.patch_jump(jump_none, exit_pos);
+                                for jmp in &frame.break_jumps {
+                                    self.chunk.patch_jump(*jmp, exit_pos);
+                                }
                             }
                         }
                     },

@@ -212,6 +212,8 @@ impl Parser {
             TokenKind::Return => self.parse_return_stmt(),
             TokenKind::If => self.parse_if_stmt(),
             TokenKind::For => self.parse_for_stmt(),
+            TokenKind::Break => self.parse_break_stmt(),
+            TokenKind::Continue => self.parse_continue_stmt(),
             _ => self.parse_expr_stmt(),
         }
     }
@@ -338,6 +340,24 @@ impl Parser {
 
         Ok(Spanned::new(
             StmtKind::Return(expr),
+            to_ast_span(merge_token_spans(start, semi)),
+        ))
+    }
+
+    fn parse_break_stmt(&mut self) -> Result<Stmt, String> {
+        let start = self.expect(TokenKind::Break)?.span;
+        let semi = self.expect(TokenKind::Semicolon)?.span;
+        Ok(Spanned::new(
+            StmtKind::Break,
+            to_ast_span(merge_token_spans(start, semi)),
+        ))
+    }
+
+    fn parse_continue_stmt(&mut self) -> Result<Stmt, String> {
+        let start = self.expect(TokenKind::Continue)?.span;
+        let semi = self.expect(TokenKind::Semicolon)?.span;
+        Ok(Spanned::new(
+            StmtKind::Continue,
             to_ast_span(merge_token_spans(start, semi)),
         ))
     }

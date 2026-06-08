@@ -48,6 +48,8 @@ pub enum TokenKind {
     For,
     Pub,
     Unsafe,
+    Break,
+    Continue,
 
     // types
     Int8,
@@ -176,6 +178,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::For => write!(f, "for"),
             TokenKind::Pub => write!(f, "pub"),
             TokenKind::Unsafe => write!(f, "unsafe"),
+            TokenKind::Break => write!(f, "break"),
+            TokenKind::Continue => write!(f, "continue"),
 
             TokenKind::Int8 => write!(f, "i8"),
             TokenKind::Int16 => write!(f, "i16"),
