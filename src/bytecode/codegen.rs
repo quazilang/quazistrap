@@ -109,8 +109,12 @@ impl<'a> Codegen<'a> {
     /// Return the resolved symbol name for a top-level item defined at `span`.
     /// Namespaced files use `module.name`; entry files use the bare `name`.
     /// Internal runtime symbols (`__void_*`) keep their bare names.
-    fn resolve_item_name(&self, span: Span, name: &str) -> String {
+    /// `@no_mangle` functions keep their bare name regardless of file namespace.
+    fn resolve_item_name(&self, span: Span, name: &str, attributes: &[Attribute]) -> String {
         if name.starts_with("__void_") {
+            return name.to_string();
+        }
+        if attributes.iter().any(|a| a.name == "no_mangle") {
             return name.to_string();
         }
         if let Some(sf) = self.source_files.iter().find(|f| f.contains(span))
@@ -167,7 +171,7 @@ impl<'a> Codegen<'a> {
                                 })
                         })
                         .unwrap_or(false);
-                    let resolved_name = self.resolve_item_name(item.span, name);
+                    let resolved_name = self.resolve_item_name(item.span, name, attributes);
                     if has_str_variadic_param {
                         self.str_variadic_fns.insert(resolved_name.clone());
                     }
@@ -313,7 +317,7 @@ impl<'a> Codegen<'a> {
                 let index_name = if is_ph {
                     "__void_panic_handler".to_string()
                 } else {
-                    self.resolve_item_name(item.span, name)
+                    self.resolve_item_name(item.span, name, attributes)
                 };
                 if is_live(&index_name) || is_ph {
                     self.fn_index.insert(index_name.clone(), idx);
@@ -412,7 +416,7 @@ impl<'a> Codegen<'a> {
                 let compile_name = if is_ph {
                     "__void_panic_handler".to_string()
                 } else {
-                    self.resolve_item_name(item.span, name)
+                    self.resolve_item_name(item.span, name, attributes)
                 };
                 if (is_live(&compile_name) || is_ph)
                     && let Some(chunk) = self.compile_fn(

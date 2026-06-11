@@ -78,9 +78,13 @@ impl Analyzer {
                 let is_syscall_or_api = attr_names
                     .iter()
                     .any(|a| matches!(a.as_str(), "syscall" | "api"));
+                let is_no_mangle = attr_names.iter().any(|a| a == "no_mangle");
                 // Internal runtime symbols (e.g. __void_panic_handler) keep their bare
                 // names so the runtime stub can find them.
+                // @no_mangle functions keep their bare name to allow stable symbol references.
                 let register_name = if name.starts_with("__void_") {
+                    name.clone()
+                } else if is_no_mangle {
                     name.clone()
                 } else if let Some(module) = self.module_path_for_span(item.span) {
                     format!("{}.{}", module, name)

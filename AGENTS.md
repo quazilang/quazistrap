@@ -137,6 +137,7 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 | `@intrinsic("void.X")` | Safe stdlib wrapper; dispatched by encoder case number. |
 | `@derive(Trait, ...)` | Register derived traits for struct. |
 | `@panic_handler` | Validate signature; mark as panic handler. |
+| `@no_mangle` | Keep function symbol name bare (no module prefix). Useful for entry points and FFI symbols. |
 | `@no_crash` | File-level: disable crash handler in entry stub. |
 
 ---
@@ -238,6 +239,7 @@ When you complete a feature or fix, append a dated entry here.
 | Date | Change |
 |------|--------|
 | 2026-06-07 | Module function namespacing/mangling implemented. Non-entry files prefix top-level functions with module name (`bar.foo`). Entry files keep bare names. `import bar.foo` errors on collision with local fn. `import bar.foo as b_foo` aliases cleanly. All 137 tests pass. |
+| 2026-06-11 | Fixed canonical path mismatch in loader that could cause entry files to be namespaced. Added `@no_mangle` attribute: keeps function symbol name bare (no module prefix). All 146 tests pass. |
 
 ---
 

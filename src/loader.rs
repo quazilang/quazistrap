@@ -228,10 +228,22 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         let mut pr = Parser::new(toks);
         if let Ok(prog) = pr.parse() {
             for item in &prog.items {
-                if let ItemKind::Fn { name, pub_fn, .. } = &item.node
+                if let ItemKind::Fn {
+                    name,
+                    pub_fn,
+                    attributes,
+                    ..
+                } = &item.node
                     && *pub_fn
                 {
-                    library_fn_names.insert(format!("{}.{}", module_name, name));
+                    // @no_mangle functions keep their bare name in library_fn_names
+                    // so wildcard imports and cross-module resolution find them.
+                    let entry_name = if attributes.iter().any(|a| a.name == "no_mangle") {
+                        name.clone()
+                    } else {
+                        format!("{}.{}", module_name, name)
+                    };
+                    library_fn_names.insert(entry_name);
                 }
             }
         }
@@ -635,15 +647,15 @@ fn collect(
         .canonicalize()
         .map_err(|e| format!("cannot resolve '{}': {}", path.display(), e))?;
 
-    if !visited.insert(canonical) {
+    if !visited.insert(canonical.clone()) {
         return Ok(());
     }
 
     let src = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
 
-    for (dep, dep_is_lib) in local_import_paths(path, &src, resolver, strict)? {
-        dep_edges.push((path.to_path_buf(), dep.clone()));
+    for (dep, dep_is_lib) in local_import_paths(&canonical, &src, resolver, strict)? {
+        dep_edges.push((canonical.clone(), dep.clone()));
         collect(
             &dep,
             is_library || dep_is_lib,
@@ -657,9 +669,9 @@ fn collect(
     }
 
     if is_library {
-        library_paths.insert(path.to_path_buf());
+        library_paths.insert(canonical.clone());
     }
-    sources.push((path.to_path_buf(), src));
+    sources.push((canonical, src));
     Ok(())
 }
 
