@@ -57,6 +57,8 @@ pub struct Codegen<'a> {
     fn_index: HashMap<String, u16>,
     const_map: HashMap<(usize, usize), ConstValue>,
     type_map: HashMap<(usize, usize), TypeKind>,
+    /// Spans marked for auto-deref by semantic analysis.
+    autoderef_map: HashMap<(usize, usize), bool>,
     import_names: HashSet<String>,
     /// Maps variadic function name → number of fixed (non-variadic) params.
     variadic_fn_info: HashMap<String, usize>,
@@ -71,6 +73,7 @@ impl<'a> Codegen<'a> {
     pub fn new(report: &'a SemanticReport) -> Self {
         let mut const_map = HashMap::new();
         let mut type_map = HashMap::new();
+        let mut autoderef_map = HashMap::new();
         for ann in &report.annotated_exprs {
             let key = (ann.span.start, ann.span.end);
             if let Some(cv) = &ann.const_value {
@@ -78,6 +81,9 @@ impl<'a> Codegen<'a> {
             }
             if let Some(ty) = &ann.ty {
                 type_map.insert(key, ty.clone());
+            }
+            if ann.auto_deref {
+                autoderef_map.insert(key, true);
             }
         }
         let mut import_names = HashSet::new();
@@ -98,6 +104,7 @@ impl<'a> Codegen<'a> {
             fn_index: HashMap::new(),
             const_map,
             type_map,
+            autoderef_map,
             import_names,
             variadic_fn_info,
             str_variadic_fns: HashSet::new(),
@@ -986,6 +993,7 @@ impl<'a> Codegen<'a> {
             &self.fn_index,
             &self.const_map,
             &self.type_map,
+            &self.autoderef_map,
             &self.import_names,
             &self.report.struct_defs,
             &self.report.struct_sizes,
@@ -1196,6 +1204,8 @@ struct FnCompiler<'a> {
     fn_index: &'a HashMap<String, u16>,
     const_map: &'a HashMap<(usize, usize), ConstValue>,
     type_map: &'a HashMap<(usize, usize), TypeKind>,
+    /// Spans marked for auto-deref by semantic analysis.
+    autoderef_map: &'a HashMap<(usize, usize), bool>,
     import_names: &'a HashSet<String>,
     struct_defs: &'a HashMap<String, Vec<(String, TypeKind)>>,
     struct_sizes: &'a HashMap<String, usize>,
@@ -1243,6 +1253,36 @@ struct LoopFrame {
     continue_jumps: Vec<usize>,
 }
 
+/// Address of an lvalue so it can be loaded and stored without re-evaluating
+/// the base expression twice. This makes compound assignment and inc/dec on
+/// non-identifier targets correct even when register allocation reuses slots.
+enum LvalueAddr {
+    Ident {
+        name: String,
+        span: Span,
+    },
+    Deref(u8),
+    Field {
+        obj: u8,
+        offset: u8,
+    },
+    IndexArray {
+        obj: u8,
+        idx: u8,
+        index_target: String,
+        set_target: String,
+    },
+    IndexSlice {
+        ptr: u8,
+        idx: u8,
+    },
+    IndexFixed {
+        base: u8,
+        idx: u8,
+        literal: Option<i64>,
+    },
+}
+
 impl LoopFrame {
     fn new() -> Self {
         Self {
@@ -1259,6 +1299,7 @@ impl<'a> FnCompiler<'a> {
         fn_index: &'a HashMap<String, u16>,
         const_map: &'a HashMap<(usize, usize), ConstValue>,
         type_map: &'a HashMap<(usize, usize), TypeKind>,
+        autoderef_map: &'a HashMap<(usize, usize), bool>,
         import_names: &'a HashSet<String>,
         struct_defs: &'a HashMap<String, Vec<(String, TypeKind)>>,
         struct_sizes: &'a HashMap<String, usize>,
@@ -1285,6 +1326,7 @@ impl<'a> FnCompiler<'a> {
             fn_index,
             const_map,
             type_map,
+            autoderef_map,
             import_names,
             struct_defs,
             struct_sizes,
@@ -1394,6 +1436,35 @@ impl<'a> FnCompiler<'a> {
             .iter()
             .find(|ann| ann.span.start == span.start && ann.span.end == span.end)
             .and_then(|ann| ann.resolved_fn.clone())
+    }
+
+    /// True if semantic analysis marked this expression span for auto-deref.
+    fn should_autoderef(&self, span: crate::parser::ast::Span) -> bool {
+        self.autoderef_map
+            .get(&(span.start, span.end))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// If `span` is marked auto-deref, load the value at the pointer in `ptr_reg`
+    /// and return the register holding the loaded value. Otherwise returns `ptr_reg`.
+    fn emit_autoderef_load(&mut self, span: crate::parser::ast::Span, ptr_reg: u8) -> u8 {
+        if !self.should_autoderef(span) {
+            return ptr_reg;
+        }
+        let key = (span.start, span.end);
+        let Some(ty) = self.type_of_span(key) else {
+            return ptr_reg;
+        };
+        // The VM Load instruction reads one 8-byte slot. Value-like types that fit
+        // in a single slot can be auto-dereferenced; `str` is a 16-byte fat pointer
+        // and must be passed/stored as a reference.
+        if matches!(ty, TypeKind::Str) {
+            return ptr_reg;
+        }
+        let dst = self.alloc_reg();
+        self.chunk.emit(mem_load(ptr_reg, dst, 0));
+        dst
     }
 
     fn is_float_span(&self, key: (usize, usize)) -> bool {
@@ -1509,6 +1580,413 @@ impl<'a> FnCompiler<'a> {
             }
         }
         0
+    }
+
+    /// Load the value of an lvalue expression (identifier, deref, field, index).
+    fn emit_lvalue_load(&mut self, target: &Expr) -> u8 {
+        match &target.node {
+            ExprKind::Ident(name) => self.reg_of(name),
+            ExprKind::Unary {
+                op: UnaryOpKind::Deref,
+                expr: ptr_expr,
+            } => {
+                let ptr = self.compile_expr(ptr_expr);
+                let dst = self.alloc_reg();
+                self.chunk.emit(mem_load(ptr, dst, 0));
+                dst
+            }
+            ExprKind::Field {
+                object,
+                name: field_name,
+            } => {
+                let byte_offset = self.field_offset(object, field_name);
+                let obj = self.compile_expr(object);
+                let dst = self.alloc_reg();
+                self.chunk
+                    .emit(rrr(Opcode::FieldLoad, dst, obj, byte_offset));
+                dst
+            }
+            ExprKind::Index { object, indices } => {
+                let key = (object.span.start, object.span.end);
+                if let Some(TypeKind::Named {
+                    name: type_name,
+                    type_args,
+                }) = self.type_of_span(key)
+                {
+                    let implements_index = self
+                        .trait_impls
+                        .get(type_name.as_str())
+                        .map(|ts| ts.contains("Index"))
+                        .unwrap_or(false);
+                    if implements_index {
+                        let type_kinds: Vec<TypeKind> =
+                            type_args.iter().map(|t| t.node.clone()).collect();
+                        let mangled = if type_kinds.is_empty() {
+                            format!("{}.index", type_name)
+                        } else {
+                            crate::semantic::typecheck::mangle_monomorphized(
+                                &format!("{}.index", type_name),
+                                &type_kinds,
+                            )
+                        };
+                        if self.fn_index.contains_key(&mangled) {
+                            let obj = self.compile_expr(object);
+                            let idx_regs: Vec<u8> =
+                                indices.iter().map(|i| self.compile_expr(i)).collect();
+                            let dst = self.alloc_reg();
+                            let mut all_args = vec![obj];
+                            all_args.extend_from_slice(&idx_regs);
+                            self.emit_call_by_name(&mangled, &all_args, dst);
+                            return dst;
+                        }
+                    }
+                }
+                let index = indices
+                    .first()
+                    .expect("index expr must have at least one index");
+                let obj_ty = self.type_of_span(key);
+                if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
+                    let ptr = self.compile_expr(object);
+                    let idx = self.compile_expr(index);
+                    let eight = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                    let offset = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Mul, offset, idx, eight));
+                    let addr = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Sub, addr, ptr, offset));
+                    let dst = self.alloc_reg();
+                    self.chunk.emit(mem_load(addr, dst, 0));
+                    return dst;
+                }
+                let base = self.compile_expr(object);
+                if let ExprKind::Literal(Literal::Int(n)) = &index.node
+                    && *n >= 0
+                {
+                    return base + *n as u8;
+                }
+                let idx = self.compile_expr(index);
+                let ptr = self.alloc_reg();
+                self.chunk.emit(mem_lea(base, ptr, 0));
+                let eight = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                let offset = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Mul, offset, idx, eight));
+                self.chunk.emit(rrr(Opcode::Sub, ptr, ptr, offset));
+                let dst = self.alloc_reg();
+                self.chunk.emit(mem_load(ptr, dst, 0));
+                dst
+            }
+            _ => self.compile_expr(target),
+        }
+    }
+
+    /// Store `src` into an lvalue expression (identifier, deref, field, index).
+    fn emit_lvalue_store(&mut self, target: &Expr, src: u8) -> u8 {
+        match &target.node {
+            ExprKind::Ident(name) => {
+                self.drop_local_now(name);
+                let dst = self.reg_of(name);
+                if dst != src {
+                    self.chunk.emit(rrr(Opcode::Mov, dst, src, 0));
+                }
+                let local_ty = self.type_of_span((target.span.start, target.span.end));
+                self.reactivate_drop_local(name, dst, local_ty);
+                dst
+            }
+            ExprKind::Unary {
+                op: UnaryOpKind::Deref,
+                expr: ptr_expr,
+            } => {
+                let ptr = self.compile_expr(ptr_expr);
+                self.chunk.emit(mem_store(ptr, src, 0));
+                src
+            }
+            ExprKind::Field {
+                object,
+                name: field_name,
+            } => {
+                let byte_offset = self.field_offset(object, field_name);
+                let obj = self.compile_expr(object);
+                self.chunk
+                    .emit(rrr(Opcode::FieldStore, src, obj, byte_offset));
+                src
+            }
+            ExprKind::Index { object, indices } => {
+                let obj_key = (object.span.start, object.span.end);
+                let obj_ty = self.type_of_span(obj_key);
+                let index = indices.first().expect("index must have at least one index");
+
+                if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array") {
+                    let type_kinds: Vec<TypeKind> =
+                        if let Some(TypeKind::Named { type_args, .. }) = &obj_ty {
+                            type_args.iter().map(|t| t.node.clone()).collect()
+                        } else {
+                            vec![]
+                        };
+                    let set_target = if type_kinds.is_empty() {
+                        "Array.set".to_string()
+                    } else {
+                        let mangled = crate::semantic::typecheck::mangle_monomorphized(
+                            "Array.set",
+                            &type_kinds,
+                        );
+                        if self.fn_index.contains_key(&mangled) {
+                            mangled
+                        } else {
+                            "Array.set".to_string()
+                        }
+                    };
+                    let obj_reg = self.compile_expr(object);
+                    let idx_reg = self.compile_expr(index);
+                    let _dst = self.alloc_reg();
+                    self.emit_call_by_name(&set_target, &[obj_reg, idx_reg, src], _dst);
+                    src
+                } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
+                    let ptr = self.compile_expr(object);
+                    let idx_reg = self.compile_expr(index);
+                    let eight = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                    let offset = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Mul, offset, idx_reg, eight));
+                    let addr = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Sub, addr, ptr, offset));
+                    self.chunk.emit(mem_store(addr, src, 0));
+                    src
+                } else {
+                    let base = self.compile_expr(object);
+                    if let ExprKind::Literal(Literal::Int(n)) = &index.node
+                        && *n >= 0
+                    {
+                        let elem_reg = base + *n as u8;
+                        self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
+                        return src;
+                    }
+                    let idx_reg = self.compile_expr(index);
+                    let ptr = self.alloc_reg();
+                    self.chunk.emit(mem_lea(base, ptr, 0));
+                    let eight = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                    let offset = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Mul, offset, idx_reg, eight));
+                    self.chunk.emit(rrr(Opcode::Sub, ptr, ptr, offset));
+                    self.chunk.emit(mem_store(ptr, src, 0));
+                    src
+                }
+            }
+            _ => src,
+        }
+    }
+
+    /// Compute the address of an lvalue once so it can be loaded and stored
+    /// without re-evaluating side-effect-free base/index expressions.
+    fn compute_lvalue_addr(&mut self, target: &Expr) -> LvalueAddr {
+        // Strip grouping parentheses so e.g. `(arr[0]) += 1` and `(*p)++` work.
+        let mut target = target;
+        while let ExprKind::Group(inner) = &target.node {
+            target = inner;
+        }
+        match &target.node {
+            ExprKind::Ident(name) => LvalueAddr::Ident {
+                name: name.clone(),
+                span: target.span,
+            },
+            ExprKind::Unary {
+                op: UnaryOpKind::Deref,
+                expr: ptr_expr,
+            } => {
+                let ptr = self.compile_expr(ptr_expr);
+                LvalueAddr::Deref(ptr)
+            }
+            ExprKind::Field {
+                object,
+                name: field_name,
+            } => {
+                let byte_offset = self.field_offset(object, field_name);
+                let obj = self.compile_expr(object);
+                LvalueAddr::Field {
+                    obj,
+                    offset: byte_offset,
+                }
+            }
+            ExprKind::Index { object, indices } => {
+                let obj_key = (object.span.start, object.span.end);
+                let obj_ty = self.type_of_span(obj_key);
+                let index = indices.first().expect("index must have at least one index");
+
+                if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array") {
+                    let type_kinds: Vec<TypeKind> =
+                        if let Some(TypeKind::Named { type_args, .. }) = &obj_ty {
+                            type_args.iter().map(|t| t.node.clone()).collect()
+                        } else {
+                            vec![]
+                        };
+                    let (set_target, index_target) = if type_kinds.is_empty() {
+                        ("Array.set".to_string(), "Array.index".to_string())
+                    } else {
+                        let set_mangled = crate::semantic::typecheck::mangle_monomorphized(
+                            "Array.set",
+                            &type_kinds,
+                        );
+                        let index_mangled = crate::semantic::typecheck::mangle_monomorphized(
+                            "Array.index",
+                            &type_kinds,
+                        );
+                        let set_target = if self.fn_index.contains_key(&set_mangled) {
+                            set_mangled
+                        } else {
+                            "Array.set".to_string()
+                        };
+                        let index_target = if self.fn_index.contains_key(&index_mangled) {
+                            index_mangled
+                        } else {
+                            "Array.index".to_string()
+                        };
+                        (set_target, index_target)
+                    };
+                    let obj = self.compile_expr(object);
+                    let idx = self.compile_expr(index);
+                    LvalueAddr::IndexArray {
+                        obj,
+                        idx,
+                        index_target,
+                        set_target,
+                    }
+                } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
+                    let ptr = self.compile_expr(object);
+                    let idx = self.compile_expr(index);
+                    LvalueAddr::IndexSlice { ptr, idx }
+                } else {
+                    let base = self.compile_expr(object);
+                    if let ExprKind::Literal(Literal::Int(n)) = &index.node
+                        && *n >= 0
+                    {
+                        LvalueAddr::IndexFixed {
+                            base,
+                            idx: 0,
+                            literal: Some(*n),
+                        }
+                    } else {
+                        let idx = self.compile_expr(index);
+                        LvalueAddr::IndexFixed {
+                            base,
+                            idx,
+                            literal: None,
+                        }
+                    }
+                }
+            }
+            _ => LvalueAddr::Ident {
+                name: String::new(),
+                span: target.span,
+            },
+        }
+    }
+
+    /// Load the current value from an lvalue address.
+    fn load_lvalue(&mut self, addr: &LvalueAddr) -> u8 {
+        match addr {
+            LvalueAddr::Ident { name, .. } => self.reg_of(name),
+            LvalueAddr::Deref(ptr) => {
+                let dst = self.alloc_reg();
+                self.chunk.emit(mem_load(*ptr, dst, 0));
+                dst
+            }
+            LvalueAddr::Field { obj, offset } => {
+                let dst = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::FieldLoad, dst, *obj, *offset));
+                dst
+            }
+            LvalueAddr::IndexArray {
+                obj,
+                idx,
+                index_target,
+                ..
+            } => {
+                let dst = self.alloc_reg();
+                self.emit_call_by_name(index_target, &[*obj, *idx], dst);
+                dst
+            }
+            LvalueAddr::IndexSlice { ptr, idx } => {
+                let eight = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                let offset = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Mul, offset, *idx, eight));
+                let addr_reg = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Sub, addr_reg, *ptr, offset));
+                let dst = self.alloc_reg();
+                self.chunk.emit(mem_load(addr_reg, dst, 0));
+                dst
+            }
+            LvalueAddr::IndexFixed { base, idx, literal } => {
+                if let Some(n) = literal {
+                    return *base + *n as u8;
+                }
+                let ptr = self.alloc_reg();
+                self.chunk.emit(mem_lea(*base, ptr, 0));
+                let eight = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                let offset = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Mul, offset, *idx, eight));
+                self.chunk.emit(rrr(Opcode::Sub, ptr, ptr, offset));
+                let dst = self.alloc_reg();
+                self.chunk.emit(mem_load(ptr, dst, 0));
+                dst
+            }
+        }
+    }
+
+    /// Store `src` into an lvalue address.
+    fn store_lvalue(&mut self, addr: &LvalueAddr, src: u8) {
+        match addr {
+            LvalueAddr::Ident { name, span } => {
+                self.drop_local_now(name);
+                let dst = self.reg_of(name);
+                if dst != src {
+                    self.chunk.emit(rrr(Opcode::Mov, dst, src, 0));
+                }
+                let local_ty = self.type_of_span((span.start, span.end));
+                self.reactivate_drop_local(name, dst, local_ty);
+            }
+            LvalueAddr::Deref(ptr) => {
+                self.chunk.emit(mem_store(*ptr, src, 0));
+            }
+            LvalueAddr::Field { obj, offset } => {
+                self.chunk.emit(rrr(Opcode::FieldStore, src, *obj, *offset));
+            }
+            LvalueAddr::IndexArray {
+                obj,
+                idx,
+                set_target,
+                ..
+            } => {
+                let _dst = self.alloc_reg();
+                self.emit_call_by_name(set_target, &[*obj, *idx, src], _dst);
+            }
+            LvalueAddr::IndexSlice { ptr, idx } => {
+                let eight = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                let offset = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Mul, offset, *idx, eight));
+                let addr_reg = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Sub, addr_reg, *ptr, offset));
+                self.chunk.emit(mem_store(addr_reg, src, 0));
+            }
+            LvalueAddr::IndexFixed { base, idx, literal } => {
+                if let Some(n) = literal {
+                    let elem_reg = *base + *n as u8;
+                    self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
+                } else {
+                    let ptr = self.alloc_reg();
+                    self.chunk.emit(mem_lea(*base, ptr, 0));
+                    let eight = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                    let offset = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Mul, offset, *idx, eight));
+                    self.chunk.emit(rrr(Opcode::Sub, ptr, ptr, offset));
+                    self.chunk.emit(mem_store(ptr, src, 0));
+                }
+            }
+        }
     }
 
     fn alloc_reg(&mut self) -> u8 {
@@ -2603,6 +3081,11 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> u8 {
+        let reg = self.compile_expr_inner(expr);
+        self.emit_autoderef_load(expr.span, reg)
+    }
+
+    fn compile_expr_inner(&mut self, expr: &Expr) -> u8 {
         // Const-fold: if the semantic pass computed a known value for a non-trivial
         // expression, emit it directly instead of computing it at runtime.
         // Skip Ident (value already in a register) and Literal (emits directly below).
@@ -2704,7 +3187,12 @@ impl<'a> FnCompiler<'a> {
                 UnaryOpKind::Not => {
                     let src = self.compile_expr(inner);
                     let dst = self.alloc_reg();
-                    self.chunk.emit(rrr(Opcode::Not, dst, src, 0));
+                    // Logical not: dst = (src == 0) ? 1 : 0
+                    self.chunk.emit(ri16(Opcode::MovI, dst, 1));
+                    self.chunk.emit(rrr(Opcode::Cmp, 0, src, 0));
+                    let jump_idx = self.chunk.emit(ri16(Opcode::Jne, dst, 0));
+                    self.chunk.emit(ri16(Opcode::MovI, dst, 0));
+                    self.chunk.patch_jump(jump_idx, self.chunk.len() as u16);
                     dst
                 }
             },
@@ -2839,6 +3327,13 @@ impl<'a> FnCompiler<'a> {
                         let obj_ty = self.type_of_span(obj_key);
                         let index = indices.first().expect("index must have at least one index");
 
+                        // Evaluate object and index first; the value register may otherwise
+                        // be overwritten before the store happens.
+                        let obj_reg = self.compile_expr(object);
+                        let idx_reg = self.compile_expr(index);
+                        // Re-evaluate the value after object/index so it survives the store.
+                        let src = self.compile_expr(value);
+
                         // Named type with Index trait → dispatch to Type.set if available.
                         if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array")
                         {
@@ -2861,36 +3356,30 @@ impl<'a> FnCompiler<'a> {
                                     "Array.set".to_string()
                                 }
                             };
-                            let obj_reg = self.compile_expr(object);
-                            let idx_reg = self.compile_expr(index);
                             let _dst = self.alloc_reg();
                             self.emit_call_by_name(&set_target, &[obj_reg, idx_reg, src], _dst);
                             src
                         } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
                             // Slice: store at stack address ptr - (idx * 8)
-                            let ptr = self.compile_expr(object);
-                            let idx_reg = self.compile_expr(index);
                             let eight = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                             let offset = self.alloc_reg();
                             self.chunk.emit(rrr(Opcode::Mul, offset, idx_reg, eight));
                             let addr = self.alloc_reg();
-                            self.chunk.emit(rrr(Opcode::Sub, addr, ptr, offset));
+                            self.chunk.emit(rrr(Opcode::Sub, addr, obj_reg, offset));
                             self.chunk.emit(mem_store(addr, src, 0));
                             src
                         } else {
                             // Fixed-size array: store at base register or computed address.
-                            let base = self.compile_expr(object);
                             if let ExprKind::Literal(Literal::Int(n)) = &index.node
                                 && *n >= 0
                             {
-                                let elem_reg = base + *n as u8;
+                                let elem_reg = obj_reg + *n as u8;
                                 self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
                                 return src;
                             }
-                            let idx_reg = self.compile_expr(index);
                             let ptr = self.alloc_reg();
-                            self.chunk.emit(mem_lea(base, ptr, 0));
+                            self.chunk.emit(mem_lea(obj_reg, ptr, 0));
                             let eight = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                             let offset = self.alloc_reg();
@@ -2930,8 +3419,8 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::CompoundAssign { target, op, value } => {
-                let src = self.compile_expr(value);
                 if let ExprKind::Ident(name) = &target.node {
+                    let src = self.compile_expr(value);
                     let dst = self.reg_of(name);
                     let opcode = match op {
                         CompoundAssignOp::Add => Opcode::Add,
@@ -2943,12 +3432,27 @@ impl<'a> FnCompiler<'a> {
                     self.chunk.emit(rrr(opcode, dst, dst, src));
                     dst
                 } else {
-                    src
+                    let addr = self.compute_lvalue_addr(target);
+                    let old = self.load_lvalue(&addr);
+                    let src = self.compile_expr(value);
+                    let opcode = match op {
+                        CompoundAssignOp::Add => Opcode::Add,
+                        CompoundAssignOp::Sub => Opcode::Sub,
+                        CompoundAssignOp::Mul => Opcode::Mul,
+                        CompoundAssignOp::Div => Opcode::Div,
+                        CompoundAssignOp::Mod => Opcode::Mod,
+                    };
+                    let new_val = self.alloc_reg();
+                    self.chunk.emit(rrr(opcode, new_val, old, src));
+                    self.store_lvalue(&addr, new_val);
+                    new_val
                 }
             }
 
             ExprKind::IncDec {
-                expr: inner, op, ..
+                expr: inner,
+                op,
+                prefix,
             } => {
                 if let ExprKind::Ident(name) = &inner.node {
                     let r = self.reg_of(name);
@@ -2956,10 +3460,30 @@ impl<'a> FnCompiler<'a> {
                         IncDecOp::Inc => Opcode::Inc,
                         IncDecOp::Dec => Opcode::Dec,
                     };
-                    self.chunk.emit(rrr(opcode, r, r, 0));
-                    r
+                    if *prefix {
+                        // ++n / --n: modify in place and return the new value.
+                        self.chunk.emit(rrr(opcode, r, r, 0));
+                        r
+                    } else {
+                        // n++ / n--: return the old value, then modify.
+                        let dst = self.alloc_reg();
+                        self.chunk.emit(rrr(Opcode::Mov, dst, r, 0));
+                        self.chunk.emit(rrr(opcode, r, r, 0));
+                        dst
+                    }
                 } else {
-                    0
+                    let addr = self.compute_lvalue_addr(inner);
+                    let old = self.load_lvalue(&addr);
+                    let opcode = match op {
+                        IncDecOp::Inc => Opcode::Add,
+                        IncDecOp::Dec => Opcode::Sub,
+                    };
+                    let one = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, one, 1));
+                    let new_val = self.alloc_reg();
+                    self.chunk.emit(rrr(opcode, new_val, old, one));
+                    self.store_lvalue(&addr, new_val);
+                    if *prefix { new_val } else { old }
                 }
             }
 
@@ -3956,6 +4480,7 @@ impl<'a> FnCompiler<'a> {
                     self.fn_index,
                     self.const_map,
                     self.type_map,
+                    self.autoderef_map,
                     self.import_names,
                     self.struct_defs,
                     self.struct_sizes,
@@ -4825,6 +5350,21 @@ mod tests {
         assert!(
             chunks[0].code.iter().any(|i| i.opcode == Opcode::Inc as u8),
             "x++ should emit Inc"
+        );
+    }
+
+    #[test]
+    fn compound_assign_on_index_loads_modifies_stores() {
+        let chunks = compile(
+            r#"fn main() i32 {
+                var arr = [1, 2, 3];
+                arr[0] += 10;
+                ret arr[0];
+            }"#,
+        );
+        assert!(
+            chunks[0].code.iter().any(|i| i.opcode == Opcode::Add as u8),
+            "arr[0] += 10 should emit Add"
         );
     }
 

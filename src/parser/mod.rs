@@ -432,18 +432,28 @@ impl Parser {
             ));
         }
 
-        // `for ;; {}` — infinite C-style loop (no clauses)
+        // `for ; cond ; upd {}` — C-style with empty init, or `for ;; {}` infinite
         if self.at(TokenKind::Semicolon) {
             self.advance(); // first `;`
+            let condition = if self.at(TokenKind::Semicolon) {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
             self.expect(TokenKind::Semicolon)?; // second `;`
+            let update = if self.at(TokenKind::LBrace) {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
             let body = self.parse_block()?;
             let end = body.span;
             return Ok(Spanned::new(
                 StmtKind::For {
                     kind: ForLoop::CStyle {
                         init: None,
-                        condition: None,
-                        update: None,
+                        condition,
+                        update,
                     },
                     body,
                 },

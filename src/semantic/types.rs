@@ -223,6 +223,9 @@ pub struct ExprAnnotation {
     /// If the expression resolves to a specific function name (e.g. a module-qualified
     /// mangled name), codegen should use this instead of the raw AST identifier.
     pub resolved_fn: Option<String>,
+    /// If true, codegen should load the value pointed to by this reference expression.
+    /// Set when a `&T` expression is used in a context that expects the value `T`.
+    pub auto_deref: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -360,6 +363,8 @@ pub struct SemanticReport {
     pub fn_param_names: HashMap<String, Vec<String>>,
     /// Files whose top-level definitions were mangled with their module name.
     pub namespaced_paths: std::collections::HashSet<String>,
+    /// Whether the entry point is `fn main(args: Array[str])`.
+    pub main_takes_args: bool,
 }
 
 /// Records a call to a generic function with concrete type arguments.

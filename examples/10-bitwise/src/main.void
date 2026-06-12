@@ -3,7 +3,8 @@ import std.io;
 fn main() i32 {
     var a: u32 = 12;
     var b: u32 = 10;
-
+    io.println("a = {}",a);
+    io.println("b = {}",b);
     io.println("Bitwise operations:");
 
     io.print("a & b  = ");

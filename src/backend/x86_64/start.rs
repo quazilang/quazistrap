@@ -26,26 +26,26 @@ pub struct StartStub {
 }
 
 impl StartStub {
-    pub fn generate(fn_offset: usize, no_crash: bool) -> Self {
+    pub fn generate(fn_offset: usize, no_crash: bool, main_takes_args: bool) -> Self {
         if no_crash {
-            Self::generate_minimal_linux(fn_offset)
+            Self::generate_minimal_linux(fn_offset, main_takes_args)
         } else {
-            Self::generate_full_linux(fn_offset)
+            Self::generate_full_linux(fn_offset, main_takes_args)
         }
     }
 
-    pub fn generate_windows(fn_offset: usize, no_crash: bool) -> Self {
+    pub fn generate_windows(fn_offset: usize, no_crash: bool, main_takes_args: bool) -> Self {
         if no_crash {
-            Self::generate_minimal_windows(fn_offset)
+            Self::generate_minimal_windows(fn_offset, main_takes_args)
         } else {
-            Self::generate_full_windows(fn_offset)
+            Self::generate_full_windows(fn_offset, main_takes_args)
         }
     }
 
     /// Linux _start stub with SIGSEGV/SIGABRT/SIGFPE/SIGBUS crash handler,
     /// backtrace printer, and VOID_TRACE=1 environment detection.
     /// Rewritten with iced-x86 so every relocation offset is exact.
-    fn generate_full_linux(fn_offset: usize) -> Self {
+    fn generate_full_linux(fn_offset: usize, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
 
         let mut asm = CodeAssembler::new(64).expect("asm");
@@ -402,7 +402,58 @@ impl StartStub {
         emit!(asm.mov(byte_ptr(rax), 1i32));
         emit!(asm.set_label(&mut no_trace));
         emit!(asm.add(rsp, 0x40i32));
+
+        // Build `Array[str] args` if `fn main(args: Array[str])` was declared.
+        if main_takes_args {
+            // At Linux entry: [rsp] = argc, [rsp+8] = argv[0], ...
+            emit!(asm.mov(r12, qword_ptr(rsp)));
+            emit!(asm.lea(r13, qword_ptr(rsp + 8i32))); // argv = &argv[0]
+
+            // Allocate the Array struct on the stack (24 bytes).
+            emit!(asm.sub(rsp, 24i32));
+
+            // Allocate the pointer array: Array[str] stores one 8-byte pointer per element.
+            emit!(asm.mov(rdi, r12));
+            emit!(asm.shl(rdi, 3i32));
+            let mut args_malloc = asm.create_label();
+            let mut args_malloc_done = asm.create_label();
+            emit!(asm.test(rdi, rdi));
+            emit!(asm.jne(args_malloc));
+            emit!(asm.xor(eax, eax));
+            emit!(asm.jmp(args_malloc_done));
+            emit!(asm.set_label(&mut args_malloc));
+            call_ext!("malloc", RelocKind::Plt32);
+            emit!(asm.set_label(&mut args_malloc_done));
+
+            emit!(asm.mov(qword_ptr(rsp), rax)); // ptr
+            emit!(asm.mov(qword_ptr(rsp + 8i32), r12)); // len
+            emit!(asm.mov(qword_ptr(rsp + 16i32), r12)); // cap
+
+            // Copy argv[i] pointers into the array.
+            let mut args_loop = asm.create_label();
+            let mut args_loop_end = asm.create_label();
+            emit!(asm.xor(r14, r14));
+            emit!(asm.set_label(&mut args_loop));
+            emit!(asm.cmp(r14, r12));
+            emit!(asm.jae(args_loop_end));
+            emit!(asm.mov(r15, qword_ptr(rsp))); // array base
+            emit!(asm.mov(rdi, qword_ptr(r13 + r14 * 8))); // argv[i]
+            emit!(asm.mov(qword_ptr(r15 + r14 * 8), rdi)); // array[i]
+            emit!(asm.inc(r14));
+            emit!(asm.jmp(args_loop));
+            emit!(asm.set_label(&mut args_loop_end));
+
+            // Pass pointer to the stack-allocated Array struct in rdi.
+            emit!(asm.mov(rdi, rsp));
+        }
+
         call_ext!("main", RelocKind::Plt32);
+
+        if main_takes_args {
+            // Pop the stack-allocated Array struct.
+            emit!(asm.add(rsp, 24i32));
+        }
+
         emit!(asm.mov(rdi, rax));
         emit!(asm.mov(rax, 60i64));
         emit!(asm.syscall());
@@ -462,7 +513,7 @@ impl StartStub {
 
     /// Minimal Linux stub without crash-handler registration.
     /// Keeps __void_print_backtrace for panic backtraces.
-    fn generate_minimal_linux(fn_offset: usize) -> Self {
+    fn generate_minimal_linux(fn_offset: usize, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
 
         let mut asm = CodeAssembler::new(64).expect("asm");
@@ -646,7 +697,50 @@ impl StartStub {
         emit!(asm.jmp(search));
 
         emit!(asm.set_label(&mut no_trace));
+
+        if main_takes_args {
+            emit!(asm.mov(r12, qword_ptr(rsp)));
+            emit!(asm.lea(r13, qword_ptr(rsp + 8i32))); // argv = &argv[0]
+            emit!(asm.sub(rsp, 24i32));
+
+            emit!(asm.mov(rdi, r12));
+            emit!(asm.shl(rdi, 3i32));
+            let mut args_malloc = asm.create_label();
+            let mut args_malloc_done = asm.create_label();
+            emit!(asm.test(rdi, rdi));
+            emit!(asm.jne(args_malloc));
+            emit!(asm.xor(eax, eax));
+            emit!(asm.jmp(args_malloc_done));
+            emit!(asm.set_label(&mut args_malloc));
+            call_ext!("malloc", RelocKind::Plt32);
+            emit!(asm.set_label(&mut args_malloc_done));
+
+            emit!(asm.mov(qword_ptr(rsp), rax));
+            emit!(asm.mov(qword_ptr(rsp + 8i32), r12));
+            emit!(asm.mov(qword_ptr(rsp + 16i32), r12));
+
+            let mut args_loop = asm.create_label();
+            let mut args_loop_end = asm.create_label();
+            emit!(asm.xor(r14, r14));
+            emit!(asm.set_label(&mut args_loop));
+            emit!(asm.cmp(r14, r12));
+            emit!(asm.jae(args_loop_end));
+            emit!(asm.mov(r15, qword_ptr(rsp)));
+            emit!(asm.mov(rdi, qword_ptr(r13 + r14 * 8)));
+            emit!(asm.mov(qword_ptr(r15 + r14 * 8), rdi));
+            emit!(asm.inc(r14));
+            emit!(asm.jmp(args_loop));
+            emit!(asm.set_label(&mut args_loop_end));
+
+            emit!(asm.mov(rdi, rsp));
+        }
+
         call_ext!("main", RelocKind::Plt32);
+
+        if main_takes_args {
+            emit!(asm.add(rsp, 24i32));
+        }
+
         emit!(asm.mov(rdi, rax));
         emit!(asm.mov(rax, 60i64));
         emit!(asm.syscall());
@@ -702,7 +796,7 @@ impl StartStub {
     ///                                 chain, prints up to 16 frames.
     ///   mainCRTStartup            — sets exception handler, reads VOID_TRACE env var,
     ///                                 calls main.
-    fn generate_full_windows(fn_offset: usize) -> Self {
+    fn generate_full_windows(fn_offset: usize, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
 
         let mut asm = CodeAssembler::new(64).expect("asm");
@@ -1129,8 +1223,66 @@ impl StartStub {
         emit!(asm.mov(byte_ptr(rax), 1i32));
         emit!(asm.set_label(&mut no_env));
 
+        // Build `Array[str] args` if `fn main(args: Array[str])` was declared.
+        if main_takes_args {
+            // Use the shadow-space slots at [rsp+8], [rsp+16], [rsp+24] for
+            // argc/argv/envp and call __getmainargs to obtain a parsed argv.
+            emit!(asm.lea(rcx, qword_ptr(rsp + 8i32)));
+            emit!(asm.lea(rdx, qword_ptr(rsp + 16i32)));
+            emit!(asm.lea(r8, qword_ptr(rsp + 24i32)));
+            emit!(asm.xor(r9d, r9d));
+            emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
+            call_ext!("__getmainargs", RelocKind::Plt32);
+
+            // r12 = argc, r13 = argv
+            emit!(asm.mov(r12, qword_ptr(rsp + 8i32)));
+            emit!(asm.mov(r13, qword_ptr(rsp + 16i32)));
+
+            // Allocate the Array struct on the stack (24 bytes).
+            emit!(asm.sub(rsp, 24i32));
+
+            // Allocate the fat-pointer array: malloc(argc * 16).
+            emit!(asm.mov(rcx, r12));
+            emit!(asm.shl(rcx, 3i32));
+            let mut args_malloc = asm.create_label();
+            let mut args_malloc_done = asm.create_label();
+            emit!(asm.test(rcx, rcx));
+            emit!(asm.jne(args_malloc));
+            emit!(asm.xor(eax, eax));
+            emit!(asm.jmp(args_malloc_done));
+            emit!(asm.set_label(&mut args_malloc));
+            call_ext!("malloc", RelocKind::Plt32);
+            emit!(asm.set_label(&mut args_malloc_done));
+
+            emit!(asm.mov(qword_ptr(rsp), rax)); // ptr
+            emit!(asm.mov(qword_ptr(rsp + 8i32), r12)); // len
+            emit!(asm.mov(qword_ptr(rsp + 16i32), r12)); // cap
+
+            // Copy argv[i] pointers into the array.
+            let mut args_loop = asm.create_label();
+            let mut args_loop_end = asm.create_label();
+            emit!(asm.xor(r14, r14));
+            emit!(asm.set_label(&mut args_loop));
+            emit!(asm.cmp(r14, r12));
+            emit!(asm.jae(args_loop_end));
+            emit!(asm.mov(r15, qword_ptr(rsp))); // array base
+            emit!(asm.mov(rcx, qword_ptr(r13 + r14 * 8))); // argv[i]
+            emit!(asm.mov(qword_ptr(r15 + r14 * 8), rcx)); // array[i]
+            emit!(asm.inc(r14));
+            emit!(asm.jmp(args_loop));
+            emit!(asm.set_label(&mut args_loop_end));
+
+            // Pass pointer to the stack-allocated Array struct in rcx.
+            emit!(asm.mov(rcx, rsp));
+        }
+
         // call main
         call_ext!("main", RelocKind::Plt32);
+
+        if main_takes_args {
+            // Pop the stack-allocated Array struct.
+            emit!(asm.add(rsp, 24i32));
+        }
 
         // ExitProcess(result)
         emit!(asm.mov(ecx, eax));
@@ -1192,7 +1344,7 @@ impl StartStub {
 
     /// Minimal Windows stub without crash-handler registration.
     /// Keeps __void_print_backtrace for panic backtraces.
-    fn generate_minimal_windows(fn_offset: usize) -> Self {
+    fn generate_minimal_windows(fn_offset: usize, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
 
         let mut asm = CodeAssembler::new(64).expect("asm");
@@ -1346,8 +1498,59 @@ impl StartStub {
         emit!(asm.mov(byte_ptr(rax), 1i32));
         emit!(asm.set_label(&mut no_env));
 
+        if main_takes_args {
+            // Use the shadow-space slots at [rsp+8], [rsp+16], [rsp+24] for
+            // argc/argv/envp and call __getmainargs to obtain a parsed argv.
+            emit!(asm.lea(rcx, qword_ptr(rsp + 8i32)));
+            emit!(asm.lea(rdx, qword_ptr(rsp + 16i32)));
+            emit!(asm.lea(r8, qword_ptr(rsp + 24i32)));
+            emit!(asm.xor(r9d, r9d));
+            emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
+            call_ext!("__getmainargs", RelocKind::Plt32);
+
+            emit!(asm.mov(r12, qword_ptr(rsp + 8i32)));
+            emit!(asm.mov(r13, qword_ptr(rsp + 16i32)));
+
+            emit!(asm.sub(rsp, 24i32));
+
+            emit!(asm.mov(rcx, r12));
+            emit!(asm.shl(rcx, 3i32));
+            let mut args_malloc = asm.create_label();
+            let mut args_malloc_done = asm.create_label();
+            emit!(asm.test(rcx, rcx));
+            emit!(asm.jne(args_malloc));
+            emit!(asm.xor(eax, eax));
+            emit!(asm.jmp(args_malloc_done));
+            emit!(asm.set_label(&mut args_malloc));
+            call_ext!("malloc", RelocKind::Plt32);
+            emit!(asm.set_label(&mut args_malloc_done));
+
+            emit!(asm.mov(qword_ptr(rsp), rax));
+            emit!(asm.mov(qword_ptr(rsp + 8i32), r12));
+            emit!(asm.mov(qword_ptr(rsp + 16i32), r12));
+
+            let mut args_loop = asm.create_label();
+            let mut args_loop_end = asm.create_label();
+            emit!(asm.xor(r14, r14));
+            emit!(asm.set_label(&mut args_loop));
+            emit!(asm.cmp(r14, r12));
+            emit!(asm.jae(args_loop_end));
+            emit!(asm.mov(r15, qword_ptr(rsp)));
+            emit!(asm.mov(rcx, qword_ptr(r13 + r14 * 8)));
+            emit!(asm.mov(qword_ptr(r15 + r14 * 8), rcx));
+            emit!(asm.inc(r14));
+            emit!(asm.jmp(args_loop));
+            emit!(asm.set_label(&mut args_loop_end));
+
+            emit!(asm.mov(rcx, rsp));
+        }
+
         // call main
         call_ext!("main", RelocKind::Plt32);
+
+        if main_takes_args {
+            emit!(asm.add(rsp, 24i32));
+        }
 
         // ExitProcess(result)
         emit!(asm.mov(ecx, eax));

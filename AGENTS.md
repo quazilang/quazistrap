@@ -95,6 +95,9 @@ pub fn name[T](param: Type, ...rest: str) ReturnType {
 unsafe fn ptr_fn(p: *u8) *u8 { ret p; }
 unsafe { var x = ptr_fn(p); *x = 1; }
 
+// Entry point may take no args or a single Array[str].
+fn main(args: Array[str]) i32 { ret args.len() as i32; }
+
 struct Foo[T] { field: T, const flag: bool, }
 trait Bar[T] { fn method(x: T) T; }
 impl Bar[i32] for Foo[i32] { fn method(x: i32) i32 { ret x; } }
@@ -240,6 +243,8 @@ When you complete a feature or fix, append a dated entry here.
 |------|--------|
 | 2026-06-07 | Module function namespacing/mangling implemented. Non-entry files prefix top-level functions with module name (`bar.foo`). Entry files keep bare names. `import bar.foo` errors on collision with local fn. `import bar.foo as b_foo` aliases cleanly. All 137 tests pass. |
 | 2026-06-11 | Fixed canonical path mismatch in loader that could cause entry files to be namespaced. Added `@no_mangle` attribute: keeps function symbol name bare (no module prefix). All 146 tests pass. |
+| 2026-06-11 | Implemented `fn main(args: Array[str])` support. Semantic analysis validates the parameter signature and sets `SemanticReport.main_takes_args`. Linux startup stubs build an `Array[str]` from `argc`/`argv` and pass it in `rdi`; Windows stubs use `__getmainargs` to obtain parsed argv and build the same array. Added `examples/13-args`. All 151 tests pass. |
+| 2026-06-11 | Hardened slice support: `types_compatible` now rejects fixed-size array ↔ slice coercion, which previously generated invalid code and crashed at runtime. Added a clear `S08` diagnostic for this case. `for item : items` over variadic slices continues to work. Full array-to-slice coercion remains on the roadmap. All 152 tests pass. |
 
 ---
 
@@ -256,3 +261,7 @@ When you complete a feature or fix, append a dated entry here.
 | `07-minimal-hw` | Smallest possible binary via intrinsic | [examples/07-minimal-hw/AGENTS.md](examples/07-minimal-hw/AGENTS.md) |
 | `08-array` | `Array[T]` usage | [examples/08-array/AGENTS.md](examples/08-array/AGENTS.md) |
 | `09-mangling` | Module namespacing demo | [examples/09-mangling/AGENTS.md](examples/09-mangling/AGENTS.md) |
+| `10-bitwise` | Bitwise operators | [examples/10-bitwise/AGENTS.md](examples/10-bitwise/AGENTS.md) |
+| `11-elseif` | `else if` chains | [examples/11-elseif/AGENTS.md](examples/11-elseif/AGENTS.md) |
+| `12-loop-control` | `break` and `continue` | [examples/12-loop-control/AGENTS.md](examples/12-loop-control/AGENTS.md) |
+| `13-args` | `fn main(args: Array[str])` | [examples/13-args/AGENTS.md](examples/13-args/AGENTS.md) |

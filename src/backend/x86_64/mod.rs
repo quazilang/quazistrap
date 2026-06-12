@@ -44,6 +44,7 @@ fn emit_native_object(
     entry_name: &[u8],
     report: Option<&SemanticReport>,
 ) -> Result<ObjectOutput, BackendError> {
+    let main_takes_args = report.map(|r| r.main_takes_args).unwrap_or(false);
     let mut obj = Object::new(
         target.binary_format(),
         target.object_architecture(),
@@ -103,9 +104,9 @@ fn emit_native_object(
         let stub_offset = text_bytes.len();
         let no_crash = target.no_crash;
         let stub = if target.os == target::Os::Windows {
-            StartStub::generate_windows(stub_offset, no_crash)
+            StartStub::generate_windows(stub_offset, no_crash, main_takes_args)
         } else {
-            StartStub::generate(stub_offset, no_crash)
+            StartStub::generate(stub_offset, no_crash, main_takes_args)
         };
 
         obj.add_symbol(object::write::Symbol {

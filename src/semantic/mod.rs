@@ -124,6 +124,8 @@ pub struct Analyzer {
     pub(super) type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
     /// Ordered parameter names per function: fn name (or mangled) → param names (excl. self).
     pub(super) fn_param_names: HashMap<String, Vec<String>>,
+    /// Whether the entry point is `fn main(args: Array[str])`.
+    pub(super) main_takes_args: bool,
 }
 
 pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
@@ -328,6 +330,7 @@ impl Analyzer {
             unsafe_depth: 0,
             loop_depth: 0,
             trait_depth: 0,
+            main_takes_args: false,
             library_char_ranges: Vec::new(),
             source_files: Vec::new(),
             namespaced_paths: std::collections::HashSet::new(),
@@ -541,6 +544,7 @@ impl Analyzer {
             type_aliases: self.type_aliases.clone(),
             fn_param_names: self.fn_param_names.clone(),
             namespaced_paths: self.namespaced_paths.clone(),
+            main_takes_args: self.main_takes_args,
         }
     }
 
@@ -579,6 +583,7 @@ impl Analyzer {
         self.monomorphizations.clear();
         self.type_aliases.clear();
         self.fn_param_names.clear();
+        self.main_takes_args = false;
         self.current_fn_name_override = None;
         self.current_module_path = None;
         self.init_builtins();
@@ -1037,7 +1042,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    var x: bool = 123;
+    var x: bool = "not a bool";
 }
     "#,
         );
@@ -1304,7 +1309,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    var a: i32 = 1 & true;
+    var a: i32 = 1 & "oops";
 }
 "#,
         );
@@ -1342,7 +1347,7 @@ fn main() void {
 fn main() void {
     if (true) {
         ret;
-    } else if (1) {
+    } else if ("not a bool") {
         ret;
     }
 }
@@ -1824,6 +1829,46 @@ fn main() void {
     }
 
     #[test]
+    fn compound_assign_on_index_expression_is_valid() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var arr = [1, 2, 3];
+    arr[0] += 10;
+    (arr[1]) -= 1;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn inc_dec_on_parenthesized_deref_is_valid() {
+        let report = analyze(
+            r#"
+unsafe fn bump(p: *i32) void {
+    (*p)++;
+    --(*p);
+}
+
+fn main() void {
+    var x: i32 = 0;
+    unsafe { bump(&x); }
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn math_absorber_mul_zero_folds_to_zero_in_annotated_tree() {
         let report = analyze(
             r#"
@@ -2256,6 +2301,65 @@ fn main() ! {
                 .iter()
                 .any(|e| e.message.contains("main() return type must")),
             "main returning ! should be accepted, got {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn main_with_array_str_args_is_valid() {
+        let report = analyze(
+            r#"
+fn main(args: Array[str]) i32 {
+    ret args.len() as i32;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "main(args: Array[str]) should be accepted, got {:?}",
+            report.errors
+        );
+        assert!(report.main_takes_args, "main_takes_args flag should be set");
+    }
+
+    #[test]
+    fn main_with_invalid_param_is_error() {
+        let report = analyze(
+            r#"
+fn main(x: i32) i32 {
+    ret x;
+}
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("main() must take either no parameters")),
+            "expected main parameter error, got {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn array_to_slice_coercion_is_rejected_with_clear_error() {
+        let report = analyze(
+            r#"
+fn sum(s: [i32]) i32 { ret 0; }
+
+fn main() i32 {
+    var arr = [1, 2, 3];
+    ret sum(arr);
+}
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("passing fixed-size array")
+                    && e.message.contains("slice parameter")),
+            "expected clear array-to-slice error, got {:?}",
             report.errors
         );
     }
