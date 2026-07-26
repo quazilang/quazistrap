@@ -186,15 +186,15 @@ impl BuildProgress {
         }
     }
 
-    /// Print header: `  void  ›  input → output`
+    /// Print header: `  quazi  ›  input → output`
     pub fn header(&self, input: &str, output: &str) {
         if self.is_tty {
             eprintln!(
-                "\n  \x1b[2mvoid\x1b[0m  \x1b[2m›\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m→\x1b[0m  \x1b[1m{}\x1b[0m\n",
+                "\n  \x1b[2mquazi\x1b[0m  \x1b[2m›\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m→\x1b[0m  \x1b[1m{}\x1b[0m\n",
                 input, output
             );
         } else {
-            eprintln!("\nvoid  {}  →  {}\n", input, output);
+            eprintln!("\nquazi  {}  →  {}\n", input, output);
         }
     }
 

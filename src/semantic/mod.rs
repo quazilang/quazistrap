@@ -381,7 +381,7 @@ impl Analyzer {
     }
 
     /// Derive the module name for a source file path, matching the loader's
-    /// `path_module_name`: `bar.void` → `bar`, `mod.void` → parent dir name.
+    /// `path_module_name`: `bar.qz` → `bar`, `mod.qz` → parent dir name.
     pub(super) fn module_name_for_path(&self, path: &str) -> Option<String> {
         let p = std::path::Path::new(path);
         let stem = p.file_stem().and_then(|s| s.to_str())?;

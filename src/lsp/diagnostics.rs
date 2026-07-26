@@ -12,7 +12,7 @@ pub fn to_lsp_diagnostics(report: &SemanticReport, source: &str) -> Vec<Diagnost
             range: span_to_range(err.span, source),
             severity: Some(DiagnosticSeverity::ERROR),
             code: Some(NumberOrString::String(err.code.to_string())),
-            source: Some("void".to_string()),
+            source: Some("quazilang".to_string()),
             message: strip_ansi(&err.message),
             ..Default::default()
         });
@@ -28,7 +28,7 @@ pub fn to_lsp_diagnostics(report: &SemanticReport, source: &str) -> Vec<Diagnost
             range: span_to_range(warn.span, source),
             severity: Some(DiagnosticSeverity::WARNING),
             code: Some(NumberOrString::String(warn.code.to_string())),
-            source: Some("void".to_string()),
+            source: Some("quazilang".to_string()),
             message: strip_ansi(&msg),
             ..Default::default()
         });

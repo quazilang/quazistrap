@@ -1,4 +1,4 @@
-// void - the programming language
+// quazilang - the programming language
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
@@ -14,7 +14,7 @@ mod progress;
 mod project;
 pub mod semantic;
 
-use analysis::{analyze_program_with_source_files, format_void_source};
+use analysis::{analyze_program_with_source_files, format_quazi_source};
 use backend::linker::{LinkerInvocation, remove_temp, write_temp_object};
 use backend::{TargetSpec, select_backend};
 use bytecode::{Codegen, serialize_vbc};
@@ -349,7 +349,7 @@ fn run_check(
 
 fn project_output_name(name: &str, emit: EmitType) -> String {
     match emit {
-        EmitType::Bytecode => format!("{}.vbc", name),
+        EmitType::Bytecode => format!("{}.qzi", name),
         EmitType::Object => format!("{}.o", name),
         EmitType::Binary => {
             if cfg!(target_os = "windows") {
@@ -411,26 +411,26 @@ fn scaffold_project(root: &PathBuf, pkg_name: &str, lib: bool) {
 
     if lib {
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\ntype = \"lib\"\n\n[build]\nentry = \"src/lib.void\"\nsrc = \"src\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\ntype = \"lib\"\n\n[build]\nentry = \"src/lib.qz\"\nsrc = \"src\"\n",
             pkg_name
         );
-        write_file(&root.join("void.toml"), &toml);
+        write_file(&root.join("quazi.toml"), &toml);
 
         let lib_src = format!(
-            "// {name} — void library\n\npub fn add(a: i64, b: i64) i64 {{\n    ret a + b;\n}}\n",
+            "// {name} — quazilang library\n\npub fn add(a: i64, b: i64) i64 {{\n    ret a + b;\n}}\n",
             name = pkg_name
         );
-        write_file(&src_dir.join("lib.void"), &lib_src);
+        write_file(&src_dir.join("lib.qz"), &lib_src);
     } else {
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[build]\nentry = \"src/main.void\"\nsrc = \"src\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[build]\nentry = \"src/main.qz\"\nsrc = \"src\"\n",
             pkg_name
         );
-        write_file(&root.join("void.toml"), &toml);
+        write_file(&root.join("quazi.toml"), &toml);
 
         let main_src =
-            "import std.io;\n\nfn main() void {\n    io.println(\"Hello, World!\");\n    ret;\n}\n";
-        write_file(&src_dir.join("main.void"), main_src);
+            "import std.io;\n\nfn main() i32 {\n    io.println(\"Hello, World!\");\n    ret 0;\n}\n";
+        write_file(&src_dir.join("main.qz"), main_src);
     }
 }
 
@@ -459,8 +459,8 @@ fn init_project(lib: bool) {
         std::process::exit(1);
     });
 
-    if cwd.join("void.toml").exists() {
-        eprintln!("\x1b[31;1merror:\x1b[0m void.toml already exists in this directory");
+    if cwd.join("quazi.toml").exists() {
+        eprintln!("\x1b[31;1merror:\x1b[0m quazi.toml already exists in this directory");
         std::process::exit(1);
     }
 
@@ -473,15 +473,15 @@ fn init_project(lib: bool) {
     println!("initialized {} project '{}'", kind, pkg_name);
 }
 
-fn collect_void_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect_quazi_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("cannot read dir entry: {}", e))?;
         let path = entry.path();
         if path.is_dir() {
-            collect_void_files(&path, out)?;
-        } else if path.extension().and_then(|s| s.to_str()) == Some("void") {
+            collect_quazi_files(&path, out)?;
+        } else if path.extension().and_then(|s| s.to_str()) == Some("qz") {
             out.push(path);
         }
     }
@@ -491,7 +491,7 @@ fn collect_void_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> 
 fn format_project_sources() {
     let ctx = load_project_context();
     let mut files = Vec::new();
-    collect_void_files(&ctx.config.src_dir, &mut files).unwrap_or_else(|e| {
+    collect_quazi_files(&ctx.config.src_dir, &mut files).unwrap_or_else(|e| {
         eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
         std::process::exit(1);
     });
@@ -506,7 +506,7 @@ fn format_project_sources() {
             );
             std::process::exit(1);
         });
-        let formatted = format_void_source(&src);
+        let formatted = format_quazi_source(&src);
         if formatted != src {
             write_file(&path, &formatted);
             changed += 1;
@@ -528,7 +528,7 @@ fn clean_project_artifacts() {
     let mut targets: HashSet<PathBuf> = HashSet::new();
     targets.insert(root.join(&bin_name));
     targets.insert(root.join(format!("{}.o", ctx.config.name)));
-    targets.insert(root.join(format!("{}.vbc", ctx.config.name)));
+    targets.insert(root.join(format!("{}.qzi", ctx.config.name)));
 
     let mut removed = 0usize;
     for path in targets {
@@ -850,7 +850,7 @@ fn main() {
 
                 if is_lib && matches!(emit, EmitType::Binary) && !emit_bytecode && !emit_object {
                     eprintln!(
-                        "\x1b[33;1mnote:\x1b[0m library project — emitting bytecode (.vbc). Use -c for object file."
+                        "\x1b[33;1mnote:\x1b[0m library project — emitting bytecode (.qzi). Use -c for object file."
                     );
                 }
 
@@ -885,11 +885,11 @@ fn main() {
                 .iter()
                 .any(|f| f.extension().is_some_and(|e| e == "vbc"))
             {
-                // .vbc input — deserialize and compile to native directly.
+                // .qzi input — deserialize and compile to native directly.
                 for vbc_file in &files {
                     if vbc_file.extension().is_some_and(|e| e != "vbc") {
                         eprintln!(
-                            "\x1b[31;1merror:\x1b[0m cannot mix .vbc and source files: {}",
+                            "\x1b[31;1merror:\x1b[0m cannot mix .qzi and source files: {}",
                             vbc_file.display()
                         );
                         std::process::exit(1);
@@ -908,7 +908,7 @@ fn main() {
                     });
                     let chunks = bytecode::deserialize_vbc(&bytes).unwrap_or_else(|e| {
                         eprintln!(
-                            "\x1b[31;1merror:\x1b[0m invalid .vbc '{}': {}",
+                            "\x1b[31;1merror:\x1b[0m invalid .qzi '{}': {}",
                             vbc_file.display(),
                             e
                         );
@@ -924,7 +924,7 @@ fn main() {
                         .to_string_lossy()
                         .into_owned();
                     match emit {
-                        EmitType::Bytecode => format!("{}.vbc", stem),
+                        EmitType::Bytecode => format!("{}.qzi", stem),
                         EmitType::Object => format!("{}.o", stem),
                         EmitType::Binary => {
                             if cfg!(target_os = "windows") {
@@ -961,7 +961,7 @@ fn main() {
                         .to_string_lossy()
                         .into_owned();
                     match emit {
-                        EmitType::Bytecode => format!("{}.vbc", stem),
+                        EmitType::Bytecode => format!("{}.qzi", stem),
                         EmitType::Object => format!("{}.o", stem),
                         EmitType::Binary => {
                             if cfg!(target_os = "windows") {
@@ -1091,21 +1091,22 @@ fn main() {
 
         CliCmd::Debug { emit_bytecode } => {
             let src = r#"
-import std.io.stdout;
+import std.io;
 
-fn main() void {
+fn main() i32 {
     const z = "hi";
     const y: i32 = 10;
     var x: i32 = 5;
 
     for x < y {
-        stdout.println("{} void! x = {}", z, x);
+        io.println("{} quazi! x = {}", z, x);
         x++;
     }
+    ret 0;
 }
 "#;
             let (emit, output) = if emit_bytecode {
-                (EmitType::Bytecode, "dbg.vbc".to_owned())
+                (EmitType::Bytecode, "dbg.qzi".to_owned())
             } else {
                 (
                     EmitType::Binary,

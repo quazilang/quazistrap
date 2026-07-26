@@ -66,7 +66,7 @@ fn std_symbols_for_source(
     let mut names = HashSet::new();
     let mut symbols = Vec::new();
     for module in modules {
-        let path = std_src_dir.join(format!("{module}.void"));
+        let path = std_src_dir.join(format!("{module}.qz"));
         let Ok(src) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -209,26 +209,7 @@ fn import_base_and_remainder(
 }
 
 fn find_std_src_dir() -> Option<PathBuf> {
-    if let Ok(root) = std::env::var("VOID_STD_ROOT") {
-        let path = PathBuf::from(root).join("src");
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("std")
-        .join("src");
-    if manifest_path.exists() {
-        return Some(manifest_path);
-    }
-
-    let cwd_path = std::env::current_dir().ok()?.join("std").join("src");
-    if cwd_path.exists() {
-        return Some(cwd_path);
-    }
-
-    None
+    crate::loader::find_builtin_std_root().map(|p| p.join("src"))
 }
 
 fn zero_span() -> Span {

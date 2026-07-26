@@ -8,9 +8,9 @@ pub enum EmitType {
     Binary,
 }
 
-/// void language compiler
+/// quazilang compiler
 #[derive(Parser, Debug)]
-#[command(name = "void", version, about, long_about = None)]
+#[command(name = "qz", version, about, long_about = None)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Command,
@@ -18,12 +18,12 @@ pub struct Args {
 
 #[derive(Clone, Subcommand, Debug)]
 pub enum Command {
-    /// build files or project (if no files given, reads void.toml)
+    /// build files or project (if no files given, reads quazi.toml)
     Build {
         files: Vec<PathBuf>,
         #[arg(short, long)]
         output: Option<String>,
-        #[arg(short = 'b', long = "bytecode")]
+        #[arg(short = 'i', long = "bytecode")]
         emit_bytecode: bool,
         /// emit relocatable object file (.o) without linking
         #[arg(short = 'c', long = "obj")]
@@ -33,14 +33,14 @@ pub enum Command {
         /// print loaded files and bytecode disassembly to stderr
         #[arg(short = 'd', long = "debug")]
         debug: bool,
-        /// explicit linker binary (overrides VOID_LINKER env var)
+        /// explicit linker binary (overrides QUAZI_LINKER env var)
         #[arg(long = "linker")]
         linker: Option<PathBuf>,
         /// strip debug symbols from the output binary
         #[arg(short = 's', long = "strip")]
         strip: bool,
     },
-    /// build and run project (reads void.toml)
+    /// build and run project (reads quazi.toml)
     Run {
         /// explicit linker binary
         #[arg(long = "linker")]
@@ -49,7 +49,7 @@ pub enum Command {
         #[arg(short = 's', long = "strip")]
         strip: bool,
     },
-    /// check project without compiling (reads void.toml)
+    /// check project without compiling (reads quazi.toml)
     Check,
     /// create new project
     New {
@@ -70,7 +70,7 @@ pub enum Command {
     Clean,
     /// debug (use preset code and nothing more)
     Debug {
-        #[arg(short = 'b', long = "bytecode")]
+        #[arg(short = 'i', long = "bytecode")]
         emit_bytecode: bool,
     },
     /// start language server (stdio mode)

@@ -1,4 +1,4 @@
-// void - the programming language
+// quazilang - the programming language
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
@@ -106,7 +106,7 @@ struct LockPackage {
 impl ProjectContext {
     pub fn load(start: &Path) -> Result<Self, String> {
         let root = find_project_root(start)
-            .ok_or_else(|| "void.toml not found in this directory or parents".to_string())?;
+            .ok_or_else(|| "quazi.toml not found in this directory or parents".to_string())?;
         Self::load_from_root(&root)
     }
 
@@ -121,7 +121,7 @@ impl ProjectContext {
         if self.resolver.modules.len() <= 1 {
             return Ok(());
         }
-        let lock_path = self.config.root.join("void.lock");
+        let lock_path = self.config.root.join("quazi.lock");
         if lock_path.exists() {
             let lock = load_lockfile(&lock_path)?;
             validate_lockfile(&lock, &self.resolver, &self.config.name)
@@ -184,7 +184,7 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
             &dir
         };
 
-        if check.join("void.toml").exists() {
+        if check.join("quazi.toml").exists() {
             return check
                 .canonicalize()
                 .ok()
@@ -199,18 +199,18 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
 }
 
 fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
-    let path = root.join("void.toml");
+    let path = root.join("quazi.toml");
     let raw = read_raw_config(&path)?;
     let package = raw
         .package
-        .ok_or_else(|| "void.toml missing [package] section".to_string())?;
+        .ok_or_else(|| "quazi.toml missing [package] section".to_string())?;
 
     let kind = match package.kind.as_deref() {
         Some("lib") => ProjectKind::Lib,
         Some("bin") | None => ProjectKind::Bin,
         Some(other) => {
             return Err(format!(
-                "void.toml: unknown package type '{}' (expected 'bin' or 'lib')",
+                "quazi.toml: unknown package type '{}' (expected 'bin' or 'lib')",
                 other
             ));
         }
@@ -224,8 +224,8 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
 
     let src_dir = root.join(build.src.unwrap_or_else(|| "src".to_string()));
     let default_entry = match kind {
-        ProjectKind::Lib => "src/lib.void",
-        ProjectKind::Bin => "src/main.void",
+        ProjectKind::Lib => "src/lib.qz",
+        ProjectKind::Bin => "src/main.qz",
     };
     let entry = root.join(build.entry.unwrap_or_else(|| default_entry.to_string()));
 
@@ -416,19 +416,19 @@ mod tests {
 
     #[test]
     fn loads_project_and_writes_lockfile() {
-        let root = temp_dir("void_project");
+        let root = temp_dir("qz_project");
         let src_dir = root.join("src");
         fs::create_dir_all(&src_dir).expect("create src");
-        fs::write(src_dir.join("main.void"), "fn main() void { ret; }").expect("write main.void");
+        fs::write(src_dir.join("main.qz"), "fn main() void { ret; }").expect("write main.qz");
 
         let dep_root = root.join("dep");
         let dep_src = dep_root.join("src");
         fs::create_dir_all(&dep_src).expect("create dep src");
-        fs::write(dep_src.join("main.void"), "fn dep_main() void { ret; }")
+        fs::write(dep_src.join("main.qz"), "fn dep_main() void { ret; }")
             .expect("write dep main");
 
         fs::write(
-            root.join("void.toml"),
+            root.join("quazi.toml"),
             r#"[package]
 name = "app"
 version = "0.1.0"
@@ -437,16 +437,16 @@ version = "0.1.0"
 dep = { path = "dep", version = "1.2.3" }
 "#,
         )
-        .expect("write app void.toml");
+        .expect("write app quazi.toml");
 
         fs::write(
-            dep_root.join("void.toml"),
+            dep_root.join("quazi.toml"),
             r#"[package]
 name = "dep"
 version = "1.2.3"
 "#,
         )
-        .expect("write dep void.toml");
+        .expect("write dep quazi.toml");
 
         let ctx = ProjectContext::load(&root).expect("load project context");
         assert_eq!(ctx.config.name, "app");
@@ -457,7 +457,7 @@ version = "1.2.3"
         assert_eq!(ctx.config.dependencies[0].version.as_deref(), Some("1.2.3"));
 
         ctx.ensure_lockfile().expect("ensure lockfile");
-        let lock_path = root.join("void.lock");
+        let lock_path = root.join("quazi.lock");
         assert!(lock_path.exists(), "expected lockfile to be created");
         let lock = load_lockfile(&lock_path).expect("load lockfile");
         assert_eq!(lock.package.len(), 1);

@@ -65,7 +65,7 @@ fn emit_native_object(
         .iter()
         .map(|c| {
             if c.intrinsic {
-                format!("__void_intr_{}", safe_label(&c.name))
+                format!("__quazi_intr_{}", safe_label(&c.name))
             } else {
                 safe_label(&c.name)
             }

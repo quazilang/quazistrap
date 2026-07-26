@@ -79,10 +79,10 @@ impl Analyzer {
                     .iter()
                     .any(|a| matches!(a.as_str(), "syscall" | "api"));
                 let is_no_mangle = attr_names.iter().any(|a| a == "no_mangle");
-                // Internal runtime symbols (e.g. __void_panic_handler) keep their bare
+                // Internal runtime symbols (e.g. __quazi_panic_handler) keep their bare
                 // names so the runtime stub can find them.
                 // @no_mangle functions keep their bare name to allow stable symbol references.
-                let register_name = if name.starts_with("__void_") {
+                let register_name = if name.starts_with("__quazi_") {
                     name.clone()
                 } else if is_no_mangle {
                     name.clone()

@@ -1,0 +1,75 @@
+// prelude.array — safe generic dynamic array backed by heap memory
+import std.core;
+import traits;
+import panic.panic;
+
+// Internal: write val into base[idx * 8]. @intrinsic bypasses S12.
+@intrinsic("quazi.array.store")
+fn __ptr_store(base: *u8, idx: usize, val: usize) void;
+
+// Internal: read base[idx * 8].
+@intrinsic("quazi.array.load")
+fn __ptr_load(base: *u8, idx: usize) usize;
+
+struct Array[T] {
+    ptr: *u8,
+    len: usize,
+    cap: usize,
+}
+
+impl Array[T] {
+    pub fn new() Array[T] {
+        var buf: *u8;
+        unsafe { buf = core.malloc(64); }
+        ret Array { ptr: buf, len: 0, cap: 8 };
+    }
+
+    pub fn from(...items: T) Array[T] {
+        var result = Array.new();
+        for item : items {
+            result.push(item);
+        }
+        ret result;
+    }
+
+    pub fn push(self: Array[T], val: T) void {
+        if (self.len >= self.cap) {
+            self.cap = self.cap * 2;
+            unsafe { self.ptr = core.realloc(self.ptr, self.cap * 8); }
+        }
+        __ptr_store(self.ptr, self.len, val);
+        self.len = self.len + 1;
+    }
+
+    pub fn get(self: Array[T], idx: usize) T {
+        if (idx >= self.len) {
+            panic("index out of bounds");
+        }
+        ret __ptr_load(self.ptr, idx);
+    }
+
+    pub fn set(self: Array[T], idx: usize, val: T) void {
+        if (idx >= self.len) {
+            panic("index out of bounds");
+        }
+        __ptr_store(self.ptr, idx, val);
+    }
+
+    pub fn len(self: Array[T]) usize {
+        ret self.len;
+    }
+
+    pub fn is_empty(self: Array[T]) bool {
+        ret self.len == 0;
+    }
+
+    pub fn free(self: Array[T]) void {
+        unsafe { core.free(self.ptr); }
+    }
+}
+
+impl Index[usize, T] for Array[T] {
+    pub fn index(self: Array[T], i: usize) T {
+        ret self.get(i);
+    }
+}

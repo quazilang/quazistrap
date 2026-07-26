@@ -1,8 +1,13 @@
 [package]
-name = "void"
+name = "quazilang"
 version = "26.0.1"
 edition = "2024"
 license = "0BSD"
+description = "quazi language compiler"
+
+[[bin]]
+name = "qz"
+path = "src/main.rs"
 
 [dependencies]
 clap      = { version = "4.6.1", features = ["derive"] }

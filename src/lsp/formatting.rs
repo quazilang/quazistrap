@@ -1,9 +1,9 @@
 use tower_lsp::lsp_types::{Position, Range, TextEdit};
 
-use crate::analysis::format_void_source;
+use crate::analysis::format_quazi_source;
 
 pub fn format_document(source: &str) -> Option<Vec<TextEdit>> {
-    let formatted = format_void_source(source);
+    let formatted = format_quazi_source(source);
     if formatted == source {
         return Some(vec![]);
     }

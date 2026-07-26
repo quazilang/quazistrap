@@ -39,7 +39,7 @@ pub fn analyze_program_with_source_files(
     analyzer.analyze_program(program)
 }
 
-pub fn format_void_source(input: &str) -> String {
+pub fn format_quazi_source(input: &str) -> String {
     let lines: Vec<String> = input
         .lines()
         .map(|line| line.trim_end().to_string())

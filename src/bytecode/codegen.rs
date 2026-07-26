@@ -20,8 +20,8 @@ fn source_file_for_span(span: Span, source_files: &[SourceFile]) -> String {
         .unwrap_or_else(|| "<unknown>".to_string())
 }
 
-/// Derive module name from a span's source file (e.g. "unix" from "std/src/unix.void").
-/// For "mod.void", uses the parent directory name (e.g. "prelude" from "prelude/mod.void").
+/// Derive module name from a span's source file (e.g. "unix" from "std/src/unix.qz").
+/// For "mod.qz", uses the parent directory name (e.g. "prelude" from "prelude/mod.qz").
 fn module_name_for_span(span: Span, source_files: &[SourceFile]) -> Option<String> {
     source_files
         .iter()
@@ -115,10 +115,10 @@ impl<'a> Codegen<'a> {
 
     /// Return the resolved symbol name for a top-level item defined at `span`.
     /// Namespaced files use `module.name`; entry files use the bare `name`.
-    /// Internal runtime symbols (`__void_*`) keep their bare names.
+    /// Internal runtime symbols (`__quazi_*`) keep their bare names.
     /// `@no_mangle` functions keep their bare name regardless of file namespace.
     fn resolve_item_name(&self, span: Span, name: &str, attributes: &[Attribute]) -> String {
-        if name.starts_with("__void_") {
+        if name.starts_with("__quazi_") {
             return name.to_string();
         }
         if attributes.iter().any(|a| a.name == "no_mangle") {
@@ -281,10 +281,10 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
-            // @panic_handler: the user's function is compiled under __void_panic_handler but
+            // @panic_handler: the user's function is compiled under __quazi_panic_handler but
             // its own body's Call edges are indexed by the original function name. Seed BFS
             // from the original name so its dependencies are included.
-            if set.contains("__void_panic_handler")
+            if set.contains("__quazi_panic_handler")
                 && let Some(ph_name) = &user_panic_handler
                 && set.insert(ph_name.clone())
             {
@@ -317,12 +317,12 @@ impl<'a> Codegen<'a> {
             {
                 let is_ph = attributes.iter().any(|a| a.name == "panic_handler");
                 // When user has @panic_handler, skip the stdlib default.
-                if name == "__void_panic_handler" && user_panic_handler.is_some() {
+                if name == "__quazi_panic_handler" && user_panic_handler.is_some() {
                     continue;
                 }
                 // @panic_handler fn is registered under the handler slot name.
                 let index_name = if is_ph {
-                    "__void_panic_handler".to_string()
+                    "__quazi_panic_handler".to_string()
                 } else {
                     self.resolve_item_name(item.span, name, attributes)
                 };
@@ -416,12 +416,12 @@ impl<'a> Codegen<'a> {
                 }
                 let is_ph = attributes.iter().any(|a| a.name == "panic_handler");
                 // Skip stdlib default handler when user has their own.
-                if name == "__void_panic_handler" && user_panic_handler.is_some() {
+                if name == "__quazi_panic_handler" && user_panic_handler.is_some() {
                     continue;
                 }
                 // @panic_handler fn is compiled under the handler slot name.
                 let compile_name = if is_ph {
-                    "__void_panic_handler".to_string()
+                    "__quazi_panic_handler".to_string()
                 } else {
                     self.resolve_item_name(item.span, name, attributes)
                 };
@@ -1074,8 +1074,8 @@ impl<'a> Codegen<'a> {
             static INTRINSIC_OPCODE_MAP: LazyLock<HashMap<&'static str, Opcode>> =
                 LazyLock::new(|| {
                     let mut m = HashMap::new();
-                    m.insert("void.array.store", Opcode::ArrayStore);
-                    m.insert("void.array.load", Opcode::ArrayLoad);
+                    m.insert("quazi.array.store", Opcode::ArrayStore);
+                    m.insert("quazi.array.load", Opcode::ArrayLoad);
                     m
                 });
             if let Some(&op) = INTRINSIC_OPCODE_MAP.get(instr_name) {
@@ -2055,7 +2055,7 @@ impl<'a> FnCompiler<'a> {
                         // if idx == len_a → all bytes matched, fall through
                         self.chunk.emit(rrr(Opcode::Cmp, 0, idx, len_a));
                         let done_equal = self.chunk.emit(ri16(Opcode::Je, 0, 0));
-                        // byte_a = void.str.byte_at(value_reg, idx): args must be in r, r+1
+                        // byte_a = quazi.str.byte_at(value_reg, idx): args must be in r, r+1
                         let r_a = self.alloc_reg();
                         let r_a_idx = self.alloc_reg(); // must be r_a + 1
                         self.chunk.emit(rrr(Opcode::Mov, r_a, value_reg, 0));
@@ -2063,7 +2063,7 @@ impl<'a> FnCompiler<'a> {
                         let mut intr_a = ri16(Opcode::Intrinsic, r_a, 23);
                         intr_a.flags = 2;
                         self.chunk.emit(intr_a);
-                        // byte_b = void.str.byte_at(lit_reg, idx)
+                        // byte_b = quazi.str.byte_at(lit_reg, idx)
                         let r_b = self.alloc_reg();
                         let r_b_idx = self.alloc_reg(); // must be r_b + 1
                         self.chunk.emit(rrr(Opcode::Mov, r_b, lit_reg, 0));
@@ -2948,8 +2948,9 @@ impl<'a> FnCompiler<'a> {
             for &r in arg_regs {
                 self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
             }
-            // ops[0] = dst reg for return value; ops[1..2] = fn index
             self.chunk.emit(ri16(Opcode::CallIdx, dst, idx));
+        } else {
+            panic!("emit_call_by_name: function not found in fn_index: {}", name);
         }
     }
 
@@ -3129,7 +3130,7 @@ impl<'a> FnCompiler<'a> {
                                 0
                             };
                         // Forwarder chunk: (env_ptr_ignored, user_args...) → call named_fn(user_args...)
-                        let fwd_name = format!("__void_fwd_{}", resolved_name);
+                        let fwd_name = format!("__quazi_fwd_{}", resolved_name);
                         let mut fwd_chunk = Chunk::with_params(&fwd_name, user_param_count + 1);
                         for i in 0..user_param_count {
                             fwd_chunk.emit(rrr(Opcode::CallArg, (i + 1) as u8, 0, 0));
@@ -3642,7 +3643,7 @@ impl<'a> FnCompiler<'a> {
                                 .emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
                             (rp, rl)
                         };
-                        self.emit_call_by_name("format", &[template_reg, r_ptr, r_len], fmt_dst);
+                        self.emit_call_by_name("fmt.format", &[template_reg, r_ptr, r_len], fmt_dst);
                         // Call the actual @format function with the single formatted string.
                         let mut call_args = vec![fmt_dst];
                         if self.variadic_fn_info.contains_key(call_name.as_str()) {
@@ -3852,7 +3853,7 @@ impl<'a> FnCompiler<'a> {
                                 (rp, rl)
                             };
                             self.emit_call_by_name(
-                                "format",
+                                "fmt.format",
                                 &[template_reg, r_ptr, r_len],
                                 fmt_dst,
                             );
@@ -3981,7 +3982,7 @@ impl<'a> FnCompiler<'a> {
                                     coerced.push(cr);
                                 }
                                 let fd = self.alloc_reg();
-                                self.emit_call_by_name("format", &coerced, fd);
+                                self.emit_call_by_name("fmt.format", &coerced, fd);
                                 fd
                             } else {
                                 template_reg
@@ -4176,7 +4177,7 @@ impl<'a> FnCompiler<'a> {
                             } else {
                                 0
                             };
-                        let fwd_name = format!("__void_fwd_{}", resolved);
+                        let fwd_name = format!("__quazi_fwd_{}", resolved);
                         let mut fwd_chunk = Chunk::with_params(&fwd_name, user_param_count + 1);
                         for i in 0..user_param_count {
                             fwd_chunk.emit(rrr(Opcode::CallArg, (i + 1) as u8, 0, 0));
@@ -4464,7 +4465,7 @@ impl<'a> FnCompiler<'a> {
             ExprKind::Closure { params, body } => {
                 let val = *self.next_closure_idx;
                 *self.next_closure_idx = val.wrapping_add(1);
-                let anon_name = format!("__void_closure_{}", val);
+                let anon_name = format!("__quazi_closure_{}", val);
 
                 let captures = self.capture_ident_names(body, params);
 
@@ -4809,37 +4810,37 @@ fn extract_field_chain(expr: &Expr) -> Option<(String, Vec<String>)> {
     }
 }
 
-/// Maps `@intrinsic("void.X")` attribute strings to case IDs for the `Intrinsic` opcode.
+/// Maps `@intrinsic("quazi.X")` attribute strings to case IDs for the `Intrinsic` opcode.
 fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> u16 {
     static INTRINSIC_MAP: LazyLock<HashMap<&'static str, u16>> = LazyLock::new(|| {
         let mut m = HashMap::new();
-        m.insert("void.write", 0);
-        m.insert("void.read", 1);
-        m.insert("void.exit", 2);
-        m.insert("void.malloc", 3);
-        m.insert("void.free", 4);
-        m.insert("void.realloc", 5);
-        m.insert("void.memcpy", 6);
-        m.insert("void.memset", 7);
-        m.insert("void.memmove", 8);
-        m.insert("void.memcmp", 9);
-        m.insert("void.strlen", 10);
-        m.insert("void.stderr_write", 11);
-        m.insert("void.sleep_ms", 12);
-        m.insert("void.getenv", 13);
-        m.insert("void.str_concat", 14);
-        m.insert("void.int_to_str", 15);
-        m.insert("void.float_to_str", 16);
+        m.insert("quazi.write", 0);
+        m.insert("quazi.read", 1);
+        m.insert("quazi.exit", 2);
+        m.insert("quazi.malloc", 3);
+        m.insert("quazi.free", 4);
+        m.insert("quazi.realloc", 5);
+        m.insert("quazi.memcpy", 6);
+        m.insert("quazi.memset", 7);
+        m.insert("quazi.memmove", 8);
+        m.insert("quazi.memcmp", 9);
+        m.insert("quazi.strlen", 10);
+        m.insert("quazi.stderr_write", 11);
+        m.insert("quazi.sleep_ms", 12);
+        m.insert("quazi.getenv", 13);
+        m.insert("quazi.str_concat", 14);
+        m.insert("quazi.int_to_str", 15);
+        m.insert("quazi.float_to_str", 16);
         // Threading: malloc+pthread_create/CreateThread; pthread_join+free/WaitForSingleObject
-        m.insert("void.thread.spawn", 18);
-        m.insert("void.thread.join", 19);
+        m.insert("quazi.thread.spawn", 18);
+        m.insert("quazi.thread.join", 19);
         // Net: only the ops that need sockaddr_in construction (accept uses 0 directly now)
-        m.insert("void.net.bind_tcp", 20);
-        m.insert("void.net.connect_tcp", 21);
+        m.insert("quazi.net.bind_tcp", 20);
+        m.insert("quazi.net.connect_tcp", 21);
         // String primitives needed to implement format in void
-        m.insert("void.str.byte_at", 23);
-        m.insert("void.str.from_byte", 24);
-        m.insert("void.print_backtrace", 25);
+        m.insert("quazi.str.byte_at", 23);
+        m.insert("quazi.str.from_byte", 24);
+        m.insert("quazi.print_backtrace", 25);
         m
     });
     let name = attr
@@ -5735,12 +5736,12 @@ mod tests {
             }"#,
         );
         assert!(
-            chunks.iter().any(|c| c.name == "__void_closure_0"),
+            chunks.iter().any(|c| c.name == "__quazi_closure_0"),
             "expected anonymous closure chunk"
         );
         let closure_chunk = chunks
             .iter()
-            .find(|c| c.name == "__void_closure_0")
+            .find(|c| c.name == "__quazi_closure_0")
             .unwrap();
         assert_eq!(
             closure_chunk.code.last().unwrap().opcode,
@@ -5779,7 +5780,7 @@ mod tests {
         );
         let closure_chunk = chunks
             .iter()
-            .find(|c| c.name == "__void_closure_0")
+            .find(|c| c.name == "__quazi_closure_0")
             .unwrap();
         // With one capture, param_count = 0 user params + 1 hidden env ptr = 1
         assert_eq!(

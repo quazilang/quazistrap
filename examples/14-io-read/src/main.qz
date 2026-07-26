@@ -1,0 +1,22 @@
+import std.io;
+
+fn main() i32 {
+    // Test 1: readln — read a line from stdin
+    io.println("Enter your name:");
+    var name: str = io.readln();
+    io.println("Hello, {}!", name);
+
+    // Test 2: readkey — read a single character
+    io.println("Press any key:");
+    var key: str = io.readkey();
+    io.println("You pressed: {}", key);
+
+    // Test 3: read_until — read until a custom delimiter
+    // Using '.' (byte 46) as delimiter
+    io.println("Type something (end with '.'):");
+    var text: str = io.read(46);
+    io.println("You typed: {}", text);
+
+    io.println("Done!");
+    ret 0;
+}

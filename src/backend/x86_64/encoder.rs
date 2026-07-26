@@ -252,7 +252,7 @@ impl<'a> FnEncoder<'a> {
                         .fn_table
                         .get(fn_idx as usize)
                         .map(|s| safe_fn_label(s))
-                        .unwrap_or_else(|| "__void_unknown".into());
+                        .unwrap_or_else(|| "__quazi_unknown".into());
 
                     if is_win64 {
                         for (i, &vreg) in pending_args.iter().enumerate().take(4) {
@@ -445,14 +445,14 @@ impl<'a> FnEncoder<'a> {
                     }
                     Some(ConstPoolEntry::FnAddr(name)) => {
                         // Look up the function symbol name. FnAddr stores the raw function name;
-                        // the symbol may have __void_intr_ prefix or safe-label mangling.
+                        // the symbol may have __quazi_intr_ prefix or safe-label mangling.
                         let sym = self
                             .fn_table
                             .iter()
                             .find(|s| {
                                 s == &name
-                                    || s.trim_start_matches("__void_intr_") == name
-                                    || s.trim_start_matches("__void_intr_") == safe_fn_label(name)
+                                    || s.trim_start_matches("__quazi_intr_") == name
+                                    || s.trim_start_matches("__quazi_intr_") == safe_fn_label(name)
                             })
                             .cloned()
                             .unwrap_or_else(|| safe_fn_label(name));
@@ -775,7 +775,7 @@ impl<'a> FnEncoder<'a> {
                 let arg_count = instr.flags as usize;
                 match id {
                     0 => {
-                        // void.write(fd, buf, len) → isize
+                        // quazi.write(fd, buf, len) → isize
                         if is_win64 {
                             // GetStdHandle: fd 0→STD_INPUT(0xFFFFFFF6), 1→STD_OUTPUT(0xFFFFFFF5), 2→STD_ERROR(0xFFFFFFF4)
                             // Formula: handle_const = -10 - fd  (DWORD, lower 32 bits = Win32 constant)
@@ -813,7 +813,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     1 => {
-                        // void.read(fd, buf, len) → isize
+                        // quazi.read(fd, buf, len) → isize
                         if is_win64 {
                             // GetStdHandle for the fd, then ReadFile
                             emit!(asm.push(-10i32));
@@ -849,7 +849,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     2 => {
-                        // void.exit(code) → !
+                        // quazi.exit(code) → !
                         if is_win64 {
                             if arg_count > 0 {
                                 emit!(asm.mov(rcx, slot(dst)));
@@ -866,7 +866,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     3 => {
-                        // void.malloc(size) → ptr
+                        // quazi.malloc(size) → ptr
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                         } else {
@@ -876,7 +876,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     4 => {
-                        // void.free(ptr) → void
+                        // quazi.free(ptr) → void
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                         } else {
@@ -887,7 +887,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     5 => {
-                        // void.realloc(ptr, size) → usize
+                        // quazi.realloc(ptr, size) → usize
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -899,7 +899,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     6 => {
-                        // void.memcpy(dst_ptr, src, n) → usize
+                        // quazi.memcpy(dst_ptr, src, n) → usize
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -913,7 +913,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     7 => {
-                        // void.memset(ptr, val, n) → usize
+                        // quazi.memset(ptr, val, n) → usize
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -927,7 +927,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     8 => {
-                        // void.memmove(dst_ptr, src, n) → usize
+                        // quazi.memmove(dst_ptr, src, n) → usize
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -941,7 +941,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     9 => {
-                        // void.memcmp(a, b, n) → i32
+                        // quazi.memcmp(a, b, n) → i32
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -955,7 +955,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     10 => {
-                        // void.strlen(s) -> usize. Inline it so Linux stays libc-free.
+                        // quazi.strlen(s) -> usize. Inline it so Linux stays libc-free.
                         let mut loop_lbl = asm.create_label();
                         let mut done_lbl = asm.create_label();
                         emit!(asm.mov(rax, slot(dst)));
@@ -971,7 +971,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rcx));
                     }
                     11 => {
-                        // void.stderr_write(buf, len) → isize
+                        // quazi.stderr_write(buf, len) → isize
                         if is_win64 {
                             // GetStdHandle(STD_ERROR_HANDLE = -12 = 0xFFFFFFF4)
                             emit!(asm.push(-12i32));
@@ -997,7 +997,7 @@ impl<'a> FnEncoder<'a> {
                         }
                     }
                     12 => {
-                        // void.sleep_ms(ms) → void
+                        // quazi.sleep_ms(ms) → void
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                             call_ext!("Sleep".into(), RelocKind::Plt32);
@@ -1013,7 +1013,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     13 => {
-                        // void.getenv(name) → usize (char*)
+                        // quazi.getenv(name) → usize (char*)
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
                         } else {
@@ -1023,7 +1023,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     14 => {
-                        // void.str_concat(s1, s2) → str (heap-allocated, null-terminated)
+                        // quazi.str_concat(s1, s2) → str (heap-allocated, null-terminated)
                         // slot(dst)=s1, slot(dst+1)=s2
                         // malloc(strlen(s1)+strlen(s2)+1), strcpy(buf,s1), strcat(buf,s2)
                         // Uses callee-saved rbx, r12, r13 to survive calls.
@@ -1089,7 +1089,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     15 => {
-                        // void.int_to_str(n: i64) → str (heap-allocated, null-terminated)
+                        // quazi.int_to_str(n: i64) → str (heap-allocated, null-terminated)
                         // slot(dst) = n; malloc(32), sprintf(buf, "%ld", n), return buf
                         // Push rbx + rax (2*8=16 bytes) to keep rsp 16-byte aligned.
                         emit!(asm.push(rbx));
@@ -1103,11 +1103,11 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(rbx, rax));
                         if is_win64 {
                             emit!(asm.mov(rcx, rbx));
-                            lea_rip!(rdx, "__void_fmt_ld".into());
+                            lea_rip!(rdx, "__quazi_fmt_ld".into());
                             emit!(asm.mov(r8, slot(dst)));
                         } else {
                             emit!(asm.mov(rdi, rbx));
-                            lea_rip!(rsi, "__void_fmt_ld".into());
+                            lea_rip!(rsi, "__quazi_fmt_ld".into());
                             emit!(asm.mov(rdx, slot(dst)));
                         }
                         call_ext!("sprintf".into(), RelocKind::Plt32);
@@ -1116,7 +1116,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     16 => {
-                        // void.float_to_str(f: f64) → str (heap-allocated, null-terminated)
+                        // quazi.float_to_str(f: f64) → str (heap-allocated, null-terminated)
                         // slot(dst) = f (64-bit IEEE754); malloc(32), sprintf(buf, "%g", f), return buf
                         // Push rbx + rax (2*8=16 bytes) to keep rsp 16-byte aligned.
                         emit!(asm.push(rbx));
@@ -1131,12 +1131,12 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(rax, slot(dst)));
                         if is_win64 {
                             emit!(asm.mov(rcx, rbx));
-                            lea_rip!(rdx, "__void_fmt_g".into());
+                            lea_rip!(rdx, "__quazi_fmt_g".into());
                             emit!(asm.movq(xmm2, rax));
                             emit!(asm.mov(r8, rax));
                         } else {
                             emit!(asm.mov(rdi, rbx));
-                            lea_rip!(rsi, "__void_fmt_g".into());
+                            lea_rip!(rsi, "__quazi_fmt_g".into());
                             emit!(asm.movq(xmm0, rax));
                             emit!(asm.mov(eax, 1i32));
                         }
@@ -1146,7 +1146,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     18 => {
-                        // void.thread.spawn(f: any) → usize (thread handle)
+                        // quazi.thread.spawn(f: any) → usize (thread handle)
                         // slot(dst) = function pointer (address)
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // align rsp to 16
@@ -1177,7 +1177,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     19 => {
-                        // void.thread.join(handle: usize) → void
+                        // quazi.thread.join(handle: usize) → void
                         // slot(dst) = thread handle
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // align
@@ -1202,7 +1202,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     20 => {
-                        // void.net.bind_tcp(sockfd: i32, port: i32) → i32
+                        // quazi.net.bind_tcp(sockfd: i32, port: i32) → i32
                         // Builds sockaddr_in on stack — void has no byte-level memory writes
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // keep rsp 16-byte aligned
@@ -1234,7 +1234,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     21 => {
-                        // void.net.connect_tcp(sockfd: i32, ip: str, port: i32) → i32
+                        // quazi.net.connect_tcp(sockfd: i32, ip: str, port: i32) → i32
                         // Uses inet_pton to parse dotted-decimal IP, builds sockaddr_in
                         emit!(asm.push(rbx));
                         emit!(asm.push(r12));
@@ -1282,7 +1282,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     23 => {
-                        // void.str.byte_at(s: str, i: usize) u8
+                        // quazi.str.byte_at(s: str, i: usize) u8
                         // s is a char* pointer (str register = ptr portion).
                         // Load byte at [s + i] with zero-extension.
                         emit!(asm.mov(rax, slot(dst))); // s (ptr)
@@ -1291,7 +1291,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     24 => {
-                        // void.str.from_byte(b: u8) str
+                        // quazi.str.from_byte(b: u8) str
                         // Allocates a 2-byte buffer [b, '\0'] on the heap and returns ptr.
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax));
@@ -1313,8 +1313,8 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     25 => {
-                        // void.print_backtrace() → void
-                        call_ext!("__void_print_backtrace".into(), RelocKind::Plt32);
+                        // quazi.print_backtrace() → void
+                        call_ext!("__quazi_print_backtrace".into(), RelocKind::Plt32);
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
                     }
@@ -1407,7 +1407,7 @@ impl<'a> FnEncoder<'a> {
                     .get(vbc_idx)
                     .and_then(|s| s.as_ref())
                     .cloned()
-                    .unwrap_or_else(|| format!("__void_itoa_missing_{}", vbc_idx));
+                    .unwrap_or_else(|| format!("__quazi_itoa_missing_{}", vbc_idx));
 
                 match type_tag {
                     1 => {
@@ -1415,12 +1415,12 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(rax, slot(src)));
                         if is_win64 {
                             lea_rip!(rcx, buf_sym.clone());
-                            lea_rip!(rdx, "__void_fmt_g".into());
+                            lea_rip!(rdx, "__quazi_fmt_g".into());
                             emit!(asm.movq(xmm2, rax));
                             emit!(asm.mov(r8, rax));
                         } else {
                             lea_rip!(rdi, buf_sym.clone());
-                            lea_rip!(rsi, "__void_fmt_g".into());
+                            lea_rip!(rsi, "__quazi_fmt_g".into());
                             emit!(asm.movq(xmm0, rax));
                             emit!(asm.mov(eax, 1i32));
                         }
@@ -1470,9 +1470,9 @@ impl<'a> FnEncoder<'a> {
                     // Integer hex/octal: sprintf(buf, fmt, val)
                     3..=5 => {
                         let fmt_sym = match type_tag {
-                            3 => "__void_fmt_llx",
-                            4 => "__void_fmt_llX",
-                            _ => "__void_fmt_llo",
+                            3 => "__quazi_fmt_llx",
+                            4 => "__quazi_fmt_llX",
+                            _ => "__quazi_fmt_llo",
                         };
                         if is_win64 {
                             lea_rip!(rcx, buf_sym.clone());
@@ -1528,7 +1528,7 @@ impl<'a> FnEncoder<'a> {
                     // Float with precision: sprintf(buf, "%.Nf", val) where N = tag - 20
                     t @ 20..=29 => {
                         let prec = t - 20;
-                        let fmt_sym = format!("__void_fmt_prec_{}", prec);
+                        let fmt_sym = format!("__quazi_fmt_prec_{}", prec);
                         emit!(asm.mov(rax, slot(src)));
                         if is_win64 {
                             lea_rip!(rcx, buf_sym.clone());
@@ -1547,11 +1547,11 @@ impl<'a> FnEncoder<'a> {
                         // int (type_tag=0 or any other): existing "%ld" path
                         if is_win64 {
                             lea_rip!(rcx, buf_sym.clone());
-                            lea_rip!(rdx, "__void_fmt_ld".into());
+                            lea_rip!(rdx, "__quazi_fmt_ld".into());
                             emit!(asm.mov(r8, slot(src)));
                         } else {
                             lea_rip!(rdi, buf_sym.clone());
-                            lea_rip!(rsi, "__void_fmt_ld".into());
+                            lea_rip!(rsi, "__quazi_fmt_ld".into());
                             emit!(asm.mov(rdx, slot(src)));
                         }
                         call_ext!("sprintf".into(), RelocKind::Plt32);

@@ -1,11 +1,11 @@
-Implement the following changes to the Void compiler (C:\Users\nam\desktop\codes\void), in exact priority order. Do NOT touch LSP — it is lowest priority. Update CLAUDE.md as you go.
+Implement the following changes to the Quazilang compiler (C:\Users\nam\desktop\codes\void), in exact priority order. Do NOT touch LSP — it is lowest priority. Update DOCS.md as you go.
 
   ## P0 — Critical Safety / Bugs
 
   1. Enhanced Crash/Panic Handler
-     - Current: Linux `__void_crash_handler` and Windows `__void_crash_handler_win` print a static 78-byte message with no context.
-     - Goal: include (a) the panic message string if available, (b) file/line info from the panic site, (c) optional stack trace via rbp frame walking when `VOID_TRACE=1` is set.
-     - Files: `src/backend/x86_64/start.rs`, `src/backend/x86_64/sections.rs`, `std/src/panic.void`, `std/src/core.void`.
+     - Current: Linux `__quazi_crash_handler` and Windows `__quazi_crash_handler_win` print a static 78-byte message with no context.
+     - Goal: include (a) the panic message string if available, (b) file/line info from the panic site, (c) optional stack trace via rbp frame walking when `QUAZI_TRACE=1` is set.
+     - Files: `src/backend/x86_64/start.rs`, `src/backend/x86_64/sections.rs`, `std/src/panic.qz`, `std/src/core.qz`.
      - Keep binary size minimal; use compile-time-known offsets where possible.
 
   2. Fix Encoder Silent Fallback
@@ -15,7 +15,7 @@ Implement the following changes to the Void compiler (C:\Users\nam\desktop\codes
 
   3. Fix Non-Slice Iterator Codegen
      - Current: in `src/bytecode/codegen.rs` around line 1624, `ForLoop::Each` on non-slice collections emits a broken infinite loop (`Jz` + `Jmp` to top with no `.next()` call).
-     - Fix: since `Iterator[T]` trait exists (`std/src/prelude/traits.void`) with `next()` and `has_next()`, emit proper iterator protocol calls: bind iterator result, loop while `has_next()`, call `next()` to
+     - Fix: since `Iterator[T]` trait exists (`std/src/prelude/traits.qz`) with `next()` and `has_next()`, emit proper iterator protocol calls: bind iterator result, loop while `has_next()`, call `next()` to
   get value. Do not change the AST; fix only the codegen path.
 
   ## P1 — High Impact
@@ -76,5 +76,5 @@ Implement the following changes to the Void compiler (C:\Users\nam\desktop\codes
   - Do not create excess intrinsics or attributes.
   - Do not hardcode behavior that can be implemented in Void itself.
   - Keep code clean and maintainable.
-  - Update CLAUDE.md to reflect any command changes or new behavior.
+  - Update DOCS.md to reflect any command changes or new behavior.
   - Run `cargo test` after each major change to ensure nothing breaks.

@@ -25,8 +25,8 @@ impl LinkerInvocation {
         let linker = Self::detect_for_target(&target).ok_or_else(|| {
             use super::target::Os;
             match target.os {
-                Os::Windows => "no linker found; install lld-link or link.exe, or set VOID_LINKER=/path/to/lld-link".to_string(),
-                _ => "no linker found; install ld.lld, mold, or ld, or set VOID_LINKER=/path/to/linker".to_string(),
+                Os::Windows => "no linker found; install lld-link or link.exe, or set QUAZI_LINKER=/path/to/lld-link".to_string(),
+                _ => "no linker found; install ld.lld, mold, or ld, or set QUAZI_LINKER=/path/to/linker".to_string(),
             }
         })?;
         Ok(Self {
@@ -39,7 +39,7 @@ impl LinkerInvocation {
     }
 
     fn detect_for_target(target: &TargetSpec) -> Option<PathBuf> {
-        if let Ok(path) = std::env::var("VOID_LINKER") {
+        if let Ok(path) = std::env::var("QUAZI_LINKER") {
             return Some(PathBuf::from(path));
         }
         use super::target::Os;
@@ -56,8 +56,8 @@ impl LinkerInvocation {
     }
 
     /// Detect the best available linker for the host target.
-    /// Search order: $VOID_LINKER → ld.lld → mold → ld  (Linux/macOS)
-    ///               $VOID_LINKER → lld-link → link      (Windows)
+    /// Search order: $QUAZI_LINKER → ld.lld → mold → ld  (Linux/macOS)
+    ///               $QUAZI_LINKER → lld-link → link      (Windows)
     pub fn detect() -> Option<PathBuf> {
         Self::detect_for_target(&TargetSpec::host())
     }
@@ -160,7 +160,7 @@ impl LinkerInvocation {
             }
         }
 
-        // Pass through flags from void.toml [build].flags.
+        // Pass through flags from quazi.toml [build].flags.
         for flag in &self.extra_flags {
             args.push(flag.into());
         }
@@ -222,7 +222,7 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 
 /// Write object bytes to a temporary file and return its path.
 pub fn write_temp_object(bytes: &[u8], stem: &str) -> Result<PathBuf, String> {
-    let tmp = std::env::temp_dir().join(format!("void_{}_{}.o", stem, std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("qz_{}_{}.o", stem, std::process::id()));
     std::fs::write(&tmp, bytes)
         .map_err(|e| format!("cannot write temp object {}: {}", tmp.display(), e))?;
     Ok(tmp)

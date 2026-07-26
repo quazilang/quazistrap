@@ -15,8 +15,8 @@ pub(super) const CRASH_HEADER: &[u8] = b"== CRASHED ==\n";
 pub(super) const FATAL_EXC: &[u8] = b"fatal: exception 0x";
 pub(super) const FAULT_PREFIX: &[u8] = b"fault: 0x";
 pub(super) const RIP_PREFIX: &[u8] = b"rip: 0x";
-pub(super) const TRACE_HINT: &[u8] = b"use VOID_TRACE=1 to see full stack trace\n";
-pub(super) const ENV_VAR_NAME: &[u8] = b"VOID_TRACE\0";
+pub(super) const TRACE_HINT: &[u8] = b"use QUAZI_TRACE=1 to see full stack trace\n";
+pub(super) const ENV_VAR_NAME: &[u8] = b"QUAZI_TRACE\0";
 
 fn safe_label(name: &str) -> String {
     name.chars()
@@ -46,7 +46,7 @@ impl SectionAccumulator {
     }
 
     /// Lay out .rodata: string constants and the "%ld" format string for PrimToStr.
-    /// Adds a data symbol for each string entry and for __void_fmt_ld.
+    /// Adds a data symbol for each string entry and for __quazi_fmt_ld.
     /// Returns the symbol name for each const-pool slot (None for non-Str entries).
     pub fn build_rodata(
         &self,
@@ -59,7 +59,7 @@ impl SectionAccumulator {
         sym_table.define_data(
             obj,
             self.rodata_id,
-            "__void_crash_header",
+            "__quazi_crash_header",
             hdr_offset,
             CRASH_HEADER.len() as u64,
         );
@@ -67,7 +67,7 @@ impl SectionAccumulator {
         sym_table.define_data(
             obj,
             self.rodata_id,
-            "__void_fatal_exc",
+            "__quazi_fatal_exc",
             fatal_exc_offset,
             FATAL_EXC.len() as u64,
         );
@@ -75,7 +75,7 @@ impl SectionAccumulator {
         sym_table.define_data(
             obj,
             self.rodata_id,
-            "__void_fault",
+            "__quazi_fault",
             fault_offset,
             FAULT_PREFIX.len() as u64,
         );
@@ -83,7 +83,7 @@ impl SectionAccumulator {
         sym_table.define_data(
             obj,
             self.rodata_id,
-            "__void_rip",
+            "__quazi_rip",
             rip_offset,
             RIP_PREFIX.len() as u64,
         );
@@ -91,7 +91,7 @@ impl SectionAccumulator {
         sym_table.define_data(
             obj,
             self.rodata_id,
-            "__void_trace_hint",
+            "__quazi_trace_hint",
             hint_offset,
             TRACE_HINT.len() as u64,
         );
@@ -99,7 +99,7 @@ impl SectionAccumulator {
         sym_table.define_data(
             obj,
             self.rodata_id,
-            "__void_env_var_name",
+            "__quazi_env_var_name",
             env_offset,
             ENV_VAR_NAME.len() as u64,
         );
@@ -109,26 +109,26 @@ impl SectionAccumulator {
         sym_table.define_data(
             obj,
             self.rodata_id,
-            "__void_proc_self_environ",
+            "__quazi_proc_self_environ",
             proc_offset,
             19,
         );
         let fatal_offset = obj.append_section_data(self.rodata_id, b"fatal: signal 0x ", 1);
-        sym_table.define_data(obj, self.rodata_id, "__void_fatal_sig", fatal_offset, 16);
+        sym_table.define_data(obj, self.rodata_id, "__quazi_fatal_sig", fatal_offset, 16);
         let at_addr_offset = obj.append_section_data(self.rodata_id, b" at address 0x", 1);
-        sym_table.define_data(obj, self.rodata_id, "__void_at_addr", at_addr_offset, 14);
+        sym_table.define_data(obj, self.rodata_id, "__quazi_at_addr", at_addr_offset, 14);
         let bt_prefix_offset = obj.append_section_data(self.rodata_id, b"stack backtrace:\n", 1);
         sym_table.define_data(
             obj,
             self.rodata_id,
-            "__void_bt_prefix",
+            "__quazi_bt_prefix",
             bt_prefix_offset,
             17,
         );
         let at_0x_offset = obj.append_section_data(self.rodata_id, b"  at 0x", 1);
-        sym_table.define_data(obj, self.rodata_id, "__void_at_0x", at_0x_offset, 7);
+        sym_table.define_data(obj, self.rodata_id, "__quazi_at_0x", at_0x_offset, 7);
         let nl_offset = obj.append_section_data(self.rodata_id, b"\n", 1);
-        sym_table.define_data(obj, self.rodata_id, "__void_nl", nl_offset, 1);
+        sym_table.define_data(obj, self.rodata_id, "__quazi_nl", nl_offset, 1);
 
         let needs_fmt_ld = chunks.iter().any(|c| {
             c.code.iter().any(|i| {
@@ -142,7 +142,7 @@ impl SectionAccumulator {
             sym_table.define_data(
                 obj,
                 self.rodata_id,
-                "__void_fmt_ld",
+                "__quazi_fmt_ld",
                 offset,
                 fmt.len() as u64,
             );
@@ -160,7 +160,7 @@ impl SectionAccumulator {
             sym_table.define_data(
                 obj,
                 self.rodata_id,
-                "__void_fmt_g",
+                "__quazi_fmt_g",
                 offset,
                 fmt.len() as u64,
             );
@@ -168,9 +168,9 @@ impl SectionAccumulator {
 
         // Format strings for PrimToStr extended tags (hex, octal, float precision).
         let fmt_specs: &[(u8, &[u8], &str)] = &[
-            (3, b"%llx\0", "__void_fmt_llx"),
-            (4, b"%llX\0", "__void_fmt_llX"),
-            (5, b"%llo\0", "__void_fmt_llo"),
+            (3, b"%llx\0", "__quazi_fmt_llx"),
+            (4, b"%llX\0", "__quazi_fmt_llX"),
+            (5, b"%llo\0", "__quazi_fmt_llo"),
         ];
         for &(tag, fmt, sym) in fmt_specs {
             if chunks.iter().any(|c| {
@@ -193,7 +193,7 @@ impl SectionAccumulator {
                 let bytes = fmt.as_bytes().to_vec();
                 let len = bytes.len() as u64;
                 let offset = obj.append_section_data(self.rodata_id, &bytes, 1);
-                let sym = format!("__void_fmt_prec_{}", prec);
+                let sym = format!("__quazi_fmt_prec_{}", prec);
                 sym_table.define_data(obj, self.rodata_id, &sym, offset, len);
             }
         }
@@ -211,7 +211,7 @@ impl SectionAccumulator {
                             let mut bytes = s.as_bytes().to_vec();
                             bytes.push(0); // null terminator
                             let offset = obj.append_section_data(self.rodata_id, &bytes, 1);
-                            let sym_name = format!("__void_str_{}_{}", lbl, i);
+                            let sym_name = format!("__quazi_str_{}_{}", lbl, i);
                             sym_table.define_data(
                                 obj,
                                 self.rodata_id,
@@ -238,10 +238,10 @@ impl SectionAccumulator {
     ) -> Vec<Vec<Option<String>>> {
         // Hex buffer for crash handler inline formatting (16 bytes for 64-bit addr).
         let hex_offset = obj.append_section_data(self.data_id, &[0u8; 16], 1);
-        sym_table.define_data(obj, self.data_id, "__void_hex_buf", hex_offset, 16);
-        // Trace-enable flag (set by _start when VOID_TRACE=1).
+        sym_table.define_data(obj, self.data_id, "__quazi_hex_buf", hex_offset, 16);
+        // Trace-enable flag (set by _start when QUAZI_TRACE=1).
         let trace_offset = obj.append_section_data(self.data_id, &[0u8], 1);
-        sym_table.define_data(obj, self.data_id, "__void_trace_enabled", trace_offset, 1);
+        sym_table.define_data(obj, self.data_id, "__quazi_trace_enabled", trace_offset, 1);
 
         chunks
             .iter()
@@ -258,7 +258,7 @@ impl SectionAccumulator {
                         // 80 bytes: enough for 64-bit binary (65 chars + null) and all other formats.
                         let zeroes = [0u8; 80];
                         let offset = obj.append_section_data(self.data_id, &zeroes, 8);
-                        let sym_name = format!("__void_itoa_{}_{}", lbl, idx);
+                        let sym_name = format!("__quazi_itoa_{}_{}", lbl, idx);
                         sym_table.define_data(obj, self.data_id, &sym_name, offset, 80);
                         Some(sym_name)
                     })

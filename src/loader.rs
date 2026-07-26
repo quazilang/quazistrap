@@ -68,7 +68,7 @@ impl ModuleResolver {
 }
 
 /// Load one or more entry files, recursively resolving local imports.
-/// Local import: `import foo.bar` where `foo.void` exists next to the importing file.
+/// Local import: `import foo.bar` where `foo.qz` exists next to the importing file.
 /// Sources are merged in dependency-first order so definitions precede their uses.
 pub fn load_programs(entries: &[PathBuf]) -> Result<LoadResult, String> {
     load_programs_with_resolver(entries, None)
@@ -91,11 +91,11 @@ pub fn load_programs_with_resolver(
         .as_ref()
         .and_then(|r| r.modules.get("prelude"))
         .and_then(|spec| {
-            let mod_void = spec.src_dir.join("mod.void");
+            let mod_void = spec.src_dir.join("mod.qz");
             if mod_void.exists() {
                 return Some(mod_void);
             }
-            let flat = spec.src_dir.join("prelude.void");
+            let flat = spec.src_dir.join("prelude.qz");
             if flat.exists() { Some(flat) } else { None }
         });
 
@@ -458,7 +458,7 @@ fn line_start(src: &str, offset: usize) -> usize {
 }
 
 /// Derive the module name for a source file path.
-/// `src/bar.void` → `bar`; `src/foo/mod.void` → `foo`.
+/// `src/bar.qz` → `bar`; `src/foo/mod.qz` → `foo`.
 fn path_module_name(path: &Path) -> String {
     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
         if stem == "mod"
@@ -511,7 +511,7 @@ fn resolver_with_builtin_modules(
 fn builtin_std_module_spec() -> Option<ModuleSpec> {
     let root = find_builtin_std_root()?;
     let src_dir = root.join("src");
-    let entry = src_dir.join("core.void");
+    let entry = src_dir.join("core.qz");
     if !entry.exists() {
         return None;
     }
@@ -527,7 +527,7 @@ fn builtin_std_module_spec() -> Option<ModuleSpec> {
 fn builtin_prelude_module_spec() -> Option<ModuleSpec> {
     let root = find_builtin_prelude_root()?;
     let src_dir = root.join("src");
-    let entry = src_dir.join("mod.void");
+    let entry = src_dir.join("mod.qz");
     if !entry.exists() {
         return None;
     }
@@ -540,31 +540,31 @@ fn builtin_prelude_module_spec() -> Option<ModuleSpec> {
     })
 }
 
-fn find_builtin_std_root() -> Option<PathBuf> {
-    if let Ok(root) = std::env::var("VOID_STD_ROOT") {
+pub fn find_builtin_std_root() -> Option<PathBuf> {
+    if let Ok(root) = std::env::var("QUAZI_STD_ROOT") {
         let path = PathBuf::from(root);
-        if path.join("src").join("core.void").exists() {
+        if path.join("src").join("core.qz").exists() {
             return Some(path);
         }
     }
 
-    // Check ~/.void/std (Unix) or %USERPROFILE%/.void/std (Windows)
+    // Check ~/.quazi/std (Unix) or %USERPROFILE%/.quazi/std (Windows)
     for home_var in &["HOME", "USERPROFILE"] {
         if let Ok(home) = std::env::var(home_var) {
-            let home_path = PathBuf::from(home).join(".void").join("std");
-            if home_path.join("src").join("core.void").exists() {
+            let home_path = PathBuf::from(home).join(".quazi").join("std");
+            if home_path.join("src").join("core.qz").exists() {
                 return Some(home_path);
             }
         }
     }
 
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std");
-    if manifest_path.join("src").join("core.void").exists() {
+    if manifest_path.join("src").join("core.qz").exists() {
         return Some(manifest_path);
     }
 
     let cwd_path = std::env::current_dir().ok()?.join("std");
-    if cwd_path.join("src").join("core.void").exists() {
+    if cwd_path.join("src").join("core.qz").exists() {
         return Some(cwd_path);
     }
 
@@ -572,29 +572,29 @@ fn find_builtin_std_root() -> Option<PathBuf> {
 }
 
 fn find_builtin_prelude_root() -> Option<PathBuf> {
-    if let Ok(root) = std::env::var("VOID_PRELUDE_ROOT") {
+    if let Ok(root) = std::env::var("QUAZI_PRELUDE_ROOT") {
         let path = PathBuf::from(root);
-        if path.join("src").join("mod.void").exists() {
+        if path.join("src").join("mod.qz").exists() {
             return Some(path);
         }
     }
 
     for home_var in &["HOME", "USERPROFILE"] {
         if let Ok(home) = std::env::var(home_var) {
-            let home_path = PathBuf::from(home).join(".void").join("prelude");
-            if home_path.join("src").join("mod.void").exists() {
+            let home_path = PathBuf::from(home).join(".quazi").join("prelude");
+            if home_path.join("src").join("mod.qz").exists() {
                 return Some(home_path);
             }
         }
     }
 
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("prelude");
-    if manifest_path.join("src").join("mod.void").exists() {
+    if manifest_path.join("src").join("mod.qz").exists() {
         return Some(manifest_path);
     }
 
     let cwd_path = std::env::current_dir().ok()?.join("prelude");
-    if cwd_path.join("src").join("mod.void").exists() {
+    if cwd_path.join("src").join("mod.qz").exists() {
         return Some(cwd_path);
     }
 
@@ -675,7 +675,7 @@ fn collect(
     Ok(())
 }
 
-/// Parse `src` just enough to find imports that resolve to local `.void` files.
+/// Parse `src` just enough to find imports that resolve to local `.qz` files.
 /// Returns `(path, is_library)` pairs — library=true for module-resolver imports.
 fn local_import_paths(
     file: &Path,
@@ -728,12 +728,12 @@ fn local_import_paths(
             let target = if remainder.is_empty() {
                 spec.entry.clone()
             } else {
-                let root_mod_void = spec.src_dir.join("mod.void");
+                let root_mod_void = spec.src_dir.join("mod.qz");
                 if root_mod_void.exists() {
                     let exported = &remainder[0];
                     if strict && !is_pub_exported_from_mod(&root_mod_void, exported)? {
                         return Err(format!(
-                            "cannot access '{}' from '{}': '{}' is not pub-imported in mod.void",
+                            "cannot access '{}' from '{}': '{}' is not pub-imported in mod.qz",
                             exported, base, exported
                         ));
                     }
@@ -745,20 +745,20 @@ fn local_import_paths(
                     }
                     root_mod_void
                 } else {
-                    // mod.void opaque directory check: if first remainder segment is a
-                    // directory with mod.void, enforce opaqueness.
+                    // mod.qz opaque directory check: if first remainder segment is a
+                    // directory with mod.qz, enforce opaqueness.
                     let first = &remainder[0];
-                    let mod_void_path = spec.src_dir.join(first).join("mod.void");
+                    let mod_void_path = spec.src_dir.join(first).join("mod.qz");
                     if mod_void_path.exists() {
                         if remainder.len() > 1 {
                             let sub = &remainder[1];
                             if strict && !is_pub_exported_from_mod(&mod_void_path, sub)? {
                                 return Err(format!(
-                                    "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.void'",
+                                    "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.qz'",
                                     sub, first, sub, first
                                 ));
                             }
-                            // Targeted: load only the specific file, skip mod.void
+                            // Targeted: load only the specific file, skip mod.qz
                             if let Some(specific) = find_pub_exported_file(&mod_void_path, sub) {
                                 if seen.insert(specific.clone()) {
                                     paths.push((specific, true));
@@ -770,15 +770,15 @@ fn local_import_paths(
                     } else {
                         // Try progressively shorter paths: the last segment(s) may be
                         // function/symbol names rather than file path components.
-                        // e.g. `import std.core.write` → try core/write.void first,
-                        // then core.void (where `write` is the imported symbol name).
+                        // e.g. `import std.core.write` → try core/write.qz first,
+                        // then core.qz (where `write` is the imported symbol name).
                         let mut found: Option<PathBuf> = None;
                         for len in (1..=remainder.len()).rev() {
                             let mut candidate = spec.src_dir.clone();
                             for seg in &remainder[..len] {
                                 candidate.push(seg);
                             }
-                            candidate.set_extension("void");
+                            candidate.set_extension("qz");
                             if candidate.exists() {
                                 found = Some(candidate);
                                 break;
@@ -793,7 +793,7 @@ fn local_import_paths(
                             for seg in &remainder {
                                 full.push(seg);
                             }
-                            full.set_extension("void");
+                            full.set_extension("qz");
                             full
                         })
                     }
@@ -813,22 +813,22 @@ fn local_import_paths(
             continue;
         } // end !ip.relative
 
-        let candidate = dir.join(format!("{}.void", base));
+        let candidate = dir.join(format!("{}.qz", base));
         if candidate.exists() && seen.insert(candidate.clone()) {
             paths.push((candidate, false)); // local file → not library
         } else if !remainder.is_empty() {
-            // mod.void opaque directory check for local imports
+            // mod.qz opaque directory check for local imports
             let base_dir = dir.join(&base);
-            let mod_void = base_dir.join("mod.void");
+            let mod_void = base_dir.join("mod.qz");
             if mod_void.exists() {
                 let sub = &remainder[0];
                 if strict && !is_pub_exported_from_mod(&mod_void, sub)? {
                     return Err(format!(
-                        "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.void'",
+                        "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.qz'",
                         sub, base, sub, base
                     ));
                 }
-                // Targeted: load only the specific file, skip mod.void
+                // Targeted: load only the specific file, skip mod.qz
                 if let Some(specific) = find_pub_exported_file(&mod_void, sub) {
                     if seen.insert(specific.clone()) {
                         paths.push((specific, true));
@@ -838,14 +838,14 @@ fn local_import_paths(
                 }
             } else {
                 // Progressive subfile resolution under a directory namespace.
-                // e.g. `import a.y` → try `a/y.void`, `import a.y.method` → `a/y/method.void` then `a/y.void`
+                // e.g. `import a.y` → try `a/y.qz`, `import a.y.method` → `a/y/method.qz` then `a/y.qz`
                 let mut found = false;
                 for len in (1..=remainder.len()).rev() {
                     let mut sub = dir.join(&base);
                     for seg in &remainder[..len] {
                         sub.push(seg);
                     }
-                    sub.set_extension("void");
+                    sub.set_extension("qz");
                     if sub.exists() && seen.insert(sub.clone()) {
                         paths.push((sub, true)); // library = true
                         found = true;
@@ -864,9 +864,9 @@ fn local_import_paths(
             // Directory namespace: import a; where a/ is a directory
             let ns_dir = dir.join(&base);
             if ns_dir.is_dir() {
-                let mod_void = ns_dir.join("mod.void");
+                let mod_void = ns_dir.join("mod.qz");
                 if mod_void.exists() {
-                    // Opaque module: load only mod.void (it pub-imports what's needed)
+                    // Opaque module: load only mod.qz (it pub-imports what's needed)
                     if seen.insert(mod_void.clone()) {
                         paths.push((mod_void, true));
                     }
@@ -899,18 +899,18 @@ fn local_import_paths(
 }
 
 fn resolve_module_file(spec: &ModuleSpec, module: &str) -> Option<PathBuf> {
-    let root_mod_void = spec.src_dir.join("mod.void");
+    let root_mod_void = spec.src_dir.join("mod.qz");
     if root_mod_void.exists() {
         return find_pub_exported_file(&root_mod_void, module);
     }
 
     let target = spec.src_dir.join(module);
-    let mod_void = target.join("mod.void");
+    let mod_void = target.join("mod.qz");
     if mod_void.exists() {
         return Some(mod_void);
     }
 
-    let file = spec.src_dir.join(format!("{module}.void"));
+    let file = spec.src_dir.join(format!("{module}.qz"));
     if file.exists() {
         return Some(file);
     }
@@ -918,8 +918,8 @@ fn resolve_module_file(spec: &ModuleSpec, module: &str) -> Option<PathBuf> {
     None
 }
 
-/// Find the file that a `mod.void` pub-exports `name` from.
-/// e.g. `pub import map.Map` → returns `mod_void_dir/map.void`
+/// Find the file that a `mod.qz` pub-exports `name` from.
+/// e.g. `pub import map.Map` → returns `mod_void_dir/map.qz`
 fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
     let src = std::fs::read_to_string(mod_void).ok()?;
     let prog = parse_source(&src).ok()?;
@@ -952,7 +952,7 @@ fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
                     path_with_item.push(seg);
                 }
                 path_with_item.push(n);
-                path_with_item.set_extension("void");
+                path_with_item.set_extension("qz");
                 candidates.push(path_with_item);
             }
             crate::parser::ast::ImportItems::Multiple(names) => {
@@ -962,26 +962,26 @@ fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
                         path_with_item.push(seg);
                     }
                     path_with_item.push(name);
-                    path_with_item.set_extension("void");
+                    path_with_item.set_extension("qz");
                     candidates.push(path_with_item);
                 }
             }
             crate::parser::ast::ImportItems::All => {
-                // Wildcard: recurse into the sub-module's mod.void to find `name`.
+                // Wildcard: recurse into the sub-module's mod.qz to find `name`.
                 if !ip.path.is_empty() {
                     let mut sub_mod = mod_dir.to_path_buf();
                     for seg in &ip.path {
                         sub_mod.push(seg);
                     }
-                    let sub_mod_void = sub_mod.join("mod.void");
+                    let sub_mod_void = sub_mod.join("mod.qz");
                     if sub_mod_void.exists()
                         && let Some(found) = find_pub_exported_file(&sub_mod_void, name)
                     {
                         return Some(found);
                     }
-                    // Also try direct file: path/name.void
+                    // Also try direct file: path/name.qz
                     sub_mod.push(name);
-                    sub_mod.set_extension("void");
+                    sub_mod.set_extension("qz");
                     if sub_mod.exists() {
                         return Some(sub_mod);
                     }
@@ -994,7 +994,7 @@ fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
             path_only.push(seg);
         }
         if !ip.path.is_empty() {
-            path_only.set_extension("void");
+            path_only.set_extension("qz");
             candidates.push(path_only);
         }
 
@@ -1082,14 +1082,14 @@ mod tests {
         let root = temp_dir("void_loader");
         let app_src = root.join("src");
         fs::create_dir_all(&app_src).expect("create app src");
-        let main_path = app_src.join("main.void");
-        fs::write(&main_path, "import dep.util; fn main() void { ret; }").expect("write main.void");
+        let main_path = app_src.join("main.qz");
+        fs::write(&main_path, "import dep.util; fn main() void { ret; }").expect("write main.qz");
 
         let dep_root = root.join("dep");
         let dep_src = dep_root.join("src");
         fs::create_dir_all(&dep_src).expect("create dep src");
-        fs::write(dep_src.join("util.void"), "fn util() void { ret; }").expect("write util.void");
-        fs::write(dep_src.join("main.void"), "fn dep_main() void { ret; }")
+        fs::write(dep_src.join("util.qz"), "fn util() void { ret; }").expect("write util.qz");
+        fs::write(dep_src.join("main.qz"), "fn dep_main() void { ret; }")
             .expect("write dep main");
 
         let mut resolver = ModuleResolver::default();
@@ -1098,7 +1098,7 @@ mod tests {
                 name: "dep".to_string(),
                 root: dep_root.clone(),
                 src_dir: dep_src.clone(),
-                entry: dep_src.join("main.void"),
+                entry: dep_src.join("main.qz"),
                 version: Some("0.1.0".to_string()),
             })
             .expect("insert module");
@@ -1106,8 +1106,8 @@ mod tests {
         let result =
             load_programs_with_resolver(&[main_path], Some(&resolver)).expect("load programs");
         assert!(
-            result.loaded_files.iter().any(|p| p.ends_with("util.void")),
-            "expected util.void to be loaded"
+            result.loaded_files.iter().any(|p| p.ends_with("util.qz")),
+            "expected util.qz to be loaded"
         );
 
         let _ = fs::remove_dir_all(root);
@@ -1116,20 +1116,20 @@ mod tests {
     #[test]
     fn std_is_available_as_namespace_with_explicit_import() {
         let root = temp_dir("void_loader_std");
-        let main_path = root.join("main.void");
+        let main_path = root.join("main.qz");
         fs::write(
             &main_path,
             "import std.core.write;\nfn main() void { ret; }",
         )
-        .expect("write main.void");
+        .expect("write main.qz");
 
         let result = load_programs(&[main_path]).expect("load programs");
         assert!(
             result
                 .library_file_paths
                 .iter()
-                .any(|p| p.ends_with(Path::new("src").join("core.void"))),
-            "expected std/src/core.void to be loaded via explicit import, got {:?}",
+                .any(|p| p.ends_with(Path::new("src").join("core.qz"))),
+            "expected std/src/core.qz to be loaded via explicit import, got {:?}",
             result.library_file_paths
         );
         assert!(result.library_fn_names.contains("core.write"));
@@ -1140,29 +1140,29 @@ mod tests {
     #[test]
     fn prelude_directory_exports_resolve_as_modules() {
         let root = temp_dir("void_loader_prelude_exports");
-        let main_path = root.join("main.void");
+        let main_path = root.join("main.qz");
         // Prelude contents are auto-imported; explicit module path uses prelude.* prefix.
         fs::write(
             &main_path,
             "import prelude.fmt.format;\nfn main() void { ret; }",
         )
-        .expect("write main.void");
+        .expect("write main.qz");
 
         let result = load_programs(&[main_path]).expect("load programs");
         assert!(
             result
                 .library_file_paths
                 .iter()
-                .any(|p| p.ends_with(Path::new("prelude").join("src").join("fmt.void"))),
-            "expected prelude/src/fmt.void to be loaded, got {:?}",
+                .any(|p| p.ends_with(Path::new("prelude").join("src").join("fmt.qz"))),
+            "expected prelude/src/fmt.qz to be loaded, got {:?}",
             result.library_file_paths
         );
         assert!(
             result
                 .library_file_paths
                 .iter()
-                .any(|p| p.ends_with(Path::new("prelude").join("src").join("string.void"))),
-            "expected prelude/src/string.void to be loaded as fmt dependency, got {:?}",
+                .any(|p| p.ends_with(Path::new("prelude").join("src").join("string.qz"))),
+            "expected prelude/src/string.qz to be loaded as fmt dependency, got {:?}",
             result.library_file_paths
         );
 
@@ -1174,24 +1174,24 @@ mod tests {
         let root = temp_dir("void_loader_mod_exports");
         let foo_dir = root.join("foo");
         fs::create_dir_all(&foo_dir).expect("create foo dir");
-        fs::write(foo_dir.join("mod.void"), "pub import a.METHOD;").expect("write mod.void");
-        fs::write(foo_dir.join("a.void"), "pub fn METHOD() void { ret; }").expect("write a.void");
+        fs::write(foo_dir.join("mod.qz"), "pub import a.METHOD;").expect("write mod.qz");
+        fs::write(foo_dir.join("a.qz"), "pub fn METHOD() void { ret; }").expect("write a.qz");
 
-        let ok_path = root.join("ok.void");
-        fs::write(&ok_path, "import foo.METHOD;\nfn main() void { ret; }").expect("write ok.void");
+        let ok_path = root.join("ok.qz");
+        fs::write(&ok_path, "import foo.METHOD;\nfn main() void { ret; }").expect("write ok.qz");
         let result = load_programs(&[ok_path]).expect("load flattened import");
         assert!(
             result
                 .loaded_files
                 .iter()
-                .any(|p| p.ends_with(Path::new("foo").join("a.void"))),
-            "expected foo/a.void through flattened export, got {:?}",
+                .any(|p| p.ends_with(Path::new("foo").join("a.qz"))),
+            "expected foo/a.qz through flattened export, got {:?}",
             result.loaded_files
         );
 
-        let bad_path = root.join("bad.void");
+        let bad_path = root.join("bad.qz");
         fs::write(&bad_path, "import foo.a.METHOD;\nfn main() void { ret; }")
-            .expect("write bad.void");
+            .expect("write bad.qz");
         let err = match load_programs(&[bad_path]) {
             Ok(_) => panic!("nested access through opaque mod should fail"),
             Err(err) => err,
@@ -1207,8 +1207,8 @@ mod tests {
     #[test]
     fn no_std_keeps_prelude_and_std_resolver() {
         let root = temp_dir("void_loader_no_std");
-        let main_path = root.join("main.void");
-        fs::write(&main_path, "@no_std\nfn main() void { ret; }").expect("write main.void");
+        let main_path = root.join("main.qz");
+        fs::write(&main_path, "@no_std\nfn main() void { ret; }").expect("write main.qz");
 
         let result = load_programs(&[main_path]).expect("load programs");
         assert!(
@@ -1220,8 +1220,8 @@ mod tests {
             result
                 .library_file_paths
                 .iter()
-                .any(|p| p.ends_with(Path::new("prelude").join("src").join("mod.void"))),
-            "expected prelude/src/mod.void to be loaded, got {:?}",
+                .any(|p| p.ends_with(Path::new("prelude").join("src").join("mod.qz"))),
+            "expected prelude/src/mod.qz to be loaded, got {:?}",
             result.library_file_paths
         );
         // std is still available for imports even with @no_std.
@@ -1229,8 +1229,8 @@ mod tests {
             result
                 .library_file_paths
                 .iter()
-                .any(|p| p.ends_with(Path::new("std").join("src").join("core.void"))),
-            "expected std/src/core.void to be loaded as prelude dependency, got {:?}",
+                .any(|p| p.ends_with(Path::new("std").join("src").join("core.qz"))),
+            "expected std/src/core.qz to be loaded as prelude dependency, got {:?}",
             result.library_file_paths
         );
 
@@ -1240,17 +1240,17 @@ mod tests {
     #[test]
     fn resolves_builtin_std_module_import_without_project() {
         let root = temp_dir("void_loader_builtin_std");
-        let main_path = root.join("main.void");
+        let main_path = root.join("main.qz");
         fs::write(&main_path, "import std.unix.open; fn main() void { ret; }")
-            .expect("write main.void");
+            .expect("write main.qz");
 
         let result = load_programs(&[main_path]).expect("load programs");
         assert!(
             result
                 .library_file_paths
                 .iter()
-                .any(|p| p.ends_with(Path::new("src").join("unix.void"))),
-            "expected std/src/unix.void to be loaded, got {:?}",
+                .any(|p| p.ends_with(Path::new("src").join("unix.qz"))),
+            "expected std/src/unix.qz to be loaded, got {:?}",
             result.library_file_paths
         );
 
@@ -1260,7 +1260,7 @@ mod tests {
     #[test]
     fn user_function_does_not_collide_with_namespaced_std_function() {
         let root = temp_dir("void_loader_namespace_std");
-        let main_path = root.join("main.void");
+        let main_path = root.join("main.qz");
         fs::write(
             &main_path,
             r#"
@@ -1276,7 +1276,7 @@ fn main() i32 {
 }
 "#,
         )
-        .expect("write main.void");
+        .expect("write main.qz");
 
         let result = load_programs(&[main_path]).expect("load programs");
         assert!(

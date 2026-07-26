@@ -43,7 +43,7 @@ impl VoidLanguageServer {
                 let diag = Diagnostic {
                     range: diagnostics::parse_error_range(&parse_err, &text),
                     severity: Some(DiagnosticSeverity::ERROR),
-                    source: Some("void".to_string()),
+                    source: Some("quazilang".to_string()),
                     message: diagnostics::strip_ansi(&parse_err),
                     ..Default::default()
                 };
@@ -82,7 +82,7 @@ impl LanguageServer for VoidLanguageServer {
 
     async fn initialized(&self, _: InitializedParams) {
         self.client
-            .log_message(MessageType::INFO, "void language server initialized")
+            .log_message(MessageType::INFO, "quazilang language server initialized")
             .await;
     }
 

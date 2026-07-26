@@ -1,7 +1,0 @@
-[package]
-name = "example"
-version = "0.1.0"
-
-[build]
-entry = "src/main.void"
-src = "src"

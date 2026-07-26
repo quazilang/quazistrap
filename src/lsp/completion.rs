@@ -85,7 +85,7 @@ fn module_file_for_segments(root: &Path, segments: &[String]) -> Option<PathBuf>
         return None;
     }
     let mut path = path_for_segments(root, segments);
-    path.set_extension("void");
+    path.set_extension("qz");
     path.exists().then_some(path)
 }
 
@@ -101,7 +101,7 @@ fn module_items_from_dir(dir: &Path, base: &str, relative: &[String]) -> Vec<Com
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
                 names.insert(name.to_string());
             }
-        } else if path.extension().and_then(|s| s.to_str()) == Some("void")
+        } else if path.extension().and_then(|s| s.to_str()) == Some("qz")
             && let Some(name) = path.file_stem().and_then(|s| s.to_str())
         {
             names.insert(name.to_string());
@@ -187,26 +187,7 @@ fn symbol_items_from_file(path: &Path) -> Vec<CompletionItem> {
 }
 
 fn find_std_src_dir() -> Option<PathBuf> {
-    if let Ok(root) = std::env::var("VOID_STD_ROOT") {
-        let path = PathBuf::from(root).join("src");
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("std")
-        .join("src");
-    if manifest_path.exists() {
-        return Some(manifest_path);
-    }
-
-    let cwd_path = std::env::current_dir().ok()?.join("std").join("src");
-    if cwd_path.exists() {
-        return Some(cwd_path);
-    }
-
-    None
+    crate::loader::find_builtin_std_root().map(|p| p.join("src"))
 }
 
 #[cfg(test)]

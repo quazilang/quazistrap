@@ -1,7 +1,0 @@
-[package]
-name = "std"
-version = "0.1.0"
-
-[build]
-entry = "src/core.void"
-src = "src"

@@ -5,13 +5,13 @@
 // Entry-point stubs with crash handlers.
 //
 // Linux layout (fn_offset = start of stub in .text):
-//   0:   __void_sigreturn        (7 B)   — restorer for rt_sigaction
-//   7:   __void_crash_handler    (241 B) — SA_SIGINFO handler: signal/addr/RIP hex + backtrace
-//   248: __void_print_backtrace  (192 B) — RBP chain walk (max 16 frames)
-//   440: _start                  (242 B) — sigaction setup, VOID_TRACE=1 env check, calls main
+//   0:   __quazi_sigreturn        (7 B)   — restorer for rt_sigaction
+//   7:   __quazi_crash_handler    (241 B) — SA_SIGINFO handler: signal/addr/RIP hex + backtrace
+//   248: __quazi_print_backtrace  (192 B) — RBP chain walk (max 16 frames)
+//   440: _start                  (242 B) — sigaction setup, QUAZI_TRACE=1 env check, calls main
 //
 // Windows layout:
-//   0:  __void_crash_handler_win (69 B) — unhandled-exception filter: WriteFile + ExitProcess
+//   0:  __quazi_crash_handler_win (69 B) — unhandled-exception filter: WriteFile + ExitProcess
 //   69: mainCRTStartup           (32 B) — SetUnhandledExceptionFilter + call main
 
 use super::relocations::{PendingReloc, RelocKind};
@@ -43,7 +43,7 @@ impl StartStub {
     }
 
     /// Linux _start stub with SIGSEGV/SIGABRT/SIGFPE/SIGBUS crash handler,
-    /// backtrace printer, and VOID_TRACE=1 environment detection.
+    /// backtrace printer, and QUAZI_TRACE=1 environment detection.
     /// Rewritten with iced-x86 so every relocation offset is exact.
     fn generate_full_linux(fn_offset: usize, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
@@ -77,14 +77,14 @@ impl StartStub {
         let mut print_bt_label = asm.create_label();
 
         // ═══════════════════════════════════════════════════════
-        // __void_sigreturn
+        // __quazi_sigreturn
         // ═══════════════════════════════════════════════════════
         let sigreturn_idx = asm.instructions().len();
         emit!(asm.mov(rax, 15i64)); // sys_rt_sigreturn
         emit!(asm.syscall());
 
         // ═══════════════════════════════════════════════════════
-        // __void_crash_handler  (SA_SIGINFO handler)
+        // __quazi_crash_handler  (SA_SIGINFO handler)
         // ═══════════════════════════════════════════════════════
         let crash_handler_idx = asm.instructions().len();
 
@@ -102,20 +102,20 @@ impl StartStub {
         // write(2, "== CRASHED ==\n", 14)
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_crash_header");
+        lea_rip!(rsi, "__quazi_crash_header");
         emit!(asm.mov(rdx, 14i64));
         emit!(asm.syscall());
 
         // ── "fatal: signal 0x" + 8 hex digits ──
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_fatal_sig");
+        lea_rip!(rsi, "__quazi_fatal_sig");
         emit!(asm.mov(rdx, 16i64));
         emit!(asm.syscall());
 
         emit!(asm.mov(rbx, r12));
         emit!(asm.mov(ecx, 8i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 7i32));
         let mut h1 = asm.create_label();
         let mut s1 = asm.create_label();
@@ -135,27 +135,27 @@ impl StartStub {
 
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_hex_buf");
+        lea_rip!(rsi, "__quazi_hex_buf");
         emit!(asm.mov(rdx, 8i64));
         emit!(asm.syscall());
 
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_nl");
+        lea_rip!(rsi, "__quazi_nl");
         emit!(asm.mov(rdx, 1i64));
         emit!(asm.syscall());
 
         // ── "fault: 0x" + 16 hex digits ──
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_fault");
+        lea_rip!(rsi, "__quazi_fault");
         emit!(asm.mov(rdx, 9i64));
         emit!(asm.syscall());
 
         // si_addr is at offset 0x10 in siginfo_t
         emit!(asm.mov(rbx, qword_ptr(r13 + 0x10)));
         emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
         let mut h2 = asm.create_label();
         let mut s2 = asm.create_label();
@@ -175,27 +175,27 @@ impl StartStub {
 
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_hex_buf");
+        lea_rip!(rsi, "__quazi_hex_buf");
         emit!(asm.mov(rdx, 16i64));
         emit!(asm.syscall());
 
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_nl");
+        lea_rip!(rsi, "__quazi_nl");
         emit!(asm.mov(rdx, 1i64));
         emit!(asm.syscall());
 
         // ── "rip: 0x" + 16 hex digits ──
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_rip");
+        lea_rip!(rsi, "__quazi_rip");
         emit!(asm.mov(rdx, 7i64));
         emit!(asm.syscall());
 
         // RIP is at offset 0xA8 in ucontext_t on x86_64 Linux
         emit!(asm.mov(rbx, qword_ptr(r14 + 0xA8)));
         emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
         let mut h3 = asm.create_label();
         let mut s3 = asm.create_label();
@@ -215,32 +215,32 @@ impl StartStub {
 
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_hex_buf");
+        lea_rip!(rsi, "__quazi_hex_buf");
         emit!(asm.mov(rdx, 16i64));
         emit!(asm.syscall());
 
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_nl");
+        lea_rip!(rsi, "__quazi_nl");
         emit!(asm.mov(rdx, 1i64));
         emit!(asm.syscall());
 
         // ── Backtrace or hint ──
         let mut bt_done_c = asm.create_label();
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.cmp(byte_ptr(rax), 0i32));
         emit!(asm.je(bt_done_c));
-        call_ext!("__void_print_backtrace", RelocKind::Plt32);
+        call_ext!("__quazi_print_backtrace", RelocKind::Plt32);
         emit!(asm.set_label(&mut bt_done_c));
 
         // Print hint when backtrace was skipped
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.cmp(byte_ptr(rax), 0i32));
         let mut skip_hint = asm.create_label();
         emit!(asm.jne(skip_hint));
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_trace_hint");
+        lea_rip!(rsi, "__quazi_trace_hint");
         emit!(asm.mov(rdx, 41i64));
         emit!(asm.syscall());
         emit!(asm.set_label(&mut skip_hint));
@@ -261,7 +261,7 @@ impl StartStub {
         let crash_handler_end_idx = asm.instructions().len();
 
         // ═══════════════════════════════════════════════════════
-        // __void_print_backtrace
+        // __quazi_print_backtrace
         // ═══════════════════════════════════════════════════════
         let print_bt_idx = asm.instructions().len();
         emit!(asm.set_label(&mut print_bt_label));
@@ -273,14 +273,14 @@ impl StartStub {
         emit!(asm.push(r15));
 
         let mut bt_done = asm.create_label();
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.cmp(byte_ptr(rax), 0i32));
         emit!(asm.je(bt_done));
 
         // write(2, "stack backtrace:\n", 17)
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_bt_prefix");
+        lea_rip!(rsi, "__quazi_bt_prefix");
         emit!(asm.mov(rdx, 17i64));
         emit!(asm.syscall());
 
@@ -297,14 +297,14 @@ impl StartStub {
         // write(2, "  at 0x", 7)
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_at_0x");
+        lea_rip!(rsi, "__quazi_at_0x");
         emit!(asm.mov(rdx, 7i64));
         emit!(asm.syscall());
 
         // format [r12+8] as 16 hex digits
         emit!(asm.mov(rbx, qword_ptr(r12 + 8)));
         emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
 
         let mut hbt = asm.create_label();
@@ -326,14 +326,14 @@ impl StartStub {
         // write(2, hex_buf, 16)
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_hex_buf");
+        lea_rip!(rsi, "__quazi_hex_buf");
         emit!(asm.mov(rdx, 16i64));
         emit!(asm.syscall());
 
         // write(2, "\n", 1)
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_nl");
+        lea_rip!(rsi, "__quazi_nl");
         emit!(asm.mov(rdx, 1i64));
         emit!(asm.syscall());
 
@@ -365,13 +365,13 @@ impl StartStub {
         emit!(asm.xor(eax, eax));
         emit!(asm.mov(qword_ptr(rsp + 24), rax));
 
-        // sa_sigaction = __void_crash_handler
-        lea_rip!(rax, "__void_crash_handler");
+        // sa_sigaction = __quazi_crash_handler
+        lea_rip!(rax, "__quazi_crash_handler");
         emit!(asm.mov(qword_ptr(rsp), rax));
         // sa_flags = SA_SIGINFO | SA_RESTORER (0x04000004)
         emit!(asm.mov(dword_ptr(rsp + 8), 0x04000004u32 as i32));
-        // sa_restorer = __void_sigreturn
-        lea_rip!(rax, "__void_sigreturn");
+        // sa_restorer = __quazi_sigreturn
+        lea_rip!(rax, "__quazi_sigreturn");
         emit!(asm.mov(qword_ptr(rsp + 16), rax));
 
         // rt_sigaction(signum, &act, NULL, 8)
@@ -389,16 +389,16 @@ impl StartStub {
         emit!(asm.mov(rdi, 7i64)); // SIGBUS
         emit!(asm.syscall());
 
-        // getenv("VOID_TRACE") — libc is already linked, dynamic linker has
+        // getenv("QUAZI_TRACE") — libc is already linked, dynamic linker has
         // initialised environ before _start runs, so this works without CRT.
-        lea_rip!(rdi, "__void_env_var_name");
+        lea_rip!(rdi, "__quazi_env_var_name");
         call_ext!("getenv", RelocKind::Plt32);
         let mut no_trace = asm.create_label();
         emit!(asm.test(rax, rax));
         emit!(asm.je(no_trace));
         emit!(asm.cmp(byte_ptr(rax), '1' as i32));
         emit!(asm.jne(no_trace));
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.mov(byte_ptr(rax), 1i32));
         emit!(asm.set_label(&mut no_trace));
         emit!(asm.add(rsp, 0x40i32));
@@ -499,20 +499,20 @@ impl StartStub {
             bytes,
             relocs,
             extra_symbols: vec![
-                ("__void_sigreturn".into(), sigreturn_off, sigreturn_size),
+                ("__quazi_sigreturn".into(), sigreturn_off, sigreturn_size),
                 (
-                    "__void_crash_handler".into(),
+                    "__quazi_crash_handler".into(),
                     crash_handler_off,
                     crash_handler_size,
                 ),
-                ("__void_print_backtrace".into(), print_bt_off, print_bt_size),
+                ("__quazi_print_backtrace".into(), print_bt_off, print_bt_size),
             ],
             start_offset: startup_off,
         }
     }
 
     /// Minimal Linux stub without crash-handler registration.
-    /// Keeps __void_print_backtrace for panic backtraces.
+    /// Keeps __quazi_print_backtrace for panic backtraces.
     fn generate_minimal_linux(fn_offset: usize, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
 
@@ -545,7 +545,7 @@ impl StartStub {
         let mut print_bt_label = asm.create_label();
 
         // ═══════════════════════════════════════════════════════
-        // __void_print_backtrace (Linux: write syscalls)
+        // __quazi_print_backtrace (Linux: write syscalls)
         // ═══════════════════════════════════════════════════════
         let print_bt_idx = asm.instructions().len();
         emit!(asm.set_label(&mut print_bt_label));
@@ -557,14 +557,14 @@ impl StartStub {
         emit!(asm.push(r15));
 
         let mut bt_done = asm.create_label();
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.cmp(byte_ptr(rax), 0i32));
         emit!(asm.je(bt_done));
 
         // write(2, "stack backtrace:\n", 17)
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_bt_prefix");
+        lea_rip!(rsi, "__quazi_bt_prefix");
         emit!(asm.mov(rdx, 17i64));
         emit!(asm.syscall());
 
@@ -581,14 +581,14 @@ impl StartStub {
         // write(2, "  at 0x", 7)
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_at_0x");
+        lea_rip!(rsi, "__quazi_at_0x");
         emit!(asm.mov(rdx, 7i64));
         emit!(asm.syscall());
 
         // format [r12+8] as 16 hex digits
         emit!(asm.mov(rbx, qword_ptr(r12 + 8)));
         emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
 
         let mut hbt = asm.create_label();
@@ -610,14 +610,14 @@ impl StartStub {
         // write(2, hex_buf, 16)
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_hex_buf");
+        lea_rip!(rsi, "__quazi_hex_buf");
         emit!(asm.mov(rdx, 16i64));
         emit!(asm.syscall());
 
         // write(2, "\n", 1)
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
-        lea_rip!(rsi, "__void_nl");
+        lea_rip!(rsi, "__quazi_nl");
         emit!(asm.mov(rdx, 1i64));
         emit!(asm.syscall());
 
@@ -644,7 +644,7 @@ impl StartStub {
 
         // open("/proc/self/environ", O_RDONLY)
         emit!(asm.mov(rax, 2i64));
-        lea_rip!(rdi, "__void_proc_self_environ");
+        lea_rip!(rdi, "__quazi_proc_self_environ");
         emit!(asm.xor(rsi, rsi));
         emit!(asm.syscall());
         emit!(asm.test(eax, eax));
@@ -687,7 +687,7 @@ impl StartStub {
         emit!(asm.cmp(dl, '1' as i32));
         emit!(asm.jne(next));
 
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.mov(byte_ptr(rax), 1i32));
         emit!(asm.jmp(no_trace));
 
@@ -781,7 +781,7 @@ impl StartStub {
         Self {
             bytes,
             relocs,
-            extra_symbols: vec![("__void_print_backtrace".into(), print_bt_off, print_bt_size)],
+            extra_symbols: vec![("__quazi_print_backtrace".into(), print_bt_off, print_bt_size)],
             start_offset: startup_off,
         }
     }
@@ -789,12 +789,12 @@ impl StartStub {
     /// Windows mainCRTStartup stub with AddVectoredExceptionHandler crash handler.
     ///
     /// Uses iced-x86 CodeAssembler to build a larger, more informative stub:
-    ///   __void_crash_handler_win  — prints exception code, fault address, RIP, and
+    ///   __quazi_crash_handler_win  — prints exception code, fault address, RIP, and
     ///                                 a backtrace (from ContextRecord->Rbp) when
-    ///                                 __void_trace_enabled is set.
-    ///   __void_print_backtrace    — checks __void_trace_enabled, walks current RBP
+    ///                                 __quazi_trace_enabled is set.
+    ///   __quazi_print_backtrace    — checks __quazi_trace_enabled, walks current RBP
     ///                                 chain, prints up to 16 frames.
-    ///   mainCRTStartup            — sets exception handler, reads VOID_TRACE env var,
+    ///   mainCRTStartup            — sets exception handler, reads QUAZI_TRACE env var,
     ///                                 calls main.
     fn generate_full_windows(fn_offset: usize, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
@@ -829,7 +829,7 @@ impl StartStub {
         let mut print_bt_label = asm.create_label();
 
         // ═══════════════════════════════════════════════════════
-        // __void_crash_handler_win
+        // __quazi_crash_handler_win
         // ═══════════════════════════════════════════════════════
         let crash_handler_idx = asm.instructions().len();
         asm.set_label(&mut fn_start).expect("label");
@@ -859,7 +859,7 @@ impl StartStub {
 
         // "== CRASHED ==\n"
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_crash_header");
+        lea_rip!(rdx, "__quazi_crash_header");
         emit!(asm.mov(r8d, 14i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -867,7 +867,7 @@ impl StartStub {
 
         // ── "fatal: exception 0x" + hex code ──
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_fatal_exc");
+        lea_rip!(rdx, "__quazi_fatal_exc");
         emit!(asm.mov(r8d, 19i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -876,7 +876,7 @@ impl StartStub {
         // Format ebx as 8 hex digits
         emit!(asm.mov(rbx, rbx)); // zero-extended from ebx
         emit!(asm.mov(ecx, 8i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 7i32));
         let mut h1 = asm.create_label();
         let mut s1 = asm.create_label();
@@ -895,14 +895,14 @@ impl StartStub {
         emit!(asm.jne(h1));
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_hex_buf");
+        lea_rip!(rdx, "__quazi_hex_buf");
         emit!(asm.mov(r8d, 8i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
         call_ext!("WriteFile", RelocKind::Plt32);
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_nl");
+        lea_rip!(rdx, "__quazi_nl");
         emit!(asm.mov(r8d, 1i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -910,7 +910,7 @@ impl StartStub {
 
         // ── "fault: 0x" + hex address ──
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_fault");
+        lea_rip!(rdx, "__quazi_fault");
         emit!(asm.mov(r8d, 9i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -918,7 +918,7 @@ impl StartStub {
 
         emit!(asm.mov(rbx, r12));
         emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
         let mut h2 = asm.create_label();
         let mut s2 = asm.create_label();
@@ -937,14 +937,14 @@ impl StartStub {
         emit!(asm.jne(h2));
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_hex_buf");
+        lea_rip!(rdx, "__quazi_hex_buf");
         emit!(asm.mov(r8d, 16i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
         call_ext!("WriteFile", RelocKind::Plt32);
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_nl");
+        lea_rip!(rdx, "__quazi_nl");
         emit!(asm.mov(r8d, 1i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -952,7 +952,7 @@ impl StartStub {
 
         // ── "rip: 0x" + hex RIP ──
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_rip");
+        lea_rip!(rdx, "__quazi_rip");
         emit!(asm.mov(r8d, 7i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -960,7 +960,7 @@ impl StartStub {
 
         emit!(asm.mov(rbx, r13));
         emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
         let mut h3 = asm.create_label();
         let mut s3 = asm.create_label();
@@ -979,14 +979,14 @@ impl StartStub {
         emit!(asm.jne(h3));
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_hex_buf");
+        lea_rip!(rdx, "__quazi_hex_buf");
         emit!(asm.mov(r8d, 16i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
         call_ext!("WriteFile", RelocKind::Plt32);
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_nl");
+        lea_rip!(rdx, "__quazi_nl");
         emit!(asm.mov(r8d, 1i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -994,7 +994,7 @@ impl StartStub {
 
         // ── Backtrace from crash context (uses ContextRecord->Rbp) ──
         let mut bt_done_c = asm.create_label();
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.cmp(byte_ptr(rax), 0i32));
         emit!(asm.je(bt_done_c));
 
@@ -1004,7 +1004,7 @@ impl StartStub {
 
         // "stack backtrace:\n"
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_bt_prefix");
+        lea_rip!(rdx, "__quazi_bt_prefix");
         emit!(asm.mov(r8d, 17i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -1020,7 +1020,7 @@ impl StartStub {
 
         // "  at 0x"
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_at_0x");
+        lea_rip!(rdx, "__quazi_at_0x");
         emit!(asm.mov(r8d, 7i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -1029,7 +1029,7 @@ impl StartStub {
         // return address
         emit!(asm.mov(rbx, qword_ptr(r12 + 8)));
         emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
         let mut hbt = asm.create_label();
         let mut sbt = asm.create_label();
@@ -1048,14 +1048,14 @@ impl StartStub {
         emit!(asm.jne(hbt));
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_hex_buf");
+        lea_rip!(rdx, "__quazi_hex_buf");
         emit!(asm.mov(r8d, 16i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
         call_ext!("WriteFile", RelocKind::Plt32);
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_nl");
+        lea_rip!(rdx, "__quazi_nl");
         emit!(asm.mov(r8d, 1i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -1068,12 +1068,12 @@ impl StartStub {
         emit!(asm.set_label(&mut bt_done_c));
 
         // Print hint when backtrace was skipped
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.cmp(byte_ptr(rax), 0i32));
         let mut skip_hint = asm.create_label();
         emit!(asm.jne(skip_hint));
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_trace_hint");
+        lea_rip!(rdx, "__quazi_trace_hint");
         emit!(asm.mov(r8d, 41i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -1096,7 +1096,7 @@ impl StartStub {
         let crash_handler_end_idx = asm.instructions().len();
 
         // ═══════════════════════════════════════════════════════
-        // __void_print_backtrace
+        // __quazi_print_backtrace
         // ═══════════════════════════════════════════════════════
         let print_bt_idx = asm.instructions().len();
         emit!(asm.set_label(&mut print_bt_label));
@@ -1109,7 +1109,7 @@ impl StartStub {
         emit!(asm.sub(rsp, 40i32));
 
         let mut bt_done = asm.create_label();
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.cmp(byte_ptr(rax), 0i32));
         emit!(asm.je(bt_done));
 
@@ -1120,7 +1120,7 @@ impl StartStub {
 
         // "stack backtrace:\n"
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_bt_prefix");
+        lea_rip!(rdx, "__quazi_bt_prefix");
         emit!(asm.mov(r8d, 17i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -1139,7 +1139,7 @@ impl StartStub {
 
         // "  at 0x"
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_at_0x");
+        lea_rip!(rdx, "__quazi_at_0x");
         emit!(asm.mov(r8d, 7i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -1148,7 +1148,7 @@ impl StartStub {
         // return address
         emit!(asm.mov(rbx, qword_ptr(r12 + 8)));
         emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
         let mut hbt2 = asm.create_label();
         let mut sbt2 = asm.create_label();
@@ -1167,14 +1167,14 @@ impl StartStub {
         emit!(asm.jne(hbt2));
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_hex_buf");
+        lea_rip!(rdx, "__quazi_hex_buf");
         emit!(asm.mov(r8d, 16i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
         call_ext!("WriteFile", RelocKind::Plt32);
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_nl");
+        lea_rip!(rdx, "__quazi_nl");
         emit!(asm.mov(r8d, 1i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -1207,8 +1207,8 @@ impl StartStub {
         emit!(asm.lea(rdx, qword_ptr(fn_start)));
         call_ext!("AddVectoredExceptionHandler", RelocKind::Plt32);
 
-        // GetEnvironmentVariableA("VOID_TRACE", buf, 8)
-        lea_rip!(rcx, "__void_env_var_name");
+        // GetEnvironmentVariableA("QUAZI_TRACE", buf, 8)
+        lea_rip!(rcx, "__quazi_env_var_name");
         emit!(asm.lea(rdx, qword_ptr(rsp)));
         emit!(asm.mov(r8d, 8i32));
         call_ext!("GetEnvironmentVariableA", RelocKind::Plt32);
@@ -1219,7 +1219,7 @@ impl StartStub {
         emit!(asm.je(no_env));
         emit!(asm.cmp(byte_ptr(rsp), '1' as i32));
         emit!(asm.jne(no_env));
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.mov(byte_ptr(rax), 1i32));
         emit!(asm.set_label(&mut no_env));
 
@@ -1332,18 +1332,18 @@ impl StartStub {
             relocs,
             extra_symbols: vec![
                 (
-                    "__void_crash_handler_win".into(),
+                    "__quazi_crash_handler_win".into(),
                     crash_handler_off,
                     crash_handler_size,
                 ),
-                ("__void_print_backtrace".into(), print_bt_off, print_bt_size),
+                ("__quazi_print_backtrace".into(), print_bt_off, print_bt_size),
             ],
             start_offset: startup_off,
         }
     }
 
     /// Minimal Windows stub without crash-handler registration.
-    /// Keeps __void_print_backtrace for panic backtraces.
+    /// Keeps __quazi_print_backtrace for panic backtraces.
     fn generate_minimal_windows(fn_offset: usize, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
 
@@ -1376,7 +1376,7 @@ impl StartStub {
         let mut print_bt_label = asm.create_label();
 
         // ═══════════════════════════════════════════════════════
-        // __void_print_backtrace (same as full Windows stub)
+        // __quazi_print_backtrace (same as full Windows stub)
         // ═══════════════════════════════════════════════════════
         let print_bt_idx = asm.instructions().len();
         emit!(asm.set_label(&mut print_bt_label));
@@ -1389,7 +1389,7 @@ impl StartStub {
         emit!(asm.sub(rsp, 40i32));
 
         let mut bt_done = asm.create_label();
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.cmp(byte_ptr(rax), 0i32));
         emit!(asm.je(bt_done));
 
@@ -1400,7 +1400,7 @@ impl StartStub {
 
         // "stack backtrace:\n"
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_bt_prefix");
+        lea_rip!(rdx, "__quazi_bt_prefix");
         emit!(asm.mov(r8d, 17i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -1419,7 +1419,7 @@ impl StartStub {
 
         // "  at 0x"
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_at_0x");
+        lea_rip!(rdx, "__quazi_at_0x");
         emit!(asm.mov(r8d, 7i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -1428,7 +1428,7 @@ impl StartStub {
         // return address
         emit!(asm.mov(rbx, qword_ptr(r12 + 8)));
         emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__void_hex_buf");
+        lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
         let mut hbt = asm.create_label();
         let mut sbt = asm.create_label();
@@ -1447,14 +1447,14 @@ impl StartStub {
         emit!(asm.jne(hbt));
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_hex_buf");
+        lea_rip!(rdx, "__quazi_hex_buf");
         emit!(asm.mov(r8d, 16i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
         call_ext!("WriteFile", RelocKind::Plt32);
 
         emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__void_nl");
+        lea_rip!(rdx, "__quazi_nl");
         emit!(asm.mov(r8d, 1i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
@@ -1482,8 +1482,8 @@ impl StartStub {
 
         emit!(asm.sub(rsp, 40i32));
 
-        // GetEnvironmentVariableA("VOID_TRACE", buf, 8)
-        lea_rip!(rcx, "__void_env_var_name");
+        // GetEnvironmentVariableA("QUAZI_TRACE", buf, 8)
+        lea_rip!(rcx, "__quazi_env_var_name");
         emit!(asm.lea(rdx, qword_ptr(rsp)));
         emit!(asm.mov(r8d, 8i32));
         call_ext!("GetEnvironmentVariableA", RelocKind::Plt32);
@@ -1494,7 +1494,7 @@ impl StartStub {
         emit!(asm.je(no_env));
         emit!(asm.cmp(byte_ptr(rsp), '1' as i32));
         emit!(asm.jne(no_env));
-        lea_rip!(rax, "__void_trace_enabled");
+        lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.mov(byte_ptr(rax), 1i32));
         emit!(asm.set_label(&mut no_env));
 
@@ -1596,7 +1596,7 @@ impl StartStub {
         Self {
             bytes,
             relocs,
-            extra_symbols: vec![("__void_print_backtrace".into(), print_bt_off, print_bt_size)],
+            extra_symbols: vec![("__quazi_print_backtrace".into(), print_bt_off, print_bt_size)],
             start_offset: startup_off,
         }
     }

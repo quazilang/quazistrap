@@ -92,10 +92,10 @@ impl Analyzer {
                         .take()
                         .unwrap_or_else(|| name.clone());
                     // Impl methods already have their mangled name ("TypeName.method") via
-                    // the override; don't add a module prefix. Runtime __void_* symbols and
+                    // the override; don't add a module prefix. Runtime __quazi_* symbols and
                     // ordinary top-level fns in namespaced files get the module prefix to
                     // match the declare pass.
-                    if base.contains('.') || base.starts_with("__void_") {
+                    if base.contains('.') || base.starts_with("__quazi_") {
                         base
                     } else if let Some(module) = self.module_path_for_span(item.span) {
                         format!("{}.{}", module, base)
@@ -2323,7 +2323,7 @@ impl Analyzer {
             substituted_params.len()
         };
         if sym.attributes.contains(&"str_variadic".to_string()) && args.len() > non_variadic_count {
-            self.add_dependency_edge(DependencyKind::Call, &from, "format");
+            self.add_dependency_edge(DependencyKind::Call, &from, "fmt.format");
         }
         if sym.unsafe_fn && self.unsafe_depth == 0 {
             self.push_error(
