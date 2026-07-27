@@ -513,18 +513,21 @@ pub enum ItemKind {
         generic_params: Vec<String>,
         fields: Vec<(String, Type, bool)>, // (name, type, const?)
         attributes: Vec<Attribute>,
+        public: bool,
     },
     Trait {
         name: String,
         generic_params: Vec<String>,
         methods: Vec<TraitMethod>,
         attributes: Vec<Attribute>,
+        public: bool,
     },
     Enum {
         name: String,
         generic_params: Vec<String>,
         variants: Vec<EnumVariant>,
         attributes: Vec<Attribute>,
+        public: bool,
     },
     Impl {
         trait_ty: Option<Type>, // None = inherent impl (`impl Type { }`)
@@ -537,6 +540,7 @@ pub enum ItemKind {
         generic_params: Vec<String>,
         aliased_type: Type,
         attributes: Vec<Attribute>,
+        public: bool,
     },
 }
 

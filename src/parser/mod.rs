@@ -103,11 +103,11 @@ impl Parser {
                 self.parse_fn(attributes, true, is_pub)
             }
             TokenKind::Fn => self.parse_fn(attributes, false, is_pub),
-            TokenKind::Struct => self.parse_struct(attributes),
-            TokenKind::Trait => self.parse_trait(attributes),
-            TokenKind::Enum => self.parse_enum(attributes),
+            TokenKind::Struct => self.parse_struct(attributes, is_pub),
+            TokenKind::Trait => self.parse_trait(attributes, is_pub),
+            TokenKind::Enum => self.parse_enum(attributes, is_pub),
             TokenKind::Impl => self.parse_impl(),
-            TokenKind::Type => self.parse_type_alias(attributes),
+            TokenKind::Type => self.parse_type_alias(attributes, is_pub),
             other => Err(self.err_here_with_code(
                 "E03",
                 format!("unexpected token in item position: {}", other),

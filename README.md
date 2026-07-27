@@ -184,6 +184,8 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 | [`12-loop-control`](examples/12-loop-control/) | `break` and `continue` |
 | [`13-args`](examples/13-args/) | Command-line arguments via `Array[str]` |
 | [`14-io-read`](examples/14-io-read/) | Example showing I/O reads. |
+| [`15-logical`](examples/15-logical/) | Logical operators: `!`, `&&`, `\|\|` |
+| [`16-pub-types`](examples/16-pub-types/) | Example showing public types |
 
 ---
 
@@ -194,13 +196,6 @@ source → Loader → Lexer → Parser → Analyzer → Codegen → Backend (ice
 ```
 
 For full technical details, see [AGENTS.md](AGENTS.md).
-
----
-
-## Contributors
-
-- **namnam1105** — lexer, tokenizer, AST
-- **amapekibert** — spans, full generic syntax, readable diagnostics
 
 ---
 

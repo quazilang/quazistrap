@@ -814,8 +814,10 @@ fn local_import_paths(
         } // end !ip.relative
 
         let candidate = dir.join(format!("{}.qz", base));
-        if candidate.exists() && seen.insert(candidate.clone()) {
-            paths.push((candidate, false)); // local file → not library
+        if candidate.exists() {
+            if seen.insert(candidate.clone()) {
+                paths.push((candidate, false)); // local file → not library
+            }
         } else if !remainder.is_empty() {
             // mod.qz opaque directory check for local imports
             let base_dir = dir.join(&base);
@@ -846,8 +848,10 @@ fn local_import_paths(
                         sub.push(seg);
                     }
                     sub.set_extension("qz");
-                    if sub.exists() && seen.insert(sub.clone()) {
-                        paths.push((sub, true)); // library = true
+                    if sub.exists() {
+                        if seen.insert(sub.clone()) {
+                            paths.push((sub, true)); // library = true
+                        }
                         found = true;
                         break;
                     }
@@ -859,8 +863,9 @@ fn local_import_paths(
                         remainder.join(".")
                     ));
                 }
-            }
-        } else {
+            } // close else { progressive subfile }
+        } // close else if !remainder.is_empty()
+        else {
             // Directory namespace: import a; where a/ is a directory
             let ns_dir = dir.join(&base);
             if ns_dir.is_dir() {
@@ -1224,15 +1229,11 @@ mod tests {
             "expected prelude/src/mod.qz to be loaded, got {:?}",
             result.library_file_paths
         );
-        // std is still available for imports even with @no_std.
-        assert!(
-            result
-                .library_file_paths
-                .iter()
-                .any(|p| p.ends_with(Path::new("std").join("src").join("core.qz"))),
-            "expected std/src/core.qz to be loaded as prelude dependency, got {:?}",
-            result.library_file_paths
-        );
+        // The prelude is now fully self-contained (uses @intrinsic, no import std),
+        // so std/src/core.qz is not a transitive dependency of the prelude.
+        // std is still available for explicit imports even with @no_std
+        // (the resolver registers it), but it won't appear in library_file_paths
+        // unless the user program imports it.
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1303,6 +1304,90 @@ fn main() i32 {
         assert!(
             report.errors.is_empty(),
             "expected namespaced std program to analyze cleanly, got {:?}",
+            report.errors
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn importing_private_type_emits_s04() {
+        let root = temp_dir("quazi_pub_type_private");
+        let src = root.join("src");
+        fs::create_dir_all(&src).expect("create src");
+
+        fs::write(
+            src.join("helper.qz"),
+            "struct PrivateStruct { value: i32, }\npub fn make() PrivateStruct { ret PrivateStruct { value: 1 }; }",
+        )
+        .expect("write helper.qz");
+
+        let main_path = src.join("main.qz");
+        fs::write(
+            &main_path,
+            "import helper.PrivateStruct;\nfn main() void { ret; }",
+        )
+        .expect("write main.qz");
+
+        let result = load_programs(&[main_path]).expect("load programs");
+        let namespaced_paths: HashSet<String> = result
+            .namespaced_paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let report = crate::analysis::analyze_program_with_source_files(
+            &result.merged_source,
+            &result.program,
+            result.library_fn_names,
+            result.library_char_ranges,
+            result.source_files,
+            namespaced_paths,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S04"),
+            "expected S04 error when importing private struct, got {:?}",
+            report.errors
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn importing_public_type_succeeds() {
+        let root = temp_dir("quazi_pub_type_public");
+        let src = root.join("src");
+        fs::create_dir_all(&src).expect("create src");
+
+        fs::write(
+            src.join("helper.qz"),
+            "pub struct PublicStruct { value: i32, }\npub fn make() PublicStruct { ret PublicStruct { value: 1 }; }",
+        )
+        .expect("write helper.qz");
+
+        let main_path = src.join("main.qz");
+        fs::write(
+            &main_path,
+            "import helper.PublicStruct;\nimport helper.make;\nfn main() void { var _s: PublicStruct = make(); ret; }",
+        )
+        .expect("write main.qz");
+
+        let result = load_programs(&[main_path]).expect("load programs");
+        let namespaced_paths: HashSet<String> = result
+            .namespaced_paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let report = crate::analysis::analyze_program_with_source_files(
+            &result.merged_source,
+            &result.program,
+            result.library_fn_names,
+            result.library_char_ranges,
+            result.source_files,
+            namespaced_paths,
+        );
+        assert!(
+            report.errors.iter().all(|e| e.code != "S04"),
+            "expected no S04 errors when importing public struct, got {:?}",
             report.errors
         );
 

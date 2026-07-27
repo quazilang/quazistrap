@@ -90,7 +90,7 @@ impl Parser {
         ))
     }
 
-    pub fn parse_struct(&mut self, attributes: Vec<Attribute>) -> Result<Item, String> {
+    pub fn parse_struct(&mut self, attributes: Vec<Attribute>, is_pub: bool) -> Result<Item, String> {
         let start = self.expect(TokenKind::Struct)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
@@ -130,12 +130,13 @@ impl Parser {
                 generic_params,
                 fields,
                 attributes,
+                public: is_pub,
             },
             span,
         ))
     }
 
-    pub fn parse_trait(&mut self, attributes: Vec<Attribute>) -> Result<Item, String> {
+    pub fn parse_trait(&mut self, attributes: Vec<Attribute>, is_pub: bool) -> Result<Item, String> {
         let start = self.expect(TokenKind::Trait)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
@@ -197,12 +198,13 @@ impl Parser {
                 generic_params,
                 methods,
                 attributes,
+                public: is_pub,
             },
             span,
         ))
     }
 
-    pub fn parse_enum(&mut self, attributes: Vec<Attribute>) -> Result<Item, String> {
+    pub fn parse_enum(&mut self, attributes: Vec<Attribute>, is_pub: bool) -> Result<Item, String> {
         let start = self.expect(TokenKind::Enum)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
@@ -262,6 +264,7 @@ impl Parser {
                 generic_params,
                 variants,
                 attributes,
+                public: is_pub,
             },
             span,
         ))
@@ -318,7 +321,7 @@ impl Parser {
         ))
     }
 
-    pub fn parse_type_alias(&mut self, attributes: Vec<Attribute>) -> Result<Item, String> {
+    pub fn parse_type_alias(&mut self, attributes: Vec<Attribute>, is_pub: bool) -> Result<Item, String> {
         let start = self.expect(TokenKind::Type)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
@@ -332,6 +335,7 @@ impl Parser {
                 generic_params,
                 aliased_type,
                 attributes,
+                public: is_pub,
             },
             span,
         ))

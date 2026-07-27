@@ -167,6 +167,7 @@ impl Analyzer {
                 fields,
                 generic_params,
                 attributes,
+                public,
             } => {
                 self.declare(
                     name.clone(),
@@ -182,7 +183,7 @@ impl Analyzer {
                         const_value: None,
                         variadic: false,
                         attributes: extract_attribute_names(attributes),
-                        public: false,
+                        public: *public,
                         unsafe_fn: false,
                         generic_params: vec![],
                     },
@@ -223,6 +224,7 @@ impl Analyzer {
                 name,
                 methods,
                 attributes,
+                public,
                 ..
             } => {
                 self.declare(
@@ -239,7 +241,7 @@ impl Analyzer {
                         const_value: None,
                         variadic: false,
                         attributes: extract_attribute_names(attributes),
-                        public: false,
+                        public: *public,
                         unsafe_fn: false,
                         generic_params: vec![],
                     },
@@ -254,6 +256,7 @@ impl Analyzer {
                 name,
                 variants,
                 attributes,
+                public,
                 ..
             } => {
                 self.declare(
@@ -270,7 +273,7 @@ impl Analyzer {
                         const_value: None,
                         variadic: false,
                         attributes: extract_attribute_names(attributes),
-                        public: false,
+                        public: *public,
                         unsafe_fn: false,
                         generic_params: vec![],
                     },
@@ -282,6 +285,7 @@ impl Analyzer {
                 generic_params,
                 aliased_type,
                 attributes,
+                public,
             } => {
                 self.declare(
                     name.clone(),
@@ -297,7 +301,7 @@ impl Analyzer {
                         const_value: None,
                         variadic: false,
                         attributes: extract_attribute_names(attributes),
-                        public: false,
+                        public: *public,
                         unsafe_fn: false,
                         generic_params: generic_params.clone(),
                     },
@@ -615,10 +619,18 @@ impl Analyzer {
         };
 
         if !matches!(original.kind, SymbolKind::Function) {
-            // Type re-import is a no-op (e.g. `pub import array.Array` when
-            // `struct Array` is already declared in the same merged source).
-            if matches!(original.kind, SymbolKind::TypeName) && local_name == leaf {
-                return;
+            if matches!(original.kind, SymbolKind::TypeName) {
+                if !original.public {
+                    self.push_error(
+                        span,
+                        "S04",
+                        format!("'{}' is private and cannot be imported", leaf),
+                    );
+                    return;
+                }
+                if local_name == leaf {
+                    return;
+                }
             }
             // Not a function import — treat as namespace/variable reference.
             self.declare(

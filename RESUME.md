@@ -20,7 +20,7 @@ Implement the following changes to the Quazilang compiler (quazistrap), in exact
 
   ## P1 — High Impact
 
-  4. [DONE] Bitwise Operators (`&` `|` `^` `<<` `>>`)
+  4. [DONE] Bitwise Operators (`&` `|` `^` `<<` `>>`) and Logical Operators (`&&` `||` `!`)
      - Problem: these are not parsed as binary operators. The encoder already implements `And`, `Or`, `Xor`, `Shl`, `Shr`, `Sar`. The stdlib already defines `BitAnd[T]`, `BitOr[T]`, `BitXor[T]`, `Shl[T]`, `Shr
   [T]` traits. But the parser has no `BinOpKind` variants for them, and codegen's fallback for unknown binary ops silently emits `Add` instead.
      - Lexer: add `Caret` (`^`), `Shl` (`<<`), `Shr` (`>>`) tokens. `&` and `|` already exist as `Ampersand` and `Pipe`.
@@ -57,11 +57,11 @@ Implement the following changes to the Quazilang compiler (quazistrap), in exact
      - Output format: `test module::name ... ok/failed` with a summary count.
      - Update CLI wiring in `src/main.rs` and `src/cli.rs`.
 
-  8. `pub` Visibility Enforcement on Types
+  8. [x] `pub` Visibility Enforcement on Types
      - Current: `pub struct`, `pub enum`, `pub trait`, `pub type` are parsed but `declare.rs` hardcodes `public: false` for all of them. Only functions enforce `public` during import resolution (S04 error).
      - Fix: in `src/semantic/declare.rs`, set `public: *pub_fn` (or equivalent parsed flag) for Struct, Enum, Trait, and TypeAlias symbol registration. Then in `declare_import_binding` (or type resolution), en
   force that importing a non-public type across modules emits S04 just like functions do.
-     - Ensure `std/src/` modules still compile — some types currently relied on as implicitly public may need `pub` added.
+     - Ensure `~/.quazi/std/src/` modules still compile — some types currently relied on as implicitly public may need `pub` added.
 
   ## P2 — Medium (only if P0/P1 done)
 

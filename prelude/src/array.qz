@@ -19,7 +19,7 @@ fn __ptr_store(base: *u8, idx: usize, val: usize) void;
 @intrinsic("quazi.array.load")
 fn __ptr_load(base: *u8, idx: usize) usize;
 
-struct Array[T] {
+pub struct Array[T] {
     ptr: *u8,
     len: usize,
     cap: usize,

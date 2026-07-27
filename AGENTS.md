@@ -97,12 +97,22 @@ pub fn name[T](param: Type, ...rest: str) ReturnType {
     var y: &str = "hello";
     var n: u64 = 42 as u64;
     x += 1; x -= 1; x++; x--;
+    // Bitwise operators
+    var b: u32 = x & 0xFF;              // & bitwise AND
+    b = x | 0x01;                       // | bitwise OR
+    b = x ^ 0x0F;                       // ^ bitwise XOR
+    b = x << 2;                         // << left shift
+    b = x >> 1;                         // >> right shift (sign-preserving)
+    // Logical operators
+    var ok: bool = true && false;       // && logical AND
+    ok = true || false;                 // || logical OR
+    ok = !ok;                           // !  logical NOT
     if (cond) { ... } else { ... }
     for (cond) { ... }                  // while-loop
     for i : 0..10 { ... }              // range loop
     for i : collection { ... }         // iterator loop
     for i, v : collection { ... }      // index+value
-    // break; continue;                  // NOT YET IMPLEMENTED — see P1
+    // break; continue;
     var arr = [1, 2, 3]; arr[0];
     ret expr;
 }
@@ -234,7 +244,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **AOT `@cfg` stripping** | ✅ Done |
 | **`qz link` built-in linker** | Pending |
 | **`qz test` runner** | Pending |
-| **`pub` on types** | Pending |
+| **`pub` on types** | ✅ Done |
 
 ### P2 — Codegen Quality
 
@@ -279,6 +289,8 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | 2026-06-11 | Implemented `fn main(args: Array[str])` support. Semantic analysis validates the parameter signature and sets `SemanticReport.main_takes_args`. Linux startup stubs build an `Array[str]` from `argc`/`argv` and pass it in `rdi`; Windows stubs use `__getmainargs` to obtain parsed argv and build the same array. Added `examples/13-args`. All 151 tests pass. |
 | 2026-06-11 | Hardened slice support: `types_compatible` now rejects fixed-size array ↔ slice coercion, which previously generated invalid code and crashed at runtime. Added a clear `S08` diagnostic for this case. `for item : items` over variadic slices continues to work. Full array-to-slice coercion remains on the roadmap. All 152 tests pass. |
 | 2026-07-26 | **Rebranding**: Quazilang → Quazilang. Binary renamed `void` → `qz`. Config files `quazi.toml`/`quazi.lock` → `quazi.toml`/`quazi.lock`. Env vars `QUAZI_LINKER`/`QUAZI_STD_ROOT` → `QUAZI_LINKER`/`QUAZI_STD_ROOT`. Internal ABI symbols `__quazi_*` → `__quazi_*`. Intrinsic namespace `quazi.X` → `quazi.X`. All docs merged from AGENTS.md + CLAUDE.md into AGENTS.md. |
+| 2026-07-27 | Documented logical operators (`&&`, `\|\|`, `!`) — all were already fully implemented in the compiler (lexer/parser/semantic/codegen). Added `examples/15-logical` demonstrating all three operators with a truth-table program. Updated Language Quick Reference and Examples table. |
+| 2026-07-27 | Implemented `pub` visibility enforcement on types (`struct`, `enum`, `trait`, `type`). Imported `AST` types now carry a `public` flag. Semantic analysis emits an `S04` error when attempting to import a non-public type across modules. Updated standard library (prelude) types like `Array` to be `pub`. |
 
 ---
 
@@ -300,3 +312,5 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | `12-loop-control` | `break` and `continue` | [examples/12-loop-control/AGENTS.md](examples/12-loop-control/AGENTS.md) |
 | `13-args` | `fn main(args: Array[str])` | [examples/13-args/AGENTS.md](examples/13-args/AGENTS.md) |
 | `14-io-read` | Example showing I/O reads. | [examples/14-io-read/AGENTS.md](examples/14-io-read/AGENTS.md) |
+| `15-logical` | Logical operators: `!`, `&&`, `\|\|` | [examples/15-logical/AGENTS.md](examples/15-logical/AGENTS.md) |
+| `16-pub-types` | `pub` visibility enforcement on types — S04 on private type import | [examples/16-pub-types/AGENTS.md](examples/16-pub-types/AGENTS.md) |

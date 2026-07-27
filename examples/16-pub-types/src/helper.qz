@@ -1,0 +1,13 @@
+// A public struct, can be imported and used in other modules.
+pub struct PublicStruct {
+    value: i32,
+}
+
+// A private struct, importing this outside of this file will cause an S04 error.
+struct PrivateStruct {
+    hidden: str,
+}
+
+pub fn get_public() PublicStruct {
+    ret PublicStruct { value: 42 };
+}
