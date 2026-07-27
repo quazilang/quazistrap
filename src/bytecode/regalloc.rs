@@ -25,21 +25,20 @@ pub fn elim_dead_regs(chunk: &mut Chunk) {
 }
 
 fn strip_nops_fix_jumps(chunk: &mut Chunk) {
-    // Build old-index → new-index map (Nops map to usize::MAX = deleted).
+    // Nops are deleted. Build old-index → new-index map.
+    // If an instruction is a Nop, jumping to it is equivalent to jumping to
+    // the next valid instruction. So we map Nop to the current `new_idx`.
     let mut new_idx = 0usize;
-    let old_to_new: Vec<usize> = chunk
-        .code
-        .iter()
-        .map(|ins| {
-            if ins.opcode == Opcode::Nop as u8 {
-                usize::MAX
-            } else {
-                let i = new_idx;
-                new_idx += 1;
-                i
-            }
-        })
-        .collect();
+    let mut old_to_new: Vec<usize> = Vec::with_capacity(chunk.code.len());
+    
+    for ins in &chunk.code {
+        old_to_new.push(new_idx);
+        if ins.opcode != Opcode::Nop as u8 {
+            new_idx += 1;
+        }
+    }
+    // Also push a mapping for the end of the chunk (length).
+    old_to_new.push(new_idx);
 
     if new_idx == chunk.code.len() {
         return; // No Nops to strip.

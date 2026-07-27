@@ -901,6 +901,12 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        // Cross-basic-block constant propagation and folding (P2 optimisation).
+        // Runs after inline expansion so inlined constants are visible across BBs.
+        for chunk in &mut chunks {
+            crate::bytecode::constprop::const_prop_fold(chunk);
+        }
+
         // Dead register elimination then linear-scan slot sharing.
         for chunk in &mut chunks {
             crate::bytecode::regalloc::elim_dead_regs(chunk);
@@ -5356,16 +5362,18 @@ mod tests {
 
     #[test]
     fn compound_assign_on_index_loads_modifies_stores() {
+        // `n` is a parameter — constprop cannot fold arr[0] + n to a constant.
+        // This exercises the load-modify-store path for index compound assignment.
         let chunks = compile(
-            r#"fn main() i32 {
+            r#"fn test(n: i32) i32 {
                 var arr = [1, 2, 3];
-                arr[0] += 10;
+                arr[0] += n;
                 ret arr[0];
             }"#,
         );
         assert!(
             chunks[0].code.iter().any(|i| i.opcode == Opcode::Add as u8),
-            "arr[0] += 10 should emit Add"
+            "arr[0] += n should emit Add when n is not constant"
         );
     }
 

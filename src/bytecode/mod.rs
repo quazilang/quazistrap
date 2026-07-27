@@ -4,6 +4,7 @@
 
 pub mod chunk;
 pub mod codegen;
+pub mod constprop;
 pub mod instruction;
 pub mod opcode;
 pub mod regalloc;

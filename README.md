@@ -1,6 +1,6 @@
 # quazilang
 
-**A fast, strict, and expressive systems programming language with no runtime, no libc, and no LLVM.**
+**A fast, strict, and expressive systems independent programming language**
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library — all without depending on LLVM, GCC, or libc.
 
@@ -186,6 +186,7 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 | [`14-io-read`](examples/14-io-read/) | Example showing I/O reads. |
 | [`15-logical`](examples/15-logical/) | Logical operators: `!`, `&&`, `\|\|` |
 | [`16-pub-types`](examples/16-pub-types/) | Example showing public types |
+| [`17-constfold`](examples/17-constfold/) | Cross-basic-block constant propagation |
 
 ---
 

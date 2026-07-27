@@ -251,7 +251,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | Item | Status |
 |------|--------|
 | Threshold-based auto-inline | ✅ Done |
-| Cross-basic-block const folding | Pending |
+| Cross-basic-block const folding | ✅ Done |
 | Strength reduction | Pending |
 
 ### P3 — Platform / Runtime
@@ -291,6 +291,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | 2026-07-26 | **Rebranding**: Quazilang → Quazilang. Binary renamed `void` → `qz`. Config files `quazi.toml`/`quazi.lock` → `quazi.toml`/`quazi.lock`. Env vars `QUAZI_LINKER`/`QUAZI_STD_ROOT` → `QUAZI_LINKER`/`QUAZI_STD_ROOT`. Internal ABI symbols `__quazi_*` → `__quazi_*`. Intrinsic namespace `quazi.X` → `quazi.X`. All docs merged from AGENTS.md + CLAUDE.md into AGENTS.md. |
 | 2026-07-27 | Documented logical operators (`&&`, `\|\|`, `!`) — all were already fully implemented in the compiler (lexer/parser/semantic/codegen). Added `examples/15-logical` demonstrating all three operators with a truth-table program. Updated Language Quick Reference and Examples table. |
 | 2026-07-27 | Implemented `pub` visibility enforcement on types (`struct`, `enum`, `trait`, `type`). Imported `AST` types now carry a `public` flag. Semantic analysis emits an `S04` error when attempting to import a non-public type across modules. Updated standard library (prelude) types like `Array` to be `pub`. |
+| 2026-07-27 | Implemented cross-basic-block constant propagation (`const_prop_fold`) in the bytecode optimizer. Constant folding operates on integers and floats natively, folding mathematical sequences and eliminating dead branches at compile-time. Added `17-constfold` example. |
 
 ---
 
@@ -314,3 +315,4 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | `14-io-read` | Example showing I/O reads. | [examples/14-io-read/AGENTS.md](examples/14-io-read/AGENTS.md) |
 | `15-logical` | Logical operators: `!`, `&&`, `\|\|` | [examples/15-logical/AGENTS.md](examples/15-logical/AGENTS.md) |
 | `16-pub-types` | `pub` visibility enforcement on types — S04 on private type import | [examples/16-pub-types/AGENTS.md](examples/16-pub-types/AGENTS.md) |
+| `17-constfold` | Cross-basic-block constant propagation | [examples/17-constfold/src/main.qz](examples/17-constfold/src/main.qz) |
