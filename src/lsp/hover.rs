@@ -19,8 +19,8 @@ pub fn hover_at(report: &SemanticReport, source: &str, pos: Position) -> Option<
     {
         let range = span_to_range(ann.span, source);
         let value = match &ann.const_value {
-            Some(cv) => format!("```void\n{ty} = {cv}\n```"),
-            None => format!("```void\n{ty}\n```"),
+            Some(cv) => format!("```quazi\n{ty} = {cv}\n```"),
+            None => format!("```quazi\n{ty}\n```"),
         };
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -61,7 +61,7 @@ pub fn hover_at(report: &SemanticReport, source: &str, pos: Position) -> Option<
         String::new()
     };
 
-    let value = format!("```void\n{kind_str} {word}: {params_str}{ty_str}\n```");
+    let value = format!("```quazi\n{kind_str} {word}: {params_str}{ty_str}\n```");
 
     let range = Range {
         start: pos,

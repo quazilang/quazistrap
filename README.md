@@ -55,7 +55,7 @@ qz build src/main.qz -o hello
 
 ## Language Syntax
 
-```void
+```quazi
 import std.io;
 
 fn main() i32 {
@@ -64,7 +64,7 @@ fn main() i32 {
 }
 ```
 
-```void
+```quazi
 // Generics
 fn max[T](a: T, b: T) T {
     if a > b { ret a; }
@@ -183,6 +183,7 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 | [`11-elseif`](examples/11-elseif/) | `else if` chains |
 | [`12-loop-control`](examples/12-loop-control/) | `break` and `continue` |
 | [`13-args`](examples/13-args/) | Command-line arguments via `Array[str]` |
+| [`14-io-read`](examples/14-io-read/) | Example showing I/O reads. |
 
 ---
 
@@ -192,7 +193,7 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 source → Loader → Lexer → Parser → Analyzer → Codegen → Backend (iced-x86) → .o → Linker → binary
 ```
 
-For full technical details, see [DOCS.md](DOCS.md).
+For full technical details, see [AGENTS.md](AGENTS.md).
 
 ---
 

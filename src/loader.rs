@@ -1,4 +1,4 @@
-// void - the programming language
+// quazi - the programming language
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 
@@ -91,9 +91,9 @@ pub fn load_programs_with_resolver(
         .as_ref()
         .and_then(|r| r.modules.get("prelude"))
         .and_then(|spec| {
-            let mod_void = spec.src_dir.join("mod.qz");
-            if mod_void.exists() {
-                return Some(mod_void);
+            let mod_entry = spec.src_dir.join("mod.qz");
+            if mod_entry.exists() {
+                return Some(mod_entry);
             }
             let flat = spec.src_dir.join("prelude.qz");
             if flat.exists() { Some(flat) } else { None }
@@ -728,45 +728,45 @@ fn local_import_paths(
             let target = if remainder.is_empty() {
                 spec.entry.clone()
             } else {
-                let root_mod_void = spec.src_dir.join("mod.qz");
-                if root_mod_void.exists() {
+                let root_mod_entry = spec.src_dir.join("mod.qz");
+                if root_mod_entry.exists() {
                     let exported = &remainder[0];
-                    if strict && !is_pub_exported_from_mod(&root_mod_void, exported)? {
+                    if strict && !is_pub_exported_from_mod(&root_mod_entry, exported)? {
                         return Err(format!(
                             "cannot access '{}' from '{}': '{}' is not pub-imported in mod.qz",
                             exported, base, exported
                         ));
                     }
-                    if let Some(specific) = find_pub_exported_file(&root_mod_void, exported) {
+                    if let Some(specific) = find_pub_exported_file(&root_mod_entry, exported) {
                         if seen.insert(specific.clone()) {
                             paths.push((specific, true));
                         }
                         continue;
                     }
-                    root_mod_void
+                    root_mod_entry
                 } else {
                     // mod.qz opaque directory check: if first remainder segment is a
                     // directory with mod.qz, enforce opaqueness.
                     let first = &remainder[0];
-                    let mod_void_path = spec.src_dir.join(first).join("mod.qz");
-                    if mod_void_path.exists() {
+                    let mod_entry_path = spec.src_dir.join(first).join("mod.qz");
+                    if mod_entry_path.exists() {
                         if remainder.len() > 1 {
                             let sub = &remainder[1];
-                            if strict && !is_pub_exported_from_mod(&mod_void_path, sub)? {
+                            if strict && !is_pub_exported_from_mod(&mod_entry_path, sub)? {
                                 return Err(format!(
                                     "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.qz'",
                                     sub, first, sub, first
                                 ));
                             }
                             // Targeted: load only the specific file, skip mod.qz
-                            if let Some(specific) = find_pub_exported_file(&mod_void_path, sub) {
+                            if let Some(specific) = find_pub_exported_file(&mod_entry_path, sub) {
                                 if seen.insert(specific.clone()) {
                                     paths.push((specific, true));
                                 }
                                 continue;
                             }
                         }
-                        mod_void_path
+                        mod_entry_path
                     } else {
                         // Try progressively shorter paths: the last segment(s) may be
                         // function/symbol names rather than file path components.
@@ -819,22 +819,22 @@ fn local_import_paths(
         } else if !remainder.is_empty() {
             // mod.qz opaque directory check for local imports
             let base_dir = dir.join(&base);
-            let mod_void = base_dir.join("mod.qz");
-            if mod_void.exists() {
+            let mod_entry = base_dir.join("mod.qz");
+            if mod_entry.exists() {
                 let sub = &remainder[0];
-                if strict && !is_pub_exported_from_mod(&mod_void, sub)? {
+                if strict && !is_pub_exported_from_mod(&mod_entry, sub)? {
                     return Err(format!(
                         "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.qz'",
                         sub, base, sub, base
                     ));
                 }
                 // Targeted: load only the specific file, skip mod.qz
-                if let Some(specific) = find_pub_exported_file(&mod_void, sub) {
+                if let Some(specific) = find_pub_exported_file(&mod_entry, sub) {
                     if seen.insert(specific.clone()) {
                         paths.push((specific, true));
                     }
-                } else if seen.insert(mod_void.clone()) {
-                    paths.push((mod_void, true));
+                } else if seen.insert(mod_entry.clone()) {
+                    paths.push((mod_entry, true));
                 }
             } else {
                 // Progressive subfile resolution under a directory namespace.
@@ -864,11 +864,11 @@ fn local_import_paths(
             // Directory namespace: import a; where a/ is a directory
             let ns_dir = dir.join(&base);
             if ns_dir.is_dir() {
-                let mod_void = ns_dir.join("mod.qz");
-                if mod_void.exists() {
+                let mod_entry = ns_dir.join("mod.qz");
+                if mod_entry.exists() {
                     // Opaque module: load only mod.qz (it pub-imports what's needed)
-                    if seen.insert(mod_void.clone()) {
-                        paths.push((mod_void, true));
+                    if seen.insert(mod_entry.clone()) {
+                        paths.push((mod_entry, true));
                     }
                 } else {
                     let mut entries: Vec<_> = std::fs::read_dir(&ns_dir)
@@ -877,7 +877,7 @@ fn local_import_paths(
                         })?
                         .filter_map(|e| e.ok())
                         .map(|e| e.path())
-                        .filter(|p| p.extension().is_some_and(|ext| ext == "void"))
+                        .filter(|p| p.extension().is_some_and(|ext| ext == "qz"))
                         .collect();
                     entries.sort();
                     for f in entries {
@@ -899,15 +899,15 @@ fn local_import_paths(
 }
 
 fn resolve_module_file(spec: &ModuleSpec, module: &str) -> Option<PathBuf> {
-    let root_mod_void = spec.src_dir.join("mod.qz");
-    if root_mod_void.exists() {
-        return find_pub_exported_file(&root_mod_void, module);
+    let root_mod_entry = spec.src_dir.join("mod.qz");
+    if root_mod_entry.exists() {
+        return find_pub_exported_file(&root_mod_entry, module);
     }
 
     let target = spec.src_dir.join(module);
-    let mod_void = target.join("mod.qz");
-    if mod_void.exists() {
-        return Some(mod_void);
+    let mod_entry = target.join("mod.qz");
+    if mod_entry.exists() {
+        return Some(mod_entry);
     }
 
     let file = spec.src_dir.join(format!("{module}.qz"));
@@ -919,11 +919,11 @@ fn resolve_module_file(spec: &ModuleSpec, module: &str) -> Option<PathBuf> {
 }
 
 /// Find the file that a `mod.qz` pub-exports `name` from.
-/// e.g. `pub import map.Map` → returns `mod_void_dir/map.qz`
-fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
-    let src = std::fs::read_to_string(mod_void).ok()?;
+/// e.g. `pub import map.Map` → returns `mod_entry_dir/map.qz`
+fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
+    let src = std::fs::read_to_string(mod_entry).ok()?;
     let prog = parse_source(&src).ok()?;
-    let mod_dir = mod_void.parent()?;
+    let mod_dir = mod_entry.parent()?;
 
     for item in &prog.items {
         let ItemKind::Import(ip) = &item.node else {
@@ -973,9 +973,9 @@ fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
                     for seg in &ip.path {
                         sub_mod.push(seg);
                     }
-                    let sub_mod_void = sub_mod.join("mod.qz");
-                    if sub_mod_void.exists()
-                        && let Some(found) = find_pub_exported_file(&sub_mod_void, name)
+                    let sub_mod_entry = sub_mod.join("mod.qz");
+                    if sub_mod_entry.exists()
+                        && let Some(found) = find_pub_exported_file(&sub_mod_entry, name)
                     {
                         return Some(found);
                     }
@@ -1007,9 +1007,9 @@ fn find_pub_exported_file(mod_void: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-fn is_pub_exported_from_mod(mod_void: &Path, name: &str) -> Result<bool, String> {
-    let src = std::fs::read_to_string(mod_void)
-        .map_err(|e| format!("cannot read '{}': {}", mod_void.display(), e))?;
+fn is_pub_exported_from_mod(mod_entry: &Path, name: &str) -> Result<bool, String> {
+    let src = std::fs::read_to_string(mod_entry)
+        .map_err(|e| format!("cannot read '{}': {}", mod_entry.display(), e))?;
     let Ok(prog) = parse_source(&src) else {
         return Ok(false);
     };
@@ -1079,7 +1079,7 @@ mod tests {
 
     #[test]
     fn resolves_module_import_with_resolver() {
-        let root = temp_dir("void_loader");
+        let root = temp_dir("quazi_loader");
         let app_src = root.join("src");
         fs::create_dir_all(&app_src).expect("create app src");
         let main_path = app_src.join("main.qz");
@@ -1115,7 +1115,7 @@ mod tests {
 
     #[test]
     fn std_is_available_as_namespace_with_explicit_import() {
-        let root = temp_dir("void_loader_std");
+        let root = temp_dir("quazi_loader_std");
         let main_path = root.join("main.qz");
         fs::write(
             &main_path,
@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn prelude_directory_exports_resolve_as_modules() {
-        let root = temp_dir("void_loader_prelude_exports");
+        let root = temp_dir("quazi_loader_prelude_exports");
         let main_path = root.join("main.qz");
         // Prelude contents are auto-imported; explicit module path uses prelude.* prefix.
         fs::write(
@@ -1170,8 +1170,8 @@ mod tests {
     }
 
     #[test]
-    fn mod_void_exports_flatten_child_imports() {
-        let root = temp_dir("void_loader_mod_exports");
+    fn mod_entry_exports_flatten_child_imports() {
+        let root = temp_dir("quazi_loader_mod_exports");
         let foo_dir = root.join("foo");
         fs::create_dir_all(&foo_dir).expect("create foo dir");
         fs::write(foo_dir.join("mod.qz"), "pub import a.METHOD;").expect("write mod.qz");
@@ -1206,7 +1206,7 @@ mod tests {
 
     #[test]
     fn no_std_keeps_prelude_and_std_resolver() {
-        let root = temp_dir("void_loader_no_std");
+        let root = temp_dir("quazi_loader_no_std");
         let main_path = root.join("main.qz");
         fs::write(&main_path, "@no_std\nfn main() void { ret; }").expect("write main.qz");
 
@@ -1239,7 +1239,7 @@ mod tests {
 
     #[test]
     fn resolves_builtin_std_module_import_without_project() {
-        let root = temp_dir("void_loader_builtin_std");
+        let root = temp_dir("quazi_loader_builtin_std");
         let main_path = root.join("main.qz");
         fs::write(&main_path, "import std.unix.open; fn main() void { ret; }")
             .expect("write main.qz");
@@ -1259,7 +1259,7 @@ mod tests {
 
     #[test]
     fn user_function_does_not_collide_with_namespaced_std_function() {
-        let root = temp_dir("void_loader_namespace_std");
+        let root = temp_dir("quazi_loader_namespace_std");
         let main_path = root.join("main.qz");
         fs::write(
             &main_path,

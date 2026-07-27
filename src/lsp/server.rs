@@ -74,7 +74,7 @@ impl LanguageServer for VoidLanguageServer {
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
-                name: "void-lsp".to_string(),
+                name: "quazi-lsp".to_string(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
         })

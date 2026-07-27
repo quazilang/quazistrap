@@ -1,6 +1,0 @@
-import std.io;
-
-fn main() i32 {
-    io.println("Hello, {}!", "Bohdan");
-    ret 0;
-}

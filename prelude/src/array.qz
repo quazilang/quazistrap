@@ -1,7 +1,15 @@
 // prelude.array — safe generic dynamic array backed by heap memory
-import std.core;
 import traits;
 import panic.panic;
+
+@intrinsic("quazi.malloc")
+fn __array_malloc(size: usize) *u8;
+
+@intrinsic("quazi.free")
+fn __array_free(ptr: *u8) void;
+
+@intrinsic("quazi.realloc")
+fn __array_realloc(ptr: *u8, size: usize) *u8;
 
 // Internal: write val into base[idx * 8]. @intrinsic bypasses S12.
 @intrinsic("quazi.array.store")
@@ -20,7 +28,7 @@ struct Array[T] {
 impl Array[T] {
     pub fn new() Array[T] {
         var buf: *u8;
-        unsafe { buf = core.malloc(64); }
+        unsafe { buf = __array_malloc(64); }
         ret Array { ptr: buf, len: 0, cap: 8 };
     }
 
@@ -35,7 +43,7 @@ impl Array[T] {
     pub fn push(self: Array[T], val: T) void {
         if (self.len >= self.cap) {
             self.cap = self.cap * 2;
-            unsafe { self.ptr = core.realloc(self.ptr, self.cap * 8); }
+            unsafe { self.ptr = __array_realloc(self.ptr, self.cap * 8); }
         }
         __ptr_store(self.ptr, self.len, val);
         self.len = self.len + 1;
@@ -64,7 +72,7 @@ impl Array[T] {
     }
 
     pub fn free(self: Array[T]) void {
-        unsafe { core.free(self.ptr); }
+        unsafe { __array_free(self.ptr); }
     }
 }
 

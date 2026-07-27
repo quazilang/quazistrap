@@ -7,7 +7,9 @@
 //   fn my_handler(info: PanicInfo) ! { ... }
 // The compiler replaces the default with your function automatically.
 
-import std.core;
+
+@intrinsic("quazi.int_to_str")
+fn __panic_int_to_str(n: usize) str;
 
 @intrinsic("quazi.write")
 fn __panic_write(fd: i32, buf: str, count: usize) isize;
@@ -47,7 +49,7 @@ pub fn __quazi_panic_handler(info: PanicInfo) ! {
     __panic_write(2, "'\n  at ", 7);
     __panic_write(2, info.file, __panic_strlen(info.file));
     __panic_write(2, ":", 1);
-    var line_str: str = core.int_to_str(info.line);
+    var line_str: str = __panic_int_to_str(info.line);
     __panic_write(2, line_str, __panic_strlen(line_str));
     __panic_write(2, "\n", 1);
     __quazi_print_backtrace();

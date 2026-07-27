@@ -1,4 +1,4 @@
-// void - the programming language
+// quazi - the programming language
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 //
@@ -1203,7 +1203,7 @@ impl<'a> FnEncoder<'a> {
                     }
                     20 => {
                         // quazi.net.bind_tcp(sockfd: i32, port: i32) → i32
-                        // Builds sockaddr_in on stack — void has no byte-level memory writes
+                        // Builds sockaddr_in on stack — quazi has no byte-level memory writes
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // keep rsp 16-byte aligned
                         emit!(asm.sub(rsp, 32i32)); // 16 bytes sockaddr_in + 16 shadow (Win64)

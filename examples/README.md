@@ -1,10 +1,10 @@
-# void examples
+# quazi examples
 
 Each folder is a standalone project. Run any with:
 
 ```
 cd examples/<name>
-void run
+qz run
 ```
 
 | Example | What it shows |
@@ -17,3 +17,9 @@ void run
 | `06-crash` | Crash handler demonstration (segfault) |
 | `07-minimal-hw` | Minimal program with raw `@intrinsic` syscalls, no stdlib |
 | `08-array` | `Array[T]`: create, push, index, set, get, len, iteration, cleanup |
+| `09-mangling` | Module namespacing demo |
+| `10-bitwise` | Bitwise operators |
+| `11-elseif` | `else if` chains |
+| `12-loop-control` | `break` and `continue` |
+| `13-args` | Command-line arguments via `Array[str]` |
+| `14-io-read` | Example showing I/O reads. |

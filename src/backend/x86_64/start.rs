@@ -1,4 +1,4 @@
-// void - the programming language
+// quazi - the programming language
 // Copyright titago (C) 2026
 // SPDX-License-Identifier: 0BSD
 //
