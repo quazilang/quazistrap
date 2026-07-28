@@ -2,6 +2,15 @@
 
 Demonstrates module-level function namespacing / mangling.
 
+## Running
+
+```bash
+qz build -o mangling
+./mangling
+```
+
+## Features shown
+
 - `core.write()` — qualified call into `std.core`
 - `unix.write()` — qualified call into `std.unix`
 - `@cfg(target_os = "linux")` for platform-specific branches

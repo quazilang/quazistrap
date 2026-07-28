@@ -1,5 +1,5 @@
-// quazi - the programming language
-// Copyright titago (C) 2026
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
 use super::instruction::Instruction;
@@ -132,27 +132,27 @@ impl Chunk {
     }
 }
 
-pub fn deserialize_vbc(buf: &[u8]) -> Result<Vec<Chunk>, String> {
+pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
     use super::instruction::Instruction;
 
     let mut pos = 0;
 
-    if buf.len() < 4 || &buf[0..4] != VBC_MAGIC.as_slice() {
-        return Err("invalid VBC magic".to_string());
+    if buf.len() < 4 || &buf[0..4] != QZI_MAGIC.as_slice() {
+        return Err("invalid QZI magic".to_string());
     }
     pos += 4;
 
     if buf.len() <= pos {
-        return Err("truncated VBC header".to_string());
+        return Err("truncated QZI header".to_string());
     }
     let version = buf[pos];
     if version != 1 && version != 2 {
-        return Err(format!("unsupported VBC version {}", version));
+        return Err(format!("unsupported QZI version {}", version));
     }
     pos += 1;
 
     if buf.len() < pos + 4 {
-        return Err("truncated VBC chunk count".to_string());
+        return Err("truncated QZI chunk count".to_string());
     }
     let chunk_count = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
@@ -305,13 +305,13 @@ pub fn deserialize_vbc(buf: &[u8]) -> Result<Vec<Chunk>, String> {
     Ok(chunks)
 }
 
-pub const VBC_MAGIC: &[u8; 4] = b"\x00VBC";
-pub const VBC_VERSION: u8 = 2;
+pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
+pub const QZI_VERSION: u8 = 2;
 
-pub fn serialize_vbc(chunks: &[Chunk]) -> Vec<u8> {
+pub fn serialize_qzi(chunks: &[Chunk]) -> Vec<u8> {
     let mut buf = Vec::new();
-    buf.extend_from_slice(VBC_MAGIC);
-    buf.push(VBC_VERSION);
+    buf.extend_from_slice(QZI_MAGIC);
+    buf.push(QZI_VERSION);
     buf.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
     for chunk in chunks {
         buf.extend_from_slice(&chunk.serialize());

@@ -1,3 +1,7 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
 // prelude.panic — panic and panic handler
 //
 // Default: prints "thread 'main' panicked at '<msg>'\n  at <file>:<line>\n" to stderr and exits 101.

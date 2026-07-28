@@ -1,3 +1,7 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
 use tower_lsp::lsp_types::{Position, Range, TextEdit};
 
 use crate::analysis::format_quazi_source;

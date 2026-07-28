@@ -29,8 +29,9 @@ Requires **Rust 2024 edition** (latest stable recommended).
 git clone https://github.com/quazilang/quazistrap
 cd quazistrap
 cargo build --release
-# binary is at: target/release/qz
 ```
+
+The binary is at: `target/release/qz`
 
 ---
 

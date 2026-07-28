@@ -1,5 +1,5 @@
 [package]
-name = "13-args"
+name = "args"
 version = "0.1.0"
 
 [build]

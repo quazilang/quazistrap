@@ -23,5 +23,6 @@ qz run
 | `12-loop-control` | `break` and `continue` |
 | `13-args` | Command-line arguments via `Array[str]` |
 | `14-io-read` | Example showing I/O reads. |
-| [`15-logical`](15-logical/) | Logical operators: `!`, `&&`, `\|\|` |
-| [`16-pub-types`](16-pub-types/) | `pub` visibility on types; S04 on private import |
+| `15-logical` | Logical operators: `!`, `&&`, `\|\|` |
+| `16-pub-types` | `pub` visibility on types; S04 on private import |
+| `17-constfold` | Constant folding demonstration |

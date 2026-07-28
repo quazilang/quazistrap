@@ -17,7 +17,7 @@ src/backend/
 
 ## Stack Frame
 
-- **VBC reg N** → `[rbp-(N+1)*8]`.
+- **QZI reg N** → `[rbp-(N+1)*8]`.
 - Frame size: `round_to_16(regs*8)` SysV, `round_to_16(regs*8+48)` Win64.
 
 ## Relocations

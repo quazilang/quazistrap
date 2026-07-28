@@ -1,3 +1,7 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
 use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position, Url};
 
 use crate::semantic::SemanticReport;

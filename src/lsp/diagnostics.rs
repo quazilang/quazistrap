@@ -1,3 +1,7 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 
 use crate::semantic::SemanticReport;

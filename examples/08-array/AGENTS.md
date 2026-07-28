@@ -2,6 +2,15 @@
 
 Demonstrates the `Array[T]` collection type.
 
+## Running
+
+```bash
+qz build -o array
+./array
+```
+
+## Features shown
+
 - `Array.new()`, `push`, `get`, `set`, `len`, `is_empty`
 - Index assignment: `arr[2] = 88`
 - Iteration: `for i : arr { ... }`

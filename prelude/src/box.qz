@@ -1,3 +1,7 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
 // std.box — heap-allocated smart pointer Box[T]
 
 @intrinsic("quazi.array.store")

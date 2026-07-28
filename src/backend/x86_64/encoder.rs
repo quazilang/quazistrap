@@ -1,8 +1,8 @@
-// quazi - the programming language
-// Copyright titago (C) 2026
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
-//
-// VBC → x86-64 binary encoding via iced-x86 CodeAssembler.
+
+// QZI → x86-64 binary encoding via iced-x86 CodeAssembler.
 //
 // Relocation strategy:
 //   - Cross-function calls (CallIdx, CallExt, string ops) emit `call fn_start` as
@@ -31,7 +31,7 @@ const WIN64_REGS: [AsmRegister64; 4] = [rcx, rdx, r8, r9];
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// VBC register N → `qword ptr [rbp - (N+1)*8]`.
+/// QZI register N → `qword ptr [rbp - (N+1)*8]`.
 fn slot(reg: u8) -> AsmMemoryOperand {
     qword_ptr(rbp + (-((reg as i32 + 1) * 8)))
 }
@@ -183,7 +183,7 @@ impl<'a> FnEncoder<'a> {
         let mut fn_start = asm.create_label();
         asm.set_label(&mut fn_start).map_err(err)?;
 
-        // Build label map for VBC jump targets (instr index → CodeLabel).
+        // Build label map for QZI jump targets (instr index → CodeLabel).
         let targets = jump_targets(chunk);
         let mut label_map: HashMap<usize, CodeLabel> = targets
             .iter()
@@ -234,9 +234,9 @@ impl<'a> FnEncoder<'a> {
         // ── Instruction loop ─────────────────────────────────────────────────
         let mut pending_args: Vec<u8> = vec![];
 
-        for (vbc_idx, instr) in chunk.code.iter().enumerate() {
-            // Set label if this VBC instruction index is a jump target.
-            if let Some(lbl) = label_map.get_mut(&vbc_idx) {
+        for (qzi_idx, instr) in chunk.code.iter().enumerate() {
+            // Set label if this QZI instruction index is a jump target.
+            if let Some(lbl) = label_map.get_mut(&qzi_idx) {
                 emit!(asm.set_label(lbl));
             }
 
@@ -310,7 +310,7 @@ impl<'a> FnEncoder<'a> {
                         &mut asm,
                         instr,
                         chunk,
-                        vbc_idx,
+                        qzi_idx,
                         op,
                         &mut pending,
                         &label_map,
@@ -375,7 +375,7 @@ impl<'a> FnEncoder<'a> {
         asm: &mut CodeAssembler,
         instr: &crate::bytecode::Instruction,
         chunk: &Chunk,
-        vbc_idx: usize,
+        qzi_idx: usize,
         op: Option<Opcode>,
         pending: &mut Vec<(usize, usize, RelocKind, String, i64)>,
         label_map: &HashMap<usize, CodeLabel>,
@@ -1404,10 +1404,10 @@ impl<'a> FnEncoder<'a> {
                 let (dst, src, type_tag) = instr.rrr();
                 let buf_sym = self
                     .bss_syms
-                    .get(vbc_idx)
+                    .get(qzi_idx)
                     .and_then(|s| s.as_ref())
                     .cloned()
-                    .unwrap_or_else(|| format!("__quazi_itoa_missing_{}", vbc_idx));
+                    .unwrap_or_else(|| format!("__quazi_itoa_missing_{}", qzi_idx));
 
                 match type_tag {
                     1 => {

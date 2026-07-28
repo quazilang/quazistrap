@@ -3,7 +3,7 @@ name = "quazilang"
 version = "26.0.1"
 edition = "2024"
 license = "0BSD"
-description = "quazi language compiler"
+description = "Quazi programming language bootstrap"
 
 [[bin]]
 name = "qz"

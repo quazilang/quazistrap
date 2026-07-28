@@ -1,3 +1,7 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
 use crate::lexer::Lexer;
 use crate::lexer::token::TokenKind;
 use crate::parser::Parser;

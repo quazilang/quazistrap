@@ -1,5 +1,5 @@
-// quazilang - the programming language
-// Copyright titago (C) 2026
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
 use std::collections::{BTreeMap, HashMap, HashSet};

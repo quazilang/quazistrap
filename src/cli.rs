@@ -1,3 +1,7 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 

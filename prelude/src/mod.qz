@@ -1,3 +1,7 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
 // prelude — commonly needed types, auto-loaded by the compiler.
 // Option[T] and Result[T, E] are builtin — no import needed.
 

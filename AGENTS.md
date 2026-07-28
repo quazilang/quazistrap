@@ -52,7 +52,7 @@ Rust edition 2024.
 source → Loader → Lexer → Parser → Analyzer → Codegen → Backend (iced-x86) → .o → Linker → binary
 ```
 
-VBC (`-b`): Codegen → serialized chunks, no backend.  
+QZI (`-b`): Codegen → serialized chunks, no backend.  
 Object (`-c`): backend only, no linker.
 
 ### Component Guide
@@ -219,7 +219,7 @@ If a `quazi.lock` file exists, it is used to pin dependency versions. When missi
 ## Roadmap
 
 ### Philosophy
-Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@intrinsic` → raw syscalls (Linux) or Win32 (Windows). VBC = stable portable IR.
+Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@intrinsic` → raw syscalls (Linux) or Win32 (Windows). QZI = stable portable IR.
 
 ### P0 — Critical Bugs / Safety
 

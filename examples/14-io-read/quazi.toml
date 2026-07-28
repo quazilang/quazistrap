@@ -1,5 +1,5 @@
 [package]
-name = "14-io-read"
+name = "io-read"
 version = "0.1.0"
 
 [build]

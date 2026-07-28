@@ -5,7 +5,8 @@ Demonstrates `pub` visibility enforcement on types in Quazilang.
 ## Running
 
 ```bash
-qz run
+qz build -o pub_types
+./pub_types
 ```
 
 ## What is shown

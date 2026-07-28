@@ -1,7 +1,6 @@
-// quazi - the programming language
-// Copyright titago (C) 2026
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
-
 use crate::parser::ast::*;
 
 use super::*;

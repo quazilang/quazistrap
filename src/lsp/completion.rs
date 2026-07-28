@@ -1,3 +1,7 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

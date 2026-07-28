@@ -11,12 +11,12 @@ on:
 jobs:
   test:
     name: Test
-    runs-on: codeberg-medium
+    runs-on: ubuntu-latest
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Cache cargo
-        uses: https://code.forgejo.org/actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -35,7 +35,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.platform }}
-    runs-on: codeberg-medium
+    runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     needs: test
     strategy:
@@ -69,10 +69,10 @@ jobs:
           # - { target: riscv64-linux-android, platform: linux-bionic-riscv64 }
 
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Cache cargo
-        uses: https://code.forgejo.org/actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -103,21 +103,23 @@ jobs:
           mv target/${{ matrix.target }}/release/quazi${EXT} quazi-${{ matrix.platform }}${EXT}
 
       - name: Upload artifact
-        uses: https://code.forgejo.org/actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: quazi-${{ matrix.platform }}${{ matrix.ext }}
           path: quazi-${{ matrix.platform }}${{ matrix.ext }}
 
   publish:
     name: Publish Release
-    runs-on: codeberg-medium
+    runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
+    permissions:
+      contents: write
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Download all artifacts
-        uses: https://code.forgejo.org/actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 
@@ -125,7 +127,8 @@ jobs:
         run: find artifacts -type f -exec mv {} . \;
 
       - name: Create Release
-        uses: https://code.forgejo.org/actions/forgejo-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           files: quazi-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

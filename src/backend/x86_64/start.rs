@@ -1,7 +1,7 @@
-// quazi - the programming language
-// Copyright titago (C) 2026
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
-//
+
 // Entry-point stubs with crash handlers.
 //
 // Linux layout (fn_offset = start of stub in .text):

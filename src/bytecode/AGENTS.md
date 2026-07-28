@@ -1,6 +1,6 @@
 # Bytecode (`src/bytecode/`)
 
-## VBC Format
+## QZI Format
 
 Platform-independent, AOT-only. **6 bytes/instruction**: `[opcode u8][operands 4B][flags u8]`.
 
@@ -22,9 +22,9 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 
 `Chunk` = fn code + const pool + name + param_count + reg_count. Return value always in `r0`.
 
-### VBC File Layout
+### QZI File Layout
 
-- Magic: `\x00VBC`
+- Magic: `\x00QZI`
 - Version: `0x02`
 - chunk_count: u32 LE
 - Per chunk: name, param_count, reg_count, consts, instrs
@@ -136,6 +136,6 @@ Key: `Ret` has `ops[0]` = return-value register (remapped by `remap_instr_regs`;
 
 ## Recent Cleanups
 
-- **`as` casts**: Previously a lazy no-op (`..` pattern). Now explicit with a comment: VBC uses 64-bit slots for all values, so integer/float size changes are no-ops at the bytecode level; the typechecker has already validated.
+- **`as` casts**: Previously a lazy no-op (`..` pattern). Now explicit with a comment: QZI uses 64-bit slots for all values, so integer/float size changes are no-ops at the bytecode level; the typechecker has already validated.
 - **`Array.from` hardcoding removed**: Previously codegen had an inline `new() + push()` special case for `Array.from([...])`. Now `Array.from(...items: T)` is a real variadic method in `prelude/src/array.qz` that iterates the variadic slice and pushes each element. Generic inference for variadic static methods was fixed in `typecheck.rs` (`infer_type_subst` now handles `Slice` types).
 - **`import_aliases` removed**: Unnecessary `HashMap` added by a teammate that did not change behavior; cleaned up from `Codegen` and `FnCompiler`.

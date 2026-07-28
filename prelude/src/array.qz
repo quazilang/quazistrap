@@ -1,3 +1,7 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
 // prelude.array — safe generic dynamic array backed by heap memory
 import traits;
 import panic.panic;

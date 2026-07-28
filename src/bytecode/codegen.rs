@@ -1,5 +1,5 @@
-// quazi - the programming language
-// Copyright titago (C) 2026
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
 use std::collections::{HashMap, HashSet};
@@ -1043,7 +1043,7 @@ impl<'a> Codegen<'a> {
     ) -> Chunk {
         use crate::parser::ast::{AttrArg, AttrVal};
         let mut chunk = Chunk::with_params(name, params.len());
-        // Store name or raw number in const pool — arch-neutral VBC.
+        // Store name or raw number in const pool — arch-neutral QZI.
         let entry = match attr.args.first() {
             Some(AttrArg::Positional(AttrVal::Int(n))) => ConstPoolEntry::Int(*n),
             Some(AttrArg::Positional(AttrVal::Str(s))) => ConstPoolEntry::Str(s.clone()),
@@ -3166,7 +3166,7 @@ impl<'a> FnCompiler<'a> {
             ExprKind::Group(inner) => self.compile_expr(inner),
 
             ExprKind::Cast { expr: inner, ty: _ } => {
-                // VBC uses 64-bit slots for all values. Integer size changes and
+                // QZI uses 64-bit slots for all values. Integer size changes and
                 // float size changes are no-ops at this level; the encoder and ABI
                 // handle the actual width. The typechecker has already validated.
                 self.compile_expr(inner)

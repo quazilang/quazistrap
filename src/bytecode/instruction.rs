@@ -1,10 +1,10 @@
-// quazi - the programming language
-// Copyright titago (C) 2026
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
 use super::opcode::Opcode;
 
-/// One VBC instruction: 6 bytes total.
+/// One QZI instruction: 6 bytes total.
 ///
 /// Layout:
 ///   [byte 0]     opcode

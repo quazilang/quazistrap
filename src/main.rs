@@ -1,5 +1,5 @@
-// quazilang - the programming language
-// Copyright titago (C) 2026
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
 pub mod analysis;
@@ -17,7 +17,7 @@ pub mod semantic;
 use analysis::{analyze_program_with_source_files, format_quazi_source};
 use backend::linker::{LinkerInvocation, remove_temp, write_temp_object};
 use backend::{TargetSpec, select_backend};
-use bytecode::{Codegen, serialize_vbc};
+use bytecode::{Codegen, serialize_qzi};
 use clap::Parser as ClapParser;
 use cli::Args;
 use lexer::Lexer;
@@ -88,7 +88,7 @@ fn run_pipeline(
 
     match emit {
         EmitType::Bytecode => {
-            let bytes = serialize_vbc(&chunks);
+            let bytes = serialize_qzi(&chunks);
             let mut f = std::fs::File::create(output_file_name).unwrap_or_else(|e| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
@@ -250,7 +250,7 @@ fn emit_chunks(
 
     match emit {
         EmitType::Bytecode => {
-            let bytes = serialize_vbc(chunks);
+            let bytes = serialize_qzi(chunks);
             let mut f = std::fs::File::create(output_file_name).unwrap_or_else(|e| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
@@ -701,7 +701,7 @@ fn build_with_progress(
 
     match emit {
         EmitType::Bytecode => {
-            let bytes = bytecode::serialize_vbc(&chunks);
+            let bytes = bytecode::serialize_qzi(&chunks);
             let mut f = std::fs::File::create(out).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {}", out, e);
                 std::process::exit(1);
@@ -883,33 +883,33 @@ fn main() {
                 }
             } else if files
                 .iter()
-                .any(|f| f.extension().is_some_and(|e| e == "vbc"))
+                .any(|f| f.extension().is_some_and(|e| e == "qzi"))
             {
                 // .qzi input — deserialize and compile to native directly.
-                for vbc_file in &files {
-                    if vbc_file.extension().is_some_and(|e| e != "vbc") {
+                for qzi_file in &files {
+                    if qzi_file.extension().is_some_and(|e| e != "qzi") {
                         eprintln!(
                             "\x1b[31;1merror:\x1b[0m cannot mix .qzi and source files: {}",
-                            vbc_file.display()
+                            qzi_file.display()
                         );
                         std::process::exit(1);
                     }
                 }
 
                 let mut all_chunks: Vec<bytecode::Chunk> = Vec::new();
-                for vbc_file in &files {
-                    let bytes = std::fs::read(vbc_file).unwrap_or_else(|e| {
+                for qzi_file in &files {
+                    let bytes = std::fs::read(qzi_file).unwrap_or_else(|e| {
                         eprintln!(
                             "\x1b[31;1merror:\x1b[0m cannot read '{}': {}",
-                            vbc_file.display(),
+                            qzi_file.display(),
                             e
                         );
                         std::process::exit(1);
                     });
-                    let chunks = bytecode::deserialize_vbc(&bytes).unwrap_or_else(|e| {
+                    let chunks = bytecode::deserialize_qzi(&bytes).unwrap_or_else(|e| {
                         eprintln!(
                             "\x1b[31;1merror:\x1b[0m invalid .qzi '{}': {}",
-                            vbc_file.display(),
+                            qzi_file.display(),
                             e
                         );
                         std::process::exit(1);

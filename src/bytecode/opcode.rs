@@ -1,5 +1,5 @@
-// quazi - the programming language
-// Copyright titago (C) 2026
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
 #[repr(u8)]
@@ -90,7 +90,7 @@ pub enum Opcode {
     FloatMin = 0x6E,   // dst = fmin(src1, src2) — RRR
     FloatMax = 0x6F,   // dst = fmax(src1, src2) — RRR
 
-    // 0x70–0x7F  Intrinsics (stdlib runtime, platform-neutral VBC)
+    // 0x70–0x7F  Intrinsics (stdlib runtime, platform-neutral QZI)
     Intrinsic = 0x70, // platform intrinsic — RI16: ops[0]=dst, ops[1..2]=intrinsic_id; flags=arg_count
 }
 
