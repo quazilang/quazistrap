@@ -30,6 +30,9 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
+      - name: Install Quazi std library
+        run: git clone --depth 1 https://github.com/quazilang/std ~/.quazi/std
+
       - name: Run tests
         run: cargo test
 
@@ -88,6 +91,9 @@ jobs:
             --default-toolchain stable \
             --target ${{ matrix.target }}
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install Quazi std library
+        run: git clone --depth 1 https://github.com/quazilang/std ~/.quazi/std
 
       - name: Install cargo-zigbuild and Zig
         run: |
