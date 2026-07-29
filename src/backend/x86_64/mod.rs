@@ -64,7 +64,15 @@ fn emit_native_object(
     let fn_names: Vec<String> = chunks
         .iter()
         .map(|c| {
-            if c.intrinsic {
+            // Foreign forwarding chunks must also have a private object symbol.
+            // In particular, `extern fn foo` calls external `foo`; exporting the
+            // wrapper itself as `foo` would either recurse or collide with a
+            // linked object's definition.
+            let foreign_wrapper = c
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == crate::bytecode::Opcode::CallExt as u8);
+            if c.intrinsic || foreign_wrapper {
                 format!("__quazi_intr_{}", safe_label(&c.name))
             } else {
                 safe_label(&c.name)

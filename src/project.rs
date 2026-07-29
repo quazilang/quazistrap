@@ -24,6 +24,11 @@ pub struct ProjectConfig {
     pub entry: PathBuf,
     pub src_dir: PathBuf,
     pub flags: Vec<String>,
+    /// Object files produced by C, C++, Rust, Zig, or another native compiler.
+    pub objects: Vec<PathBuf>,
+    /// Native libraries passed to the platform linker (names, not filenames).
+    pub libraries: Vec<String>,
+    pub library_paths: Vec<PathBuf>,
     pub dependencies: Vec<ResolvedDependency>,
 }
 
@@ -61,6 +66,9 @@ struct RawBuild {
     entry: Option<String>,
     src: Option<String>,
     flags: Option<Vec<String>>,
+    objects: Option<Vec<String>>,
+    libraries: Option<Vec<String>>,
+    library_paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +89,9 @@ struct ProjectMeta {
     entry: PathBuf,
     src_dir: PathBuf,
     flags: Vec<String>,
+    objects: Vec<PathBuf>,
+    libraries: Vec<String>,
+    library_paths: Vec<PathBuf>,
     dependencies: Vec<DependencySpec>,
 }
 
@@ -140,6 +151,9 @@ impl ProjectContext {
             entry: meta.entry.clone(),
             src_dir: meta.src_dir.clone(),
             flags: meta.flags.clone(),
+            objects: meta.objects.clone(),
+            libraries: meta.libraries.clone(),
+            library_paths: meta.library_paths.clone(),
             dependencies: Vec::new(),
         };
 
@@ -220,6 +234,9 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         entry: None,
         src: None,
         flags: None,
+        objects: None,
+        libraries: None,
+        library_paths: None,
     });
 
     let src_dir = root.join(build.src.unwrap_or_else(|| "src".to_string()));
@@ -256,6 +273,19 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         entry,
         src_dir,
         flags: build.flags.unwrap_or_default(),
+        objects: build
+            .objects
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| root.join(path))
+            .collect(),
+        libraries: build.libraries.unwrap_or_default(),
+        library_paths: build
+            .library_paths
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| root.join(path))
+            .collect(),
         dependencies,
     })
 }
@@ -462,6 +492,33 @@ version = "1.2.3"
         let lock = load_lockfile(&lock_path).expect("load lockfile");
         assert_eq!(lock.package.len(), 1);
         assert_eq!(lock.package[0].name, "dep");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolves_native_link_inputs_relative_to_project() {
+        let root = temp_dir("qz_native_project");
+        fs::create_dir_all(root.join("src")).expect("create src");
+        fs::write(root.join("src/main.qz"), "fn main() void { ret; }")
+            .expect("write main.qz");
+        fs::write(
+            root.join("quazi.toml"),
+            r#"[package]
+name = "native-app"
+
+[build]
+objects = ["native/helper.o"]
+library_paths = ["native/lib"]
+libraries = ["answer"]
+"#,
+        )
+        .expect("write quazi.toml");
+
+        let ctx = ProjectContext::load(&root).expect("load project context");
+        assert_eq!(ctx.config.objects, vec![root.join("native/helper.o")]);
+        assert_eq!(ctx.config.library_paths, vec![root.join("native/lib")]);
+        assert_eq!(ctx.config.libraries, vec!["answer"]);
 
         let _ = fs::remove_dir_all(root);
     }

@@ -906,6 +906,11 @@ impl Analyzer {
             ExprKind::Cast { expr: inner, ty } => {
                 let inner_eval = self.type_check_expr(inner, reachable);
                 let target_ty = self.resolve_type_aliases(&ty.node);
+                let is_foreign_function_cast = matches!(
+                    (inner_eval.ty.as_ref(), &target_ty),
+                    (Some(TypeKind::RawPtr { .. }), TypeKind::Fn { .. })
+                        | (Some(TypeKind::Fn { .. }), TypeKind::RawPtr { .. })
+                );
                 let allowed = match inner_eval.ty.as_ref() {
                     Some(src) if Self::is_integer(src) && Self::is_integer(&target_ty) => true,
                     Some(src) if Self::is_float(src) && Self::is_float(&target_ty) => true,
@@ -914,8 +919,17 @@ impl Analyzer {
                     {
                         true
                     }
+                    _ if is_foreign_function_cast => true,
                     _ => false,
                 };
+                if is_foreign_function_cast && self.unsafe_depth == 0 {
+                    self.push_error(
+                        expr.span,
+                        "S11",
+                        "casting between a raw pointer and a function pointer requires an unsafe context"
+                            .to_string(),
+                    );
+                }
                 if !allowed {
                     let src_name = inner_eval
                         .ty

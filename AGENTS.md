@@ -167,6 +167,14 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 | `@no_mangle` | Keep function symbol name bare (no module prefix). Useful for entry points and FFI symbols. |
 | `@no_crash` | File-level: disable crash handler in entry stub. |
 
+`extern fn name(...);` declares an unsafe C-ABI function supplied by a native
+object or shared library. The parser lowers it to `@api("name")`, keeping one
+foreign-call implementation in codegen. `[build]` accepts `objects`, `libraries`,
+and `library_paths` for multi-language linking. The prelude `ffi` module defines
+C ABI aliases plus cross-platform dynamic-library loading.
+Raw pointers may be cast to/from `fn(...) ReturnType` only in an unsafe context,
+which makes symbols returned by `ffi.Library.symbol` callable without an intrinsic.
+
 ---
 
 ## Project Config (`quazi.toml`)
@@ -293,6 +301,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | 2026-07-27 | Implemented `pub` visibility enforcement on types (`struct`, `enum`, `trait`, `type`). Imported `AST` types now carry a `public` flag. Semantic analysis emits an `S04` error when attempting to import a non-public type across modules. Updated standard library (prelude) types like `Array` to be `pub`. |
 | 2026-07-27 | Implemented cross-basic-block constant propagation (`const_prop_fold`) in the bytecode optimizer. Constant folding operates on integers and floats natively, folding mathematical sequences and eliminating dead branches at compile-time. Added `17-constfold` example. |
 | 2026-07-29 | Fixed raw-pointer dereferences to honor integer pointee widths. QZI `Load`/`Store` flags now carry byte/word/dword/qword width metadata; signed sub-word loads sign-extend, unsigned loads zero-extend, and legacy zero flags remain qword-compatible. Explicit dereference reads, writes, and compound assignments are covered by codegen tests. |
+| 2026-07-29 | Added native FFI and multi-language linking: `extern fn` C-ABI declarations, prelude `ffi` C types and dynamic-library APIs, and `objects`/`libraries`/`library_paths` project settings. |
 
 ---
 

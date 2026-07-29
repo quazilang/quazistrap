@@ -858,7 +858,31 @@ fn main() {
                 let out = output.clone().unwrap_or_else(|| {
                     project_output_name(&ctx.config.name, effective_emit.clone())
                 });
-                let link_flags = ctx.config.flags.clone();
+                let mut link_flags = ctx.config.flags.clone();
+                link_flags.extend(
+                    ctx.config
+                        .objects
+                        .iter()
+                        .map(|path| path.to_string_lossy().into_owned()),
+                );
+                for path in &ctx.config.library_paths {
+                    if cfg!(windows) {
+                        link_flags.push(format!("/libpath:{}", path.display()));
+                    } else {
+                        link_flags.push(format!("-L{}", path.display()));
+                    }
+                }
+                for library in &ctx.config.libraries {
+                    if cfg!(windows) {
+                        link_flags.push(if library.ends_with(".lib") {
+                            library.clone()
+                        } else {
+                            format!("{library}.lib")
+                        });
+                    } else {
+                        link_flags.push(format!("-l{library}"));
+                    }
+                }
                 build_with_progress(
                     &[entry],
                     &out,

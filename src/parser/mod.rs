@@ -102,6 +102,10 @@ impl Parser {
                 self.advance(); // consume 'unsafe'
                 self.parse_fn(attributes, true, is_pub)
             }
+            TokenKind::Extern => {
+                self.advance();
+                self.parse_extern_fn(attributes, is_pub)
+            }
             TokenKind::Fn => self.parse_fn(attributes, false, is_pub),
             TokenKind::Struct => self.parse_struct(attributes, is_pub),
             TokenKind::Trait => self.parse_trait(attributes, is_pub),
@@ -1636,7 +1640,13 @@ impl Parser {
                 };
                 TypeKind::Dyn { trait_name }
             }
-            TokenKind::Ident(name) => {
+            TokenKind::Ident(mut name) => {
+                // Module-qualified types, e.g. `ffi.CInt` or `net.Socket`.
+                while self.at(TokenKind::Dot) {
+                    self.advance();
+                    name.push('.');
+                    name.push_str(&self.parse_ident()?);
+                }
                 let type_args = self.parse_optional_type_args()?;
                 TypeKind::Named { name, type_args }
             }
@@ -1852,6 +1862,39 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new_with_source(tokens, src);
         parser.parse().expect_err("source should fail to parse")
+    }
+
+    #[test]
+    fn parses_extern_function_as_foreign_declaration() {
+        let program = parse_program("pub extern fn puts(value: *i8) i32;");
+        let ItemKind::Fn {
+            name,
+            body,
+            attributes,
+            unsafe_fn,
+            pub_fn,
+            ..
+        } = &program.items[0].node
+        else {
+            panic!("expected function item");
+        };
+        assert_eq!(name, "puts");
+        assert!(body.is_none());
+        assert!(*unsafe_fn);
+        assert!(*pub_fn);
+        assert!(attributes.iter().any(|attribute| {
+            attribute.name == "api"
+                && matches!(
+                    attribute.args.as_slice(),
+                    [AttrArg::Positional(AttrVal::Str(symbol))] if symbol == "puts"
+                )
+        }));
+    }
+
+    #[test]
+    fn rejects_extern_function_body() {
+        let error = parse_program_err("extern fn puts(value: *i8) i32 { ret 0; }");
+        assert!(error.contains("must end with `;`"), "{error}");
     }
 
     #[test]

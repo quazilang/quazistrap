@@ -48,6 +48,7 @@ pub enum TokenKind {
     For,
     Pub,
     Unsafe,
+    Extern,
     Break,
     Continue,
 
@@ -178,6 +179,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::For => write!(f, "for"),
             TokenKind::Pub => write!(f, "pub"),
             TokenKind::Unsafe => write!(f, "unsafe"),
+            TokenKind::Extern => write!(f, "extern"),
             TokenKind::Break => write!(f, "break"),
             TokenKind::Continue => write!(f, "continue"),
 

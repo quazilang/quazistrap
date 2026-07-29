@@ -8,6 +8,64 @@ use crate::parser::ast::*;
 use crate::parser::common::{merge_token_spans, to_ast_span};
 
 impl Parser {
+    /// Parse a C-ABI function declaration supplied by another object or shared library.
+    /// `extern fn foo(...);` is deliberately lowered to the existing `@api("foo")`
+    /// representation so every backend has one canonical foreign-call path.
+    pub fn parse_extern_fn(
+        &mut self,
+        mut attributes: Vec<Attribute>,
+        pub_fn: bool,
+    ) -> Result<Item, String> {
+        let symbol_span = to_ast_span(self.current_span());
+        let item = self.parse_fn(Vec::new(), true, pub_fn)?;
+        let ItemKind::Fn { name, body, .. } = &item.node else {
+            unreachable!();
+        };
+        if body.is_some() {
+            return Err(self.err_here(
+                "extern function declarations must end with `;` and cannot have a body"
+                    .to_string(),
+            ));
+        }
+        if attributes.iter().any(|attr| attr.name == "api") {
+            return Err(self.err_here(
+                "extern declarations cannot also use @api; use one foreign declaration syntax"
+                    .to_string(),
+            ));
+        }
+        attributes.push(Attribute {
+            name: "api".to_string(),
+            args: vec![AttrArg::Positional(AttrVal::Str(name.clone()))],
+            span: symbol_span,
+        });
+        let ItemKind::Fn {
+            name,
+            generic_params,
+            params,
+            return_ty,
+            body,
+            unsafe_fn,
+            pub_fn,
+            ..
+        } = item.node
+        else {
+            unreachable!();
+        };
+        Ok(Spanned::new(
+            ItemKind::Fn {
+                name,
+                generic_params,
+                params,
+                return_ty,
+                body,
+                attributes,
+                unsafe_fn,
+                pub_fn,
+            },
+            item.span,
+        ))
+    }
+
     pub fn parse_fn(
         &mut self,
         attributes: Vec<Attribute>,

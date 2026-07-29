@@ -1,0 +1,77 @@
+// C ABI types and dynamic-library loading.
+//
+// CStr is a pointer to a NUL-terminated byte sequence, not a Quazilang `str`.
+// Keeping that distinction explicit prevents accidentally passing a fat string
+// to a foreign function that expects `const char *`.
+
+pub type CChar = i8;
+pub type CUChar = u8;
+pub type CShort = i16;
+pub type CUShort = u16;
+pub type CInt = i32;
+pub type CUInt = u32;
+pub type CLong = isize;
+pub type CULong = usize;
+pub type CLongLong = i64;
+pub type CULongLong = u64;
+pub type CFloat = f32;
+pub type CDouble = f64;
+pub type CSize = usize;
+pub type CPtr = *u8;
+pub type CStr = *i8;
+
+pub struct Library {
+    handle: CPtr,
+}
+
+@cfg(target_os = "linux")
+extern fn dlopen(path: CStr, flags: CInt) CPtr;
+@cfg(target_os = "linux")
+extern fn dlsym(handle: CPtr, symbol: CStr) CPtr;
+@cfg(target_os = "linux")
+extern fn dlclose(handle: CPtr) CInt;
+
+@cfg(target_os = "windows")
+extern fn LoadLibraryA(path: CStr) CPtr;
+@cfg(target_os = "windows")
+extern fn GetProcAddress(handle: CPtr, symbol: CStr) CPtr;
+@cfg(target_os = "windows")
+extern fn FreeLibrary(handle: CPtr) CInt;
+
+impl Library {
+    /// Load a shared object (`.so`) or dynamic library (`.dll`).
+    /// `path` must point to a NUL-terminated string.
+    @cfg(target_os = "linux")
+    pub unsafe fn open(path: CStr) Library {
+        // RTLD_NOW: resolve every symbol before returning from dlopen.
+        ret Library { handle: dlopen(path, 2) };
+    }
+
+    @cfg(target_os = "windows")
+    pub unsafe fn open(path: CStr) Library {
+        ret Library { handle: LoadLibraryA(path) };
+    }
+
+    /// Resolve a symbol to an opaque pointer. Cast it to the matching `fn(...)`
+    /// type in an unsafe context before calling it. A null pointer means the
+    /// symbol was not found.
+    @cfg(target_os = "linux")
+    pub unsafe fn symbol(self: Library, name: CStr) CPtr {
+        ret dlsym(self.handle, name);
+    }
+
+    @cfg(target_os = "windows")
+    pub unsafe fn symbol(self: Library, name: CStr) CPtr {
+        ret GetProcAddress(self.handle, name);
+    }
+
+    @cfg(target_os = "linux")
+    pub unsafe fn close(self: Library) CInt {
+        ret dlclose(self.handle);
+    }
+
+    @cfg(target_os = "windows")
+    pub unsafe fn close(self: Library) CInt {
+        ret FreeLibrary(self.handle);
+    }
+}

@@ -122,6 +122,37 @@ qz lsp                    # start language server
 
 **Environment variables:**
 - `QUAZI_LINKER=/path/to/linker` — override linker detection
+
+### Native FFI and multi-language builds
+
+Declare a C-ABI symbol implemented by a shared library or another object file with
+`extern fn`. Foreign calls are unsafe, so invoke them from an `unsafe` function or
+block:
+
+```quazi
+import ffi;
+
+extern fn puts(message: ffi.CStr) ffi.CInt;
+```
+
+The `ffi` prelude module provides C scalar/pointer aliases and `ffi.Library` for
+loading `.so` and `.dll` files and resolving symbols at runtime. `ffi.CStr` is a
+NUL-terminated C pointer; it is intentionally distinct from Quazilang's `str`.
+Resolved symbol pointers can be cast to their exact function type inside an
+unsafe context, for example `symbol as fn(ffi.CInt) ffi.CInt`.
+
+Native outputs from other compilers and link-time libraries can be declared in
+`quazi.toml` (paths are relative to the project root):
+
+```toml
+[build]
+objects = ["native/math.o"]
+library_paths = ["native/lib"]
+libraries = ["sqlite3"]
+```
+
+This allows a project to compile its C/C++/Rust/Zig portion with the appropriate
+compiler and have `qz build` link those artifacts into the final executable.
 - `QUAZI_STD_ROOT=/path/to/std` — override standard library location
 - `QUAZI_TRACE=1` — enable crash backtraces
 

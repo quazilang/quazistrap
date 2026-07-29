@@ -2630,4 +2630,31 @@ fn main() void { }
         assert_eq!(slots[0], "draw", "draw should be slot 0");
         assert_eq!(slots[1], "area", "area should be slot 1");
     }
+
+    #[test]
+    fn raw_pointer_to_function_cast_is_allowed_in_unsafe_context() {
+        let report = analyze(
+            r#"
+unsafe fn invoke(symbol: *u8) i32 {
+    var function: fn(i32) i32 = symbol as fn(i32) i32;
+    ret function(41);
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn raw_pointer_to_function_cast_requires_unsafe_context() {
+        let report = analyze(
+            r#"
+fn invoke(value: usize) i32 {
+    var symbol: *u8 = value as *u8;
+    var function: fn(i32) i32 = symbol as fn(i32) i32;
+    ret function(41);
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| error.code == "S11"));
+    }
 }

@@ -1127,8 +1127,8 @@ impl<'a> Codegen<'a> {
         params: &[crate::parser::ast::Param],
         attr: &crate::parser::ast::Attribute,
     ) -> Chunk {
-        let mut chunk = Chunk::with_params(name, params.len());
         let symbol = api_symbol(attr);
+        let mut chunk = Chunk::with_params(name, params.len());
         let sym_idx = chunk.add_constant(ConstPoolEntry::Str(symbol));
         // Params are in r0..r(n-1) by calling convention.
         // Emit CallExt: dst=r0, sym_idx, flags=arg_count.
@@ -5546,6 +5546,16 @@ mod tests {
                 .any(|c| matches!(c, ConstPoolEntry::Str(s) if s == "WriteFile")),
             "expected WriteFile in constant pool"
         );
+    }
+
+    #[test]
+    fn extern_wrapper_does_not_define_the_foreign_symbol() {
+        let chunks = compile("extern fn foreign_answer() i32;");
+        assert_eq!(chunks[0].name, "foreign_answer");
+        assert!(chunks[0]
+            .constants
+            .iter()
+            .any(|entry| matches!(entry, ConstPoolEntry::Str(symbol) if symbol == "foreign_answer")));
     }
 
     #[test]

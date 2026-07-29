@@ -179,6 +179,7 @@ impl Lexer {
             "for" => TokenKind::For,
             "pub" => TokenKind::Pub,
             "unsafe" => TokenKind::Unsafe,
+            "extern" => TokenKind::Extern,
             "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
             "type" => TokenKind::Type,
@@ -436,5 +437,11 @@ mod tests {
         assert!(matches!(tokens[8].kind, TokenKind::Float16));
         assert!(matches!(tokens[9].kind, TokenKind::Float32));
         assert!(matches!(tokens[10].kind, TokenKind::Float64));
+    }
+
+    #[test]
+    fn extern_is_a_keyword() {
+        let mut lexer = Lexer::new("extern fn puts;");
+        assert!(matches!(lexer.next_token().kind, TokenKind::Extern));
     }
 }
