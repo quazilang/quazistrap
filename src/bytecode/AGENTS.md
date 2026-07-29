@@ -6,6 +6,12 @@ Platform-independent, AOT-only. **6 bytes/instruction**: `[opcode u8][operands 4
 
 Operand layouts: **RRR** (dst/src1/src2), **RI16** (dst/imm16 LE), **MEM** (val/base/offset16 LE signed).
 
+For `Load`/`Store`, flags bits 1–2 encode `MemWidth` (`00=qword`,
+`01=byte`, `10=word`, `11=dword`) and bit 3 marks a signed sub-word
+`Load`. Bit 0 remains `FLOAT_FLAG`. A zero flags byte therefore preserves the
+legacy qword access. Explicit raw-pointer dereferences use the pointee width;
+VM slot, aggregate, field, array, slice, and reference accesses remain qword.
+
 ### Opcode Groups
 
 | Range | Group |
