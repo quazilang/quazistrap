@@ -391,6 +391,33 @@ impl Instruction {
 /// Flag bit: instruction operands are f64 (use SSE float ops in encoder).
 pub const FLOAT_FLAG: u8 = 0x01;
 
+const MEM_WIDTH_SHIFT: u8 = 1;
+const MEM_WIDTH_MASK: u8 = 0x06;
+const MEM_SIGNED_FLAG: u8 = 0x08;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemWidth {
+    Qword = 0,
+    Byte = 1,
+    Word = 2,
+    Dword = 3,
+}
+
+impl Instruction {
+    pub fn mem_width(&self) -> MemWidth {
+        match (self.flags & MEM_WIDTH_MASK) >> MEM_WIDTH_SHIFT {
+            1 => MemWidth::Byte,
+            2 => MemWidth::Word,
+            3 => MemWidth::Dword,
+            _ => MemWidth::Qword,
+        }
+    }
+
+    pub fn mem_signed(&self) -> bool {
+        self.flags & MEM_SIGNED_FLAG != 0
+    }
+}
+
 pub fn rrr(op: Opcode, dst: u8, src1: u8, src2: u8) -> Instruction {
     Instruction::new(op, [dst, src1, src2, 0], 0)
 }
@@ -405,13 +432,26 @@ pub fn ri16(op: Opcode, dst: u8, imm: u16) -> Instruction {
 }
 
 pub fn mem_load(base: u8, dst: u8, offset: i16) -> Instruction {
+    mem_load_w(base, dst, offset, MemWidth::Qword, false)
+}
+
+pub fn mem_load_w(base: u8, dst: u8, offset: i16, width: MemWidth, signed: bool) -> Instruction {
     let [ol, oh] = offset.to_le_bytes();
-    Instruction::new(Opcode::Load, [dst, base, ol, oh], 0)
+    let flags = ((width as u8) << MEM_WIDTH_SHIFT) | if signed { MEM_SIGNED_FLAG } else { 0 };
+    Instruction::new(Opcode::Load, [dst, base, ol, oh], flags)
 }
 
 pub fn mem_store(base: u8, src: u8, offset: i16) -> Instruction {
+    mem_store_w(base, src, offset, MemWidth::Qword)
+}
+
+pub fn mem_store_w(base: u8, src: u8, offset: i16, width: MemWidth) -> Instruction {
     let [ol, oh] = offset.to_le_bytes();
-    Instruction::new(Opcode::Store, [src, base, ol, oh], 0)
+    Instruction::new(
+        Opcode::Store,
+        [src, base, ol, oh],
+        (width as u8) << MEM_WIDTH_SHIFT,
+    )
 }
 
 pub fn mem_lea(base: u8, dst: u8, offset: i16) -> Instruction {
@@ -457,6 +497,25 @@ mod tests {
         assert_eq!(dst, 0);
         assert_eq!(base, 2);
         assert_eq!(off, -8);
+    }
+
+    #[test]
+    fn memory_width_flags_roundtrip() {
+        for width in [
+            MemWidth::Qword,
+            MemWidth::Byte,
+            MemWidth::Word,
+            MemWidth::Dword,
+        ] {
+            let load = mem_load_w(2, 0, 0, width, true);
+            assert_eq!(load.mem_width(), width);
+            assert!(load.mem_signed());
+            let store = mem_store_w(2, 0, 0, width);
+            assert_eq!(store.mem_width(), width);
+            assert!(!store.mem_signed());
+        }
+        assert_eq!(mem_load(0, 1, 0).flags, 0);
+        assert_eq!(mem_store(0, 1, 0).flags, 0);
     }
 
     #[test]

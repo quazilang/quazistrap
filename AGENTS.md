@@ -292,6 +292,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | 2026-07-27 | Documented logical operators (`&&`, `\|\|`, `!`) — all were already fully implemented in the compiler (lexer/parser/semantic/codegen). Added `examples/15-logical` demonstrating all three operators with a truth-table program. Updated Language Quick Reference and Examples table. |
 | 2026-07-27 | Implemented `pub` visibility enforcement on types (`struct`, `enum`, `trait`, `type`). Imported `AST` types now carry a `public` flag. Semantic analysis emits an `S04` error when attempting to import a non-public type across modules. Updated standard library (prelude) types like `Array` to be `pub`. |
 | 2026-07-27 | Implemented cross-basic-block constant propagation (`const_prop_fold`) in the bytecode optimizer. Constant folding operates on integers and floats natively, folding mathematical sequences and eliminating dead branches at compile-time. Added `17-constfold` example. |
+| 2026-07-29 | Fixed raw-pointer dereferences to honor integer pointee widths. QZI `Load`/`Store` flags now carry byte/word/dword/qword width metadata; signed sub-word loads sign-extend, unsigned loads zero-extend, and legacy zero flags remain qword-compatible. Explicit dereference reads, writes, and compound assignments are covered by codegen tests. |
 
 ---
 
