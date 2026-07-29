@@ -391,6 +391,46 @@ impl Instruction {
 /// Flag bit: instruction operands are f64 (use SSE float ops in encoder).
 pub const FLOAT_FLAG: u8 = 0x01;
 
+/// Width of a scalar memory access. Qword is encoded as zero so QZI produced
+/// before width-aware loads and stores remains compatible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MemWidth {
+    Qword = 0,
+    Byte = 1,
+    Word = 2,
+    Dword = 3,
+}
+
+const MEM_WIDTH_SHIFT: u8 = 1;
+const MEM_WIDTH_MASK: u8 = 0b0000_0110;
+pub const MEM_SIGNED_FLAG: u8 = 0b0000_1000;
+
+impl MemWidth {
+    fn flags(self) -> u8 {
+        (self as u8) << MEM_WIDTH_SHIFT
+    }
+
+    pub fn from_flags(flags: u8) -> Self {
+        match (flags & MEM_WIDTH_MASK) >> MEM_WIDTH_SHIFT {
+            1 => Self::Byte,
+            2 => Self::Word,
+            3 => Self::Dword,
+            _ => Self::Qword,
+        }
+    }
+}
+
+impl Instruction {
+    pub fn mem_width(&self) -> MemWidth {
+        MemWidth::from_flags(self.flags)
+    }
+
+    pub fn mem_signed(&self) -> bool {
+        self.flags & MEM_SIGNED_FLAG != 0
+    }
+}
+
 pub fn rrr(op: Opcode, dst: u8, src1: u8, src2: u8) -> Instruction {
     Instruction::new(op, [dst, src1, src2, 0], 0)
 }
@@ -405,13 +445,22 @@ pub fn ri16(op: Opcode, dst: u8, imm: u16) -> Instruction {
 }
 
 pub fn mem_load(base: u8, dst: u8, offset: i16) -> Instruction {
+    mem_load_w(base, dst, offset, MemWidth::Qword, false)
+}
+
+pub fn mem_load_w(base: u8, dst: u8, offset: i16, width: MemWidth, signed: bool) -> Instruction {
     let [ol, oh] = offset.to_le_bytes();
-    Instruction::new(Opcode::Load, [dst, base, ol, oh], 0)
+    let flags = width.flags() | if signed { MEM_SIGNED_FLAG } else { 0 };
+    Instruction::new(Opcode::Load, [dst, base, ol, oh], flags)
 }
 
 pub fn mem_store(base: u8, src: u8, offset: i16) -> Instruction {
+    mem_store_w(base, src, offset, MemWidth::Qword)
+}
+
+pub fn mem_store_w(base: u8, src: u8, offset: i16, width: MemWidth) -> Instruction {
     let [ol, oh] = offset.to_le_bytes();
-    Instruction::new(Opcode::Store, [src, base, ol, oh], 0)
+    Instruction::new(Opcode::Store, [src, base, ol, oh], width.flags())
 }
 
 pub fn mem_lea(base: u8, dst: u8, offset: i16) -> Instruction {
@@ -457,6 +506,19 @@ mod tests {
         assert_eq!(dst, 0);
         assert_eq!(base, 2);
         assert_eq!(off, -8);
+    }
+
+    #[test]
+    fn width_aware_memory_flags_roundtrip() {
+        let load = mem_load_w(2, 0, 4, MemWidth::Word, true);
+        assert_eq!(load.mem_width(), MemWidth::Word);
+        assert!(load.mem_signed());
+        assert_eq!(Instruction::from_bytes(load.to_bytes()), load);
+
+        let legacy = mem_load(2, 0, 0);
+        assert_eq!(legacy.flags, 0);
+        assert_eq!(legacy.mem_width(), MemWidth::Qword);
+        assert!(!legacy.mem_signed());
     }
 
     #[test]

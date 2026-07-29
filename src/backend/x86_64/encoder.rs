@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use iced_x86::code_asm::*;
 
 use crate::backend::{BackendError, TargetSpec, target::Abi};
-use crate::bytecode::{Chunk, ConstPoolEntry, Opcode};
+use crate::bytecode::{Chunk, ConstPoolEntry, Opcode, instruction::MemWidth};
 
 use super::relocations::{PendingReloc, RelocKind};
 
@@ -710,7 +710,15 @@ impl<'a> FnEncoder<'a> {
                 if offset != 0 {
                     emit!(asm.add(rax, offset as i32));
                 }
-                emit!(asm.mov(rcx, qword_ptr(rax)));
+                match (instr.mem_width(), instr.mem_signed()) {
+                    (MemWidth::Byte, false) => emit!(asm.movzx(rcx, byte_ptr(rax))),
+                    (MemWidth::Byte, true) => emit!(asm.movsx(rcx, byte_ptr(rax))),
+                    (MemWidth::Word, false) => emit!(asm.movzx(rcx, word_ptr(rax))),
+                    (MemWidth::Word, true) => emit!(asm.movsx(rcx, word_ptr(rax))),
+                    (MemWidth::Dword, false) => emit!(asm.mov(ecx, dword_ptr(rax))),
+                    (MemWidth::Dword, true) => emit!(asm.movsxd(rcx, dword_ptr(rax))),
+                    (MemWidth::Qword, _) => emit!(asm.mov(rcx, qword_ptr(rax))),
+                }
                 emit!(asm.mov(slot(dst), rcx));
             }
 
@@ -721,7 +729,12 @@ impl<'a> FnEncoder<'a> {
                     emit!(asm.add(rax, offset as i32));
                 }
                 emit!(asm.mov(rcx, slot(src)));
-                emit!(asm.mov(qword_ptr(rax), rcx));
+                match instr.mem_width() {
+                    MemWidth::Byte => emit!(asm.mov(byte_ptr(rax), cl)),
+                    MemWidth::Word => emit!(asm.mov(word_ptr(rax), cx)),
+                    MemWidth::Dword => emit!(asm.mov(dword_ptr(rax), ecx)),
+                    MemWidth::Qword => emit!(asm.mov(qword_ptr(rax), rcx)),
+                }
             }
 
             Some(Opcode::ArrayStore) => {

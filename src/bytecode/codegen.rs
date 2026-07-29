@@ -5,7 +5,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-use super::instruction::{mem_lea, mem_load, mem_store, ri16, rrr, rrr_f};
+use super::instruction::{
+    MemWidth, mem_lea, mem_load, mem_load_w, mem_store, mem_store_w, ri16, rrr, rrr_f,
+};
 use super::{Chunk, ConstPoolEntry, Opcode};
 use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
@@ -1267,7 +1269,11 @@ enum LvalueAddr {
         name: String,
         span: Span,
     },
-    Deref(u8),
+    Deref {
+        ptr: u8,
+        width: MemWidth,
+        signed: bool,
+    },
     Field {
         obj: u8,
         offset: u8,
@@ -1436,6 +1442,28 @@ impl<'a> FnCompiler<'a> {
         self.type_map.get(&key).map(|ty| self.resolve_type(ty))
     }
 
+    /// Resolve the physical access required by an explicit raw-pointer
+    /// dereference. Other memory paths intentionally retain the VM's 8-byte
+    /// slot layout.
+    fn raw_pointee_access(&self, ptr_expr: &Expr) -> (MemWidth, bool) {
+        let Some(TypeKind::RawPtr { inner }) =
+            self.type_of_span((ptr_expr.span.start, ptr_expr.span.end))
+        else {
+            return (MemWidth::Qword, false);
+        };
+        match self.resolve_type(&inner.node) {
+            TypeKind::Int8 => (MemWidth::Byte, true),
+            TypeKind::Int16 => (MemWidth::Word, true),
+            TypeKind::Int32 => (MemWidth::Dword, true),
+            TypeKind::Uint8 | TypeKind::Bool => (MemWidth::Byte, false),
+            TypeKind::Uint16 => (MemWidth::Word, false),
+            TypeKind::Uint32 => (MemWidth::Dword, false),
+            // VM floats are represented as f64 values in 8-byte slots. Narrow
+            // float conversion is not a plain integer memory load/store.
+            _ => (MemWidth::Qword, false),
+        }
+    }
+
     /// Look up the resolved function name annotation for a span, if any.
     fn resolved_fn_for_span(&self, span: crate::parser::ast::Span) -> Option<String> {
         self.annotated_exprs
@@ -1597,8 +1625,9 @@ impl<'a> FnCompiler<'a> {
                 expr: ptr_expr,
             } => {
                 let ptr = self.compile_expr(ptr_expr);
+                let (width, signed) = self.raw_pointee_access(ptr_expr);
                 let dst = self.alloc_reg();
-                self.chunk.emit(mem_load(ptr, dst, 0));
+                self.chunk.emit(mem_load_w(ptr, dst, 0, width, signed));
                 dst
             }
             ExprKind::Field {
@@ -1704,7 +1733,8 @@ impl<'a> FnCompiler<'a> {
                 expr: ptr_expr,
             } => {
                 let ptr = self.compile_expr(ptr_expr);
-                self.chunk.emit(mem_store(ptr, src, 0));
+                let (width, _) = self.raw_pointee_access(ptr_expr);
+                self.chunk.emit(mem_store_w(ptr, src, 0, width));
                 src
             }
             ExprKind::Field {
@@ -1801,7 +1831,8 @@ impl<'a> FnCompiler<'a> {
                 expr: ptr_expr,
             } => {
                 let ptr = self.compile_expr(ptr_expr);
-                LvalueAddr::Deref(ptr)
+                let (width, signed) = self.raw_pointee_access(ptr_expr);
+                LvalueAddr::Deref { ptr, width, signed }
             }
             ExprKind::Field {
                 object,
@@ -1892,9 +1923,9 @@ impl<'a> FnCompiler<'a> {
     fn load_lvalue(&mut self, addr: &LvalueAddr) -> u8 {
         match addr {
             LvalueAddr::Ident { name, .. } => self.reg_of(name),
-            LvalueAddr::Deref(ptr) => {
+            LvalueAddr::Deref { ptr, width, signed } => {
                 let dst = self.alloc_reg();
-                self.chunk.emit(mem_load(*ptr, dst, 0));
+                self.chunk.emit(mem_load_w(*ptr, dst, 0, *width, *signed));
                 dst
             }
             LvalueAddr::Field { obj, offset } => {
@@ -1953,8 +1984,8 @@ impl<'a> FnCompiler<'a> {
                 let local_ty = self.type_of_span((span.start, span.end));
                 self.reactivate_drop_local(name, dst, local_ty);
             }
-            LvalueAddr::Deref(ptr) => {
-                self.chunk.emit(mem_store(*ptr, src, 0));
+            LvalueAddr::Deref { ptr, width, .. } => {
+                self.chunk.emit(mem_store_w(*ptr, src, 0, *width));
             }
             LvalueAddr::Field { obj, offset } => {
                 self.chunk.emit(rrr(Opcode::FieldStore, src, *obj, *offset));
@@ -3181,8 +3212,9 @@ impl<'a> FnCompiler<'a> {
                 }
                 UnaryOpKind::Deref => {
                     let ptr = self.compile_expr(inner);
+                    let (width, signed) = self.raw_pointee_access(inner);
                     let dst = self.alloc_reg();
-                    self.chunk.emit(mem_load(ptr, dst, 0));
+                    self.chunk.emit(mem_load_w(ptr, dst, 0, width, signed));
                     dst
                 }
                 UnaryOpKind::Neg => {
@@ -3316,7 +3348,8 @@ impl<'a> FnCompiler<'a> {
                         expr: ptr_expr,
                     } => {
                         let ptr = self.compile_expr(ptr_expr);
-                        self.chunk.emit(mem_store(ptr, src, 0));
+                        let (width, _) = self.raw_pointee_access(ptr_expr);
+                        self.chunk.emit(mem_store_w(ptr, src, 0, width));
                         src
                     }
                     ExprKind::Field {
@@ -5375,6 +5408,67 @@ mod tests {
             chunks[0].code.iter().any(|i| i.opcode == Opcode::Add as u8),
             "arr[0] += n should emit Add when n is not constant"
         );
+    }
+
+    #[test]
+    fn raw_pointer_dereferences_use_pointee_width_and_signedness() {
+        let chunks = compile(
+            r#"unsafe fn read_u8(p: *u8) u8 { ret *p; }
+               unsafe fn read_i16(p: *i16) i16 { ret *p; }
+               unsafe fn read_i32(p: *i32) i32 { ret *p; }
+               unsafe fn read_u64(p: *u64) u64 { ret *p; }"#,
+        );
+        let expected = [
+            ("read_u8", MemWidth::Byte, false),
+            ("read_i16", MemWidth::Word, true),
+            ("read_i32", MemWidth::Dword, true),
+            ("read_u64", MemWidth::Qword, false),
+        ];
+        for (name, width, signed) in expected {
+            let load = chunks
+                .iter()
+                .find(|chunk| chunk.name == name)
+                .and_then(|chunk| {
+                    chunk
+                        .code
+                        .iter()
+                        .find(|instr| instr.opcode == Opcode::Load as u8)
+                })
+                .unwrap_or_else(|| panic!("missing Load in {name}"));
+            assert_eq!(load.mem_width(), width, "wrong width in {name}");
+            assert_eq!(load.mem_signed(), signed, "wrong signedness in {name}");
+        }
+    }
+
+    #[test]
+    fn raw_pointer_stores_and_compound_assignments_keep_pointee_width() {
+        let chunks = compile(
+            r#"unsafe fn write(p: *u8, value: u8) void { *p = value; }
+               unsafe fn bump(p: *u16) void { *p += 1; }"#,
+        );
+        let write_store = chunks
+            .iter()
+            .find(|chunk| chunk.name == "write")
+            .unwrap()
+            .code
+            .iter()
+            .find(|instr| instr.opcode == Opcode::Store as u8)
+            .unwrap();
+        assert_eq!(write_store.mem_width(), MemWidth::Byte);
+
+        let bump = chunks.iter().find(|chunk| chunk.name == "bump").unwrap();
+        let bump_load = bump
+            .code
+            .iter()
+            .find(|instr| instr.opcode == Opcode::Load as u8)
+            .unwrap();
+        let bump_store = bump
+            .code
+            .iter()
+            .find(|instr| instr.opcode == Opcode::Store as u8)
+            .unwrap();
+        assert_eq!(bump_load.mem_width(), MemWidth::Word);
+        assert_eq!(bump_store.mem_width(), MemWidth::Word);
     }
 
     #[test]
