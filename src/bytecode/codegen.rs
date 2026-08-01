@@ -1150,36 +1150,20 @@ fn extract_format_specs(template: &str) -> Vec<String> {
     let bytes = template.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] != b'{' {
-            i += 1;
-            continue;
-        }
-        if i + 1 >= bytes.len() {
-            i += 1;
-            continue;
-        }
-        if bytes[i + 1] == b'{' {
-            i += 2;
-            continue;
-        }
-        if bytes[i + 1] == b'}' {
+        if bytes[i] != b'{' || i + 1 >= bytes.len() { i += 1; continue; }
+        if bytes[i + 1] == b'{' { i += 2; continue; }
+        let mut end = i + 1;
+        while end < bytes.len() && bytes[end] != b'}' { end += 1; }
+        if end == bytes.len() { break; }
+        let field = std::str::from_utf8(&bytes[i + 1..end]).unwrap_or("");
+        if field.is_empty() {
             specs.push(String::new());
-            i += 2;
-        } else if bytes[i + 1] == b':' {
-            let spec_start = i + 2;
-            let mut j = spec_start;
-            while j < bytes.len() && bytes[j] != b'}' {
-                j += 1;
+        } else if let Some((name, spec)) = field.split_once(':') {
+            if name.is_empty() || name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                specs.push(spec.to_string());
             }
-            specs.push(
-                std::str::from_utf8(&bytes[spec_start..j])
-                    .unwrap_or("")
-                    .to_string(),
-            );
-            i = j + 1;
-        } else {
-            i += 1;
         }
+        i = end + 1;
     }
     specs
 }
@@ -1192,19 +1176,17 @@ fn strip_format_specs(template: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            out.push_str("{{");
-            i += 2;
-        } else if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b':' {
-            let mut j = i + 2;
-            while j < bytes.len() && bytes[j] != b'}' {
-                j += 1;
-            }
-            out.push_str("{}");
-            i = j + 1;
-        } else {
-            out.push(bytes[i] as char);
-            i += 1;
+            out.push_str("{{"); i += 2; continue;
         }
+        if bytes[i] == b'{' {
+            let mut end = i + 1;
+            while end < bytes.len() && bytes[end] != b'}' { end += 1; }
+            if end < bytes.len() {
+                let field = std::str::from_utf8(&bytes[i + 1..end]).unwrap_or("");
+                if field.contains(':') { out.push_str("{}"); i = end + 1; continue; }
+            }
+        }
+        out.push(bytes[i] as char); i += 1;
     }
     out
 }
@@ -1215,7 +1197,7 @@ mod format_spec_tests {
 
     #[test]
     fn extracts_default_and_rust_style_specs() {
-        assert_eq!(extract_format_specs("{} {:X} {:x}"), ["", "X", "x"]);
+        assert_eq!(extract_format_specs("{} {:X} {value:x}"), ["", "X", "x"]);
     }
 
     #[test]
@@ -1225,7 +1207,7 @@ mod format_spec_tests {
 
     #[test]
     fn strips_specs_but_keeps_escaped_braces() {
-        assert_eq!(strip_format_specs("{{{:X}}}"), "{{{}}}");
+        assert_eq!(strip_format_specs("{{{value:X}}}"), "{{{}}}");
     }
 }
 
