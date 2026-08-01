@@ -245,6 +245,9 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **`qz link` built-in linker** | Pending |
 | **`qz test` runner** | Pending |
 | **`pub` on types** | ✅ Done |
+| **Unified formatting for `println`/`print`/`format`** | In progress — support shared placeholder behavior, escaped braces, and format specifications; begin with `{:X}` uppercase hexadecimal |
+| **Raw backtick string literals** | Pending — preserve contents exactly; no backslash escape decoding |
+| **ANSI escapes in non-raw strings** | Pending — add `\e` for ESC (`U+001B`) while preserving existing quoted-string escapes |
 
 ### P2 — Codegen Quality
 
