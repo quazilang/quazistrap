@@ -1158,6 +1158,10 @@ fn extract_format_specs(template: &str) -> Vec<String> {
             i += 1;
             continue;
         }
+        if bytes[i + 1] == b'{' {
+            i += 2;
+            continue;
+        }
         if bytes[i + 1] == b'}' {
             specs.push(String::new());
             i += 2;
@@ -1187,7 +1191,10 @@ fn strip_format_specs(template: &str) -> String {
     let bytes = template.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b':' {
+        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            out.push_str("{{");
+            i += 2;
+        } else if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b':' {
             let mut j = i + 2;
             while j < bytes.len() && bytes[j] != b'}' {
                 j += 1;
@@ -1200,6 +1207,26 @@ fn strip_format_specs(template: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod format_spec_tests {
+    use super::{extract_format_specs, strip_format_specs};
+
+    #[test]
+    fn extracts_default_and_rust_style_specs() {
+        assert_eq!(extract_format_specs("{} {:X} {:x}"), ["", "X", "x"]);
+    }
+
+    #[test]
+    fn ignores_escaped_braces() {
+        assert_eq!(extract_format_specs("{{}} {}"), [""]);
+    }
+
+    #[test]
+    fn strips_specs_but_keeps_escaped_braces() {
+        assert_eq!(strip_format_specs("{{{:X}}}"), "{{{}}}");
+    }
 }
 
 // ── Per-function compiler ─────────────────────────────────────────────────────

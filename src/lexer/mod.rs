@@ -92,6 +92,7 @@ impl Lexer {
                             'n' => '\n',
                             't' => '\t',
                             'r' => '\r',
+                            'e' => '\u{001b}',
                             '"' => '"',
                             '\\' => '\\',
                             other => other,
@@ -106,6 +107,21 @@ impl Lexer {
         }
 
         // Unterminated string: still emit StringLit so parser can continue.
+        let span = self.make_span(start, self.pos, line, col);
+        Token::new(TokenKind::StringLit(s), span)
+    }
+
+    fn read_raw_string(&mut self, start: usize, line: usize, col: usize) -> Token {
+        let mut s = String::new();
+
+        while let Some(ch) = self.advance() {
+            if ch == '`' {
+                let span = self.make_span(start, self.pos, line, col);
+                return Token::new(TokenKind::StringLit(s), span);
+            }
+            s.push(ch);
+        }
+
         let span = self.make_span(start, self.pos, line, col);
         Token::new(TokenKind::StringLit(s), span)
     }
@@ -354,6 +370,7 @@ impl Lexer {
                     '?' => TokenKind::Question,
 
                     '"' => return self.read_string(start, line, col),
+                    '`' => return self.read_raw_string(start, line, col),
 
                     c if c.is_ascii_digit() => return self.read_number(c, start, line, col),
                     c if c.is_alphabetic() || c == '_' => {
@@ -436,5 +453,32 @@ mod tests {
         assert!(matches!(tokens[8].kind, TokenKind::Float16));
         assert!(matches!(tokens[9].kind, TokenKind::Float32));
         assert!(matches!(tokens[10].kind, TokenKind::Float64));
+    }
+}
+
+#[cfg(test)]
+mod string_tests {
+    use super::*;
+
+    fn string_value(source: &str) -> String {
+        match Lexer::new(source).next_token().kind {
+            TokenKind::StringLit(value) => value,
+            other => panic!("expected string literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quoted_strings_decode_ansi_escape() {
+        assert_eq!(string_value(r#""\e[31mred\e[0m""#), "\u{001b}[31mred\u{001b}[0m");
+    }
+
+    #[test]
+    fn raw_strings_preserve_backslashes_and_quotes() {
+        assert_eq!(string_value(r#"`line\n\e[31m"quoted"`"#), r#"line\n\e[31m"quoted""#);
+    }
+
+    #[test]
+    fn raw_strings_can_span_lines() {
+        assert_eq!(string_value("`first\nsecond`"), "first\nsecond");
     }
 }
