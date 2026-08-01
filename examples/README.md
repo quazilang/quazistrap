@@ -26,3 +26,4 @@ qz run
 | `15-logical` | Logical operators: `!`, `&&`, `\|\|` |
 | `16-pub-types` | `pub` visibility on types; S04 on private import |
 | `17-constfold` | Constant folding demonstration |
+| `18-formatting` | Format specifications, raw strings, ANSI escapes |

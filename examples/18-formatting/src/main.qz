@@ -1,0 +1,12 @@
+import std.io;
+
+fn main() void {
+    var value: u32 = 48879;
+
+    io.println("decimal: {}", value);
+    io.println("uppercase hex: {:X}", value);
+    io.println("escaped braces: {{ value = {} }}", value);
+
+    io.println(`raw string keeps \n and \e unchanged`);
+    io.println("\e[32mgreen ANSI text\e[0m");
+}
