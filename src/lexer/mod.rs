@@ -86,22 +86,14 @@ impl Lexer {
                     let span = self.make_span(start, self.pos, line, col);
                     return Token::new(TokenKind::StringLit(s), span);
                 }
-                '\\' => {
-                    if let Some(esc) = self.advance() {
-                        let mapped = match esc {
-                            'n' => '\n',
-                            't' => '\t',
-                            'r' => '\r',
-                            'e' => '\u{001b}',
-                            '"' => '"',
-                            '\\' => '\\',
-                            other => other,
-                        };
-                        s.push(mapped);
-                    } else {
-                        break;
+                '\\' => match self.read_escape() {
+                    Ok(Some(mapped)) => s.push(mapped),
+                    Ok(None) => {}
+                    Err(message) => {
+                        let span = self.make_span(start, self.pos, line, col);
+                        return Token::new(TokenKind::Error(message), span);
                     }
-                }
+                },
                 other => s.push(other),
             }
         }
@@ -109,6 +101,117 @@ impl Lexer {
         // Unterminated string: still emit StringLit so parser can continue.
         let span = self.make_span(start, self.pos, line, col);
         Token::new(TokenKind::StringLit(s), span)
+    }
+
+    fn read_escape(&mut self) -> Result<Option<char>, String> {
+        let Some(escape) = self.advance() else {
+            return Err("unterminated escape sequence".to_string());
+        };
+
+        let value = match escape {
+            'a' => '\u{0007}',
+            'b' => '\u{0008}',
+            'e' => '\u{001b}',
+            'f' => '\u{000c}',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            'v' => '\u{000b}',
+            '\\' => '\\',
+            '\'' => '\'',
+            '"' => '"',
+            '?' => '?',
+            '\n' => {
+                while self.peek().is_some_and(char::is_whitespace) {
+                    self.advance();
+                }
+                return Ok(None);
+            }
+            'x' => return self.read_hex_escape().map(Some),
+            'u' => return self.read_unicode_escape().map(Some),
+            'U' => return self.read_fixed_unicode_escape(8).map(Some),
+            '0'..='7' => return self.read_octal_escape(escape).map(Some),
+            other => return Err(format!("unknown escape sequence '\\{other}'")),
+        };
+        Ok(Some(value))
+    }
+
+    fn read_hex_escape(&mut self) -> Result<char, String> {
+        let value = self.read_digits(16, 2, "hexadecimal escape")?;
+        if value > 0x7f {
+            return Err("hexadecimal escape must be in the ASCII range (00-7F)".to_string());
+        }
+        char::from_u32(value).ok_or_else(|| "invalid hexadecimal escape".to_string())
+    }
+
+    fn read_unicode_escape(&mut self) -> Result<char, String> {
+        if self.peek() != Some('{') {
+            return self.read_fixed_unicode_escape(4);
+        }
+        self.advance();
+
+        let mut digits = String::new();
+        while let Some(ch) = self.peek() {
+            if ch == '}' {
+                self.advance();
+                break;
+            }
+            if ch == '_' {
+                self.advance();
+                continue;
+            }
+            if !ch.is_ascii_hexdigit() {
+                return Err(format!("invalid character '{ch}' in Unicode escape"));
+            }
+            if digits.len() == 6 {
+                return Err("Unicode escape may contain at most 6 hex digits".to_string());
+            }
+            digits.push(ch);
+            self.advance();
+        }
+
+        if digits.is_empty() {
+            return Err("Unicode escape must contain 1 to 6 hex digits".to_string());
+        }
+        if self.input.get(self.pos.saturating_sub(1)) != Some(&'}') {
+            return Err("unterminated Unicode escape; expected '}'".to_string());
+        }
+
+        let value = u32::from_str_radix(&digits, 16).expect("validated Unicode digits");
+        char::from_u32(value)
+            .ok_or_else(|| format!("Unicode escape U+{value:04X} is not a valid scalar value"))
+    }
+
+    fn read_fixed_unicode_escape(&mut self, count: usize) -> Result<char, String> {
+        let value = self.read_digits(16, count, "Unicode escape")?;
+        char::from_u32(value)
+            .ok_or_else(|| format!("Unicode escape U+{value:04X} is not a valid scalar value"))
+    }
+
+    fn read_octal_escape(&mut self, first: char) -> Result<char, String> {
+        let mut value = first.to_digit(8).expect("validated octal digit");
+        for _ in 1..3 {
+            let Some(ch @ '0'..='7') = self.peek() else {
+                break;
+            };
+            self.advance();
+            value = value * 8 + ch.to_digit(8).expect("validated octal digit");
+        }
+        char::from_u32(value).ok_or_else(|| "invalid octal escape".to_string())
+    }
+
+    fn read_digits(&mut self, radix: u32, count: usize, name: &str) -> Result<u32, String> {
+        let mut value = 0;
+        for _ in 0..count {
+            let Some(ch) = self.advance() else {
+                return Err(format!("incomplete {name}; expected {count} digits"));
+            };
+            let Some(digit) = ch.to_digit(radix) else {
+                return Err(format!("invalid digit '{ch}' in {name}"));
+            };
+            value = value * radix + digit;
+        }
+        Ok(value)
     }
 
     fn read_raw_string(&mut self, start: usize, line: usize, col: usize) -> Token {
@@ -467,14 +570,59 @@ mod string_tests {
         }
     }
 
+    fn escape_error(source: &str) -> String {
+        match Lexer::new(source).next_token().kind {
+            TokenKind::Error(message) => message,
+            other => panic!("expected escape error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quoted_strings_decode_simple_control_escapes() {
+        assert_eq!(
+            string_value(r#""\0\a\b\e\f\n\r\t\v\\\'\"\?""#),
+            "\0\u{0007}\u{0008}\u{001b}\u{000c}\n\r\t\u{000b}\\\'\"?"
+        );
+    }
+
+    #[test]
+    fn quoted_strings_decode_numeric_escapes() {
+        assert_eq!(
+            string_value(r#""\x41\101\u263A\U0001F980\u{1F_980}""#),
+            "AA☺🦀🦀"
+        );
+    }
+
+    #[test]
+    fn quoted_strings_support_line_continuations() {
+        assert_eq!(string_value("\"first\\\n    second\""), "firstsecond");
+    }
+
+    #[test]
+    fn malformed_escapes_are_errors() {
+        assert!(escape_error(r#""\q""#).contains("unknown escape"));
+        assert!(escape_error(r#""\xG0""#).contains("invalid digit"));
+        assert!(escape_error(r#""\xFF""#).contains("ASCII range"));
+        assert!(escape_error(r#""\u12G4""#).contains("invalid digit"));
+        assert!(escape_error(r#""\u{}""#).contains("1 to 6"));
+        assert!(escape_error(r#""\u{D800}""#).contains("not a valid scalar"));
+        assert!(escape_error(r#""\u{110000}""#).contains("not a valid scalar"));
+    }
+
     #[test]
     fn quoted_strings_decode_ansi_escape() {
-        assert_eq!(string_value(r#""\e[31mred\e[0m""#), "\u{001b}[31mred\u{001b}[0m");
+        assert_eq!(
+            string_value(r#""\e[31mred\e[0m""#),
+            "\u{001b}[31mred\u{001b}[0m"
+        );
     }
 
     #[test]
     fn raw_strings_preserve_backslashes_and_quotes() {
-        assert_eq!(string_value(r#"`line\n\e[31m"quoted"`"#), r#"line\n\e[31m"quoted""#);
+        assert_eq!(
+            string_value(r#"`\0\a\e\n\t\x41\101\u263A\U0001F980\u{1F980}"quoted"`"#),
+            r#"\0\a\e\n\t\x41\101\u263A\U0001F980\u{1F980}"quoted""#
+        );
     }
 
     #[test]

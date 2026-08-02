@@ -5,6 +5,7 @@
 - `&&` / `||` are **synthesized by the parser** via `match_and_and()` / `match_or_or()`, not emitted as distinct lexer tokens.
 - Generics use `[T]` square brackets (not `<T>`).
 - `TokenKind::While` exists in the lexer but is **not handled** by the parser — `for (cond) {}` is the only while-like loop syntax.
+- Quoted strings decode simple C/Rust-style escapes, `\xNN`, C `\uNNNN`/`\UNNNNNNNN`, Rust `\u{H...}`, and up to three octal digits. Unknown or malformed escapes emit `TokenKind::Error`; raw backtick strings decode nothing.
 
 ## Token Conventions
 
