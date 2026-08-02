@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-// std.string — owned heap string (null-terminated, heap-allocated copy)
+// prelude.string — owned heap string (null-terminated, heap-allocated copy)
 
 @intrinsic("quazi.strlen")
 fn __string_strlen(s: str) usize;

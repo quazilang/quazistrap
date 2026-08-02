@@ -75,7 +75,7 @@ Object (`-c`): backend only, no linker.
 ### Loader (`src/loader.rs`)
 
 - `load_programs` — resolves imports recursively, merges dependency-first, parses as one `Program`.
-- Std resolution: `QUAZI_STD_ROOT` → `~/.quazi/std` / `%USERPROFILE%/.quazi/std` → `CARGO_MANIFEST_DIR/std` → `cwd/std`.
+- Std resolution: compiler `CARGO_MANIFEST_DIR/std` → `~/.quazi/std` / `%USERPROFILE%/.quazi/std`.
 - `foo/mod.qz` = opaque module directory; `pub import` controls what's exported.
 - Deduplicates via canonical-path `HashSet`. Circular imports safe.
 - **Namespacing**: every non-entry file gets module-qualified function names (`bar.foo`). Entry files keep bare names.
@@ -287,6 +287,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-02 | Removed the nested `quazistrap/std` checkout. Std resolution now checks the compiler's Cargo manifest directory for `std/`, then the user installation at `~/.quazi/std`; prelude module headers no longer identify themselves as `std.*`. |
 | 2026-06-07 | Module function namespacing/mangling implemented. Non-entry files prefix top-level functions with module name (`bar.foo`). Entry files keep bare names. `import bar.foo` errors on collision with local fn. `import bar.foo as b_foo` aliases cleanly. All 137 tests pass. |
 | 2026-06-11 | Fixed canonical path mismatch in loader that could cause entry files to be namespaced. Added `@no_mangle` attribute: keeps function symbol name bare (no module prefix). All 146 tests pass. |
 | 2026-06-11 | Implemented `fn main(args: Array[str])` support. Semantic analysis validates the parameter signature and sets `SemanticReport.main_takes_args`. Linux startup stubs build an `Array[str]` from `argc`/`argv` and pass it in `rdi`; Windows stubs use `__getmainargs` to obtain parsed argv and build the same array. Added `examples/13-args`. All 151 tests pass. |

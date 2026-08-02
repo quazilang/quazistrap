@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-// std.traits — core language traits
+// prelude.traits — core language traits
 
 // ── Display ──────────────────────────────────────────────────────────────────
 // Human-readable string representation.

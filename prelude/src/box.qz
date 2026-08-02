@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-// std.box — heap-allocated smart pointer Box[T]
+// prelude.box — heap-allocated smart pointer Box[T]
 
 @intrinsic("quazi.array.store")
 fn __box_write(base: *u8, idx: usize, val: usize) void;
