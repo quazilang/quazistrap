@@ -99,6 +99,25 @@ unsafe fn memzero(p: *u8, len: usize) void {
 }
 ```
 
+### String escapes
+
+Ordinary double-quoted strings support C- and Rust-style escapes:
+
+| Escape | Value |
+|--------|-------|
+| `\0` | Null (`U+0000`) |
+| `\a`, `\b`, `\e`, `\f`, `\v` | Bell, backspace, escape, form feed, vertical tab |
+| `\n`, `\r`, `\t` | Newline, carriage return, tab |
+| `\\`, `\"`, `\'`, `\?` | Literal punctuation |
+| `\xNN` | Exactly two hexadecimal digits; ASCII range `00`–`7F` |
+| `\ooo` | One to three octal digits |
+| `\uNNNN`, `\UNNNNNNNN` | C-style 4- or 8-digit Unicode scalar |
+| `\u{H...}` | Rust-style Unicode scalar with one to six hex digits; `_` separators allowed |
+| Backslash + newline | Continue the string, ignoring following whitespace |
+
+Malformed and unknown escapes are compile errors. Backtick raw strings preserve
+all characters exactly and never decode escapes: `` `\n\e\x41\u{41}` ``.
+
 ---
 
 ## CLI Reference
@@ -122,7 +141,6 @@ qz lsp                    # start language server
 
 **Environment variables:**
 - `QUAZI_LINKER=/path/to/linker` — override linker detection
-- `QUAZI_STD_ROOT=/path/to/std` — override standard library location
 - `QUAZI_TRACE=1` — enable crash backtraces
 
 ---
@@ -188,6 +206,7 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 | [`15-logical`](examples/15-logical/) | Logical operators: `!`, `&&`, `\|\|` |
 | [`16-pub-types`](examples/16-pub-types/) | Example showing public types |
 | [`17-constfold`](examples/17-constfold/) | Cross-basic-block constant propagation |
+| [`18-formatting`](examples/18-formatting/) | Formatting, raw strings, ANSI, and escape sequences |
 
 ---
 

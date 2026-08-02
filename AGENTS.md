@@ -149,6 +149,7 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 - `str` / `&str` — interchangeable. Immutable, valid UTF-8, fat pointer internally.
 - `String` — owned heap string (`ptr+len+cap`). Local variables auto-clean via `String.free`.
 - `Rune = u32` — Unicode codepoint.
+- Quoted strings decode `\0`, `\a`, `\b`, `\e`, `\f`, `\n`, `\r`, `\t`, `\v`, punctuation escapes, `\xNN` ASCII escapes, one-to-three-digit octal escapes, C-style `\uNNNN`/`\UNNNNNNNN` and Rust-style `\u{H...}` Unicode scalar escapes, and escaped-newline continuations. Invalid escapes are lexer errors. Raw backtick strings decode nothing.
 
 ---
 
@@ -246,8 +247,8 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **`qz test` runner** | Pending |
 | **`pub` on types** | ✅ Done |
 | **Unified formatting for `print`/`println`/`err`/`errln`/`format`** | In progress — support shared placeholder behavior, escaped braces, and format specifications; begin with `{:X}` and `{name:X}` uppercase hexadecimal |
-| **Raw backtick string literals** | Pending — preserve contents exactly; no backslash escape decoding |
-| **ANSI escapes in non-raw strings** | Pending — add `\e` for ESC (`U+001B`) while preserving existing quoted-string escapes |
+| **Raw backtick string literals** | ✅ Done — contents are preserved exactly with no backslash escape decoding |
+| **C/Rust-style escapes in non-raw strings** | ✅ Done — control, punctuation, ANSI `\e`, hexadecimal, octal, Unicode scalar, and line-continuation escapes with strict diagnostics |
 
 ### P2 — Codegen Quality
 
@@ -287,6 +288,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-02 | Expanded quoted-string escapes with C control/octal forms and Rust hexadecimal/Unicode forms. Invalid escapes now produce lexer diagnostics; raw strings preserve every escape spelling. |
 | 2026-08-02 | Removed the nested `quazistrap/std` checkout. Std resolution now checks the compiler's Cargo manifest directory for `std/`, then the user installation at `~/.quazi/std`; prelude module headers no longer identify themselves as `std.*`. |
 | 2026-06-07 | Module function namespacing/mangling implemented. Non-entry files prefix top-level functions with module name (`bar.foo`). Entry files keep bare names. `import bar.foo` errors on collision with local fn. `import bar.foo as b_foo` aliases cleanly. All 137 tests pass. |
 | 2026-06-11 | Fixed canonical path mismatch in loader that could cause entry files to be namespaced. Added `@no_mangle` attribute: keeps function symbol name bare (no module prefix). All 146 tests pass. |

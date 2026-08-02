@@ -7,7 +7,16 @@ fn main() void {
     io.println("uppercase hex: {value:X}", value);
     io.println("escaped braces: {{ value = {} }}", value);
 
-    io.println(`raw string keeps \n and \e unchanged`);
+    io.println(`raw string keeps \n, \e, \x41, \101, \u263A, and \u{1F980} unchanged`);
+
+    io.println("escaped quote: \" and backslash: \\");
+    io.println("tab-separated:\tleft\tright");
+    io.println("newline-separated:\nfirst\nsecond");
+    io.println("carriage return:\roverwritten");
+    io.println("hex: \x41; octal: \101; C Unicode: \u263A \U0001F980; Rust Unicode: \u{1F_980}");
+    io.println("controls: bell=\a backspace=\b form-feed=\f vertical-tab=\v null=\0 question=\?");
+    io.println("line \
+        continuation");
 
     io.println("\e[31mred\e[0m \e[32mgreen\e[0m \e[34mblue\e[0m");
     io.println("\e[1mbold\e[0m \e[3mitalic\e[0m \e[4munderline\e[0m \e[7mreverse\e[0m");
