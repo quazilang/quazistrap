@@ -8,5 +8,10 @@ fn main() void {
     io.println("escaped braces: {{ value = {} }}", value);
 
     io.println(`raw string keeps \n and \e unchanged`);
-    io.println("\e[32mgreen ANSI text\e[0m");
+
+    io.println("\e[31mred\e[0m \e[32mgreen\e[0m \e[34mblue\e[0m");
+    io.println("\e[1mbold\e[0m \e[3mitalic\e[0m \e[4munderline\e[0m \e[7mreverse\e[0m");
+    io.println("\e[33;44myellow on blue\e[0m");
+    io.println("\e[38;5;208m256-color orange\e[0m");
+    io.println("\e[38;2;255;105;180mRGB pink\e[0m");
 }
