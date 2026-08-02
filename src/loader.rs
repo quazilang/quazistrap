@@ -541,11 +541,9 @@ fn builtin_prelude_module_spec() -> Option<ModuleSpec> {
 }
 
 pub fn find_builtin_std_root() -> Option<PathBuf> {
-    if let Ok(root) = std::env::var("QUAZI_STD_ROOT") {
-        let path = PathBuf::from(root);
-        if path.join("src").join("core.qz").exists() {
-            return Some(path);
-        }
+    let compiler_std = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std");
+    if compiler_std.join("src").join("core.qz").exists() {
+        return Some(compiler_std);
     }
 
     // Check ~/.quazi/std (Unix) or %USERPROFILE%/.quazi/std (Windows)
@@ -556,16 +554,6 @@ pub fn find_builtin_std_root() -> Option<PathBuf> {
                 return Some(home_path);
             }
         }
-    }
-
-    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std");
-    if manifest_path.join("src").join("core.qz").exists() {
-        return Some(manifest_path);
-    }
-
-    let cwd_path = std::env::current_dir().ok()?.join("std");
-    if cwd_path.join("src").join("core.qz").exists() {
-        return Some(cwd_path);
     }
 
     None

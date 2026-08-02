@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-// std.result — Result[T, E] methods
+// prelude.result — Result[T, E] methods
 // Result[T, E] is a builtin enum: Ok(T) = tag 1, Err(E) = tag 0.
 
 impl Result[T, E] {

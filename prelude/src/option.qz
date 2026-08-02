@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-// std.option — Option[T] methods
+// prelude.option — Option[T] methods
 // Option[T] is a builtin enum: Some(T) = tag 1, None = tag 0.
 
 impl Option[T] {
