@@ -1587,7 +1587,21 @@ impl<'a> FnEncoder<'a> {
             Some(Opcode::FieldLoad) => {
                 let (dst, obj, byte_off) = instr.rrr();
                 emit!(asm.mov(rax, slot(obj)));
-                emit!(asm.mov(rcx, qword_ptr(rax + byte_off as i64)));
+                match instr.mem_width() {
+                    MemWidth::Byte if instr.mem_signed() => {
+                        emit!(asm.movsx(rcx, byte_ptr(rax + byte_off as i64)))
+                    }
+                    MemWidth::Byte => emit!(asm.movzx(rcx, byte_ptr(rax + byte_off as i64))),
+                    MemWidth::Word if instr.mem_signed() => {
+                        emit!(asm.movsx(rcx, word_ptr(rax + byte_off as i64)))
+                    }
+                    MemWidth::Word => emit!(asm.movzx(rcx, word_ptr(rax + byte_off as i64))),
+                    MemWidth::Dword if instr.mem_signed() => {
+                        emit!(asm.movsxd(rcx, dword_ptr(rax + byte_off as i64)))
+                    }
+                    MemWidth::Dword => emit!(asm.mov(ecx, dword_ptr(rax + byte_off as i64))),
+                    MemWidth::Qword => emit!(asm.mov(rcx, qword_ptr(rax + byte_off as i64))),
+                }
                 emit!(asm.mov(slot(dst), rcx));
             }
 
@@ -1595,7 +1609,12 @@ impl<'a> FnEncoder<'a> {
                 let (val, obj, byte_off) = instr.rrr();
                 emit!(asm.mov(rax, slot(obj)));
                 emit!(asm.mov(rcx, slot(val)));
-                emit!(asm.mov(qword_ptr(rax + byte_off as i64), rcx));
+                match instr.mem_width() {
+                    MemWidth::Byte => emit!(asm.mov(byte_ptr(rax + byte_off as i64), cl)),
+                    MemWidth::Word => emit!(asm.mov(word_ptr(rax + byte_off as i64), cx)),
+                    MemWidth::Dword => emit!(asm.mov(dword_ptr(rax + byte_off as i64), ecx)),
+                    MemWidth::Qword => emit!(asm.mov(qword_ptr(rax + byte_off as i64), rcx)),
+                }
             }
 
             Some(Opcode::New) => {

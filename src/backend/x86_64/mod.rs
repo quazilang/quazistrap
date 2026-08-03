@@ -9,6 +9,7 @@ pub mod start;
 pub mod symbols;
 
 use object::Endianness;
+use object::SymbolScope;
 use object::write::Object;
 
 use crate::backend::target;
@@ -66,6 +67,8 @@ fn emit_native_object(
         .map(|c| {
             if c.intrinsic {
                 format!("__quazi_intr_{}", safe_label(&c.name))
+            } else if let Some(symbol) = report.and_then(|r| r.exported_symbols.get(&c.name)) {
+                symbol.clone()
             } else {
                 safe_label(&c.name)
             }
@@ -85,13 +88,21 @@ fn emit_native_object(
 
         let (fn_bytes, fn_relocs) = encoder.encode()?;
 
+        let is_exported = report.is_some_and(|r| r.exported_symbols.contains_key(&chunk.name));
+        let scope = if chunk.intrinsic {
+            SymbolScope::Compilation
+        } else if is_exported {
+            SymbolScope::Dynamic
+        } else {
+            SymbolScope::Linkage
+        };
         sym_table.define_function(
             &mut obj,
             section_acc.text_id,
             &fn_names[chunk_idx],
             fn_offset as u64,
             fn_bytes.len() as u64,
-            chunk.intrinsic,
+            scope,
         );
 
         for reloc in fn_relocs {
@@ -127,7 +138,7 @@ fn emit_native_object(
                 name,
                 (stub_offset + offset_in_stub) as u64,
                 *size as u64,
-                true,
+                SymbolScope::Compilation,
             );
         }
 

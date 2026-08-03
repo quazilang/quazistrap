@@ -426,6 +426,19 @@ pub fn rrr_f(op: Opcode, dst: u8, src1: u8, src2: u8) -> Instruction {
     Instruction::new(op, [dst, src1, src2, 0], FLOAT_FLAG)
 }
 
+pub fn field_load_w(dst: u8, object: u8, offset: u8, width: MemWidth, signed: bool) -> Instruction {
+    let flags = ((width as u8) << MEM_WIDTH_SHIFT) | if signed { MEM_SIGNED_FLAG } else { 0 };
+    Instruction::new(Opcode::FieldLoad, [dst, object, offset, 0], flags)
+}
+
+pub fn field_store_w(val: u8, object: u8, offset: u8, width: MemWidth) -> Instruction {
+    Instruction::new(
+        Opcode::FieldStore,
+        [val, object, offset, 0],
+        (width as u8) << MEM_WIDTH_SHIFT,
+    )
+}
+
 pub fn ri16(op: Opcode, dst: u8, imm: u16) -> Instruction {
     let [lo, hi] = imm.to_le_bytes();
     Instruction::new(op, [dst, lo, hi, 0], 0)

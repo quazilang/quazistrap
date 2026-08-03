@@ -25,6 +25,23 @@ pub struct ProjectConfig {
     pub src_dir: PathBuf,
     pub flags: Vec<String>,
     pub dependencies: Vec<ResolvedDependency>,
+    pub cc: CcConfig,
+    pub link: LinkConfig,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CcConfig {
+    pub sources: Vec<PathBuf>,
+    pub include_paths: Vec<PathBuf>,
+    pub defines: Vec<String>,
+    pub flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LinkConfig {
+    pub objects: Vec<PathBuf>,
+    pub libraries: Vec<String>,
+    pub library_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +63,25 @@ struct RawConfig {
     package: Option<RawPackage>,
     build: Option<RawBuild>,
     dependencies: Option<BTreeMap<String, RawDependency>>,
+    cc: Option<RawCc>,
+    link: Option<RawLink>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+struct RawCc {
+    sources: Option<Vec<String>>,
+    include_paths: Option<Vec<String>>,
+    defines: Option<Vec<String>>,
+    flags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+struct RawLink {
+    objects: Option<Vec<String>>,
+    libraries: Option<Vec<String>>,
+    library_paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +118,8 @@ struct ProjectMeta {
     src_dir: PathBuf,
     flags: Vec<String>,
     dependencies: Vec<DependencySpec>,
+    cc: CcConfig,
+    link: LinkConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +179,8 @@ impl ProjectContext {
             src_dir: meta.src_dir.clone(),
             flags: meta.flags.clone(),
             dependencies: Vec::new(),
+            cc: meta.cc.clone(),
+            link: meta.link.clone(),
         };
 
         let mut resolver = ModuleResolver::default();
@@ -222,6 +262,40 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         flags: None,
     });
 
+    let raw_cc = raw.cc.unwrap_or_default();
+    let cc = CcConfig {
+        sources: raw_cc
+            .sources
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| root.join(path))
+            .collect(),
+        include_paths: raw_cc
+            .include_paths
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| root.join(path))
+            .collect(),
+        defines: raw_cc.defines.unwrap_or_default(),
+        flags: raw_cc.flags.unwrap_or_default(),
+    };
+    let raw_link = raw.link.unwrap_or_default();
+    let link = LinkConfig {
+        objects: raw_link
+            .objects
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| root.join(path))
+            .collect(),
+        libraries: raw_link.libraries.unwrap_or_default(),
+        library_paths: raw_link
+            .library_paths
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| root.join(path))
+            .collect(),
+    };
+
     let src_dir = root.join(build.src.unwrap_or_else(|| "src".to_string()));
     let default_entry = match kind {
         ProjectKind::Lib => "src/lib.qz",
@@ -257,6 +331,8 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         src_dir,
         flags: build.flags.unwrap_or_default(),
         dependencies,
+        cc,
+        link,
     })
 }
 
@@ -424,8 +500,7 @@ mod tests {
         let dep_root = root.join("dep");
         let dep_src = dep_root.join("src");
         fs::create_dir_all(&dep_src).expect("create dep src");
-        fs::write(dep_src.join("main.qz"), "fn dep_main() void { ret; }")
-            .expect("write dep main");
+        fs::write(dep_src.join("main.qz"), "fn dep_main() void { ret; }").expect("write dep main");
 
         fs::write(
             root.join("quazi.toml"),

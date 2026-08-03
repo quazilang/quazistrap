@@ -106,6 +106,8 @@ pub struct Analyzer {
     pub(super) struct_defs: HashMap<String, Vec<(String, TypeKind)>>,
     /// Generic params per struct: struct name → ordered generic param names.
     pub(super) struct_generic_params: HashMap<String, Vec<String>>,
+    /// Structs explicitly requesting the target C memory layout.
+    pub(super) repr_c_structs: std::collections::HashSet<String>,
     /// Derived traits: struct name → list of trait names from @derive.
     pub(super) derived_traits: HashMap<String, Vec<String>>,
     /// Trait implementations: type name → set of trait names explicitly implemented via `impl Trait for Type`.
@@ -124,6 +126,8 @@ pub struct Analyzer {
     pub(super) type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
     /// Ordered parameter names per function: fn name (or mangled) → param names (excl. self).
     pub(super) fn_param_names: HashMap<String, Vec<String>>,
+    /// Internal function name → stable native symbol requested by @export.
+    pub(super) exported_symbols: HashMap<String, String>,
     /// Whether the entry point is `fn main(args: Array[str])`.
     pub(super) main_takes_args: bool,
 }
@@ -134,6 +138,56 @@ pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
 
 pub(super) fn extract_attribute_names(attributes: &[Attribute]) -> Vec<String> {
     attributes.iter().map(|a| a.name.clone()).collect()
+}
+
+fn resolve_layout_alias(
+    ty: &TypeKind,
+    aliases: &std::collections::HashMap<String, (Vec<String>, TypeKind)>,
+) -> TypeKind {
+    if let TypeKind::Named { name, type_args } = ty
+        && type_args.is_empty()
+        && let Some((params, target)) = aliases.get(name)
+        && params.is_empty()
+    {
+        return resolve_layout_alias(target, aliases);
+    }
+    ty.clone()
+}
+
+fn ffi_type_size_align(
+    ty: &TypeKind,
+    aliases: &std::collections::HashMap<String, (Vec<String>, TypeKind)>,
+) -> (usize, usize) {
+    match resolve_layout_alias(ty, aliases) {
+        TypeKind::Int8 | TypeKind::Uint8 | TypeKind::Bool => (1, 1),
+        TypeKind::Int16 | TypeKind::Uint16 => (2, 2),
+        TypeKind::Int32 | TypeKind::Uint32 | TypeKind::Float32 => (4, 4),
+        TypeKind::Int64
+        | TypeKind::Uint64
+        | TypeKind::Isize
+        | TypeKind::Usize
+        | TypeKind::Float64
+        | TypeKind::RawPtr { .. } => (8, 8),
+        _ => (8, 8),
+    }
+}
+
+fn ffi_struct_layout(
+    fields: &[(String, TypeKind)],
+    aliases: &std::collections::HashMap<String, (Vec<String>, TypeKind)>,
+) -> (usize, Vec<(String, usize)>) {
+    let mut offset = 0usize;
+    let mut struct_align = 1usize;
+    let mut offsets = Vec::with_capacity(fields.len());
+    for (name, ty) in fields {
+        let (size, align) = ffi_type_size_align(ty, aliases);
+        offset = (offset + align - 1) & !(align - 1);
+        offsets.push((name.clone(), offset));
+        offset += size;
+        struct_align = struct_align.max(align);
+    }
+    let size = (offset + struct_align - 1) & !(struct_align - 1);
+    (size, offsets)
 }
 
 /// Returns `true` if the item should be included on this host based on @cfg attributes.
@@ -339,6 +393,7 @@ impl Analyzer {
             explicitly_imported_fns: std::collections::HashMap::new(),
             struct_defs: HashMap::new(),
             struct_generic_params: HashMap::new(),
+            repr_c_structs: std::collections::HashSet::new(),
             derived_traits: HashMap::new(),
             trait_impls: HashMap::new(),
             trait_method_slots: HashMap::new(),
@@ -347,6 +402,7 @@ impl Analyzer {
             monomorphizations: Vec::new(),
             type_aliases: std::collections::HashMap::new(),
             fn_param_names: HashMap::new(),
+            exported_symbols: HashMap::new(),
         }
     }
 
@@ -508,7 +564,11 @@ impl Analyzer {
                 .struct_defs
                 .iter()
                 .map(|(name, fields)| {
-                    let size = fields.len() * 8;
+                    let size = if self.repr_c_structs.contains(name) {
+                        ffi_struct_layout(fields, &self.type_aliases).0
+                    } else {
+                        fields.len() * 8
+                    };
                     (name.clone(), size)
                 })
                 .collect(),
@@ -516,11 +576,15 @@ impl Analyzer {
                 .struct_defs
                 .iter()
                 .map(|(name, fields)| {
-                    let offsets: Vec<(String, usize)> = fields
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (fname, _))| (fname.clone(), i * 8))
-                        .collect();
+                    let offsets = if self.repr_c_structs.contains(name) {
+                        ffi_struct_layout(fields, &self.type_aliases).1
+                    } else {
+                        fields
+                            .iter()
+                            .enumerate()
+                            .map(|(i, (fname, _))| (fname.clone(), i * 8))
+                            .collect()
+                    };
                     (name.clone(), offsets)
                 })
                 .collect(),
@@ -543,6 +607,8 @@ impl Analyzer {
             monomorphizations: std::mem::take(&mut self.monomorphizations),
             type_aliases: self.type_aliases.clone(),
             fn_param_names: self.fn_param_names.clone(),
+            exported_symbols: self.exported_symbols.clone(),
+            repr_c_structs: self.repr_c_structs.clone(),
             namespaced_paths: self.namespaced_paths.clone(),
             main_takes_args: self.main_takes_args,
         }
@@ -583,6 +649,8 @@ impl Analyzer {
         self.monomorphizations.clear();
         self.type_aliases.clear();
         self.fn_param_names.clear();
+        self.exported_symbols.clear();
+        self.repr_c_structs.clear();
         self.main_takes_args = false;
         self.current_fn_name_override = None;
         self.current_module_path = None;
@@ -2629,5 +2697,51 @@ fn main() void { }
             .expect("Drawable slots must exist");
         assert_eq!(slots[0], "draw", "draw should be slot 0");
         assert_eq!(slots[1], "area", "area should be slot 1");
+    }
+
+    #[test]
+    fn ffi_attributes_and_c_layout_are_recorded() {
+        let report = analyze(
+            r#"
+type c_char = i8;
+type c_int = i32;
+@repr(C)
+struct Record { tag: c_char, value: c_int, next: *Record, }
+@api("native_read") unsafe fn native_read(out: *Record) c_int;
+@export("quazi_answer") pub fn answer() c_int { ret 42; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "FFI declarations: {:?}",
+            report.errors
+        );
+        assert_eq!(report.struct_sizes.get("Record"), Some(&16));
+        assert_eq!(
+            report.struct_field_offsets.get("Record"),
+            Some(&vec![
+                ("tag".into(), 0),
+                ("value".into(), 4),
+                ("next".into(), 8)
+            ])
+        );
+        assert_eq!(
+            report.exported_symbols.get("answer"),
+            Some(&"quazi_answer".to_string())
+        );
+    }
+
+    #[test]
+    fn ffi_rejects_safe_calls_and_aggregate_by_value() {
+        let report = analyze(
+            r#"
+@repr(C) struct Point { x: i32, y: i32, }
+@api unsafe fn consume(point: Point) i32;
+fn main() void { consume(Point { x: 1, y: 2 }); }
+"#,
+        );
+        assert!(report.errors.iter().any(|e| e.code == "S11"));
+        assert!(report.errors.iter().any(|e| e.code == "S14"));
     }
 }

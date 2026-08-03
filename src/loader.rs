@@ -236,9 +236,22 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
                 } = &item.node
                     && *pub_fn
                 {
-                    // @no_mangle functions keep their bare name in library_fn_names
+                    // Stable ABI functions keep their bare/exported name in library_fn_names
                     // so wildcard imports and cross-module resolution find them.
-                    let entry_name = if attributes.iter().any(|a| a.name == "no_mangle") {
+                    let exported = attributes
+                        .iter()
+                        .find(|a| a.name == "export")
+                        .and_then(|a| {
+                            a.args.first().and_then(|arg| match arg {
+                                crate::parser::ast::AttrArg::Positional(
+                                    crate::parser::ast::AttrVal::Str(symbol),
+                                ) => Some(symbol.clone()),
+                                _ => None,
+                            })
+                        });
+                    let entry_name = if let Some(symbol) = exported {
+                        symbol
+                    } else if attributes.iter().any(|a| a.name == "no_mangle") {
                         name.clone()
                     } else {
                         format!("{}.{}", module_name, name)
@@ -541,9 +554,24 @@ fn builtin_prelude_module_spec() -> Option<ModuleSpec> {
 }
 
 pub fn find_builtin_std_root() -> Option<PathBuf> {
+    if let Ok(root) = std::env::var("QUAZI_STD_ROOT") {
+        let path = PathBuf::from(root);
+        if path.join("src").join("core.qz").exists() {
+            return Some(path);
+        }
+    }
+
     let compiler_std = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std");
     if compiler_std.join("src").join("core.qz").exists() {
         return Some(compiler_std);
+    }
+
+    // Development workspace layout keeps compiler and std as sibling repos.
+    let workspace_std = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("std");
+    if workspace_std.join("src").join("core.qz").exists() {
+        return workspace_std.canonicalize().ok().or(Some(workspace_std));
     }
 
     // Check ~/.quazi/std (Unix) or %USERPROFILE%/.quazi/std (Windows)
@@ -852,7 +880,8 @@ fn local_import_paths(
                     ));
                 }
             } // close else { progressive subfile }
-        } // close else if !remainder.is_empty()
+        }
+        // close else if !remainder.is_empty()
         else {
             // Directory namespace: import a; where a/ is a directory
             let ns_dir = dir.join(&base);
@@ -1082,8 +1111,7 @@ mod tests {
         let dep_src = dep_root.join("src");
         fs::create_dir_all(&dep_src).expect("create dep src");
         fs::write(dep_src.join("util.qz"), "fn util() void { ret; }").expect("write util.qz");
-        fs::write(dep_src.join("main.qz"), "fn dep_main() void { ret; }")
-            .expect("write dep main");
+        fs::write(dep_src.join("main.qz"), "fn dep_main() void { ret; }").expect("write dep main");
 
         let mut resolver = ModuleResolver::default();
         resolver

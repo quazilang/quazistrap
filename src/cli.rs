@@ -43,6 +43,18 @@ pub enum Command {
         /// strip debug symbols from the output binary
         #[arg(short = 's', long = "strip")]
         strip: bool,
+        /// add a native library search directory
+        #[arg(short = 'L', value_name = "DIR")]
+        library_paths: Vec<PathBuf>,
+        /// link a native library (uses the platform linker's -l convention)
+        #[arg(short = 'l', value_name = "NAME")]
+        libraries: Vec<String>,
+        /// emit a native static library (.a)
+        #[arg(long = "static-lib", conflicts_with = "shared_lib")]
+        static_lib: bool,
+        /// emit a native shared library (.so on Linux)
+        #[arg(long = "shared-lib", conflicts_with = "static_lib")]
+        shared_lib: bool,
     },
     /// build and run project (reads quazi.toml)
     Run {

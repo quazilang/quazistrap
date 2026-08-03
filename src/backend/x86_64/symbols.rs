@@ -30,18 +30,14 @@ impl SymbolTable {
         name: &str,
         text_offset: u64,
         size: u64,
-        local: bool,
+        scope: SymbolScope,
     ) -> SymbolId {
         let id = obj.add_symbol(Symbol {
             name: name.as_bytes().to_vec(),
             value: text_offset,
             size,
             kind: SymbolKind::Text,
-            scope: if local {
-                SymbolScope::Compilation
-            } else {
-                SymbolScope::Linkage
-            },
+            scope,
             weak: false,
             section: SymbolSection::Section(text_id),
             flags: SymbolFlags::None,

@@ -361,6 +361,10 @@ pub struct SemanticReport {
     pub type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
     /// Ordered parameter names per function (mangled or plain): used for named-arg resolution.
     pub fn_param_names: HashMap<String, Vec<String>>,
+    /// Internal function name → stable C ABI symbol requested by @export.
+    pub exported_symbols: HashMap<String, String>,
+    /// Struct names declared with `@repr(C)`.
+    pub repr_c_structs: std::collections::HashSet<String>,
     /// Files whose top-level definitions were mangled with their module name.
     pub namespaced_paths: std::collections::HashSet<String>,
     /// Whether the entry point is `fn main(args: Array[str])`.

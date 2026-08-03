@@ -25,14 +25,25 @@ impl Analyzer {
         match &item.node {
             ItemKind::Fn {
                 name,
+                generic_params,
                 params,
                 return_ty,
                 body,
                 attributes,
                 unsafe_fn,
+                pub_fn,
                 ..
             } => {
-                self.validate_foreign_attributes(attributes);
+                self.validate_foreign_attributes(
+                    name,
+                    generic_params,
+                    params,
+                    return_ty,
+                    body,
+                    attributes,
+                    *pub_fn,
+                    item.span,
+                );
                 let is_foreign = attributes
                     .iter()
                     .any(|a| a.name == "syscall" || a.name == "api" || a.name == "intrinsic");
@@ -226,7 +237,59 @@ impl Analyzer {
                     self.unsafe_depth -= 1;
                 }
             }
-            ItemKind::Struct { .. } | ItemKind::Enum { .. } | ItemKind::Import(_) => {}
+            ItemKind::Struct {
+                name,
+                generic_params,
+                fields,
+                attributes,
+                ..
+            } => {
+                if attributes.iter().any(|attr| attr.name == "opaque")
+                    && (!fields.is_empty() || !generic_params.is_empty())
+                {
+                    self.push_error(
+                        item.span,
+                        "S14",
+                        format!("@opaque type `{name}` must be a non-generic empty struct"),
+                    );
+                }
+                if let Some(repr) = attributes.iter().find(|attr| attr.name == "repr") {
+                    let valid = matches!(
+                        repr.args.as_slice(),
+                        [AttrArg::Positional(AttrVal::Ident(value))] if value == "C"
+                    );
+                    if !valid {
+                        self.push_error(
+                            repr.span,
+                            "S14",
+                            "unsupported representation; use @repr(C)".to_string(),
+                        );
+                    } else {
+                        if !generic_params.is_empty() {
+                            self.push_error(
+                                item.span,
+                                "S14",
+                                format!("@repr(C) struct `{name}` cannot be generic yet"),
+                            );
+                        }
+                        for (field_name, field_ty, _) in fields {
+                            let resolved = self.resolve_type_aliases(&field_ty.node);
+                            if !ffi_scalar_or_pointer(&resolved)
+                                || matches!(resolved, TypeKind::Void)
+                            {
+                                self.push_error(
+                                    field_ty.span,
+                                    "S14",
+                                    format!(
+                                        "@repr(C) field `{field_name}` in `{name}` must be a C scalar or raw pointer"
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            ItemKind::Enum { .. } | ItemKind::Import(_) => {}
             ItemKind::Trait { .. } => {
                 // Trait method signatures are abstract — no body to type-check.
                 // trait_depth is not incremented here because TraitMethod never
@@ -248,14 +311,27 @@ impl Analyzer {
         }
     }
 
-    fn validate_foreign_attributes(&mut self, attributes: &[Attribute]) {
+    #[allow(clippy::too_many_arguments)]
+    fn validate_foreign_attributes(
+        &mut self,
+        name: &str,
+        generic_params: &[String],
+        params: &[Param],
+        return_ty: &Type,
+        body: &Option<Block>,
+        attributes: &[Attribute],
+        is_public: bool,
+        item_span: Span,
+    ) {
         let mut syscall_attr: Option<&Attribute> = None;
         let mut api_attr: Option<&Attribute> = None;
+        let mut export_attr: Option<&Attribute> = None;
 
         for attr in attributes {
             match attr.name.as_str() {
                 "syscall" => syscall_attr = Some(attr),
                 "api" => api_attr = Some(attr),
+                "export" => export_attr = Some(attr),
                 _ => {}
             }
         }
@@ -275,6 +351,40 @@ impl Analyzer {
 
         if let Some(attr) = api_attr {
             self.validate_api_attr(attr);
+            if body.is_some() {
+                self.push_error(
+                    item_span,
+                    "S06",
+                    format!("@api function `{name}` must be a bodyless declaration ending in `;`"),
+                );
+            }
+            self.validate_ffi_signature(name, generic_params, params, return_ty, item_span);
+        }
+
+        if let Some(attr) = export_attr {
+            self.validate_export_attr(attr);
+            if api_attr.is_some() || syscall_attr.is_some() {
+                self.push_error(
+                    attr.span,
+                    "S06",
+                    "@export cannot be combined with @api or @syscall".to_string(),
+                );
+            }
+            if body.is_none() {
+                self.push_error(
+                    item_span,
+                    "S06",
+                    format!("@export function `{name}` must have a Quazi body"),
+                );
+            }
+            if !is_public {
+                self.push_error(
+                    item_span,
+                    "S06",
+                    format!("@export function `{name}` must be declared `pub`"),
+                );
+            }
+            self.validate_ffi_signature(name, generic_params, params, return_ty, item_span);
         }
     }
 
@@ -296,12 +406,88 @@ impl Analyzer {
     }
 
     fn validate_api_attr(&mut self, attr: &Attribute) {
-        let ok = matches!(attr.args.as_slice(), [AttrArg::Positional(AttrVal::Str(_))]);
+        let ok = matches!(
+            attr.args.as_slice(),
+            [] | [AttrArg::Positional(AttrVal::Str(_))]
+        );
         if !ok {
             self.push_error(
                 attr.span,
                 "S06",
-                "invalid @api attribute (use @api(\"FunctionName\"))".to_string(),
+                "invalid @api attribute (use @api or @api(\"symbol\"))".to_string(),
+            );
+        }
+    }
+
+    fn validate_export_attr(&mut self, attr: &Attribute) {
+        let ok = match attr.args.as_slice() {
+            [] => true,
+            [AttrArg::Positional(AttrVal::Str(symbol))] => !symbol.is_empty(),
+            _ => false,
+        };
+        if !ok {
+            self.push_error(
+                attr.span,
+                "S06",
+                "invalid @export attribute (use @export or @export(\"symbol\"))".to_string(),
+            );
+        }
+    }
+
+    fn validate_ffi_signature(
+        &mut self,
+        name: &str,
+        generic_params: &[String],
+        params: &[Param],
+        return_ty: &Type,
+        span: Span,
+    ) {
+        if !generic_params.is_empty() {
+            self.push_error(
+                span,
+                "S14",
+                format!("FFI function `{name}` cannot be generic"),
+            );
+        }
+        if params.iter().any(|p| p.variadic) {
+            self.push_error(
+                span,
+                "S14",
+                format!("C variadics are not supported yet in FFI function `{name}`"),
+            );
+        }
+        if params.len() > 6 {
+            self.push_error(
+                span,
+                "S14",
+                format!(
+                    "FFI function `{name}` has {} parameters; phase-one FFI supports at most six register arguments",
+                    params.len()
+                ),
+            );
+        }
+        for param in params {
+            let resolved = self.resolve_type_aliases(&param.ty.node);
+            if !ffi_scalar_or_pointer(&resolved) {
+                self.push_error(
+                    param.ty.span,
+                    "S14",
+                    format!(
+                        "FFI parameter `{}` in `{name}` has unsupported by-value type `{}`; pass C structs through raw pointers",
+                        param.name, param.ty.node
+                    ),
+                );
+            }
+        }
+        let resolved_return = self.resolve_type_aliases(&return_ty.node);
+        if !ffi_scalar_or_pointer(&resolved_return) {
+            self.push_error(
+                return_ty.span,
+                "S14",
+                format!(
+                    "FFI function `{name}` has unsupported by-value return type `{}`; return C structs through an out pointer",
+                    return_ty.node
+                ),
             );
         }
     }
@@ -1710,6 +1896,16 @@ impl Analyzer {
                 }
             }
             ExprKind::StructInit { name, fields } => {
+                if self
+                    .resolve_symbol(name)
+                    .is_some_and(|symbol| symbol.attributes.iter().any(|attr| attr == "opaque"))
+                {
+                    self.push_error(
+                        expr.span,
+                        "S14",
+                        format!("opaque FFI type `{name}` cannot be constructed in Quazi"),
+                    );
+                }
                 if let Some(field_defs) = self.struct_defs.get(name).cloned() {
                     for (fname, fval) in fields {
                         let val_eval = self.type_check_expr(fval, reachable);
@@ -3123,6 +3319,27 @@ fn type_contains_rawptr(ty: &TypeKind) -> bool {
         TypeKind::Slice { elem_ty } => type_contains_rawptr(&elem_ty.node),
         _ => false,
     }
+}
+
+/// Types supported by the initial Linux x86-64 C ABI bridge. Aggregates are
+/// deliberately pointer-only until SysV's eightbyte classifier is implemented.
+fn ffi_scalar_or_pointer(ty: &TypeKind) -> bool {
+    matches!(
+        ty,
+        TypeKind::Int8
+            | TypeKind::Int16
+            | TypeKind::Int32
+            | TypeKind::Int64
+            | TypeKind::Uint8
+            | TypeKind::Uint16
+            | TypeKind::Uint32
+            | TypeKind::Uint64
+            | TypeKind::Isize
+            | TypeKind::Usize
+            | TypeKind::Bool
+            | TypeKind::Void
+            | TypeKind::RawPtr { .. }
+    )
 }
 
 fn type_contains_any(ty: &TypeKind) -> bool {
