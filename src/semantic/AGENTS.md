@@ -46,3 +46,19 @@ For `Named` receivers with concrete type args, substitute receiver generics into
 - **Functions**: enforced. Private fn imported cross-module emits S04 error.
 - **Structs, traits, enums, type aliases**: parsed but hardcoded `public: false`; not enforced. (P1 roadmap item.)
 - **Re-exports**: `pub_import` stored but not read.
+
+## C ABI validation
+
+- `@api` declarations are bodyless and always unsafe to call. Bare `@api` uses
+  the local function name; `@api("symbol")` is the recommended explicit form.
+- `@export` requires an explicitly `pub`, non-generic Quazi body and is retained
+  as a native root even without Quazi callers.
+- Phase-one signatures accept integer/bool scalars, pointer-sized integers, raw
+  pointers, and `void`. Floats, variadics, function pointers, and aggregates by
+  value emit `S14` until their real SysV ABI lowering exists.
+- `@repr(C)` is limited to non-generic scalar/pointer fields. Layout uses target
+  size/alignment and tail padding; field offsets are recorded in SemanticReport.
+- `@opaque` requires an empty, non-generic struct and rejects Quazi construction.
+- A panic in exported code follows the existing terminating panic path. It never
+  unwinds across a C frame; recoverable ABI errors must be explicit return codes
+  or out parameters.

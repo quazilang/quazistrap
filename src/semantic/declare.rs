@@ -44,6 +44,13 @@ impl Analyzer {
                 if is_foreign && !attr_names.contains(&"ignore".to_string()) {
                     attr_names.push("ignore".to_string());
                 }
+                // Exported functions are roots invoked by native consumers, so they are
+                // never dead merely because no Quazi call site references them.
+                if attr_names.iter().any(|a| a == "export")
+                    && !attr_names.contains(&"ignore".to_string())
+                {
+                    attr_names.push("ignore".to_string());
+                }
                 // Str-variadic fns: codegen coerces variadic args to str at call sites.
                 // Detected by: ...args: str/ref, OR ...args: any with a preceding str param
                 // (the any+str convention is how format-style fns like println are written).
@@ -78,19 +85,34 @@ impl Analyzer {
                 let is_syscall_or_api = attr_names
                     .iter()
                     .any(|a| matches!(a.as_str(), "syscall" | "api"));
-                let is_no_mangle = attr_names.iter().any(|a| a == "no_mangle");
+                let is_no_mangle = attr_names
+                    .iter()
+                    .any(|a| matches!(a.as_str(), "no_mangle" | "export"));
                 // Internal runtime symbols (e.g. __quazi_panic_handler) keep their bare
                 // names so the runtime stub can find them.
                 // @no_mangle functions keep their bare name to allow stable symbol references.
-                let register_name = if name.starts_with("__quazi_") {
-                    name.clone()
-                } else if is_no_mangle {
+                let export_name = attributes
+                    .iter()
+                    .find(|a| a.name == "export")
+                    .and_then(|a| {
+                        a.args.first().and_then(|arg| match arg {
+                            AttrArg::Positional(AttrVal::Str(symbol)) => Some(symbol.clone()),
+                            _ => None,
+                        })
+                    });
+                let register_name = if name.starts_with("__quazi_") || is_no_mangle {
                     name.clone()
                 } else if let Some(module) = self.module_path_for_span(item.span) {
                     format!("{}.{}", module, name)
                 } else {
                     name.clone()
                 };
+                if attr_names.iter().any(|a| a == "export") {
+                    self.exported_symbols.insert(
+                        register_name.clone(),
+                        export_name.unwrap_or_else(|| name.clone()),
+                    );
+                }
                 self.fn_param_names.insert(
                     register_name.clone(),
                     params
@@ -194,6 +216,15 @@ impl Analyzer {
                     .map(|(fname, ftype, _)| (fname.clone(), ftype.node.clone()))
                     .collect();
                 self.struct_defs.insert(name.clone(), field_defs);
+                if attributes.iter().any(|attr| {
+                    attr.name == "repr"
+                        && matches!(
+                            attr.args.as_slice(),
+                            [AttrArg::Positional(AttrVal::Ident(value))] if value == "C"
+                        )
+                }) {
+                    self.repr_c_structs.insert(name.clone());
+                }
                 if !generic_params.is_empty() {
                     self.struct_generic_params
                         .insert(name.clone(), generic_params.clone());

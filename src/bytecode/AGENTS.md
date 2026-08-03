@@ -57,6 +57,12 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 ### Key Codegen Behaviours
 
 - `@syscall` → `Syscall+Ret`. `@api` → `CallExt+Ret`.
+- `@api` wrapper chunks use a private backend symbol so an import whose local
+  name equals its C symbol cannot resolve recursively to itself.
+- `@export` functions remain ordinary chunks; SemanticReport maps their internal
+  names to stable dynamic native symbols and keeps them alive as roots.
+- `FieldLoad`/`FieldStore` reuse memory-width flags for `@repr(C)` byte, word,
+  dword, and qword fields, including sign extension on signed loads.
 - Const-fold: `ConstValue` in `const_map` → `MovI`/`MovConst` directly.
 - `&&`/`||`: short-circuit via `Jz`/`Jnz`.
 - Variadics: call-site packs coerced args into consecutive slots, emits `Lea` (ptr) + `MovI` (len), passes as two registers to callee.

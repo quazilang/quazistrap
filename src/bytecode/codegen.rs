@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use super::instruction::{
-    MemWidth, mem_lea, mem_load, mem_load_w, mem_store, mem_store_w, ri16, rrr, rrr_f,
+    MemWidth, field_load_w, field_store_w, mem_lea, mem_load, mem_load_w, mem_store, mem_store_w,
+    ri16, rrr, rrr_f,
 };
 use super::{Chunk, ConstPoolEntry, Opcode};
 use crate::parser::ast::*;
@@ -119,6 +120,8 @@ impl<'a> Codegen<'a> {
     /// Namespaced files use `module.name`; entry files use the bare `name`.
     /// Internal runtime symbols (`__quazi_*`) keep their bare names.
     /// `@no_mangle` functions keep their bare name regardless of file namespace.
+    /// `@export` functions keep their source identity here. The native backend
+    /// applies their external ABI symbol from SemanticReport.
     fn resolve_item_name(&self, span: Span, name: &str, attributes: &[Attribute]) -> String {
         if name.starts_with("__quazi_") {
             return name.to_string();
@@ -318,6 +321,7 @@ impl<'a> Codegen<'a> {
             } = &item.node
             {
                 let is_ph = attributes.iter().any(|a| a.name == "panic_handler");
+                let is_export = attributes.iter().any(|a| a.name == "export");
                 // When user has @panic_handler, skip the stdlib default.
                 if name == "__quazi_panic_handler" && user_panic_handler.is_some() {
                     continue;
@@ -328,7 +332,7 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.resolve_item_name(item.span, name, attributes)
                 };
-                if is_live(&index_name) || is_ph {
+                if is_live(&index_name) || is_ph || is_export {
                     self.fn_index.insert(index_name.clone(), idx);
                     idx += 1;
                 }
@@ -427,7 +431,8 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.resolve_item_name(item.span, name, attributes)
                 };
-                if (is_live(&compile_name) || is_ph)
+                let is_export = attributes.iter().any(|a| a.name == "export");
+                if (is_live(&compile_name) || is_ph || is_export)
                     && let Some(chunk) = self.compile_fn(
                         &compile_name,
                         params,
@@ -1006,6 +1011,8 @@ impl<'a> Codegen<'a> {
             &self.report.struct_defs,
             &self.report.struct_sizes,
             &self.report.struct_field_offsets,
+            &self.report.repr_c_structs,
+            &self.report.type_aliases,
             &self.report.trait_impls,
             &self.variadic_fn_info,
             &self.report.enum_defs,
@@ -1128,7 +1135,11 @@ impl<'a> Codegen<'a> {
         attr: &crate::parser::ast::Attribute,
     ) -> Chunk {
         let mut chunk = Chunk::with_params(name, params.len());
-        let symbol = api_symbol(attr);
+        // Keep the Quazi wrapper private and distinct from the undefined C
+        // symbol it calls, otherwise the relocation resolves recursively to
+        // the wrapper itself when local and foreign names match.
+        chunk.intrinsic = true;
+        let symbol = api_symbol(attr).unwrap_or_else(|| name.to_string());
         let sym_idx = chunk.add_constant(ConstPoolEntry::Str(symbol));
         // Params are in r0..r(n-1) by calling convention.
         // Emit CallExt: dst=r0, sym_idx, flags=arg_count.
@@ -1150,11 +1161,21 @@ fn extract_format_specs(template: &str) -> Vec<String> {
     let bytes = template.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] != b'{' || i + 1 >= bytes.len() { i += 1; continue; }
-        if bytes[i + 1] == b'{' { i += 2; continue; }
+        if bytes[i] != b'{' || i + 1 >= bytes.len() {
+            i += 1;
+            continue;
+        }
+        if bytes[i + 1] == b'{' {
+            i += 2;
+            continue;
+        }
         let mut end = i + 1;
-        while end < bytes.len() && bytes[end] != b'}' { end += 1; }
-        if end == bytes.len() { break; }
+        while end < bytes.len() && bytes[end] != b'}' {
+            end += 1;
+        }
+        if end == bytes.len() {
+            break;
+        }
         let field = std::str::from_utf8(&bytes[i + 1..end]).unwrap_or("");
         if field.is_empty() {
             specs.push(String::new());
@@ -1176,17 +1197,26 @@ fn strip_format_specs(template: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            out.push_str("{{"); i += 2; continue;
+            out.push_str("{{");
+            i += 2;
+            continue;
         }
         if bytes[i] == b'{' {
             let mut end = i + 1;
-            while end < bytes.len() && bytes[end] != b'}' { end += 1; }
+            while end < bytes.len() && bytes[end] != b'}' {
+                end += 1;
+            }
             if end < bytes.len() {
                 let field = std::str::from_utf8(&bytes[i + 1..end]).unwrap_or("");
-                if field.contains(':') { out.push_str("{}"); i = end + 1; continue; }
+                if field.contains(':') {
+                    out.push_str("{}");
+                    i = end + 1;
+                    continue;
+                }
             }
         }
-        out.push(bytes[i] as char); i += 1;
+        out.push(bytes[i] as char);
+        i += 1;
     }
     out
 }
@@ -1227,6 +1257,8 @@ struct FnCompiler<'a> {
     struct_defs: &'a HashMap<String, Vec<(String, TypeKind)>>,
     struct_sizes: &'a HashMap<String, usize>,
     struct_field_offsets: &'a HashMap<String, Vec<(String, usize)>>,
+    repr_c_structs: &'a HashSet<String>,
+    type_aliases: &'a HashMap<String, (Vec<String>, TypeKind)>,
     trait_impls: &'a HashMap<String, std::collections::HashSet<String>>,
     /// Maps variadic function name → number of fixed (non-variadic) params.
     variadic_fn_info: &'a HashMap<String, usize>,
@@ -1325,6 +1357,8 @@ impl<'a> FnCompiler<'a> {
         struct_defs: &'a HashMap<String, Vec<(String, TypeKind)>>,
         struct_sizes: &'a HashMap<String, usize>,
         struct_field_offsets: &'a HashMap<String, Vec<(String, usize)>>,
+        repr_c_structs: &'a HashSet<String>,
+        type_aliases: &'a HashMap<String, (Vec<String>, TypeKind)>,
         trait_impls: &'a HashMap<String, std::collections::HashSet<String>>,
         variadic_fn_info: &'a HashMap<String, usize>,
         enum_defs: &'a HashMap<String, HashMap<String, usize>>,
@@ -1352,6 +1386,8 @@ impl<'a> FnCompiler<'a> {
             struct_defs,
             struct_sizes,
             struct_field_offsets,
+            repr_c_structs,
+            type_aliases,
             trait_impls,
             variadic_fn_info,
             enum_defs,
@@ -1594,6 +1630,50 @@ impl<'a> FnCompiler<'a> {
             }
         }
         0
+    }
+
+    fn ffi_field_access_by_name(&self, struct_name: &str, field_name: &str) -> (MemWidth, bool) {
+        if !self.repr_c_structs.contains(struct_name) {
+            return (MemWidth::Qword, false);
+        }
+        let Some((_, ty)) = self
+            .struct_defs
+            .get(struct_name)
+            .and_then(|fields| fields.iter().find(|(name, _)| name == field_name))
+        else {
+            return (MemWidth::Qword, false);
+        };
+        let mut resolved = ty;
+        while let TypeKind::Named { name, type_args } = resolved {
+            if !type_args.is_empty() {
+                break;
+            }
+            let Some((params, target)) = self.type_aliases.get(name) else {
+                break;
+            };
+            if !params.is_empty() {
+                break;
+            }
+            resolved = target;
+        }
+        match resolved {
+            TypeKind::Int8 => (MemWidth::Byte, true),
+            TypeKind::Uint8 | TypeKind::Bool => (MemWidth::Byte, false),
+            TypeKind::Int16 => (MemWidth::Word, true),
+            TypeKind::Uint16 => (MemWidth::Word, false),
+            TypeKind::Int32 => (MemWidth::Dword, true),
+            TypeKind::Uint32 => (MemWidth::Dword, false),
+            _ => (MemWidth::Qword, false),
+        }
+    }
+
+    fn ffi_field_access(&self, object: &Expr, field_name: &str) -> (MemWidth, bool) {
+        let key = (object.span.start, object.span.end);
+        if let Some(TypeKind::Named { name, .. }) = self.type_of_span(key) {
+            self.ffi_field_access_by_name(&name, field_name)
+        } else {
+            (MemWidth::Qword, false)
+        }
     }
 
     /// Scan the body of an `ExprKind::Closure` for identifiers that reference
@@ -2994,7 +3074,10 @@ impl<'a> FnCompiler<'a> {
             }
             self.chunk.emit(ri16(Opcode::CallIdx, dst, idx));
         } else {
-            panic!("emit_call_by_name: function not found in fn_index: {}", name);
+            panic!(
+                "emit_call_by_name: function not found in fn_index: {}",
+                name
+            );
         }
     }
 
@@ -3364,9 +3447,9 @@ impl<'a> FnCompiler<'a> {
                         name: field_name,
                     } => {
                         let byte_offset = self.field_offset(object, field_name);
+                        let (width, _) = self.ffi_field_access(object, field_name);
                         let obj = self.compile_expr(object);
-                        self.chunk
-                            .emit(rrr(Opcode::FieldStore, src, obj, byte_offset));
+                        self.chunk.emit(field_store_w(src, obj, byte_offset, width));
                         src
                     }
                     ExprKind::Index { object, indices } => {
@@ -3459,7 +3542,8 @@ impl<'a> FnCompiler<'a> {
                     if let Some((_, fval)) = fields.iter().find(|(fn_, _)| fn_ == field_name) {
                         let val = self.compile_expr(fval);
                         let off = self.field_offset_by_name(name, field_name);
-                        self.chunk.emit(rrr(Opcode::FieldStore, val, dst, off));
+                        let (width, _) = self.ffi_field_access_by_name(name, field_name);
+                        self.chunk.emit(field_store_w(val, dst, off, width));
                     }
                 }
                 dst
@@ -3689,7 +3773,11 @@ impl<'a> FnCompiler<'a> {
                                 .emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
                             (rp, rl)
                         };
-                        self.emit_call_by_name("fmt.format", &[template_reg, r_ptr, r_len], fmt_dst);
+                        self.emit_call_by_name(
+                            "fmt.format",
+                            &[template_reg, r_ptr, r_len],
+                            fmt_dst,
+                        );
                         // Call the actual @format function with the single formatted string.
                         let mut call_args = vec![fmt_dst];
                         if self.variadic_fn_info.contains_key(call_name.as_str()) {
@@ -4270,10 +4358,11 @@ impl<'a> FnCompiler<'a> {
                     }
                 }
                 let byte_offset = self.field_offset(object, name);
+                let (width, signed) = self.ffi_field_access(object, name);
                 let obj = self.compile_expr(object);
                 let dst = self.alloc_reg();
                 self.chunk
-                    .emit(rrr(Opcode::FieldLoad, dst, obj, byte_offset));
+                    .emit(field_load_w(dst, obj, byte_offset, width, signed));
                 dst
             }
 
@@ -4532,6 +4621,8 @@ impl<'a> FnCompiler<'a> {
                     self.struct_defs,
                     self.struct_sizes,
                     self.struct_field_offsets,
+                    self.repr_c_structs,
+                    self.type_aliases,
                     self.trait_impls,
                     self.variadic_fn_info,
                     self.enum_defs,
@@ -4902,16 +4993,13 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> u16 {
     INTRINSIC_MAP.get(name).copied().unwrap_or(0)
 }
 
-fn api_symbol(attr: &crate::parser::ast::Attribute) -> String {
-    attr.args
-        .first()
-        .and_then(|a| match a {
-            crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => {
-                Some(s.clone())
-            }
-            _ => None,
-        })
-        .unwrap_or_default()
+fn api_symbol(attr: &crate::parser::ast::Attribute) -> Option<String> {
+    attr.args.first().and_then(|a| match a {
+        crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(s)) => {
+            Some(s.clone())
+        }
+        _ => None,
+    })
 }
 
 fn cfg_condition_matches(attr: &crate::parser::ast::Attribute) -> bool {
@@ -5541,7 +5629,7 @@ mod tests {
     #[test]
     fn api_attribute_emits_call_ext_opcode() {
         let chunks = compile(
-            r#"@api("WriteFile") fn win_write(h: usize, buf: str, len: usize, out: usize, ovl: usize) usize { }"#,
+            r#"@api("WriteFile") unsafe fn win_write(h: usize, buf: *u8, len: usize, out: *u8, ovl: *u8) usize;"#,
         );
         let chunk = &chunks[0];
         assert!(
@@ -5555,6 +5643,25 @@ mod tests {
                 .any(|c| matches!(c, ConstPoolEntry::Str(s) if s == "WriteFile")),
             "expected WriteFile in constant pool"
         );
+    }
+
+    #[test]
+    fn repr_c_fields_use_c_offsets_and_widths() {
+        let chunks = compile(
+            r#"
+@repr(C) struct Record { tag: i8, value: i32, next: *Record, }
+fn read(record: Record) i32 { ret record.value; }
+"#,
+        );
+        let load = chunks
+            .iter()
+            .flat_map(|chunk| chunk.code.iter())
+            .find(|instr| instr.opcode == Opcode::FieldLoad as u8)
+            .expect("C field access should emit FieldLoad");
+        let (_, _, offset) = load.rrr();
+        assert_eq!(offset, 4);
+        assert_eq!(load.mem_width(), MemWidth::Dword);
+        assert!(load.mem_signed());
     }
 
     #[test]

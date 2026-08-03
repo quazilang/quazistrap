@@ -30,7 +30,7 @@ fn strip_nops_fix_jumps(chunk: &mut Chunk) {
     // the next valid instruction. So we map Nop to the current `new_idx`.
     let mut new_idx = 0usize;
     let mut old_to_new: Vec<usize> = Vec::with_capacity(chunk.code.len());
-    
+
     for ins in &chunk.code {
         old_to_new.push(new_idx);
         if ins.opcode != Opcode::Nop as u8 {

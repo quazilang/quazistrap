@@ -112,13 +112,12 @@ fn run_pipeline(
         EmitType::Object => {
             let no_crash = source_contains_no_crash(src);
             let obj_bytes = compile_to_object(&chunks, false, no_crash, Some(&sema_report));
-            std::fs::write(output_file_name, &obj_bytes).unwrap_or_else(|e| {
-                eprintln!(
-                    "\x1b[31;1merror:\x1b[0m cannot write {}: {}",
-                    output_file_name, e
-                );
-                std::process::exit(1);
-            });
+            write_or_package_object(
+                &obj_bytes,
+                output_file_name,
+                link_flags.unwrap_or(&[]),
+                explicit_linker,
+            );
             println!(
                 "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m[object]\x1b[0m"
             );
@@ -163,6 +162,86 @@ fn run_pipeline(
             remove_temp(&tmp_obj);
             println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
         }
+    }
+}
+
+fn write_or_package_object(
+    bytes: &[u8],
+    output: &str,
+    link_flags: &[String],
+    explicit_linker: Option<&Path>,
+) {
+    match Path::new(output).extension().and_then(|ext| ext.to_str()) {
+        Some("a") => {
+            let object = write_temp_object(bytes, "ffi_static").unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                std::process::exit(1);
+            });
+            let ar = std::env::var_os("AR").unwrap_or_else(|| "ar".into());
+            // `ar r` replaces only a member with the same member name; our temporary
+            // object name changes per process, so recreate the requested archive.
+            if Path::new(output).exists() {
+                std::fs::remove_file(output).unwrap_or_else(|e| {
+                    remove_temp(&object);
+                    eprintln!("\x1b[31;1merror:\x1b[0m cannot replace {output}: {e}");
+                    std::process::exit(1);
+                });
+            }
+            let mut command = std::process::Command::new(&ar);
+            command.args(["rcs", output]).arg(&object);
+            for native_object in link_flags.iter().filter(|flag| flag.ends_with(".o")) {
+                command.arg(native_object);
+            }
+            let result = command.output();
+            remove_temp(&object);
+            let result = result.unwrap_or_else(|e| {
+                eprintln!(
+                    "\x1b[31;1merror:\x1b[0m failed to run archiver {:?}: {e}",
+                    ar
+                );
+                std::process::exit(1);
+            });
+            if !result.status.success() {
+                eprintln!(
+                    "\x1b[31;1merror:\x1b[0m archiver failed\n{}{}",
+                    String::from_utf8_lossy(&result.stderr),
+                    String::from_utf8_lossy(&result.stdout)
+                );
+                std::process::exit(1);
+            }
+        }
+        Some("so") => {
+            let object = write_temp_object(bytes, "ffi_shared").unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                std::process::exit(1);
+            });
+            let mut flags = vec!["-shared".to_string()];
+            flags.extend_from_slice(link_flags);
+            let mut invocation = LinkerInvocation::new(
+                object.clone(),
+                PathBuf::from(output),
+                TargetSpec::host(),
+                flags,
+            )
+            .unwrap_or_else(|e| {
+                remove_temp(&object);
+                eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                std::process::exit(1);
+            });
+            if let Some(linker) = explicit_linker {
+                invocation.linker = linker.to_path_buf();
+            }
+            invocation.run().unwrap_or_else(|e| {
+                remove_temp(&object);
+                eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                std::process::exit(1);
+            });
+            remove_temp(&object);
+        }
+        _ => std::fs::write(output, bytes).unwrap_or_else(|e| {
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot write {output}: {e}");
+            std::process::exit(1);
+        }),
     }
 }
 
@@ -273,13 +352,12 @@ fn emit_chunks(
 
         EmitType::Object => {
             let obj_bytes = compile_to_object(chunks, false, false, None);
-            std::fs::write(output_file_name, &obj_bytes).unwrap_or_else(|e| {
-                eprintln!(
-                    "\x1b[31;1merror:\x1b[0m cannot write {}: {}",
-                    output_file_name, e
-                );
-                std::process::exit(1);
-            });
+            write_or_package_object(
+                &obj_bytes,
+                output_file_name,
+                link_flags.unwrap_or(&[]),
+                explicit_linker,
+            );
             println!(
                 "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m[object]\x1b[0m"
             );
@@ -387,6 +465,110 @@ fn load_project_context() -> ProjectContext {
     })
 }
 
+fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
+    let mut flags = ctx.config.flags.clone();
+    let object_dir = ctx.config.root.join("target").join("ffi");
+    if !ctx.config.cc.sources.is_empty() {
+        std::fs::create_dir_all(&object_dir).map_err(|e| {
+            format!(
+                "cannot create native object directory {}: {e}",
+                object_dir.display()
+            )
+        })?;
+    }
+
+    let cc = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    for source in &ctx.config.cc.sources {
+        let stem = source
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| format!("invalid C source path: {}", source.display()))?;
+        let object = object_dir.join(format!("{stem}.o"));
+        let mut command = std::process::Command::new(&cc);
+        command
+            .arg("-c")
+            .arg(source)
+            .arg("-o")
+            .arg(&object)
+            .arg("-fPIC");
+        for include in &ctx.config.cc.include_paths {
+            command.arg(format!("-I{}", include.display()));
+        }
+        for define in &ctx.config.cc.defines {
+            command.arg(format!("-D{define}"));
+        }
+        command.args(&ctx.config.cc.flags);
+        let output = command.output().map_err(|e| {
+            format!(
+                "failed to run C compiler {:?} for {}: {e}",
+                cc,
+                source.display()
+            )
+        })?;
+        if !output.status.success() {
+            return Err(format!(
+                "C compiler failed for {}\n{}{}",
+                source.display(),
+                String::from_utf8_lossy(&output.stderr),
+                String::from_utf8_lossy(&output.stdout)
+            ));
+        }
+        flags.push(object.to_string_lossy().into_owned());
+    }
+
+    flags.extend(
+        ctx.config
+            .link
+            .objects
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned()),
+    );
+    flags.extend(
+        ctx.config
+            .link
+            .library_paths
+            .iter()
+            .map(|path| format!("-L{}", path.display())),
+    );
+    flags.extend(
+        ctx.config
+            .link
+            .libraries
+            .iter()
+            .map(|name| format!("-l{name}")),
+    );
+    Ok(flags)
+}
+
+fn compile_direct_c_sources(sources: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let cc = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let mut objects: Vec<PathBuf> = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        let object = std::env::temp_dir().join(format!("qz_cc_{}_{}.o", std::process::id(), index));
+        let output = std::process::Command::new(&cc)
+            .arg("-c")
+            .arg(source)
+            .arg("-o")
+            .arg(&object)
+            .arg("-fPIC")
+            .output()
+            .map_err(|e| format!("failed to run C compiler {:?}: {e}", cc))?;
+        if !output.status.success() {
+            for prior in &objects {
+                remove_temp(prior);
+            }
+            return Err(format!(
+                "C compiler failed for {}\n{}{}",
+                source.display(),
+                String::from_utf8_lossy(&output.stderr),
+                String::from_utf8_lossy(&output.stdout)
+            ));
+        }
+        objects.push(object);
+    }
+    Ok(objects)
+}
+
 fn write_file(path: &Path, contents: &str) {
     std::fs::write(path, contents).unwrap_or_else(|e| {
         eprintln!(
@@ -428,8 +610,7 @@ fn scaffold_project(root: &PathBuf, pkg_name: &str, lib: bool) {
         );
         write_file(&root.join("quazi.toml"), &toml);
 
-        let main_src =
-            "import std.io;\n\nfn main() i32 {\n    io.println(\"Hello, World!\");\n    ret 0;\n}\n";
+        let main_src = "import std.io;\n\nfn main() i32 {\n    io.println(\"Hello, World!\");\n    ret 0;\n}\n";
         write_file(&src_dir.join("main.qz"), main_src);
     }
 }
@@ -720,10 +901,7 @@ fn build_with_progress(
             prog.begin(&format!("Native  {}", arch));
             let no_crash = source_contains_no_crash(&result.merged_source);
             let obj_bytes = compile_to_object(&chunks, false, no_crash, Some(&sema));
-            std::fs::write(out, &obj_bytes).unwrap_or_else(|e| {
-                eprintln!("\x1b[31;1merror:\x1b[0m cannot write {}: {}", out, e);
-                std::process::exit(1);
-            });
+            write_or_package_object(&obj_bytes, out, link_flags.unwrap_or(&[]), explicit_linker);
             prog.done(&format!("{:.1} KB", obj_bytes.len() as f64 / 1024.0));
             prog.success(out, Some(obj_bytes.len() as u64));
         }
@@ -818,10 +996,14 @@ fn main() {
             debug,
             linker,
             strip,
+            library_paths,
+            libraries,
+            static_lib,
+            shared_lib,
         } => {
             let emit = if emit_bytecode {
                 EmitType::Bytecode
-            } else if emit_object {
+            } else if emit_object || static_lib || shared_lib {
                 EmitType::Object
             } else {
                 EmitType::Binary
@@ -856,9 +1038,24 @@ fn main() {
 
                 let entry = ctx.config.entry.clone();
                 let out = output.clone().unwrap_or_else(|| {
-                    project_output_name(&ctx.config.name, effective_emit.clone())
+                    if static_lib {
+                        format!("lib{}.a", ctx.config.name)
+                    } else if shared_lib {
+                        format!("lib{}.so", ctx.config.name)
+                    } else {
+                        project_output_name(&ctx.config.name, effective_emit.clone())
+                    }
                 });
-                let link_flags = ctx.config.flags.clone();
+                let mut link_flags = native_link_flags(&ctx).unwrap_or_else(|e| {
+                    eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                    std::process::exit(1);
+                });
+                link_flags.extend(
+                    library_paths
+                        .iter()
+                        .map(|path| format!("-L{}", path.display())),
+                );
+                link_flags.extend(libraries.iter().map(|name| format!("-l{name}")));
                 build_with_progress(
                     &[entry],
                     &out,
@@ -954,8 +1151,50 @@ fn main() {
                     }
                 }
             } else {
+                let source_files: Vec<PathBuf> = files
+                    .iter()
+                    .filter(|path| path.extension().is_some_and(|ext| ext == "qz"))
+                    .cloned()
+                    .collect();
+                let native_objects: Vec<String> = files
+                    .iter()
+                    .filter(|path| {
+                        path.extension()
+                            .is_some_and(|ext| matches!(ext.to_str(), Some("o" | "a" | "so")))
+                    })
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
+                let c_sources: Vec<PathBuf> = files
+                    .iter()
+                    .filter(|path| path.extension().is_some_and(|ext| ext == "c"))
+                    .cloned()
+                    .collect();
+                let compiled_c_objects = compile_direct_c_sources(&c_sources).unwrap_or_else(|e| {
+                    eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                    std::process::exit(1);
+                });
+                if source_files.is_empty() {
+                    eprintln!(
+                        "\x1b[31;1merror:\x1b[0m build requires at least one .qz source file"
+                    );
+                    std::process::exit(1);
+                }
                 let out = output.clone().unwrap_or_else(|| {
-                    let stem = files[0]
+                    if static_lib {
+                        let stem = source_files[0]
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        return format!("lib{stem}.a");
+                    }
+                    if shared_lib {
+                        let stem = source_files[0]
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        return format!("lib{stem}.so");
+                    }
+                    let stem = source_files[0]
                         .file_stem()
                         .unwrap_or_default()
                         .to_string_lossy()
@@ -973,7 +1212,30 @@ fn main() {
                     }
                 });
 
-                build_with_progress(&files, &out, emit, debug, None, explicit_linker, do_strip);
+                let mut link_flags = native_objects;
+                link_flags.extend(
+                    compiled_c_objects
+                        .iter()
+                        .map(|path| path.to_string_lossy().into_owned()),
+                );
+                link_flags.extend(
+                    library_paths
+                        .iter()
+                        .map(|path| format!("-L{}", path.display())),
+                );
+                link_flags.extend(libraries.iter().map(|name| format!("-l{name}")));
+                build_with_progress(
+                    &source_files,
+                    &out,
+                    emit,
+                    debug,
+                    Some(&link_flags),
+                    explicit_linker,
+                    do_strip,
+                );
+                for object in &compiled_c_objects {
+                    remove_temp(object);
+                }
 
                 if run && !emit_bytecode && !emit_object {
                     let status = std::process::Command::new(abs_path(&out))

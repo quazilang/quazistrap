@@ -36,3 +36,14 @@ Emits dummy `call fn_start` / `lea rax,[fn_start]`, records pending relocs, zero
 | Linux x86-64 | ELF64 | SysV | Full |
 | Windows x86-64 | PE/COFF | Win64 | Full (needs `lld-link` + `LIB`) |
 | macOS x86-64 | ~~Mach-O~~ ELF | SysV | Broken — `select_backend()` maps macOS to `ElfBackend`, `emit_start: false`, no Mach-O relocations |
+
+## Native FFI and libraries
+
+- Exported functions use `SymbolScope::Dynamic`; ordinary Quazi functions use
+  linkage scope and intrinsic/API wrapper chunks remain compilation-local.
+- `qz build source.qz native.o -L dir -l name` forwards native inputs to the
+  linker. Project `[cc]` sources are compiled through `$CC` or `cc` with `-fPIC`.
+- `--static-lib` emits an archive through `$AR` or `ar`; `--shared-lib` emits a
+  Linux `.so` through the selected linker without a process start stub.
+- Shared-library output is currently Linux x86-64 only. The compiler intentionally
+  rejects unsupported FFI types before backend lowering.

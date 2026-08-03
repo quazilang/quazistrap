@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::chunk::{Chunk, ConstPoolEntry};
-use super::instruction::{ri16, Instruction};
+use super::instruction::{Instruction, ri16};
 use super::opcode::Opcode;
 
 // ── Lattice ───────────────────────────────────────────────────────────────────
@@ -146,7 +146,12 @@ fn build_cfg(code: &[Instruction]) -> (Vec<BasicBlock>, Vec<usize>) {
         } else {
             code.len() - 1
         };
-        blocks.push(BasicBlock { start, end, succs: Vec::new(), preds: Vec::new() });
+        blocks.push(BasicBlock {
+            start,
+            end,
+            succs: Vec::new(),
+            preds: Vec::new(),
+        });
     }
 
     let block_of: Vec<usize> = {
@@ -283,13 +288,27 @@ fn compute_result(
             Some(Opcode::Add) => Some(|a, b| Some(a.wrapping_add(b))),
             Some(Opcode::Sub) => Some(|a, b| Some(a.wrapping_sub(b))),
             Some(Opcode::Mul) => Some(|a, b| Some(a.wrapping_mul(b))),
-            Some(Opcode::Div) => Some(|a, b| if b == 0 { None } else { Some(a.wrapping_div(b)) }),
-            Some(Opcode::Mod) => Some(|a, b| if b == 0 { None } else { Some(a.wrapping_rem(b)) }),
+            Some(Opcode::Div) => Some(|a, b| {
+                if b == 0 {
+                    None
+                } else {
+                    Some(a.wrapping_div(b))
+                }
+            }),
+            Some(Opcode::Mod) => Some(|a, b| {
+                if b == 0 {
+                    None
+                } else {
+                    Some(a.wrapping_rem(b))
+                }
+            }),
             Some(Opcode::And) => Some(|a, b| Some(a & b)),
-            Some(Opcode::Or)  => Some(|a, b| Some(a | b)),
+            Some(Opcode::Or) => Some(|a, b| Some(a | b)),
             Some(Opcode::Xor) => Some(|a, b| Some(a ^ b)),
             Some(Opcode::Shl) => Some(|a, b| Some(a.wrapping_shl((b & 63) as u32))),
-            Some(Opcode::Shr) => Some(|a, b| Some(((a as u64).wrapping_shr((b & 63) as u32)) as i64)),
+            Some(Opcode::Shr) => {
+                Some(|a, b| Some(((a as u64).wrapping_shr((b & 63) as u32)) as i64))
+            }
             Some(Opcode::Sar) => Some(|a, b| Some(a.wrapping_shr((b & 63) as u32))),
             _ => None,
         }
@@ -343,54 +362,54 @@ fn has_dest(op: u8) -> bool {
         Opcode::from_u8(op),
         Some(
             Opcode::Mov
-            | Opcode::MovI
-            | Opcode::MovConst
-            | Opcode::Add
-            | Opcode::Sub
-            | Opcode::Mul
-            | Opcode::Div
-            | Opcode::Mod
-            | Opcode::Neg
-            | Opcode::Not
-            | Opcode::Inc
-            | Opcode::Dec
-            | Opcode::And
-            | Opcode::Or
-            | Opcode::Xor
-            | Opcode::Shl
-            | Opcode::Shr
-            | Opcode::Sar
-            | Opcode::Pow
-            | Opcode::Cmp
-            | Opcode::Load
-            | Opcode::Lea
-            | Opcode::Dup
-            | Opcode::ArrayLoad
-            | Opcode::New
-            | Opcode::NewObj
-            | Opcode::FieldLoad
-            | Opcode::VtblLoad
-            | Opcode::StrLen
-            | Opcode::StrConcat
-            | Opcode::StrToInt
-            | Opcode::StrToFloat
-            | Opcode::PrimToStr
-            | Opcode::StrAsStr
-            | Opcode::IntAbs
-            | Opcode::IntMin
-            | Opcode::IntMax
-            | Opcode::FloatAbs
-            | Opcode::FloatSqrt
-            | Opcode::FloatFloor
-            | Opcode::FloatCeil
-            | Opcode::FloatRound
-            | Opcode::FloatMin
-            | Opcode::FloatMax
-            | Opcode::Intrinsic
-            | Opcode::CallIdx
-            | Opcode::CallReg
-            | Opcode::Syscall
-            | Opcode::CallExt
+                | Opcode::MovI
+                | Opcode::MovConst
+                | Opcode::Add
+                | Opcode::Sub
+                | Opcode::Mul
+                | Opcode::Div
+                | Opcode::Mod
+                | Opcode::Neg
+                | Opcode::Not
+                | Opcode::Inc
+                | Opcode::Dec
+                | Opcode::And
+                | Opcode::Or
+                | Opcode::Xor
+                | Opcode::Shl
+                | Opcode::Shr
+                | Opcode::Sar
+                | Opcode::Pow
+                | Opcode::Cmp
+                | Opcode::Load
+                | Opcode::Lea
+                | Opcode::Dup
+                | Opcode::ArrayLoad
+                | Opcode::New
+                | Opcode::NewObj
+                | Opcode::FieldLoad
+                | Opcode::VtblLoad
+                | Opcode::StrLen
+                | Opcode::StrConcat
+                | Opcode::StrToInt
+                | Opcode::StrToFloat
+                | Opcode::PrimToStr
+                | Opcode::StrAsStr
+                | Opcode::IntAbs
+                | Opcode::IntMin
+                | Opcode::IntMax
+                | Opcode::FloatAbs
+                | Opcode::FloatSqrt
+                | Opcode::FloatFloor
+                | Opcode::FloatCeil
+                | Opcode::FloatRound
+                | Opcode::FloatMin
+                | Opcode::FloatMax
+                | Opcode::Intrinsic
+                | Opcode::CallIdx
+                | Opcode::CallReg
+                | Opcode::Syscall
+                | Opcode::CallExt
         )
     )
 }
@@ -542,8 +561,7 @@ pub fn const_prop_fold(chunk: &mut Chunk) {
 
             if let Some(result) = compute_result(&instr, &state, &constants) {
                 if let ConstLattice::Const(ref cv) = result {
-                    let already_const =
-                        op == Opcode::MovI as u8 || op == Opcode::MovConst as u8;
+                    let already_const = op == Opcode::MovI as u8 || op == Opcode::MovConst as u8;
                     if !already_const && has_dest(op) {
                         let dst = instr.ops[0];
                         emit_const_instr(chunk, i, dst, cv);
@@ -557,7 +575,10 @@ pub fn const_prop_fold(chunk: &mut Chunk) {
 
             if is_conditional_branch(op) {
                 let (cond_reg, target) = instr.ri16();
-                let cond_state = state.get(&cond_reg).cloned().unwrap_or(ConstLattice::Bottom);
+                let cond_state = state
+                    .get(&cond_reg)
+                    .cloned()
+                    .unwrap_or(ConstLattice::Bottom);
                 if let Some(v) = cond_state.as_int() {
                     if let Some(taken) = eval_branch(op, v) {
                         if taken {
@@ -592,12 +613,15 @@ mod tests {
 
     #[test]
     fn folds_add_of_two_constants() {
-        let mut chunk = make_chunk("test_add", vec![
-            ri16(Opcode::MovI, 0, 5),
-            ri16(Opcode::MovI, 1, 3),
-            rrr(Opcode::Add, 2, 0, 1),
-            rrr(Opcode::Ret, 2, 0, 0),
-        ]);
+        let mut chunk = make_chunk(
+            "test_add",
+            vec![
+                ri16(Opcode::MovI, 0, 5),
+                ri16(Opcode::MovI, 1, 3),
+                rrr(Opcode::Add, 2, 0, 1),
+                rrr(Opcode::Ret, 2, 0, 0),
+            ],
+        );
         const_prop_fold(&mut chunk);
         let instr = chunk.code[2];
         assert_eq!(instr.opcode, Opcode::MovI as u8);
@@ -608,14 +632,17 @@ mod tests {
 
     #[test]
     fn folds_chained_ops() {
-        let mut chunk = make_chunk("test_chain", vec![
-            ri16(Opcode::MovI, 0, 2),
-            ri16(Opcode::MovI, 1, 3),
-            rrr(Opcode::Mul, 2, 0, 1),  // 2*3=6
-            ri16(Opcode::MovI, 3, 1),
-            rrr(Opcode::Add, 4, 2, 3),  // 6+1=7
-            rrr(Opcode::Ret, 4, 0, 0),
-        ]);
+        let mut chunk = make_chunk(
+            "test_chain",
+            vec![
+                ri16(Opcode::MovI, 0, 2),
+                ri16(Opcode::MovI, 1, 3),
+                rrr(Opcode::Mul, 2, 0, 1), // 2*3=6
+                ri16(Opcode::MovI, 3, 1),
+                rrr(Opcode::Add, 4, 2, 3), // 6+1=7
+                rrr(Opcode::Ret, 4, 0, 0),
+            ],
+        );
         const_prop_fold(&mut chunk);
         let instr = chunk.code[4];
         assert_eq!(instr.opcode, Opcode::MovI as u8);
@@ -625,36 +652,45 @@ mod tests {
 
     #[test]
     fn eliminates_always_not_taken_jz() {
-        let mut chunk = make_chunk("test_jz", vec![
-            ri16(Opcode::MovI, 0, 42),
-            ri16(Opcode::Jz, 0, 3),
-            ri16(Opcode::MovI, 1, 99),
-            rrr(Opcode::Ret, 1, 0, 0),
-        ]);
+        let mut chunk = make_chunk(
+            "test_jz",
+            vec![
+                ri16(Opcode::MovI, 0, 42),
+                ri16(Opcode::Jz, 0, 3),
+                ri16(Opcode::MovI, 1, 99),
+                rrr(Opcode::Ret, 1, 0, 0),
+            ],
+        );
         const_prop_fold(&mut chunk);
         assert_eq!(chunk.code[1].opcode, Opcode::Nop as u8);
     }
 
     #[test]
     fn eliminates_always_not_taken_jnz() {
-        let mut chunk = make_chunk("test_jnz", vec![
-            ri16(Opcode::MovI, 0, 0),
-            ri16(Opcode::Jnz, 0, 3),
-            ri16(Opcode::MovI, 1, 1),
-            rrr(Opcode::Ret, 1, 0, 0),
-        ]);
+        let mut chunk = make_chunk(
+            "test_jnz",
+            vec![
+                ri16(Opcode::MovI, 0, 0),
+                ri16(Opcode::Jnz, 0, 3),
+                ri16(Opcode::MovI, 1, 1),
+                rrr(Opcode::Ret, 1, 0, 0),
+            ],
+        );
         const_prop_fold(&mut chunk);
         assert_eq!(chunk.code[1].opcode, Opcode::Nop as u8);
     }
 
     #[test]
     fn promotes_always_taken_jz_to_jmp() {
-        let mut chunk = make_chunk("test_jz_taken", vec![
-            ri16(Opcode::MovI, 0, 0),
-            ri16(Opcode::Jz, 0, 3),
-            ri16(Opcode::MovI, 1, 99),
-            rrr(Opcode::Ret, 0, 0, 0),
-        ]);
+        let mut chunk = make_chunk(
+            "test_jz_taken",
+            vec![
+                ri16(Opcode::MovI, 0, 0),
+                ri16(Opcode::Jz, 0, 3),
+                ri16(Opcode::MovI, 1, 99),
+                rrr(Opcode::Ret, 0, 0, 0),
+            ],
+        );
         const_prop_fold(&mut chunk);
         assert_eq!(chunk.code[1].opcode, Opcode::Jmp as u8);
     }
@@ -673,12 +709,15 @@ mod tests {
 
     #[test]
     fn does_not_fold_div_by_zero() {
-        let mut chunk = make_chunk("test_divz", vec![
-            ri16(Opcode::MovI, 0, 10),
-            ri16(Opcode::MovI, 1, 0),
-            rrr(Opcode::Div, 2, 0, 1),
-            rrr(Opcode::Ret, 2, 0, 0),
-        ]);
+        let mut chunk = make_chunk(
+            "test_divz",
+            vec![
+                ri16(Opcode::MovI, 0, 10),
+                ri16(Opcode::MovI, 1, 0),
+                rrr(Opcode::Div, 2, 0, 1),
+                rrr(Opcode::Ret, 2, 0, 0),
+            ],
+        );
         const_prop_fold(&mut chunk);
         assert_eq!(chunk.code[2].opcode, Opcode::Div as u8);
     }
@@ -688,15 +727,18 @@ mod tests {
         // BB0: r0=1, Jnz → BB2
         // BB1: r0=2, Jmp → BB2
         // BB2: Add r1, r0, r2  — r0 is Bottom
-        let mut chunk = make_chunk("test_join", vec![
-            ri16(Opcode::MovI, 0, 1),    // 0
-            ri16(Opcode::Jnz, 0, 4),     // 1 → jump to 4
-            ri16(Opcode::MovI, 0, 2),    // 2
-            ri16(Opcode::Jmp, 0, 4),     // 3 → jump to 4
-            ri16(Opcode::MovI, 2, 0),    // 4
-            rrr(Opcode::Add, 1, 0, 2),   // 5 — r0 is Bottom
-            rrr(Opcode::Ret, 1, 0, 0),   // 6
-        ]);
+        let mut chunk = make_chunk(
+            "test_join",
+            vec![
+                ri16(Opcode::MovI, 0, 1),  // 0
+                ri16(Opcode::Jnz, 0, 4),   // 1 → jump to 4
+                ri16(Opcode::MovI, 0, 2),  // 2
+                ri16(Opcode::Jmp, 0, 4),   // 3 → jump to 4
+                ri16(Opcode::MovI, 2, 0),  // 4
+                rrr(Opcode::Add, 1, 0, 2), // 5 — r0 is Bottom
+                rrr(Opcode::Ret, 1, 0, 0), // 6
+            ],
+        );
         const_prop_fold(&mut chunk);
         assert_eq!(chunk.code[5].opcode, Opcode::Add as u8);
     }

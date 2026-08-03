@@ -159,6 +159,10 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 |-----------|--------|
 | `@syscall("name"/num)` | Body → `Syscall+Ret`. Implicitly unsafe. |
 | `@api("Symbol")` | Body → `CallExt+Ret`. Win64 on Windows, SysV elsewhere. Implicitly unsafe. |
+| `@api` | Bodyless C ABI import using the Quazi function name as the native symbol. Every call requires `unsafe`; explicit `@api("Symbol")` is recommended. |
+| `@export("Symbol")` | Export an explicitly `pub` Quazi function under a stable C ABI symbol. Bare `@export` uses the function name. |
+| `@repr(C)` | C-compatible scalar/pointer struct layout. FFI structs are pointer-only until aggregate ABI classification is implemented. |
+| `@opaque` | Declare an empty, non-generic foreign handle type which Quazi cannot construct. |
 | `@cfg(key="val")` | Conditional compile. Keys: `target_os`, `target_arch`, `target_abi`. |
 | `@inline` | Force inline eligibility (excluded if recursive). |
 | `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)` | Suppress W01/W02/W03/W07. |
@@ -185,6 +189,17 @@ src = "src"               # optional, defaults to src
 
 [dependencies]
 utils = { path = "../utils", version = "0.1.0" }
+
+[cc]
+sources = ["native/helper.c"]
+include-paths = ["native/include"]
+defines = ["FEATURE=1"]
+flags = ["-Wall"]
+
+[link]
+objects = ["native/prebuilt.o"]
+libraries = ["sqlite3"]
+library-paths = ["native/lib"]
 ```
 
 If a `quazi.lock` file exists, it is used to pin dependency versions. When missing and dependencies are present, a lockfile is created on build/run.
@@ -214,6 +229,7 @@ If a `quazi.lock` file exists, it is used to pin dependency versions. When missi
 | `net` | Done | TcpListener, TcpStream, UdpSocket |
 | `os` | Done | exit, sleep, yield_cpu, getpid, getenv, cwd, etc. |
 | `thread` | Done | spawn/join. No-capture only. |
+| `ffi` | Initial | Linux x86-64 C aliases, `nullptr[T]()`, `CStr`, and `CString`. |
 
 ---
 
@@ -249,6 +265,8 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **Unified formatting for `print`/`println`/`err`/`errln`/`format`** | In progress — support shared placeholder behavior, escaped braces, and format specifications; begin with `{:X}` and `{name:X}` uppercase hexadecimal |
 | **Raw backtick string literals** | ✅ Done — contents are preserved exactly with no backslash escape decoding |
 | **C/Rust-style escapes in non-raw strings** | ✅ Done — control, punctuation, ANSI `\e`, hexadecimal, octal, Unicode scalar, and line-continuation escapes with strict diagnostics |
+| **C ABI FFI phase 1** | ✅ Initial — `@api`, `@export`, scalar/pointer signatures, `@repr(C)`, opaque handles, C compilation, object/library inputs, `.a`/`.so` output |
+| **C ABI FFI phase 2** | Planned — SysV aggregate arguments/returns, SSE float arguments, callbacks/function pointers, variadics, unions, packed/aligned structs, bitfields, flexible arrays, globals, byte strings, checked C-string conversions, header generation |
 
 ### P2 — Codegen Quality
 
@@ -288,6 +306,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-03 | Added the first Linux x86-64 C ABI layer: unified `@api` imports, stable `@export` symbols, scalar/pointer signature validation, `@repr(C)` scalar/pointer layouts, opaque handles, `$CC` native sources, object/archive/shared-library linkage, static/shared outputs, `std.ffi`, and a C→Quazi→C round-trip example. Unsupported ABI cases fail explicitly instead of guessing. |
 | 2026-08-02 | Expanded quoted-string escapes with C control/octal forms and Rust hexadecimal/Unicode forms. Invalid escapes now produce lexer diagnostics; raw strings preserve every escape spelling. |
 | 2026-08-02 | Removed the nested `quazistrap/std` checkout. Std resolution now checks the compiler's Cargo manifest directory for `std/`, then the user installation at `~/.quazi/std`; prelude module headers no longer identify themselves as `std.*`. |
 | 2026-06-07 | Module function namespacing/mangling implemented. Non-entry files prefix top-level functions with module name (`bar.foo`). Entry files keep bare names. `import bar.foo` errors on collision with local fn. `import bar.foo as b_foo` aliases cleanly. All 137 tests pass. |

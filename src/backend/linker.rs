@@ -93,6 +93,7 @@ impl LinkerInvocation {
     fn build_args(&self) -> Vec<OsString> {
         use super::target::Os;
         let mut args: Vec<OsString> = Vec::new();
+        let is_shared = self.extra_flags.iter().any(|flag| flag == "-shared");
 
         match self.target.os {
             Os::Linux => {
@@ -101,8 +102,11 @@ impl LinkerInvocation {
                 args.push("-o".into());
                 args.push(self.output.as_os_str().into());
                 args.push(self.object.as_os_str().into());
+                for flag in &self.extra_flags {
+                    args.push(flag.into());
+                }
                 // Ensure dynamic linker is set up so PLT/GOT resolves correctly.
-                if let Some(interp) = find_dynamic_linker() {
+                if !is_shared && let Some(interp) = find_dynamic_linker() {
                     args.push("-dynamic-linker".into());
                     args.push(interp.into());
                 }
@@ -125,21 +129,26 @@ impl LinkerInvocation {
                 args.push("max-page-size=0x1000".into()); // 4KB instead of default 2MB
                 // ld.lld cannot parse GNU linker scripts, so link the actual
                 // ELF shared objects by full path.
-                if let Some(libc) = find_system_so("libc") {
-                    args.push(libc.into());
-                } else {
-                    args.push("-lc".into());
-                }
-                if let Some(libm) = find_system_so("libm") {
-                    args.push(libm.into());
-                } else {
-                    args.push("-lm".into());
+                if !is_shared {
+                    if let Some(libc) = find_system_so("libc") {
+                        args.push(libc.into());
+                    } else {
+                        args.push("-lc".into());
+                    }
+                    if let Some(libm) = find_system_so("libm") {
+                        args.push(libm.into());
+                    } else {
+                        args.push("-lm".into());
+                    }
                 }
             }
             Os::MacOs => {
                 args.push("-o".into());
                 args.push(self.output.as_os_str().into());
                 args.push(self.object.as_os_str().into());
+                for flag in &self.extra_flags {
+                    args.push(flag.into());
+                }
                 args.push("-lm".into());
             }
             Os::Windows => {
@@ -148,6 +157,9 @@ impl LinkerInvocation {
                 let out_flag = format!("/out:{}", self.output.display());
                 args.push(out_flag.into());
                 args.push(self.object.as_os_str().into());
+                for flag in &self.extra_flags {
+                    args.push(flag.into());
+                }
                 args.push("/subsystem:console".into());
                 args.push("/entry:mainCRTStartup".into());
                 args.push("/debug:none".into());
@@ -158,11 +170,6 @@ impl LinkerInvocation {
                 args.push("vcruntime.lib".into()); // memset, memcpy, memmove, memcmp
                 args.push("legacy_stdio_definitions.lib".into()); // sprintf, printf (CRT stdio forwarders)
             }
-        }
-
-        // Pass through flags from quazi.toml [build].flags.
-        for flag in &self.extra_flags {
-            args.push(flag.into());
         }
 
         args

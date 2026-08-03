@@ -505,7 +505,11 @@ impl StartStub {
                     crash_handler_off,
                     crash_handler_size,
                 ),
-                ("__quazi_print_backtrace".into(), print_bt_off, print_bt_size),
+                (
+                    "__quazi_print_backtrace".into(),
+                    print_bt_off,
+                    print_bt_size,
+                ),
             ],
             start_offset: startup_off,
         }
@@ -781,7 +785,11 @@ impl StartStub {
         Self {
             bytes,
             relocs,
-            extra_symbols: vec![("__quazi_print_backtrace".into(), print_bt_off, print_bt_size)],
+            extra_symbols: vec![(
+                "__quazi_print_backtrace".into(),
+                print_bt_off,
+                print_bt_size,
+            )],
             start_offset: startup_off,
         }
     }
@@ -1336,7 +1344,11 @@ impl StartStub {
                     crash_handler_off,
                     crash_handler_size,
                 ),
-                ("__quazi_print_backtrace".into(), print_bt_off, print_bt_size),
+                (
+                    "__quazi_print_backtrace".into(),
+                    print_bt_off,
+                    print_bt_size,
+                ),
             ],
             start_offset: startup_off,
         }
@@ -1596,7 +1608,11 @@ impl StartStub {
         Self {
             bytes,
             relocs,
-            extra_symbols: vec![("__quazi_print_backtrace".into(), print_bt_off, print_bt_size)],
+            extra_symbols: vec![(
+                "__quazi_print_backtrace".into(),
+                print_bt_off,
+                print_bt_size,
+            )],
             start_offset: startup_off,
         }
     }
