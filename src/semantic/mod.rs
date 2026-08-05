@@ -899,7 +899,15 @@ impl Analyzer {
     pub(super) fn resolve_type_aliases(&self, ty: &TypeKind) -> TypeKind {
         match ty {
             TypeKind::Named { name, type_args } => {
-                if let Some((generic_params, aliased)) = self.type_aliases.get(name) {
+                let alias_entry = self.type_aliases.get(name).or_else(|| {
+                    // Dotted name like "ffi.c_int": also try the leaf segment "c_int".
+                    if name.contains('.') {
+                        name.rsplit('.').next().and_then(|leaf| self.type_aliases.get(leaf))
+                    } else {
+                        None
+                    }
+                });
+                if let Some((generic_params, aliased)) = alias_entry {
                     // Substitute generic params if this alias has type args
                     if type_args.is_empty() || generic_params.is_empty() {
                         let resolved = self.resolve_type_aliases(aliased);
@@ -921,6 +929,7 @@ impl Analyzer {
                     }
                 }
             }
+
             TypeKind::Ref { inner } => TypeKind::Ref {
                 inner: Box::new(Spanned::new(
                     self.resolve_type_aliases(&inner.node),
@@ -2743,5 +2752,882 @@ fn main() void { consume(Point { x: 1, y: 2 }); }
         );
         assert!(report.errors.iter().any(|e| e.code == "S11"));
         assert!(report.errors.iter().any(|e| e.code == "S14"));
+    }
+
+    // ── @api ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ffi_bare_api_uses_function_name() {
+        // @api with no argument is valid; the function name is used as the symbol
+        let report = analyze(
+            r#"
+@api unsafe fn puts(text: *i8) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "bare @api should be valid: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_api_with_explicit_symbol_is_valid() {
+        let report = analyze(
+            r#"
+@api("write") unsafe fn sys_write(fd: i32, buf: *u8, count: usize) isize;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "explicit @api(\"symbol\") should be valid: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_api_with_body_is_rejected() {
+        let report = analyze(
+            r#"
+@api("c_func") unsafe fn c_func(x: i32) i32 { ret x; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S06"),
+            "S06 expected for @api with body: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_api_must_be_unsafe() {
+        // @api functions are bodyless; calling them without unsafe => S11
+        let report = analyze(
+            r#"
+@api("c_func") unsafe fn c_func(x: i32) i32;
+fn main() void {
+    var r: i32 = c_func(1);
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S11"),
+            "S11 expected when calling @api outside unsafe: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_api_call_inside_unsafe_block_is_valid() {
+        let report = analyze(
+            r#"
+@api("c_add") unsafe fn c_add(a: i32, b: i32) i32;
+fn main() void {
+    var r: i32 = 0;
+    unsafe { r = c_add(1, 2); }
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "calling @api inside unsafe block must be valid: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_api_invalid_attribute_arg_rejected() {
+        // @api(42) — integer not valid for @api
+        let report = analyze(
+            r#"
+@api(42) unsafe fn bad(x: i32) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S06"),
+            "S06 expected for invalid @api arg: {:?}",
+            report.errors
+        );
+    }
+
+    // ── @export ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ffi_export_requires_pub() {
+        let report = analyze(
+            r#"
+@export("quazi_fn") fn not_public(x: i32) i32 { ret x; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S06"),
+            "S06 expected for non-pub @export: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_export_requires_body() {
+        let report = analyze(
+            r#"
+@export("quazi_fn") pub unsafe fn no_body(x: i32) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S06"),
+            "S06 expected for bodyless @export: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_export_bare_uses_function_name() {
+        // Bare @export (no symbol argument) should be valid and use fn name
+        let report = analyze(
+            r#"
+@export pub fn quazi_add(a: i32, b: i32) i32 { ret a + b; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "bare @export should be valid: {:?}",
+            report.errors
+        );
+        assert_eq!(
+            report.exported_symbols.get("quazi_add"),
+            Some(&"quazi_add".to_string()),
+        );
+    }
+
+    #[test]
+    fn ffi_export_with_explicit_symbol_is_recorded() {
+        let report = analyze(
+            r#"
+@export("my_lib_add") pub fn add(a: i32, b: i32) i32 { ret a + b; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "explicit @export should be valid: {:?}",
+            report.errors
+        );
+        assert_eq!(
+            report.exported_symbols.get("add"),
+            Some(&"my_lib_add".to_string()),
+        );
+    }
+
+    #[test]
+    fn ffi_export_cannot_combine_with_api() {
+        let report = analyze(
+            r#"
+@api("x") @export("y") pub fn bad(x: i32) i32 { ret x; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S06"),
+            "S06 expected for @export + @api combination: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_syscall_and_api_cannot_be_combined() {
+        let report = analyze(
+            r#"
+@syscall("write") @api("write") unsafe fn bad_write(fd: i32, buf: *u8, n: usize) isize;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S06"),
+            "S06 expected for @syscall + @api: {:?}",
+            report.errors
+        );
+    }
+
+    // ── FFI signature restrictions ────────────────────────────────────────────
+
+    #[test]
+    fn ffi_rejects_float_parameter() {
+        let report = analyze(
+            r#"
+@api("c_fn") unsafe fn c_fn(x: f32) f32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for float FFI param: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_rejects_float64_return() {
+        let report = analyze(
+            r#"
+@api("get_pi") unsafe fn get_pi() f64;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for f64 return: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_rejects_str_parameter() {
+        let report = analyze(
+            r#"
+@api("c_fn") unsafe fn c_fn(s: str) void;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for str FFI param: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_rejects_variadic_parameter() {
+        let report = analyze(
+            r#"
+@api("printf") unsafe fn c_printf(fmt: *i8, ...args: i32) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for variadic FFI: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_rejects_more_than_six_params() {
+        let report = analyze(
+            r#"
+@api("too_many") unsafe fn too_many(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for 7+ FFI params: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_allows_exactly_six_params() {
+        let report = analyze(
+            r#"
+@api("six_args") unsafe fn six_args(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "six params should be allowed: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_rejects_generic_api_function() {
+        let report = analyze(
+            r#"
+@api("gen_fn") unsafe fn gen_fn[T](x: i32) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for generic FFI function: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_rejects_generic_export_function() {
+        let report = analyze(
+            r#"
+@export("gen_export") pub fn gen_export[T](x: i32) i32 { ret x; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for generic @export: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_allows_void_return() {
+        let report = analyze(
+            r#"
+@api("free") unsafe fn c_free(ptr: *u8) void;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "void return from FFI should be valid: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_allows_bool_parameter_and_return() {
+        let report = analyze(
+            r#"
+@api("c_flag") unsafe fn c_flag(enabled: bool) bool;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "bool FFI param/return should be valid: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_allows_all_integer_widths() {
+        let report = analyze(
+            r#"
+@api("i8_fn") unsafe fn i8_fn(a: i8) i8;
+@api("i16_fn") unsafe fn i16_fn(a: i16) i16;
+@api("i32_fn") unsafe fn i32_fn(a: i32) i32;
+@api("i64_fn") unsafe fn i64_fn(a: i64) i64;
+@api("u8_fn") unsafe fn u8_fn(a: u8) u8;
+@api("u16_fn") unsafe fn u16_fn(a: u16) u16;
+@api("u32_fn") unsafe fn u32_fn(a: u32) u32;
+@api("u64_fn") unsafe fn u64_fn(a: u64) u64;
+@api("usize_fn") unsafe fn usize_fn(a: usize) usize;
+@api("isize_fn") unsafe fn isize_fn(a: isize) isize;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "all integer widths should be valid FFI types: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_allows_raw_pointer_parameter() {
+        let report = analyze(
+            r#"
+@api("memcpy") unsafe fn c_memcpy(dst: *u8, src: *u8, n: usize) *u8;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "raw pointer FFI params/return should be valid: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_type_alias_resolves_for_validation() {
+        // Type aliases (like c_int = i32) must be resolved before FFI validation
+        let report = analyze(
+            r#"
+type c_int = i32;
+type c_char = i8;
+@api("strlen") unsafe fn c_strlen(s: *c_char) usize;
+@export("quazi_sum") pub fn qz_sum(a: c_int, b: c_int) c_int { ret a + b; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "type aliases should resolve correctly for FFI: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_type_alias_to_float_still_rejected() {
+        // Even through a type alias, floats must be rejected in FFI
+        let report = analyze(
+            r#"
+type c_float = f32;
+@api("c_fn") unsafe fn c_fn(x: c_float) c_float;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for float alias in FFI: {:?}",
+            report.errors
+        );
+    }
+
+    // ── @repr(C) ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ffi_repr_c_basic_layout() {
+        // struct { i8, i32 } → size 8 with padding, offsets [0, 4]
+        let report = analyze(
+            r#"
+@repr(C) struct S { a: i8, b: i32, }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "basic @repr(C) should be valid: {:?}",
+            report.errors
+        );
+        assert_eq!(report.struct_sizes.get("S"), Some(&8));
+        assert_eq!(
+            report.struct_field_offsets.get("S"),
+            Some(&vec![("a".into(), 0), ("b".into(), 4)])
+        );
+    }
+
+    #[test]
+    fn ffi_repr_c_rejects_generic_struct() {
+        let report = analyze(
+            r#"
+@repr(C) struct Pair[T] { first: i32, second: i32, }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for generic @repr(C): {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_repr_c_rejects_str_field() {
+        let report = analyze(
+            r#"
+@repr(C) struct Bad { name: str, value: i32, }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for str field in @repr(C): {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_repr_c_rejects_float_field() {
+        let report = analyze(
+            r#"
+@repr(C) struct Bad { x: f32, y: f32, }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for float field in @repr(C): {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_repr_c_pointer_fields_valid() {
+        // All fields are raw pointers — valid in @repr(C) phase one
+        let report = analyze(
+            r#"
+@repr(C) struct Node { next: *Node, prev: *Node, data: *u8, }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "pointer-only @repr(C) struct should be valid: {:?}",
+            report.errors
+        );
+        // All pointers = 8 bytes each, naturally aligned → size 24, offsets 0,8,16
+        assert_eq!(report.struct_sizes.get("Node"), Some(&24));
+        assert_eq!(
+            report.struct_field_offsets.get("Node"),
+            Some(&vec![
+                ("next".into(), 0),
+                ("prev".into(), 8),
+                ("data".into(), 16),
+            ])
+        );
+    }
+
+    #[test]
+    fn ffi_repr_c_all_integer_fields_layout() {
+        // struct { i8, i8, i16, i32 } → should be 8 bytes total with C layout
+        let report = analyze(
+            r#"
+@repr(C) struct Packed { a: i8, b: i8, c: i16, d: i32, }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "all-integer @repr(C) struct: {:?}",
+            report.errors
+        );
+        assert_eq!(report.struct_sizes.get("Packed"), Some(&8));
+        assert_eq!(
+            report.struct_field_offsets.get("Packed"),
+            Some(&vec![
+                ("a".into(), 0),
+                ("b".into(), 1),
+                ("c".into(), 2),
+                ("d".into(), 4),
+            ])
+        );
+    }
+
+    #[test]
+    fn ffi_repr_wrong_arg_rejected() {
+        let report = analyze(
+            r#"
+@repr(Rust) struct Bad { x: i32, }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for @repr(Rust): {:?}",
+            report.errors
+        );
+    }
+
+    // ── @opaque ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ffi_opaque_empty_struct_valid() {
+        let report = analyze(
+            r#"
+@opaque pub struct sqlite3 {}
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "empty @opaque struct should be valid: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_opaque_with_fields_rejected() {
+        let report = analyze(
+            r#"
+@opaque pub struct Bad { x: i32, }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for non-empty @opaque: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_opaque_generic_rejected() {
+        let report = analyze(
+            r#"
+@opaque pub struct GenHandle[T] {}
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for generic @opaque: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_opaque_used_as_pointer_param() {
+        // @opaque types should be usable as raw-pointer FFI params
+        let report = analyze(
+            r#"
+@opaque pub struct sqlite3 {}
+@api("sqlite3_close") unsafe fn sqlite3_close(db: *sqlite3) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "@opaque pointer param should be valid: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_opaque_double_pointer_param_via_double_star() {
+        // sqlite3_open uses **sqlite3 — double pointer via StarStar token is now
+        // supported: the parser treats **T as *(*T).
+        let report = analyze(
+            r#"
+@opaque pub struct sqlite3 {}
+@api("sqlite3_open") unsafe fn sqlite3_open(filename: *i8, database: **sqlite3) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "**opaque param should be valid after StarStar parser fix: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_double_star_parses_as_nested_pointer() {
+        // Verify that **T parses as RawPtr { inner: RawPtr { inner: T } } without
+        // a panic. The semantic check then accepts *(*T) as a valid FFI type.
+        let report = analyze(
+            r#"
+@api("f") unsafe fn f(p: **i32) **i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "**T should parse and be a valid FFI type after fix: {:?}",
+            report.errors
+        );
+    }
+
+    // ── @repr(C) struct through pointer in FFI ────────────────────────────────
+
+    #[test]
+    fn ffi_repr_c_struct_through_pointer_is_valid() {
+        let report = analyze(
+            r#"
+@repr(C) struct Record { tag: i8, value: i32, }
+@api("read_record") unsafe fn read_record(r: *Record) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "@repr(C) struct through pointer should be a valid FFI param: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_repr_c_struct_by_value_is_rejected() {
+        let report = analyze(
+            r#"
+@repr(C) struct Vec2 { x: i32, y: i32, }
+@api("use_vec") unsafe fn use_vec(v: Vec2) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for @repr(C) struct by value in FFI: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_repr_c_struct_return_by_value_is_rejected() {
+        let report = analyze(
+            r#"
+@repr(C) struct Vec2 { x: i32, y: i32, }
+@api("make_vec") unsafe fn make_vec() Vec2;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for @repr(C) return by value: {:?}",
+            report.errors
+        );
+    }
+
+    // ── nullptr ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ffi_nullptr_usage_valid() {
+        let report = analyze(
+            r#"
+pub unsafe fn nullptr[T]() *T { ret 0; }
+@opaque pub struct Ctx {}
+fn main() void {
+    unsafe {
+        var p: *Ctx = nullptr[Ctx]();
+    }
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "nullptr[T]() should be usable: {:?}",
+            report.errors
+        );
+    }
+
+    // ── @export symbol recording ──────────────────────────────────────────────
+
+    #[test]
+    fn ffi_multiple_exports_all_recorded() {
+        let report = analyze(
+            r#"
+@export("quazi_add") pub fn add(a: i32, b: i32) i32 { ret a + b; }
+@export("quazi_sub") pub fn sub(a: i32, b: i32) i32 { ret a - b; }
+@export("quazi_mul") pub fn mul(a: i32, b: i32) i32 { ret a * b; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "multiple exports should all be valid: {:?}",
+            report.errors
+        );
+        assert_eq!(
+            report.exported_symbols.get("add"),
+            Some(&"quazi_add".to_string())
+        );
+        assert_eq!(
+            report.exported_symbols.get("sub"),
+            Some(&"quazi_sub".to_string())
+        );
+        assert_eq!(
+            report.exported_symbols.get("mul"),
+            Some(&"quazi_mul".to_string())
+        );
+    }
+
+    #[test]
+    fn ffi_export_pointer_return_valid() {
+        // @export does not exempt from S12: a raw-pointer return still requires
+        // `unsafe fn` on the Quazi side. The exported symbol is recorded correctly.
+        let report = analyze(
+            r#"
+@export("quazi_buf") pub unsafe fn get_buf() *u8 { ret 0; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "pointer-returning @export with unsafe fn should be valid: {:?}",
+            report.errors
+        );
+        assert_eq!(
+            report.exported_symbols.get("get_buf"),
+            Some(&"quazi_buf".to_string())
+        );
+    }
+
+    // ── Calling @api inside unsafe fn ────────────────────────────────────────
+
+    #[test]
+    fn ffi_api_callable_inside_unsafe_fn() {
+        let report = analyze(
+            r#"
+@api("c_work") unsafe fn c_work(x: i32) i32;
+unsafe fn do_work(x: i32) i32 {
+    ret c_work(x);
+}
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "@api callable from unsafe fn: {:?}",
+            report.errors
+        );
+    }
+
+    // ── S14 from export, not just @api ────────────────────────────────────────
+
+    #[test]
+    fn ffi_export_with_float_param_rejected() {
+        let report = analyze(
+            r#"
+@export("quazi_fn") pub fn qz_fn(x: f64) i32 { ret 0; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for float param in @export: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_export_with_str_return_rejected() {
+        let report = analyze(
+            r#"
+@export("quazi_fn") pub fn qz_fn() str { ret "hello"; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "S14 expected for str return in @export: {:?}",
+            report.errors
+        );
+    }
+
+    // ── repr(C) layout: tail padding ─────────────────────────────────────────
+
+    #[test]
+    fn ffi_repr_c_tail_padding_applied() {
+        // struct { i32, i8 } → size should be 8 (tail padding to i32 align)
+        let report = analyze(
+            r#"
+@repr(C) struct TailPad { x: i32, y: i8, }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "tail-padded @repr(C) should be valid: {:?}",
+            report.errors
+        );
+        assert_eq!(report.struct_sizes.get("TailPad"), Some(&8));
+        assert_eq!(
+            report.struct_field_offsets.get("TailPad"),
+            Some(&vec![("x".into(), 0), ("y".into(), 4)])
+        );
+    }
+
+    #[test]
+    fn ffi_repr_c_single_pointer_field() {
+        let report = analyze(
+            r#"
+@repr(C) struct Handle { ptr: *u8, }
+fn main() void { }
+"#,
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.struct_sizes.get("Handle"), Some(&8));
+        assert_eq!(
+            report.struct_field_offsets.get("Handle"),
+            Some(&vec![("ptr".into(), 0)])
+        );
     }
 }

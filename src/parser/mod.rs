@@ -1636,7 +1636,12 @@ impl Parser {
                 };
                 TypeKind::Dyn { trait_name }
             }
-            TokenKind::Ident(name) => {
+            TokenKind::Ident(mut name) => {
+                while self.at(TokenKind::Dot) {
+                    self.advance();
+                    let next = self.parse_ident()?;
+                    name = format!("{}.{}", name, next);
+                }
                 let type_args = self.parse_optional_type_args()?;
                 TypeKind::Named { name, type_args }
             }
@@ -1693,6 +1698,24 @@ impl Parser {
                 return Ok(Spanned::new(
                     TypeKind::RawPtr {
                         inner: Box::new(inner),
+                    },
+                    span,
+                ));
+            }
+            // `**T` is lexed as a single `StarStar` token. Treat it as `*(*T)`.
+            TokenKind::StarStar => {
+                let inner = self.parse_type()?;
+                let inner_span = inner.span;
+                let ptr_inner = Spanned::new(
+                    TypeKind::RawPtr {
+                        inner: Box::new(inner),
+                    },
+                    inner_span,
+                );
+                let span = Span::merge(to_ast_span(start), inner_span);
+                return Ok(Spanned::new(
+                    TypeKind::RawPtr {
+                        inner: Box::new(ptr_inner),
                     },
                     span,
                 ));

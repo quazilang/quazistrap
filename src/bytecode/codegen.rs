@@ -496,7 +496,8 @@ impl<'a> Codegen<'a> {
             }
 
             if mono.fn_name.contains('.') {
-                // Impl method: "TypeName.method" — search impl blocks.
+                // Could be an impl method ("TypeName.method") or a module-namespaced
+                // top-level generic function ("module.fn"). Try impl blocks first.
                 let (type_part, method_part) = mono.fn_name.split_once('.').unwrap();
                 let mut found = false;
                 for item in &program.items {
@@ -556,11 +557,56 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
+                // If no impl block matched, fall through to top-level lookup. This handles
+                // module-namespaced generic functions, e.g. `ffi.nullptr` whose fn_name
+                // contains a dot but is not an impl method.
+                if !found {
+                    let original = program.items.iter().find(|item| {
+                        if let ItemKind::Fn { name, attributes, .. } = &item.node {
+                            self.resolve_item_name(item.span, name, attributes) == mono.fn_name
+                        } else {
+                            false
+                        }
+                    });
+                    if let Some(Item {
+                        node:
+                            ItemKind::Fn {
+                                params,
+                                body,
+                                attributes,
+                                generic_params,
+                                ..
+                            },
+                        ..
+                    }) = original
+                    {
+                        let subst: HashMap<String, TypeKind> = generic_params
+                            .iter()
+                            .zip(mono.type_args.iter())
+                            .map(|(p, t)| (p.clone(), t.clone()))
+                            .collect();
+                        if let Some(chunk) = self.compile_fn_with_subst(
+                            mono_name,
+                            params,
+                            body.as_ref().map(|b| b as &Block),
+                            attributes,
+                            &mut chunks,
+                            &mut next_closure_idx,
+                            subst,
+                        ) {
+                            chunks.push(chunk);
+                        }
+                    }
+                }
             } else {
-                // Top-level function.
-                let original = program.items.iter().find(
-                    |item| matches!(&item.node, ItemKind::Fn { name, .. } if name == &mono.fn_name),
-                );
+                // Top-level function (bare name, no dot).
+                let original = program.items.iter().find(|item| {
+                    if let ItemKind::Fn { name, attributes, .. } = &item.node {
+                        self.resolve_item_name(item.span, name, attributes) == mono.fn_name
+                    } else {
+                        false
+                    }
+                });
                 if let Some(Item {
                     node:
                         ItemKind::Fn {
@@ -3318,8 +3364,7 @@ impl<'a> FnCompiler<'a> {
                     let dst = self.alloc_reg();
                     // Logical not: dst = (src == 0) ? 1 : 0
                     self.chunk.emit(ri16(Opcode::MovI, dst, 1));
-                    self.chunk.emit(rrr(Opcode::Cmp, 0, src, 0));
-                    let jump_idx = self.chunk.emit(ri16(Opcode::Jne, dst, 0));
+                    let jump_idx = self.chunk.emit(ri16(Opcode::Jz, src, 0));
                     self.chunk.emit(ri16(Opcode::MovI, dst, 0));
                     self.chunk.patch_jump(jump_idx, self.chunk.len() as u16);
                     dst
@@ -3921,9 +3966,17 @@ impl<'a> FnCompiler<'a> {
                     let dst = self.alloc_reg();
                     // Use sema-resolved name when available; otherwise form the target from
                     // the module chain. The resolved name already accounts for namespacing.
-                    let call_target = self
+                    let mut call_target = self
                         .resolved_fn_for_span(expr.span)
                         .unwrap_or_else(|| format!("{}.{}", module_base, method));
+
+                    // Monomorphized generic function: resolve to mangled name.
+                    if !type_args.is_empty()
+                        && let Some(mono_name) =
+                            self.resolve_monomorphized_name(&call_target, type_args)
+                    {
+                        call_target = mono_name;
+                    }
                     let is_fmt_fn = self.str_variadic_fns.contains(call_target.as_str());
                     let is_variadic_intrinsic =
                         self.variadic_intrinsic_fns.contains(call_target.as_str());

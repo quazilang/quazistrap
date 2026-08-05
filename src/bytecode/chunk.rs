@@ -92,6 +92,10 @@ impl Chunk {
         buf.extend_from_slice(name_bytes);
         buf.extend_from_slice(&(self.param_count as u16).to_le_bytes());
         buf.push(self.reg_count);
+        let mut flags = 0u8;
+        if self.intrinsic { flags |= 1; }
+        if self.variadic { flags |= 2; }
+        buf.push(flags);
         buf.extend_from_slice(&(self.constants.len() as u16).to_le_bytes());
         for c in &self.constants {
             match c {
@@ -146,7 +150,7 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
         return Err("truncated QZI header".to_string());
     }
     let version = buf[pos];
-    if version != 1 && version != 2 {
+    if version != 1 && version != 2 && version != 3 {
         return Err(format!("unsupported QZI version {}", version));
     }
     pos += 1;
@@ -172,16 +176,25 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             .map_err(|_| "invalid UTF-8 in chunk name".to_string())?;
         pos += name_len;
 
-        let (param_count, reg_count) = if version >= 2 {
+        let (param_count, reg_count, intrinsic, variadic) = if version >= 3 {
+            if buf.len() < pos + 4 {
+                return Err("truncated chunk param/reg/flags".to_string());
+            }
+            let pc = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+            let rc = buf[pos + 2];
+            let flags = buf[pos + 3];
+            pos += 4;
+            (pc, rc, (flags & 1) != 0, (flags & 2) != 0)
+        } else if version >= 2 {
             if buf.len() < pos + 3 {
                 return Err("truncated chunk param_count/reg_count".to_string());
             }
             let pc = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
             let rc = buf[pos + 2];
             pos += 3;
-            (pc, rc)
+            (pc, rc, false, false)
         } else {
-            (0, 0)
+            (0, 0, false, false)
         };
 
         if buf.len() < pos + 2 {
@@ -292,13 +305,13 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
         }
 
         chunks.push(Chunk {
-            code,
-            constants,
             name,
             param_count,
             reg_count,
-            intrinsic: false,
-            variadic: false,
+            intrinsic,
+            variadic,
+            constants,
+            code,
         });
     }
 
@@ -306,7 +319,7 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 2;
+pub const QZI_VERSION: u8 = 3;
 
 pub fn serialize_qzi(chunks: &[Chunk]) -> Vec<u8> {
     let mut buf = Vec::new();
