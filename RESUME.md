@@ -72,9 +72,108 @@ Implement the following changes to the Quazilang compiler (quazistrap), in exact
   10. Cross-Basic-Block Const Folding
       - Extend const propagation beyond single expressions in `src/bytecode/codegen.rs`.
 
+
+
+## FFI Roadmap — Full Plan
+
+### What's done (Phase 1)
+- `@api` / `@export` / `@repr(C)` / `@opaque` attributes
+- Scalar + pointer types in FFI signatures (up to 6 SysV register args)
+- `std.ffi`: `c_int`, `c_char`, etc.; `CStr`, `CString`, `nullptr[T]()`
+- C source compilation via `[cc]` in `quazi.toml`
+- Linking `.o`, `.a`, `.so` via `[link]` in `quazi.toml`
+- `CallExt` in encoder: SysV / Win64 register args (scalars, pointers)
+
+### Phase 2 — C Variadics (`printf`, `scanf`, etc.) (✅ DONE)
+**Goal**: Allow calling C functions that use `...` (C variadics), e.g. `printf`, `dprintf`, `ioctl`.
+
+Items:
+1. [x] **Parser/AST**: add `c_variadic: bool` flag on `Fn` items and parameters.
+   - Surface syntax: `@api("printf") unsafe fn printf(fmt: *c_char, ...);`
+   - The `...` at the end means C variadic, not Quazi variadic. Parse as a bodyless decl only.
+2. [x] **Semantic (`typecheck.rs`)**: lift the S14 "variadics not supported" error for `@api` functions when the variadic param uses `...` with no type annotation (C-style). Regular Quazi variadics still require a type.
+3. [x] **Codegen (`codegen.rs`)**: `compile_api_fn` — set `flags = arg_count | C_VARIADIC_FLAG` on the `CallExt` instruction so the encoder knows to emit the ABI-required AL=0 for SysV float arg count.
+4. [x] **Encoder (`encoder.rs`)**: in `CallExt`, if `C_VARIADIC_FLAG` is set, zero `rax` before the call (SysV requires `al` = number of XMM args for variadic calls).
+5. [x] **`std.ffi`**: add `va_list` opaque struct and `c_variadic_fn` type alias pattern (documentation only; Quazi will not marshal `va_list` internally).
+6. [x] **Test**: `examples/19-cvariadics/` — call `printf` and `dprintf` directly; verify output.
+
+### Phase 3 — SysV Aggregate Arguments / Returns (struct by value)
+**Goal**: Pass and return `@repr(C)` structs by value according to the SysV AMD64 ABI classification rules.
+
+Items:
+1. [ ] **ABI Classifier**: new module `src/backend/x86_64/sysv_abi.rs`.
+   - `classify_type(fields: &[(TypeKind)], aliases) -> ArgClass`
+   - `ArgClass`: `Integer`, `Sse`, `Memory` (for structs > 16 bytes or with unclassifiable fields).
+   - `classify_struct(size, fields) -> (lo_class, hi_class)` — splits 8-byte halves.
+2. [ ] **Codegen**: when a param/return type is a `@repr(C)` named struct:
+   - If `Memory` class: pass pointer, emit `Lea` of the struct allocation, caller allocates stack slot.
+   - If `Integer`/`Sse` in 1 or 2 eightbytes: load into register pairs (rdi+rsi, etc.).
+3. [ ] **Encoder**: extend `CallExt` to accept struct register pairs via additional `CallArg` slots; emit `xmm` loads for `Sse`-class halves.
+4. [ ] **Semantic**: lift the S14 "pass C structs through raw pointers" restriction for `@repr(C)` structs that the classifier accepts.
+5. [ ] **Return aggregates**: for functions returning structs by value:
+   - ≤ 16 bytes + `Integer` class: returned in `rax:rdx`.
+   - `Memory` class: caller passes hidden first arg pointer (sret).
+6. [ ] **Test**: `examples/20-repr-c-structs/` — pass and return `Point { x: f64, y: f64 }` by value from C.
+
+### Phase 4 — SSE / Float Arguments
+**Goal**: Pass `f32`/`f64` args in `xmm0`–`xmm7` per SysV ABI instead of integer registers.
+
+Items:
+1. [ ] **Encoder**: in `CallExt`, before calling, check each param type annotation stored in the chunk constants (needs new metadata in `CallExt` encoding or a separate `CallArgF` opcode).
+2. [ ] **Option A (simpler)**: add a new opcode `CallArgF` that marks the next arg as floating-point; encoder moves it to the next `xmmN` register instead of the next `rdiN`.
+3. [ ] **Codegen**: when compiling a call to an `@api` function, emit `CallArgF` for each `f32`/`f64` param.
+4. [ ] **`std.ffi`**: expose `c_float` and `c_double` as aliases for `f32` and `f64` (already done); update docs noting SSE calling convention.
+5. [ ] **Test**: `examples/21-ffi-floats/` — call `sin(x: f64)`, `fabs(x: f64)` from `libm`.
+
+### Phase 5 — Callbacks / Function Pointers over FFI
+**Goal**: Pass Quazi function pointers to C APIs (e.g. `qsort`, `pthread_create`).
+
+Items:
+1. [ ] **Semantic**: validate that a `fn(...)` type passed to an `@api` call is `@repr(C)`-compatible (no closures with captures, no generics, only FFI-safe param/return types).
+2. [ ] **Codegen**: `FnAddr` const-pool entry already exists; ensure it generates a correct PLT relocation for cross-module function addresses.
+3. [ ] **`@export` on lambdas**: allow `@export` on named top-level functions so they can be passed as C callbacks; already partially supported.
+4. [ ] **`@no_mangle` + `unsafe fn`**: ensure calling convention of exported callback matches what C expects (SysV / Win64 depending on target).
+5. [ ] **Test**: `examples/22-callbacks/` — pass a Quazi function to `qsort`; sort an integer array.
+
+### Phase 6 — Foreign Global Variables
+**Goal**: Read and write C global variables (e.g. `errno`, `stdout`, `environ`).
+
+Items:
+1. [ ] **Parser**: add `@api_global("symbol")` attribute for variable declarations.
+   - Surface: `@api_global("errno") var errno: c_int;` at top level.
+2. [ ] **Semantic**: validate `@api_global` — must be a top-level `var`, non-generic, FFI-safe type.
+3. [ ] **Codegen**: emit a `Lea`-style reference: load address of the external symbol into a register; reads become `Load`; writes become `Store`.
+4. [ ] **Sections/Relocations**: add the symbol as an undefined extern in the object file; linker resolves it.
+5. [ ] **`std.ffi`**: expose `errno` as a getter function (preferred over direct global — avoids threading issues with `errno` macros) using `__errno_location()` on Linux.
+6. [ ] **Test**: `examples/23-ffi-globals/` — read `stdout` FILE pointer; check `errno` after a failing syscall.
+
+### Phase 7 — `qz header` Generator
+**Goal**: Emit a C header (`.h`) for all `@export`-annotated Quazi functions, so C code can call into Quazi libraries.
+
+Items:
+1. [ ] **CLI**: `qz header <file|project>` subcommand.
+2. [ ] **Type Printer**: map Quazi types → C type strings:
+   - `i32` → `int32_t`, `u8` → `uint8_t`, `*u8` → `uint8_t*`, `void` → `void`, `@repr(C)` struct → struct forward decl, etc.
+3. [ ] **Generator**: iterate `SemanticReport.exported_symbols`, render each as a C function prototype with `extern "C"` guards.
+4. [ ] **Output**: write to `<stem>.h` next to the object or to `-o <path>`.
+5. [ ] **Test**: compile a Quazi library to `.so`, generate its header, and include it from a C program that calls into Quazi.
+
+---
+
+### FFI Phase Priority Order
+| Phase | Feature | Priority |
+|-------|---------|----------|
+| 2 | C Variadics (`printf`) | **DONE** |
+| 3 | Aggregate args/returns | **HIGH** — needed for most real C APIs |
+| 4 | SSE float arguments | **HIGH** — `sin`, `cos`, etc. |
+| 5 | Callbacks/fn pointers | Medium |
+| 6 | Foreign globals | Medium |
+| 7 | Header generator | Low |
+
   ## Constraints
   - Do not create excess intrinsics or attributes.
   - Do not hardcode behavior that can be implemented in Quazilang itself.
   - Keep code clean and maintainable.
   - Update AGENTS.md to reflect any command changes or new behavior.
   - Run `cargo test` after each major change to ensure nothing breaks.
+

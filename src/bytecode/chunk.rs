@@ -27,6 +27,9 @@ pub struct Chunk {
     pub reg_count: u8,
     pub intrinsic: bool,
     pub variadic: bool,
+    /// True when this is an @api function wrapping a C variadic (ends with bare `...`).
+    /// The encoder emits `xor rax, rax` (al=0 XMM args) before the call per SysV ABI.
+    pub c_variadic: bool,
 }
 
 impl Chunk {
@@ -95,6 +98,7 @@ impl Chunk {
         let mut flags = 0u8;
         if self.intrinsic { flags |= 1; }
         if self.variadic { flags |= 2; }
+        if self.c_variadic { flags |= 4; }
         buf.push(flags);
         buf.extend_from_slice(&(self.constants.len() as u16).to_le_bytes());
         for c in &self.constants {
@@ -176,25 +180,17 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             .map_err(|_| "invalid UTF-8 in chunk name".to_string())?;
         pos += name_len;
 
-        let (param_count, reg_count, intrinsic, variadic) = if version >= 3 {
+        let (param_count, reg_count, intrinsic, variadic, c_variadic) = if version >= 2 {
             if buf.len() < pos + 4 {
-                return Err("truncated chunk param/reg/flags".to_string());
+                return Err("truncated chunk params/regs/flags".to_string());
             }
             let pc = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
             let rc = buf[pos + 2];
             let flags = buf[pos + 3];
             pos += 4;
-            (pc, rc, (flags & 1) != 0, (flags & 2) != 0)
-        } else if version >= 2 {
-            if buf.len() < pos + 3 {
-                return Err("truncated chunk param_count/reg_count".to_string());
-            }
-            let pc = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
-            let rc = buf[pos + 2];
-            pos += 3;
-            (pc, rc, false, false)
+            (pc, rc, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0)
         } else {
-            (0, 0, false, false)
+            (0, 0, false, false, false)
         };
 
         if buf.len() < pos + 2 {
@@ -310,6 +306,7 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             reg_count,
             intrinsic,
             variadic,
+            c_variadic,
             constants,
             code,
         });
