@@ -1340,7 +1340,8 @@ impl<'a> FnEncoder<'a> {
 
             Some(Opcode::CallExt) => {
                 let (dst, idx) = instr.ri16();
-                let arg_count = instr.flags as usize;
+                let c_variadic = (instr.flags & 0x80) != 0;
+                let arg_count = (instr.flags & 0x7F) as usize;
                 match chunk.constants.get(idx as usize) {
                     Some(ConstPoolEntry::Str(sym)) => {
                         let sym = sym.clone();
@@ -1359,6 +1360,12 @@ impl<'a> FnEncoder<'a> {
                         } else {
                             for (i, &reg) in SYSV_REGS.iter().enumerate().take(arg_count) {
                                 emit!(asm.mov(reg, slot(i as u8)));
+                            }
+                            if c_variadic {
+                                // SysV ABI requires AL to contain the number of vector registers
+                                // used for variadic arguments. We currently don't pass floats
+                                // to variadic functions, so we set AL (via RAX) to 0.
+                                emit!(asm.xor(rax, rax));
                             }
                         }
                         call_ext!(sym, RelocKind::Plt32);

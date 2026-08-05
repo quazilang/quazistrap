@@ -32,6 +32,7 @@ impl Analyzer {
                 attributes,
                 unsafe_fn,
                 pub_fn,
+                c_variadic,
                 ..
             } => {
                 self.validate_foreign_attributes(
@@ -42,6 +43,7 @@ impl Analyzer {
                     body,
                     attributes,
                     *pub_fn,
+                    *c_variadic,
                     item.span,
                 );
                 let is_foreign = attributes
@@ -321,6 +323,7 @@ impl Analyzer {
         body: &Option<Block>,
         attributes: &[Attribute],
         is_public: bool,
+        c_variadic: bool,
         item_span: Span,
     ) {
         let mut syscall_attr: Option<&Attribute> = None;
@@ -358,7 +361,7 @@ impl Analyzer {
                     format!("@api function `{name}` must be a bodyless declaration ending in `;`"),
                 );
             }
-            self.validate_ffi_signature(name, generic_params, params, return_ty, item_span);
+            self.validate_ffi_signature(name, generic_params, params, return_ty, item_span, c_variadic);
         }
 
         if let Some(attr) = export_attr {
@@ -384,7 +387,7 @@ impl Analyzer {
                     format!("@export function `{name}` must be declared `pub`"),
                 );
             }
-            self.validate_ffi_signature(name, generic_params, params, return_ty, item_span);
+            self.validate_ffi_signature(name, generic_params, params, return_ty, item_span, false);
         }
     }
 
@@ -441,6 +444,7 @@ impl Analyzer {
         params: &[Param],
         return_ty: &Type,
         span: Span,
+        c_variadic: bool,
     ) {
         if !generic_params.is_empty() {
             self.push_error(
@@ -453,7 +457,7 @@ impl Analyzer {
             self.push_error(
                 span,
                 "S14",
-                format!("C variadics are not supported yet in FFI function `{name}`"),
+                format!("Quazi-style variadics are not supported in FFI function `{name}`; use bare `...` for C variadics"),
             );
         }
         if params.len() > 6 {
@@ -2549,7 +2553,21 @@ impl Analyzer {
         };
         // Use total arg count (positional + named, reflected in arg_evals).
         let total_arg_count = arg_evals.len();
-        if !is_variadic && substituted_params.len() != total_arg_count {
+        let is_c_variadic = sym.attributes.contains(&"c_variadic".to_string());
+        
+        if is_c_variadic {
+            if total_arg_count < substituted_params.len() {
+                self.push_error(
+                    callee_span,
+                    "S08",
+                    format!(
+                        "expected at least {} args, got {}",
+                        substituted_params.len(),
+                        total_arg_count
+                    ),
+                );
+            }
+        } else if !is_variadic && substituted_params.len() != total_arg_count {
             self.push_error(
                 callee_span,
                 "S08",

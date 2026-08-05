@@ -266,7 +266,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **Raw backtick string literals** | ✅ Done — contents are preserved exactly with no backslash escape decoding |
 | **C/Rust-style escapes in non-raw strings** | ✅ Done — control, punctuation, ANSI `\e`, hexadecimal, octal, Unicode scalar, and line-continuation escapes with strict diagnostics |
 | **C ABI FFI phase 1** | ✅ Initial — `@api`, `@export`, scalar/pointer signatures, `@repr(C)`, opaque handles, C compilation, object/library inputs, `.a`/`.so` output |
-| **C ABI FFI phase 2** | Planned — SysV aggregate arguments/returns, SSE float arguments, callbacks/function pointers, variadics, unions, packed/aligned structs, bitfields, flexible arrays, globals, byte strings, checked C-string conversions, header generation |
+| **C ABI FFI phase 2** | Partial — C variadics (`...` in `@api`) ✅ Done; remaining: SysV aggregate arguments/returns, SSE float arguments, callbacks/function pointers, unions, packed/aligned structs, bitfields, flexible arrays, globals, byte strings, checked C-string conversions, header generation |
 
 ### P2 — Codegen Quality
 
@@ -313,11 +313,12 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | 2026-06-11 | Fixed canonical path mismatch in loader that could cause entry files to be namespaced. Added `@no_mangle` attribute: keeps function symbol name bare (no module prefix). All 146 tests pass. |
 | 2026-06-11 | Implemented `fn main(args: Array[str])` support. Semantic analysis validates the parameter signature and sets `SemanticReport.main_takes_args`. Linux startup stubs build an `Array[str]` from `argc`/`argv` and pass it in `rdi`; Windows stubs use `__getmainargs` to obtain parsed argv and build the same array. Added `examples/13-args`. All 151 tests pass. |
 | 2026-06-11 | Hardened slice support: `types_compatible` now rejects fixed-size array ↔ slice coercion, which previously generated invalid code and crashed at runtime. Added a clear `S08` diagnostic for this case. `for item : items` over variadic slices continues to work. Full array-to-slice coercion remains on the roadmap. All 152 tests pass. |
-| 2026-07-26 | **Rebranding**: Quazilang → Quazilang. Binary renamed `void` → `qz`. Config files `quazi.toml`/`quazi.lock` → `quazi.toml`/`quazi.lock`. Env vars `QUAZI_LINKER`/`QUAZI_STD_ROOT` → `QUAZI_LINKER`/`QUAZI_STD_ROOT`. Internal ABI symbols `__quazi_*` → `__quazi_*`. Intrinsic namespace `quazi.X` → `quazi.X`. All docs merged from AGENTS.md + CLAUDE.md into AGENTS.md. |
+| 2026-07-26 | **Rebranding**: Binary renamed `void` → `qz`. Config files `quazilang.toml`/`quazilang.lock` → `quazi.toml`/`quazi.lock`. Internal ABI symbols `__void_*` → `__quazi_*`. Intrinsic namespace `void.X` → `quazi.X`. All docs merged from AGENTS.md + CLAUDE.md into AGENTS.md. |
 | 2026-07-27 | Documented logical operators (`&&`, `\|\|`, `!`) — all were already fully implemented in the compiler (lexer/parser/semantic/codegen). Added `examples/15-logical` demonstrating all three operators with a truth-table program. Updated Language Quick Reference and Examples table. |
 | 2026-07-27 | Implemented `pub` visibility enforcement on types (`struct`, `enum`, `trait`, `type`). Imported `AST` types now carry a `public` flag. Semantic analysis emits an `S04` error when attempting to import a non-public type across modules. Updated standard library (prelude) types like `Array` to be `pub`. |
 | 2026-07-27 | Implemented cross-basic-block constant propagation (`const_prop_fold`) in the bytecode optimizer. Constant folding operates on integers and floats natively, folding mathematical sequences and eliminating dead branches at compile-time. Added `17-constfold` example. |
 | 2026-07-29 | Fixed raw-pointer dereferences to honor integer pointee widths. QZI `Load`/`Store` flags now carry byte/word/dword/qword width metadata; signed sub-word loads sign-extend, unsigned loads zero-extend, and legacy zero flags remain qword-compatible. Explicit dereference reads, writes, and compound assignments are covered by codegen tests. |
+| 2026-08-05 | Implemented C variadic FFI (Phase 2): bare `...` in `@api` parameter lists now compiles to a C-variadic call. Parser detects `...` immediately before `)` as a C-variadic marker (`c_variadic: bool` on `ItemKind::Fn`). Semantic analysis lifts the S14 error for bare `...` while still rejecting Quazi-style `...name: T` variadics in FFI. Codegen stores `c_variadic` in `Chunk` (serialized in QZI flags bit 2) and sets flag `0x80` on the `CallExt` instruction. Encoder checks that flag and emits `xor rax, rax` before the `call` to satisfy the SysV ABI `AL` convention. Added `std.ffi.va_list` opaque type and `examples/19-cvariadics`. All 230 tests pass. |
 
 ---
 
@@ -343,3 +344,4 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | `16-pub-types` | `pub` visibility enforcement on types — S04 on private type import | [examples/16-pub-types/AGENTS.md](examples/16-pub-types/AGENTS.md) |
 | `17-constfold` | Cross-basic-block constant propagation | [examples/17-constfold/src/main.qz](examples/17-constfold/src/main.qz) |
 | `18-formatting` | `{:X}` formatting, raw strings, ANSI escapes | [examples/18-formatting/src/main.qz](examples/18-formatting/src/main.qz) |
+| `19-cvariadics` | C-style variadic `@api` via bare `...` — calls libc `printf` with extra args | [examples/19-cvariadics/AGENTS.md](examples/19-cvariadics/AGENTS.md) |

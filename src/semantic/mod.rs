@@ -296,6 +296,7 @@ pub fn strip_cfg(program: &Program) -> Program {
                 pub_fn,
                 unsafe_fn,
                 generic_params,
+                c_variadic,
             } => ItemKind::Fn {
                 name: name.clone(),
                 return_ty: return_ty.clone(),
@@ -305,6 +306,7 @@ pub fn strip_cfg(program: &Program) -> Program {
                 pub_fn: *pub_fn,
                 unsafe_fn: *unsafe_fn,
                 generic_params: generic_params.clone(),
+                c_variadic: *c_variadic,
             },
             other => other.clone(),
         }
@@ -3628,6 +3630,40 @@ fn main() void { }
         assert_eq!(
             report.struct_field_offsets.get("Handle"),
             Some(&vec![("ptr".into(), 0)])
+        );
+    }
+    // ── C variadics: bare `...` in @api ──────────────────────────────────────
+
+    #[test]
+    fn ffi_c_variadic_bare_dots_accepted() {
+        let report = analyze(
+            r#"
+@api("printf") unsafe fn c_printf(fmt: *i8, ...) i32;
+unsafe fn caller() i32 {
+    ret c_printf(0, 1 as i32, 2 as i32);
+}
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "bare `...` in @api should be accepted: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_c_variadic_quazi_style_rejected_in_api() {
+        let report = analyze(
+            r#"
+@api("printf") unsafe fn c_printf(fmt: *i8, ...args: i32) i32;
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S14"),
+            "Quazi-style variadic in @api should be rejected with S14: {:?}",
+            report.errors
         );
     }
 }

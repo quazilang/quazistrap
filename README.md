@@ -182,6 +182,7 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 | `std.result` | `Result[T, E]` + `?` operator |
 | `std.box` | `Box[T]`: heap-allocated single value |
 | `std.panic` | `panic("msg")` with file/line injection |
+| `std.ffi` | C types (`c_int`, `c_char`, `va_list`), `CString`, `CStr`, `nullptr` |
 
 ---
 
@@ -207,6 +208,7 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 | [`16-pub-types`](examples/16-pub-types/) | Example showing public types |
 | [`17-constfold`](examples/17-constfold/) | Cross-basic-block constant propagation |
 | [`18-formatting`](examples/18-formatting/) | Formatting, raw strings, ANSI, and escape sequences |
+| [`19-cvariadics`](examples/19-cvariadics/) | C-style variadic `@api` via bare `...` — calls libc `printf` |
 
 ---
 

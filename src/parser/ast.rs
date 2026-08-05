@@ -507,6 +507,9 @@ pub enum ItemKind {
         attributes: Vec<Attribute>,
         unsafe_fn: bool,
         pub_fn: bool,
+        /// True when the function ends with a bare `...` (C-style variadic, `@api` only).
+        /// Distinct from Quazi variadics which require `...name: Type`.
+        c_variadic: bool,
     },
     Struct {
         name: String,

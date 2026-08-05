@@ -21,8 +21,16 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
 
         let mut params: Vec<Param> = Vec::new();
+        let mut c_variadic = false;
         if !self.at(TokenKind::RParen) {
             loop {
+                // Bare `...` with no name/type = C-style variadic (only valid on @api decls).
+                // Must be the last token before `)`.
+                if self.at(TokenKind::DotDotDot) && self.peek_n(1).kind == TokenKind::RParen {
+                    self.advance();
+                    c_variadic = true;
+                    break;
+                }
                 let param_attributes = if self.at(TokenKind::At) {
                     self.parse_attributes()?
                 } else {
@@ -85,6 +93,7 @@ impl Parser {
                 attributes,
                 unsafe_fn,
                 pub_fn,
+                c_variadic,
             },
             span,
         ))

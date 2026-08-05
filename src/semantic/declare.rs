@@ -33,9 +33,13 @@ impl Analyzer {
                 pub_fn,
                 unsafe_fn,
                 generic_params,
+                c_variadic,
                 ..
             } => {
                 let mut attr_names = extract_attribute_names(attributes);
+                if *c_variadic {
+                    attr_names.push("c_variadic".to_string());
+                }
                 // Foreign functions (@syscall, @api, @intrinsic) are library stubs —
                 // suppress all unused warnings for them automatically.
                 let is_foreign = attr_names

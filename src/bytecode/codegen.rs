@@ -414,6 +414,7 @@ impl<'a> Codegen<'a> {
                 params,
                 body,
                 attributes,
+                c_variadic,
                 ..
             } = &item.node
             {
@@ -438,6 +439,7 @@ impl<'a> Codegen<'a> {
                         params,
                         body.as_ref().map(|b| b as &Block),
                         attributes,
+                        *c_variadic,
                         &mut chunks,
                         &mut next_closure_idx,
                     )
@@ -459,6 +461,7 @@ impl<'a> Codegen<'a> {
                         params,
                         body,
                         attributes,
+                        c_variadic,
                         ..
                     } = &method.node
                     {
@@ -472,6 +475,7 @@ impl<'a> Codegen<'a> {
                                 params,
                                 body.as_ref().map(|b| b as &Block),
                                 attributes,
+                                *c_variadic,
                                 &mut chunks,
                                 &mut next_closure_idx,
                             )
@@ -515,6 +519,7 @@ impl<'a> Codegen<'a> {
                                 body,
                                 attributes,
                                 generic_params,
+                                c_variadic,
                                 ..
                             } = &m.node
                             {
@@ -542,6 +547,7 @@ impl<'a> Codegen<'a> {
                                     params,
                                     body.as_ref().map(|b| b as &Block),
                                     attributes,
+                                    *c_variadic,
                                     &mut chunks,
                                     &mut next_closure_idx,
                                     subst,
@@ -575,6 +581,7 @@ impl<'a> Codegen<'a> {
                                 body,
                                 attributes,
                                 generic_params,
+                                c_variadic,
                                 ..
                             },
                         ..
@@ -590,6 +597,7 @@ impl<'a> Codegen<'a> {
                             params,
                             body.as_ref().map(|b| b as &Block),
                             attributes,
+                            *c_variadic,
                             &mut chunks,
                             &mut next_closure_idx,
                             subst,
@@ -614,6 +622,7 @@ impl<'a> Codegen<'a> {
                             body,
                             attributes,
                             generic_params,
+                            c_variadic,
                             ..
                         },
                     ..
@@ -629,6 +638,7 @@ impl<'a> Codegen<'a> {
                         params,
                         body.as_ref().map(|b| b as &Block),
                         attributes,
+                        *c_variadic,
                         &mut chunks,
                         &mut next_closure_idx,
                         subst,
@@ -1001,6 +1011,7 @@ impl<'a> Codegen<'a> {
         params: &[crate::parser::ast::Param],
         body: Option<&Block>,
         attributes: &[crate::parser::ast::Attribute],
+        c_variadic: bool,
         output_chunks: &mut Vec<Chunk>,
         next_closure_idx: &mut u16,
     ) -> Option<Chunk> {
@@ -1009,6 +1020,7 @@ impl<'a> Codegen<'a> {
             params,
             body,
             attributes,
+            c_variadic,
             output_chunks,
             next_closure_idx,
             HashMap::new(),
@@ -1021,6 +1033,7 @@ impl<'a> Codegen<'a> {
         params: &[crate::parser::ast::Param],
         body: Option<&Block>,
         attributes: &[crate::parser::ast::Attribute],
+        c_variadic: bool,
         output_chunks: &mut Vec<Chunk>,
         next_closure_idx: &mut u16,
         type_subst: HashMap<String, TypeKind>,
@@ -1037,7 +1050,7 @@ impl<'a> Codegen<'a> {
 
         // @api: emit a single CallExt instruction instead of the function body.
         if let Some(attr) = attributes.iter().find(|a| a.name == "api") {
-            return Some(self.compile_api_fn(name, params, attr));
+            return Some(self.compile_api_fn(name, params, attr, c_variadic));
         }
 
         // Bodyless declaration — no code to emit; linker must resolve calls.
@@ -1179,8 +1192,10 @@ impl<'a> Codegen<'a> {
         name: &str,
         params: &[crate::parser::ast::Param],
         attr: &crate::parser::ast::Attribute,
+        c_variadic: bool,
     ) -> Chunk {
         let mut chunk = Chunk::with_params(name, params.len());
+        chunk.c_variadic = c_variadic;
         // Keep the Quazi wrapper private and distinct from the undefined C
         // symbol it calls, otherwise the relocation resolves recursively to
         // the wrapper itself when local and foreign names match.
@@ -1192,10 +1207,14 @@ impl<'a> Codegen<'a> {
         let arg_count = params.len() as u8;
         let mut instr = ri16(Opcode::CallExt, 0, sym_idx);
         instr.flags = arg_count;
+        if c_variadic {
+            instr.flags |= 0x80; // C_VARIADIC_FLAG
+        }
         chunk.emit(instr);
         chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
         chunk
     }
+
 }
 
 // ── Format spec helpers ───────────────────────────────────────────────────────

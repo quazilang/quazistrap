@@ -1,4 +1,4 @@
-# quazi examples
+# Quazilang Examples
 
 Each folder is a standalone project. Run any with:
 
@@ -27,3 +27,4 @@ qz run
 | `16-pub-types` | `pub` visibility on types; S04 on private import |
 | `17-constfold` | Constant folding demonstration |
 | `18-formatting` | Format specifications, raw strings, ANSI escapes |
+| `19-cvariadics` | C-style variadic `@api` via bare `...` — calls libc `printf` |
