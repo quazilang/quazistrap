@@ -1217,94 +1217,7 @@ impl<'a> Codegen<'a> {
 
 }
 
-// ── Format spec helpers ───────────────────────────────────────────────────────
 
-/// Parse `{}` and `{:spec}` placeholders in a format template.
-/// Returns one spec string per placeholder; `""` for bare `{}`.
-fn extract_format_specs(template: &str) -> Vec<String> {
-    let mut specs = Vec::new();
-    let bytes = template.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'{' || i + 1 >= bytes.len() {
-            i += 1;
-            continue;
-        }
-        if bytes[i + 1] == b'{' {
-            i += 2;
-            continue;
-        }
-        let mut end = i + 1;
-        while end < bytes.len() && bytes[end] != b'}' {
-            end += 1;
-        }
-        if end == bytes.len() {
-            break;
-        }
-        let field = std::str::from_utf8(&bytes[i + 1..end]).unwrap_or("");
-        if field.is_empty() {
-            specs.push(String::new());
-        } else if let Some((name, spec)) = field.split_once(':') {
-            if name.is_empty() || name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                specs.push(spec.to_string());
-            }
-        }
-        i = end + 1;
-    }
-    specs
-}
-
-/// Rewrite a format template, replacing `{:spec}` with `{}` so the runtime
-/// `format()` function can find all placeholders uniformly.
-fn strip_format_specs(template: &str) -> String {
-    let mut out = String::with_capacity(template.len());
-    let bytes = template.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            out.push_str("{{");
-            i += 2;
-            continue;
-        }
-        if bytes[i] == b'{' {
-            let mut end = i + 1;
-            while end < bytes.len() && bytes[end] != b'}' {
-                end += 1;
-            }
-            if end < bytes.len() {
-                let field = std::str::from_utf8(&bytes[i + 1..end]).unwrap_or("");
-                if field.contains(':') {
-                    out.push_str("{}");
-                    i = end + 1;
-                    continue;
-                }
-            }
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
-}
-
-#[cfg(test)]
-mod format_spec_tests {
-    use super::{extract_format_specs, strip_format_specs};
-
-    #[test]
-    fn extracts_default_and_rust_style_specs() {
-        assert_eq!(extract_format_specs("{} {:X} {value:x}"), ["", "X", "x"]);
-    }
-
-    #[test]
-    fn ignores_escaped_braces() {
-        assert_eq!(extract_format_specs("{{}} {}"), [""]);
-    }
-
-    #[test]
-    fn strips_specs_but_keeps_escaped_braces() {
-        assert_eq!(strip_format_specs("{{{value:X}}}"), "{{{}}}");
-    }
-}
 
 // ── Per-function compiler ─────────────────────────────────────────────────────
 
@@ -3803,75 +3716,50 @@ impl<'a> FnCompiler<'a> {
                         return dst;
                     }
                     // str_variadic dispatch: auto-coerce args to str at call sites.
-                    if self.str_variadic_fns.contains(call_name.as_str()) && args.len() > 1 {
-                        // Extract format specs from the template literal (compile-time).
-                        let specs = if let ExprKind::Literal(Literal::String(s)) = &args[0].node {
-                            extract_format_specs(s)
-                        } else {
-                            vec![]
-                        };
-                        let has_specs = specs.iter().any(|s| !s.is_empty());
-                        // If any spec is non-empty, strip specs from template so format()
-                        // can match bare `{}` placeholders at runtime.
-                        let template_reg = if has_specs {
-                            if let ExprKind::Literal(Literal::String(s)) = &args[0].node {
-                                let stripped = strip_format_specs(s);
-                                let idx = self.chunk.add_constant(ConstPoolEntry::Str(stripped));
-                                let r = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovConst, r, idx));
-                                r
-                            } else {
-                                self.compile_expr(&args[0])
+                    if self.str_variadic_fns.contains(call_name.as_str()) && !args.is_empty() {
+                        if let Some(expanded) = crate::parser::format::expand_format_call_args(args) {
+                            let idx = self.chunk.add_constant(ConstPoolEntry::Str(expanded.clean_template));
+                            let template_reg = self.alloc_reg();
+                            self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
+
+                            let mut coerced_var: Vec<u8> = Vec::new();
+                            for (i, arg) in expanded.args.iter().enumerate() {
+                                let reg = self.compile_expr(arg);
+                                let spec = expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
+                                coerced_var.push(self.coerce_with_spec(reg, spec, arg.span));
                             }
-                        } else {
-                            self.compile_expr(&args[0])
-                        };
-                        let mut coerced_var: Vec<u8> = Vec::new();
-                        for (i, arg) in args[1..].iter().enumerate() {
-                            let reg = self.compile_expr(arg);
-                            let spec = specs.get(i).map(|s| s.as_str()).unwrap_or("");
-                            coerced_var.push(self.coerce_with_spec(reg, spec, arg.span));
-                        }
-                        // format(template, ..args: str) — variadic: pack var args into slice.
-                        let fmt_dst = self.alloc_reg();
-                        let (r_ptr, r_len) = if coerced_var.is_empty() {
-                            let rp = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rp, 0));
-                            let rl = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rl, 0));
-                            (rp, rl)
-                        } else {
-                            let first_slot = self.next_reg;
-                            for &r in &coerced_var {
-                                let slot = self.alloc_reg();
-                                if r != slot {
-                                    self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
+
+                            let fmt_dst = if !coerced_var.is_empty() {
+                                let first_slot = self.next_reg;
+                                for &r in &coerced_var {
+                                    let slot = self.alloc_reg();
+                                    if r != slot {
+                                        self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
+                                    }
                                 }
+                                let rp = self.alloc_reg();
+                                self.chunk.emit(mem_lea(first_slot, rp, 0));
+                                let rl = self.alloc_reg();
+                                self.chunk.emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
+                                let fd = self.alloc_reg();
+                                self.emit_call_by_name("fmt.format", &[template_reg, rp, rl], fd);
+                                fd
+                            } else {
+                                template_reg
+                            };
+
+                            let mut call_args = vec![fmt_dst];
+                            if self.variadic_fn_info.contains_key(call_name.as_str()) {
+                                let rp = self.alloc_reg();
+                                self.chunk.emit(ri16(Opcode::MovI, rp, 0));
+                                let rl = self.alloc_reg();
+                                self.chunk.emit(ri16(Opcode::MovI, rl, 0));
+                                call_args.push(rp);
+                                call_args.push(rl);
                             }
-                            let rp = self.alloc_reg();
-                            self.chunk.emit(mem_lea(first_slot, rp, 0));
-                            let rl = self.alloc_reg();
-                            self.chunk
-                                .emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
-                            (rp, rl)
-                        };
-                        self.emit_call_by_name(
-                            "fmt.format",
-                            &[template_reg, r_ptr, r_len],
-                            fmt_dst,
-                        );
-                        // Call the actual @format function with the single formatted string.
-                        let mut call_args = vec![fmt_dst];
-                        if self.variadic_fn_info.contains_key(call_name.as_str()) {
-                            let rp = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rp, 0));
-                            let rl = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rl, 0));
-                            call_args.push(rp);
-                            call_args.push(rl);
+                            self.emit_call_by_name(&call_name, &call_args, dst);
+                            return dst;
                         }
-                        self.emit_call_by_name(&call_name, &call_args, dst);
-                        return dst;
                     }
                     if let Some(&fixed_count) = self.variadic_fn_info.get(call_name.as_str()) {
                         // Variadic call: compile fixed args, pack variadic args into
@@ -4017,73 +3905,53 @@ impl<'a> FnCompiler<'a> {
                     let is_fmt_fn = self.str_variadic_fns.contains(call_target.as_str());
                     let is_variadic_intrinsic =
                         self.variadic_intrinsic_fns.contains(call_target.as_str());
-                    if (is_fmt_fn || is_variadic_intrinsic) && args.len() > 1 {
-                        // Extract format specs if this is an @format call.
-                        let specs = if let ExprKind::Literal(Literal::String(s)) = &args[0].node {
-                            extract_format_specs(s)
-                        } else {
-                            vec![]
-                        };
-                        let has_specs = specs.iter().any(|s| !s.is_empty());
-                        let template_reg = if has_specs {
-                            if let ExprKind::Literal(Literal::String(s)) = &args[0].node {
-                                let stripped = strip_format_specs(s);
-                                let idx = self.chunk.add_constant(ConstPoolEntry::Str(stripped));
-                                let r = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovConst, r, idx));
-                                r
-                            } else {
-                                self.compile_expr(&args[0])
+                    if (is_fmt_fn || is_variadic_intrinsic) && !args.is_empty() {
+                        if let Some(expanded) = crate::parser::format::expand_format_call_args(args) {
+                            let idx = self.chunk.add_constant(ConstPoolEntry::Str(expanded.clean_template));
+                            let template_reg = self.alloc_reg();
+                            self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
+
+                            let mut coerced = vec![template_reg];
+                            for (i, arg) in expanded.args.iter().enumerate() {
+                                let reg = self.compile_expr(arg);
+                                let spec = expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
+                                let cr = if spec.is_empty() {
+                                    self.coerce_to_display_str(reg, arg.span)
+                                } else {
+                                    self.coerce_with_spec(reg, spec, arg.span)
+                                };
+                                coerced.push(cr);
                             }
-                        } else {
-                            self.compile_expr(&args[0])
-                        };
-                        let mut coerced = vec![template_reg];
-                        for (i, arg) in args[1..].iter().enumerate() {
-                            let reg = self.compile_expr(arg);
-                            let spec = specs.get(i).map(|s| s.as_str()).unwrap_or("");
-                            let cr = if spec.is_empty() {
-                                self.coerce_to_display_str(reg, arg.span)
+                            if is_variadic_intrinsic {
+                                self.emit_call_by_name(&call_target, &coerced, dst);
                             } else {
-                                self.coerce_with_spec(reg, spec, arg.span)
-                            };
-                            coerced.push(cr);
-                        }
-                        if is_variadic_intrinsic {
-                            self.emit_call_by_name(&call_target, &coerced, dst);
-                        } else {
-                            let fmt_dst = self.alloc_reg();
-                            // Pack coerced args (after template) into a slice for variadic format().
-                            let coerced_args = &coerced[1..];
-                            let (r_ptr, r_len) = if coerced_args.is_empty() {
-                                let rp = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovI, rp, 0));
-                                let rl = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovI, rl, 0));
-                                (rp, rl)
-                            } else {
-                                let first_slot = self.next_reg;
-                                for &r in coerced_args {
-                                    let slot = self.alloc_reg();
-                                    if r != slot {
-                                        self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
+                                let fmt_dst = if coerced.len() > 1 {
+                                    let coerced_args = &coerced[1..];
+                                    let first_slot = self.next_reg;
+                                    for &r in coerced_args {
+                                        let slot = self.alloc_reg();
+                                        if r != slot {
+                                            self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
+                                        }
                                     }
-                                }
-                                let rp = self.alloc_reg();
-                                self.chunk.emit(mem_lea(first_slot, rp, 0));
-                                let rl = self.alloc_reg();
-                                self.chunk
-                                    .emit(ri16(Opcode::MovI, rl, coerced_args.len() as u16));
-                                (rp, rl)
-                            };
-                            self.emit_call_by_name(
-                                "fmt.format",
-                                &[template_reg, r_ptr, r_len],
-                                fmt_dst,
-                            );
-                            self.emit_call_by_name(&call_target, &[fmt_dst], dst);
+                                    let rp = self.alloc_reg();
+                                    self.chunk.emit(mem_lea(first_slot, rp, 0));
+                                    let rl = self.alloc_reg();
+                                    self.chunk
+                                        .emit(ri16(Opcode::MovI, rl, coerced_args.len() as u16));
+                                    let fd = self.alloc_reg();
+                                    self.emit_call_by_name("fmt.format", &[template_reg, rp, rl], fd);
+                                    fd
+                                } else {
+                                    template_reg
+                                };
+                                self.emit_call_by_name(&call_target, &[fmt_dst], dst);
+                            }
+                            return dst;
                         }
-                    } else {
+                    }
+                    // Fallthrough: plain call (format expansion not applicable or no template match).
+                    {
                         let arg_regs: Vec<u8> = args
                             .iter()
                             .map(|a| {
@@ -4197,23 +4065,45 @@ impl<'a> FnCompiler<'a> {
                     {
                         let mangled_check = format!("{}.{}", type_name, method);
                         if self.str_variadic_fns.contains(&mangled_check) && !args.is_empty() {
-                            let template_reg = self.compile_expr(&args[0]);
-                            let fmt_reg = if args.len() > 1 {
-                                let mut coerced = vec![template_reg];
-                                for arg in &args[1..] {
-                                    let r = self.compile_expr(arg);
-                                    let cr = self.coerce_to_display_str(r, arg.span);
-                                    coerced.push(cr);
-                                }
-                                let fd = self.alloc_reg();
-                                self.emit_call_by_name("fmt.format", &coerced, fd);
-                                fd
-                            } else {
-                                template_reg
-                            };
-                            let dst = self.alloc_reg();
-                            self.emit_call_by_name(&mangled_check, &[obj, fmt_reg], dst);
-                            return dst;
+                            if let Some(expanded) = crate::parser::format::expand_format_call_args(args) {
+                                let idx = self.chunk.add_constant(ConstPoolEntry::Str(expanded.clean_template));
+                                let template_reg = self.alloc_reg();
+                                self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
+
+                                let fmt_reg = if !expanded.args.is_empty() {
+                                    let mut coerced = vec![template_reg];
+                                    for (i, arg) in expanded.args.iter().enumerate() {
+                                        let r = self.compile_expr(arg);
+                                        let spec = expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
+                                        let cr = if spec.is_empty() {
+                                            self.coerce_to_display_str(r, arg.span)
+                                        } else {
+                                            self.coerce_with_spec(r, spec, arg.span)
+                                        };
+                                        coerced.push(cr);
+                                    }
+                                    let coerced_args = &coerced[1..];
+                                    let first_slot = self.next_reg;
+                                    for &r in coerced_args {
+                                        let slot = self.alloc_reg();
+                                        if r != slot {
+                                            self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
+                                        }
+                                    }
+                                    let rp = self.alloc_reg();
+                                    self.chunk.emit(mem_lea(first_slot, rp, 0));
+                                    let rl = self.alloc_reg();
+                                    self.chunk.emit(ri16(Opcode::MovI, rl, coerced_args.len() as u16));
+                                    let fd = self.alloc_reg();
+                                    self.emit_call_by_name("fmt.format", &[template_reg, rp, rl], fd);
+                                    fd
+                                } else {
+                                    template_reg
+                                };
+                                let dst = self.alloc_reg();
+                                self.emit_call_by_name(&mangled_check, &[obj, fmt_reg], dst);
+                                return dst;
+                            }
                         }
                     }
 

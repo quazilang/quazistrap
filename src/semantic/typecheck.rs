@@ -2521,8 +2521,13 @@ impl Analyzer {
         } else {
             substituted_params.len()
         };
-        if sym.attributes.contains(&"str_variadic".to_string()) && args.len() > non_variadic_count {
+        if sym.attributes.contains(&"str_variadic".to_string()) {
             self.add_dependency_edge(DependencyKind::Call, &from, "fmt.format");
+            if let Some(expanded) = crate::parser::format::expand_format_call_args(args) {
+                for arg in &expanded.args {
+                    self.type_check_expr(arg, true);
+                }
+            }
         }
         if sym.unsafe_fn && self.unsafe_depth == 0 {
             self.push_error(

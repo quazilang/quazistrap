@@ -4,6 +4,7 @@
 
 pub mod ast;
 pub mod common;
+pub mod format;
 pub mod items;
 
 use crate::lexer::token::Span as TokenSpan;
