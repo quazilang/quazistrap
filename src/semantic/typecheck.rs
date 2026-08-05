@@ -1325,7 +1325,7 @@ impl Analyzer {
             } => {
                 // For lazy import tracking: record the object chain path (not the method itself)
                 if let Some((base, path)) = Self::extract_field_chain(object)
-                    && let Some(sym) = self.resolve_symbol(&base)
+                    && let Some(sym) = self.resolve_for_read(&base)
                     && sym.is_import
                 {
                     let import_base = sym.import_path.as_deref().unwrap_or(&base);
@@ -1340,7 +1340,6 @@ impl Analyzer {
                         .insert(full_access);
                 }
                 if self.is_module_import_receiver(object) {
-                    self.type_check_expr(object, reachable);
                     let arg_evals: Vec<ExprEval> = args
                         .iter()
                         .chain(named_args.iter().map(|(_, e)| e))
@@ -1800,7 +1799,7 @@ impl Analyzer {
             ExprKind::Field { object, name } => {
                 // For lazy import tracking: record the full chain including this field
                 if let Some((base, mut path)) = Self::extract_field_chain(object)
-                    && let Some(sym) = self.resolve_symbol(&base)
+                    && let Some(sym) = self.resolve_for_read(&base)
                     && sym.is_import
                 {
                     path.push(name.clone());
