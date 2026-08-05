@@ -1580,7 +1580,7 @@ impl<'a> FnCompiler<'a> {
             return ptr_reg;
         };
         // The VM Load instruction reads one 8-byte slot. Value-like types that fit
-        // in a single slot can be auto-dereferenced; `str` is a 16-byte fat pointer
+        // in a single slot can be auto-dereferenced; `str` is currently a thin null-terminated pointer
         // and must be passed/stored as a reference.
         if matches!(ty, TypeKind::Str) {
             return ptr_reg;
@@ -1594,6 +1594,13 @@ impl<'a> FnCompiler<'a> {
         matches!(
             self.type_of_span(key),
             Some(TypeKind::Float16 | TypeKind::Float32 | TypeKind::Float64)
+        )
+    }
+
+    fn is_str_span(&self, key: (usize, usize)) -> bool {
+        matches!(
+            self.type_of_span(key),
+            Some(TypeKind::Str | TypeKind::Ref { .. })
         )
     }
 
@@ -3410,11 +3417,22 @@ impl<'a> FnCompiler<'a> {
             ExprKind::Binary { left, op, right } => {
                 let left_key = (left.span.start, left.span.end);
                 let is_float = self.is_float_span(left_key);
+                let is_str = self.is_str_span(left_key);
                 let r1 = self.compile_expr(left);
                 let r2 = self.compile_expr(right);
                 let dst = self.alloc_reg();
                 let arith = if is_float { rrr_f } else { rrr };
                 match op {
+                    BinOpKind::Add if is_str => {
+                        // str + str: call runtime concat intrinsic (ID 14).
+                        // Arguments must be in consecutive registers starting at `dst`.
+                        let arg2 = self.alloc_reg(); // dst + 1
+                        self.chunk.emit(rrr(Opcode::Mov, dst, r1, 0));
+                        self.chunk.emit(rrr(Opcode::Mov, arg2, r2, 0));
+                        let mut instr = ri16(Opcode::Intrinsic, dst, 14);
+                        instr.flags = 2; // 2 arguments
+                        self.chunk.emit(instr);
+                    }
                     BinOpKind::Add => {
                         self.chunk.emit(arith(Opcode::Add, dst, r1, r2));
                     }
