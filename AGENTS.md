@@ -24,7 +24,7 @@ qz lsp
 ```
 
 Output: `<stem>.qzi` (bytecode), `<stem>.o` (object), `<stem>`/`<stem>.exe` (binary).  
-`.qzi` as input: skips frontend, goes straight to backend.  
+`.qzi` as input: skips frontend, goes straight to backend. Binary emission also reuses the current project's `[cc]` and `[link]` inputs, so the same target-neutral QZI can be linked against the host's native C objects and libraries.
 Linker: `QUAZI_LINKER` env → `ld.lld` → `mold` → `ld` (Linux/macOS); `lld-link` → `link` (Windows). Linux uses `-dynamic-linker` and links `libc.so.6` / `libm.so.6` by full path to avoid GNU linker scripts that `ld.lld` cannot parse.  
 `qz build myprog.o` — planned built-in linker path (P1).  
 Rust edition 2024.
