@@ -5,7 +5,7 @@
 use super::instruction::Instruction;
 use super::instruction::{ri16, rrr};
 use super::opcode::Opcode;
-use crate::abi::ForeignSymbol;
+use crate::abi::{ForeignGlobal, ForeignSymbol};
 
 /// Constant pool value — lives alongside bytecode, referenced by MovConst.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +20,8 @@ pub enum ConstPoolEntry {
     VtableAddr(String, String),
     /// External C symbol plus its target-neutral ABI signature — tag 5.
     ForeignSymbol(ForeignSymbol),
+    /// Addressable external C data symbol and its source-level ABI type — tag 7.
+    ForeignGlobal(ForeignGlobal),
 }
 
 /// A single function's bytecode + its constant pool.
@@ -160,6 +162,10 @@ impl Chunk {
                     buf.push(5);
                     symbol.encode(&mut buf);
                 }
+                ConstPoolEntry::ForeignGlobal(global) => {
+                    buf.push(7);
+                    global.encode(&mut buf);
+                }
             }
         }
         buf.extend_from_slice(&(self.code.len() as u32).to_le_bytes());
@@ -182,7 +188,7 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
         return Err("truncated QZI header".to_string());
     }
     let version = buf[pos];
-    if !matches!(version, 1..=4) {
+    if !matches!(version, 1..=5) {
         return Err(format!("unsupported QZI version {}", version));
     }
     pos += 1;
@@ -338,6 +344,11 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
                     constants.push(ConstPoolEntry::Bytes(buf[pos..pos + bytes_len].to_vec()));
                     pos += bytes_len;
                 }
+                7 if version >= 5 => {
+                    constants.push(ConstPoolEntry::ForeignGlobal(ForeignGlobal::decode(
+                        buf, &mut pos,
+                    )?));
+                }
                 _ => return Err(format!("unknown const tag {}", tag)),
             }
         }
@@ -377,7 +388,7 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 4;
+pub const QZI_VERSION: u8 = 5;
 
 pub fn serialize_qzi(chunks: &[Chunk]) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -416,6 +427,9 @@ impl std::fmt::Display for Chunk {
                     }
                     ConstPoolEntry::ForeignSymbol(symbol) => {
                         format!("\x1b[35mforeign({})\x1b[0m", symbol.symbol)
+                    }
+                    ConstPoolEntry::ForeignGlobal(global) => {
+                        format!("\x1b[35mglobal({})\x1b[0m", global.symbol)
                     }
                 };
                 writeln!(f, "  \x1b[2m[{i:>2}]\x1b[0m  {val}")?;
@@ -498,7 +512,7 @@ impl std::fmt::Display for Chunk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::abi::{AbiSignature, AbiType, ForeignSymbol};
+    use crate::abi::{AbiSignature, AbiType, ForeignGlobal, ForeignSymbol};
 
     #[test]
     fn emit_and_patch_jump() {
@@ -528,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn qzi_v4_roundtrips_foreign_abi_metadata_and_bytes() {
+    fn qzi_v5_roundtrips_foreign_abi_metadata_bytes_and_globals() {
         let signature = AbiSignature {
             params: vec![AbiType::Float64],
             return_type: AbiType::Float64,
@@ -548,15 +562,24 @@ mod tests {
         chunk
             .constants
             .push(ConstPoolEntry::Bytes(vec![0, 0xff, 1]));
+        chunk
+            .constants
+            .push(ConstPoolEntry::ForeignGlobal(ForeignGlobal {
+                symbol: "native_counter".to_string(),
+                ty: AbiType::Integer {
+                    bytes: 4,
+                    signed: true,
+                },
+            }));
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
 
         let encoded = serialize_qzi(&[chunk]);
-        let decoded = deserialize_qzi(&encoded).expect("QZI v4 should decode");
+        let decoded = deserialize_qzi(&encoded).expect("QZI v5 should decode");
         assert_eq!(decoded[0].export.as_ref().unwrap().symbol, "quazi_sin");
         assert!(matches!(
             decoded[0].constants.as_slice(),
-            [ConstPoolEntry::ForeignSymbol(symbol), ConstPoolEntry::Bytes(bytes)]
-                if symbol.symbol == "sin" && bytes == &[0, 0xff, 1]
+            [ConstPoolEntry::ForeignSymbol(symbol), ConstPoolEntry::Bytes(bytes), ConstPoolEntry::ForeignGlobal(global)]
+                if symbol.symbol == "sin" && bytes == &[0, 0xff, 1] && global.symbol == "native_counter"
         ));
     }
 }

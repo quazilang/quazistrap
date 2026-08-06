@@ -26,6 +26,9 @@ Both Linux and Windows stubs are generated via `iced-x86` `CodeAssembler` — ra
 - `CallCReg` shares the direct `CallExt` argument/return lowering, but loads the
   callback address from its QZI slot and emits `call r11` instead of a symbol
   relocation. This keeps one portable signature for Linux SysV and Win64.
+- `ForeignGlobal` constants lower to RIP-relative addresses with `Pc32` data
+  relocations. Subsequent QZI `Load`/`Store` flags select byte/word/dword/qword,
+  signed extension, and `f32` conversion identically on SysV and Win64.
 
 ---
 

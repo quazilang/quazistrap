@@ -41,6 +41,12 @@ unsafe fn c_apply_callback(callback: BinaryCallback, a: i64, b: i64) i64;
 @api("c_get_add_callback")
 unsafe fn c_get_add_callback() BinaryCallback;
 
+@api("c_global_counter")
+var c_counter: i32;
+
+@api("c_global_ratio")
+var c_ratio: f32;
+
 @export("quazi_scale_point")
 pub fn scale_point(point: Point, factor: f64) Point {
     ret Point {
@@ -108,6 +114,14 @@ fn main() i32 {
         var add = c_get_add_callback();
         if (add(20, 22) != 42) {
             ret 7;
+        }
+        c_counter += 2;
+        if (c_counter != 42) {
+            ret 8;
+        }
+        c_ratio = 2.5 as f32;
+        if (c_ratio != 2.5) {
+            ret 9;
         }
     }
     ret 0;

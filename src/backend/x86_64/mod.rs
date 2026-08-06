@@ -185,9 +185,13 @@ fn emit_native_object(
     let bin_fmt = target.binary_format();
 
     for (reloc, _) in all_relocs {
-        let sym_id = sym_table
-            .get_defined(&reloc.symbol)
-            .unwrap_or_else(|| sym_table.get_or_add_undef(&mut obj, &reloc.symbol));
+        let sym_id = sym_table.get_defined(&reloc.symbol).unwrap_or_else(|| {
+            if reloc.kind == relocations::RelocKind::Pc32 {
+                sym_table.get_or_add_undef_data(&mut obj, &reloc.symbol)
+            } else {
+                sym_table.get_or_add_undef(&mut obj, &reloc.symbol)
+            }
+        });
 
         write_reloc(
             &mut obj,

@@ -1523,6 +1523,10 @@ impl<'a> FnEncoder<'a> {
                         lea_rip!(rax, sym);
                         emit!(asm.mov(slot(dst), rax));
                     }
+                    Some(ConstPoolEntry::ForeignGlobal(global)) => {
+                        lea_rip!(rax, global.symbol.clone());
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     Some(ConstPoolEntry::ForeignSymbol(_)) => {
                         return Err(BackendError(
                             "encoder: foreign symbol used as a runtime constant".to_string(),
@@ -3040,7 +3044,7 @@ fn resolve_x86_64_syscall(name: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::abi::AbiField;
+    use crate::abi::{AbiField, ForeignGlobal};
     use crate::backend::target::{Arch, Os};
     use crate::bytecode::instruction::{call_c_reg, ri16, rrr};
 
@@ -3165,6 +3169,28 @@ mod tests {
                     .iter()
                     .any(|reloc| reloc.symbol == "<function-pointer>")
             );
+        }
+    }
+
+    #[test]
+    fn foreign_global_address_encodes_as_data_relocation() {
+        let mut chunk = Chunk::new("read_global");
+        let constant = chunk.add_constant(ConstPoolEntry::ForeignGlobal(ForeignGlobal {
+            symbol: "native_counter".to_string(),
+            ty: AbiType::Integer {
+                bytes: 4,
+                signed: true,
+            },
+        }));
+        chunk.emit(ri16(Opcode::MovConst, 0, constant));
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        for abi in [Abi::SysV, Abi::Win64] {
+            let (bytes, relocs) = encode(&chunk, abi);
+            assert!(!bytes.is_empty());
+            assert!(relocs.iter().any(|reloc| {
+                reloc.symbol == "native_counter" && reloc.kind == RelocKind::Pc32
+            }));
         }
     }
 

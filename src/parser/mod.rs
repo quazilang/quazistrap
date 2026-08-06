@@ -110,6 +110,7 @@ impl Parser {
             TokenKind::Enum => self.parse_enum(attributes, is_pub),
             TokenKind::Impl => self.parse_impl(),
             TokenKind::Type => self.parse_type_alias(attributes, is_pub),
+            TokenKind::Var => self.parse_foreign_global(attributes, is_pub),
             other => Err(self.err_here_with_code(
                 "E03",
                 format!("unexpected token in item position: {}", other),

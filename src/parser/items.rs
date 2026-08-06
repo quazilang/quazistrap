@@ -408,6 +408,27 @@ impl Parser {
         ))
     }
 
+    pub fn parse_foreign_global(
+        &mut self,
+        attributes: Vec<Attribute>,
+        is_pub: bool,
+    ) -> Result<Item, String> {
+        let start = self.expect(TokenKind::Var)?.span;
+        let name = self.parse_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let ty = self.parse_type()?;
+        let end = self.expect(TokenKind::Semicolon)?.span;
+        Ok(Spanned::new(
+            ItemKind::ForeignGlobal {
+                name,
+                ty,
+                attributes,
+                public: is_pub,
+            },
+            to_ast_span(merge_token_spans(start, end)),
+        ))
+    }
+
     pub fn parse_import(&mut self, pub_import: bool, is_reexport: bool) -> Result<Item, String> {
         let start = if is_reexport {
             self.peek().span

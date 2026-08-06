@@ -10,7 +10,9 @@ use super::instruction::{
     mem_load_w, mem_store, mem_store_w, ri16, rrr, rrr_f,
 };
 use super::{Chunk, ConstPoolEntry, Opcode};
-use crate::abi::{AbiField, AbiSignature, AbiType, ForeignSymbol};
+use crate::abi::{
+    AbiField, AbiSignature, AbiType, ForeignGlobal as AbiForeignGlobal, ForeignSymbol,
+};
 use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
 use crate::semantic::{ConstValue, DependencyKind, SemanticReport};
@@ -1292,6 +1294,7 @@ impl<'a> Codegen<'a> {
             &self.report.repr_c_structs,
             &self.report.type_aliases,
             &self.foreign_imports,
+            &self.report.foreign_globals,
             &self.report.trait_impls,
             &self.variadic_fn_info,
             &self.report.enum_defs,
@@ -1466,6 +1469,7 @@ struct FnCompiler<'a> {
     repr_c_structs: &'a HashSet<String>,
     type_aliases: &'a HashMap<String, (Vec<String>, TypeKind)>,
     foreign_imports: &'a HashMap<String, ForeignSymbol>,
+    foreign_globals: &'a HashMap<String, crate::semantic::ForeignGlobalInfo>,
     trait_impls: &'a HashMap<String, std::collections::HashSet<String>>,
     /// Maps variadic function name → number of fixed (non-variadic) params.
     variadic_fn_info: &'a HashMap<String, usize>,
@@ -1522,6 +1526,12 @@ enum LvalueAddr {
         width: MemWidth,
         signed: bool,
     },
+    ForeignGlobal {
+        ptr: u8,
+        width: MemWidth,
+        signed: bool,
+        float32: bool,
+    },
     Field {
         obj: u8,
         offset: u8,
@@ -1573,6 +1583,7 @@ impl<'a> FnCompiler<'a> {
         repr_c_structs: &'a HashSet<String>,
         type_aliases: &'a HashMap<String, (Vec<String>, TypeKind)>,
         foreign_imports: &'a HashMap<String, ForeignSymbol>,
+        foreign_globals: &'a HashMap<String, crate::semantic::ForeignGlobalInfo>,
         trait_impls: &'a HashMap<String, std::collections::HashSet<String>>,
         variadic_fn_info: &'a HashMap<String, usize>,
         enum_defs: &'a HashMap<String, HashMap<String, usize>>,
@@ -1605,6 +1616,7 @@ impl<'a> FnCompiler<'a> {
             repr_c_structs,
             type_aliases,
             foreign_imports,
+            foreign_globals,
             trait_impls,
             variadic_fn_info,
             enum_defs,
@@ -1799,6 +1811,57 @@ impl<'a> FnCompiler<'a> {
             .rev()
             .find(|ann| ann.span.start == span.start && ann.span.end == span.end)
             .and_then(|ann| ann.resolved_fn.clone())
+    }
+
+    fn foreign_global_for_span(
+        &self,
+        span: crate::parser::ast::Span,
+    ) -> Option<crate::semantic::ForeignGlobalInfo> {
+        let resolved = self
+            .annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.span.start == span.start && annotation.span.end == span.end
+            })?
+            .resolved_global
+            .as_ref()?;
+        self.foreign_globals.get(resolved).cloned()
+    }
+
+    fn emit_foreign_global_address(&mut self, global: &crate::semantic::ForeignGlobalInfo) -> u8 {
+        let ty = abi_type_from_layout(
+            &global.ty,
+            self.struct_defs,
+            self.struct_sizes,
+            self.struct_field_offsets,
+            self.struct_alignments,
+            self.bit_field_layouts,
+            self.repr_c_structs,
+            self.type_aliases,
+        )
+        .expect("semantic analysis validated the foreign global ABI type");
+        let constant = self
+            .chunk
+            .add_constant(ConstPoolEntry::ForeignGlobal(AbiForeignGlobal {
+                symbol: global.symbol.clone(),
+                ty,
+            }));
+        let address = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovConst, address, constant));
+        address
+    }
+
+    fn foreign_global_lvalue(&mut self, span: crate::parser::ast::Span) -> Option<LvalueAddr> {
+        let global = self.foreign_global_for_span(span)?;
+        let address = self.emit_foreign_global_address(&global);
+        let (width, signed, _, float32) = self.c_memory_access(&global.ty);
+        Some(LvalueAddr::ForeignGlobal {
+            ptr: address,
+            width,
+            signed,
+            float32,
+        })
     }
 
     fn is_c_abi_function_span(&self, span: crate::parser::ast::Span) -> bool {
@@ -2384,10 +2447,16 @@ impl<'a> FnCompiler<'a> {
             target = inner;
         }
         match &target.node {
-            ExprKind::Ident(name) => LvalueAddr::Ident {
-                name: name.clone(),
-                span: target.span,
-            },
+            ExprKind::Ident(name) => {
+                if let Some(addr) = self.foreign_global_lvalue(target.span) {
+                    addr
+                } else {
+                    LvalueAddr::Ident {
+                        name: name.clone(),
+                        span: target.span,
+                    }
+                }
+            }
             ExprKind::Unary {
                 op: UnaryOpKind::Deref,
                 expr: ptr_expr,
@@ -2500,6 +2569,12 @@ impl<'a> FnCompiler<'a> {
                 self.chunk.emit(mem_load_w(*ptr, dst, 0, *width, *signed));
                 dst
             }
+            LvalueAddr::ForeignGlobal {
+                ptr,
+                width,
+                signed,
+                float32,
+            } => self.emit_c_load(*ptr, *width, *signed, *float32),
             LvalueAddr::Field { obj, offset } => {
                 let dst = self.alloc_reg();
                 self.chunk.emit(rrr(Opcode::FieldLoad, dst, *obj, *offset));
@@ -2560,6 +2635,12 @@ impl<'a> FnCompiler<'a> {
             LvalueAddr::Deref { ptr, width, .. } => {
                 self.chunk.emit(mem_store_w(*ptr, src, 0, *width));
             }
+            LvalueAddr::ForeignGlobal {
+                ptr,
+                width,
+                float32,
+                ..
+            } => self.emit_c_store(*ptr, src, *width, *float32),
             LvalueAddr::Field { obj, offset } => {
                 self.chunk.emit(rrr(Opcode::FieldStore, src, *obj, *offset));
             }
@@ -3814,6 +3895,11 @@ impl<'a> FnCompiler<'a> {
             ExprKind::Literal(lit) => self.emit_literal(lit),
 
             ExprKind::Ident(name) => {
+                if let Some(global) = self.foreign_global_for_span(expr.span) {
+                    let address = self.emit_foreign_global_address(&global);
+                    let (width, signed, _, float32) = self.c_memory_access(&global.ty);
+                    return self.emit_c_load(address, width, signed, float32);
+                }
                 // Use sema-resolved name when available (handles namespacing).
                 let resolved_name = self
                     .resolved_fn_for_span(expr.span)
@@ -4025,6 +4111,10 @@ impl<'a> FnCompiler<'a> {
                 let src = self.compile_expr(value);
                 match &target.node {
                     ExprKind::Ident(name) => {
+                        if let Some(addr) = self.foreign_global_lvalue(target.span) {
+                            self.store_lvalue(&addr, src);
+                            return src;
+                        }
                         self.drop_local_now(name);
                         let dst = self.reg_of(name);
                         if dst != src {
@@ -4176,6 +4266,22 @@ impl<'a> FnCompiler<'a> {
 
             ExprKind::CompoundAssign { target, op, value } => {
                 if let ExprKind::Ident(name) = &target.node {
+                    if self.foreign_global_for_span(target.span).is_some() {
+                        let addr = self.compute_lvalue_addr(target);
+                        let old = self.load_lvalue(&addr);
+                        let src = self.compile_expr(value);
+                        let opcode = match op {
+                            CompoundAssignOp::Add => Opcode::Add,
+                            CompoundAssignOp::Sub => Opcode::Sub,
+                            CompoundAssignOp::Mul => Opcode::Mul,
+                            CompoundAssignOp::Div => Opcode::Div,
+                            CompoundAssignOp::Mod => Opcode::Mod,
+                        };
+                        let new_val = self.alloc_reg();
+                        self.chunk.emit(rrr(opcode, new_val, old, src));
+                        self.store_lvalue(&addr, new_val);
+                        return new_val;
+                    }
                     let src = self.compile_expr(value);
                     let dst = self.reg_of(name);
                     let opcode = match op {
@@ -4211,6 +4317,20 @@ impl<'a> FnCompiler<'a> {
                 prefix,
             } => {
                 if let ExprKind::Ident(name) = &inner.node {
+                    if self.foreign_global_for_span(inner.span).is_some() {
+                        let addr = self.compute_lvalue_addr(inner);
+                        let old = self.load_lvalue(&addr);
+                        let opcode = match op {
+                            IncDecOp::Inc => Opcode::Add,
+                            IncDecOp::Dec => Opcode::Sub,
+                        };
+                        let one = self.alloc_reg();
+                        self.chunk.emit(ri16(Opcode::MovI, one, 1));
+                        let new_val = self.alloc_reg();
+                        self.chunk.emit(rrr(opcode, new_val, old, one));
+                        self.store_lvalue(&addr, new_val);
+                        return if *prefix { new_val } else { old };
+                    }
                     let r = self.reg_of(name);
                     let opcode = match op {
                         IncDecOp::Inc => Opcode::Inc,
@@ -5347,6 +5467,7 @@ impl<'a> FnCompiler<'a> {
                     self.repr_c_structs,
                     self.type_aliases,
                     self.foreign_imports,
+                    self.foreign_globals,
                     self.trait_impls,
                     self.variadic_fn_info,
                     self.enum_defs,
@@ -6613,6 +6734,7 @@ fn main() i32 {
         var foreign: Callback = get_callback();
         result = local(1) + foreign(2);
     }
+
     ret result;
 }
 "#,
@@ -6636,6 +6758,39 @@ fn main() i32 {
                     if symbol.symbol == "<function-pointer>"
                         && symbol.signature.params.len() == 1
             )
+        }));
+    }
+
+    #[test]
+    fn foreign_globals_use_typed_external_data_loads_and_stores() {
+        let chunks = compile(
+            r#"
+@api("native_counter") var counter: i32;
+@api("native_ratio") var ratio: f32;
+fn main() i32 {
+    var result: i32 = 0;
+    unsafe {
+        counter += 1;
+        ratio = 2.5 as f32;
+        result = counter;
+    }
+    ret result;
+}
+"#,
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(main.constants.iter().any(|constant| {
+            matches!(constant, ConstPoolEntry::ForeignGlobal(global) if global.symbol == "native_counter")
+        }));
+        assert!(main.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Load as u8
+                && instruction.mem_width() == MemWidth::Dword
+                && instruction.mem_signed()
+        }));
+        assert!(main.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Store as u8
+                && instruction.mem_width() == MemWidth::Dword
+                && instruction.flags & FLOAT_FLAG != 0
         }));
     }
 

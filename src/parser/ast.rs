@@ -572,6 +572,12 @@ pub enum ItemKind {
         attributes: Vec<Attribute>,
         public: bool,
     },
+    ForeignGlobal {
+        name: String,
+        ty: Type,
+        attributes: Vec<Attribute>,
+        public: bool,
+    },
 }
 
 pub type Item = Spanned<ItemKind>;

@@ -16,7 +16,8 @@ impl Analyzer {
             | ItemKind::Fn { attributes, .. }
             | ItemKind::Struct { attributes, .. }
             | ItemKind::Trait { attributes, .. }
-            | ItemKind::Enum { attributes, .. } => Some(attributes),
+            | ItemKind::Enum { attributes, .. }
+            | ItemKind::ForeignGlobal { attributes, .. } => Some(attributes),
             _ => None,
         };
         if let Some(attrs) = attrs
@@ -398,6 +399,58 @@ impl Analyzer {
                 self.type_aliases
                     .insert(name.clone(), (generic_params.clone(), stored_type));
             }
+            ItemKind::ForeignGlobal {
+                name,
+                ty,
+                attributes,
+                public,
+            } => {
+                let mut attr_names = extract_attribute_names(attributes);
+                attr_names.push("foreign_global".to_string());
+                if !attr_names.iter().any(|attribute| attribute == "ignore") {
+                    attr_names.push("ignore".to_string());
+                }
+                let register_name = if let Some(module) = self.module_path_for_span(item.span) {
+                    format!("{}.{}", module, name)
+                } else {
+                    name.clone()
+                };
+                let symbol = attributes
+                    .iter()
+                    .find(|attribute| attribute.name == "api")
+                    .and_then(|attribute| attribute.args.first())
+                    .and_then(|argument| match argument {
+                        AttrArg::Positional(AttrVal::Str(symbol)) => Some(symbol.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| name.clone());
+                self.foreign_globals.insert(
+                    register_name.clone(),
+                    ForeignGlobalInfo {
+                        symbol,
+                        ty: ty.node.clone(),
+                    },
+                );
+                self.declare(
+                    register_name,
+                    Symbol {
+                        kind: SymbolKind::Variable { mutable: true },
+                        span: item.span,
+                        ty: Some(ty.node.clone()),
+                        params: vec![],
+                        used: false,
+                        initialized: true,
+                        is_import: false,
+                        import_path: None,
+                        const_value: None,
+                        variadic: false,
+                        attributes: attr_names,
+                        public: *public,
+                        unsafe_fn: false,
+                        generic_params: vec![],
+                    },
+                );
+            }
             ItemKind::Import(import_path) => self.declare_import_item(import_path, item.span),
             ItemKind::Impl {
                 for_ty,
@@ -706,6 +759,40 @@ impl Analyzer {
         };
 
         if !matches!(original.kind, SymbolKind::Function) {
+            if original
+                .attributes
+                .iter()
+                .any(|attribute| attribute == "foreign_global")
+            {
+                if !original.public {
+                    self.push_error(
+                        span,
+                        "S04",
+                        format!("'{}' is private and cannot be imported", leaf),
+                    );
+                    return;
+                }
+                self.declare(
+                    local_name,
+                    Symbol {
+                        kind: original.kind,
+                        ty: original.ty,
+                        span,
+                        params: vec![],
+                        used: false,
+                        initialized: true,
+                        is_import: true,
+                        import_path: Some(full_path),
+                        const_value: None,
+                        variadic: false,
+                        attributes: original.attributes,
+                        public: false,
+                        unsafe_fn: false,
+                        generic_params: vec![],
+                    },
+                );
+                return;
+            }
             if matches!(original.kind, SymbolKind::TypeName) {
                 if !original.public {
                     self.push_error(

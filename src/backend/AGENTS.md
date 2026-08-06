@@ -22,6 +22,9 @@ src/backend/
 - `CallCReg` applies the same SysV/Win64 classification to an indirect raw
   function pointer. Exported functions become callback values through the
   address of their synthetic C adapter.
+- Foreign globals use undefined data symbols and PC-relative relocations in
+  ELF64 and PE/COFF. The frontend limits them to scalar/pointer-sized values;
+  typed loads and stores preserve C widths and `f32` conversion.
 
 ## Stack Frame
 

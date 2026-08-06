@@ -71,6 +71,20 @@ impl SymbolTable {
 
     /// Get or create an UNDEF symbol for an external reference.
     pub fn get_or_add_undef(&mut self, obj: &mut Object<'_>, name: &str) -> SymbolId {
+        self.get_or_add_undef_kind(obj, name, SymbolKind::Text)
+    }
+
+    /// Get or create an undefined external data symbol.
+    pub fn get_or_add_undef_data(&mut self, obj: &mut Object<'_>, name: &str) -> SymbolId {
+        self.get_or_add_undef_kind(obj, name, SymbolKind::Data)
+    }
+
+    fn get_or_add_undef_kind(
+        &mut self,
+        obj: &mut Object<'_>,
+        name: &str,
+        kind: SymbolKind,
+    ) -> SymbolId {
         if let Some(&id) = self.undefined.get(name) {
             return id;
         }
@@ -78,7 +92,7 @@ impl SymbolTable {
             name: name.as_bytes().to_vec(),
             value: 0,
             size: 0,
-            kind: SymbolKind::Text,
+            kind,
             scope: SymbolScope::Dynamic,
             weak: false,
             section: SymbolSection::Undefined,
