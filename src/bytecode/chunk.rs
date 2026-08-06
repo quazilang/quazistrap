@@ -464,6 +464,14 @@ impl std::fmt::Display for Chunk {
                         }
                         pending.clear();
                     }
+                    Some(Opcode::CallCReg) => {
+                        let (_, source, _) = instr.call_c_reg_parts();
+                        let callee = format!("C r{}", source);
+                        for (pos, &pi) in pending.iter().enumerate() {
+                            callarg_info[pi] = Some((pos, callee.clone()));
+                        }
+                        pending.clear();
+                    }
                     _ => {
                         pending.clear();
                     }

@@ -23,6 +23,9 @@ extern int64_t quazi_sum8(
     int64_t a, int64_t b, int64_t c, int64_t d,
     int64_t e, int64_t f, int64_t g, int64_t h
 );
+extern int64_t quazi_multiply(int64_t a, int64_t b);
+
+typedef int64_t (*BinaryCallback)(int64_t, int64_t);
 
 Point c_roundtrip_point(Point point, float bias) {
     point.x += bias;
@@ -51,4 +54,16 @@ int64_t c_sum8(
 
 int64_t c_call_quazi_sum8(void) {
     return quazi_sum8(1, 2, 3, 4, 5, 6, 7, 8);
+}
+
+int64_t c_apply_callback(BinaryCallback callback, int64_t a, int64_t b) {
+    return callback(a, b);
+}
+
+static int64_t c_add(int64_t a, int64_t b) {
+    return a + b;
+}
+
+BinaryCallback c_get_add_callback(void) {
+    return c_add;
 }

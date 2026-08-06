@@ -308,6 +308,7 @@ impl Analyzer {
             | TypeKind::Str
             | TypeKind::Bytes
             | TypeKind::RawPtr { .. }
+            | TypeKind::CFn { .. }
             | TypeKind::Ref { .. } => false,
             // All other types (structs, enums, arrays, slices, dyn Trait, etc.) are move types.
             _ => true,

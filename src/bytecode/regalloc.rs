@@ -455,6 +455,7 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
         | Opcode::Load       // ops[0]=dst, ops[1]=base
         | Opcode::Lea        // ops[0]=dst, ops[1]=base
         | Opcode::CallReg    // ops[0]=dst, ops[1]=fn_ptr
+        | Opcode::CallCReg   // ops[0]=dst, ops[1]=C fn ptr, ops[2..3]=signature
         | Opcode::Spawn      // ops[0]=dst, ops[1]=fn_ptr
         => vec![instr.ops[1]],
 

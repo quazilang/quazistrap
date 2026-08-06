@@ -131,6 +131,10 @@ match value { Some(v) if v > 0 => v, _ => 0, }   // guards
 
 var f: fn(i32, i32) i32 = |x, y| x + y;   // closure
 var g: fn() i32 = my_func;                  // fn-name as value
+
+@repr(C)
+type CCallback = fn(i32, i32) i32;          // raw C function pointer
+// Only @export functions coerce to CCallback; invoking one is unsafe.
 ```
 
 **Named arguments**: `foo(x=1, y=2)` — `name=value` pairs at call site. All positional args must precede named args.
@@ -161,7 +165,7 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 | `@api("Symbol")` | Body → `CallExt+Ret`. Win64 on Windows, SysV elsewhere. Implicitly unsafe. |
 | `@api` | Bodyless C ABI import using the Quazi function name as the native symbol. Every call requires `unsafe`; explicit `@api("Symbol")` is recommended. |
 | `@export("Symbol")` | Export an explicitly `pub` Quazi function under a stable C ABI symbol. Bare `@export` uses the function name. |
-| `@repr(C)` | C-compatible struct/union layout, including by-value FFI arguments and returns. `packed` and power-of-two `align=N` modifiers are supported; empty and generic aggregates remain rejected. |
+| `@repr(C)` | C-compatible struct/union layout and raw function-pointer aliases. Aggregates support by-value FFI, `packed`, and power-of-two `align=N`; empty and generic forms remain rejected. |
 | `@opaque` | Declare an empty, non-generic foreign handle type which Quazi cannot construct. |
 | `@cfg(key="val")` | Conditional compile. Keys: `target_os`, `target_arch`, `target_abi`. |
 | `@inline` | Force inline eligibility (excluded if recursive). |
@@ -266,7 +270,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **Raw backtick string literals** | ✅ Done — contents are preserved exactly with no backslash escape decoding |
 | **C/Rust-style escapes in non-raw strings** | ✅ Done — control, punctuation, ANSI `\e`, hexadecimal, octal, Unicode scalar, and line-continuation escapes with strict diagnostics |
 | **C ABI FFI phase 1** | ✅ Initial — `@api`, `@export`, scalar/pointer signatures, `@repr(C)`, opaque handles, C compilation, object/library inputs, `.a`/`.so` output |
-| **C ABI FFI phase 2** | Partial — C variadics, scalar `f32`/`f64`, by-value `@repr(C)` aggregates, unions, packed/aligned structs, named integer bitfields, final flexible array members, portable byte strings, and checked C-string construction are done for Linux SysV and Windows Win64 through portable QZI v4 metadata; remaining: callbacks/function pointers, globals, and header generation |
+| **C ABI FFI phase 2** | Partial — C variadics, scalar `f32`/`f64`, by-value `@repr(C)` aggregates, callbacks/function pointers, unions, packed/aligned structs, named integer bitfields, final flexible array members, portable byte strings, and checked C-string construction are done for Linux SysV and Windows Win64 through portable QZI v4 metadata; remaining: globals and header generation |
 
 ### P2 — Codegen Quality
 
@@ -306,6 +310,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-06 | Added raw C callbacks through `@repr(C) type Callback = fn(...) ...`; `@export` functions coerce to callback pointers, `@api` may accept or return them, and indirect calls lower through the target SysV/Win64 ABI. Callback invocation is unsafe and ordinary Quazi closures cannot cross the C boundary. |
 | 2026-08-06 | Extended C aggregate layouts with `union`, `@repr(C, packed, align=N)`, named nonzero integer bitfields, and pointer-only final `[T; ..]` flexible array members. Union field access and flexible-array indexing are unsafe. |
 | 2026-08-06 | Added immutable `bytes` with `b"..."`/`br"..."`, exact QZI v4 byte constants, `.len()`/indexing/`.as_ptr()`, and checked `std.ffi.CString.try_from(bytes)` with interior-NUL and allocation errors. |
 | 2026-08-06 | Extended `qz run` to accept the same QZI, source, C, Unix/Windows object-library, library-path, and library inputs as `qz build -r`; invoking it without files retains current-project mode through `quazi.toml`. |

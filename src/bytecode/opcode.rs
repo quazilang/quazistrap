@@ -69,7 +69,8 @@ pub enum Opcode {
     AtomicCas = 0x51, // compare-and-swap
     MemFence = 0x52,
     Spawn = 0x53,
-    CallExt = 0x5D, // call external symbol (FFI/API)
+    CallCReg = 0x54, // C ABI indirect call: dst, fn register, u16 signature constant
+    CallExt = 0x5D,  // call external symbol (FFI/API)
     Syscall = 0x5E, // syscall — RI16: ops[0]=dst, ops[1..2]=const_pool_idx (name or raw num); flags=arg_count
 
     // 0x60–0x6F  String & numeric operations
@@ -150,6 +151,7 @@ impl Opcode {
             0x51 => Some(Self::AtomicCas),
             0x52 => Some(Self::MemFence),
             0x53 => Some(Self::Spawn),
+            0x54 => Some(Self::CallCReg),
             0x5D => Some(Self::CallExt),
             0x5E => Some(Self::Syscall),
             0x60 => Some(Self::StrLen),

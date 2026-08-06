@@ -1134,6 +1134,16 @@ impl Analyzer {
                     return_ty.span,
                 )),
             },
+            TypeKind::CFn { params, return_ty } => TypeKind::CFn {
+                params: params
+                    .iter()
+                    .map(|p| Spanned::new(self.resolve_type_aliases(&p.node), p.span))
+                    .collect(),
+                return_ty: Box::new(Spanned::new(
+                    self.resolve_type_aliases(&return_ty.node),
+                    return_ty.span,
+                )),
+            },
             other => other.clone(),
         }
     }
@@ -3919,6 +3929,62 @@ fn main() void {
         assert_eq!(flags["high"].bit_offset, 3);
         assert_eq!(flags["tail"].byte_offset, 4);
         assert_eq!(report.struct_sizes.get("Flags"), Some(&8));
+    }
+
+    #[test]
+    fn ffi_c_function_pointer_alias_accepts_exports_and_is_unsafe_to_call() {
+        let report = analyze(
+            r#"
+@repr(C) pub type CompareFn = fn(*u8, *u8) i32;
+
+@export("compare_bytes")
+pub unsafe fn compare_bytes(left: *u8, right: *u8) i32 { ret 0; }
+
+@api("get_compare") unsafe fn get_compare() CompareFn;
+@api("set_compare") unsafe fn set_compare(callback: CompareFn);
+
+fn main() void {
+    unsafe {
+        var local: CompareFn = compare_bytes;
+        set_compare(local);
+        var foreign: CompareFn = get_compare();
+        foreign(0, 0);
+    }
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "C callbacks: {:?}", report.errors);
+
+        let unsafe_call = analyze(
+            r#"
+@repr(C) type Callback = fn(i32) i32;
+fn invoke(callback: Callback) i32 { ret callback(1); }
+fn main() void { }
+"#,
+        );
+        assert!(
+            unsafe_call
+                .errors
+                .iter()
+                .any(|error| { error.message.contains("C function pointer requires unsafe") })
+        );
+    }
+
+    #[test]
+    fn ffi_c_function_pointer_rejects_non_exported_function_coercion() {
+        let report = analyze(
+            r#"
+@repr(C) type Callback = fn(i32) i32;
+fn ordinary(value: i32) i32 { ret value; }
+fn main() void { var callback: Callback = ordinary; }
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| { error.message.contains("type mismatch") })
+        );
     }
 
     #[test]

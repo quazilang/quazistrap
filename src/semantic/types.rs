@@ -226,6 +226,8 @@ pub struct ExprAnnotation {
     /// If true, codegen should load the value pointed to by this reference expression.
     /// Set when a `&T` expression is used in a context that expects the value `T`.
     pub auto_deref: bool,
+    /// The expression is an exported Quazi function coerced to its C adapter address.
+    pub c_abi_function: bool,
 }
 
 #[derive(Debug, Clone)]

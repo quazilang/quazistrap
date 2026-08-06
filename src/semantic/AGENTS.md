@@ -53,10 +53,16 @@ For `Named` receivers with concrete type args, substitute receiver generics into
   the local function name; `@api("symbol")` is the recommended explicit form.
 - `@export` requires an explicitly `pub`, non-generic Quazi body and is retained
   as a native root even without Quazi callers.
+- An exact `@repr(C) type Callback = fn(...) ...` declares a raw C function
+  pointer. Its signature follows the same ABI validation as `@api`/`@export`,
+  calls require unsafe context, and only signature-compatible `@export`
+  functions may coerce to it. Ordinary Quazi functions and closures retain
+  their environment-pointer representation and cannot cross the C boundary.
 - Signatures accept C integer/bool scalars, pointer-sized integers, raw pointers,
   `f32`/`f64`, `void` returns, and non-generic `@repr(C)` structs by value. Bare
   C variadics validate each actual extra argument and apply default promotions.
-  Function pointers and other unsupported types emit `S14`.
+  C function pointers are passed as pointer-sized values; other unsupported
+  types emit `S14`.
 - `@repr(C)` covers non-empty, non-generic structs and unions with scalar
   array fields, optional `packed`/power-of-two `align=N`, named nonzero integer
   bitfields, and final flexible array members. FAM aggregates are pointer-only;

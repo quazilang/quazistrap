@@ -8,6 +8,8 @@ status zero without printing anything.
   field conversion.
 - `Triple` exercises memory/hidden-sret aggregate passing.
 - `c_sum8`/`quazi_sum8` exercise stack overflow arguments in both directions.
+- `BinaryCallback` passes an exported Quazi function to C and calls a C-returned
+  function pointer through the same portable source on SysV and Win64.
 - C calls exported Quazi adapters before returning each value to Quazi, so the
   same source checks `@api` and `@export` symmetrically.
 
