@@ -3699,4 +3699,43 @@ fn main() void { }
             report.errors
         );
     }
+
+    #[test]
+    fn byte_strings_have_length_index_and_pointer_methods() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var value: bytes = b"A\xFF\0";
+    var length: usize = value.len();
+    var byte: u8 = value[1];
+    var pointer: *u8 = value.as_ptr();
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "byte-string operations should typecheck: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn byte_strings_are_immutable() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var value = b"abc";
+    value[0] = 1;
+}
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.message.contains("byte strings are immutable")),
+            "byte-string writes should be rejected: {:?}",
+            report.errors
+        );
+    }
 }

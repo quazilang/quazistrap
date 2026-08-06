@@ -33,7 +33,7 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x03` (readers retain v1/v2 compatibility)
+- Version: `0x04` (readers retain v1/v2/v3 compatibility)
 - chunk_count: u32 LE
 - Per chunk: name, param_count, reg_count, flags, optional export ABI metadata,
   consts, instrs. Chunk flags bit 3 marks the export metadata extension.
@@ -48,6 +48,7 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 | `3` | FnAddr(u16_len + bytes) |
 | `4` | VtableAddr(type u16 + bytes, trait u16 + bytes) |
 | `5` | ForeignSymbol(symbol + target-neutral `AbiSignature`) |
+| `6` | Bytes(u32_len + exact bytes) |
 
 ---
 
@@ -67,6 +68,9 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 - `@export` functions remain ordinary internal-ABI chunks and are kept alive as
   roots. Codegen appends a synthetic C adapter chunk whose embedded export
   metadata names the stable dynamic symbol.
+- Byte constants are emitted into read-only data as `[u64 length][payload]`.
+  `.len()` loads the prefix, indexing reads an unsigned byte, and `.as_ptr()`
+  skips the prefix so C receives the first payload byte.
 - `FieldLoad`/`FieldStore` reuse memory-width flags for `@repr(C)` byte, word,
   dword, and qword fields, including sign extension on signed loads. `FLOAT_FLAG`
   on a dword field marks C `f32` conversion to/from internal f64 slots.

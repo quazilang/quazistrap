@@ -27,6 +27,7 @@ assign → logical-or → logical-and → equality → comparison → term → f
 - **Import**: `import std.io.stdout;` / `import a.b.{x,y};` / `import a.b as c;` / `import a.b.*;`
 - **Closure**: `|params| expr` — `Pipe` in primary position. Params are bare idents (no types).
 - **Fn pointer type**: `fn(T, U) V` — greedy return type via `peek_is_type_start()`.
+- **Byte strings**: `b"..."` decodes byte escapes while `br"..."` is raw. Both have the immutable `bytes` type; indexing yields `u8` and `.as_ptr()` points at the first payload byte.
 - **Variadics**: `...args: T` in param list; inside fn body `args` is `Slice[T]` with `.len()`.
 - **Pattern matching**: wildcard, bind, literal, variant, and **guards** (`pat if expr =>`).
 - **Named arguments**: `foo(x=1, y=2)` — all positional args must precede named args. Resolved to param position at compile time; unknown name or position conflict = S09 error.

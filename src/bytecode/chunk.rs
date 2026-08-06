@@ -13,6 +13,8 @@ pub enum ConstPoolEntry {
     Int(i64),
     Float(f64),
     Str(String),
+    /// Exact bytes, stored with a u64 length prefix in native read-only data.
+    Bytes(Vec<u8>),
     FnAddr(String),
     /// Address of a vtable for a (type, trait) pair — tag 4.
     VtableAddr(String, String),
@@ -134,6 +136,11 @@ impl Chunk {
                     buf.extend_from_slice(&(sb.len() as u16).to_le_bytes());
                     buf.extend_from_slice(sb);
                 }
+                ConstPoolEntry::Bytes(bytes) => {
+                    buf.push(6);
+                    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                    buf.extend_from_slice(bytes);
+                }
                 ConstPoolEntry::FnAddr(name) => {
                     buf.push(3);
                     let nb = name.as_bytes();
@@ -175,7 +182,7 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
         return Err("truncated QZI header".to_string());
     }
     let version = buf[pos];
-    if version != 1 && version != 2 && version != 3 {
+    if !matches!(version, 1..=4) {
         return Err(format!("unsupported QZI version {}", version));
     }
     pos += 1;
@@ -318,6 +325,19 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
                         buf, &mut pos,
                     )?));
                 }
+                6 if version >= 4 => {
+                    if buf.len() < pos + 4 {
+                        return Err("truncated const bytes length".to_string());
+                    }
+                    let bytes_len =
+                        u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+                    pos += 4;
+                    if buf.len() < pos + bytes_len {
+                        return Err("truncated const bytes data".to_string());
+                    }
+                    constants.push(ConstPoolEntry::Bytes(buf[pos..pos + bytes_len].to_vec()));
+                    pos += bytes_len;
+                }
                 _ => return Err(format!("unknown const tag {}", tag)),
             }
         }
@@ -357,7 +377,7 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 3;
+pub const QZI_VERSION: u8 = 4;
 
 pub fn serialize_qzi(chunks: &[Chunk]) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -387,6 +407,9 @@ impl std::fmt::Display for Chunk {
                     ConstPoolEntry::Int(v) => format!("\x1b[33m{v}\x1b[0m"),
                     ConstPoolEntry::Float(v) => format!("\x1b[33m{v}\x1b[0m"),
                     ConstPoolEntry::Str(s) => format!("\x1b[32m{s:?}\x1b[0m"),
+                    ConstPoolEntry::Bytes(bytes) => {
+                        format!("\x1b[32mbytes({bytes:?})\x1b[0m")
+                    }
                     ConstPoolEntry::FnAddr(name) => format!("\x1b[36m{name}\x1b[0m"),
                     ConstPoolEntry::VtableAddr(tn, tr) => {
                         format!("\x1b[35mvtable({tn}::{tr})\x1b[0m")
@@ -497,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn qzi_v3_roundtrips_foreign_abi_metadata() {
+    fn qzi_v4_roundtrips_foreign_abi_metadata_and_bytes() {
         let signature = AbiSignature {
             params: vec![AbiType::Float64],
             return_type: AbiType::Float64,
@@ -514,14 +537,18 @@ mod tests {
                 symbol: "sin".to_string(),
                 signature,
             }));
+        chunk
+            .constants
+            .push(ConstPoolEntry::Bytes(vec![0, 0xff, 1]));
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
 
         let encoded = serialize_qzi(&[chunk]);
-        let decoded = deserialize_qzi(&encoded).expect("QZI v3 should decode");
+        let decoded = deserialize_qzi(&encoded).expect("QZI v4 should decode");
         assert_eq!(decoded[0].export.as_ref().unwrap().symbol, "quazi_sin");
         assert!(matches!(
             decoded[0].constants.as_slice(),
-            [ConstPoolEntry::ForeignSymbol(symbol)] if symbol.symbol == "sin"
+            [ConstPoolEntry::ForeignSymbol(symbol), ConstPoolEntry::Bytes(bytes)]
+                if symbol.symbol == "sin" && bytes == &[0, 0xff, 1]
         ));
     }
 }

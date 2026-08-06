@@ -53,6 +53,7 @@ pub enum Literal {
     Int(i64),
     Float(f64),
     String(String),
+    Bytes(Vec<u8>),
     Bool(bool),
 }
 
@@ -266,6 +267,8 @@ pub enum TypeKind {
     Float64,
     Bool,
     Str,
+    /// Immutable length-carrying byte string produced by `b"..."`/`br"..."`.
+    Bytes,
     Void,
     Any,
     Named {
@@ -320,6 +323,7 @@ impl std::fmt::Display for TypeKind {
             TypeKind::Float64 => write!(f, "f64"),
             TypeKind::Bool => write!(f, "bool"),
             TypeKind::Str => write!(f, "str"),
+            TypeKind::Bytes => write!(f, "bytes"),
             TypeKind::Void => write!(f, "void"),
             TypeKind::Any => write!(f, "any"),
             TypeKind::Named { name, type_args } => {

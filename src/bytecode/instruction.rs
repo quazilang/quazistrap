@@ -89,6 +89,9 @@ impl Instruction {
                 ConstPoolEntry::Int(v) => format!("\x1b[33m{v}\x1b[0m"),
                 ConstPoolEntry::Float(v) => format!("\x1b[33m{v}\x1b[0m"),
                 ConstPoolEntry::Str(s) => format!("\x1b[32m{s:?}\x1b[0m"),
+                ConstPoolEntry::Bytes(bytes) => {
+                    format!("\x1b[32mbytes({bytes:?})\x1b[0m")
+                }
                 ConstPoolEntry::FnAddr(name) => format!("\x1b[36m{name}\x1b[0m"),
                 ConstPoolEntry::VtableAddr(tn, tr) => format!("\x1b[35mvtable({tn}::{tr})\x1b[0m"),
                 ConstPoolEntry::ForeignSymbol(symbol) => {
@@ -314,6 +317,7 @@ impl Instruction {
                     .get(idx as usize)
                     .map(|c| match c {
                         ConstPoolEntry::Str(s) => format!(" \x1b[32m{s:?}\x1b[0m"),
+                        ConstPoolEntry::Bytes(bytes) => format!(" bytes({bytes:?})"),
                         ConstPoolEntry::Int(n) => format!(" \x1b[33m{n}\x1b[0m"),
                         ConstPoolEntry::Float(f) => format!(" \x1b[33m{f}\x1b[0m"),
                         ConstPoolEntry::FnAddr(name) => format!(" \x1b[36m{name}\x1b[0m"),

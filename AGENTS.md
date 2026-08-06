@@ -135,7 +135,7 @@ var g: fn() i32 = my_func;                  // fn-name as value
 
 **Named arguments**: `foo(x=1, y=2)` — `name=value` pairs at call site. All positional args must precede named args.
 
-Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`, `bool`, `str`, `void`, `any`.
+Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`, `bool`, `str`, `bytes`, `void`, `any`. `b"..."` decodes byte escapes, while `br"..."` preserves them; byte strings are immutable, length-carrying, and expose `.len()`, indexing, and `.as_ptr()`.
 
 ### Unsafe System
 
@@ -229,7 +229,7 @@ If a `quazi.lock` file exists, it is used to pin dependency versions. When missi
 | `net` | Done | TcpListener, TcpStream, UdpSocket |
 | `os` | Done | exit, sleep, yield_cpu, getpid, getenv, cwd, etc. |
 | `thread` | Done | spawn/join. No-capture only. |
-| `ffi` | Initial | Linux x86-64 C aliases, `nullptr[T]()`, `CStr`, and `CString`. |
+| `ffi` | Initial | Cross-platform C aliases, `nullptr[T]()`, `CStr`, and checked `CString.try_from(bytes)`. |
 
 ---
 
@@ -266,7 +266,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **Raw backtick string literals** | ✅ Done — contents are preserved exactly with no backslash escape decoding |
 | **C/Rust-style escapes in non-raw strings** | ✅ Done — control, punctuation, ANSI `\e`, hexadecimal, octal, Unicode scalar, and line-continuation escapes with strict diagnostics |
 | **C ABI FFI phase 1** | ✅ Initial — `@api`, `@export`, scalar/pointer signatures, `@repr(C)`, opaque handles, C compilation, object/library inputs, `.a`/`.so` output |
-| **C ABI FFI phase 2** | Partial — C variadics, scalar `f32`/`f64`, and by-value `@repr(C)` aggregates are done for Linux SysV and Windows Win64 through portable QZI v3 metadata; remaining: callbacks/function pointers, unions, packed/aligned structs, bitfields, flexible arrays, globals, byte strings, checked C-string conversions, header generation |
+| **C ABI FFI phase 2** | Partial — C variadics, scalar `f32`/`f64`, by-value `@repr(C)` aggregates, portable byte strings, and checked C-string construction are done for Linux SysV and Windows Win64 through portable QZI v4 metadata; remaining: callbacks/function pointers, unions, packed/aligned structs, bitfields, flexible arrays, globals, and header generation |
 
 ### P2 — Codegen Quality
 
@@ -306,6 +306,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-06 | Added immutable `bytes` with `b"..."`/`br"..."`, exact QZI v4 byte constants, `.len()`/indexing/`.as_ptr()`, and checked `std.ffi.CString.try_from(bytes)` with interior-NUL and allocation errors. |
 | 2026-08-06 | Extended `qz run` to accept the same QZI, source, C, Unix/Windows object-library, library-path, and library inputs as `qz build -r`; invoking it without files retains current-project mode through `quazi.toml`. |
 | 2026-08-06 | Added portable QZI v3 C ABI signatures and symmetric adapter chunks for `@api`/`@export`; implemented scalar float and by-value `@repr(C)` aggregate arguments/returns for Linux SysV and Windows Win64, including hidden sret, stack overflow arguments, C variadic promotions/SSE counts, `f32` field conversion, and Windows native-source/linker support. Added `examples/20-ffi-abi`. |
 | 2026-08-03 | Added the first Linux x86-64 C ABI layer: unified `@api` imports, stable `@export` symbols, scalar/pointer signature validation, `@repr(C)` scalar/pointer layouts, opaque handles, `$CC` native sources, object/archive/shared-library linkage, static/shared outputs, `std.ffi`, and a C→Quazi→C round-trip example. Unsupported ABI cases fail explicitly instead of guessing. |

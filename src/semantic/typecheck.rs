@@ -920,6 +920,7 @@ impl Analyzer {
                     Literal::String(_) => TypeKind::Ref {
                         inner: Box::new(Spanned::new(TypeKind::Str, expr.span)),
                     },
+                    Literal::Bytes(_) => TypeKind::Bytes,
                     Literal::Bool(_) => TypeKind::Bool,
                 };
 
@@ -1785,6 +1786,21 @@ impl Analyzer {
                                 }
                                 None => None,
                             },
+                            "as_ptr" => match &object_eval.ty {
+                                Some(TypeKind::Bytes) => Some(TypeKind::RawPtr {
+                                    inner: Box::new(Spanned::new(TypeKind::Uint8, expr.span)),
+                                }),
+                                Some(TypeKind::Named { .. }) => None,
+                                Some(other) => {
+                                    self.push_error(
+                                        expr.span,
+                                        "S06",
+                                        format!("as_ptr() is not available on {}", other),
+                                    );
+                                    None
+                                }
+                                None => None,
+                            },
                             "parse" => type_args.first().map(|t| t.node.clone()),
                             "abs" => match &object_eval.ty {
                                 Some(t) if Self::is_integer(t) || Self::is_float(t) => {
@@ -2251,6 +2267,7 @@ impl Analyzer {
                     match &obj_eval.ty {
                         Some(TypeKind::Array { elem_ty, .. }) => Some(elem_ty.node.clone()),
                         Some(TypeKind::Slice { elem_ty }) => Some(elem_ty.node.clone()),
+                        Some(TypeKind::Bytes) => Some(TypeKind::Uint8),
                         _ => None,
                     }
                 };
@@ -2850,6 +2867,7 @@ impl Analyzer {
             Literal::Int(v) => Some(ConstValue::Int(*v)),
             Literal::Float(v) => Some(ConstValue::Float(*v)),
             Literal::String(v) => Some(ConstValue::String(v.clone())),
+            Literal::Bytes(_) => None,
             Literal::Bool(v) => Some(ConstValue::Bool(*v)),
         }
     }
@@ -3231,7 +3249,10 @@ impl Analyzer {
                 }
             }
             ExprKind::Index { object, indices } => {
-                self.type_check_expr(object, true);
+                let object_eval = self.type_check_expr(object, true);
+                if matches!(object_eval.ty, Some(TypeKind::Bytes)) {
+                    self.push_error(target.span, "S07", "byte strings are immutable".to_string());
+                }
                 for idx in indices {
                     self.type_check_expr(idx, true);
                 }
