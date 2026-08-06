@@ -56,14 +56,21 @@ pub enum Command {
         #[arg(long = "shared-lib", conflicts_with = "static_lib")]
         shared_lib: bool,
     },
-    /// build and run project (reads quazi.toml)
+    /// build and run files or project (if no files given, reads quazi.toml)
     Run {
+        files: Vec<PathBuf>,
         /// explicit linker binary
         #[arg(long = "linker")]
         linker: Option<PathBuf>,
         /// strip debug symbols from the output binary
         #[arg(short = 's', long = "strip")]
         strip: bool,
+        /// add a native library search directory
+        #[arg(short = 'L', value_name = "DIR")]
+        library_paths: Vec<PathBuf>,
+        /// link a native library (uses the platform linker's -l convention)
+        #[arg(short = 'l', value_name = "NAME")]
+        libraries: Vec<String>,
     },
     /// check project without compiling (reads quazi.toml)
     Check,
@@ -94,4 +101,55 @@ pub enum Command {
         #[arg(long, default_value_t = true)]
         stdio: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Args, Command};
+    use clap::Parser;
+    use std::path::PathBuf;
+
+    #[test]
+    fn run_without_files_selects_project_mode() {
+        let args = Args::try_parse_from(["qz", "run"]).expect("run should parse");
+        match args.command {
+            Command::Run { files, .. } => assert!(files.is_empty()),
+            command => panic!("expected run command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn run_accepts_source_and_native_inputs() {
+        let args = Args::try_parse_from([
+            "qz",
+            "run",
+            "src/main.qz",
+            "native/helper.c",
+            "-L",
+            "native/lib",
+            "-l",
+            "helper",
+        ])
+        .expect("run inputs should parse");
+
+        match args.command {
+            Command::Run {
+                files,
+                library_paths,
+                libraries,
+                ..
+            } => {
+                assert_eq!(
+                    files,
+                    [
+                        PathBuf::from("src/main.qz"),
+                        PathBuf::from("native/helper.c")
+                    ]
+                );
+                assert_eq!(library_paths, [PathBuf::from("native/lib")]);
+                assert_eq!(libraries, ["helper"]);
+            }
+            command => panic!("expected run command, got {command:?}"),
+        }
+    }
 }

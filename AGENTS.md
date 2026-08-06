@@ -17,7 +17,7 @@ cargo fmt                # format
 CLI (dep: `clap 4.6`):
 ```bash
 qz build <file> [-i|-c] [-o out] [-r] [-s] [--linker path]
-qz run / qz check / qz fmt / qz clean
+qz run [file ...] [--linker path] / qz check / qz fmt / qz clean
 qz new <name> [--lib] / qz init [--lib]
 qz debug [-i]
 qz lsp
@@ -306,6 +306,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-06 | Extended `qz run` to accept the same QZI, source, C, Unix/Windows object-library, library-path, and library inputs as `qz build -r`; invoking it without files retains current-project mode through `quazi.toml`. |
 | 2026-08-06 | Added portable QZI v3 C ABI signatures and symmetric adapter chunks for `@api`/`@export`; implemented scalar float and by-value `@repr(C)` aggregate arguments/returns for Linux SysV and Windows Win64, including hidden sret, stack overflow arguments, C variadic promotions/SSE counts, `f32` field conversion, and Windows native-source/linker support. Added `examples/20-ffi-abi`. |
 | 2026-08-03 | Added the first Linux x86-64 C ABI layer: unified `@api` imports, stable `@export` symbols, scalar/pointer signature validation, `@repr(C)` scalar/pointer layouts, opaque handles, `$CC` native sources, object/archive/shared-library linkage, static/shared outputs, `std.ffi`, and a C→Quazi→C round-trip example. Unsupported ABI cases fail explicitly instead of guessing. |
 | 2026-08-02 | Expanded quoted-string escapes with C control/octal forms and Rust hexadecimal/Unicode forms. Invalid escapes now produce lexer diagnostics; raw strings preserve every escape spelling. |

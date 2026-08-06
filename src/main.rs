@@ -985,7 +985,31 @@ fn main() {
     }
     let args = Args::parse();
 
-    match args.command {
+    let command = match args.command {
+        CliCmd::Run {
+            files,
+            linker,
+            strip,
+            library_paths,
+            libraries,
+        } => CliCmd::Build {
+            files,
+            output: None,
+            emit_bytecode: false,
+            emit_object: false,
+            run: true,
+            debug: false,
+            linker,
+            strip,
+            library_paths,
+            libraries,
+            static_lib: false,
+            shared_lib: false,
+        },
+        command => command,
+    };
+
+    match command {
         CliCmd::Build {
             files,
             output,
@@ -1185,7 +1209,12 @@ fn main() {
                     .iter()
                     .filter(|path| {
                         path.extension()
-                            .is_some_and(|ext| matches!(ext.to_str(), Some("o" | "a" | "so")))
+                            .is_some_and(|ext| {
+                                matches!(
+                                    ext.to_str(),
+                                    Some("o" | "a" | "so" | "obj" | "lib")
+                                )
+                            })
                     })
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
@@ -1276,62 +1305,7 @@ fn main() {
             }
         }
 
-        CliCmd::Run { linker, strip } => {
-            let ctx = load_project_context();
-            ctx.ensure_lockfile().unwrap_or_else(|e| {
-                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
-            });
-
-            let entry = ctx.config.entry.clone();
-            let result = loader::load_programs_with_resolver(&[entry], Some(&ctx.resolver))
-                .unwrap_or_else(|e| {
-                    eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                    std::process::exit(1);
-                });
-            if let Some(e) = &result.parse_error {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-
-            let out = project_output_name(&ctx.config.name, EmitType::Binary);
-            let link_flags = native_link_flags(&ctx).unwrap_or_else(|e| {
-                eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                std::process::exit(1);
-            });
-            let namespaced_paths: HashSet<String> = result
-                .namespaced_paths
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect();
-            run_pipeline(
-                &result.merged_source,
-                &result.program,
-                result.library_fn_names,
-                result.library_char_ranges,
-                result.source_files,
-                namespaced_paths,
-                false,
-                EmitType::Binary,
-                &out,
-                Some(&link_flags),
-                linker.as_deref(),
-            );
-
-            if strip {
-                strip_binary(Path::new(&out));
-            }
-
-            let status = std::process::Command::new(abs_path(&out))
-                .status()
-                .unwrap_or_else(|e| {
-                    eprintln!("\x1b[31;1merror:\x1b[0m cannot run {}: {}", out, e);
-                    std::process::exit(1);
-                });
-            if !status.success() {
-                std::process::exit(status.code().unwrap_or(1));
-            }
-        }
+        CliCmd::Run { .. } => unreachable!("run commands are normalized to build --run"),
 
         CliCmd::Check => {
             let ctx = load_project_context();
