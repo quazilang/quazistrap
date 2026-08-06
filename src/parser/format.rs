@@ -39,7 +39,13 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
     let explicit_args = &args[1..];
     let bytes = s.as_bytes();
     let mut i = 0;
-    let mut clean_template = String::with_capacity(s.len());
+    // NOTE: this buffer holds raw UTF-8 *bytes*, not chars. The template may
+    // contain multi-byte UTF-8 sequences (box-drawing chars, Cyrillic, emoji,
+    // etc.) outside of `{...}` placeholders, and those bytes must be copied
+    // through verbatim rather than reinterpreted one byte at a time as a
+    // `char` (which corrupts anything above ASCII — see bug report where
+    // `╭` etc. turned into `â` mojibake).
+    let mut clean_template_bytes: Vec<u8> = Vec::with_capacity(s.len());
     let mut out_args: Vec<Expr> = Vec::new();
     let mut out_specs: Vec<String> = Vec::new();
     let mut pos_arg_idx = 0;
@@ -47,13 +53,13 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
     while i < bytes.len() {
         // `{{` → escaped `{`
         if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            clean_template.push_str("{{");
+            clean_template_bytes.extend_from_slice(b"{{");
             i += 2;
             continue;
         }
         // `}}` → escaped `}`
         if bytes[i] == b'}' && i + 1 < bytes.len() && bytes[i + 1] == b'}' {
-            clean_template.push_str("}}");
+            clean_template_bytes.extend_from_slice(b"}}");
             i += 2;
             continue;
         }
@@ -78,7 +84,7 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
                         out_specs.push(spec_part.to_string());
                         pos_arg_idx += 1;
                     }
-                    clean_template.push_str("{}");
+                    clean_template_bytes.extend_from_slice(b"{}");
                 } else {
                     // Named / expression placeholder `{expr}` or `{expr:spec}`.
                     // Compute real file span for this name_part so that type_map
@@ -109,7 +115,7 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
                     {
                         out_args.push(parsed_expr);
                         out_specs.push(spec_part.to_string());
-                        clean_template.push_str("{}");
+                        clean_template_bytes.extend_from_slice(b"{}");
                     } else {
                         // Parse failed — fall back to next positional arg.
                         if pos_arg_idx < explicit_args.len() {
@@ -117,16 +123,25 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
                             out_specs.push(spec_part.to_string());
                             pos_arg_idx += 1;
                         }
-                        clean_template.push_str("{}");
+                        clean_template_bytes.extend_from_slice(b"{}");
                     }
                 }
                 i = end + 1;
                 continue;
             }
         }
-        clean_template.push(bytes[i] as char);
+        // Copy the raw byte through as-is (NOT `bytes[i] as char` — that
+        // reinterprets the byte as a Latin-1 codepoint and mangles any
+        // multi-byte UTF-8 sequence it's part of).
+        clean_template_bytes.push(bytes[i]);
         i += 1;
     }
+
+    // `clean_template_bytes` is built entirely out of slices of the original
+    // (valid UTF-8) `s` plus ASCII-only literals (`{{`, `}}`, `{}`), so it is
+    // guaranteed to be valid UTF-8 itself.
+    let clean_template = String::from_utf8(clean_template_bytes)
+        .expect("clean_template_bytes is built from valid UTF-8 fragments only");
 
     Some(ExpandedFormatArgs {
         clean_template,
