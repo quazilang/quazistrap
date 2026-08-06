@@ -1,7 +1,9 @@
 # C ABI phase-two round trip
 
-This fixture crosses the C boundary in both directions and should exit with
-status zero without printing anything.
+This fixture crosses the C boundary in both directions. It prints a short
+self-test introduction, one PASS or FAIL line for each check, and a final
+summary. A successful run exits with status zero; failures print the affected
+ABI feature and use exit codes 1 through 9.
 
 - `Point` exercises two-register SSE aggregates and a scalar `f32` argument.
 - `Sample` exercises an eight-byte mixed float/integer aggregate plus `f32`
