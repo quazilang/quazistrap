@@ -28,3 +28,4 @@ qz run
 | `17-constfold` | Constant folding demonstration |
 | `18-formatting` | Format specifications, raw strings, ANSI escapes |
 | `19-cvariadics` | C-style variadic `@api` via bare `...` — calls libc `printf` |
+| `20-ffi-abi` | Cross-platform C ABI Phase 2 round trip and self-test |
