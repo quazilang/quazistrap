@@ -1132,7 +1132,33 @@ fn main() {
                     }
                 });
 
-                emit_chunks(&all_chunks, emit, &out, None, explicit_linker, debug);
+                let mut qzi_link_flags = Vec::new();
+                if matches!(emit, EmitType::Binary) {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    if let Some(ctx) = ProjectContext::discover(&cwd).unwrap_or_else(|e| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                        std::process::exit(1);
+                    }) {
+                        qzi_link_flags = native_link_flags(&ctx).unwrap_or_else(|e| {
+                            eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                            std::process::exit(1);
+                        });
+                    }
+                    qzi_link_flags.extend(
+                        library_paths
+                            .iter()
+                            .map(|path| format!("-L{}", path.display())),
+                    );
+                    qzi_link_flags.extend(libraries.iter().map(|name| format!("-l{name}")));
+                }
+                emit_chunks(
+                    &all_chunks,
+                    emit,
+                    &out,
+                    Some(&qzi_link_flags),
+                    explicit_linker,
+                    debug,
+                );
 
                 if do_strip {
                     strip_binary(Path::new(&out));
