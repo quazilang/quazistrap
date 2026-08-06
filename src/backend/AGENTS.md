@@ -19,6 +19,9 @@ src/backend/
   arguments, indirect non-1/2/4/8-byte aggregates, and hidden sret pointers.
 - C ABI values are normalized at synthetic export adapters. Ordinary Quazi
   calls continue to use the internal eight-byte-slot ABI.
+- `CallCReg` applies the same SysV/Win64 classification to an indirect raw
+  function pointer. Exported functions become callback values through the
+  address of their synthetic C adapter.
 
 ## Stack Frame
 

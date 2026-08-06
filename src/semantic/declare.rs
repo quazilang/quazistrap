@@ -359,12 +359,29 @@ impl Analyzer {
                 attributes,
                 public,
             } => {
+                let stored_type = if attributes.iter().any(|attribute| {
+                    attribute.name == "repr"
+                        && matches!(
+                            attribute.args.first(),
+                            Some(AttrArg::Positional(AttrVal::Ident(value))) if value == "C"
+                        )
+                }) {
+                    match &aliased_type.node {
+                        TypeKind::Fn { params, return_ty } => TypeKind::CFn {
+                            params: params.clone(),
+                            return_ty: return_ty.clone(),
+                        },
+                        other => other.clone(),
+                    }
+                } else {
+                    aliased_type.node.clone()
+                };
                 self.declare(
                     name.clone(),
                     Symbol {
                         kind: SymbolKind::TypeName,
                         span: item.span,
-                        ty: Some(aliased_type.node.clone()),
+                        ty: Some(stored_type.clone()),
                         params: vec![],
                         used: false,
                         initialized: true,
@@ -378,10 +395,8 @@ impl Analyzer {
                         generic_params: generic_params.clone(),
                     },
                 );
-                self.type_aliases.insert(
-                    name.clone(),
-                    (generic_params.clone(), aliased_type.node.clone()),
-                );
+                self.type_aliases
+                    .insert(name.clone(), (generic_params.clone(), stored_type));
             }
             ItemKind::Import(import_path) => self.declare_import_item(import_path, item.span),
             ItemKind::Impl {

@@ -23,6 +23,9 @@ Both Linux and Windows stubs are generated via `iced-x86` `CodeAssembler` — ra
   shadow space, and hidden sret.
 - C `f32` values convert to/from the internal f64-bit slot representation at
   argument, return, and `@repr(C)` field boundaries.
+- `CallCReg` shares the direct `CallExt` argument/return lowering, but loads the
+  callback address from its QZI slot and emits `call r11` instead of a symbol
+  relocation. This keeps one portable signature for Linux SysV and Win64.
 
 ---
 

@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use super::instruction::{
-    FLOAT_FLAG, MemWidth, field_load_typed, field_store_typed, mem_lea, mem_load, mem_load_w,
-    mem_store, mem_store_w, ri16, rrr, rrr_f,
+    FLOAT_FLAG, MemWidth, call_c_reg, field_load_typed, field_store_typed, mem_lea, mem_load,
+    mem_load_w, mem_store, mem_store_w, ri16, rrr, rrr_f,
 };
 use super::{Chunk, ConstPoolEntry, Opcode};
 use crate::abi::{AbiField, AbiSignature, AbiType, ForeignSymbol};
@@ -98,6 +98,7 @@ fn abi_type_from_layout(
         TypeKind::Float32 => Some(AbiType::Float32),
         TypeKind::Float64 => Some(AbiType::Float64),
         TypeKind::RawPtr { .. } => Some(AbiType::Pointer),
+        TypeKind::CFn { .. } => Some(AbiType::Pointer),
         TypeKind::Array { elem_ty, len } => {
             let elem = abi_type_from_layout(
                 &elem_ty.node,
@@ -644,14 +645,7 @@ impl<'a> Codegen<'a> {
                             .fn_index
                             .get(&compile_name)
                             .expect("exported function must have a function-table index");
-                        let adapter_name = format!(
-                            "__quazi_export_adapter_{}_{}",
-                            compile_name
-                                .chars()
-                                .map(|ch| if ch.is_alphanumeric() { ch } else { '_' })
-                                .collect::<String>(),
-                            fn_idx
-                        );
+                        let adapter_name = export_adapter_name(&compile_name, fn_idx);
                         let mut adapter = Chunk::with_params(adapter_name, params.len());
                         adapter.export = Some(foreign);
                         adapter.reg_count = params.len().max(1) as u8;
@@ -1703,6 +1697,26 @@ impl<'a> FnCompiler<'a> {
             TypeKind::Slice { elem_ty } => TypeKind::Slice {
                 elem_ty: Box::new(Spanned::new(self.resolve_type(&elem_ty.node), elem_ty.span)),
             },
+            TypeKind::Fn { params, return_ty } => TypeKind::Fn {
+                params: params
+                    .iter()
+                    .map(|param| Spanned::new(self.resolve_type(&param.node), param.span))
+                    .collect(),
+                return_ty: Box::new(Spanned::new(
+                    self.resolve_type(&return_ty.node),
+                    return_ty.span,
+                )),
+            },
+            TypeKind::CFn { params, return_ty } => TypeKind::CFn {
+                params: params
+                    .iter()
+                    .map(|param| Spanned::new(self.resolve_type(&param.node), param.span))
+                    .collect(),
+                return_ty: Box::new(Spanned::new(
+                    self.resolve_type(&return_ty.node),
+                    return_ty.span,
+                )),
+            },
             _ => ty.clone(),
         }
     }
@@ -1782,8 +1796,53 @@ impl<'a> FnCompiler<'a> {
     fn resolved_fn_for_span(&self, span: crate::parser::ast::Span) -> Option<String> {
         self.annotated_exprs
             .iter()
+            .rev()
             .find(|ann| ann.span.start == span.start && ann.span.end == span.end)
             .and_then(|ann| ann.resolved_fn.clone())
+    }
+
+    fn is_c_abi_function_span(&self, span: crate::parser::ast::Span) -> bool {
+        self.annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.span.start == span.start && annotation.span.end == span.end
+            })
+            .is_some_and(|annotation| annotation.c_abi_function)
+    }
+
+    fn c_callback_signature(&self, ty: &TypeKind) -> Option<AbiSignature> {
+        let TypeKind::CFn { params, return_ty } = self.resolve_type(ty) else {
+            return None;
+        };
+        Some(AbiSignature {
+            params: params
+                .iter()
+                .map(|param| {
+                    abi_type_from_layout(
+                        &param.node,
+                        self.struct_defs,
+                        self.struct_sizes,
+                        self.struct_field_offsets,
+                        self.struct_alignments,
+                        self.bit_field_layouts,
+                        self.repr_c_structs,
+                        self.type_aliases,
+                    )
+                })
+                .collect::<Option<Vec<_>>>()?,
+            return_type: abi_type_from_layout(
+                &return_ty.node,
+                self.struct_defs,
+                self.struct_sizes,
+                self.struct_field_offsets,
+                self.struct_alignments,
+                self.bit_field_layouts,
+                self.repr_c_structs,
+                self.type_aliases,
+            )?,
+            variadic: false,
+        })
     }
 
     /// True if semantic analysis marked this expression span for auto-deref.
@@ -2830,6 +2889,37 @@ impl<'a> FnCompiler<'a> {
         self.chunk.emit(rrr(Opcode::CallReg, dst, fn_ptr_reg, 0));
     }
 
+    fn emit_c_indirect_call(
+        &mut self,
+        dst: u8,
+        callee_reg: u8,
+        arg_regs: &[u8],
+        signature: AbiSignature,
+    ) {
+        for &reg in arg_regs {
+            self.chunk.emit(rrr(Opcode::CallArg, reg, 0, 0));
+        }
+        let signature_index =
+            self.chunk
+                .add_constant(ConstPoolEntry::ForeignSymbol(ForeignSymbol {
+                    symbol: "<function-pointer>".to_string(),
+                    signature,
+                }));
+        self.chunk
+            .emit(call_c_reg(dst, callee_reg, signature_index));
+    }
+
+    fn emit_c_callback_address(&mut self, resolved_name: &str) -> Option<u8> {
+        let fn_idx = *self.fn_index.get(resolved_name)?;
+        let adapter_name = export_adapter_name(resolved_name, fn_idx);
+        let dst = self.alloc_reg();
+        let constant = self
+            .chunk
+            .add_constant(ConstPoolEntry::FnAddr(adapter_name));
+        self.chunk.emit(ri16(Opcode::MovConst, dst, constant));
+        Some(dst)
+    }
+
     // ── Block / statement ──
 
     /// Compile an else-if / else chain.  `end_jumps` collects the `Jmp`
@@ -3745,6 +3835,11 @@ impl<'a> FnCompiler<'a> {
                     }
                     // Function name used as a value → wrap in forwarder + env struct.
                     // All fn-ptr values use the env struct representation for uniform dispatch.
+                    if self.is_c_abi_function_span(expr.span)
+                        && let Some(address) = self.emit_c_callback_address(&resolved_name)
+                    {
+                        return address;
+                    }
                     if let Some(&fn_idx) = self.fn_index.get(resolved_name.as_str()) {
                         let user_param_count =
                             if let Some(TypeKind::Fn { params, .. }) = self.type_map.get(&key) {
@@ -4380,6 +4475,7 @@ impl<'a> FnCompiler<'a> {
                         return dst;
                     } else if self.regs.contains_key(call_name.as_str()) {
                         // Local variable — fn pointer or closure env pointer.
+                        let callee_type = self.type_of_span((callee.span.start, callee.span.end));
                         let fn_reg = self.compile_expr(callee);
                         let arg_regs: Vec<u8> = args
                             .iter()
@@ -4388,7 +4484,14 @@ impl<'a> FnCompiler<'a> {
                                 self.compile_expr(a)
                             })
                             .collect();
-                        self.emit_indirect_call(dst, fn_reg, &arg_regs);
+                        if let Some(signature) = callee_type
+                            .as_ref()
+                            .and_then(|ty| self.c_callback_signature(ty))
+                        {
+                            self.emit_c_indirect_call(dst, fn_reg, &arg_regs, signature);
+                        } else {
+                            self.emit_indirect_call(dst, fn_reg, &arg_regs);
+                        }
                     } else {
                         let arg_regs: Vec<u8> = args
                             .iter()
@@ -4401,6 +4504,7 @@ impl<'a> FnCompiler<'a> {
                     }
                 } else {
                     // Indirect call: callee is an expression (variable, closure, etc.)
+                    let callee_type = self.type_of_span((callee.span.start, callee.span.end));
                     let fn_reg = self.compile_expr(callee);
                     let arg_regs: Vec<u8> = args
                         .iter()
@@ -4409,7 +4513,14 @@ impl<'a> FnCompiler<'a> {
                             self.compile_expr(a)
                         })
                         .collect();
-                    self.emit_indirect_call(dst, fn_reg, &arg_regs);
+                    if let Some(signature) = callee_type
+                        .as_ref()
+                        .and_then(|ty| self.c_callback_signature(ty))
+                    {
+                        self.emit_c_indirect_call(dst, fn_reg, &arg_regs, signature);
+                    } else {
+                        self.emit_indirect_call(dst, fn_reg, &arg_regs);
+                    }
                 }
                 dst
             }
@@ -4864,6 +4975,11 @@ impl<'a> FnCompiler<'a> {
                 // Module namespace field used as a function value: `bar.foo`.
                 // Sema already resolved the target name; emit a fn-pointer value.
                 if let Some(resolved) = self.resolved_fn_for_span(expr.span) {
+                    if self.is_c_abi_function_span(expr.span)
+                        && let Some(address) = self.emit_c_callback_address(&resolved)
+                    {
+                        return address;
+                    }
                     let key = (expr.span.start, expr.span.end);
                     if let Some(&fn_idx) = self.fn_index.get(resolved.as_str()) {
                         let user_param_count =
@@ -5434,6 +5550,11 @@ pub(crate) fn remap_instr_regs(
             instr.ops[0] = remap(instr.ops[0]);
         }
 
+        Opcode::CallCReg => {
+            instr.ops[0] = remap(instr.ops[0]);
+            instr.ops[1] = remap(instr.ops[1]);
+        }
+
         // MEM — ops[0]=val/dst, ops[1]=base
         Opcode::Load | Opcode::Store | Opcode::Lea => {
             instr.ops[0] = remap(instr.ops[0]);
@@ -5654,6 +5775,17 @@ fn item_cfg_active(attributes: &[crate::parser::ast::Attribute]) -> bool {
     true
 }
 
+fn export_adapter_name(function_name: &str, function_index: u16) -> String {
+    format!(
+        "__quazi_export_adapter_{}_{}",
+        function_name
+            .chars()
+            .map(|ch| if ch.is_alphanumeric() { ch } else { '_' })
+            .collect::<String>(),
+        function_index
+    )
+}
+
 fn collect_destructor_roots(program: &Program) -> HashSet<String> {
     let mut roots = HashSet::new();
     for item in &program.items {
@@ -5816,6 +5948,7 @@ fn type_kind_base_name(ty: &TypeKind) -> String {
         TypeKind::Bool => "bool".to_string(),
         TypeKind::Str => "str".to_string(),
         TypeKind::Bytes => "bytes".to_string(),
+        TypeKind::CFn { .. } => "C fn".to_string(),
         TypeKind::Ref { inner } => type_kind_base_name(&inner.node),
         TypeKind::RawPtr { inner } => type_kind_base_name(&inner.node),
         other => format!("{}", other),
@@ -5863,6 +5996,33 @@ fn types_equal(a: &TypeKind, b: &TypeKind) -> bool {
             },
         ) => l1 == l2 && types_equal(&e1.node, &e2.node),
         (Slice { elem_ty: e1 }, Slice { elem_ty: e2 }) => types_equal(&e1.node, &e2.node),
+        (
+            Fn {
+                params: p1,
+                return_ty: r1,
+            },
+            Fn {
+                params: p2,
+                return_ty: r2,
+            },
+        )
+        | (
+            CFn {
+                params: p1,
+                return_ty: r1,
+            },
+            CFn {
+                params: p2,
+                return_ty: r2,
+            },
+        ) => {
+            p1.len() == p2.len()
+                && p1
+                    .iter()
+                    .zip(p2)
+                    .all(|(t1, t2)| types_equal(&t1.node, &t2.node))
+                && types_equal(&r1.node, &r2.node)
+        }
         _ => false,
     }
 }
@@ -6435,6 +6595,47 @@ unsafe fn first(packet: *Packet) u8 { ret (*packet).data[0]; }
         let first = chunks.iter().find(|chunk| chunk.name == "first").unwrap();
         assert!(first.code.iter().any(|instruction| {
             instruction.opcode == Opcode::Load as u8 && instruction.mem_width() == MemWidth::Byte
+        }));
+    }
+
+    #[test]
+    fn c_function_pointers_use_export_adapters_and_c_indirect_calls() {
+        let chunks = compile(
+            r#"
+@repr(C) type Callback = fn(i32) i32;
+@export("increment") pub fn increment(value: i32) i32 { ret value + 1; }
+@api("get_callback") unsafe fn get_callback() Callback;
+
+fn main() i32 {
+    var result: i32 = 0;
+    unsafe {
+        var local: Callback = increment;
+        var foreign: Callback = get_callback();
+        result = local(1) + foreign(2);
+    }
+    ret result;
+}
+"#,
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(main
+            .constants
+            .iter()
+            .any(|constant| matches!(constant, ConstPoolEntry::FnAddr(name) if name.starts_with("__quazi_export_adapter_increment_"))));
+        assert_eq!(
+            main.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallCReg as u8)
+                .count(),
+            2
+        );
+        assert!(main.constants.iter().any(|constant| {
+            matches!(
+                constant,
+                ConstPoolEntry::ForeignSymbol(symbol)
+                    if symbol.symbol == "<function-pointer>"
+                        && symbol.signature.params.len() == 1
+            )
         }));
     }
 

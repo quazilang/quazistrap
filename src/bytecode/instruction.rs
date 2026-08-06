@@ -137,7 +137,7 @@ impl Instruction {
             | Opcode::Jnz
             | Opcode::Jmp
             | Opcode::Ret => "\x1b[33m", // yellow – control flow
-            Opcode::CallIdx | Opcode::CallReg | Opcode::CallArg => "\x1b[1;33m", // bold yellow – calls
+            Opcode::CallIdx | Opcode::CallReg | Opcode::CallCReg | Opcode::CallArg => "\x1b[1;33m", // bold yellow – calls
             Opcode::Mov
             | Opcode::MovI
             | Opcode::MovConst
@@ -234,6 +234,16 @@ impl Instruction {
             Opcode::CallReg | Opcode::Spawn => {
                 let (d, s, _) = self.rrr();
                 format!("{cop}{}, {}", r(d), r(s))
+            }
+
+            Opcode::CallCReg => {
+                let index = u16::from_le_bytes([self.ops[2], self.ops[3]]);
+                format!(
+                    "{cop}{}, {}, {}",
+                    r(self.ops[0]),
+                    r(self.ops[1]),
+                    dim(&format!("C sig[{index}]"))
+                )
             }
 
             Opcode::MovI => {
@@ -438,6 +448,21 @@ pub fn rrr_f(op: Opcode, dst: u8, src1: u8, src2: u8) -> Instruction {
 
 pub fn field_load_w(dst: u8, object: u8, offset: u8, width: MemWidth, signed: bool) -> Instruction {
     field_load_typed(dst, object, offset, width, signed, false)
+}
+
+pub fn call_c_reg(dst: u8, function: u8, signature: u16) -> Instruction {
+    let [lo, hi] = signature.to_le_bytes();
+    Instruction::new(Opcode::CallCReg, [dst, function, lo, hi], 0)
+}
+
+impl Instruction {
+    pub fn call_c_reg_parts(&self) -> (u8, u8, u16) {
+        (
+            self.ops[0],
+            self.ops[1],
+            u16::from_le_bytes([self.ops[2], self.ops[3]]),
+        )
+    }
 }
 
 pub fn field_load_typed(

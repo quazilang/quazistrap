@@ -14,6 +14,9 @@
     c: i64,
 }
 
+@repr(C)
+type BinaryCallback = fn(i64, i64) i64;
+
 @api("c_roundtrip_point")
 unsafe fn c_roundtrip_point(point: Point, bias: f32) Point;
 
@@ -31,6 +34,12 @@ unsafe fn c_sum8(
 
 @api("c_call_quazi_sum8")
 unsafe fn c_call_quazi_sum8() i64;
+
+@api("c_apply_callback")
+unsafe fn c_apply_callback(callback: BinaryCallback, a: i64, b: i64) i64;
+
+@api("c_get_add_callback")
+unsafe fn c_get_add_callback() BinaryCallback;
 
 @export("quazi_scale_point")
 pub fn scale_point(point: Point, factor: f64) Point {
@@ -65,6 +74,11 @@ pub fn sum8(
     ret a + b + c + d + e + f + g + h;
 }
 
+@export("quazi_multiply")
+pub fn multiply(a: i64, b: i64) i64 {
+    ret a * b;
+}
+
 fn main() i32 {
     unsafe {
         var point = c_roundtrip_point(Point { x: 1.0, y: 2.0 }, 0.5 as f32);
@@ -87,6 +101,13 @@ fn main() i32 {
         }
         if (c_call_quazi_sum8() != 36) {
             ret 5;
+        }
+        if (c_apply_callback(multiply, 6, 7) != 42) {
+            ret 6;
+        }
+        var add = c_get_add_callback();
+        if (add(20, 22) != 42) {
+            ret 7;
         }
     }
     ret 0;

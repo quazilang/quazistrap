@@ -408,6 +408,7 @@ fn has_dest(op: u8) -> bool {
                 | Opcode::Intrinsic
                 | Opcode::CallIdx
                 | Opcode::CallReg
+                | Opcode::CallCReg
                 | Opcode::Syscall
                 | Opcode::CallExt
         )

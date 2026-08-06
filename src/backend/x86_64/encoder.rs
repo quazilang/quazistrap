@@ -490,6 +490,7 @@ fn max_reg_used(chunk: &Chunk) -> usize {
                 | Opcode::FieldLoad
                 | Opcode::FieldStore
                 | Opcode::CallReg
+                | Opcode::CallCReg
                 | Opcode::StrLen
                 | Opcode::StrConcat
                 | Opcode::StrToInt
@@ -768,6 +769,7 @@ impl<'a> FnEncoder<'a> {
                                 abi_layout.foreign_result_disp,
                                 &mut pending,
                                 fn_start,
+                                None,
                             )?;
                         } else {
                             self.emit_sysv_foreign_call(
@@ -778,6 +780,7 @@ impl<'a> FnEncoder<'a> {
                                 abi_layout.foreign_result_disp,
                                 &mut pending,
                                 fn_start,
+                                None,
                             )?;
                         }
                         pending_args.clear();
@@ -793,6 +796,41 @@ impl<'a> FnEncoder<'a> {
                             fn_start,
                         )?;
                     }
+                }
+
+                Some(Opcode::CallCReg) => {
+                    let (dst, function, constant_index) = instr.call_c_reg_parts();
+                    let Some(ConstPoolEntry::ForeignSymbol(foreign)) =
+                        chunk.constants.get(constant_index as usize)
+                    else {
+                        return Err(BackendError(
+                            "C function-pointer call is missing ABI signature metadata".to_string(),
+                        ));
+                    };
+                    if is_win64 {
+                        self.emit_win64_foreign_call(
+                            &mut asm,
+                            dst,
+                            foreign,
+                            &pending_args,
+                            abi_layout.foreign_result_disp,
+                            &mut pending,
+                            fn_start,
+                            Some(function),
+                        )?;
+                    } else {
+                        self.emit_sysv_foreign_call(
+                            &mut asm,
+                            dst,
+                            foreign,
+                            &pending_args,
+                            abi_layout.foreign_result_disp,
+                            &mut pending,
+                            fn_start,
+                            Some(function),
+                        )?;
+                    }
+                    pending_args.clear();
                 }
 
                 Some(Opcode::Ret) if chunk.export.is_some() && !is_win64 => {
@@ -887,6 +925,7 @@ impl<'a> FnEncoder<'a> {
         result_disp: Option<i32>,
         pending: &mut Vec<(usize, usize, RelocKind, String, i64)>,
         fn_start: CodeLabel,
+        indirect_function: Option<u8>,
     ) -> Result<(), BackendError> {
         let err = |error: IcedError| BackendError(error.to_string());
         if foreign.signature.params.len() != arg_regs.len() {
@@ -997,9 +1036,14 @@ impl<'a> FnEncoder<'a> {
             asm.mov(rcx, qword_ptr(rbp + scratch)).map_err(err)?;
         }
 
-        let call_index = asm.instructions().len();
-        asm.call(fn_start).map_err(err)?;
-        pending.push((call_index, 1, RelocKind::Plt32, foreign.symbol.clone(), -4));
+        if let Some(function) = indirect_function {
+            asm.mov(r11, slot(function)).map_err(err)?;
+            asm.call(r11).map_err(err)?;
+        } else {
+            let call_index = asm.instructions().len();
+            asm.call(fn_start).map_err(err)?;
+            pending.push((call_index, 1, RelocKind::Plt32, foreign.symbol.clone(), -4));
+        }
         asm.add(rsp, call_frame_size as i32).map_err(err)?;
 
         match &foreign.signature.return_type {
@@ -1090,6 +1134,7 @@ impl<'a> FnEncoder<'a> {
         result_disp: Option<i32>,
         pending: &mut Vec<(usize, usize, RelocKind, String, i64)>,
         fn_start: CodeLabel,
+        indirect_function: Option<u8>,
     ) -> Result<(), BackendError> {
         let err = |error: IcedError| BackendError(error.to_string());
         if foreign.signature.params.len() != arg_regs.len() {
@@ -1221,9 +1266,14 @@ impl<'a> FnEncoder<'a> {
             asm.mov(eax, plan.sse_used as i32).map_err(err)?;
         }
 
-        let call_index = asm.instructions().len();
-        asm.call(fn_start).map_err(err)?;
-        pending.push((call_index, 1, RelocKind::Plt32, foreign.symbol.clone(), -4));
+        if let Some(function) = indirect_function {
+            asm.mov(r11, slot(function)).map_err(err)?;
+            asm.call(r11).map_err(err)?;
+        } else {
+            let call_index = asm.instructions().len();
+            asm.call(fn_start).map_err(err)?;
+            pending.push((call_index, 1, RelocKind::Plt32, foreign.symbol.clone(), -4));
+        }
         if plan.stack_size > 0 {
             asm.add(rsp, plan.stack_size as i32).map_err(err)?;
         }
@@ -2992,7 +3042,7 @@ mod tests {
     use super::*;
     use crate::abi::AbiField;
     use crate::backend::target::{Arch, Os};
-    use crate::bytecode::instruction::{ri16, rrr};
+    use crate::bytecode::instruction::{call_c_reg, ri16, rrr};
 
     fn pair_type() -> AbiType {
         AbiType::Aggregate {
@@ -3081,6 +3131,40 @@ mod tests {
                     .any(|reloc| reloc.symbol == "native_transform")
             );
             assert!(relocs.iter().any(|reloc| reloc.symbol == "malloc"));
+        }
+    }
+
+    #[test]
+    fn c_function_pointer_call_encodes_for_sysv_and_win64() {
+        let signature = AbiSignature {
+            params: vec![
+                AbiType::Integer {
+                    bytes: 4,
+                    signed: true,
+                },
+                AbiType::Float64,
+            ],
+            return_type: AbiType::Float64,
+            variadic: false,
+        };
+        let mut chunk = Chunk::with_params("call_callback", 3);
+        let constant = chunk.add_constant(ConstPoolEntry::ForeignSymbol(ForeignSymbol {
+            symbol: "<function-pointer>".to_string(),
+            signature,
+        }));
+        chunk.emit(rrr(Opcode::CallArg, 1, 0, 0));
+        chunk.emit(rrr(Opcode::CallArg, 2, 0, 0));
+        chunk.emit(call_c_reg(3, 0, constant));
+        chunk.emit(rrr(Opcode::Ret, 3, 0, 0));
+
+        for abi in [Abi::SysV, Abi::Win64] {
+            let (bytes, relocs) = encode(&chunk, abi);
+            assert!(!bytes.is_empty());
+            assert!(
+                !relocs
+                    .iter()
+                    .any(|reloc| reloc.symbol == "<function-pointer>")
+            );
         }
     }
 

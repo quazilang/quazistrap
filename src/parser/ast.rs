@@ -303,6 +303,11 @@ pub enum TypeKind {
         params: Vec<Type>,
         return_ty: Box<Type>,
     },
+    /// Raw C ABI function pointer, introduced by `@repr(C) type X = fn(...) ...`.
+    CFn {
+        params: Vec<Type>,
+        return_ty: Box<Type>,
+    },
     /// `dyn Trait` — fat pointer (data ptr + vtable ptr) for dynamic dispatch.
     Dyn {
         trait_name: String,
@@ -352,6 +357,16 @@ impl std::fmt::Display for TypeKind {
             TypeKind::Never => write!(f, "!"),
             TypeKind::Fn { params, return_ty } => {
                 write!(f, "fn(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p.node)?;
+                }
+                write!(f, ") -> {}", return_ty.node)
+            }
+            TypeKind::CFn { params, return_ty } => {
+                write!(f, "C fn(")?;
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

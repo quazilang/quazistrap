@@ -380,7 +380,77 @@ impl Analyzer {
                 }
             }
             // Type aliases are just name bindings — no code to type-check.
-            ItemKind::TypeAlias { .. } => {}
+            ItemKind::TypeAlias {
+                name,
+                generic_params,
+                aliased_type,
+                attributes,
+                ..
+            } => {
+                if let Some(repr) = attributes.iter().find(|attribute| attribute.name == "repr") {
+                    let is_c = matches!(
+                        repr.args.as_slice(),
+                        [AttrArg::Positional(AttrVal::Ident(value))] if value == "C"
+                    );
+                    if !is_c || !matches!(aliased_type.node, TypeKind::Fn { .. }) {
+                        self.push_error(
+                            repr.span,
+                            "S14",
+                            "@repr(C) on a type alias requires `type Name = fn(...) Return`"
+                                .to_string(),
+                        );
+                    }
+                    if !generic_params.is_empty() {
+                        self.push_error(
+                            item.span,
+                            "S14",
+                            format!("C function pointer alias `{name}` cannot be generic"),
+                        );
+                    }
+                    if let TypeKind::Fn { params, return_ty } = &aliased_type.node {
+                        for param in params {
+                            let resolved = self.resolve_type_aliases(&param.node);
+                            let supported = ffi_primitive(&resolved)
+                                || matches!(
+                                    &resolved,
+                                    TypeKind::Named { name, type_args }
+                                        if type_args.is_empty()
+                                            && self.repr_c_structs.contains(name)
+                                            && !self.flexible_array_structs.contains(name)
+                                );
+                            if !supported || matches!(resolved, TypeKind::Void) {
+                                self.push_error(
+                                    param.span,
+                                    "S14",
+                                    format!(
+                                        "C function pointer `{name}` has unsupported parameter type `{}`",
+                                        param.node
+                                    ),
+                                );
+                            }
+                        }
+                        let resolved = self.resolve_type_aliases(&return_ty.node);
+                        let supported = ffi_primitive(&resolved)
+                            || matches!(
+                                &resolved,
+                                TypeKind::Named { name, type_args }
+                                    if type_args.is_empty()
+                                        && self.repr_c_structs.contains(name)
+                                        && !self.flexible_array_structs.contains(name)
+                            );
+                        if !supported {
+                            self.push_error(
+                                return_ty.span,
+                                "S14",
+                                format!(
+                                    "C function pointer `{name}` has unsupported return type `{}`",
+                                    return_ty.node
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1334,8 +1404,30 @@ impl Analyzer {
 
                     // Function pointer variable or other callable expression.
                     if let Some(ref fn_ty) = sym.ty
-                        && let TypeKind::Fn { params, return_ty } = self.resolve_type_aliases(fn_ty)
+                        && let resolved @ (TypeKind::Fn { .. } | TypeKind::CFn { .. }) =
+                            self.resolve_type_aliases(fn_ty)
                     {
+                        self.annotate_expr(
+                            callee,
+                            &ExprEval {
+                                ty: Some(resolved.clone()),
+                                const_value: None,
+                            },
+                            reachable,
+                            None,
+                        );
+                        let (params, return_ty, is_c) = match resolved {
+                            TypeKind::Fn { params, return_ty } => (params, return_ty, false),
+                            TypeKind::CFn { params, return_ty } => (params, return_ty, true),
+                            _ => unreachable!(),
+                        };
+                        if is_c && self.unsafe_depth == 0 {
+                            self.push_error(
+                                expr.span,
+                                "S11",
+                                "calling a C function pointer requires unsafe context".to_string(),
+                            );
+                        }
                         let expected_count = params.len();
                         let actual_count = arg_evals.len();
                         if actual_count != expected_count {
@@ -1348,6 +1440,24 @@ impl Analyzer {
                                 ),
                             );
                             return ExprEval::default();
+                        }
+                        for (index, ((param, arg_eval), arg)) in
+                            params.iter().zip(&arg_evals).zip(args).enumerate()
+                        {
+                            if let Some(actual) = &arg_eval.ty
+                                && !self.check_expr_compat(arg, &param.node, actual)
+                            {
+                                self.push_error(
+                                    arg.span,
+                                    "S08",
+                                    format!(
+                                        "arg {}: expected {}, got {}",
+                                        index + 1,
+                                        param.node,
+                                        actual
+                                    ),
+                                );
+                            }
                         }
                         let eval = ExprEval {
                             ty: Some(return_ty.node.clone()),
@@ -1371,7 +1481,20 @@ impl Analyzer {
                 } else {
                     let callee_eval = self.type_check_expr(callee, reachable);
                     match callee_eval.ty.as_ref() {
-                        Some(TypeKind::Fn { params, return_ty }) => {
+                        Some(resolved @ (TypeKind::Fn { .. } | TypeKind::CFn { .. })) => {
+                            let (params, return_ty, is_c) = match resolved {
+                                TypeKind::Fn { params, return_ty } => (params, return_ty, false),
+                                TypeKind::CFn { params, return_ty } => (params, return_ty, true),
+                                _ => unreachable!(),
+                            };
+                            if is_c && self.unsafe_depth == 0 {
+                                self.push_error(
+                                    expr.span,
+                                    "S11",
+                                    "calling a C function pointer requires unsafe context"
+                                        .to_string(),
+                                );
+                            }
                             let expected_count = params.len();
                             let actual_count = arg_evals.len();
                             if actual_count != expected_count {
@@ -1385,9 +1508,23 @@ impl Analyzer {
                                 );
                                 return ExprEval::default();
                             }
-                            for arg_eval in arg_evals.iter() {
-                                // For now, skip detailed param type checking (params are often Any).
-                                let _ = arg_eval;
+                            for (index, ((param, arg_eval), arg)) in
+                                params.iter().zip(&arg_evals).zip(args).enumerate()
+                            {
+                                if let Some(actual) = &arg_eval.ty
+                                    && !self.check_expr_compat(arg, &param.node, actual)
+                                {
+                                    self.push_error(
+                                        arg.span,
+                                        "S08",
+                                        format!(
+                                            "arg {}: expected {}, got {}",
+                                            index + 1,
+                                            param.node,
+                                            actual
+                                        ),
+                                    );
+                                }
                             }
                             ExprEval {
                                 ty: Some(return_ty.node.clone()),
@@ -3109,6 +3246,7 @@ impl Analyzer {
             reachable,
             resolved_fn,
             auto_deref: false,
+            c_abi_function: false,
         });
 
         if let Some(value) = &eval.const_value {
@@ -3136,6 +3274,7 @@ impl Analyzer {
             reachable,
             resolved_fn,
             auto_deref: true,
+            c_abi_function: false,
         });
 
         if let Some(value) = &eval.const_value {
@@ -3163,6 +3302,54 @@ impl Analyzer {
     /// Check type compatibility and mark the expression for auto-deref when a
     /// reference to a value-like type is used where the value type is expected.
     fn check_expr_compat(&mut self, expr: &Expr, expected: &TypeKind, actual: &TypeKind) -> bool {
+        let expected_resolved = self.resolve_type_aliases(expected);
+        let actual_resolved = self.resolve_type_aliases(actual);
+        if let (
+            TypeKind::CFn {
+                params: expected_params,
+                return_ty: expected_return,
+            },
+            TypeKind::Fn {
+                params: actual_params,
+                return_ty: actual_return,
+            },
+        ) = (&expected_resolved, &actual_resolved)
+        {
+            let signature_matches = expected_params.len() == actual_params.len()
+                && expected_params
+                    .iter()
+                    .zip(actual_params)
+                    .all(|(expected, actual)| self.types_compatible(&expected.node, &actual.node))
+                && self.types_compatible(&expected_return.node, &actual_return.node);
+            let resolved_function = self
+                .annotated_exprs
+                .iter()
+                .rev()
+                .find(|annotation| {
+                    annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
+                })
+                .and_then(|annotation| annotation.resolved_fn.clone())
+                .or_else(|| match &expr.node {
+                    ExprKind::Ident(name) => self.resolve_bare_fn_name(name),
+                    _ => None,
+                });
+            let exported = resolved_function
+                .and_then(|resolved| self.resolve_symbol(&resolved))
+                .is_some_and(|symbol| symbol.attributes.iter().any(|attr| attr == "export"));
+            if signature_matches && exported {
+                for annotation in self.annotated_exprs.iter_mut().rev() {
+                    if annotation.span.start == expr.span.start
+                        && annotation.span.end == expr.span.end
+                    {
+                        annotation.ty = Some(expected_resolved);
+                        annotation.c_abi_function = true;
+                        break;
+                    }
+                }
+                return true;
+            }
+            return false;
+        }
         let ok = self.types_compatible(expected, actual);
         if ok {
             if let TypeKind::Ref { inner } = actual {
@@ -3449,6 +3636,7 @@ impl Analyzer {
             (a, TypeKind::RawPtr { .. }) | (TypeKind::RawPtr { .. }, a) if Self::is_integer(a) => {
                 true
             }
+            (a, TypeKind::CFn { .. }) | (TypeKind::CFn { .. }, a) if Self::is_integer(a) => true,
             (TypeKind::RawPtr { .. }, TypeKind::Ref { .. })
             | (TypeKind::Ref { .. }, TypeKind::RawPtr { .. }) => true,
             // str and &str are interchangeable — both are UTF-8 string views
@@ -3463,6 +3651,23 @@ impl Analyzer {
                     return_ty: a_ret,
                 },
                 TypeKind::Fn {
+                    params: b_params,
+                    return_ty: b_ret,
+                },
+            ) => {
+                a_params.len() == b_params.len()
+                    && a_params
+                        .iter()
+                        .zip(b_params.iter())
+                        .all(|(ap, bp)| self.types_compatible(&ap.node, &bp.node))
+                    && self.types_compatible(&a_ret.node, &b_ret.node)
+            }
+            (
+                TypeKind::CFn {
+                    params: a_params,
+                    return_ty: a_ret,
+                },
+                TypeKind::CFn {
                     params: b_params,
                     return_ty: b_ret,
                 },
@@ -3509,6 +3714,7 @@ impl Analyzer {
                 TypeKind::Bool
                     | TypeKind::Str
                     | TypeKind::RawPtr { .. }
+                    | TypeKind::CFn { .. }
                     | TypeKind::Ref { .. }
                     | TypeKind::Any
             )
@@ -3532,6 +3738,7 @@ fn type_contains_rawptr(ty: &TypeKind) -> bool {
         TypeKind::Array { elem_ty, .. } => type_contains_rawptr(&elem_ty.node),
         TypeKind::FlexibleArray { elem_ty } => type_contains_rawptr(&elem_ty.node),
         TypeKind::Slice { elem_ty } => type_contains_rawptr(&elem_ty.node),
+        TypeKind::CFn { .. } => true,
         _ => false,
     }
 }
@@ -3556,6 +3763,7 @@ fn ffi_primitive(ty: &TypeKind) -> bool {
             | TypeKind::Bool
             | TypeKind::Void
             | TypeKind::RawPtr { .. }
+            | TypeKind::CFn { .. }
     )
 }
 
@@ -3590,6 +3798,10 @@ fn type_contains_any(ty: &TypeKind) -> bool {
         TypeKind::FlexibleArray { elem_ty } => type_contains_any(&elem_ty.node),
         TypeKind::Slice { elem_ty } => type_contains_any(&elem_ty.node),
         TypeKind::Named { type_args, .. } => type_args.iter().any(|a| type_contains_any(&a.node)),
+        TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {
+            params.iter().any(|param| type_contains_any(&param.node))
+                || type_contains_any(&return_ty.node)
+        }
         _ => false,
     }
 }
@@ -3650,6 +3862,26 @@ pub(super) fn substitute_type_kind(
             elem_ty: Box::new(Spanned::new(
                 substitute_type_kind(&elem_ty.node, subst),
                 elem_ty.span,
+            )),
+        },
+        TypeKind::Fn { params, return_ty } => TypeKind::Fn {
+            params: params
+                .iter()
+                .map(|param| Spanned::new(substitute_type_kind(&param.node, subst), param.span))
+                .collect(),
+            return_ty: Box::new(Spanned::new(
+                substitute_type_kind(&return_ty.node, subst),
+                return_ty.span,
+            )),
+        },
+        TypeKind::CFn { params, return_ty } => TypeKind::CFn {
+            params: params
+                .iter()
+                .map(|param| Spanned::new(substitute_type_kind(&param.node, subst), param.span))
+                .collect(),
+            return_ty: Box::new(Spanned::new(
+                substitute_type_kind(&return_ty.node, subst),
+                return_ty.span,
             )),
         },
         other => other.clone(),

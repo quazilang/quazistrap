@@ -23,7 +23,7 @@ VM slot, aggregate, field, array, slice, and reference accesses remain qword.
 | `0x20–0x2F` | Memory: `Load`, `Store`, `Lea`, `Move`, `Drop`, `Dup` |
 | `0x30–0x3F` | Control: `Cmp`, `Jmp`, `Je`–`Jnz`, `CallIdx`, `CallReg`, `Ret` |
 | `0x40–0x4F` | Structs: `New`, `NewObj`, `FieldLoad`, `FieldStore`, `VtblLoad` |
-| `0x50–0x5F` | Foreign: `AtomicAdd`, `AtomicCas`, `MemFence`, `Spawn`, `CallExt=0x5D`, `Syscall=0x5E` |
+| `0x50–0x5F` | Foreign: `AtomicAdd`, `AtomicCas`, `MemFence`, `Spawn`, `CallCReg=0x54`, `CallExt=0x5D`, `Syscall=0x5E` |
 | `0x60–0x6F` | Strings: `StrLen=0x60`, `StrConcat=0x61`, `StrToInt=0x62`, `StrToFloat=0x63`, `PrimToStr=0x64`, `StrAsStr=0x65` |
 
 Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_alloc_size(n)=((n+1)*8).max(16)`.
@@ -68,6 +68,10 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 - `@export` functions remain ordinary internal-ABI chunks and are kept alive as
   roots. Codegen appends a synthetic C adapter chunk whose embedded export
   metadata names the stable dynamic symbol.
+- Raw C callbacks use `CallCReg(dst, pointer_reg, signature_const)`. The
+  signature is stored in an existing `ForeignSymbol` constant whose placeholder
+  symbol is ignored for indirect calls. Converting an `@export` function emits
+  the address of its synthetic C adapter, never its internal closure value.
 - Byte constants are emitted into read-only data as `[u64 length][payload]`.
   `.len()` loads the prefix, indexing reads an unsigned byte, and `.as_ptr()`
   skips the prefix so C receives the first payload byte.
@@ -83,7 +87,9 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 - Enum constructors: `New` + discriminant `FieldStore` at `ENUM_DISCRIM_OFFSET`, payloads at `ENUM_PAYLOAD_OFFSET+i*8`.
 - `?` operator: reads discriminant, uses `.expect()` for tag lookup (no silent fallback).
 - Struct: `New(size)` + `FieldStore` per field in declaration order. Field access → `FieldLoad(dst, ptr, offset)`.
-- Fn-name as value: `MovConst(FnAddr(name))`. Variable callee: `CallArg*+CallReg`.
+- Fn-name as value: `MovConst(FnAddr(name))`. A Quazi variable callee uses
+  `CallArg*+CallReg`; a `@repr(C)` callback variable uses
+  `CallArg*+CallCReg` and target-specific C ABI lowering.
 - Closure: `__quazi_closure_N` chunk; captures detected via `capture_ident_names`; env struct heap-allocated; fn ptr at `ENUM_DISCRIM_OFFSET`, captures at `ENUM_PAYLOAD_OFFSET+i*8`; hidden env ptr in r0 on call.
 
 ### Monomorphization

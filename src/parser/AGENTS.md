@@ -26,7 +26,7 @@ assign → logical-or → logical-and → equality → comparison → term → f
 
 - **Import**: `import std.io.stdout;` / `import a.b.{x,y};` / `import a.b as c;` / `import a.b.*;`
 - **Closure**: `|params| expr` — `Pipe` in primary position. Params are bare idents (no types).
-- **Fn pointer type**: `fn(T, U) V` — greedy return type via `peek_is_type_start()`.
+- **Fn pointer type**: `fn(T, U) V` — greedy return type via `peek_is_type_start()`. An exact `@repr(C)` on a non-generic type alias turns this syntax into a raw C callback type; the unannotated form remains a Quazi closure/function value.
 - **Byte strings**: `b"..."` decodes byte escapes while `br"..."` is raw. Both have the immutable `bytes` type; indexing yields `u8` and `.as_ptr()` points at the first payload byte.
 - **C aggregates**: `@repr(C) union U { ... }`, `@repr(C, packed, align=8) struct S`, named fields such as `flags: u32:5`, and final `[u8; ..]` flexible array members.
 - **Variadics**: `...args: T` in param list; inside fn body `args` is `Slice[T]` with `.len()`.
