@@ -221,6 +221,21 @@ impl SectionAccumulator {
                             );
                             Some(sym_name)
                         }
+                        ConstPoolEntry::Bytes(value) => {
+                            let mut bytes = Vec::with_capacity(8 + value.len());
+                            bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+                            bytes.extend_from_slice(value);
+                            let offset = obj.append_section_data(self.rodata_id, &bytes, 8);
+                            let sym_name = format!("__quazi_bytes_{}_{}", lbl, i);
+                            sym_table.define_data(
+                                obj,
+                                self.rodata_id,
+                                &sym_name,
+                                offset,
+                                bytes.len() as u64,
+                            );
+                            Some(sym_name)
+                        }
                         _ => None,
                     })
                     .collect()

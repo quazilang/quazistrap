@@ -1499,6 +1499,10 @@ impl Parser {
                 ExprKind::Literal(Literal::String(s)),
                 to_ast_span(tok.span),
             )),
+            TokenKind::ByteStringLit(bytes) => Ok(Spanned::new(
+                ExprKind::Literal(Literal::Bytes(bytes)),
+                to_ast_span(tok.span),
+            )),
             TokenKind::True => Ok(Spanned::new(
                 ExprKind::Literal(Literal::Bool(true)),
                 to_ast_span(tok.span),
@@ -1620,6 +1624,7 @@ impl Parser {
             TokenKind::Float64 => TypeKind::Float64,
             TokenKind::Bool => TypeKind::Bool,
             TokenKind::Str => TypeKind::Str,
+            TokenKind::Bytes => TypeKind::Bytes,
             TokenKind::Void => TypeKind::Void,
             TokenKind::Any => TypeKind::Any,
             TokenKind::Ident(name) if name == "dyn" => {
@@ -1754,6 +1759,7 @@ impl Parser {
                 | TokenKind::Float64
                 | TokenKind::Bool
                 | TokenKind::Str
+                | TokenKind::Bytes
                 | TokenKind::Void
                 | TokenKind::Any
                 | TokenKind::Ident(_)

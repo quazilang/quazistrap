@@ -1,15 +1,15 @@
-import std.ffi;
+import std.ffi.{CString, c_char, c_int};
 
 // Call C's printf via the c_variadic FFI bridge.
 // The `...` at the end means this is a C-style variadic function.
-@api("printf") unsafe fn printf(fmt: *ffi.c_char, ...);
+@api("printf") unsafe fn printf(fmt: *c_char, ...);
 
 fn main() i32 {
     unsafe {
-        var fmt  = ffi.CString.from("Hello from %s! C variadics work: %d + %d = %d\n");
-        var name = ffi.CString.from("Quazilang");
+        var fmt: CString = CString.try_from(b"Hello from %s! C variadics work: %d + %d = %d\n").unwrap();
+        var name: CString = CString.try_from(b"Quazilang").unwrap();
 
-        printf(fmt.as_ptr(), name.as_ptr(), 40 as ffi.c_int, 2 as ffi.c_int, 42 as ffi.c_int);
+        printf(fmt.as_ptr(), name.as_ptr(), 40 as c_int, 2 as c_int, 42 as c_int);
 
         fmt.free();
         name.free();

@@ -229,6 +229,85 @@ impl Lexer {
         Token::new(TokenKind::StringLit(s), span)
     }
 
+    fn read_byte_string(&mut self, start: usize, line: usize, col: usize, raw: bool) -> Token {
+        let mut bytes = Vec::new();
+
+        while let Some(ch) = self.advance() {
+            if ch == '"' {
+                let span = self.make_span(start, self.pos, line, col);
+                return Token::new(TokenKind::ByteStringLit(bytes), span);
+            }
+            if ch == '\\' && !raw {
+                match self.read_byte_escape() {
+                    Ok(Some(byte)) => bytes.push(byte),
+                    Ok(None) => {}
+                    Err(message) => {
+                        let span = self.make_span(start, self.pos, line, col);
+                        return Token::new(TokenKind::Error(message), span);
+                    }
+                }
+            } else {
+                let mut encoded = [0u8; 4];
+                bytes.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+            }
+        }
+
+        let span = self.make_span(start, self.pos, line, col);
+        Token::new(
+            TokenKind::Error("unterminated byte string".to_string()),
+            span,
+        )
+    }
+
+    fn read_byte_escape(&mut self) -> Result<Option<u8>, String> {
+        let Some(escape) = self.advance() else {
+            return Err("unterminated byte escape sequence".to_string());
+        };
+        let byte = match escape {
+            'a' => 0x07,
+            'b' => 0x08,
+            'e' => 0x1b,
+            'f' => 0x0c,
+            'n' => b'\n',
+            'r' => b'\r',
+            't' => b'\t',
+            'v' => 0x0b,
+            '\\' => b'\\',
+            '\'' => b'\'',
+            '"' => b'"',
+            '?' => b'?',
+            '\n' => {
+                while self.peek().is_some_and(char::is_whitespace) {
+                    self.advance();
+                }
+                return Ok(None);
+            }
+            'x' => {
+                let value = self.read_digits(16, 2, "byte hexadecimal escape")?;
+                return Ok(Some(value as u8));
+            }
+            first @ '0'..='7' => {
+                let mut value = first.to_digit(8).expect("validated octal digit");
+                for _ in 1..3 {
+                    let Some(ch @ '0'..='7') = self.peek() else {
+                        break;
+                    };
+                    self.advance();
+                    value = value * 8 + ch.to_digit(8).expect("validated octal digit");
+                }
+                if value > u8::MAX as u32 {
+                    return Err("byte octal escape must fit in 8 bits".to_string());
+                }
+                return Ok(Some(value as u8));
+            }
+            'u' | 'U' => {
+                return Err("Unicode escapes are not allowed in byte strings".to_string());
+            }
+            other => return Err(format!("unknown byte escape sequence '\\{other}'")),
+        };
+        Ok(Some(byte))
+    }
+
     fn read_number(&mut self, first: char, start: usize, line: usize, col: usize) -> Token {
         let mut s = String::from(first);
         let mut is_float = false;
@@ -319,6 +398,7 @@ impl Lexer {
             "f64" => TokenKind::Float64,
             "bool" => TokenKind::Bool,
             "str" => TokenKind::Str,
+            "bytes" => TokenKind::Bytes,
             "void" => TokenKind::Void,
             "any" => TokenKind::Any,
             "true" => TokenKind::True,
@@ -472,6 +552,17 @@ impl Lexer {
                     }
                     '?' => TokenKind::Question,
 
+                    'b' if self.peek() == Some('"') => {
+                        self.advance();
+                        return self.read_byte_string(start, line, col, false);
+                    }
+                    'b' if self.peek() == Some('r')
+                        && self.input.get(self.pos + 1) == Some(&'"') =>
+                    {
+                        self.advance();
+                        self.advance();
+                        return self.read_byte_string(start, line, col, true);
+                    }
                     '"' => return self.read_string(start, line, col),
                     '`' => return self.read_raw_string(start, line, col),
 
@@ -556,6 +647,16 @@ mod tests {
         assert!(matches!(tokens[8].kind, TokenKind::Float16));
         assert!(matches!(tokens[9].kind, TokenKind::Float32));
         assert!(matches!(tokens[10].kind, TokenKind::Float64));
+    }
+
+    #[test]
+    fn byte_strings_preserve_exact_bytes() {
+        let tokens = Lexer::new(r#"b"A\xFF\0" br"\x41""#).tokenize();
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::ByteStringLit(vec![b'A', 0xff, 0])
+        );
+        assert_eq!(tokens[1].kind, TokenKind::ByteStringLit(br"\x41".to_vec()));
     }
 }
 

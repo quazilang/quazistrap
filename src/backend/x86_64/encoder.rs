@@ -1441,7 +1441,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(rax, bits));
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    Some(ConstPoolEntry::Str(_)) => {
+                    Some(ConstPoolEntry::Str(_) | ConstPoolEntry::Bytes(_)) => {
                         if let Some(sym) = self.str_syms.get(idx as usize).and_then(|s| s.as_ref())
                         {
                             lea_rip!(rax, sym.clone());

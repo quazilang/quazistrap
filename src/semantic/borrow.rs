@@ -306,6 +306,7 @@ impl Analyzer {
             | TypeKind::Float32
             | TypeKind::Float64
             | TypeKind::Str
+            | TypeKind::Bytes
             | TypeKind::RawPtr { .. }
             | TypeKind::Ref { .. } => false,
             // All other types (structs, enums, arrays, slices, dyn Trait, etc.) are move types.

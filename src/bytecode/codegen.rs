@@ -4466,6 +4466,11 @@ impl<'a> FnCompiler<'a> {
                 {
                     match pm {
                         PrimitiveMethod::Len => {
+                            if matches!(self.type_map.get(&key), Some(TypeKind::Bytes)) {
+                                let dst = self.alloc_reg();
+                                self.chunk.emit(mem_load(obj, dst, 0));
+                                return dst;
+                            }
                             // Slice: .len() returns the hidden __len register.
                             if matches!(self.type_map.get(&key), Some(TypeKind::Slice { .. })) {
                                 let len_reg = if let ExprKind::Ident(vname) = &object.node {
@@ -4511,6 +4516,13 @@ impl<'a> FnCompiler<'a> {
                         PrimitiveMethod::AsStr => {
                             let dst = self.alloc_reg();
                             self.chunk.emit(rrr(Opcode::StrAsStr, dst, obj, 0));
+                            return dst;
+                        }
+                        PrimitiveMethod::BytesAsPtr => {
+                            let eight = self.alloc_reg();
+                            self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                            let dst = self.alloc_reg();
+                            self.chunk.emit(rrr(Opcode::Add, dst, obj, eight));
                             return dst;
                         }
                         PrimitiveMethod::Parse { is_float } => {
@@ -4686,6 +4698,20 @@ impl<'a> FnCompiler<'a> {
                     .first()
                     .expect("index expr must have at least one index");
                 let obj_key = (object.span.start, object.span.end);
+                if matches!(self.type_of_span(obj_key), Some(TypeKind::Bytes)) {
+                    let bytes = self.compile_expr(object);
+                    let idx = self.compile_expr(index);
+                    let eight = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                    let data = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Add, data, bytes, eight));
+                    let addr = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Add, addr, data, idx));
+                    let dst = self.alloc_reg();
+                    self.chunk
+                        .emit(mem_load_w(addr, dst, 0, MemWidth::Byte, false));
+                    return dst;
+                }
                 // Slice (variadic param): ptr register holds caller's stack address.
                 if matches!(self.type_of_span(obj_key), Some(TypeKind::Slice { .. })) {
                     let ptr = self.compile_expr(object);
@@ -5010,6 +5036,12 @@ impl<'a> FnCompiler<'a> {
                 let idx = self.chunk.add_constant(ConstPoolEntry::Str(s.clone()));
                 self.chunk.emit(ri16(Opcode::MovConst, dst, idx));
             }
+            Literal::Bytes(bytes) => {
+                let idx = self
+                    .chunk
+                    .add_constant(ConstPoolEntry::Bytes(bytes.clone()));
+                self.chunk.emit(ri16(Opcode::MovConst, dst, idx));
+            }
             Literal::Bool(b) => {
                 self.chunk.emit(ri16(Opcode::MovI, dst, *b as u16));
             }
@@ -5160,6 +5192,8 @@ enum PrimitiveMethod {
     PrimToString { intrinsic_id: u16 },
     /// .as_str() / .as_string() — StrAsStr identity view
     AsStr,
+    /// .as_ptr() on bytes â€” skip the read-only length prefix.
+    BytesAsPtr,
     /// .parse[T]() — true=float, false=int
     Parse { is_float: bool },
 }
@@ -5206,6 +5240,9 @@ fn resolve_primitive_method(
             }),
         },
         "as_string" | "as_str" if args.is_empty() => Some(PrimitiveMethod::AsStr),
+        "as_ptr" if args.is_empty() && matches!(receiver_ty, Some(TypeKind::Bytes)) => {
+            Some(PrimitiveMethod::BytesAsPtr)
+        }
         "parse" => Some(PrimitiveMethod::Parse { is_float: false }),
         _ => None,
     }
@@ -5472,6 +5509,7 @@ fn type_kind_base_name(ty: &TypeKind) -> String {
         TypeKind::Float64 => "f64".to_string(),
         TypeKind::Bool => "bool".to_string(),
         TypeKind::Str => "str".to_string(),
+        TypeKind::Bytes => "bytes".to_string(),
         TypeKind::Ref { inner } => type_kind_base_name(&inner.node),
         TypeKind::RawPtr { inner } => type_kind_base_name(&inner.node),
         other => format!("{}", other),
@@ -5486,7 +5524,9 @@ fn types_equal(a: &TypeKind, b: &TypeKind) -> bool {
         (Uint8, Uint8) | (Uint16, Uint16) | (Uint32, Uint32) | (Uint64, Uint64) => true,
         (Isize, Isize) | (Usize, Usize) => true,
         (Float16, Float16) | (Float32, Float32) | (Float64, Float64) => true,
-        (Bool, Bool) | (Str, Str) | (Void, Void) | (Any, Any) | (Never, Never) => true,
+        (Bool, Bool) | (Str, Str) | (Bytes, Bytes) | (Void, Void) | (Any, Any) | (Never, Never) => {
+            true
+        }
         (
             Named {
                 name: n1,
@@ -6393,5 +6433,22 @@ fn update(sample: Sample, value: f32) f32 {
                 .any(|i| i.opcode == Opcode::CallArg as u8),
             "expected CallArg for hidden env ptr"
         );
+    }
+
+    #[test]
+    fn byte_string_uses_exact_bytes_and_byte_loads() {
+        let chunks = compile(
+            r#"fn main() i32 {
+                var value: bytes = b"A\xFF\0";
+                ret value[1] as i32;
+            }"#,
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(main.constants.iter().any(
+            |constant| matches!(constant, ConstPoolEntry::Bytes(bytes) if bytes == &[b'A', 0xff, 0])
+        ));
+        assert!(main.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Load as u8 && instruction.mem_width() == MemWidth::Byte
+        }));
     }
 }

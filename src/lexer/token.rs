@@ -27,6 +27,7 @@ pub enum TokenKind {
     Int(i64),
     Float(f64),
     StringLit(String),
+    ByteStringLit(Vec<u8>),
     Ident(String),
     Error(String),
 
@@ -67,6 +68,7 @@ pub enum TokenKind {
     Float64,
     Bool,
     Str,
+    Bytes,
     Void,
     Any,
     True,
@@ -158,6 +160,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Int(value) => write!(f, "integer literal {}", value),
             TokenKind::Float(value) => write!(f, "float literal {}", value),
             TokenKind::StringLit(_) => write!(f, "string literal"),
+            TokenKind::ByteStringLit(_) => write!(f, "byte string literal"),
             TokenKind::Ident(name) => write!(f, "identifier {}", name),
             TokenKind::Error(msg) => write!(f, "lexer error {}", msg),
 
@@ -196,6 +199,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Float64 => write!(f, "f64"),
             TokenKind::Bool => write!(f, "bool"),
             TokenKind::Str => write!(f, "str"),
+            TokenKind::Bytes => write!(f, "bytes"),
             TokenKind::Void => write!(f, "void"),
             TokenKind::Any => write!(f, "any"),
             TokenKind::True => write!(f, "true"),
