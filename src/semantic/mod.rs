@@ -904,7 +904,9 @@ impl Analyzer {
                 let alias_entry = self.type_aliases.get(name).or_else(|| {
                     // Dotted name like "ffi.c_int": also try the leaf segment "c_int".
                     if name.contains('.') {
-                        name.rsplit('.').next().and_then(|leaf| self.type_aliases.get(leaf))
+                        name.rsplit('.')
+                            .next()
+                            .and_then(|leaf| self.type_aliases.get(leaf))
                     } else {
                         None
                     }
@@ -2744,7 +2746,7 @@ fn main() void { }
     }
 
     #[test]
-    fn ffi_rejects_safe_calls_and_aggregate_by_value() {
+    fn ffi_rejects_safe_calls_but_accepts_aggregate_by_value() {
         let report = analyze(
             r#"
 @repr(C) struct Point { x: i32, y: i32, }
@@ -2753,7 +2755,7 @@ fn main() void { consume(Point { x: 1, y: 2 }); }
 "#,
         );
         assert!(report.errors.iter().any(|e| e.code == "S11"));
-        assert!(report.errors.iter().any(|e| e.code == "S14"));
+        assert!(!report.errors.iter().any(|e| e.code == "S14"));
     }
 
     // ── @api ──────────────────────────────────────────────────────────────────
@@ -2960,7 +2962,7 @@ fn main() void { }
     // ── FFI signature restrictions ────────────────────────────────────────────
 
     #[test]
-    fn ffi_rejects_float_parameter() {
+    fn ffi_accepts_float_parameter() {
         let report = analyze(
             r#"
 @api("c_fn") unsafe fn c_fn(x: f32) f32;
@@ -2968,14 +2970,14 @@ fn main() void { }
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S14"),
-            "S14 expected for float FFI param: {:?}",
+            report.errors.is_empty(),
+            "float FFI param: {:?}",
             report.errors
         );
     }
 
     #[test]
-    fn ffi_rejects_float64_return() {
+    fn ffi_accepts_float64_return() {
         let report = analyze(
             r#"
 @api("get_pi") unsafe fn get_pi() f64;
@@ -2983,8 +2985,8 @@ fn main() void { }
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S14"),
-            "S14 expected for f64 return: {:?}",
+            report.errors.is_empty(),
+            "f64 FFI return: {:?}",
             report.errors
         );
     }
@@ -3020,7 +3022,7 @@ fn main() void { }
     }
 
     #[test]
-    fn ffi_rejects_more_than_six_params() {
+    fn ffi_accepts_stack_parameters_after_six_registers() {
         let report = analyze(
             r#"
 @api("too_many") unsafe fn too_many(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32) i32;
@@ -3028,8 +3030,8 @@ fn main() void { }
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S14"),
-            "S14 expected for 7+ FFI params: {:?}",
+            report.errors.is_empty(),
+            "7+ FFI params: {:?}",
             report.errors
         );
     }
@@ -3168,8 +3170,7 @@ fn main() void { }
     }
 
     #[test]
-    fn ffi_type_alias_to_float_still_rejected() {
-        // Even through a type alias, floats must be rejected in FFI
+    fn ffi_type_alias_to_float_is_accepted() {
         let report = analyze(
             r#"
 type c_float = f32;
@@ -3178,8 +3179,8 @@ fn main() void { }
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S14"),
-            "S14 expected for float alias in FFI: {:?}",
+            report.errors.is_empty(),
+            "float alias in FFI: {:?}",
             report.errors
         );
     }
@@ -3238,7 +3239,7 @@ fn main() void { }
     }
 
     #[test]
-    fn ffi_repr_c_rejects_float_field() {
+    fn ffi_repr_c_accepts_float_fields() {
         let report = analyze(
             r#"
 @repr(C) struct Bad { x: f32, y: f32, }
@@ -3246,10 +3247,11 @@ fn main() void { }
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S14"),
-            "S14 expected for float field in @repr(C): {:?}",
+            report.errors.is_empty(),
+            "float @repr(C) fields: {:?}",
             report.errors
         );
+        assert_eq!(report.struct_sizes.get("Bad"), Some(&8));
     }
 
     #[test]
@@ -3437,7 +3439,7 @@ fn main() void { }
     }
 
     #[test]
-    fn ffi_repr_c_struct_by_value_is_rejected() {
+    fn ffi_repr_c_struct_by_value_is_accepted() {
         let report = analyze(
             r#"
 @repr(C) struct Vec2 { x: i32, y: i32, }
@@ -3446,14 +3448,14 @@ fn main() void { }
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S14"),
-            "S14 expected for @repr(C) struct by value in FFI: {:?}",
+            report.errors.is_empty(),
+            "@repr(C) by value: {:?}",
             report.errors
         );
     }
 
     #[test]
-    fn ffi_repr_c_struct_return_by_value_is_rejected() {
+    fn ffi_repr_c_struct_return_by_value_is_accepted() {
         let report = analyze(
             r#"
 @repr(C) struct Vec2 { x: i32, y: i32, }
@@ -3462,8 +3464,8 @@ fn main() void { }
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S14"),
-            "S14 expected for @repr(C) return by value: {:?}",
+            report.errors.is_empty(),
+            "@repr(C) return: {:?}",
             report.errors
         );
     }
@@ -3565,7 +3567,7 @@ fn main() void { }
     // ── S14 from export, not just @api ────────────────────────────────────────
 
     #[test]
-    fn ffi_export_with_float_param_rejected() {
+    fn ffi_export_with_float_param_accepted() {
         let report = analyze(
             r#"
 @export("quazi_fn") pub fn qz_fn(x: f64) i32 { ret 0; }
@@ -3573,8 +3575,8 @@ fn main() void { }
 "#,
         );
         assert!(
-            report.errors.iter().any(|e| e.code == "S14"),
-            "S14 expected for float param in @export: {:?}",
+            report.errors.is_empty(),
+            "float @export param: {:?}",
             report.errors
         );
     }
@@ -3663,6 +3665,37 @@ fn main() void { }
         assert!(
             report.errors.iter().any(|e| e.code == "S14"),
             "Quazi-style variadic in @api should be rejected with S14: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_c_variadic_rejects_non_c_extra_argument() {
+        let report = analyze(
+            r#"
+@api("printf") unsafe fn c_printf(fmt: *i8, ...) i32;
+unsafe fn caller() i32 { ret c_printf(0, "not a C string pointer"); }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| error.code == "S14"),
+            "C variadic extras need a concrete C ABI type: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_repr_c_empty_struct_is_rejected() {
+        let report = analyze(
+            r#"
+@repr(C) struct Empty { }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| error.code == "S14"),
+            "portable C layout cannot represent an empty struct: {:?}",
             report.errors
         );
     }

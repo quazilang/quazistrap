@@ -168,6 +168,7 @@ impl LinkerInvocation {
                 args.push("kernel32.lib".into()); // ExitProcess
                 args.push("ucrt.lib".into()); // malloc, strlen, atoll, strtod, pow, calloc
                 args.push("vcruntime.lib".into()); // memset, memcpy, memmove, memcmp
+                args.push("libcmt.lib".into()); // compiler support such as `_fltused`
                 args.push("legacy_stdio_definitions.lib".into()); // sprintf, printf (CRT stdio forwarders)
             }
         }
@@ -277,5 +278,28 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-z", "max-page-size=0x1000"])
         );
+    }
+
+    #[test]
+    fn windows_link_args_include_float_compiler_support() {
+        let inv = LinkerInvocation {
+            output: PathBuf::from("hello.exe"),
+            object: PathBuf::from("hello.obj"),
+            linker: PathBuf::from("lld-link"),
+            extra_flags: Vec::new(),
+            target: TargetSpec {
+                arch: Arch::X86_64,
+                os: Os::Windows,
+                abi: Abi::Win64,
+                emit_start: true,
+                no_crash: false,
+            },
+        };
+        let args: Vec<String> = inv
+            .build_args()
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"libcmt.lib".to_string()));
     }
 }

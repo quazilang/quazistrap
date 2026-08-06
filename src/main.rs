@@ -2,6 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
+mod abi;
 pub mod analysis;
 mod backend;
 pub mod bytecode;
@@ -485,12 +486,10 @@ fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
             .ok_or_else(|| format!("invalid C source path: {}", source.display()))?;
         let object = object_dir.join(format!("{stem}.o"));
         let mut command = std::process::Command::new(&cc);
-        command
-            .arg("-c")
-            .arg(source)
-            .arg("-o")
-            .arg(&object)
-            .arg("-fPIC");
+        command.arg("-c").arg(source).arg("-o").arg(&object);
+        if !cfg!(target_os = "windows") {
+            command.arg("-fPIC");
+        }
         for include in &ctx.config.cc.include_paths {
             command.arg(format!("-I{}", include.display()));
         }
@@ -545,12 +544,12 @@ fn compile_direct_c_sources(sources: &[PathBuf]) -> Result<Vec<PathBuf>, String>
     let mut objects: Vec<PathBuf> = Vec::new();
     for (index, source) in sources.iter().enumerate() {
         let object = std::env::temp_dir().join(format!("qz_cc_{}_{}.o", std::process::id(), index));
-        let output = std::process::Command::new(&cc)
-            .arg("-c")
-            .arg(source)
-            .arg("-o")
-            .arg(&object)
-            .arg("-fPIC")
+        let mut command = std::process::Command::new(&cc);
+        command.arg("-c").arg(source).arg("-o").arg(&object);
+        if !cfg!(target_os = "windows") {
+            command.arg("-fPIC");
+        }
+        let output = command
             .output()
             .map_err(|e| format!("failed to run C compiler {:?}: {e}", cc))?;
         if !output.status.success() {
@@ -1270,6 +1269,10 @@ fn main() {
             }
 
             let out = project_output_name(&ctx.config.name, EmitType::Binary);
+            let link_flags = native_link_flags(&ctx).unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                std::process::exit(1);
+            });
             let namespaced_paths: HashSet<String> = result
                 .namespaced_paths
                 .iter()
@@ -1285,7 +1288,7 @@ fn main() {
                 false,
                 EmitType::Binary,
                 &out,
-                Some(&ctx.config.flags),
+                Some(&link_flags),
                 linker.as_deref(),
             );
 

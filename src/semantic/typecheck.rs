@@ -274,16 +274,23 @@ impl Analyzer {
                                 format!("@repr(C) struct `{name}` cannot be generic yet"),
                             );
                         }
+                        if fields.is_empty() {
+                            self.push_error(
+                                item.span,
+                                "S14",
+                                format!(
+                                    "@repr(C) struct `{name}` cannot be empty because C has no portable empty-struct layout"
+                                ),
+                            );
+                        }
                         for (field_name, field_ty, _) in fields {
                             let resolved = self.resolve_type_aliases(&field_ty.node);
-                            if !ffi_scalar_or_pointer(&resolved)
-                                || matches!(resolved, TypeKind::Void)
-                            {
+                            if !ffi_primitive(&resolved) || matches!(resolved, TypeKind::Void) {
                                 self.push_error(
                                     field_ty.span,
                                     "S14",
                                     format!(
-                                        "@repr(C) field `{field_name}` in `{name}` must be a C scalar or raw pointer"
+                                        "@repr(C) field `{field_name}` in `{name}` must be a C integer, float, or raw pointer"
                                     ),
                                 );
                             }
@@ -361,7 +368,14 @@ impl Analyzer {
                     format!("@api function `{name}` must be a bodyless declaration ending in `;`"),
                 );
             }
-            self.validate_ffi_signature(name, generic_params, params, return_ty, item_span, c_variadic);
+            self.validate_ffi_signature(
+                name,
+                generic_params,
+                params,
+                return_ty,
+                item_span,
+                c_variadic,
+            );
         }
 
         if let Some(attr) = export_attr {
@@ -460,40 +474,43 @@ impl Analyzer {
                 format!("Quazi-style variadics are not supported in FFI function `{name}`; use bare `...` for C variadics"),
             );
         }
-        if params.len() > 6 {
-            self.push_error(
-                span,
-                "S14",
-                format!(
-                    "FFI function `{name}` has {} parameters; phase-one FFI supports at most six register arguments",
-                    params.len()
-                ),
-            );
-        }
         for param in params {
             let resolved = self.resolve_type_aliases(&param.ty.node);
-            if !ffi_scalar_or_pointer(&resolved) {
+            let supported = ffi_primitive(&resolved)
+                || matches!(
+                    &resolved,
+                    TypeKind::Named { name, type_args }
+                        if type_args.is_empty() && self.repr_c_structs.contains(name)
+                );
+            if !supported || matches!(resolved, TypeKind::Void) {
                 self.push_error(
                     param.ty.span,
                     "S14",
                     format!(
-                        "FFI parameter `{}` in `{name}` has unsupported by-value type `{}`; pass C structs through raw pointers",
+                        "FFI parameter `{}` in `{name}` has unsupported C ABI type `{}`",
                         param.name, param.ty.node
                     ),
                 );
             }
         }
         let resolved_return = self.resolve_type_aliases(&return_ty.node);
-        if !ffi_scalar_or_pointer(&resolved_return) {
+        let return_supported = ffi_primitive(&resolved_return)
+            || matches!(
+                &resolved_return,
+                TypeKind::Named { name, type_args }
+                    if type_args.is_empty() && self.repr_c_structs.contains(name)
+            );
+        if !return_supported {
             self.push_error(
                 return_ty.span,
                 "S14",
                 format!(
-                    "FFI function `{name}` has unsupported by-value return type `{}`; return C structs through an out pointer",
+                    "FFI function `{name}` has unsupported C ABI return type `{}`",
                     return_ty.node
                 ),
             );
         }
+        let _ = c_variadic;
     }
 
     pub(super) fn type_check_block(
@@ -2516,11 +2533,6 @@ impl Analyzer {
         };
 
         // str_variadic fns with >1 arg cause codegen to inject a call to "format".
-        let non_variadic_count = if sym.variadic {
-            substituted_params.len().saturating_sub(1)
-        } else {
-            substituted_params.len()
-        };
         if sym.attributes.contains(&"str_variadic".to_string()) {
             self.add_dependency_edge(DependencyKind::Call, &from, "fmt.format");
             if let Some(expanded) = crate::parser::format::expand_format_call_args(args) {
@@ -2559,7 +2571,7 @@ impl Analyzer {
         // Use total arg count (positional + named, reflected in arg_evals).
         let total_arg_count = arg_evals.len();
         let is_c_variadic = sym.attributes.contains(&"c_variadic".to_string());
-        
+
         if is_c_variadic {
             if total_arg_count < substituted_params.len() {
                 self.push_error(
@@ -2571,6 +2583,44 @@ impl Analyzer {
                         total_arg_count
                     ),
                 );
+            }
+            for (i, (param_ty, arg_ty)) in substituted_params
+                .iter()
+                .zip(arg_evals.iter().map(|eval| eval.ty.as_ref()))
+                .enumerate()
+            {
+                if let (Some(arg_ty), Some(arg_expr)) = (arg_ty, args.get(i))
+                    && !self.check_expr_compat(arg_expr, param_ty, arg_ty)
+                {
+                    self.push_error(
+                        arg_expr.span,
+                        "S08",
+                        format!("arg {}: expected {}, got {}", i + 1, param_ty, arg_ty),
+                    );
+                }
+            }
+            for (index, eval) in arg_evals.iter().enumerate().skip(substituted_params.len()) {
+                let Some(arg_ty) = &eval.ty else {
+                    continue;
+                };
+                let resolved = self.resolve_type_aliases(arg_ty);
+                let supported = (ffi_primitive(&resolved) && !matches!(resolved, TypeKind::Void))
+                    || matches!(
+                        &resolved,
+                        TypeKind::Named { name, type_args }
+                            if type_args.is_empty() && self.repr_c_structs.contains(name)
+                    );
+                if !supported {
+                    self.push_error(
+                        args.get(index).map_or(callee_span, |arg| arg.span),
+                        "S14",
+                        format!(
+                            "C variadic arg {} has unsupported C ABI type `{}`",
+                            index + 1,
+                            arg_ty
+                        ),
+                    );
+                }
             }
         } else if !is_variadic && substituted_params.len() != total_arg_count {
             self.push_error(
@@ -3343,9 +3393,9 @@ fn type_contains_rawptr(ty: &TypeKind) -> bool {
     }
 }
 
-/// Types supported by the initial Linux x86-64 C ABI bridge. Aggregates are
-/// deliberately pointer-only until SysV's eightbyte classifier is implemented.
-fn ffi_scalar_or_pointer(ty: &TypeKind) -> bool {
+/// Primitive types with a direct C ABI representation. `@repr(C)` aggregates
+/// are validated separately because they require their recorded field layout.
+fn ffi_primitive(ty: &TypeKind) -> bool {
     matches!(
         ty,
         TypeKind::Int8
@@ -3358,6 +3408,8 @@ fn ffi_scalar_or_pointer(ty: &TypeKind) -> bool {
             | TypeKind::Uint64
             | TypeKind::Isize
             | TypeKind::Usize
+            | TypeKind::Float32
+            | TypeKind::Float64
             | TypeKind::Bool
             | TypeKind::Void
             | TypeKind::RawPtr { .. }

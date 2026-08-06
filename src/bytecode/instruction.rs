@@ -91,6 +91,9 @@ impl Instruction {
                 ConstPoolEntry::Str(s) => format!("\x1b[32m{s:?}\x1b[0m"),
                 ConstPoolEntry::FnAddr(name) => format!("\x1b[36m{name}\x1b[0m"),
                 ConstPoolEntry::VtableAddr(tn, tr) => format!("\x1b[35mvtable({tn}::{tr})\x1b[0m"),
+                ConstPoolEntry::ForeignSymbol(symbol) => {
+                    format!("\x1b[35mforeign({})\x1b[0m", symbol.symbol)
+                }
             }
         }
 
@@ -315,6 +318,9 @@ impl Instruction {
                         ConstPoolEntry::Float(f) => format!(" \x1b[33m{f}\x1b[0m"),
                         ConstPoolEntry::FnAddr(name) => format!(" \x1b[36m{name}\x1b[0m"),
                         ConstPoolEntry::VtableAddr(tn, tr) => format!(" vtable({tn}::{tr})"),
+                        ConstPoolEntry::ForeignSymbol(symbol) => {
+                            format!(" foreign({})", symbol.symbol)
+                        }
                     })
                     .unwrap_or_default();
                 format!(
@@ -427,15 +433,40 @@ pub fn rrr_f(op: Opcode, dst: u8, src1: u8, src2: u8) -> Instruction {
 }
 
 pub fn field_load_w(dst: u8, object: u8, offset: u8, width: MemWidth, signed: bool) -> Instruction {
+    field_load_typed(dst, object, offset, width, signed, false)
+}
+
+pub fn field_load_typed(
+    dst: u8,
+    object: u8,
+    offset: u8,
+    width: MemWidth,
+    signed: bool,
+    float32: bool,
+) -> Instruction {
     let flags = ((width as u8) << MEM_WIDTH_SHIFT) | if signed { MEM_SIGNED_FLAG } else { 0 };
-    Instruction::new(Opcode::FieldLoad, [dst, object, offset, 0], flags)
+    Instruction::new(
+        Opcode::FieldLoad,
+        [dst, object, offset, 0],
+        flags | if float32 { FLOAT_FLAG } else { 0 },
+    )
 }
 
 pub fn field_store_w(val: u8, object: u8, offset: u8, width: MemWidth) -> Instruction {
+    field_store_typed(val, object, offset, width, false)
+}
+
+pub fn field_store_typed(
+    val: u8,
+    object: u8,
+    offset: u8,
+    width: MemWidth,
+    float32: bool,
+) -> Instruction {
     Instruction::new(
         Opcode::FieldStore,
         [val, object, offset, 0],
-        (width as u8) << MEM_WIDTH_SHIFT,
+        ((width as u8) << MEM_WIDTH_SHIFT) | if float32 { FLOAT_FLAG } else { 0 },
     )
 }
 

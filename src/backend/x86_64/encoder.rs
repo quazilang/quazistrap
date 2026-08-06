@@ -17,17 +17,21 @@ use std::collections::HashMap;
 
 use iced_x86::code_asm::*;
 
+use crate::abi::{AbiSignature, AbiType, ForeignSymbol};
 use crate::backend::{BackendError, TargetSpec, target::Abi};
 use crate::bytecode::{Chunk, ConstPoolEntry, Opcode, instruction::MemWidth};
 
 use super::relocations::{PendingReloc, RelocKind};
+use super::sysv_abi::{EightbyteClass, TypeClass, classify};
 
 // ── Calling-convention register tables ──────────────────────────────────────
 
 const SYSV_REGS: [AsmRegister64; 6] = [rdi, rsi, rdx, rcx, r8, r9];
+const SYSV_XMM_REGS: [AsmRegisterXmm; 8] = [xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7];
 const SYSCALL_REGS: [AsmRegister64; 6] = [rdi, rsi, rdx, r10, r8, r9];
 // Win64: first 4 integer args in rcx/rdx/r8/r9; args 5-6 on stack.
 const WIN64_REGS: [AsmRegister64; 4] = [rcx, rdx, r8, r9];
+const WIN64_XMM_REGS: [AsmRegisterXmm; 4] = [xmm0, xmm1, xmm2, xmm3];
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,6 +42,422 @@ fn slot(reg: u8) -> AsmMemoryOperand {
 
 fn round_to_16(n: usize) -> usize {
     (n + 15) & !15
+}
+
+fn round_to_8(n: usize) -> usize {
+    (n + 7) & !7
+}
+
+#[derive(Debug, Clone)]
+enum SysvPiece {
+    Gp(usize),
+    Sse(usize),
+}
+
+#[derive(Debug, Clone)]
+enum SysvArgLocation {
+    Registers(Vec<SysvPiece>),
+    Stack { offset: usize },
+}
+
+#[derive(Debug)]
+struct SysvCallPlan {
+    args: Vec<SysvArgLocation>,
+    stack_size: usize,
+    sse_used: usize,
+}
+
+fn plan_sysv_call(signature: &AbiSignature) -> SysvCallPlan {
+    let return_in_memory = matches!(classify(&signature.return_type), TypeClass::Memory);
+    let mut gp = usize::from(return_in_memory);
+    let mut sse = 0usize;
+    let mut stack_size = 0usize;
+    let mut args = Vec::with_capacity(signature.params.len());
+
+    for ty in &signature.params {
+        let classification = classify(ty);
+        let TypeClass::Registers(classes) = &classification else {
+            let offset = stack_size;
+            stack_size += round_to_8(ty.size());
+            args.push(SysvArgLocation::Stack { offset });
+            continue;
+        };
+        let needed_gp = classes
+            .iter()
+            .filter(|class| **class == EightbyteClass::Integer)
+            .count();
+        let needed_sse = classes.len() - needed_gp;
+        if gp + needed_gp > SYSV_REGS.len() || sse + needed_sse > SYSV_XMM_REGS.len() {
+            let offset = stack_size;
+            stack_size += round_to_8(ty.size());
+            args.push(SysvArgLocation::Stack { offset });
+            continue;
+        }
+        let mut pieces = Vec::with_capacity(classes.len());
+        for class in classes {
+            match class {
+                EightbyteClass::Integer => {
+                    pieces.push(SysvPiece::Gp(gp));
+                    gp += 1;
+                }
+                EightbyteClass::Sse => {
+                    pieces.push(SysvPiece::Sse(sse));
+                    sse += 1;
+                }
+            }
+        }
+        args.push(SysvArgLocation::Registers(pieces));
+    }
+
+    SysvCallPlan {
+        args,
+        stack_size: round_to_16(stack_size),
+        sse_used: sse,
+    }
+}
+
+fn emit_mem_copy(
+    asm: &mut CodeAssembler,
+    dst_base: AsmRegister64,
+    dst_disp: i32,
+    src_base: AsmRegister64,
+    src_disp: i32,
+    size: usize,
+) -> Result<(), BackendError> {
+    let err = |error: IcedError| BackendError(error.to_string());
+    let mut offset = 0usize;
+    while offset + 8 <= size {
+        asm.mov(rax, qword_ptr(src_base + (src_disp + offset as i32)))
+            .map_err(err)?;
+        asm.mov(qword_ptr(dst_base + (dst_disp + offset as i32)), rax)
+            .map_err(err)?;
+        offset += 8;
+    }
+    if offset + 4 <= size {
+        asm.mov(eax, dword_ptr(src_base + (src_disp + offset as i32)))
+            .map_err(err)?;
+        asm.mov(dword_ptr(dst_base + (dst_disp + offset as i32)), eax)
+            .map_err(err)?;
+        offset += 4;
+    }
+    if offset + 2 <= size {
+        asm.mov(ax, word_ptr(src_base + (src_disp + offset as i32)))
+            .map_err(err)?;
+        asm.mov(word_ptr(dst_base + (dst_disp + offset as i32)), ax)
+            .map_err(err)?;
+        offset += 2;
+    }
+    if offset < size {
+        asm.mov(al, byte_ptr(src_base + (src_disp + offset as i32)))
+            .map_err(err)?;
+        asm.mov(byte_ptr(dst_base + (dst_disp + offset as i32)), al)
+            .map_err(err)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct AbiFrameLayout {
+    frame_size: i32,
+    export_aggregate_disps: Vec<Option<i32>>,
+    export_sret_disp: Option<i32>,
+    foreign_result_disp: Option<i32>,
+}
+
+fn abi_frame_layout(chunk: &Chunk, num_regs: usize, is_win64: bool) -> AbiFrameLayout {
+    let mut used = num_regs * 8;
+    let mut export_aggregate_disps = vec![None; chunk.param_count];
+    let mut export_sret_disp = None;
+    if let Some(export) = &chunk.export {
+        for (index, ty) in export.signature.params.iter().enumerate() {
+            if matches!(ty, AbiType::Aggregate { .. }) {
+                used += round_to_8(ty.size()).max(8);
+                if let Some(disp) = export_aggregate_disps.get_mut(index) {
+                    *disp = Some(-(used as i32));
+                }
+            }
+        }
+        let return_in_memory = if is_win64 {
+            win64_return_in_memory(&export.signature.return_type)
+        } else {
+            matches!(classify(&export.signature.return_type), TypeClass::Memory)
+        };
+        if return_in_memory {
+            used += 8;
+            export_sret_disp = Some(-(used as i32));
+        }
+    }
+
+    let needs_foreign_result = chunk.constants.iter().any(|constant| {
+        matches!(
+            constant,
+            ConstPoolEntry::ForeignSymbol(symbol)
+                if matches!(symbol.signature.return_type, AbiType::Aggregate { .. })
+        )
+    });
+    let foreign_result_disp = if needs_foreign_result {
+        used += 8;
+        Some(-(used as i32))
+    } else {
+        None
+    };
+    let outgoing = if is_win64 { 48 } else { 0 };
+    AbiFrameLayout {
+        frame_size: round_to_16(used + outgoing) as i32,
+        export_aggregate_disps,
+        export_sret_disp,
+        foreign_result_disp,
+    }
+}
+
+fn win64_return_in_memory(ty: &AbiType) -> bool {
+    matches!(ty, AbiType::Aggregate { size, .. } if !matches!(*size, 1 | 2 | 4 | 8))
+}
+
+fn win64_pass_indirect(ty: &AbiType) -> bool {
+    matches!(ty, AbiType::Aggregate { size, .. } if !matches!(*size, 1 | 2 | 4 | 8))
+}
+
+fn emit_store_aggregate_bits(
+    asm: &mut CodeAssembler,
+    dst_base: AsmRegister64,
+    dst_disp: i32,
+    size: usize,
+) -> Result<(), BackendError> {
+    let err = |error: IcedError| BackendError(error.to_string());
+    match size {
+        1 => asm.mov(byte_ptr(dst_base + dst_disp), al).map_err(err)?,
+        2 => asm.mov(word_ptr(dst_base + dst_disp), ax).map_err(err)?,
+        4 => asm.mov(dword_ptr(dst_base + dst_disp), eax).map_err(err)?,
+        8 => asm.mov(qword_ptr(dst_base + dst_disp), rax).map_err(err)?,
+        _ => {
+            return Err(BackendError(format!(
+                "invalid direct Win64 aggregate size {size}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn emit_load_aggregate_bits(
+    asm: &mut CodeAssembler,
+    src_base: AsmRegister64,
+    src_disp: i32,
+    size: usize,
+) -> Result<(), BackendError> {
+    let err = |error: IcedError| BackendError(error.to_string());
+    match size {
+        1 => asm.movzx(rax, byte_ptr(src_base + src_disp)).map_err(err)?,
+        2 => asm.movzx(rax, word_ptr(src_base + src_disp)).map_err(err)?,
+        4 => asm.mov(eax, dword_ptr(src_base + src_disp)).map_err(err)?,
+        8 => asm.mov(rax, qword_ptr(src_base + src_disp)).map_err(err)?,
+        _ => {
+            return Err(BackendError(format!(
+                "invalid direct Win64 aggregate size {size}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn emit_store_sse_piece(
+    asm: &mut CodeAssembler,
+    dst_base: AsmRegister64,
+    dst_disp: i32,
+    src: AsmRegisterXmm,
+    size: usize,
+) -> Result<(), BackendError> {
+    let err = |error: IcedError| BackendError(error.to_string());
+    match size {
+        4 => asm.movd(dword_ptr(dst_base + dst_disp), src).map_err(err)?,
+        8 => asm.movq(qword_ptr(dst_base + dst_disp), src).map_err(err)?,
+        _ => return Err(BackendError(format!("invalid SysV SSE piece size {size}"))),
+    }
+    Ok(())
+}
+
+fn emit_load_sse_piece(
+    asm: &mut CodeAssembler,
+    dst: AsmRegisterXmm,
+    src_base: AsmRegister64,
+    src_disp: i32,
+    size: usize,
+) -> Result<(), BackendError> {
+    let err = |error: IcedError| BackendError(error.to_string());
+    match size {
+        4 => asm.movd(dst, dword_ptr(src_base + src_disp)).map_err(err)?,
+        8 => asm.movq(dst, qword_ptr(src_base + src_disp)).map_err(err)?,
+        _ => return Err(BackendError(format!("invalid SysV SSE piece size {size}"))),
+    }
+    Ok(())
+}
+
+fn emit_sysv_export_prologue(
+    asm: &mut CodeAssembler,
+    export: &ForeignSymbol,
+    layout: &AbiFrameLayout,
+) -> Result<(), BackendError> {
+    let err = |error: IcedError| BackendError(error.to_string());
+    let plan = plan_sysv_call(&export.signature);
+    if matches!(classify(&export.signature.return_type), TypeClass::Memory) {
+        let disp = layout
+            .export_sret_disp
+            .expect("SysV sret export must reserve a frame slot");
+        asm.mov(qword_ptr(rbp + disp), rdi).map_err(err)?;
+    }
+
+    for (index, (ty, location)) in export
+        .signature
+        .params
+        .iter()
+        .zip(plan.args.iter())
+        .enumerate()
+    {
+        match (ty, location) {
+            (AbiType::Aggregate { .. }, SysvArgLocation::Stack { offset }) => {
+                let dst_disp = layout.export_aggregate_disps[index]
+                    .expect("aggregate export parameter must reserve local storage");
+                emit_mem_copy(asm, rbp, dst_disp, rbp, 16 + *offset as i32, ty.size())?;
+                asm.lea(rax, qword_ptr(rbp + dst_disp)).map_err(err)?;
+                asm.mov(slot(index as u8), rax).map_err(err)?;
+            }
+            (AbiType::Aggregate { .. }, SysvArgLocation::Registers(pieces)) => {
+                let dst_disp = layout.export_aggregate_disps[index]
+                    .expect("aggregate export parameter must reserve local storage");
+                for (piece_index, piece) in pieces.iter().enumerate() {
+                    let disp = dst_disp + (piece_index * 8) as i32;
+                    let piece_size = ty.size().saturating_sub(piece_index * 8).min(8);
+                    match piece {
+                        SysvPiece::Gp(reg) => {
+                            asm.mov(rax, SYSV_REGS[*reg]).map_err(err)?;
+                            emit_store_aggregate_bits(asm, rbp, disp, piece_size)?;
+                        }
+                        SysvPiece::Sse(reg) => {
+                            emit_store_sse_piece(asm, rbp, disp, SYSV_XMM_REGS[*reg], piece_size)?
+                        }
+                    }
+                }
+                asm.lea(rax, qword_ptr(rbp + dst_disp)).map_err(err)?;
+                asm.mov(slot(index as u8), rax).map_err(err)?;
+            }
+            (scalar, SysvArgLocation::Registers(pieces)) => match (scalar, pieces.as_slice()) {
+                (AbiType::Float64, [SysvPiece::Sse(reg)]) => {
+                    asm.movsd_2(slot(index as u8), SYSV_XMM_REGS[*reg])
+                        .map_err(err)?;
+                }
+                (AbiType::Float32, [SysvPiece::Sse(reg)]) => {
+                    asm.cvtss2sd(xmm15, SYSV_XMM_REGS[*reg]).map_err(err)?;
+                    asm.movsd_2(slot(index as u8), xmm15).map_err(err)?;
+                }
+                (AbiType::Integer { .. } | AbiType::Pointer, [SysvPiece::Gp(reg)]) => {
+                    asm.mov(slot(index as u8), SYSV_REGS[*reg]).map_err(err)?;
+                }
+                _ => {
+                    return Err(BackendError(format!(
+                        "unsupported SysV export register parameter {scalar:?} at index {index}"
+                    )));
+                }
+            },
+            (AbiType::Float64, SysvArgLocation::Stack { offset }) => {
+                asm.mov(rax, qword_ptr(rbp + (16 + *offset as i32)))
+                    .map_err(err)?;
+                asm.mov(slot(index as u8), rax).map_err(err)?;
+            }
+            (AbiType::Float32, SysvArgLocation::Stack { offset }) => {
+                asm.movss(xmm15, dword_ptr(rbp + (16 + *offset as i32)))
+                    .map_err(err)?;
+                asm.cvtss2sd(xmm15, xmm15).map_err(err)?;
+                asm.movsd_2(slot(index as u8), xmm15).map_err(err)?;
+            }
+            (AbiType::Integer { .. } | AbiType::Pointer, SysvArgLocation::Stack { offset }) => {
+                asm.mov(rax, qword_ptr(rbp + (16 + *offset as i32)))
+                    .map_err(err)?;
+                asm.mov(slot(index as u8), rax).map_err(err)?;
+            }
+            _ => {
+                return Err(BackendError(format!(
+                    "unsupported SysV export parameter {ty:?} at index {index}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn emit_win64_export_prologue(
+    asm: &mut CodeAssembler,
+    export: &ForeignSymbol,
+    layout: &AbiFrameLayout,
+) -> Result<(), BackendError> {
+    let err = |error: IcedError| BackendError(error.to_string());
+    let has_sret = win64_return_in_memory(&export.signature.return_type);
+    if has_sret {
+        let disp = layout
+            .export_sret_disp
+            .expect("Win64 sret export must reserve a frame slot");
+        asm.mov(qword_ptr(rbp + disp), rcx).map_err(err)?;
+    }
+
+    for (index, ty) in export.signature.params.iter().enumerate() {
+        let position = index + usize::from(has_sret);
+        let stack_disp = 48 + (position.saturating_sub(4) * 8) as i32;
+        match ty {
+            AbiType::Aggregate { size, .. } => {
+                let dst_disp = layout.export_aggregate_disps[index]
+                    .expect("aggregate export parameter must reserve local storage");
+                if win64_pass_indirect(ty) {
+                    if position < 4 {
+                        asm.mov(r10, WIN64_REGS[position]).map_err(err)?;
+                    } else {
+                        asm.mov(r10, qword_ptr(rbp + stack_disp)).map_err(err)?;
+                    }
+                    emit_mem_copy(asm, rbp, dst_disp, r10, 0, usize::from(*size))?;
+                } else {
+                    if position < 4 {
+                        asm.mov(rax, WIN64_REGS[position]).map_err(err)?;
+                    } else {
+                        asm.mov(rax, qword_ptr(rbp + stack_disp)).map_err(err)?;
+                    }
+                    emit_store_aggregate_bits(asm, rbp, dst_disp, usize::from(*size))?;
+                }
+                asm.lea(rax, qword_ptr(rbp + dst_disp)).map_err(err)?;
+                asm.mov(slot(index as u8), rax).map_err(err)?;
+            }
+            AbiType::Float64 => {
+                if position < 4 {
+                    asm.movsd_2(slot(index as u8), WIN64_XMM_REGS[position])
+                        .map_err(err)?;
+                } else {
+                    asm.mov(rax, qword_ptr(rbp + stack_disp)).map_err(err)?;
+                    asm.mov(slot(index as u8), rax).map_err(err)?;
+                }
+            }
+            AbiType::Float32 => {
+                if position < 4 {
+                    asm.cvtss2sd(xmm15, WIN64_XMM_REGS[position]).map_err(err)?;
+                } else {
+                    asm.movss(xmm15, dword_ptr(rbp + stack_disp)).map_err(err)?;
+                    asm.cvtss2sd(xmm15, xmm15).map_err(err)?;
+                }
+                asm.movsd_2(slot(index as u8), xmm15).map_err(err)?;
+            }
+            AbiType::Integer { .. } | AbiType::Pointer => {
+                if position < 4 {
+                    asm.mov(slot(index as u8), WIN64_REGS[position])
+                        .map_err(err)?;
+                } else {
+                    asm.mov(rax, qword_ptr(rbp + stack_disp)).map_err(err)?;
+                    asm.mov(slot(index as u8), rax).map_err(err)?;
+                }
+            }
+            AbiType::Void => {
+                return Err(BackendError(
+                    "void cannot be an export parameter".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn max_reg_used(chunk: &Chunk) -> usize {
@@ -167,12 +587,8 @@ impl<'a> FnEncoder<'a> {
         let chunk = self.chunk;
         let is_win64 = self.target.abi == Abi::Win64;
         let num_regs = max_reg_used(chunk) + 1;
-        // Win64: reserve 32-byte shadow space + 16 bytes for up to 2 stack args
-        let frame_size = if is_win64 {
-            round_to_16(num_regs * 8 + 48) as i32
-        } else {
-            round_to_16(num_regs * 8) as i32
-        };
+        let abi_layout = abi_frame_layout(chunk, num_regs, is_win64);
+        let frame_size = abi_layout.frame_size;
 
         let err = |e: IcedError| BackendError(e.to_string());
 
@@ -212,22 +628,28 @@ impl<'a> FnEncoder<'a> {
         if frame_size > 0 {
             emit!(asm.sub(rsp, frame_size));
         }
-        if is_win64 {
-            for i in 0..chunk.param_count.min(4) {
-                emit!(asm.mov(slot(i as u8), WIN64_REGS[i]));
+        if let Some(export) = &chunk.export {
+            if is_win64 {
+                emit_win64_export_prologue(&mut asm, export, &abi_layout)?;
+            } else {
+                emit_sysv_export_prologue(&mut asm, export, &abi_layout)?;
             }
-            if chunk.param_count > 4 {
-                // arg5 lives at [rbp+48]: above saved_rbp(8) + ret_addr(8) + 4 shadow slots(32)
-                emit!(asm.mov(rax, qword_ptr(rbp + 48i32)));
-                emit!(asm.mov(slot(4), rax));
+        } else if is_win64 {
+            for (i, register) in WIN64_REGS.iter().take(chunk.param_count).enumerate() {
+                emit!(asm.mov(slot(i as u8), *register));
             }
-            if chunk.param_count > 5 {
-                emit!(asm.mov(rax, qword_ptr(rbp + 56i32)));
-                emit!(asm.mov(slot(5), rax));
+            for i in 4..chunk.param_count {
+                // Above saved rbp + return address + the 32-byte shadow space.
+                emit!(asm.mov(rax, qword_ptr(rbp + 48 + ((i - 4) * 8) as i32)));
+                emit!(asm.mov(slot(i as u8), rax));
             }
         } else {
-            for i in 0..chunk.param_count.min(6) {
-                emit!(asm.mov(slot(i as u8), SYSV_REGS[i]));
+            for (i, register) in SYSV_REGS.iter().take(chunk.param_count).enumerate() {
+                emit!(asm.mov(slot(i as u8), *register));
+            }
+            for i in 6..chunk.param_count {
+                emit!(asm.mov(rax, qword_ptr(rbp + 16 + ((i - 6) * 8) as i32)));
+                emit!(asm.mov(slot(i as u8), rax));
             }
         }
 
@@ -255,25 +677,39 @@ impl<'a> FnEncoder<'a> {
                         .unwrap_or_else(|| "__quazi_unknown".into());
 
                     if is_win64 {
+                        let call_frame =
+                            round_to_16(32 + pending_args.len().saturating_sub(4) * 8).max(32);
+                        emit!(asm.sub(rsp, call_frame as i32));
+                        for (i, &vreg) in pending_args.iter().enumerate().skip(4) {
+                            emit!(asm.mov(rax, slot(vreg)));
+                            emit!(asm.mov(qword_ptr(rsp + 32 + ((i - 4) * 8) as i32), rax));
+                        }
                         for (i, &vreg) in pending_args.iter().enumerate().take(4) {
                             emit!(asm.mov(WIN64_REGS[i], slot(vreg)));
                         }
-                        if pending_args.len() > 4 {
-                            emit!(asm.mov(rax, slot(pending_args[4])));
-                            emit!(asm.mov(qword_ptr(rsp + 32i32), rax));
-                        }
-                        if pending_args.len() > 5 {
-                            emit!(asm.mov(rax, slot(pending_args[5])));
-                            emit!(asm.mov(qword_ptr(rsp + 40i32), rax));
-                        }
+                        let call_idx = asm.instructions().len();
+                        emit!(asm.call(fn_start));
+                        pending.push((call_idx, 1, RelocKind::Plt32, fn_name, -4));
+                        emit!(asm.add(rsp, call_frame as i32));
                     } else {
+                        let stack_size = round_to_16(pending_args.len().saturating_sub(6) * 8);
+                        if stack_size > 0 {
+                            emit!(asm.sub(rsp, stack_size as i32));
+                        }
+                        for (i, &vreg) in pending_args.iter().enumerate().skip(6) {
+                            emit!(asm.mov(rax, slot(vreg)));
+                            emit!(asm.mov(qword_ptr(rsp + ((i - 6) * 8) as i32), rax));
+                        }
                         for (i, &vreg) in pending_args.iter().enumerate().take(6) {
                             emit!(asm.mov(SYSV_REGS[i], slot(vreg)));
                         }
+                        let call_idx = asm.instructions().len();
+                        emit!(asm.call(fn_start));
+                        pending.push((call_idx, 1, RelocKind::Plt32, fn_name, -4));
+                        if stack_size > 0 {
+                            emit!(asm.add(rsp, stack_size as i32));
+                        }
                     }
-                    let call_idx = asm.instructions().len();
-                    emit!(asm.call(fn_start));
-                    pending.push((call_idx, 1, RelocKind::Plt32, fn_name, -4));
                     emit!(asm.mov(slot(dst), rax));
                     pending_args.clear();
                 }
@@ -282,29 +718,101 @@ impl<'a> FnEncoder<'a> {
                 Some(Opcode::CallReg) => {
                     let (dst, fn_reg, _) = instr.rrr();
                     if is_win64 {
+                        let call_frame =
+                            round_to_16(32 + pending_args.len().saturating_sub(4) * 8).max(32);
+                        emit!(asm.sub(rsp, call_frame as i32));
+                        for (i, &vreg) in pending_args.iter().enumerate().skip(4) {
+                            emit!(asm.mov(rax, slot(vreg)));
+                            emit!(asm.mov(qword_ptr(rsp + 32 + ((i - 4) * 8) as i32), rax));
+                        }
                         for (i, &vreg) in pending_args.iter().enumerate().take(4) {
                             emit!(asm.mov(WIN64_REGS[i], slot(vreg)));
                         }
-                        if pending_args.len() > 4 {
-                            emit!(asm.mov(rax, slot(pending_args[4])));
-                            emit!(asm.mov(qword_ptr(rsp + 32i32), rax));
-                        }
-                        if pending_args.len() > 5 {
-                            emit!(asm.mov(rax, slot(pending_args[5])));
-                            emit!(asm.mov(qword_ptr(rsp + 40i32), rax));
-                        }
+                        emit!(asm.mov(rax, slot(fn_reg)));
+                        emit!(asm.call(rax));
+                        emit!(asm.add(rsp, call_frame as i32));
                     } else {
+                        let stack_size = round_to_16(pending_args.len().saturating_sub(6) * 8);
+                        if stack_size > 0 {
+                            emit!(asm.sub(rsp, stack_size as i32));
+                        }
+                        for (i, &vreg) in pending_args.iter().enumerate().skip(6) {
+                            emit!(asm.mov(rax, slot(vreg)));
+                            emit!(asm.mov(qword_ptr(rsp + ((i - 6) * 8) as i32), rax));
+                        }
                         for (i, &vreg) in pending_args.iter().enumerate().take(6) {
                             emit!(asm.mov(SYSV_REGS[i], slot(vreg)));
                         }
+                        emit!(asm.mov(rax, slot(fn_reg)));
+                        emit!(asm.call(rax));
+                        if stack_size > 0 {
+                            emit!(asm.add(rsp, stack_size as i32));
+                        }
                     }
-                    emit!(asm.mov(rax, slot(fn_reg)));
-                    emit!(asm.call(rax));
                     emit!(asm.mov(slot(dst), rax));
                     pending_args.clear();
                 }
 
                 // ── All other opcodes ─────────────────────────────────────────
+                Some(Opcode::CallExt) => {
+                    let (dst, constant_index) = instr.ri16();
+                    if let Some(ConstPoolEntry::ForeignSymbol(foreign)) =
+                        chunk.constants.get(constant_index as usize)
+                    {
+                        if is_win64 {
+                            self.emit_win64_foreign_call(
+                                &mut asm,
+                                dst,
+                                foreign,
+                                &pending_args,
+                                abi_layout.foreign_result_disp,
+                                &mut pending,
+                                fn_start,
+                            )?;
+                        } else {
+                            self.emit_sysv_foreign_call(
+                                &mut asm,
+                                dst,
+                                foreign,
+                                &pending_args,
+                                abi_layout.foreign_result_disp,
+                                &mut pending,
+                                fn_start,
+                            )?;
+                        }
+                        pending_args.clear();
+                    } else {
+                        self.emit_instr(
+                            &mut asm,
+                            instr,
+                            chunk,
+                            qzi_idx,
+                            Some(Opcode::CallExt),
+                            &mut pending,
+                            &label_map,
+                            fn_start,
+                        )?;
+                    }
+                }
+
+                Some(Opcode::Ret) if chunk.export.is_some() && !is_win64 => {
+                    self.emit_sysv_export_return(
+                        &mut asm,
+                        instr.ops[0],
+                        chunk.export.as_ref().unwrap(),
+                        &abi_layout,
+                    )?;
+                }
+
+                Some(Opcode::Ret) if chunk.export.is_some() && is_win64 => {
+                    self.emit_win64_export_return(
+                        &mut asm,
+                        instr.ops[0],
+                        chunk.export.as_ref().unwrap(),
+                        &abi_layout,
+                    )?;
+                }
+
                 op => {
                     self.emit_instr(
                         &mut asm,
@@ -367,6 +875,503 @@ impl<'a> FnEncoder<'a> {
         }
 
         Ok((bytes, relocs))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_win64_foreign_call(
+        &self,
+        asm: &mut CodeAssembler,
+        dst: u8,
+        foreign: &ForeignSymbol,
+        arg_regs: &[u8],
+        result_disp: Option<i32>,
+        pending: &mut Vec<(usize, usize, RelocKind, String, i64)>,
+        fn_start: CodeLabel,
+    ) -> Result<(), BackendError> {
+        let err = |error: IcedError| BackendError(error.to_string());
+        if foreign.signature.params.len() != arg_regs.len() {
+            return Err(BackendError(format!(
+                "foreign call `{}` expected {} ABI arguments, got {}",
+                foreign.symbol,
+                foreign.signature.params.len(),
+                arg_regs.len()
+            )));
+        }
+
+        let return_in_memory = win64_return_in_memory(&foreign.signature.return_type);
+        let aggregate_return = matches!(foreign.signature.return_type, AbiType::Aggregate { .. });
+        if aggregate_return {
+            let scratch = result_disp.expect("aggregate foreign result needs scratch storage");
+            let allocation_size = round_to_8(foreign.signature.return_type.size()).max(8);
+            asm.mov(rcx, allocation_size as i64).map_err(err)?;
+            let call_index = asm.instructions().len();
+            asm.call(fn_start).map_err(err)?;
+            pending.push((call_index, 1, RelocKind::Plt32, "malloc".to_string(), -4));
+            asm.mov(qword_ptr(rbp + scratch), rax).map_err(err)?;
+        }
+
+        let first_position = usize::from(return_in_memory);
+        let position_count = first_position + foreign.signature.params.len();
+        let stack_slots = position_count.saturating_sub(4);
+        let stack_area = 32 + stack_slots * 8;
+        let mut temp_cursor = round_to_16(stack_area);
+        let mut temp_offsets = Vec::with_capacity(foreign.signature.params.len());
+        for ty in &foreign.signature.params {
+            if win64_pass_indirect(ty) {
+                temp_offsets.push(Some(temp_cursor));
+                temp_cursor += round_to_16(ty.size()).max(16);
+            } else {
+                temp_offsets.push(None);
+            }
+        }
+        let call_frame_size = round_to_16(temp_cursor).max(32);
+        asm.sub(rsp, call_frame_size as i32).map_err(err)?;
+
+        for (index, (ty, vreg)) in foreign
+            .signature
+            .params
+            .iter()
+            .zip(arg_regs.iter())
+            .enumerate()
+        {
+            let position = first_position + index;
+            let stack_disp = 32 + (position.saturating_sub(4) * 8) as i32;
+            match ty {
+                AbiType::Aggregate { size, .. } => {
+                    asm.mov(r10, slot(*vreg)).map_err(err)?;
+                    if let Some(temp_offset) = temp_offsets[index] {
+                        emit_mem_copy(asm, rsp, temp_offset as i32, r10, 0, usize::from(*size))?;
+                        asm.lea(rax, qword_ptr(rsp + temp_offset as i32))
+                            .map_err(err)?;
+                    } else {
+                        emit_load_aggregate_bits(asm, r10, 0, usize::from(*size))?;
+                    }
+                    if position < 4 {
+                        asm.mov(WIN64_REGS[position], rax).map_err(err)?;
+                    } else {
+                        asm.mov(qword_ptr(rsp + stack_disp), rax).map_err(err)?;
+                    }
+                }
+                AbiType::Float64 => {
+                    asm.movq(xmm15, slot(*vreg)).map_err(err)?;
+                    if position < 4 {
+                        asm.movq(WIN64_XMM_REGS[position], xmm15).map_err(err)?;
+                        if foreign.signature.variadic {
+                            asm.movq(rax, xmm15).map_err(err)?;
+                            asm.mov(WIN64_REGS[position], rax).map_err(err)?;
+                        }
+                    } else {
+                        asm.movq(qword_ptr(rsp + stack_disp), xmm15).map_err(err)?;
+                    }
+                }
+                AbiType::Float32 => {
+                    asm.movq(xmm15, slot(*vreg)).map_err(err)?;
+                    asm.cvtsd2ss(xmm15, xmm15).map_err(err)?;
+                    if position < 4 {
+                        asm.movss(WIN64_XMM_REGS[position], xmm15).map_err(err)?;
+                        if foreign.signature.variadic {
+                            asm.movd(eax, xmm15).map_err(err)?;
+                            asm.mov(WIN64_REGS[position], rax).map_err(err)?;
+                        }
+                    } else {
+                        asm.movss(dword_ptr(rsp + stack_disp), xmm15).map_err(err)?;
+                    }
+                }
+                AbiType::Integer { .. } | AbiType::Pointer => {
+                    asm.mov(rax, slot(*vreg)).map_err(err)?;
+                    if position < 4 {
+                        asm.mov(WIN64_REGS[position], rax).map_err(err)?;
+                    } else {
+                        asm.mov(qword_ptr(rsp + stack_disp), rax).map_err(err)?;
+                    }
+                }
+                AbiType::Void => {
+                    return Err(BackendError(
+                        "void cannot be a foreign argument".to_string(),
+                    ));
+                }
+            }
+        }
+        if return_in_memory {
+            let scratch = result_disp.expect("Win64 sret foreign result needs scratch storage");
+            asm.mov(rcx, qword_ptr(rbp + scratch)).map_err(err)?;
+        }
+
+        let call_index = asm.instructions().len();
+        asm.call(fn_start).map_err(err)?;
+        pending.push((call_index, 1, RelocKind::Plt32, foreign.symbol.clone(), -4));
+        asm.add(rsp, call_frame_size as i32).map_err(err)?;
+
+        match &foreign.signature.return_type {
+            AbiType::Void => {
+                asm.xor(rax, rax).map_err(err)?;
+                asm.mov(slot(dst), rax).map_err(err)?;
+            }
+            AbiType::Integer { bytes, signed } => {
+                match (*bytes, *signed) {
+                    (1, true) => asm.movsx(rax, al).map_err(err)?,
+                    (2, true) => asm.movsx(rax, ax).map_err(err)?,
+                    (4, true) => asm.movsxd(rax, eax).map_err(err)?,
+                    (1, false) => asm.movzx(rax, al).map_err(err)?,
+                    (2, false) => asm.movzx(rax, ax).map_err(err)?,
+                    (4, false) => asm.mov(eax, eax).map_err(err)?,
+                    _ => {}
+                }
+                asm.mov(slot(dst), rax).map_err(err)?;
+            }
+            AbiType::Pointer => asm.mov(slot(dst), rax).map_err(err)?,
+            AbiType::Float64 => asm.movsd_2(slot(dst), xmm0).map_err(err)?,
+            AbiType::Float32 => {
+                asm.cvtss2sd(xmm15, xmm0).map_err(err)?;
+                asm.movsd_2(slot(dst), xmm15).map_err(err)?;
+            }
+            AbiType::Aggregate { size, .. } if return_in_memory => {
+                let scratch = result_disp.expect("aggregate result needs scratch storage");
+                asm.mov(rax, qword_ptr(rbp + scratch)).map_err(err)?;
+                asm.mov(slot(dst), rax).map_err(err)?;
+            }
+            AbiType::Aggregate { size, .. } => {
+                let scratch = result_disp.expect("aggregate result needs scratch storage");
+                asm.mov(r10, qword_ptr(rbp + scratch)).map_err(err)?;
+                emit_store_aggregate_bits(asm, r10, 0, usize::from(*size))?;
+                asm.mov(slot(dst), r10).map_err(err)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_win64_export_return(
+        &self,
+        asm: &mut CodeAssembler,
+        return_reg: u8,
+        export: &ForeignSymbol,
+        layout: &AbiFrameLayout,
+    ) -> Result<(), BackendError> {
+        let err = |error: IcedError| BackendError(error.to_string());
+        match &export.signature.return_type {
+            AbiType::Void => asm.xor(rax, rax).map_err(err)?,
+            AbiType::Integer { .. } | AbiType::Pointer => {
+                asm.mov(rax, slot(return_reg)).map_err(err)?;
+            }
+            AbiType::Float64 => asm.movq(xmm0, slot(return_reg)).map_err(err)?,
+            AbiType::Float32 => {
+                asm.movq(xmm15, slot(return_reg)).map_err(err)?;
+                asm.cvtsd2ss(xmm0, xmm15).map_err(err)?;
+            }
+            AbiType::Aggregate { size, .. }
+                if win64_return_in_memory(&export.signature.return_type) =>
+            {
+                let sret = layout
+                    .export_sret_disp
+                    .expect("Win64 aggregate export return needs sret storage");
+                asm.mov(r10, qword_ptr(rbp + sret)).map_err(err)?;
+                asm.mov(r11, slot(return_reg)).map_err(err)?;
+                emit_mem_copy(asm, r10, 0, r11, 0, usize::from(*size))?;
+                asm.mov(rax, r10).map_err(err)?;
+            }
+            AbiType::Aggregate { size, .. } => {
+                asm.mov(r10, slot(return_reg)).map_err(err)?;
+                emit_load_aggregate_bits(asm, r10, 0, usize::from(*size))?;
+            }
+        }
+        asm.mov(rsp, rbp).map_err(err)?;
+        asm.pop(rbp).map_err(err)?;
+        asm.ret().map_err(err)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_sysv_foreign_call(
+        &self,
+        asm: &mut CodeAssembler,
+        dst: u8,
+        foreign: &ForeignSymbol,
+        arg_regs: &[u8],
+        result_disp: Option<i32>,
+        pending: &mut Vec<(usize, usize, RelocKind, String, i64)>,
+        fn_start: CodeLabel,
+    ) -> Result<(), BackendError> {
+        let err = |error: IcedError| BackendError(error.to_string());
+        if foreign.signature.params.len() != arg_regs.len() {
+            return Err(BackendError(format!(
+                "foreign call `{}` expected {} ABI arguments, got {}",
+                foreign.symbol,
+                foreign.signature.params.len(),
+                arg_regs.len()
+            )));
+        }
+        let plan = plan_sysv_call(&foreign.signature);
+        let return_class = classify(&foreign.signature.return_type);
+        let aggregate_return = matches!(foreign.signature.return_type, AbiType::Aggregate { .. });
+
+        if aggregate_return {
+            let scratch = result_disp.expect("aggregate foreign result needs scratch storage");
+            let allocation_size = round_to_8(foreign.signature.return_type.size()).max(8);
+            asm.mov(rdi, allocation_size as i64).map_err(err)?;
+            let call_index = asm.instructions().len();
+            asm.call(fn_start).map_err(err)?;
+            pending.push((call_index, 1, RelocKind::Plt32, "malloc".to_string(), -4));
+            asm.mov(qword_ptr(rbp + scratch), rax).map_err(err)?;
+        }
+
+        if plan.stack_size > 0 {
+            asm.sub(rsp, plan.stack_size as i32).map_err(err)?;
+        }
+
+        // Materialize stack arguments before register arguments so scratch use
+        // cannot overwrite an already assigned ABI register.
+        for ((ty, location), vreg) in foreign
+            .signature
+            .params
+            .iter()
+            .zip(plan.args.iter())
+            .zip(arg_regs.iter())
+        {
+            let SysvArgLocation::Stack { offset } = location else {
+                continue;
+            };
+            match ty {
+                AbiType::Aggregate { .. } => {
+                    asm.mov(r10, slot(*vreg)).map_err(err)?;
+                    emit_mem_copy(asm, rsp, *offset as i32, r10, 0, ty.size())?;
+                }
+                AbiType::Float32 => {
+                    asm.movq(xmm15, slot(*vreg)).map_err(err)?;
+                    asm.cvtsd2ss(xmm15, xmm15).map_err(err)?;
+                    asm.movss(dword_ptr(rsp + *offset as i32), xmm15)
+                        .map_err(err)?;
+                }
+                AbiType::Float64 | AbiType::Integer { .. } | AbiType::Pointer => {
+                    asm.mov(rax, slot(*vreg)).map_err(err)?;
+                    asm.mov(qword_ptr(rsp + *offset as i32), rax).map_err(err)?;
+                }
+                AbiType::Void => {
+                    return Err(BackendError(
+                        "void cannot be a foreign argument".to_string(),
+                    ));
+                }
+            }
+        }
+
+        for ((ty, location), vreg) in foreign
+            .signature
+            .params
+            .iter()
+            .zip(plan.args.iter())
+            .zip(arg_regs.iter())
+        {
+            let SysvArgLocation::Registers(pieces) = location else {
+                continue;
+            };
+            match ty {
+                AbiType::Aggregate { .. } => {
+                    asm.mov(r10, slot(*vreg)).map_err(err)?;
+                    for (piece_index, piece) in pieces.iter().enumerate() {
+                        let offset = (piece_index * 8) as i32;
+                        let piece_size = ty.size().saturating_sub(piece_index * 8).min(8);
+                        match piece {
+                            SysvPiece::Gp(reg) => {
+                                emit_load_aggregate_bits(asm, r10, offset, piece_size)?;
+                                asm.mov(SYSV_REGS[*reg], rax).map_err(err)?;
+                            }
+                            SysvPiece::Sse(reg) => emit_load_sse_piece(
+                                asm,
+                                SYSV_XMM_REGS[*reg],
+                                r10,
+                                offset,
+                                piece_size,
+                            )?,
+                        }
+                    }
+                }
+                AbiType::Float64 => {
+                    let [SysvPiece::Sse(reg)] = pieces.as_slice() else {
+                        return Err(BackendError("invalid SysV f64 classification".to_string()));
+                    };
+                    asm.movq(SYSV_XMM_REGS[*reg], slot(*vreg)).map_err(err)?;
+                }
+                AbiType::Float32 => {
+                    let [SysvPiece::Sse(reg)] = pieces.as_slice() else {
+                        return Err(BackendError("invalid SysV f32 classification".to_string()));
+                    };
+                    asm.movq(xmm15, slot(*vreg)).map_err(err)?;
+                    asm.cvtsd2ss(SYSV_XMM_REGS[*reg], xmm15).map_err(err)?;
+                }
+                AbiType::Integer { .. } | AbiType::Pointer => {
+                    let [SysvPiece::Gp(reg)] = pieces.as_slice() else {
+                        return Err(BackendError(
+                            "invalid SysV integer classification".to_string(),
+                        ));
+                    };
+                    asm.mov(SYSV_REGS[*reg], slot(*vreg)).map_err(err)?;
+                }
+                AbiType::Void => {
+                    return Err(BackendError(
+                        "void cannot be a foreign argument".to_string(),
+                    ));
+                }
+            }
+        }
+
+        if matches!(return_class, TypeClass::Memory) {
+            let scratch = result_disp.expect("sret foreign result needs scratch storage");
+            asm.mov(rdi, qword_ptr(rbp + scratch)).map_err(err)?;
+        }
+        if foreign.signature.variadic {
+            asm.mov(eax, plan.sse_used as i32).map_err(err)?;
+        }
+
+        let call_index = asm.instructions().len();
+        asm.call(fn_start).map_err(err)?;
+        pending.push((call_index, 1, RelocKind::Plt32, foreign.symbol.clone(), -4));
+        if plan.stack_size > 0 {
+            asm.add(rsp, plan.stack_size as i32).map_err(err)?;
+        }
+
+        match (&foreign.signature.return_type, return_class) {
+            (AbiType::Void, _) => {
+                asm.xor(rax, rax).map_err(err)?;
+                asm.mov(slot(dst), rax).map_err(err)?;
+            }
+            (AbiType::Integer { bytes, signed }, _) => {
+                match (*bytes, *signed) {
+                    (1, true) => asm.movsx(rax, al).map_err(err)?,
+                    (2, true) => asm.movsx(rax, ax).map_err(err)?,
+                    (4, true) => asm.movsxd(rax, eax).map_err(err)?,
+                    (1, false) => asm.movzx(rax, al).map_err(err)?,
+                    (2, false) => asm.movzx(rax, ax).map_err(err)?,
+                    (4, false) => asm.mov(eax, eax).map_err(err)?,
+                    _ => {}
+                }
+                asm.mov(slot(dst), rax).map_err(err)?;
+            }
+            (AbiType::Pointer, _) => {
+                asm.mov(slot(dst), rax).map_err(err)?;
+            }
+            (AbiType::Float64, _) => {
+                asm.movsd_2(slot(dst), xmm0).map_err(err)?;
+            }
+            (AbiType::Float32, _) => {
+                asm.cvtss2sd(xmm15, xmm0).map_err(err)?;
+                asm.movsd_2(slot(dst), xmm15).map_err(err)?;
+            }
+            (AbiType::Aggregate { .. }, TypeClass::Memory) => {
+                let scratch = result_disp.expect("aggregate result needs scratch storage");
+                asm.mov(rax, qword_ptr(rbp + scratch)).map_err(err)?;
+                asm.mov(slot(dst), rax).map_err(err)?;
+            }
+            (AbiType::Aggregate { .. }, TypeClass::Registers(classes)) => {
+                let scratch = result_disp.expect("aggregate result needs scratch storage");
+                asm.mov(r10, qword_ptr(rbp + scratch)).map_err(err)?;
+                asm.mov(r11, rax).map_err(err)?;
+                for (piece_index, class) in classes.iter().enumerate().rev() {
+                    let offset = (piece_index * 8) as i32;
+                    let piece_size = foreign
+                        .signature
+                        .return_type
+                        .size()
+                        .saturating_sub(piece_index * 8)
+                        .min(8);
+                    match class {
+                        EightbyteClass::Integer => {
+                            let gp = classes[..=piece_index]
+                                .iter()
+                                .filter(|class| **class == EightbyteClass::Integer)
+                                .count()
+                                - 1;
+                            let reg = [r11, rdx][gp];
+                            asm.mov(rax, reg).map_err(err)?;
+                            emit_store_aggregate_bits(asm, r10, offset, piece_size)?;
+                        }
+                        EightbyteClass::Sse => {
+                            let sse = classes[..=piece_index]
+                                .iter()
+                                .filter(|class| **class == EightbyteClass::Sse)
+                                .count()
+                                - 1;
+                            let reg = [xmm0, xmm1][sse];
+                            emit_store_sse_piece(asm, r10, offset, reg, piece_size)?;
+                        }
+                    }
+                }
+                asm.mov(slot(dst), r10).map_err(err)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_sysv_export_return(
+        &self,
+        asm: &mut CodeAssembler,
+        return_reg: u8,
+        export: &ForeignSymbol,
+        layout: &AbiFrameLayout,
+    ) -> Result<(), BackendError> {
+        let err = |error: IcedError| BackendError(error.to_string());
+        match (
+            &export.signature.return_type,
+            classify(&export.signature.return_type),
+        ) {
+            (AbiType::Void, _) => asm.xor(rax, rax).map_err(err)?,
+            (AbiType::Integer { .. } | AbiType::Pointer, _) => {
+                asm.mov(rax, slot(return_reg)).map_err(err)?;
+            }
+            (AbiType::Float64, _) => {
+                asm.movq(xmm0, slot(return_reg)).map_err(err)?;
+            }
+            (AbiType::Float32, _) => {
+                asm.movq(xmm15, slot(return_reg)).map_err(err)?;
+                asm.cvtsd2ss(xmm0, xmm15).map_err(err)?;
+            }
+            (AbiType::Aggregate { .. }, TypeClass::Memory) => {
+                let sret = layout
+                    .export_sret_disp
+                    .expect("SysV aggregate export return needs sret storage");
+                asm.mov(r10, qword_ptr(rbp + sret)).map_err(err)?;
+                asm.mov(r11, slot(return_reg)).map_err(err)?;
+                emit_mem_copy(asm, r10, 0, r11, 0, export.signature.return_type.size())?;
+                asm.mov(rax, r10).map_err(err)?;
+            }
+            (AbiType::Aggregate { .. }, TypeClass::Registers(classes)) => {
+                asm.mov(r10, slot(return_reg)).map_err(err)?;
+                for (piece_index, class) in classes.iter().enumerate().rev() {
+                    let offset = (piece_index * 8) as i32;
+                    let piece_size = export
+                        .signature
+                        .return_type
+                        .size()
+                        .saturating_sub(piece_index * 8)
+                        .min(8);
+                    match class {
+                        EightbyteClass::Integer => {
+                            let gp = classes[..=piece_index]
+                                .iter()
+                                .filter(|class| **class == EightbyteClass::Integer)
+                                .count()
+                                - 1;
+                            let reg = [rax, rdx][gp];
+                            emit_load_aggregate_bits(asm, r10, offset, piece_size)?;
+                            if reg != rax {
+                                asm.mov(reg, rax).map_err(err)?;
+                            }
+                        }
+                        EightbyteClass::Sse => {
+                            let sse = classes[..=piece_index]
+                                .iter()
+                                .filter(|class| **class == EightbyteClass::Sse)
+                                .count()
+                                - 1;
+                            let reg = [xmm0, xmm1][sse];
+                            emit_load_sse_piece(asm, reg, r10, offset, piece_size)?;
+                        }
+                    }
+                }
+            }
+        }
+        asm.mov(rsp, rbp).map_err(err)?;
+        asm.pop(rbp).map_err(err)?;
+        asm.ret().map_err(err)?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -467,6 +1472,11 @@ impl<'a> FnEncoder<'a> {
                         );
                         lea_rip!(rax, sym);
                         emit!(asm.mov(slot(dst), rax));
+                    }
+                    Some(ConstPoolEntry::ForeignSymbol(_)) => {
+                        return Err(BackendError(
+                            "encoder: foreign symbol used as a runtime constant".to_string(),
+                        ));
                     }
                     None => {
                         emit!(asm.xor(rax, rax));
@@ -1594,6 +2604,14 @@ impl<'a> FnEncoder<'a> {
             Some(Opcode::FieldLoad) => {
                 let (dst, obj, byte_off) = instr.rrr();
                 emit!(asm.mov(rax, slot(obj)));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0
+                    && instr.mem_width() == MemWidth::Dword
+                {
+                    emit!(asm.movss(xmm0, dword_ptr(rax + byte_off as i64)));
+                    emit!(asm.cvtss2sd(xmm0, xmm0));
+                    emit!(asm.movsd_2(slot(dst), xmm0));
+                    return Ok(());
+                }
                 match instr.mem_width() {
                     MemWidth::Byte if instr.mem_signed() => {
                         emit!(asm.movsx(rcx, byte_ptr(rax + byte_off as i64)))
@@ -1615,6 +2633,14 @@ impl<'a> FnEncoder<'a> {
             Some(Opcode::FieldStore) => {
                 let (val, obj, byte_off) = instr.rrr();
                 emit!(asm.mov(rax, slot(obj)));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0
+                    && instr.mem_width() == MemWidth::Dword
+                {
+                    emit!(asm.movq(xmm0, slot(val)));
+                    emit!(asm.cvtsd2ss(xmm0, xmm0));
+                    emit!(asm.movss(dword_ptr(rax + byte_off as i64), xmm0));
+                    return Ok(());
+                }
                 emit!(asm.mov(rcx, slot(val)));
                 match instr.mem_width() {
                     MemWidth::Byte => emit!(asm.mov(byte_ptr(rax + byte_off as i64), cl)),
@@ -1942,5 +2968,124 @@ fn resolve_x86_64_syscall(name: &str) -> u64 {
         "pwritev2" => 328,
         "statx" => 332,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::abi::AbiField;
+    use crate::backend::target::{Arch, Os};
+    use crate::bytecode::instruction::{ri16, rrr};
+
+    fn pair_type() -> AbiType {
+        AbiType::Aggregate {
+            size: 16,
+            align: 8,
+            fields: vec![
+                AbiField {
+                    offset: 0,
+                    ty: AbiType::Float64,
+                },
+                AbiField {
+                    offset: 8,
+                    ty: AbiType::Float64,
+                },
+            ],
+        }
+    }
+
+    fn target(abi: Abi) -> TargetSpec {
+        TargetSpec {
+            arch: Arch::X86_64,
+            os: if abi == Abi::Win64 {
+                Os::Windows
+            } else {
+                Os::Linux
+            },
+            abi,
+            emit_start: false,
+            no_crash: true,
+        }
+    }
+
+    fn encode(chunk: &Chunk, abi: Abi) -> (Vec<u8>, Vec<PendingReloc>) {
+        let fn_table = vec![chunk.name.clone()];
+        let str_syms = vec![None; chunk.constants.len()];
+        let bss_syms = vec![None; chunk.code.len()];
+        FnEncoder {
+            chunk,
+            fn_table: &fn_table,
+            fn_offset: 0,
+            str_syms: &str_syms,
+            bss_syms: &bss_syms,
+            target: &target(abi),
+        }
+        .encode()
+        .expect("ABI adapter should encode")
+    }
+
+    #[test]
+    fn foreign_float_and_aggregate_call_encodes_for_sysv_and_win64() {
+        let params = vec![
+            pair_type(),
+            AbiType::Float64,
+            AbiType::Float32,
+            AbiType::Integer {
+                bytes: 4,
+                signed: true,
+            },
+            AbiType::Integer {
+                bytes: 8,
+                signed: false,
+            },
+        ];
+        let foreign = ForeignSymbol {
+            symbol: "native_transform".to_string(),
+            signature: AbiSignature {
+                params: params.clone(),
+                return_type: pair_type(),
+                variadic: false,
+            },
+        };
+        let mut chunk = Chunk::with_params("call_native", params.len());
+        let constant = chunk.add_constant(ConstPoolEntry::ForeignSymbol(foreign));
+        for index in 0..params.len() {
+            chunk.emit(rrr(Opcode::CallArg, index as u8, 0, 0));
+        }
+        chunk.emit(ri16(Opcode::CallExt, params.len() as u8, constant));
+        chunk.emit(rrr(Opcode::Ret, params.len() as u8, 0, 0));
+
+        for abi in [Abi::SysV, Abi::Win64] {
+            let (bytes, relocs) = encode(&chunk, abi);
+            assert!(!bytes.is_empty());
+            assert!(
+                relocs
+                    .iter()
+                    .any(|reloc| reloc.symbol == "native_transform")
+            );
+            assert!(relocs.iter().any(|reloc| reloc.symbol == "malloc"));
+        }
+    }
+
+    #[test]
+    fn exported_float_and_aggregate_adapter_encodes_for_sysv_and_win64() {
+        let signature = AbiSignature {
+            params: vec![pair_type(), AbiType::Float32, AbiType::Float64],
+            return_type: pair_type(),
+            variadic: false,
+        };
+        let mut chunk = Chunk::with_params("export_adapter", signature.params.len());
+        chunk.export = Some(ForeignSymbol {
+            symbol: "quazi_transform".to_string(),
+            signature,
+        });
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        for abi in [Abi::SysV, Abi::Win64] {
+            let (bytes, relocs) = encode(&chunk, abi);
+            assert!(!bytes.is_empty());
+            assert!(relocs.is_empty());
+        }
     }
 }

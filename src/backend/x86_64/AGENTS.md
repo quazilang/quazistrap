@@ -12,6 +12,18 @@
 
 Both Linux and Windows stubs are generated via `iced-x86` `CodeAssembler` — raw-byte stubs with hand-computed relocations were removed to eliminate relocation-offset bugs.
 
+## Portable C ABI lowering
+
+- `ForeignSymbol` QZI constants describe source widths and aggregate fields;
+  the encoder performs target-specific classification.
+- SysV supports GP/SSE bank allocation, stack fallback, variadic `AL`, register
+  aggregates through 16 bytes, and memory-class hidden sret.
+- Win64 supports positional GP/XMM slots, variadic float duplication, aligned
+  caller temporaries for indirect aggregates, direct 1/2/4/8-byte aggregates,
+  shadow space, and hidden sret.
+- C `f32` values convert to/from the internal f64-bit slot representation at
+  argument, return, and `@repr(C)` field boundaries.
+
 ---
 
 ## Crash Handler

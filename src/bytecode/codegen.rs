@@ -6,10 +6,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use super::instruction::{
-    MemWidth, field_load_w, field_store_w, mem_lea, mem_load, mem_load_w, mem_store, mem_store_w,
-    ri16, rrr, rrr_f,
+    MemWidth, field_load_typed, field_store_typed, mem_lea, mem_load, mem_load_w, mem_store,
+    mem_store_w, ri16, rrr, rrr_f,
 };
 use super::{Chunk, ConstPoolEntry, Opcode};
+use crate::abi::{AbiField, AbiSignature, AbiType, ForeignSymbol};
 use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
 use crate::semantic::{ConstValue, DependencyKind, SemanticReport};
@@ -53,6 +54,83 @@ fn enum_variant_alloc_size(payload_count: usize) -> u16 {
     ((payload_count + 1) * 8).max(16) as u16
 }
 
+fn abi_type_from_layout(
+    ty: &TypeKind,
+    struct_defs: &HashMap<String, Vec<(String, TypeKind)>>,
+    struct_sizes: &HashMap<String, usize>,
+    struct_field_offsets: &HashMap<String, Vec<(String, usize)>>,
+    repr_c_structs: &HashSet<String>,
+    type_aliases: &HashMap<String, (Vec<String>, TypeKind)>,
+) -> Option<AbiType> {
+    let resolved = match ty {
+        TypeKind::Named { name, type_args } if type_args.is_empty() => {
+            if let Some((params, target)) = type_aliases.get(name)
+                && params.is_empty()
+            {
+                return abi_type_from_layout(
+                    target,
+                    struct_defs,
+                    struct_sizes,
+                    struct_field_offsets,
+                    repr_c_structs,
+                    type_aliases,
+                );
+            }
+            ty
+        }
+        _ => ty,
+    };
+
+    let integer = |bytes, signed| AbiType::Integer { bytes, signed };
+    match resolved {
+        TypeKind::Int8 => Some(integer(1, true)),
+        TypeKind::Int16 => Some(integer(2, true)),
+        TypeKind::Int32 => Some(integer(4, true)),
+        TypeKind::Int64 | TypeKind::Isize => Some(integer(8, true)),
+        TypeKind::Uint8 | TypeKind::Bool => Some(integer(1, false)),
+        TypeKind::Uint16 => Some(integer(2, false)),
+        TypeKind::Uint32 => Some(integer(4, false)),
+        TypeKind::Uint64 | TypeKind::Usize => Some(integer(8, false)),
+        TypeKind::Float32 => Some(AbiType::Float32),
+        TypeKind::Float64 => Some(AbiType::Float64),
+        TypeKind::RawPtr { .. } => Some(AbiType::Pointer),
+        TypeKind::Void | TypeKind::Never => Some(AbiType::Void),
+        TypeKind::Named { name, type_args }
+            if type_args.is_empty() && repr_c_structs.contains(name) =>
+        {
+            let defs = struct_defs.get(name)?;
+            let offsets = struct_field_offsets.get(name)?;
+            let size = u16::try_from(*struct_sizes.get(name)?).ok()?;
+            let mut fields = Vec::with_capacity(defs.len());
+            let mut align = 1usize;
+            for ((field_name, field_ty), (offset_name, offset)) in defs.iter().zip(offsets) {
+                if field_name != offset_name {
+                    return None;
+                }
+                let abi_ty = abi_type_from_layout(
+                    field_ty,
+                    struct_defs,
+                    struct_sizes,
+                    struct_field_offsets,
+                    repr_c_structs,
+                    type_aliases,
+                )?;
+                align = align.max(abi_ty.align());
+                fields.push(AbiField {
+                    offset: u16::try_from(*offset).ok()?,
+                    ty: abi_ty,
+                });
+            }
+            Some(AbiType::Aggregate {
+                size,
+                align: u8::try_from(align).ok()?,
+                fields,
+            })
+        }
+        _ => None,
+    }
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub struct Codegen<'a> {
@@ -69,6 +147,10 @@ pub struct Codegen<'a> {
     str_variadic_fns: HashSet<String>,
     /// Variadic @intrinsic functions: call with coerced args directly (no pre-format step).
     variadic_intrinsic_fns: HashSet<String>,
+    /// Resolved Quazi function name -> portable C import description.
+    foreign_imports: HashMap<String, ForeignSymbol>,
+    /// Resolved Quazi function name -> portable C export description.
+    foreign_exports: HashMap<String, ForeignSymbol>,
     source_files: Vec<SourceFile>,
 }
 
@@ -112,6 +194,8 @@ impl<'a> Codegen<'a> {
             variadic_fn_info,
             str_variadic_fns: HashSet::new(),
             variadic_intrinsic_fns: HashSet::new(),
+            foreign_imports: HashMap::new(),
+            foreign_exports: HashMap::new(),
             source_files: Vec::new(),
         }
     }
@@ -120,8 +204,8 @@ impl<'a> Codegen<'a> {
     /// Namespaced files use `module.name`; entry files use the bare `name`.
     /// Internal runtime symbols (`__quazi_*`) keep their bare names.
     /// `@no_mangle` functions keep their bare name regardless of file namespace.
-    /// `@export` functions keep their source identity here. The native backend
-    /// applies their external ABI symbol from SemanticReport.
+    /// `@export` functions keep their source identity here; a synthetic adapter
+    /// receives the external symbol and C ABI metadata after body compilation.
     fn resolve_item_name(&self, span: Span, name: &str, attributes: &[Attribute]) -> String {
         if name.starts_with("__quazi_") {
             return name.to_string();
@@ -138,12 +222,72 @@ impl<'a> Codegen<'a> {
         name.to_string()
     }
 
+    fn abi_type(&self, ty: &TypeKind) -> Option<AbiType> {
+        abi_type_from_layout(
+            ty,
+            &self.report.struct_defs,
+            &self.report.struct_sizes,
+            &self.report.struct_field_offsets,
+            &self.report.repr_c_structs,
+            &self.report.type_aliases,
+        )
+    }
+
     pub fn compile_program(
         &mut self,
         program: &Program,
         source_files: &[SourceFile],
     ) -> Vec<Chunk> {
         self.source_files = source_files.to_vec();
+        self.foreign_imports.clear();
+        self.foreign_exports.clear();
+        for item in &program.items {
+            let ItemKind::Fn {
+                name,
+                return_ty,
+                params,
+                attributes,
+                c_variadic,
+                ..
+            } = &item.node
+            else {
+                continue;
+            };
+            if !item_cfg_active(attributes) {
+                continue;
+            }
+            let Some(kind) = attributes
+                .iter()
+                .find(|attr| attr.name == "api" || attr.name == "export")
+            else {
+                continue;
+            };
+            let Some(param_types) = params
+                .iter()
+                .map(|param| self.abi_type(&param.ty.node))
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            let Some(return_type) = self.abi_type(&return_ty.node) else {
+                continue;
+            };
+            let resolved_name = self.resolve_item_name(item.span, name, attributes);
+            let symbol = api_symbol(kind).unwrap_or_else(|| name.clone());
+            let foreign = ForeignSymbol {
+                symbol,
+                signature: AbiSignature {
+                    params: param_types,
+                    return_type,
+                    variadic: *c_variadic,
+                },
+            };
+            if kind.name == "api" {
+                self.foreign_imports.insert(resolved_name, foreign);
+            } else {
+                self.foreign_exports.insert(resolved_name, foreign);
+            }
+        }
         // Pre-pass: collect str_variadic fns, variadic @intrinsic, and @panic_handler names.
         let mut user_panic_handler: Option<String> = None;
         for item in &program.items {
@@ -272,6 +416,7 @@ impl<'a> Codegen<'a> {
         let reachable: Option<std::collections::HashSet<String>> = if has_main {
             let mut set = std::collections::HashSet::new();
             set.insert("main".to_string());
+            set.extend(self.foreign_exports.keys().cloned());
             for root in &destructor_roots {
                 set.insert(root.clone());
             }
@@ -445,6 +590,29 @@ impl<'a> Codegen<'a> {
                     )
                 {
                     chunks.push(chunk);
+                    if let Some(foreign) = self.foreign_exports.get(&compile_name).cloned() {
+                        let fn_idx = *self
+                            .fn_index
+                            .get(&compile_name)
+                            .expect("exported function must have a function-table index");
+                        let adapter_name = format!(
+                            "__quazi_export_adapter_{}_{}",
+                            compile_name
+                                .chars()
+                                .map(|ch| if ch.is_alphanumeric() { ch } else { '_' })
+                                .collect::<String>(),
+                            fn_idx
+                        );
+                        let mut adapter = Chunk::with_params(adapter_name, params.len());
+                        adapter.export = Some(foreign);
+                        adapter.reg_count = params.len().max(1) as u8;
+                        for index in 0..params.len() {
+                            adapter.emit(rrr(Opcode::CallArg, index as u8, 0, 0));
+                        }
+                        adapter.emit(ri16(Opcode::CallIdx, 0, fn_idx));
+                        adapter.emit(rrr(Opcode::Ret, 0, 0, 0));
+                        chunks.push(adapter);
+                    }
                 }
             }
         }
@@ -568,7 +736,10 @@ impl<'a> Codegen<'a> {
                 // contains a dot but is not an impl method.
                 if !found {
                     let original = program.items.iter().find(|item| {
-                        if let ItemKind::Fn { name, attributes, .. } = &item.node {
+                        if let ItemKind::Fn {
+                            name, attributes, ..
+                        } = &item.node
+                        {
                             self.resolve_item_name(item.span, name, attributes) == mono.fn_name
                         } else {
                             false
@@ -609,7 +780,10 @@ impl<'a> Codegen<'a> {
             } else {
                 // Top-level function (bare name, no dot).
                 let original = program.items.iter().find(|item| {
-                    if let ItemKind::Fn { name, attributes, .. } = &item.node {
+                    if let ItemKind::Fn {
+                        name, attributes, ..
+                    } = &item.node
+                    {
                         self.resolve_item_name(item.span, name, attributes) == mono.fn_name
                     } else {
                         false
@@ -1072,6 +1246,7 @@ impl<'a> Codegen<'a> {
             &self.report.struct_field_offsets,
             &self.report.repr_c_structs,
             &self.report.type_aliases,
+            &self.foreign_imports,
             &self.report.trait_impls,
             &self.variadic_fn_info,
             &self.report.enum_defs,
@@ -1200,24 +1375,30 @@ impl<'a> Codegen<'a> {
         // symbol it calls, otherwise the relocation resolves recursively to
         // the wrapper itself when local and foreign names match.
         chunk.intrinsic = true;
-        let symbol = api_symbol(attr).unwrap_or_else(|| name.to_string());
-        let sym_idx = chunk.add_constant(ConstPoolEntry::Str(symbol));
-        // Params are in r0..r(n-1) by calling convention.
-        // Emit CallExt: dst=r0, sym_idx, flags=arg_count.
-        let arg_count = params.len() as u8;
-        let mut instr = ri16(Opcode::CallExt, 0, sym_idx);
-        instr.flags = arg_count;
-        if c_variadic {
-            instr.flags |= 0x80; // C_VARIADIC_FLAG
+        let foreign = self
+            .foreign_imports
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| ForeignSymbol {
+                symbol: api_symbol(attr).unwrap_or_else(|| name.to_string()),
+                signature: AbiSignature {
+                    params: vec![AbiType::Pointer; params.len()],
+                    return_type: AbiType::Pointer,
+                    variadic: c_variadic,
+                },
+            });
+        let sym_idx = chunk.add_constant(ConstPoolEntry::ForeignSymbol(foreign));
+        // Normalize fixed Quazi parameters into an explicit foreign-call argument list.
+        for index in 0..params.len() {
+            chunk.emit(rrr(Opcode::CallArg, index as u8, 0, 0));
         }
+        let mut instr = ri16(Opcode::CallExt, 0, sym_idx);
+        instr.flags = 0;
         chunk.emit(instr);
         chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
         chunk
     }
-
 }
-
-
 
 // ── Per-function compiler ─────────────────────────────────────────────────────
 
@@ -1237,6 +1418,7 @@ struct FnCompiler<'a> {
     struct_field_offsets: &'a HashMap<String, Vec<(String, usize)>>,
     repr_c_structs: &'a HashSet<String>,
     type_aliases: &'a HashMap<String, (Vec<String>, TypeKind)>,
+    foreign_imports: &'a HashMap<String, ForeignSymbol>,
     trait_impls: &'a HashMap<String, std::collections::HashSet<String>>,
     /// Maps variadic function name → number of fixed (non-variadic) params.
     variadic_fn_info: &'a HashMap<String, usize>,
@@ -1337,6 +1519,7 @@ impl<'a> FnCompiler<'a> {
         struct_field_offsets: &'a HashMap<String, Vec<(String, usize)>>,
         repr_c_structs: &'a HashSet<String>,
         type_aliases: &'a HashMap<String, (Vec<String>, TypeKind)>,
+        foreign_imports: &'a HashMap<String, ForeignSymbol>,
         trait_impls: &'a HashMap<String, std::collections::HashSet<String>>,
         variadic_fn_info: &'a HashMap<String, usize>,
         enum_defs: &'a HashMap<String, HashMap<String, usize>>,
@@ -1366,6 +1549,7 @@ impl<'a> FnCompiler<'a> {
             struct_field_offsets,
             repr_c_structs,
             type_aliases,
+            foreign_imports,
             trait_impls,
             variadic_fn_info,
             enum_defs,
@@ -1617,16 +1801,20 @@ impl<'a> FnCompiler<'a> {
         0
     }
 
-    fn ffi_field_access_by_name(&self, struct_name: &str, field_name: &str) -> (MemWidth, bool) {
+    fn ffi_field_access_by_name(
+        &self,
+        struct_name: &str,
+        field_name: &str,
+    ) -> (MemWidth, bool, bool) {
         if !self.repr_c_structs.contains(struct_name) {
-            return (MemWidth::Qword, false);
+            return (MemWidth::Qword, false, false);
         }
         let Some((_, ty)) = self
             .struct_defs
             .get(struct_name)
             .and_then(|fields| fields.iter().find(|(name, _)| name == field_name))
         else {
-            return (MemWidth::Qword, false);
+            return (MemWidth::Qword, false, false);
         };
         let mut resolved = ty;
         while let TypeKind::Named { name, type_args } = resolved {
@@ -1642,22 +1830,23 @@ impl<'a> FnCompiler<'a> {
             resolved = target;
         }
         match resolved {
-            TypeKind::Int8 => (MemWidth::Byte, true),
-            TypeKind::Uint8 | TypeKind::Bool => (MemWidth::Byte, false),
-            TypeKind::Int16 => (MemWidth::Word, true),
-            TypeKind::Uint16 => (MemWidth::Word, false),
-            TypeKind::Int32 => (MemWidth::Dword, true),
-            TypeKind::Uint32 => (MemWidth::Dword, false),
-            _ => (MemWidth::Qword, false),
+            TypeKind::Int8 => (MemWidth::Byte, true, false),
+            TypeKind::Uint8 | TypeKind::Bool => (MemWidth::Byte, false, false),
+            TypeKind::Int16 => (MemWidth::Word, true, false),
+            TypeKind::Uint16 => (MemWidth::Word, false, false),
+            TypeKind::Int32 => (MemWidth::Dword, true, false),
+            TypeKind::Uint32 => (MemWidth::Dword, false, false),
+            TypeKind::Float32 => (MemWidth::Dword, false, true),
+            _ => (MemWidth::Qword, false, false),
         }
     }
 
-    fn ffi_field_access(&self, object: &Expr, field_name: &str) -> (MemWidth, bool) {
+    fn ffi_field_access(&self, object: &Expr, field_name: &str) -> (MemWidth, bool, bool) {
         let key = (object.span.start, object.span.end);
         if let Some(TypeKind::Named { name, .. }) = self.type_of_span(key) {
             self.ffi_field_access_by_name(&name, field_name)
         } else {
-            (MemWidth::Qword, false)
+            (MemWidth::Qword, false, false)
         }
     }
 
@@ -3066,6 +3255,70 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    fn emit_c_variadic_call(&mut self, name: &str, args: &[Expr], dst: u8) -> bool {
+        let Some(declaration) = self.foreign_imports.get(name).cloned() else {
+            return false;
+        };
+        if !declaration.signature.variadic {
+            return false;
+        }
+
+        let fixed_count = declaration.signature.params.len();
+        let arg_regs: Vec<u8> = args
+            .iter()
+            .map(|arg| {
+                self.mark_consumed_expr(arg);
+                self.compile_expr(arg)
+            })
+            .collect();
+        let mut params = declaration.signature.params.clone();
+        for arg in args.iter().skip(fixed_count) {
+            let ty = self
+                .type_of_span((arg.span.start, arg.span.end))
+                .and_then(|ty| {
+                    abi_type_from_layout(
+                        &ty,
+                        self.struct_defs,
+                        self.struct_sizes,
+                        self.struct_field_offsets,
+                        self.repr_c_structs,
+                        self.type_aliases,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "unsupported C variadic argument type at {}:{}",
+                        arg.span.line, arg.span.col
+                    )
+                });
+            params.push(match ty {
+                // C default argument promotions.
+                AbiType::Float32 => AbiType::Float64,
+                AbiType::Integer { bytes: 1 | 2, .. } => AbiType::Integer {
+                    bytes: 4,
+                    signed: true,
+                },
+                other => other,
+            });
+        }
+        let foreign = ForeignSymbol {
+            symbol: declaration.symbol,
+            signature: AbiSignature {
+                params,
+                return_type: declaration.signature.return_type,
+                variadic: true,
+            },
+        };
+        for reg in arg_regs {
+            self.chunk.emit(rrr(Opcode::CallArg, reg, 0, 0));
+        }
+        let symbol_index = self
+            .chunk
+            .add_constant(ConstPoolEntry::ForeignSymbol(foreign));
+        self.chunk.emit(ri16(Opcode::CallExt, dst, symbol_index));
+        true
+    }
+
     /// If `object` is a module alias (imported via `import std.X;`), returns its base name.
     fn module_import_base(&self, object: &Expr) -> Option<String> {
         let (base, _) = extract_field_chain(object)?;
@@ -3442,9 +3695,10 @@ impl<'a> FnCompiler<'a> {
                         name: field_name,
                     } => {
                         let byte_offset = self.field_offset(object, field_name);
-                        let (width, _) = self.ffi_field_access(object, field_name);
+                        let (width, _, float32) = self.ffi_field_access(object, field_name);
                         let obj = self.compile_expr(object);
-                        self.chunk.emit(field_store_w(src, obj, byte_offset, width));
+                        self.chunk
+                            .emit(field_store_typed(src, obj, byte_offset, width, float32));
                         src
                     }
                     ExprKind::Index { object, indices } => {
@@ -3537,8 +3791,9 @@ impl<'a> FnCompiler<'a> {
                     if let Some((_, fval)) = fields.iter().find(|(fn_, _)| fn_ == field_name) {
                         let val = self.compile_expr(fval);
                         let off = self.field_offset_by_name(name, field_name);
-                        let (width, _) = self.ffi_field_access_by_name(name, field_name);
-                        self.chunk.emit(field_store_w(val, dst, off, width));
+                        let (width, _, float32) = self.ffi_field_access_by_name(name, field_name);
+                        self.chunk
+                            .emit(field_store_typed(val, dst, off, width, float32));
                     }
                 }
                 dst
@@ -3634,6 +3889,9 @@ impl<'a> FnCompiler<'a> {
                         merged_owned = self.merge_named_args(&call_name, args, named_args);
                         &merged_owned
                     };
+                    if self.emit_c_variadic_call(&call_name, args, dst) {
+                        return dst;
+                    }
                     // Panic calls: inject file/line constants from the call site span.
                     // Only use the builtin panic path when the resolved name is the bare
                     // builtin "panic"; a user-defined `fn panic` in a module keeps the
@@ -3717,8 +3975,11 @@ impl<'a> FnCompiler<'a> {
                     }
                     // str_variadic dispatch: auto-coerce args to str at call sites.
                     if self.str_variadic_fns.contains(call_name.as_str()) && !args.is_empty() {
-                        if let Some(expanded) = crate::parser::format::expand_format_call_args(args) {
-                            let idx = self.chunk.add_constant(ConstPoolEntry::Str(expanded.clean_template));
+                        if let Some(expanded) = crate::parser::format::expand_format_call_args(args)
+                        {
+                            let idx = self
+                                .chunk
+                                .add_constant(ConstPoolEntry::Str(expanded.clean_template));
                             let template_reg = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
@@ -3740,7 +4001,8 @@ impl<'a> FnCompiler<'a> {
                                 let rp = self.alloc_reg();
                                 self.chunk.emit(mem_lea(first_slot, rp, 0));
                                 let rl = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
+                                self.chunk
+                                    .emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
                                 let fd = self.alloc_reg();
                                 self.emit_call_by_name("fmt.format", &[template_reg, rp, rl], fd);
                                 fd
@@ -3895,6 +4157,10 @@ impl<'a> FnCompiler<'a> {
                         .resolved_fn_for_span(expr.span)
                         .unwrap_or_else(|| format!("{}.{}", module_base, method));
 
+                    if self.emit_c_variadic_call(&call_target, args, dst) {
+                        return dst;
+                    }
+
                     // Monomorphized generic function: resolve to mangled name.
                     if !type_args.is_empty()
                         && let Some(mono_name) =
@@ -3906,8 +4172,11 @@ impl<'a> FnCompiler<'a> {
                     let is_variadic_intrinsic =
                         self.variadic_intrinsic_fns.contains(call_target.as_str());
                     if (is_fmt_fn || is_variadic_intrinsic) && !args.is_empty() {
-                        if let Some(expanded) = crate::parser::format::expand_format_call_args(args) {
-                            let idx = self.chunk.add_constant(ConstPoolEntry::Str(expanded.clean_template));
+                        if let Some(expanded) = crate::parser::format::expand_format_call_args(args)
+                        {
+                            let idx = self
+                                .chunk
+                                .add_constant(ConstPoolEntry::Str(expanded.clean_template));
                             let template_reg = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
@@ -3937,10 +4206,17 @@ impl<'a> FnCompiler<'a> {
                                     let rp = self.alloc_reg();
                                     self.chunk.emit(mem_lea(first_slot, rp, 0));
                                     let rl = self.alloc_reg();
-                                    self.chunk
-                                        .emit(ri16(Opcode::MovI, rl, coerced_args.len() as u16));
+                                    self.chunk.emit(ri16(
+                                        Opcode::MovI,
+                                        rl,
+                                        coerced_args.len() as u16,
+                                    ));
                                     let fd = self.alloc_reg();
-                                    self.emit_call_by_name("fmt.format", &[template_reg, rp, rl], fd);
+                                    self.emit_call_by_name(
+                                        "fmt.format",
+                                        &[template_reg, rp, rl],
+                                        fd,
+                                    );
                                     fd
                                 } else {
                                     template_reg
@@ -4065,8 +4341,12 @@ impl<'a> FnCompiler<'a> {
                     {
                         let mangled_check = format!("{}.{}", type_name, method);
                         if self.str_variadic_fns.contains(&mangled_check) && !args.is_empty() {
-                            if let Some(expanded) = crate::parser::format::expand_format_call_args(args) {
-                                let idx = self.chunk.add_constant(ConstPoolEntry::Str(expanded.clean_template));
+                            if let Some(expanded) =
+                                crate::parser::format::expand_format_call_args(args)
+                            {
+                                let idx = self
+                                    .chunk
+                                    .add_constant(ConstPoolEntry::Str(expanded.clean_template));
                                 let template_reg = self.alloc_reg();
                                 self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
@@ -4074,7 +4354,8 @@ impl<'a> FnCompiler<'a> {
                                     let mut coerced = vec![template_reg];
                                     for (i, arg) in expanded.args.iter().enumerate() {
                                         let r = self.compile_expr(arg);
-                                        let spec = expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
+                                        let spec =
+                                            expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
                                         let cr = if spec.is_empty() {
                                             self.coerce_to_display_str(r, arg.span)
                                         } else {
@@ -4093,9 +4374,17 @@ impl<'a> FnCompiler<'a> {
                                     let rp = self.alloc_reg();
                                     self.chunk.emit(mem_lea(first_slot, rp, 0));
                                     let rl = self.alloc_reg();
-                                    self.chunk.emit(ri16(Opcode::MovI, rl, coerced_args.len() as u16));
+                                    self.chunk.emit(ri16(
+                                        Opcode::MovI,
+                                        rl,
+                                        coerced_args.len() as u16,
+                                    ));
                                     let fd = self.alloc_reg();
-                                    self.emit_call_by_name("fmt.format", &[template_reg, rp, rl], fd);
+                                    self.emit_call_by_name(
+                                        "fmt.format",
+                                        &[template_reg, rp, rl],
+                                        fd,
+                                    );
                                     fd
                                 } else {
                                     template_reg
@@ -4338,11 +4627,17 @@ impl<'a> FnCompiler<'a> {
                     }
                 }
                 let byte_offset = self.field_offset(object, name);
-                let (width, signed) = self.ffi_field_access(object, name);
+                let (width, signed, float32) = self.ffi_field_access(object, name);
                 let obj = self.compile_expr(object);
                 let dst = self.alloc_reg();
-                self.chunk
-                    .emit(field_load_w(dst, obj, byte_offset, width, signed));
+                self.chunk.emit(field_load_typed(
+                    dst,
+                    obj,
+                    byte_offset,
+                    width,
+                    signed,
+                    float32,
+                ));
                 dst
             }
 
@@ -4603,6 +4898,7 @@ impl<'a> FnCompiler<'a> {
                     self.struct_field_offsets,
                     self.repr_c_structs,
                     self.type_aliases,
+                    self.foreign_imports,
                     self.trait_impls,
                     self.variadic_fn_info,
                     self.enum_defs,
@@ -5620,8 +5916,89 @@ mod tests {
             chunk
                 .constants
                 .iter()
-                .any(|c| matches!(c, ConstPoolEntry::Str(s) if s == "WriteFile")),
+                .any(|c| matches!(c, ConstPoolEntry::ForeignSymbol(s) if s.symbol == "WriteFile")),
             "expected WriteFile in constant pool"
+        );
+    }
+
+    #[test]
+    fn c_variadic_call_records_promoted_actual_signature() {
+        let chunks = compile(
+            r#"
+@api("printf") unsafe fn printf(format: *u8, ...) i32;
+fn main() void { unsafe { printf(0, 1.5, 7 as i8); } }
+"#,
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        let foreign = main
+            .constants
+            .iter()
+            .find_map(|constant| match constant {
+                ConstPoolEntry::ForeignSymbol(symbol) if symbol.symbol == "printf" => Some(symbol),
+                _ => None,
+            })
+            .expect("direct C-variadic call should carry ABI metadata");
+        assert!(foreign.signature.variadic);
+        assert_eq!(foreign.signature.params.len(), 3);
+        assert_eq!(foreign.signature.params[0], AbiType::Pointer);
+        assert_eq!(foreign.signature.params[1], AbiType::Float64);
+        assert_eq!(
+            foreign.signature.params[2],
+            AbiType::Integer {
+                bytes: 4,
+                signed: true
+            }
+        );
+    }
+
+    #[test]
+    fn export_uses_c_adapter_and_keeps_internal_function_abi() {
+        let chunks = compile(
+            r#"
+@repr(C) struct Pair { x: f64, y: f64, }
+@export("quazi_identity_pair") pub fn identity_pair(pair: Pair) Pair { ret pair; }
+"#,
+        );
+        let original = chunks
+            .iter()
+            .find(|chunk| chunk.name == "identity_pair")
+            .expect("exported Quazi function should remain present");
+        assert!(original.export.is_none());
+
+        let adapter = chunks
+            .iter()
+            .find(|chunk| chunk.export.is_some())
+            .expect("export should have a C ABI adapter");
+        let export = adapter.export.as_ref().unwrap();
+        assert_eq!(export.symbol, "quazi_identity_pair");
+        assert!(matches!(
+            export.signature.params.as_slice(),
+            [AbiType::Aggregate { size: 16, .. }]
+        ));
+        assert!(
+            adapter
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+        );
+    }
+
+    #[test]
+    fn export_roots_keep_their_quazi_dependencies() {
+        let chunks = compile(
+            r#"
+fn helper(value: i32) i32 {
+    var one = 1;
+    var two = 2;
+    ret value + one + two;
+}
+@export("quazi_entry") pub fn entry(value: i32) i32 { ret helper(value); }
+fn main() void { }
+"#,
+        );
+        assert!(
+            chunks.iter().any(|chunk| chunk.name == "helper"),
+            "dependencies reachable only from a C export must not be tree-shaken"
         );
     }
 
@@ -5642,6 +6019,34 @@ fn read(record: Record) i32 { ret record.value; }
         assert_eq!(offset, 4);
         assert_eq!(load.mem_width(), MemWidth::Dword);
         assert!(load.mem_signed());
+    }
+
+    #[test]
+    fn repr_c_f32_fields_convert_at_the_memory_boundary() {
+        let chunks = compile(
+            r#"
+@repr(C) struct Sample { value: f32, }
+fn update(sample: Sample, value: f32) f32 {
+    sample.value = value;
+    ret sample.value;
+}
+"#,
+        );
+        let fields: Vec<_> = chunks
+            .iter()
+            .flat_map(|chunk| chunk.code.iter())
+            .filter(|instruction| {
+                matches!(
+                    Opcode::from_u8(instruction.opcode),
+                    Some(Opcode::FieldLoad | Opcode::FieldStore)
+                )
+            })
+            .collect();
+        assert!(!fields.is_empty());
+        assert!(fields.iter().all(|instruction| {
+            instruction.mem_width() == MemWidth::Dword
+                && instruction.flags & crate::bytecode::instruction::FLOAT_FLAG != 0
+        }));
     }
 
     #[test]

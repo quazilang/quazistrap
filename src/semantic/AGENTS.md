@@ -53,11 +53,13 @@ For `Named` receivers with concrete type args, substitute receiver generics into
   the local function name; `@api("symbol")` is the recommended explicit form.
 - `@export` requires an explicitly `pub`, non-generic Quazi body and is retained
   as a native root even without Quazi callers.
-- Phase-one signatures accept integer/bool scalars, pointer-sized integers, raw
-  pointers, and `void`. Floats, variadics, function pointers, and aggregates by
-  value emit `S14` until their real SysV ABI lowering exists.
-- `@repr(C)` is limited to non-generic scalar/pointer fields. Layout uses target
-  size/alignment and tail padding; field offsets are recorded in SemanticReport.
+- Signatures accept C integer/bool scalars, pointer-sized integers, raw pointers,
+  `f32`/`f64`, `void` returns, and non-generic `@repr(C)` structs by value. Bare
+  C variadics validate each actual extra argument and apply default promotions.
+  Function pointers and other unsupported types emit `S14`.
+- `@repr(C)` is limited to non-empty, non-generic integer/float/raw-pointer
+  fields. Layout uses target size/alignment and tail padding; field offsets are
+  recorded in SemanticReport.
 - `@opaque` requires an empty, non-generic struct and rejects Quazi construction.
 - A panic in exported code follows the existing terminating panic path. It never
   unwinds across a C frame; recoverable ABI errors must be explicit return codes

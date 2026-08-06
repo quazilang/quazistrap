@@ -161,7 +161,7 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 | `@api("Symbol")` | Body → `CallExt+Ret`. Win64 on Windows, SysV elsewhere. Implicitly unsafe. |
 | `@api` | Bodyless C ABI import using the Quazi function name as the native symbol. Every call requires `unsafe`; explicit `@api("Symbol")` is recommended. |
 | `@export("Symbol")` | Export an explicitly `pub` Quazi function under a stable C ABI symbol. Bare `@export` uses the function name. |
-| `@repr(C)` | C-compatible scalar/pointer struct layout. FFI structs are pointer-only until aggregate ABI classification is implemented. |
+| `@repr(C)` | C-compatible integer/float/pointer struct layout, including by-value FFI arguments and returns. Empty and generic C structs remain rejected. |
 | `@opaque` | Declare an empty, non-generic foreign handle type which Quazi cannot construct. |
 | `@cfg(key="val")` | Conditional compile. Keys: `target_os`, `target_arch`, `target_abi`. |
 | `@inline` | Force inline eligibility (excluded if recursive). |
@@ -266,7 +266,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **Raw backtick string literals** | ✅ Done — contents are preserved exactly with no backslash escape decoding |
 | **C/Rust-style escapes in non-raw strings** | ✅ Done — control, punctuation, ANSI `\e`, hexadecimal, octal, Unicode scalar, and line-continuation escapes with strict diagnostics |
 | **C ABI FFI phase 1** | ✅ Initial — `@api`, `@export`, scalar/pointer signatures, `@repr(C)`, opaque handles, C compilation, object/library inputs, `.a`/`.so` output |
-| **C ABI FFI phase 2** | Partial — C variadics (`...` in `@api`) ✅ Done; remaining: SysV aggregate arguments/returns, SSE float arguments, callbacks/function pointers, unions, packed/aligned structs, bitfields, flexible arrays, globals, byte strings, checked C-string conversions, header generation |
+| **C ABI FFI phase 2** | Partial — C variadics, scalar `f32`/`f64`, and by-value `@repr(C)` aggregates are done for Linux SysV and Windows Win64 through portable QZI v3 metadata; remaining: callbacks/function pointers, unions, packed/aligned structs, bitfields, flexible arrays, globals, byte strings, checked C-string conversions, header generation |
 
 ### P2 — Codegen Quality
 
@@ -306,6 +306,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-06 | Added portable QZI v3 C ABI signatures and symmetric adapter chunks for `@api`/`@export`; implemented scalar float and by-value `@repr(C)` aggregate arguments/returns for Linux SysV and Windows Win64, including hidden sret, stack overflow arguments, C variadic promotions/SSE counts, `f32` field conversion, and Windows native-source/linker support. Added `examples/20-ffi-abi`. |
 | 2026-08-03 | Added the first Linux x86-64 C ABI layer: unified `@api` imports, stable `@export` symbols, scalar/pointer signature validation, `@repr(C)` scalar/pointer layouts, opaque handles, `$CC` native sources, object/archive/shared-library linkage, static/shared outputs, `std.ffi`, and a C→Quazi→C round-trip example. Unsupported ABI cases fail explicitly instead of guessing. |
 | 2026-08-02 | Expanded quoted-string escapes with C control/octal forms and Rust hexadecimal/Unicode forms. Invalid escapes now produce lexer diagnostics; raw strings preserve every escape spelling. |
 | 2026-08-02 | Removed the nested `quazistrap/std` checkout. Std resolution now checks the compiler's Cargo manifest directory for `std/`, then the user installation at `~/.quazi/std`; prelude module headers no longer identify themselves as `std.*`. |
@@ -318,7 +319,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | 2026-07-27 | Implemented `pub` visibility enforcement on types (`struct`, `enum`, `trait`, `type`). Imported `AST` types now carry a `public` flag. Semantic analysis emits an `S04` error when attempting to import a non-public type across modules. Updated standard library (prelude) types like `Array` to be `pub`. |
 | 2026-07-27 | Implemented cross-basic-block constant propagation (`const_prop_fold`) in the bytecode optimizer. Constant folding operates on integers and floats natively, folding mathematical sequences and eliminating dead branches at compile-time. Added `17-constfold` example. |
 | 2026-07-29 | Fixed raw-pointer dereferences to honor integer pointee widths. QZI `Load`/`Store` flags now carry byte/word/dword/qword width metadata; signed sub-word loads sign-extend, unsigned loads zero-extend, and legacy zero flags remain qword-compatible. Explicit dereference reads, writes, and compound assignments are covered by codegen tests. |
-| 2026-08-05 | Implemented C variadic FFI (Phase 2): bare `...` in `@api` parameter lists now compiles to a C-variadic call. Parser detects `...` immediately before `)` as a C-variadic marker (`c_variadic: bool` on `ItemKind::Fn`). Semantic analysis lifts the S14 error for bare `...` while still rejecting Quazi-style `...name: T` variadics in FFI. Codegen stores `c_variadic` in `Chunk` (serialized in QZI flags bit 2) and sets flag `0x80` on the `CallExt` instruction. Encoder checks that flag and emits `xor rax, rax` before the `call` to satisfy the SysV ABI `AL` convention. Added `std.ffi.va_list` opaque type and `examples/19-cvariadics`. All 230 tests pass. |
+| 2026-08-05 | Implemented C variadic FFI (Phase 2): bare `...` in `@api` parameter lists now compiles to a C-variadic call. Parser detects `...` immediately before `)` as a C-variadic marker (`c_variadic: bool` on `ItemKind::Fn`). Semantic analysis lifts the S14 error for bare `...` while still rejecting Quazi-style `...name: T` variadics in FFI. Call-site ABI metadata now records every promoted actual argument; SysV sets `AL` to the used SSE-register count and Win64 duplicates variadic floats in positional integer registers. Added `std.ffi.va_list` opaque type and `examples/19-cvariadics`. |
 
 ---
 
@@ -345,3 +346,4 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | `17-constfold` | Cross-basic-block constant propagation | [examples/17-constfold/src/main.qz](examples/17-constfold/src/main.qz) |
 | `18-formatting` | `{:X}` formatting, raw strings, ANSI escapes | [examples/18-formatting/src/main.qz](examples/18-formatting/src/main.qz) |
 | `19-cvariadics` | C-style variadic `@api` via bare `...` — calls libc `printf` with extra args | [examples/19-cvariadics/AGENTS.md](examples/19-cvariadics/AGENTS.md) |
+| `20-ffi-abi` | Cross-platform scalar-float and by-value aggregate C→Quazi→C round trip | [examples/20-ffi-abi/AGENTS.md](examples/20-ffi-abi/AGENTS.md) |
