@@ -5,6 +5,7 @@
 use super::instruction::Instruction;
 use super::instruction::{ri16, rrr};
 use super::opcode::Opcode;
+use crate::abi::ForeignSymbol;
 
 /// Constant pool value — lives alongside bytecode, referenced by MovConst.
 #[derive(Debug, Clone, PartialEq)]
@@ -15,6 +16,8 @@ pub enum ConstPoolEntry {
     FnAddr(String),
     /// Address of a vtable for a (type, trait) pair — tag 4.
     VtableAddr(String, String),
+    /// External C symbol plus its target-neutral ABI signature — tag 5.
+    ForeignSymbol(ForeignSymbol),
 }
 
 /// A single function's bytecode + its constant pool.
@@ -28,8 +31,10 @@ pub struct Chunk {
     pub intrinsic: bool,
     pub variadic: bool,
     /// True when this is an @api function wrapping a C variadic (ends with bare `...`).
-    /// The encoder emits `xor rax, rax` (al=0 XMM args) before the call per SysV ABI.
+    /// Portable call-site metadata records the promoted actual argument types.
     pub c_variadic: bool,
+    /// C-facing entry point metadata for a synthetic export adapter chunk.
+    pub export: Option<ForeignSymbol>,
 }
 
 impl Chunk {
@@ -96,10 +101,22 @@ impl Chunk {
         buf.extend_from_slice(&(self.param_count as u16).to_le_bytes());
         buf.push(self.reg_count);
         let mut flags = 0u8;
-        if self.intrinsic { flags |= 1; }
-        if self.variadic { flags |= 2; }
-        if self.c_variadic { flags |= 4; }
+        if self.intrinsic {
+            flags |= 1;
+        }
+        if self.variadic {
+            flags |= 2;
+        }
+        if self.c_variadic {
+            flags |= 4;
+        }
+        if self.export.is_some() {
+            flags |= 8;
+        }
         buf.push(flags);
+        if let Some(export) = &self.export {
+            export.encode(&mut buf);
+        }
         buf.extend_from_slice(&(self.constants.len() as u16).to_le_bytes());
         for c in &self.constants {
             match c {
@@ -131,6 +148,10 @@ impl Chunk {
                     let tr = trait_name.as_bytes();
                     buf.extend_from_slice(&(tr.len() as u16).to_le_bytes());
                     buf.extend_from_slice(tr);
+                }
+                ConstPoolEntry::ForeignSymbol(symbol) => {
+                    buf.push(5);
+                    symbol.encode(&mut buf);
                 }
             }
         }
@@ -180,7 +201,8 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             .map_err(|_| "invalid UTF-8 in chunk name".to_string())?;
         pos += name_len;
 
-        let (param_count, reg_count, intrinsic, variadic, c_variadic) = if version >= 2 {
+        let (param_count, reg_count, intrinsic, variadic, c_variadic, has_export) = if version >= 2
+        {
             if buf.len() < pos + 4 {
                 return Err("truncated chunk params/regs/flags".to_string());
             }
@@ -188,9 +210,22 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             let rc = buf[pos + 2];
             let flags = buf[pos + 3];
             pos += 4;
-            (pc, rc, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0)
+            (
+                pc,
+                rc,
+                (flags & 1) != 0,
+                (flags & 2) != 0,
+                (flags & 4) != 0,
+                (flags & 8) != 0,
+            )
         } else {
-            (0, 0, false, false, false)
+            (0, 0, false, false, false, false)
+        };
+
+        let export = if version >= 3 && has_export {
+            Some(ForeignSymbol::decode(buf, &mut pos)?)
+        } else {
+            None
         };
 
         if buf.len() < pos + 2 {
@@ -278,6 +313,11 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
                     pos += tr_len;
                     constants.push(ConstPoolEntry::VtableAddr(type_name, trait_name));
                 }
+                5 if version >= 3 => {
+                    constants.push(ConstPoolEntry::ForeignSymbol(ForeignSymbol::decode(
+                        buf, &mut pos,
+                    )?));
+                }
                 _ => return Err(format!("unknown const tag {}", tag)),
             }
         }
@@ -307,6 +347,7 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             intrinsic,
             variadic,
             c_variadic,
+            export,
             constants,
             code,
         });
@@ -349,6 +390,9 @@ impl std::fmt::Display for Chunk {
                     ConstPoolEntry::FnAddr(name) => format!("\x1b[36m{name}\x1b[0m"),
                     ConstPoolEntry::VtableAddr(tn, tr) => {
                         format!("\x1b[35mvtable({tn}::{tr})\x1b[0m")
+                    }
+                    ConstPoolEntry::ForeignSymbol(symbol) => {
+                        format!("\x1b[35mforeign({})\x1b[0m", symbol.symbol)
                     }
                 };
                 writeln!(f, "  \x1b[2m[{i:>2}]\x1b[0m  {val}")?;
@@ -423,6 +467,7 @@ impl std::fmt::Display for Chunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::abi::{AbiSignature, AbiType, ForeignSymbol};
 
     #[test]
     fn emit_and_patch_jump() {
@@ -449,5 +494,34 @@ mod tests {
         chunk.emit_rrr(Opcode::Add, 0, 1, 2);
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
         assert_eq!(chunk.to_bytes().len(), 12); // 2 * 6
+    }
+
+    #[test]
+    fn qzi_v3_roundtrips_foreign_abi_metadata() {
+        let signature = AbiSignature {
+            params: vec![AbiType::Float64],
+            return_type: AbiType::Float64,
+            variadic: false,
+        };
+        let mut chunk = Chunk::with_params("sin_adapter", 1);
+        chunk.export = Some(ForeignSymbol {
+            symbol: "quazi_sin".to_string(),
+            signature: signature.clone(),
+        });
+        chunk
+            .constants
+            .push(ConstPoolEntry::ForeignSymbol(ForeignSymbol {
+                symbol: "sin".to_string(),
+                signature,
+            }));
+        chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+
+        let encoded = serialize_qzi(&[chunk]);
+        let decoded = deserialize_qzi(&encoded).expect("QZI v3 should decode");
+        assert_eq!(decoded[0].export.as_ref().unwrap().symbol, "quazi_sin");
+        assert!(matches!(
+            decoded[0].constants.as_slice(),
+            [ConstPoolEntry::ForeignSymbol(symbol)] if symbol.symbol == "sin"
+        ));
     }
 }

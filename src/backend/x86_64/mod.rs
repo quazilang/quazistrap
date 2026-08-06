@@ -7,6 +7,7 @@ pub mod relocations;
 pub mod sections;
 pub mod start;
 pub mod symbols;
+pub mod sysv_abi;
 
 use object::Endianness;
 use object::SymbolScope;
@@ -62,12 +63,21 @@ fn emit_native_object(
     let mut all_relocs: Vec<(relocations::PendingReloc, Option<String>)> = Vec::new();
     // Intrinsic wrappers get a private prefix so their call_ext targets (e.g. "malloc")
     // resolve to the external CRT symbol, not back to the wrapper itself.
+    let embedded_export_symbols: std::collections::HashSet<&str> = chunks
+        .iter()
+        .filter_map(|chunk| chunk.export.as_ref().map(|export| export.symbol.as_str()))
+        .collect();
     let fn_names: Vec<String> = chunks
         .iter()
         .map(|c| {
-            if c.intrinsic {
+            if let Some(export) = &c.export {
+                export.symbol.clone()
+            } else if c.intrinsic {
                 format!("__quazi_intr_{}", safe_label(&c.name))
-            } else if let Some(symbol) = report.and_then(|r| r.exported_symbols.get(&c.name)) {
+            } else if let Some(symbol) = report
+                .and_then(|r| r.exported_symbols.get(&c.name))
+                .filter(|symbol| !embedded_export_symbols.contains(symbol.as_str()))
+            {
                 symbol.clone()
             } else {
                 safe_label(&c.name)
@@ -88,7 +98,12 @@ fn emit_native_object(
 
         let (fn_bytes, fn_relocs) = encoder.encode()?;
 
-        let is_exported = report.is_some_and(|r| r.exported_symbols.contains_key(&chunk.name));
+        let is_exported = chunk.export.is_some()
+            || report.is_some_and(|r| {
+                r.exported_symbols
+                    .get(&chunk.name)
+                    .is_some_and(|symbol| !embedded_export_symbols.contains(symbol.as_str()))
+            });
         let scope = if chunk.intrinsic {
             SymbolScope::Compilation
         } else if is_exported {

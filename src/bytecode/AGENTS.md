@@ -31,9 +31,10 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x02`
+- Version: `0x03` (readers retain v1/v2 compatibility)
 - chunk_count: u32 LE
-- Per chunk: name, param_count, reg_count, consts, instrs
+- Per chunk: name, param_count, reg_count, flags, optional export ABI metadata,
+  consts, instrs. Chunk flags bit 3 marks the export metadata extension.
 
 ### Const Pool Tags
 
@@ -44,6 +45,7 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 | `2` | Str(u16_len + bytes) |
 | `3` | FnAddr(u16_len + bytes) |
 | `4` | VtableAddr(type u16 + bytes, trait u16 + bytes) |
+| `5` | ForeignSymbol(symbol + target-neutral `AbiSignature`) |
 
 ---
 
@@ -56,13 +58,16 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 
 ### Key Codegen Behaviours
 
-- `@syscall` → `Syscall+Ret`. `@api` → `CallExt+Ret`.
+- `@syscall` → `Syscall+Ret`. `@api` → `CallArg*+CallExt+Ret`, with a
+  `ForeignSymbol` constant carrying its portable ABI signature.
 - `@api` wrapper chunks use a private backend symbol so an import whose local
   name equals its C symbol cannot resolve recursively to itself.
-- `@export` functions remain ordinary chunks; SemanticReport maps their internal
-  names to stable dynamic native symbols and keeps them alive as roots.
+- `@export` functions remain ordinary internal-ABI chunks and are kept alive as
+  roots. Codegen appends a synthetic C adapter chunk whose embedded export
+  metadata names the stable dynamic symbol.
 - `FieldLoad`/`FieldStore` reuse memory-width flags for `@repr(C)` byte, word,
-  dword, and qword fields, including sign extension on signed loads.
+  dword, and qword fields, including sign extension on signed loads. `FLOAT_FLAG`
+  on a dword field marks C `f32` conversion to/from internal f64 slots.
 - Const-fold: `ConstValue` in `const_map` → `MovI`/`MovConst` directly.
 - `&&`/`||`: short-circuit via `Jz`/`Jnz`.
 - Variadics: call-site packs coerced args into consecutive slots, emits `Lea` (ptr) + `MovI` (len), passes as two registers to callee.

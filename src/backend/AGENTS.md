@@ -12,8 +12,13 @@ src/backend/
 
 ## Calling Conventions
 
-- **SysV** (Linux/macOS): `rdi,rsi,rdx,rcx,r8,r9` → `rax`.
-- **Win64**: `rcx,rdx,r8,r9` → `rax`; args 5-6 at `[rsp+32/40]`.
+- **SysV** (Linux/macOS): independent integer and SSE register banks, stack
+  overflow arguments, up-to-two-eightbyte aggregate classification, and hidden
+  sret pointers for memory-class returns.
+- **Win64**: four positional GP/XMM slots, 32-byte shadow space, stack overflow
+  arguments, indirect non-1/2/4/8-byte aggregates, and hidden sret pointers.
+- C ABI values are normalized at synthetic export adapters. Ordinary Quazi
+  calls continue to use the internal eight-byte-slot ABI.
 
 ## Stack Frame
 
@@ -43,6 +48,9 @@ Emits dummy `call fn_start` / `lea rax,[fn_start]`, records pending relocs, zero
   linkage scope and intrinsic/API wrapper chunks remain compilation-local.
 - `qz build source.qz native.o -L dir -l name` forwards native inputs to the
   linker. Project `[cc]` sources are compiled through `$CC` or `cc` with `-fPIC`.
+- Windows omits `-fPIC`, includes the compiler-support archive needed for
+  floating-point C objects, and `qz run` uses the same `[cc]`/`[link]` inputs as
+  `qz build`.
 - `--static-lib` emits an archive through `$AR` or `ar`; `--shared-lib` emits a
   Linux `.so` through the selected linker without a process start stub.
 - Shared-library output is currently Linux x86-64 only. The compiler intentionally

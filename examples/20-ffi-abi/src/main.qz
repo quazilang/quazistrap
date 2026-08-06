@@ -1,0 +1,93 @@
+@repr(C) struct Point {
+    x: f64,
+    y: f64,
+}
+
+@repr(C) struct Sample {
+    value: f32,
+    tag: i32,
+}
+
+@repr(C) struct Triple {
+    a: i64,
+    b: i64,
+    c: i64,
+}
+
+@api("c_roundtrip_point")
+unsafe fn c_roundtrip_point(point: Point, bias: f32) Point;
+
+@api("c_roundtrip_sample")
+unsafe fn c_roundtrip_sample(sample: Sample) Sample;
+
+@api("c_roundtrip_triple")
+unsafe fn c_roundtrip_triple(triple: Triple) Triple;
+
+@api("c_sum8")
+unsafe fn c_sum8(
+    a: i64, b: i64, c: i64, d: i64,
+    e: i64, f: i64, g: i64, h: i64
+) i64;
+
+@api("c_call_quazi_sum8")
+unsafe fn c_call_quazi_sum8() i64;
+
+@export("quazi_scale_point")
+pub fn scale_point(point: Point, factor: f64) Point {
+    ret Point {
+        x: point.x * factor,
+        y: point.y * factor,
+    };
+}
+
+@export("quazi_adjust_sample")
+pub fn adjust_sample(sample: Sample) Sample {
+    ret Sample {
+        value: sample.value + 0.5,
+        tag: sample.tag + 10,
+    };
+}
+
+@export("quazi_bump_triple")
+pub fn bump_triple(triple: Triple) Triple {
+    ret Triple {
+        a: triple.a + 10,
+        b: triple.b + 10,
+        c: triple.c + 10,
+    };
+}
+
+@export("quazi_sum8")
+pub fn sum8(
+    a: i64, b: i64, c: i64, d: i64,
+    e: i64, f: i64, g: i64, h: i64
+) i64 {
+    ret a + b + c + d + e + f + g + h;
+}
+
+fn main() i32 {
+    unsafe {
+        var point = c_roundtrip_point(Point { x: 1.0, y: 2.0 }, 0.5 as f32);
+        if (point.x != 3.0 || point.y != 4.0) {
+            ret 1;
+        }
+
+        var sample = c_roundtrip_sample(Sample { value: 1.0, tag: 1 });
+        if (sample.value != 1.75 || sample.tag != 12) {
+            ret 2;
+        }
+
+        var triple = c_roundtrip_triple(Triple { a: 1, b: 2, c: 3 });
+        if (triple.a != 12 || triple.b != 13 || triple.c != 14) {
+            ret 3;
+        }
+
+        if (c_sum8(1, 2, 3, 4, 5, 6, 7, 8) != 36) {
+            ret 4;
+        }
+        if (c_call_quazi_sum8() != 36) {
+            ret 5;
+        }
+    }
+    ret 0;
+}
