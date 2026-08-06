@@ -7,6 +7,7 @@ pub mod analysis;
 mod backend;
 pub mod bytecode;
 pub mod cli;
+mod header;
 pub mod lexer;
 pub mod loader;
 mod lsp;
@@ -1306,6 +1307,72 @@ fn main() {
         }
 
         CliCmd::Run { .. } => unreachable!("run commands are normalized to build --run"),
+
+        CliCmd::Header {
+            files,
+            output,
+            target,
+        } => {
+            let result = if files.is_empty() {
+                let ctx = load_project_context();
+                loader::load_programs_with_resolver(&[ctx.config.entry], Some(&ctx.resolver))
+            } else {
+                load_with_optional_project(&files)
+            }
+            .unwrap_or_else(|error| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                std::process::exit(1);
+            });
+            if let Some(error) = &result.parse_error {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+            let namespaced_paths: HashSet<String> = result
+                .namespaced_paths
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            let (target_os, target_abi) = match target {
+                cli::HeaderTarget::X86_64Linux => ("linux", "sysv"),
+                cli::HeaderTarget::X86_64Windows => ("windows", "win64"),
+            };
+            let target_program =
+                semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
+            let report = analyze_program_with_source_files(
+                &result.merged_source,
+                &target_program,
+                result.library_fn_names.clone(),
+                result.library_char_ranges.clone(),
+                result.source_files.clone(),
+                namespaced_paths,
+            );
+            if !report_diagnostics(&report, &result.merged_source, &result.source_files) {
+                std::process::exit(1);
+            }
+            let guard = output
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("quazi.h");
+            let generated =
+                header::generate(&result.program, &result.library_char_ranges, target, guard)
+                    .unwrap_or_else(|errors| {
+                        for error in errors {
+                            eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                        }
+                        std::process::exit(1);
+                    });
+            std::fs::write(&output, generated).unwrap_or_else(|error| {
+                eprintln!(
+                    "\x1b[31;1merror:\x1b[0m cannot write '{}': {error}",
+                    output.display()
+                );
+                std::process::exit(1);
+            });
+            println!(
+                "\x1b[1;32mgenerated\x1b[0m  \x1b[1m{}\x1b[0m",
+                output.display()
+            );
+        }
 
         CliCmd::Check => {
             let ctx = load_project_context();

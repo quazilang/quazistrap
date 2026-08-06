@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -10,6 +10,14 @@ pub enum EmitType {
     Bytecode,
     Object,
     Binary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HeaderTarget {
+    #[value(name = "x86_64-linux")]
+    X86_64Linux,
+    #[value(name = "x86_64-windows")]
+    X86_64Windows,
 }
 
 /// quazilang compiler
@@ -74,6 +82,17 @@ pub enum Command {
     },
     /// check project without compiling (reads quazi.toml)
     Check,
+    /// generate a C header for exported functions and C-compatible types
+    Header {
+        /// source files, or the current project when omitted
+        files: Vec<PathBuf>,
+        /// generated header path
+        #[arg(short, long, default_value = "quazi.h")]
+        output: PathBuf,
+        /// C data model used for cfg and platform aliases
+        #[arg(long, value_enum, default_value = "x86_64-linux")]
+        target: HeaderTarget,
+    },
     /// create new project
     New {
         name: String,
@@ -150,6 +169,32 @@ mod tests {
                 assert_eq!(libraries, ["helper"]);
             }
             command => panic!("expected run command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn header_accepts_files_output_and_target() {
+        let args = Args::try_parse_from([
+            "qz",
+            "header",
+            "src/lib.qz",
+            "-o",
+            "include/api.h",
+            "--target",
+            "x86_64-windows",
+        ])
+        .expect("header command should parse");
+        match args.command {
+            Command::Header {
+                files,
+                output,
+                target,
+            } => {
+                assert_eq!(files, [PathBuf::from("src/lib.qz")]);
+                assert_eq!(output, PathBuf::from("include/api.h"));
+                assert_eq!(target, super::HeaderTarget::X86_64Windows);
+            }
+            command => panic!("expected header command, got {command:?}"),
         }
     }
 }
