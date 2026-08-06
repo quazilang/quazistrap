@@ -321,6 +321,16 @@ pub struct MatchExhaustivenessIssue {
     pub missing_variants: Vec<String>,
 }
 
+/// Target-independent description of a named C bitfield inside its storage unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitFieldLayout {
+    pub byte_offset: usize,
+    pub storage_bytes: u8,
+    pub bit_offset: u8,
+    pub bit_width: u8,
+    pub signed: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct SemanticReport {
     pub errors: Vec<SemanticError>,
@@ -347,6 +357,10 @@ pub struct SemanticReport {
     pub struct_sizes: HashMap<String, usize>,
     /// Struct field byte offsets: struct name → vec of (field_name, byte_offset).
     pub struct_field_offsets: HashMap<String, Vec<(String, usize)>>,
+    /// C bitfield metadata, keyed by aggregate and field name.
+    pub bit_field_layouts: HashMap<String, HashMap<String, BitFieldLayout>>,
+    /// Effective alignment of every aggregate.
+    pub struct_alignments: HashMap<String, usize>,
     /// Trait implementations: type name → set of trait names explicitly implemented.
     pub trait_impls: HashMap<String, std::collections::HashSet<String>>,
     /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
@@ -365,6 +379,10 @@ pub struct SemanticReport {
     pub exported_symbols: HashMap<String, String>,
     /// Struct names declared with `@repr(C)`.
     pub repr_c_structs: std::collections::HashSet<String>,
+    /// `@repr(C) union` declarations (also present in `repr_c_structs`).
+    pub repr_c_unions: std::collections::HashSet<String>,
+    /// Aggregates whose final field is a C flexible array member.
+    pub flexible_array_structs: std::collections::HashSet<String>,
     /// Files whose top-level definitions were mangled with their module name.
     pub namespaced_paths: std::collections::HashSet<String>,
     /// Whether the entry point is `fn main(args: Array[str])`.

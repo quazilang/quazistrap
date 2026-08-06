@@ -370,6 +370,7 @@ impl Lexer {
             "import" => TokenKind::Import,
             "impl" => TokenKind::Impl,
             "struct" => TokenKind::Struct,
+            "union" => TokenKind::Union,
             "trait" => TokenKind::Trait,
             "enum" => TokenKind::Enum,
             "match" => TokenKind::Match,

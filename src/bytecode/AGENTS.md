@@ -74,6 +74,9 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 - `FieldLoad`/`FieldStore` reuse memory-width flags for `@repr(C)` byte, word,
   dword, and qword fields, including sign extension on signed loads. `FLOAT_FLAG`
   on a dword field marks C `f32` conversion to/from internal f64 slots.
+- Named C bitfields lower to storage-unit loads, masks, shifts, and stores.
+  Flexible-array field expressions produce the tail address and indexing uses
+  the element's C width; packed fields remain valid unaligned x86-64 accesses.
 - Const-fold: `ConstValue` in `const_map` → `MovI`/`MovConst` directly.
 - `&&`/`||`: short-circuit via `Jz`/`Jnz`.
 - Variadics: call-site packs coerced args into consecutive slots, emits `Lea` (ptr) + `MovI` (len), passes as two registers to callee.

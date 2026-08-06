@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use super::instruction::{
-    MemWidth, field_load_typed, field_store_typed, mem_lea, mem_load, mem_load_w, mem_store,
-    mem_store_w, ri16, rrr, rrr_f,
+    FLOAT_FLAG, MemWidth, field_load_typed, field_store_typed, mem_lea, mem_load, mem_load_w,
+    mem_store, mem_store_w, ri16, rrr, rrr_f,
 };
 use super::{Chunk, ConstPoolEntry, Opcode};
 use crate::abi::{AbiField, AbiSignature, AbiType, ForeignSymbol};
@@ -59,6 +59,8 @@ fn abi_type_from_layout(
     struct_defs: &HashMap<String, Vec<(String, TypeKind)>>,
     struct_sizes: &HashMap<String, usize>,
     struct_field_offsets: &HashMap<String, Vec<(String, usize)>>,
+    struct_alignments: &HashMap<String, usize>,
+    bit_field_layouts: &HashMap<String, HashMap<String, crate::semantic::BitFieldLayout>>,
     repr_c_structs: &HashSet<String>,
     type_aliases: &HashMap<String, (Vec<String>, TypeKind)>,
 ) -> Option<AbiType> {
@@ -72,6 +74,8 @@ fn abi_type_from_layout(
                     struct_defs,
                     struct_sizes,
                     struct_field_offsets,
+                    struct_alignments,
+                    bit_field_layouts,
                     repr_c_structs,
                     type_aliases,
                 );
@@ -94,6 +98,32 @@ fn abi_type_from_layout(
         TypeKind::Float32 => Some(AbiType::Float32),
         TypeKind::Float64 => Some(AbiType::Float64),
         TypeKind::RawPtr { .. } => Some(AbiType::Pointer),
+        TypeKind::Array { elem_ty, len } => {
+            let elem = abi_type_from_layout(
+                &elem_ty.node,
+                struct_defs,
+                struct_sizes,
+                struct_field_offsets,
+                struct_alignments,
+                bit_field_layouts,
+                repr_c_structs,
+                type_aliases,
+            )?;
+            let elem_size = elem.size();
+            let fields = (0..*len)
+                .map(|index| {
+                    Some(AbiField {
+                        offset: u16::try_from(index as usize * elem_size).ok()?,
+                        ty: elem.clone(),
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(AbiType::Aggregate {
+                size: u16::try_from(elem_size * *len as usize).ok()?,
+                align: u8::try_from(elem.align()).ok()?,
+                fields,
+            })
+        }
         TypeKind::Void | TypeKind::Never => Some(AbiType::Void),
         TypeKind::Named { name, type_args }
             if type_args.is_empty() && repr_c_structs.contains(name) =>
@@ -102,20 +132,37 @@ fn abi_type_from_layout(
             let offsets = struct_field_offsets.get(name)?;
             let size = u16::try_from(*struct_sizes.get(name)?).ok()?;
             let mut fields = Vec::with_capacity(defs.len());
-            let mut align = 1usize;
+            let bit_layouts = bit_field_layouts.get(name);
+            let mut emitted_bit_units = HashSet::new();
             for ((field_name, field_ty), (offset_name, offset)) in defs.iter().zip(offsets) {
                 if field_name != offset_name {
                     return None;
+                }
+                if matches!(field_ty, TypeKind::FlexibleArray { .. }) {
+                    continue;
+                }
+                if let Some(bit) = bit_layouts.and_then(|layouts| layouts.get(field_name)) {
+                    if emitted_bit_units.insert((bit.byte_offset, bit.storage_bytes)) {
+                        fields.push(AbiField {
+                            offset: u16::try_from(bit.byte_offset).ok()?,
+                            ty: AbiType::Integer {
+                                bytes: bit.storage_bytes,
+                                signed: false,
+                            },
+                        });
+                    }
+                    continue;
                 }
                 let abi_ty = abi_type_from_layout(
                     field_ty,
                     struct_defs,
                     struct_sizes,
                     struct_field_offsets,
+                    struct_alignments,
+                    bit_field_layouts,
                     repr_c_structs,
                     type_aliases,
                 )?;
-                align = align.max(abi_ty.align());
                 fields.push(AbiField {
                     offset: u16::try_from(*offset).ok()?,
                     ty: abi_ty,
@@ -123,7 +170,7 @@ fn abi_type_from_layout(
             }
             Some(AbiType::Aggregate {
                 size,
-                align: u8::try_from(align).ok()?,
+                align: u8::try_from(*struct_alignments.get(name)?).ok()?,
                 fields,
             })
         }
@@ -228,6 +275,8 @@ impl<'a> Codegen<'a> {
             &self.report.struct_defs,
             &self.report.struct_sizes,
             &self.report.struct_field_offsets,
+            &self.report.struct_alignments,
+            &self.report.bit_field_layouts,
             &self.report.repr_c_structs,
             &self.report.type_aliases,
         )
@@ -1244,6 +1293,8 @@ impl<'a> Codegen<'a> {
             &self.report.struct_defs,
             &self.report.struct_sizes,
             &self.report.struct_field_offsets,
+            &self.report.struct_alignments,
+            &self.report.bit_field_layouts,
             &self.report.repr_c_structs,
             &self.report.type_aliases,
             &self.foreign_imports,
@@ -1416,6 +1467,8 @@ struct FnCompiler<'a> {
     struct_defs: &'a HashMap<String, Vec<(String, TypeKind)>>,
     struct_sizes: &'a HashMap<String, usize>,
     struct_field_offsets: &'a HashMap<String, Vec<(String, usize)>>,
+    struct_alignments: &'a HashMap<String, usize>,
+    bit_field_layouts: &'a HashMap<String, HashMap<String, crate::semantic::BitFieldLayout>>,
     repr_c_structs: &'a HashSet<String>,
     type_aliases: &'a HashMap<String, (Vec<String>, TypeKind)>,
     foreign_imports: &'a HashMap<String, ForeignSymbol>,
@@ -1479,6 +1532,10 @@ enum LvalueAddr {
         obj: u8,
         offset: u8,
     },
+    BitField {
+        obj: u8,
+        layout: crate::semantic::BitFieldLayout,
+    },
     IndexArray {
         obj: u8,
         idx: u8,
@@ -1517,6 +1574,8 @@ impl<'a> FnCompiler<'a> {
         struct_defs: &'a HashMap<String, Vec<(String, TypeKind)>>,
         struct_sizes: &'a HashMap<String, usize>,
         struct_field_offsets: &'a HashMap<String, Vec<(String, usize)>>,
+        struct_alignments: &'a HashMap<String, usize>,
+        bit_field_layouts: &'a HashMap<String, HashMap<String, crate::semantic::BitFieldLayout>>,
         repr_c_structs: &'a HashSet<String>,
         type_aliases: &'a HashMap<String, (Vec<String>, TypeKind)>,
         foreign_imports: &'a HashMap<String, ForeignSymbol>,
@@ -1547,6 +1606,8 @@ impl<'a> FnCompiler<'a> {
             struct_defs,
             struct_sizes,
             struct_field_offsets,
+            struct_alignments,
+            bit_field_layouts,
             repr_c_structs,
             type_aliases,
             foreign_imports,
@@ -1636,6 +1697,9 @@ impl<'a> FnCompiler<'a> {
                 elem_ty: Box::new(Spanned::new(self.resolve_type(&elem_ty.node), elem_ty.span)),
                 len: *len,
             },
+            TypeKind::FlexibleArray { elem_ty } => TypeKind::FlexibleArray {
+                elem_ty: Box::new(Spanned::new(self.resolve_type(&elem_ty.node), elem_ty.span)),
+            },
             TypeKind::Slice { elem_ty } => TypeKind::Slice {
                 elem_ty: Box::new(Spanned::new(self.resolve_type(&elem_ty.node), elem_ty.span)),
             },
@@ -1667,6 +1731,51 @@ impl<'a> FnCompiler<'a> {
             TypeKind::Uint32 => (MemWidth::Dword, false),
             _ => (MemWidth::Qword, false),
         }
+    }
+
+    fn c_memory_access(&self, ty: &TypeKind) -> (MemWidth, bool, u64, bool) {
+        match self.resolve_type(ty) {
+            TypeKind::Int8 => (MemWidth::Byte, true, 1, false),
+            TypeKind::Uint8 | TypeKind::Bool => (MemWidth::Byte, false, 1, false),
+            TypeKind::Int16 => (MemWidth::Word, true, 2, false),
+            TypeKind::Uint16 => (MemWidth::Word, false, 2, false),
+            TypeKind::Int32 => (MemWidth::Dword, true, 4, false),
+            TypeKind::Uint32 => (MemWidth::Dword, false, 4, false),
+            TypeKind::Float32 => (MemWidth::Dword, false, 4, true),
+            _ => (MemWidth::Qword, false, 8, false),
+        }
+    }
+
+    fn emit_c_load(&mut self, address: u8, width: MemWidth, signed: bool, float32: bool) -> u8 {
+        let dst = self.alloc_reg();
+        let mut instruction = mem_load_w(address, dst, 0, width, signed);
+        if float32 {
+            instruction.flags |= FLOAT_FLAG;
+        }
+        self.chunk.emit(instruction);
+        dst
+    }
+
+    fn emit_c_store(&mut self, address: u8, source: u8, width: MemWidth, float32: bool) {
+        let mut instruction = mem_store_w(address, source, 0, width);
+        if float32 {
+            instruction.flags |= FLOAT_FLAG;
+        }
+        self.chunk.emit(instruction);
+    }
+
+    fn emit_indexed_c_address(&mut self, base: u8, index: u8, elem_size: u64) -> u8 {
+        if elem_size == 1 {
+            let address = self.alloc_reg();
+            self.chunk.emit(rrr(Opcode::Add, address, base, index));
+            return address;
+        }
+        let size = self.emit_u64_constant(elem_size);
+        let offset = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mul, offset, index, size));
+        let address = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Add, address, base, offset));
+        address
     }
 
     /// Look up the resolved function name annotation for a span, if any.
@@ -1850,6 +1959,132 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    fn bit_field_layout_by_name(
+        &self,
+        aggregate_name: &str,
+        field_name: &str,
+    ) -> Option<crate::semantic::BitFieldLayout> {
+        self.bit_field_layouts
+            .get(aggregate_name)
+            .and_then(|fields| fields.get(field_name))
+            .copied()
+    }
+
+    fn bit_field_layout(
+        &self,
+        object: &Expr,
+        field_name: &str,
+    ) -> Option<crate::semantic::BitFieldLayout> {
+        let key = (object.span.start, object.span.end);
+        let TypeKind::Named { name, .. } = self.type_of_span(key)? else {
+            return None;
+        };
+        self.bit_field_layout_by_name(&name, field_name)
+    }
+
+    fn emit_u64_constant(&mut self, value: u64) -> u8 {
+        let reg = self.alloc_reg();
+        if value <= u16::MAX as u64 {
+            self.chunk.emit(ri16(Opcode::MovI, reg, value as u16));
+        } else {
+            let index = self.chunk.add_constant(ConstPoolEntry::Int(value as i64));
+            self.chunk.emit(ri16(Opcode::MovConst, reg, index));
+        }
+        reg
+    }
+
+    fn bit_storage_width(bytes: u8) -> MemWidth {
+        match bytes {
+            1 => MemWidth::Byte,
+            2 => MemWidth::Word,
+            4 => MemWidth::Dword,
+            _ => MemWidth::Qword,
+        }
+    }
+
+    fn emit_bit_field_load(&mut self, object: u8, layout: crate::semantic::BitFieldLayout) -> u8 {
+        let mut value = self.alloc_reg();
+        self.chunk.emit(field_load_typed(
+            value,
+            object,
+            layout.byte_offset as u8,
+            Self::bit_storage_width(layout.storage_bytes),
+            false,
+            false,
+        ));
+        if layout.bit_offset != 0 {
+            let shift = self.emit_u64_constant(layout.bit_offset as u64);
+            let shifted = self.alloc_reg();
+            self.chunk.emit(rrr(Opcode::Shr, shifted, value, shift));
+            value = shifted;
+        }
+        let storage_bits = u32::from(layout.storage_bytes) * 8;
+        if u32::from(layout.bit_width) < storage_bits {
+            let mask = (1u64 << layout.bit_width) - 1;
+            let mask_reg = self.emit_u64_constant(mask);
+            let masked = self.alloc_reg();
+            self.chunk.emit(rrr(Opcode::And, masked, value, mask_reg));
+            value = masked;
+            if layout.signed {
+                let amount = 64 - u64::from(layout.bit_width);
+                let shift = self.emit_u64_constant(amount);
+                let extended = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Shl, extended, value, shift));
+                self.chunk.emit(rrr(Opcode::Sar, extended, extended, shift));
+                value = extended;
+            }
+        }
+        value
+    }
+
+    fn emit_bit_field_store(
+        &mut self,
+        object: u8,
+        source: u8,
+        layout: crate::semantic::BitFieldLayout,
+    ) {
+        let storage_bits = u32::from(layout.storage_bytes) * 8;
+        let value_mask = if u32::from(layout.bit_width) == storage_bits {
+            u64::MAX
+        } else {
+            (1u64 << layout.bit_width) - 1
+        };
+        let positioned_mask = value_mask << layout.bit_offset;
+        let old = self.alloc_reg();
+        self.chunk.emit(field_load_typed(
+            old,
+            object,
+            layout.byte_offset as u8,
+            Self::bit_storage_width(layout.storage_bytes),
+            false,
+            false,
+        ));
+        let clear_mask = self.emit_u64_constant(!positioned_mask);
+        let cleared = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::And, cleared, old, clear_mask));
+        let value_mask_reg = self.emit_u64_constant(value_mask);
+        let mut positioned = self.alloc_reg();
+        self.chunk
+            .emit(rrr(Opcode::And, positioned, source, value_mask_reg));
+        if layout.bit_offset != 0 {
+            let shift = self.emit_u64_constant(layout.bit_offset as u64);
+            let shifted = self.alloc_reg();
+            self.chunk
+                .emit(rrr(Opcode::Shl, shifted, positioned, shift));
+            positioned = shifted;
+        }
+        let merged = self.alloc_reg();
+        self.chunk
+            .emit(rrr(Opcode::Or, merged, cleared, positioned));
+        self.chunk.emit(field_store_typed(
+            merged,
+            object,
+            layout.byte_offset as u8,
+            Self::bit_storage_width(layout.storage_bytes),
+            false,
+        ));
+    }
+
     /// Scan the body of an `ExprKind::Closure` for identifiers that reference
     /// outer-scope local variables. Returns the deduplicated list of capture names.
     fn capture_ident_names(&self, body: &Expr, closure_params: &[String]) -> Vec<String> {
@@ -2013,7 +2248,14 @@ impl<'a> FnCompiler<'a> {
                 let obj_ty = self.type_of_span(obj_key);
                 let index = indices.first().expect("index must have at least one index");
 
-                if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array") {
+                if let Some(TypeKind::FlexibleArray { elem_ty }) = &obj_ty {
+                    let base = self.compile_expr(object);
+                    let idx = self.compile_expr(index);
+                    let (width, _, elem_size, float32) = self.c_memory_access(&elem_ty.node);
+                    let ptr = self.emit_indexed_c_address(base, idx, elem_size);
+                    self.emit_c_store(ptr, src, width, float32);
+                    src
+                } else if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array") {
                     let type_kinds: Vec<TypeKind> =
                         if let Some(TypeKind::Named { type_args, .. }) = &obj_ty {
                             type_args.iter().map(|t| t.node.clone()).collect()
@@ -2099,11 +2341,15 @@ impl<'a> FnCompiler<'a> {
                 object,
                 name: field_name,
             } => {
-                let byte_offset = self.field_offset(object, field_name);
                 let obj = self.compile_expr(object);
-                LvalueAddr::Field {
-                    obj,
-                    offset: byte_offset,
+                if let Some(layout) = self.bit_field_layout(object, field_name) {
+                    LvalueAddr::BitField { obj, layout }
+                } else {
+                    let byte_offset = self.field_offset(object, field_name);
+                    LvalueAddr::Field {
+                        obj,
+                        offset: byte_offset,
+                    }
                 }
             }
             ExprKind::Index { object, indices } => {
@@ -2111,7 +2357,13 @@ impl<'a> FnCompiler<'a> {
                 let obj_ty = self.type_of_span(obj_key);
                 let index = indices.first().expect("index must have at least one index");
 
-                if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array") {
+                if let Some(TypeKind::FlexibleArray { elem_ty }) = &obj_ty {
+                    let base = self.compile_expr(object);
+                    let idx = self.compile_expr(index);
+                    let (width, signed, elem_size, _) = self.c_memory_access(&elem_ty.node);
+                    let ptr = self.emit_indexed_c_address(base, idx, elem_size);
+                    LvalueAddr::Deref { ptr, width, signed }
+                } else if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array") {
                     let type_kinds: Vec<TypeKind> =
                         if let Some(TypeKind::Named { type_args, .. }) = &obj_ty {
                             type_args.iter().map(|t| t.node.clone()).collect()
@@ -2194,6 +2446,7 @@ impl<'a> FnCompiler<'a> {
                 self.chunk.emit(rrr(Opcode::FieldLoad, dst, *obj, *offset));
                 dst
             }
+            LvalueAddr::BitField { obj, layout } => self.emit_bit_field_load(*obj, *layout),
             LvalueAddr::IndexArray {
                 obj,
                 idx,
@@ -2250,6 +2503,9 @@ impl<'a> FnCompiler<'a> {
             }
             LvalueAddr::Field { obj, offset } => {
                 self.chunk.emit(rrr(Opcode::FieldStore, src, *obj, *offset));
+            }
+            LvalueAddr::BitField { obj, layout } => {
+                self.emit_bit_field_store(*obj, src, *layout);
             }
             LvalueAddr::IndexArray {
                 obj,
@@ -3281,6 +3537,8 @@ impl<'a> FnCompiler<'a> {
                         self.struct_defs,
                         self.struct_sizes,
                         self.struct_field_offsets,
+                        self.struct_alignments,
+                        self.bit_field_layouts,
                         self.repr_c_structs,
                         self.type_aliases,
                     )
@@ -3694,11 +3952,20 @@ impl<'a> FnCompiler<'a> {
                         object,
                         name: field_name,
                     } => {
-                        let byte_offset = self.field_offset(object, field_name);
-                        let (width, _, float32) = self.ffi_field_access(object, field_name);
                         let obj = self.compile_expr(object);
-                        self.chunk
-                            .emit(field_store_typed(src, obj, byte_offset, width, float32));
+                        if let Some(layout) = self.bit_field_layout(object, field_name) {
+                            self.emit_bit_field_store(obj, src, layout);
+                        } else {
+                            let byte_offset = self.field_offset(object, field_name);
+                            let (width, _, float32) = self.ffi_field_access(object, field_name);
+                            self.chunk.emit(field_store_typed(
+                                src,
+                                obj,
+                                byte_offset,
+                                width,
+                                float32,
+                            ));
+                        }
                         src
                     }
                     ExprKind::Index { object, indices } => {
@@ -3712,6 +3979,14 @@ impl<'a> FnCompiler<'a> {
                         let idx_reg = self.compile_expr(index);
                         // Re-evaluate the value after object/index so it survives the store.
                         let src = self.compile_expr(value);
+
+                        if let Some(TypeKind::FlexibleArray { elem_ty }) = &obj_ty {
+                            let (width, _, elem_size, float32) =
+                                self.c_memory_access(&elem_ty.node);
+                            let address = self.emit_indexed_c_address(obj_reg, idx_reg, elem_size);
+                            self.emit_c_store(address, src, width, float32);
+                            return src;
+                        }
 
                         // Named type with Index trait → dispatch to Type.set if available.
                         if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array")
@@ -3790,10 +4065,15 @@ impl<'a> FnCompiler<'a> {
                 for field_name in &field_order {
                     if let Some((_, fval)) = fields.iter().find(|(fn_, _)| fn_ == field_name) {
                         let val = self.compile_expr(fval);
-                        let off = self.field_offset_by_name(name, field_name);
-                        let (width, _, float32) = self.ffi_field_access_by_name(name, field_name);
-                        self.chunk
-                            .emit(field_store_typed(val, dst, off, width, float32));
+                        if let Some(layout) = self.bit_field_layout_by_name(name, field_name) {
+                            self.emit_bit_field_store(dst, val, layout);
+                        } else {
+                            let off = self.field_offset_by_name(name, field_name);
+                            let (width, _, float32) =
+                                self.ffi_field_access_by_name(name, field_name);
+                            self.chunk
+                                .emit(field_store_typed(val, dst, off, width, float32));
+                        }
                     }
                 }
                 dst
@@ -4638,9 +4918,26 @@ impl<'a> FnCompiler<'a> {
                         return dst;
                     }
                 }
+                if matches!(
+                    self.type_of_span((expr.span.start, expr.span.end)),
+                    Some(TypeKind::FlexibleArray { .. })
+                ) {
+                    let base = self.compile_expr(object);
+                    let byte_offset = self.field_offset(object, name);
+                    if byte_offset == 0 {
+                        return base;
+                    }
+                    let offset = self.emit_u64_constant(byte_offset as u64);
+                    let address = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Add, address, base, offset));
+                    return address;
+                }
+                let obj = self.compile_expr(object);
+                if let Some(layout) = self.bit_field_layout(object, name) {
+                    return self.emit_bit_field_load(obj, layout);
+                }
                 let byte_offset = self.field_offset(object, name);
                 let (width, signed, float32) = self.ffi_field_access(object, name);
-                let obj = self.compile_expr(object);
                 let dst = self.alloc_reg();
                 self.chunk.emit(field_load_typed(
                     dst,
@@ -4711,6 +5008,13 @@ impl<'a> FnCompiler<'a> {
                     self.chunk
                         .emit(mem_load_w(addr, dst, 0, MemWidth::Byte, false));
                     return dst;
+                }
+                if let Some(TypeKind::FlexibleArray { elem_ty }) = self.type_of_span(obj_key) {
+                    let base = self.compile_expr(object);
+                    let idx = self.compile_expr(index);
+                    let (width, signed, elem_size, float32) = self.c_memory_access(&elem_ty.node);
+                    let address = self.emit_indexed_c_address(base, idx, elem_size);
+                    return self.emit_c_load(address, width, signed, float32);
                 }
                 // Slice (variadic param): ptr register holds caller's stack address.
                 if matches!(self.type_of_span(obj_key), Some(TypeKind::Slice { .. })) {
@@ -4922,6 +5226,8 @@ impl<'a> FnCompiler<'a> {
                     self.struct_defs,
                     self.struct_sizes,
                     self.struct_field_offsets,
+                    self.struct_alignments,
+                    self.bit_field_layouts,
                     self.repr_c_structs,
                     self.type_aliases,
                     self.foreign_imports,
@@ -6086,6 +6392,49 @@ fn update(sample: Sample, value: f32) f32 {
         assert!(fields.iter().all(|instruction| {
             instruction.mem_width() == MemWidth::Dword
                 && instruction.flags & crate::bytecode::instruction::FLOAT_FLAG != 0
+        }));
+    }
+
+    #[test]
+    fn repr_c_bitfields_emit_masked_storage_loads_and_stores() {
+        let chunks = compile(
+            r#"
+@repr(C) struct Flags { low: u32:3, high: u32:5 }
+fn main() u32 {
+    var flags = Flags { low: 1, high: 2 };
+    flags.high += 3;
+    ret flags.low + flags.high;
+}
+"#,
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(main.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::FieldLoad as u8
+                && instruction.mem_width() == MemWidth::Dword
+        }));
+        assert!(
+            main.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::And as u8)
+        );
+        assert!(
+            main.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::Shl as u8)
+        );
+    }
+
+    #[test]
+    fn repr_c_flexible_array_index_uses_c_element_width() {
+        let chunks = compile(
+            r#"
+@repr(C) struct Packet { length: u32, data: [u8; ..] }
+unsafe fn first(packet: *Packet) u8 { ret (*packet).data[0]; }
+"#,
+        );
+        let first = chunks.iter().find(|chunk| chunk.name == "first").unwrap();
+        assert!(first.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Load as u8 && instruction.mem_width() == MemWidth::Byte
         }));
     }
 

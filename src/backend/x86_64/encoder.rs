@@ -1720,6 +1720,14 @@ impl<'a> FnEncoder<'a> {
                 if offset != 0 {
                     emit!(asm.add(rax, offset as i32));
                 }
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0
+                    && instr.mem_width() == MemWidth::Dword
+                {
+                    emit!(asm.movss(xmm0, dword_ptr(rax)));
+                    emit!(asm.cvtss2sd(xmm0, xmm0));
+                    emit!(asm.movsd_2(slot(dst), xmm0));
+                    return Ok(());
+                }
                 match (instr.mem_width(), instr.mem_signed()) {
                     (MemWidth::Byte, false) => emit!(asm.movzx(rcx, byte_ptr(rax))),
                     (MemWidth::Byte, true) => emit!(asm.movsx(rcx, byte_ptr(rax))),
@@ -1737,6 +1745,14 @@ impl<'a> FnEncoder<'a> {
                 emit!(asm.mov(rax, slot(base)));
                 if offset != 0 {
                     emit!(asm.add(rax, offset as i32));
+                }
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0
+                    && instr.mem_width() == MemWidth::Dword
+                {
+                    emit!(asm.movq(xmm0, slot(src)));
+                    emit!(asm.cvtsd2ss(xmm0, xmm0));
+                    emit!(asm.movss(dword_ptr(rax), xmm0));
+                    return Ok(());
                 }
                 emit!(asm.mov(rcx, slot(src)));
                 match instr.mem_width() {

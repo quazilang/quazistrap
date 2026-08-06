@@ -104,12 +104,36 @@ impl Parser {
         attributes: Vec<Attribute>,
         is_pub: bool,
     ) -> Result<Item, String> {
-        let start = self.expect(TokenKind::Struct)?.span;
+        self.parse_aggregate(attributes, is_pub, false)
+    }
+
+    pub fn parse_union(
+        &mut self,
+        attributes: Vec<Attribute>,
+        is_pub: bool,
+    ) -> Result<Item, String> {
+        self.parse_aggregate(attributes, is_pub, true)
+    }
+
+    fn parse_aggregate(
+        &mut self,
+        attributes: Vec<Attribute>,
+        is_pub: bool,
+        is_union: bool,
+    ) -> Result<Item, String> {
+        let start = self
+            .expect(if is_union {
+                TokenKind::Union
+            } else {
+                TokenKind::Struct
+            })?
+            .span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
 
         self.expect(TokenKind::LBrace)?;
         let mut fields: Vec<(String, Type, bool)> = Vec::new();
+        let mut bit_widths = Vec::new();
 
         while !self.at(TokenKind::RBrace) {
             if self.at(TokenKind::Eof) {
@@ -127,7 +151,27 @@ impl Parser {
             self.expect(TokenKind::Colon)?;
             let field_ty = self.parse_type()?;
 
+            let bit_width = if self.at(TokenKind::Colon) {
+                self.advance();
+                let width = self.advance();
+                match width.kind {
+                    TokenKind::Int(value) if value > 0 && value <= u8::MAX as i64 => {
+                        Some(value as u8)
+                    }
+                    other => {
+                        return Err(self.err_tok_with_code(
+                            width.span,
+                            "E05",
+                            format!("expected a nonzero bitfield width, found {}", other),
+                        ));
+                    }
+                }
+            } else {
+                None
+            };
+
             fields.push((field_name, field_ty, is_const));
+            bit_widths.push(bit_width);
 
             if self.at(TokenKind::Comma) || self.at(TokenKind::Semicolon) {
                 self.advance();
@@ -142,6 +186,8 @@ impl Parser {
                 name,
                 generic_params,
                 fields,
+                bit_widths,
+                is_union,
                 attributes,
                 public: is_pub,
             },

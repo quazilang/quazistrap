@@ -243,6 +243,8 @@ impl Analyzer {
                 name,
                 generic_params,
                 fields,
+                bit_widths,
+                is_union,
                 attributes,
                 ..
             } => {
@@ -257,21 +259,30 @@ impl Analyzer {
                 }
                 if let Some(repr) = attributes.iter().find(|attr| attr.name == "repr") {
                     let valid = matches!(
-                        repr.args.as_slice(),
-                        [AttrArg::Positional(AttrVal::Ident(value))] if value == "C"
-                    );
+                        repr.args.first(),
+                        Some(AttrArg::Positional(AttrVal::Ident(value))) if value == "C"
+                    ) && repr.args.iter().skip(1).all(|arg| match arg {
+                        AttrArg::Positional(AttrVal::Ident(value)) => value == "packed",
+                        AttrArg::KeyValue(key, AttrVal::Int(value)) => {
+                            key == "align"
+                                && *value > 0
+                                && (*value as usize).is_power_of_two()
+                                && *value <= 4096
+                        }
+                        _ => false,
+                    });
                     if !valid {
                         self.push_error(
                             repr.span,
                             "S14",
-                            "unsupported representation; use @repr(C)".to_string(),
+                            "unsupported representation; use @repr(C), @repr(C, packed), or @repr(C, align=N) with a power-of-two N up to 4096".to_string(),
                         );
                     } else {
                         if !generic_params.is_empty() {
                             self.push_error(
                                 item.span,
                                 "S14",
-                                format!("@repr(C) struct `{name}` cannot be generic yet"),
+                                format!("@repr(C) aggregate `{name}` cannot be generic yet"),
                             );
                         }
                         if fields.is_empty() {
@@ -279,23 +290,76 @@ impl Analyzer {
                                 item.span,
                                 "S14",
                                 format!(
-                                    "@repr(C) struct `{name}` cannot be empty because C has no portable empty-struct layout"
+                                    "@repr(C) aggregate `{name}` cannot be empty because C has no portable empty-aggregate layout"
                                 ),
                             );
                         }
-                        for (field_name, field_ty, _) in fields {
+                        for (index, ((field_name, field_ty, _), bit_width)) in
+                            fields.iter().zip(bit_widths).enumerate()
+                        {
                             let resolved = self.resolve_type_aliases(&field_ty.node);
-                            if !ffi_primitive(&resolved) || matches!(resolved, TypeKind::Void) {
+                            let field_supported = ffi_aggregate_field(&resolved);
+                            if !field_supported {
                                 self.push_error(
                                     field_ty.span,
                                     "S14",
                                     format!(
-                                        "@repr(C) field `{field_name}` in `{name}` must be a C integer, float, or raw pointer"
+                                        "@repr(C) field `{field_name}` in `{name}` must be a C scalar or final flexible array member"
                                     ),
                                 );
                             }
+                            if let Some(width) = bit_width {
+                                let Some(storage_bits) = ffi_integer_bits(&resolved) else {
+                                    self.push_error(
+                                        field_ty.span,
+                                        "S14",
+                                        format!("bitfield `{field_name}` in `{name}` must use an integer type"),
+                                    );
+                                    continue;
+                                };
+                                if usize::from(*width) > storage_bits {
+                                    self.push_error(
+                                        field_ty.span,
+                                        "S14",
+                                        format!(
+                                            "bitfield `{field_name}` width {} exceeds its {}-bit storage type",
+                                            width, storage_bits
+                                        ),
+                                    );
+                                }
+                            }
+                            if matches!(resolved, TypeKind::FlexibleArray { .. }) {
+                                if *is_union {
+                                    self.push_error(
+                                        field_ty.span,
+                                        "S14",
+                                        "a union cannot contain a flexible array member"
+                                            .to_string(),
+                                    );
+                                }
+                                if index + 1 != fields.len() {
+                                    self.push_error(
+                                        field_ty.span,
+                                        "S14",
+                                        format!("flexible array member `{field_name}` must be the final field"),
+                                    );
+                                }
+                                if bit_width.is_some() {
+                                    self.push_error(
+                                        field_ty.span,
+                                        "S14",
+                                        "a flexible array member cannot be a bitfield".to_string(),
+                                    );
+                                }
+                            }
                         }
                     }
+                } else if *is_union {
+                    self.push_error(
+                        item.span,
+                        "S14",
+                        format!("union `{name}` requires @repr(C)"),
+                    );
                 }
             }
             ItemKind::Enum { .. } | ItemKind::Import(_) => {}
@@ -480,7 +544,9 @@ impl Analyzer {
                 || matches!(
                     &resolved,
                     TypeKind::Named { name, type_args }
-                        if type_args.is_empty() && self.repr_c_structs.contains(name)
+                        if type_args.is_empty()
+                            && self.repr_c_structs.contains(name)
+                            && !self.flexible_array_structs.contains(name)
                 );
             if !supported || matches!(resolved, TypeKind::Void) {
                 self.push_error(
@@ -498,7 +564,9 @@ impl Analyzer {
             || matches!(
                 &resolved_return,
                 TypeKind::Named { name, type_args }
-                    if type_args.is_empty() && self.repr_c_structs.contains(name)
+                    if type_args.is_empty()
+                        && self.repr_c_structs.contains(name)
+                        && !self.flexible_array_structs.contains(name)
             );
         if !return_supported {
             self.push_error(
@@ -1893,6 +1961,19 @@ impl Analyzer {
                 }
 
                 let obj_eval = self.type_check_expr(object, reachable);
+                if let Some(TypeKind::Named {
+                    name: aggregate_name,
+                    ..
+                }) = &obj_eval.ty
+                    && self.repr_c_unions.contains(aggregate_name)
+                    && self.unsafe_depth == 0
+                {
+                    self.push_error(
+                        expr.span,
+                        "S11",
+                        format!("reading union field `{name}` requires unsafe context"),
+                    );
+                }
                 // Resolve field type from struct_defs, substituting generic params when present.
                 let field_ty = match &obj_eval.ty {
                     Some(TypeKind::Named {
@@ -1940,6 +2021,22 @@ impl Analyzer {
                         expr.span,
                         "S14",
                         format!("opaque FFI type `{name}` cannot be constructed in Quazi"),
+                    );
+                }
+                if self.repr_c_unions.contains(name) && fields.len() != 1 {
+                    self.push_error(
+                        expr.span,
+                        "S14",
+                        format!("union `{name}` construction must initialize exactly one field"),
+                    );
+                }
+                if self.flexible_array_structs.contains(name) {
+                    self.push_error(
+                        expr.span,
+                        "S14",
+                        format!(
+                            "aggregate `{name}` has a flexible array member and cannot be constructed by value"
+                        ),
                     );
                 }
                 if let Some(field_defs) = self.struct_defs.get(name).cloned() {
@@ -2267,6 +2364,17 @@ impl Analyzer {
                     match &obj_eval.ty {
                         Some(TypeKind::Array { elem_ty, .. }) => Some(elem_ty.node.clone()),
                         Some(TypeKind::Slice { elem_ty }) => Some(elem_ty.node.clone()),
+                        Some(TypeKind::FlexibleArray { elem_ty }) => {
+                            if self.unsafe_depth == 0 {
+                                self.push_error(
+                                    expr.span,
+                                    "S11",
+                                    "accessing a flexible array member requires unsafe context"
+                                        .to_string(),
+                                );
+                            }
+                            Some(elem_ty.node.clone())
+                        }
                         Some(TypeKind::Bytes) => Some(TypeKind::Uint8),
                         _ => None,
                     }
@@ -3220,8 +3328,21 @@ impl Analyzer {
                     SymbolKind::Parameter | SymbolKind::Variable { mutable: true } => {}
                 },
             },
-            ExprKind::Field { object, .. } => {
-                self.type_check_expr(object, true);
+            ExprKind::Field { object, name } => {
+                let object_eval = self.type_check_expr(object, true);
+                if let Some(TypeKind::Named {
+                    name: aggregate_name,
+                    ..
+                }) = object_eval.ty
+                    && self.repr_c_unions.contains(&aggregate_name)
+                    && self.unsafe_depth == 0
+                {
+                    self.push_error(
+                        target.span,
+                        "S11",
+                        format!("writing union field `{name}` requires unsafe context"),
+                    );
+                }
             }
             ExprKind::Unary {
                 op: UnaryOpKind::Deref,
@@ -3409,6 +3530,7 @@ fn type_contains_rawptr(ty: &TypeKind) -> bool {
         TypeKind::RawPtr { .. } => true,
         TypeKind::Ref { inner } => type_contains_rawptr(&inner.node),
         TypeKind::Array { elem_ty, .. } => type_contains_rawptr(&elem_ty.node),
+        TypeKind::FlexibleArray { elem_ty } => type_contains_rawptr(&elem_ty.node),
         TypeKind::Slice { elem_ty } => type_contains_rawptr(&elem_ty.node),
         _ => false,
     }
@@ -3437,12 +3559,35 @@ fn ffi_primitive(ty: &TypeKind) -> bool {
     )
 }
 
+fn ffi_aggregate_field(ty: &TypeKind) -> bool {
+    if ffi_primitive(ty) && !matches!(ty, TypeKind::Void) {
+        return true;
+    }
+    match ty {
+        TypeKind::FlexibleArray { elem_ty } => {
+            ffi_primitive(&elem_ty.node) && !matches!(elem_ty.node, TypeKind::Void)
+        }
+        _ => false,
+    }
+}
+
+fn ffi_integer_bits(ty: &TypeKind) -> Option<usize> {
+    match ty {
+        TypeKind::Int8 | TypeKind::Uint8 | TypeKind::Bool => Some(8),
+        TypeKind::Int16 | TypeKind::Uint16 => Some(16),
+        TypeKind::Int32 | TypeKind::Uint32 => Some(32),
+        TypeKind::Int64 | TypeKind::Uint64 | TypeKind::Isize | TypeKind::Usize => Some(64),
+        _ => None,
+    }
+}
+
 fn type_contains_any(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Any => true,
         TypeKind::Ref { inner } => type_contains_any(&inner.node),
         TypeKind::RawPtr { inner } => type_contains_any(&inner.node),
         TypeKind::Array { elem_ty, .. } => type_contains_any(&elem_ty.node),
+        TypeKind::FlexibleArray { elem_ty } => type_contains_any(&elem_ty.node),
         TypeKind::Slice { elem_ty } => type_contains_any(&elem_ty.node),
         TypeKind::Named { type_args, .. } => type_args.iter().any(|a| type_contains_any(&a.node)),
         _ => false,
@@ -3494,6 +3639,12 @@ pub(super) fn substitute_type_kind(
                 elem_ty.span,
             )),
             len: *len,
+        },
+        TypeKind::FlexibleArray { elem_ty } => TypeKind::FlexibleArray {
+            elem_ty: Box::new(Spanned::new(
+                substitute_type_kind(&elem_ty.node, subst),
+                elem_ty.span,
+            )),
         },
         TypeKind::Slice { elem_ty } => TypeKind::Slice {
             elem_ty: Box::new(Spanned::new(

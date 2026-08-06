@@ -176,6 +176,7 @@ impl Parser {
                 TokenKind::Import
                 | TokenKind::Fn
                 | TokenKind::Struct
+                | TokenKind::Union
                 | TokenKind::Trait
                 | TokenKind::Enum
                 | TokenKind::Impl => break,
