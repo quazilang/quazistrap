@@ -119,6 +119,22 @@ fn emit_native_object(
             fn_bytes.len() as u64,
             scope,
         );
+        if chunk.export.is_some() {
+            let adapter_name = safe_label(&chunk.name);
+            if adapter_name != fn_names[chunk_idx] {
+                // C consumers use the stable @export symbol, while a Quazi
+                // callback conversion names the synthetic adapter directly.
+                // Both symbols must resolve to the same machine-code range.
+                sym_table.define_function(
+                    &mut obj,
+                    section_acc.text_id,
+                    &adapter_name,
+                    fn_offset as u64,
+                    fn_bytes.len() as u64,
+                    SymbolScope::Compilation,
+                );
+            }
+        }
 
         for reloc in fn_relocs {
             all_relocs.push((reloc, None));
@@ -236,5 +252,62 @@ impl Backend for PeBackend {
             b"mainCRTStartup",
             report,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use object::{Object as _, ObjectSymbol as _};
+
+    use super::*;
+    use crate::abi::{AbiSignature, AbiType, ForeignSymbol};
+    use crate::backend::target::{Abi, Arch, Os};
+    use crate::bytecode::chunk::ConstPoolEntry;
+    use crate::bytecode::instruction::{ri16, rrr};
+    use crate::bytecode::opcode::Opcode;
+
+    #[test]
+    fn coff_export_adapter_defines_stable_and_callback_symbols() {
+        let adapter_name = "__quazi_export_adapter_increment_0";
+        let mut main = Chunk::new("main");
+        main.reg_count = 1;
+        let address = main.add_constant(ConstPoolEntry::FnAddr(adapter_name.to_string()));
+        main.emit(ri16(Opcode::MovConst, 0, address));
+        main.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let mut adapter = Chunk::new(adapter_name);
+        adapter.reg_count = 1;
+        adapter.export = Some(ForeignSymbol {
+            symbol: "increment".to_string(),
+            signature: AbiSignature {
+                params: Vec::new(),
+                return_type: AbiType::Void,
+                variadic: false,
+            },
+        });
+        adapter.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let target = TargetSpec {
+            arch: Arch::X86_64,
+            os: Os::Windows,
+            abi: Abi::Win64,
+            emit_start: false,
+            no_crash: false,
+        };
+        let output = PeBackend
+            .compile(&[main, adapter], &target, None)
+            .expect("COFF output should compile");
+        let object = object::File::parse(output.bytes.as_slice()).expect("valid COFF object");
+
+        for expected in ["increment", adapter_name] {
+            let symbol = object
+                .symbols()
+                .find(|symbol| symbol.name() == Ok(expected))
+                .unwrap_or_else(|| panic!("missing symbol `{expected}`"));
+            assert!(
+                !symbol.is_undefined(),
+                "symbol `{expected}` must be defined"
+            );
+        }
     }
 }

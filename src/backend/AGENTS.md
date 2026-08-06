@@ -52,6 +52,9 @@ Emits dummy `call fn_start` / `lea rax,[fn_start]`, records pending relocs, zero
 
 - Exported functions use `SymbolScope::Dynamic`; ordinary Quazi functions use
   linkage scope and intrinsic/API wrapper chunks remain compilation-local.
+- Export adapter code has two symbols at the same address: the stable dynamic
+  `@export` name for C consumers and a compilation-local synthetic name used by
+  Quazi callback-address relocations, including portable QZI inputs.
 - `qz build source.qz native.o -L dir -l name` forwards native inputs to the
   linker. Project `[cc]` sources are compiled through `$CC` or `cc` with `-fPIC`.
 - Windows omits `-fPIC`, includes the compiler-support archive needed for

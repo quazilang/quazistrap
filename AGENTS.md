@@ -312,6 +312,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-06 | Fixed native callback-address linkage by defining each export adapter under both its stable C symbol and its compilation-local synthetic symbol. This preserves existing portable QZI callback relocations on ELF and COFF. |
 | 2026-08-06 | Added `qz header` for deterministic C/C++-compatible declarations of `@export` functions and their `@repr(C)` dependencies. It supports callbacks, unions, packed/aligned structs, bitfields, flexible array members, aliases, opaque handles, target `@cfg`, and Linux/Windows C data models without compiling or linking. |
 | 2026-08-06 | Added mutable foreign globals with `@api("symbol") var name: Type;`. Scalar, pointer, and C callback reads/writes require unsafe context and lower through portable QZI v5 data-symbol metadata to ELF/COFF PC-relative relocations. Macro and TLS pseudo-globals such as `errno` remain accessor functions. |
 | 2026-08-06 | Added raw C callbacks through `@repr(C) type Callback = fn(...) ...`; `@export` functions coerce to callback pointers, `@api` may accept or return them, and indirect calls lower through the target SysV/Win64 ABI. Callback invocation is unsafe and ordinary Quazi closures cannot cross the C boundary. |
