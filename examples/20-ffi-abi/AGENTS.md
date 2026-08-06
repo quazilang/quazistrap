@@ -17,3 +17,13 @@ status zero without printing anything.
 
 Run `qz run` from this directory. On Windows, use an LLVM `clang` as `CC` and
 `lld-link` as the Quazi linker. On Linux, use Clang or GCC plus `ld.lld`.
+
+Generate the declarations exported by this fixture without compiling or linking:
+
+```text
+qz header -o quazi-ffi.h --target x86_64-linux
+qz header -o quazi-ffi.h --target x86_64-windows
+```
+
+The target controls `@cfg` selection, `c_long` widths, and aggregate spelling;
+the generated header is guarded for both C and C++ consumers.

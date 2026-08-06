@@ -125,6 +125,7 @@ all characters exactly and never decode escapes: `` `\n\e\x41\u{41}` ``.
 ```
 qz build <file|dir> [-o out] [-i] [-c] [-r] [-s] [--linker path]
 qz run                    # build and run (reads quazi.toml)
+qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz check                  # type-check without compiling
 qz fmt                    # trim trailing whitespace in .qz files
 qz clean                  # remove build artifacts
@@ -132,6 +133,13 @@ qz new <name> [--lib]     # scaffold a new project
 qz init [--lib]           # init in current directory
 qz lsp                    # start language server
 ```
+
+`qz header` reads the current project when no files are supplied and emits the
+public C surface formed by `@export` functions and their C-compatible type
+dependencies. Select `x86_64-linux` or `x86_64-windows` explicitly so `@cfg`,
+`c_long`, packing, and alignment match the intended consumer. The result can be
+included from either C or C++ and does not require compiling or linking the
+Quazi project.
 
 **Flags:**
 - `-i` — emit `.qzi` bytecode only (no backend)

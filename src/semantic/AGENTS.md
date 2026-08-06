@@ -25,7 +25,10 @@ Five sequential passes:
 
 ## `@cfg` Evaluation
 
-Keys `target_os`, `target_arch`, `target_abi` evaluated against `std::env::consts`. Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
+Keys `target_os`, `target_arch`, `target_abi` are evaluated against the host for
+normal builds. `strip_cfg_for` accepts an explicit target for cross-target tools
+such as `qz header`, then removes the selected cfg markers before analysis.
+Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 
 ## Borrow Checker (`borrow.rs`)
 

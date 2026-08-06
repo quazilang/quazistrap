@@ -277,6 +277,25 @@ fn align_up(value: usize, align: usize) -> usize {
 
 /// Returns `true` if the item should be included on this host based on @cfg attributes.
 pub fn item_should_include(attributes: &[Attribute]) -> bool {
+    #[cfg(target_os = "windows")]
+    let host_abi = "win64";
+    #[cfg(not(target_os = "windows"))]
+    let host_abi = "sysv";
+    item_should_include_for(
+        attributes,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        host_abi,
+    )
+}
+
+/// Returns `true` if the item should be included for an explicit compilation target.
+pub fn item_should_include_for(
+    attributes: &[Attribute],
+    target_os: &str,
+    target_arch: &str,
+    target_abi: &str,
+) -> bool {
     use crate::parser::ast::{AttrArg, AttrVal};
     for attr in attributes {
         if attr.name == "cfg" {
@@ -284,21 +303,17 @@ pub fn item_should_include(attributes: &[Attribute]) -> bool {
             for arg in &attr.args {
                 match arg {
                     AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_os" => {
-                        if val.as_str() != std::env::consts::OS {
+                        if val.as_str() != target_os {
                             matched = false;
                         }
                     }
                     AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_arch" => {
-                        if val.as_str() != std::env::consts::ARCH {
+                        if val.as_str() != target_arch {
                             matched = false;
                         }
                     }
                     AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_abi" => {
-                        #[cfg(target_os = "windows")]
-                        let host_abi = "win64";
-                        #[cfg(not(target_os = "windows"))]
-                        let host_abi = "sysv";
-                        if val.as_str() != host_abi {
+                        if val.as_str() != target_abi {
                             matched = false;
                         }
                     }
@@ -316,13 +331,37 @@ pub fn item_should_include(attributes: &[Attribute]) -> bool {
 /// Strip @cfg-disabled items and CfgBlock statements from a Program before analysis.
 /// Called once after loading; all subsequent passes see the clean AST.
 pub fn strip_cfg(program: &Program) -> Program {
-    fn strip_block(block: &Block) -> Block {
+    #[cfg(target_os = "windows")]
+    let host_abi = "win64";
+    #[cfg(not(target_os = "windows"))]
+    let host_abi = "sysv";
+    strip_cfg_for(
+        program,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        host_abi,
+    )
+}
+
+/// Strip @cfg-disabled syntax for an explicit target before semantic analysis.
+pub fn strip_cfg_for(
+    program: &Program,
+    target_os: &str,
+    target_arch: &str,
+    target_abi: &str,
+) -> Program {
+    fn strip_block(block: &Block, target_os: &str, target_arch: &str, target_abi: &str) -> Block {
         let mut stmts = Vec::new();
         for stmt in &block.stmts {
             match &stmt.node {
                 StmtKind::CfgBlock { condition, body } => {
-                    if item_should_include(std::slice::from_ref(condition)) {
-                        stmts.extend(strip_block(body).stmts);
+                    if item_should_include_for(
+                        std::slice::from_ref(condition),
+                        target_os,
+                        target_arch,
+                        target_abi,
+                    ) {
+                        stmts.extend(strip_block(body, target_os, target_arch, target_abi).stmts);
                     }
                 }
                 StmtKind::If {
@@ -334,12 +373,19 @@ pub fn strip_cfg(program: &Program) -> Program {
                     stmts.push(Spanned::new(
                         StmtKind::If {
                             condition: condition.clone(),
-                            then_block: strip_block(then_block),
+                            then_block: strip_block(then_block, target_os, target_arch, target_abi),
                             else_if: else_if
                                 .iter()
-                                .map(|(c, b)| (c.clone(), strip_block(b)))
+                                .map(|(c, b)| {
+                                    (
+                                        c.clone(),
+                                        strip_block(b, target_os, target_arch, target_abi),
+                                    )
+                                })
                                 .collect(),
-                            else_block: else_block.as_ref().map(strip_block),
+                            else_block: else_block.as_ref().map(|block| {
+                                strip_block(block, target_os, target_arch, target_abi)
+                            }),
                         },
                         stmt.span,
                     ));
@@ -348,7 +394,7 @@ pub fn strip_cfg(program: &Program) -> Program {
                     stmts.push(Spanned::new(
                         StmtKind::For {
                             kind: kind.clone(),
-                            body: strip_block(body),
+                            body: strip_block(body, target_os, target_arch, target_abi),
                         },
                         stmt.span,
                     ));
@@ -356,7 +402,7 @@ pub fn strip_cfg(program: &Program) -> Program {
                 StmtKind::UnsafeBlock { body } => {
                     stmts.push(Spanned::new(
                         StmtKind::UnsafeBlock {
-                            body: strip_block(body),
+                            body: strip_block(body, target_os, target_arch, target_abi),
                         },
                         stmt.span,
                     ));
@@ -370,7 +416,7 @@ pub fn strip_cfg(program: &Program) -> Program {
         }
     }
 
-    fn strip_fn(node: &ItemKind) -> ItemKind {
+    fn strip_fn(node: &ItemKind, target_os: &str, target_arch: &str, target_abi: &str) -> ItemKind {
         match node {
             ItemKind::Fn {
                 name,
@@ -386,14 +432,35 @@ pub fn strip_cfg(program: &Program) -> Program {
                 name: name.clone(),
                 return_ty: return_ty.clone(),
                 params: params.clone(),
-                body: body.as_ref().map(strip_block),
-                attributes: attributes.clone(),
+                body: body
+                    .as_ref()
+                    .map(|block| strip_block(block, target_os, target_arch, target_abi)),
+                attributes: attributes
+                    .iter()
+                    .filter(|attribute| attribute.name != "cfg")
+                    .cloned()
+                    .collect(),
                 pub_fn: *pub_fn,
                 unsafe_fn: *unsafe_fn,
                 generic_params: generic_params.clone(),
                 c_variadic: *c_variadic,
             },
             other => other.clone(),
+        }
+    }
+
+    fn remove_cfg_attributes(node: &mut ItemKind) {
+        let attributes = match node {
+            ItemKind::Fn { attributes, .. }
+            | ItemKind::Struct { attributes, .. }
+            | ItemKind::Trait { attributes, .. }
+            | ItemKind::Enum { attributes, .. }
+            | ItemKind::TypeAlias { attributes, .. }
+            | ItemKind::ForeignGlobal { attributes, .. } => Some(attributes),
+            _ => None,
+        };
+        if let Some(attributes) = attributes {
+            attributes.retain(|attribute| attribute.name != "cfg");
         }
     }
 
@@ -408,10 +475,12 @@ pub fn strip_cfg(program: &Program) -> Program {
             | ItemKind::ForeignGlobal { attributes, .. } => Some(attributes),
             _ => None,
         };
-        if attrs.is_some_and(|a| !item_should_include(a)) {
+        if attrs.is_some_and(|attributes| {
+            !item_should_include_for(attributes, target_os, target_arch, target_abi)
+        }) {
             continue;
         }
-        let node = match &item.node {
+        let mut node = match &item.node {
             ItemKind::Impl {
                 trait_ty,
                 for_ty,
@@ -421,12 +490,17 @@ pub fn strip_cfg(program: &Program) -> Program {
                     .iter()
                     .filter(|m| {
                         if let ItemKind::Fn { attributes, .. } = &m.node {
-                            item_should_include(attributes)
+                            item_should_include_for(attributes, target_os, target_arch, target_abi)
                         } else {
                             true
                         }
                     })
-                    .map(|m| Spanned::new(strip_fn(&m.node), m.span))
+                    .map(|m| {
+                        Spanned::new(
+                            strip_fn(&m.node, target_os, target_arch, target_abi),
+                            m.span,
+                        )
+                    })
                     .collect();
                 ItemKind::Impl {
                     trait_ty: trait_ty.clone(),
@@ -434,9 +508,10 @@ pub fn strip_cfg(program: &Program) -> Program {
                     methods,
                 }
             }
-            ItemKind::Fn { .. } => strip_fn(&item.node),
+            ItemKind::Fn { .. } => strip_fn(&item.node, target_os, target_arch, target_abi),
             other => other.clone(),
         };
+        remove_cfg_attributes(&mut node);
         items.push(Spanned::new(node, item.span));
     }
     Program {
@@ -1265,9 +1340,9 @@ impl Default for Analyzer {
 #[cfg(test)]
 mod tests {
     use crate::lexer::Lexer;
-    use crate::parser::Parser;
+    use crate::parser::{Parser, ast::ItemKind};
 
-    use super::{Analyzer, ConstValue, DependencyKind, SemanticReport};
+    use super::{Analyzer, ConstValue, DependencyKind, SemanticReport, strip_cfg_for};
 
     fn parse_program(src: &str) -> crate::parser::ast::Program {
         let mut lexer = Lexer::new(src);
@@ -1280,6 +1355,33 @@ mod tests {
         let program = parse_program(src);
         let mut analyzer = Analyzer::new();
         analyzer.analyze_program(&program)
+    }
+
+    #[test]
+    fn strips_cfg_for_an_explicit_target() {
+        let program = parse_program(
+            r#"
+@cfg(target_os="linux") type platform_word = i64;
+@cfg(target_os="windows") type platform_word = i32;
+@cfg(target_abi="sysv") fn linux_only() void {}
+@cfg(target_abi="win64") fn windows_only() void {}
+"#,
+        );
+        let linux = strip_cfg_for(&program, "linux", "x86_64", "sysv");
+        let names: Vec<_> = linux
+            .items
+            .iter()
+            .map(|item| match &item.node {
+                ItemKind::TypeAlias { name, .. } | ItemKind::Fn { name, .. } => name.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(names, ["platform_word", "linux_only"]);
+        assert!(linux.items.iter().all(|item| match &item.node {
+            ItemKind::TypeAlias { attributes, .. } | ItemKind::Fn { attributes, .. } =>
+                attributes.iter().all(|attribute| attribute.name != "cfg"),
+            _ => true,
+        }));
     }
 
     #[test]

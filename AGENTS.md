@@ -18,6 +18,7 @@ CLI (dep: `clap 4.6`):
 ```bash
 qz build <file> [-i|-c] [-o out] [-r] [-s] [--linker path]
 qz run [file ...] [--linker path] / qz check / qz fmt / qz clean
+qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz new <name> [--lib] / qz init [--lib]
 qz debug [-i]
 qz lsp
@@ -271,7 +272,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **Raw backtick string literals** | ✅ Done — contents are preserved exactly with no backslash escape decoding |
 | **C/Rust-style escapes in non-raw strings** | ✅ Done — control, punctuation, ANSI `\e`, hexadecimal, octal, Unicode scalar, and line-continuation escapes with strict diagnostics |
 | **C ABI FFI phase 1** | ✅ Initial — `@api`, `@export`, scalar/pointer signatures, `@repr(C)`, opaque handles, C compilation, object/library inputs, `.a`/`.so` output |
-| **C ABI FFI phase 2** | Partial — C variadics, scalar `f32`/`f64`, by-value `@repr(C)` aggregates, callbacks/function pointers, foreign globals, unions, packed/aligned structs, named integer bitfields, final flexible array members, portable byte strings, and checked C-string construction are done for Linux SysV and Windows Win64 through portable QZI v5 metadata; remaining: header generation |
+| **C ABI FFI phase 2** | ✅ Done — C variadics, scalar `f32`/`f64`, by-value `@repr(C)` aggregates, callbacks/function pointers, foreign globals, unions, packed/aligned structs, named integer bitfields, final flexible array members, portable byte strings, checked C-string construction, and target-aware C header generation for Linux SysV and Windows Win64 through portable QZI v5 metadata |
 
 ### P2 — Codegen Quality
 
@@ -311,6 +312,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-06 | Added `qz header` for deterministic C/C++-compatible declarations of `@export` functions and their `@repr(C)` dependencies. It supports callbacks, unions, packed/aligned structs, bitfields, flexible array members, aliases, opaque handles, target `@cfg`, and Linux/Windows C data models without compiling or linking. |
 | 2026-08-06 | Added mutable foreign globals with `@api("symbol") var name: Type;`. Scalar, pointer, and C callback reads/writes require unsafe context and lower through portable QZI v5 data-symbol metadata to ELF/COFF PC-relative relocations. Macro and TLS pseudo-globals such as `errno` remain accessor functions. |
 | 2026-08-06 | Added raw C callbacks through `@repr(C) type Callback = fn(...) ...`; `@export` functions coerce to callback pointers, `@api` may accept or return them, and indirect calls lower through the target SysV/Win64 ABI. Callback invocation is unsafe and ordinary Quazi closures cannot cross the C boundary. |
 | 2026-08-06 | Extended C aggregate layouts with `union`, `@repr(C, packed, align=N)`, named nonzero integer bitfields, and pointer-only final `[T; ..]` flexible array members. Union field access and flexible-array indexing are unsafe. |
