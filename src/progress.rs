@@ -81,7 +81,13 @@ fn short_label(path: &Path, lib_prefix: Option<&Path>) -> String {
         let parts: Vec<String> = no_ext
             .components()
             .map(|c| c.as_os_str().to_str().unwrap_or("?").to_string())
-            .filter(|c| c != "src" && c != "mod")
+            // `.quazi` is the cache/install root directory (`~/.quazi/...`).
+            // If `common_lib_prefix` ends up above the actual `std`/`prelude`
+            // root (e.g. because lib files span multiple install
+            // subdirectories), this component leaks into the label as
+            // `.quazi.std.ffi` instead of `std.ffi`. Strip it like the
+            // other structural/noise components.
+            .filter(|c| c != "src" && c != "mod" && c != ".quazi")
             .collect();
         if !parts.is_empty() {
             return parts.join(".");
