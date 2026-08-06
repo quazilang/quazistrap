@@ -133,6 +133,8 @@ pub struct Analyzer {
     pub(super) fn_param_names: HashMap<String, Vec<String>>,
     /// Internal function name → stable native symbol requested by @export.
     pub(super) exported_symbols: HashMap<String, String>,
+    /// Resolved Quazi binding name → imported C data symbol metadata.
+    pub(super) foreign_globals: HashMap<String, ForeignGlobalInfo>,
     /// Whether the entry point is `fn main(args: Array[str])`.
     pub(super) main_takes_args: bool,
 }
@@ -402,7 +404,8 @@ pub fn strip_cfg(program: &Program) -> Program {
             | ItemKind::Struct { attributes, .. }
             | ItemKind::Trait { attributes, .. }
             | ItemKind::Enum { attributes, .. }
-            | ItemKind::TypeAlias { attributes, .. } => Some(attributes),
+            | ItemKind::TypeAlias { attributes, .. }
+            | ItemKind::ForeignGlobal { attributes, .. } => Some(attributes),
             _ => None,
         };
         if attrs.is_some_and(|a| !item_should_include(a)) {
@@ -493,6 +496,7 @@ impl Analyzer {
             type_aliases: std::collections::HashMap::new(),
             fn_param_names: HashMap::new(),
             exported_symbols: HashMap::new(),
+            foreign_globals: HashMap::new(),
         }
     }
 
@@ -762,6 +766,7 @@ impl Analyzer {
             type_aliases: self.type_aliases.clone(),
             fn_param_names: self.fn_param_names.clone(),
             exported_symbols: self.exported_symbols.clone(),
+            foreign_globals: self.foreign_globals.clone(),
             repr_c_structs: self.repr_c_structs.clone(),
             repr_c_unions: self.repr_c_unions.clone(),
             flexible_array_structs: self.flexible_array_structs.clone(),
@@ -807,6 +812,7 @@ impl Analyzer {
         self.type_aliases.clear();
         self.fn_param_names.clear();
         self.exported_symbols.clear();
+        self.foreign_globals.clear();
         self.repr_c_structs.clear();
         self.repr_c_unions.clear();
         self.repr_c_packed.clear();
@@ -3736,6 +3742,50 @@ fn main() void { }
             report.errors.is_empty(),
             "@api callable from unsafe fn: {:?}",
             report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_foreign_global_supports_unsafe_reads_and_writes() {
+        let report = analyze(
+            r#"
+@api("native_counter") pub var counter: i32;
+fn main() i32 {
+    var result: i32 = 0;
+    unsafe {
+        counter += 1;
+        result = counter;
+    }
+    ret result;
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let global = report.foreign_globals.get("counter").unwrap();
+        assert_eq!(global.symbol, "native_counter");
+        assert!(matches!(global.ty, crate::parser::ast::TypeKind::Int32));
+    }
+
+    #[test]
+    fn ffi_foreign_global_requires_api_and_unsafe_access() {
+        let report = analyze(
+            r#"
+var missing_api: i32;
+@api("native_counter") var counter: i32;
+fn main() i32 {
+    counter = 1;
+    ret counter;
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("requires exactly one @api")
+        }));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| { error.code == "S11" && error.message.contains("foreign global") })
         );
     }
 

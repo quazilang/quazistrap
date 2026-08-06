@@ -58,6 +58,11 @@ For `Named` receivers with concrete type args, substitute receiver generics into
   calls require unsafe context, and only signature-compatible `@export`
   functions may coerce to it. Ordinary Quazi functions and closures retain
   their environment-pointer representation and cannot cross the C boundary.
+- `@api("symbol") var name: Type;` imports a mutable C data symbol. Reading,
+  assigning, compound-assigning, or incrementing it requires unsafe context.
+  Globals currently accept C scalars, pointers, and C function pointers; C
+  aggregate values are rejected because Quazi aggregates use address semantics.
+  C macros and thread-local pseudo-globals must be exposed through accessors.
 - Signatures accept C integer/bool scalars, pointer-sized integers, raw pointers,
   `f32`/`f64`, `void` returns, and non-generic `@repr(C)` structs by value. Bare
   C variadics validate each actual extra argument and apply default promotions.

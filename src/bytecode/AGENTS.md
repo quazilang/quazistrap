@@ -33,7 +33,7 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x04` (readers retain v1/v2/v3 compatibility)
+- Version: `0x05` (readers retain v1/v2/v3/v4 compatibility)
 - chunk_count: u32 LE
 - Per chunk: name, param_count, reg_count, flags, optional export ABI metadata,
   consts, instrs. Chunk flags bit 3 marks the export metadata extension.
@@ -49,6 +49,7 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 | `4` | VtableAddr(type u16 + bytes, trait u16 + bytes) |
 | `5` | ForeignSymbol(symbol + target-neutral `AbiSignature`) |
 | `6` | Bytes(u32_len + exact bytes) |
+| `7` | ForeignGlobal(symbol + target-neutral `AbiType`) |
 
 ---
 
@@ -72,6 +73,9 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
   signature is stored in an existing `ForeignSymbol` constant whose placeholder
   symbol is ignored for indirect calls. Converting an `@export` function emits
   the address of its synthetic C adapter, never its internal closure value.
+- A foreign-global expression emits `MovConst(ForeignGlobal)` for the external
+  data address followed by a width-aware `Load` or `Store`. QZI carries the ABI
+  type so native backends do not infer C widths from host state.
 - Byte constants are emitted into read-only data as `[u64 length][payload]`.
   `.len()` loads the prefix, indexing reads an unsigned byte, and `.as_ptr()`
   skips the prefix so C receives the first payload byte.

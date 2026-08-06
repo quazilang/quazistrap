@@ -97,6 +97,9 @@ impl Instruction {
                 ConstPoolEntry::ForeignSymbol(symbol) => {
                     format!("\x1b[35mforeign({})\x1b[0m", symbol.symbol)
                 }
+                ConstPoolEntry::ForeignGlobal(global) => {
+                    format!("\x1b[35mglobal({})\x1b[0m", global.symbol)
+                }
             }
         }
 
@@ -334,6 +337,9 @@ impl Instruction {
                         ConstPoolEntry::VtableAddr(tn, tr) => format!(" vtable({tn}::{tr})"),
                         ConstPoolEntry::ForeignSymbol(symbol) => {
                             format!(" foreign({})", symbol.symbol)
+                        }
+                        ConstPoolEntry::ForeignGlobal(global) => {
+                            format!(" global({})", global.symbol)
                         }
                     })
                     .unwrap_or_default();

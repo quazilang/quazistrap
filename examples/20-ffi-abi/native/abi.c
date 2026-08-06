@@ -27,6 +27,9 @@ extern int64_t quazi_multiply(int64_t a, int64_t b);
 
 typedef int64_t (*BinaryCallback)(int64_t, int64_t);
 
+int32_t c_global_counter = 40;
+float c_global_ratio = 1.5f;
+
 Point c_roundtrip_point(Point point, float bias) {
     point.x += bias;
     return quazi_scale_point(point, 2.0);

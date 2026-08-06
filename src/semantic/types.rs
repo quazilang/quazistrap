@@ -223,6 +223,8 @@ pub struct ExprAnnotation {
     /// If the expression resolves to a specific function name (e.g. a module-qualified
     /// mangled name), codegen should use this instead of the raw AST identifier.
     pub resolved_fn: Option<String>,
+    /// Canonical binding name for an imported C data symbol.
+    pub resolved_global: Option<String>,
     /// If true, codegen should load the value pointed to by this reference expression.
     /// Set when a `&T` expression is used in a context that expects the value `T`.
     pub auto_deref: bool,
@@ -333,6 +335,13 @@ pub struct BitFieldLayout {
     pub signed: bool,
 }
 
+/// A source-level binding for an addressable C data symbol imported with `@api`.
+#[derive(Debug, Clone)]
+pub struct ForeignGlobalInfo {
+    pub symbol: String,
+    pub ty: TypeKind,
+}
+
 #[derive(Debug, Clone)]
 pub struct SemanticReport {
     pub errors: Vec<SemanticError>,
@@ -379,6 +388,8 @@ pub struct SemanticReport {
     pub fn_param_names: HashMap<String, Vec<String>>,
     /// Internal function name → stable C ABI symbol requested by @export.
     pub exported_symbols: HashMap<String, String>,
+    /// Resolved Quazi binding name → native C data symbol and value type.
+    pub foreign_globals: HashMap<String, ForeignGlobalInfo>,
     /// Struct names declared with `@repr(C)`.
     pub repr_c_structs: std::collections::HashSet<String>,
     /// `@repr(C) union` declarations (also present in `repr_c_structs`).

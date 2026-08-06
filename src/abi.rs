@@ -45,6 +45,12 @@ pub struct ForeignSymbol {
     pub signature: AbiSignature,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignGlobal {
+    pub symbol: String,
+    pub ty: AbiType,
+}
+
 impl AbiType {
     pub fn size(&self) -> usize {
         match self {
@@ -174,6 +180,27 @@ impl ForeignSymbol {
         *pos += name_len;
         let signature = AbiSignature::decode(input, pos)?;
         Ok(Self { symbol, signature })
+    }
+}
+
+impl ForeignGlobal {
+    pub(crate) fn encode(&self, out: &mut Vec<u8>) {
+        let name = self.symbol.as_bytes();
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(name);
+        self.ty.encode(out);
+    }
+
+    pub(crate) fn decode(input: &[u8], pos: &mut usize) -> Result<Self, String> {
+        let name_len = take_u16(input, pos, "foreign global symbol length")? as usize;
+        if input.len() < *pos + name_len {
+            return Err("truncated foreign global symbol".to_string());
+        }
+        let symbol = String::from_utf8(input[*pos..*pos + name_len].to_vec())
+            .map_err(|_| "invalid UTF-8 in foreign global symbol".to_string())?;
+        *pos += name_len;
+        let ty = AbiType::decode(input, pos)?;
+        Ok(Self { symbol, ty })
     }
 }
 

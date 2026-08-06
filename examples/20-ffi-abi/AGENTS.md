@@ -10,6 +10,8 @@ status zero without printing anything.
 - `c_sum8`/`quazi_sum8` exercise stack overflow arguments in both directions.
 - `BinaryCallback` passes an exported Quazi function to C and calls a C-returned
   function pointer through the same portable source on SysV and Win64.
+- `c_global_counter` and `c_global_ratio` exercise unsafe typed reads and writes
+  of external C data symbols, including `f32` boundary conversion.
 - C calls exported Quazi adapters before returning each value to Quazi, so the
   same source checks `@api` and `@export` symmetrically.
 

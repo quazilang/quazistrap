@@ -14,7 +14,8 @@ impl Analyzer {
             | ItemKind::Fn { attributes, .. }
             | ItemKind::Struct { attributes, .. }
             | ItemKind::Trait { attributes, .. }
-            | ItemKind::Enum { attributes, .. } => Some(attributes),
+            | ItemKind::Enum { attributes, .. }
+            | ItemKind::ForeignGlobal { attributes, .. } => Some(attributes),
             _ => None,
         };
         if let Some(attrs) = attrs
@@ -359,6 +360,57 @@ impl Analyzer {
                         item.span,
                         "S14",
                         format!("union `{name}` requires @repr(C)"),
+                    );
+                }
+            }
+            ItemKind::ForeignGlobal {
+                name,
+                ty,
+                attributes,
+                ..
+            } => {
+                let api_attributes: Vec<&Attribute> = attributes
+                    .iter()
+                    .filter(|attribute| attribute.name == "api")
+                    .collect();
+                if api_attributes.len() != 1 {
+                    self.push_error(
+                        item.span,
+                        "S14",
+                        format!("foreign global `{name}` requires exactly one @api attribute"),
+                    );
+                } else {
+                    let api = api_attributes[0];
+                    let valid_args = matches!(
+                        api.args.as_slice(),
+                        [] | [AttrArg::Positional(AttrVal::Str(_))]
+                    );
+                    if !valid_args {
+                        self.push_error(
+                            api.span,
+                            "S14",
+                            "@api on a foreign global accepts no argument or one string symbol"
+                                .to_string(),
+                        );
+                    }
+                }
+                if attributes.iter().any(|attribute| {
+                    matches!(attribute.name.as_str(), "export" | "syscall" | "intrinsic")
+                }) {
+                    self.push_error(
+                        item.span,
+                        "S14",
+                        format!("foreign global `{name}` only supports @api and @cfg attributes"),
+                    );
+                }
+                let resolved = self.resolve_type_aliases(&ty.node);
+                if !ffi_primitive(&resolved) || matches!(resolved, TypeKind::Void) {
+                    self.push_error(
+                        ty.span,
+                        "S14",
+                        format!(
+                            "foreign global `{name}` must use a C scalar, pointer, or C function-pointer type"
+                        ),
                     );
                 }
             }
@@ -1068,6 +1120,27 @@ impl Analyzer {
                 }
             }
             ExprKind::Ident(name) => {
+                if let Some(resolved) = self.resolve_bare_foreign_global_name(name) {
+                    if resolved != *name {
+                        let _ = self.resolve_for_read(name);
+                    }
+                    let sym = self
+                        .resolve_for_read(&resolved)
+                        .expect("resolved foreign global should exist");
+                    if self.unsafe_depth == 0 {
+                        self.push_error(
+                            expr.span,
+                            "S11",
+                            format!("reading foreign global `{name}` requires unsafe context"),
+                        );
+                    }
+                    let eval = ExprEval {
+                        ty: sym.ty,
+                        const_value: None,
+                    };
+                    self.annotate_foreign_global_expr(expr, &eval, reachable, resolved);
+                    return eval;
+                }
                 // Prefer the module-qualified resolution when in a namespaced module.
                 if let Some(resolved) = self.resolve_bare_fn_name(name) {
                     let _ = self.resolve_for_read(name);
@@ -1300,7 +1373,10 @@ impl Analyzer {
                 let value_eval = self.type_check_expr(value, reachable);
 
                 if let ExprKind::Ident(name) = &target.node {
-                    if let Some(sym) = self.resolve_symbol(name)
+                    let resolved = self
+                        .resolve_bare_foreign_global_name(name)
+                        .unwrap_or_else(|| name.clone());
+                    if let Some(sym) = self.resolve_symbol(&resolved)
                         && let (Some(var_ty), Some(val_ty)) = (&sym.ty, &value_eval.ty)
                     {
                         if !self.check_expr_compat(value, var_ty, val_ty) {
@@ -2638,6 +2714,38 @@ impl Analyzer {
         None
     }
 
+    fn resolve_bare_foreign_global_name(&self, name: &str) -> Option<String> {
+        for scope in self.scopes.iter().skip(1).rev() {
+            if scope.contains_key(name) {
+                return None;
+            }
+        }
+        if let Some(module) = &self.current_module_path {
+            let qualified = format!("{}.{}", module, name);
+            if self.foreign_globals.contains_key(&qualified) {
+                return Some(qualified);
+            }
+        }
+        let symbol = self.resolve_symbol(name)?;
+        if symbol
+            .attributes
+            .iter()
+            .any(|attribute| attribute == "foreign_global")
+        {
+            if symbol.is_import
+                && let Some(path) = symbol.import_path.as_deref()
+                && let Some(mangled) = super::declare::mangle_import_path(path)
+                && self.foreign_globals.contains_key(&mangled)
+            {
+                return Some(mangled);
+            }
+            if self.foreign_globals.contains_key(name) {
+                return Some(name.to_string());
+            }
+        }
+        None
+    }
+
     /// Resolve a module-qualified method call like `bar.foo()` or `std.write()`.
     /// The object chain identifies the imported module namespace; the method is
     /// resolved as `<module_file>.<method>` where `<module_file>` is the last
@@ -3245,6 +3353,7 @@ impl Analyzer {
             const_value: eval.const_value.clone(),
             reachable,
             resolved_fn,
+            resolved_global: None,
             auto_deref: false,
             c_abi_function: false,
         });
@@ -3255,6 +3364,25 @@ impl Analyzer {
                 value: value.clone(),
             });
         }
+    }
+
+    fn annotate_foreign_global_expr(
+        &mut self,
+        expr: &Expr,
+        eval: &ExprEval,
+        reachable: bool,
+        resolved_global: String,
+    ) {
+        self.annotated_exprs.push(ExprAnnotation {
+            span: expr.span,
+            ty: eval.ty.clone(),
+            const_value: None,
+            reachable,
+            resolved_fn: None,
+            resolved_global: Some(resolved_global),
+            auto_deref: false,
+            c_abi_function: false,
+        });
     }
 
     /// Annotate an expression and mark it for codegen auto-dereference.
@@ -3273,6 +3401,7 @@ impl Analyzer {
             const_value: eval.const_value.clone(),
             reachable,
             resolved_fn,
+            resolved_global: None,
             auto_deref: true,
             c_abi_function: false,
         });
@@ -3497,6 +3626,27 @@ impl Analyzer {
             target = inner;
         }
         match &target.node {
+            ExprKind::Ident(name) if self.resolve_bare_foreign_global_name(name).is_some() => {
+                let resolved = self
+                    .resolve_bare_foreign_global_name(name)
+                    .expect("foreign global resolution changed");
+                if self.unsafe_depth == 0 {
+                    self.push_error(
+                        target.span,
+                        "S11",
+                        format!("writing foreign global `{name}` requires unsafe context"),
+                    );
+                }
+                let ty = self
+                    .resolve_symbol(&resolved)
+                    .and_then(|symbol| symbol.ty)
+                    .map(|ty| ExprEval {
+                        ty: Some(ty),
+                        const_value: None,
+                    })
+                    .unwrap_or_default();
+                self.annotate_foreign_global_expr(target, &ty, true, resolved);
+            }
             ExprKind::Ident(name) => match self.resolve_symbol(name) {
                 None => {
                     self.push_error(target.span, "S04", format!("unknown identifier '{}'", name))
