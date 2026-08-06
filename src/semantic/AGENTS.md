@@ -57,9 +57,11 @@ For `Named` receivers with concrete type args, substitute receiver generics into
   `f32`/`f64`, `void` returns, and non-generic `@repr(C)` structs by value. Bare
   C variadics validate each actual extra argument and apply default promotions.
   Function pointers and other unsupported types emit `S14`.
-- `@repr(C)` is limited to non-empty, non-generic integer/float/raw-pointer
-  fields. Layout uses target size/alignment and tail padding; field offsets are
-  recorded in SemanticReport.
+- `@repr(C)` covers non-empty, non-generic structs and unions with scalar
+  array fields, optional `packed`/power-of-two `align=N`, named nonzero integer
+  bitfields, and final flexible array members. FAM aggregates are pointer-only;
+  union field access and FAM indexing require unsafe context. Layout metadata is
+  recorded in `SemanticReport`.
 - `@opaque` requires an empty, non-generic struct and rejects Quazi construction.
 - A panic in exported code follows the existing terminating panic path. It never
   unwinds across a C frame; recoverable ABI errors must be explicit return codes

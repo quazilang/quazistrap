@@ -191,6 +191,8 @@ impl Analyzer {
             ItemKind::Struct {
                 name,
                 fields,
+                bit_widths,
+                is_union,
                 generic_params,
                 attributes,
                 public,
@@ -220,14 +222,49 @@ impl Analyzer {
                     .map(|(fname, ftype, _)| (fname.clone(), ftype.node.clone()))
                     .collect();
                 self.struct_defs.insert(name.clone(), field_defs);
+                self.struct_field_bit_widths.insert(
+                    name.clone(),
+                    fields
+                        .iter()
+                        .zip(bit_widths)
+                        .map(|((field_name, _, _), width)| (field_name.clone(), *width))
+                        .collect(),
+                );
                 if attributes.iter().any(|attr| {
                     attr.name == "repr"
                         && matches!(
-                            attr.args.as_slice(),
-                            [AttrArg::Positional(AttrVal::Ident(value))] if value == "C"
+                            attr.args.first(),
+                            Some(AttrArg::Positional(AttrVal::Ident(value))) if value == "C"
                         )
                 }) {
                     self.repr_c_structs.insert(name.clone());
+                    if *is_union {
+                        self.repr_c_unions.insert(name.clone());
+                    }
+                    for arg in attributes
+                        .iter()
+                        .find(|attr| attr.name == "repr")
+                        .into_iter()
+                        .flat_map(|attr| attr.args.iter().skip(1))
+                    {
+                        match arg {
+                            AttrArg::Positional(AttrVal::Ident(value)) if value == "packed" => {
+                                self.repr_c_packed.insert(name.clone());
+                            }
+                            AttrArg::KeyValue(key, AttrVal::Int(value))
+                                if key == "align" && *value > 0 =>
+                            {
+                                self.repr_c_alignments.insert(name.clone(), *value as usize);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if fields
+                        .last()
+                        .is_some_and(|(_, ty, _)| matches!(ty.node, TypeKind::FlexibleArray { .. }))
+                    {
+                        self.flexible_array_structs.insert(name.clone());
+                    }
                 }
                 if !generic_params.is_empty() {
                     self.struct_generic_params

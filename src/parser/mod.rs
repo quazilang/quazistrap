@@ -105,6 +105,7 @@ impl Parser {
             }
             TokenKind::Fn => self.parse_fn(attributes, false, is_pub),
             TokenKind::Struct => self.parse_struct(attributes, is_pub),
+            TokenKind::Union => self.parse_union(attributes, is_pub),
             TokenKind::Trait => self.parse_trait(attributes, is_pub),
             TokenKind::Enum => self.parse_enum(attributes, is_pub),
             TokenKind::Impl => self.parse_impl(),
@@ -1656,6 +1657,15 @@ impl Parser {
                 if self.at(TokenKind::Semicolon) {
                     self.advance();
                     let len_tok = self.advance();
+                    if matches!(len_tok.kind, TokenKind::DotDot) {
+                        let end = self.expect(TokenKind::RBracket)?.span;
+                        return Ok(Spanned::new(
+                            TypeKind::FlexibleArray {
+                                elem_ty: Box::new(elem_ty),
+                            },
+                            to_ast_span(merge_token_spans(start, end)),
+                        ));
+                    }
                     let len = match len_tok.kind {
                         TokenKind::Int(n) if n >= 0 => n as u64,
                         other => {

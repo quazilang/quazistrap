@@ -280,6 +280,10 @@ pub enum TypeKind {
         elem_ty: Box<Type>,
         len: u64,
     },
+    /// `[T; ..]` — a final C flexible array member with no size contribution.
+    FlexibleArray {
+        elem_ty: Box<Type>,
+    },
     /// `[T]` — unsized slice (fat pointer: ptr + len, resolved later).
     Slice {
         elem_ty: Box<Type>,
@@ -341,6 +345,7 @@ impl std::fmt::Display for TypeKind {
                 }
             }
             TypeKind::Array { elem_ty, len } => write!(f, "[{}; {}]", elem_ty.node, len),
+            TypeKind::FlexibleArray { elem_ty } => write!(f, "[{}; ..]", elem_ty.node),
             TypeKind::Slice { elem_ty } => write!(f, "[{}]", elem_ty.node),
             TypeKind::Ref { inner } => write!(f, "&{}", inner.node),
             TypeKind::RawPtr { inner } => write!(f, "*{}", inner.node),
@@ -519,6 +524,9 @@ pub enum ItemKind {
         name: String,
         generic_params: Vec<String>,
         fields: Vec<(String, Type, bool)>, // (name, type, const?)
+        /// Optional C bit width for each field, parallel to `fields`.
+        bit_widths: Vec<Option<u8>>,
+        is_union: bool,
         attributes: Vec<Attribute>,
         public: bool,
     },

@@ -104,10 +104,15 @@ pub struct Analyzer {
     pub(super) explicitly_imported_fns: std::collections::HashMap<String, String>,
     /// Struct field layouts: struct name → ordered list of (field_name, field_type).
     pub(super) struct_defs: HashMap<String, Vec<(String, TypeKind)>>,
+    pub(super) struct_field_bit_widths: HashMap<String, Vec<(String, Option<u8>)>>,
     /// Generic params per struct: struct name → ordered generic param names.
     pub(super) struct_generic_params: HashMap<String, Vec<String>>,
     /// Structs explicitly requesting the target C memory layout.
     pub(super) repr_c_structs: std::collections::HashSet<String>,
+    pub(super) repr_c_unions: std::collections::HashSet<String>,
+    pub(super) repr_c_packed: std::collections::HashSet<String>,
+    pub(super) repr_c_alignments: HashMap<String, usize>,
+    pub(super) flexible_array_structs: std::collections::HashSet<String>,
     /// Derived traits: struct name → list of trait names from @derive.
     pub(super) derived_traits: HashMap<String, Vec<String>>,
     /// Trait implementations: type name → set of trait names explicitly implemented via `impl Trait for Type`.
@@ -168,26 +173,104 @@ fn ffi_type_size_align(
         | TypeKind::Usize
         | TypeKind::Float64
         | TypeKind::RawPtr { .. } => (8, 8),
+        TypeKind::Array { elem_ty, len } => {
+            let (size, align) = ffi_type_size_align(&elem_ty.node, aliases);
+            (size.saturating_mul(len as usize), align)
+        }
+        TypeKind::FlexibleArray { elem_ty } => {
+            let (_, align) = ffi_type_size_align(&elem_ty.node, aliases);
+            (0, align)
+        }
         _ => (8, 8),
     }
 }
 
-fn ffi_struct_layout(
+#[derive(Default)]
+struct AggregateLayout {
+    size: usize,
+    align: usize,
+    offsets: Vec<(String, usize)>,
+    bit_fields: HashMap<String, BitFieldLayout>,
+}
+
+fn ffi_aggregate_layout(
     fields: &[(String, TypeKind)],
+    bit_widths: &[(String, Option<u8>)],
     aliases: &std::collections::HashMap<String, (Vec<String>, TypeKind)>,
-) -> (usize, Vec<(String, usize)>) {
+    is_union: bool,
+    packed: bool,
+    explicit_align: Option<usize>,
+) -> AggregateLayout {
     let mut offset = 0usize;
     let mut struct_align = 1usize;
     let mut offsets = Vec::with_capacity(fields.len());
-    for (name, ty) in fields {
+    let mut bit_fields = HashMap::new();
+    let mut active_bits: Option<(usize, usize, u8)> = None;
+    let mut union_size = 0usize;
+    for ((name, ty), (_, bit_width)) in fields.iter().zip(bit_widths) {
         let (size, align) = ffi_type_size_align(ty, aliases);
-        offset = (offset + align - 1) & !(align - 1);
-        offsets.push((name.clone(), offset));
-        offset += size;
-        struct_align = struct_align.max(align);
+        let field_align = if packed { 1 } else { align };
+        struct_align = struct_align.max(field_align);
+        if let Some(width) = bit_width {
+            let signed = matches!(
+                resolve_layout_alias(ty, aliases),
+                TypeKind::Int8
+                    | TypeKind::Int16
+                    | TypeKind::Int32
+                    | TypeKind::Int64
+                    | TypeKind::Isize
+            );
+            let (byte_offset, bit_offset) = if is_union {
+                union_size = union_size.max(size);
+                (0, 0)
+            } else if let Some((unit_offset, unit_size, used)) = active_bits
+                && unit_size == size
+                && usize::from(used) + usize::from(*width) <= size * 8
+            {
+                active_bits = Some((unit_offset, unit_size, used + *width));
+                (unit_offset, used)
+            } else {
+                offset = align_up(offset, field_align);
+                let unit_offset = offset;
+                offset += size;
+                active_bits = Some((unit_offset, size, *width));
+                (unit_offset, 0)
+            };
+            offsets.push((name.clone(), byte_offset));
+            bit_fields.insert(
+                name.clone(),
+                BitFieldLayout {
+                    byte_offset,
+                    storage_bytes: size as u8,
+                    bit_offset,
+                    bit_width: *width,
+                    signed,
+                },
+            );
+        } else {
+            active_bits = None;
+            if is_union {
+                offsets.push((name.clone(), 0));
+                union_size = union_size.max(size);
+            } else {
+                offset = align_up(offset, field_align);
+                offsets.push((name.clone(), offset));
+                offset += size;
+            }
+        }
     }
-    let size = (offset + struct_align - 1) & !(struct_align - 1);
-    (size, offsets)
+    struct_align = struct_align.max(explicit_align.unwrap_or(1));
+    let raw_size = if is_union { union_size } else { offset };
+    AggregateLayout {
+        size: align_up(raw_size, struct_align),
+        align: struct_align,
+        offsets,
+        bit_fields,
+    }
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    (value + align - 1) & !(align - 1)
 }
 
 /// Returns `true` if the item should be included on this host based on @cfg attributes.
@@ -394,8 +477,13 @@ impl Analyzer {
             library_symbols: Vec::new(),
             explicitly_imported_fns: std::collections::HashMap::new(),
             struct_defs: HashMap::new(),
+            struct_field_bit_widths: HashMap::new(),
             struct_generic_params: HashMap::new(),
             repr_c_structs: std::collections::HashSet::new(),
+            repr_c_unions: std::collections::HashSet::new(),
+            repr_c_packed: std::collections::HashSet::new(),
+            repr_c_alignments: HashMap::new(),
+            flexible_array_structs: std::collections::HashSet::new(),
             derived_traits: HashMap::new(),
             trait_impls: HashMap::new(),
             trait_method_slots: HashMap::new(),
@@ -567,7 +655,18 @@ impl Analyzer {
                 .iter()
                 .map(|(name, fields)| {
                     let size = if self.repr_c_structs.contains(name) {
-                        ffi_struct_layout(fields, &self.type_aliases).0
+                        ffi_aggregate_layout(
+                            fields,
+                            self.struct_field_bit_widths
+                                .get(name)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]),
+                            &self.type_aliases,
+                            self.repr_c_unions.contains(name),
+                            self.repr_c_packed.contains(name),
+                            self.repr_c_alignments.get(name).copied(),
+                        )
+                        .size
                     } else {
                         fields.len() * 8
                     };
@@ -579,7 +678,18 @@ impl Analyzer {
                 .iter()
                 .map(|(name, fields)| {
                     let offsets = if self.repr_c_structs.contains(name) {
-                        ffi_struct_layout(fields, &self.type_aliases).1
+                        ffi_aggregate_layout(
+                            fields,
+                            self.struct_field_bit_widths
+                                .get(name)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]),
+                            &self.type_aliases,
+                            self.repr_c_unions.contains(name),
+                            self.repr_c_packed.contains(name),
+                            self.repr_c_alignments.get(name).copied(),
+                        )
+                        .offsets
                     } else {
                         fields
                             .iter()
@@ -588,6 +698,48 @@ impl Analyzer {
                             .collect()
                     };
                     (name.clone(), offsets)
+                })
+                .collect(),
+            bit_field_layouts: self
+                .struct_defs
+                .iter()
+                .filter(|(name, _)| self.repr_c_structs.contains(*name))
+                .map(|(name, fields)| {
+                    let layout = ffi_aggregate_layout(
+                        fields,
+                        self.struct_field_bit_widths
+                            .get(name)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        &self.type_aliases,
+                        self.repr_c_unions.contains(name),
+                        self.repr_c_packed.contains(name),
+                        self.repr_c_alignments.get(name).copied(),
+                    );
+                    (name.clone(), layout.bit_fields)
+                })
+                .collect(),
+            struct_alignments: self
+                .struct_defs
+                .iter()
+                .map(|(name, fields)| {
+                    let align = if self.repr_c_structs.contains(name) {
+                        ffi_aggregate_layout(
+                            fields,
+                            self.struct_field_bit_widths
+                                .get(name)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]),
+                            &self.type_aliases,
+                            self.repr_c_unions.contains(name),
+                            self.repr_c_packed.contains(name),
+                            self.repr_c_alignments.get(name).copied(),
+                        )
+                        .align
+                    } else {
+                        8
+                    };
+                    (name.clone(), align)
                 })
                 .collect(),
             trait_impls: self.trait_impls.clone(),
@@ -611,6 +763,8 @@ impl Analyzer {
             fn_param_names: self.fn_param_names.clone(),
             exported_symbols: self.exported_symbols.clone(),
             repr_c_structs: self.repr_c_structs.clone(),
+            repr_c_unions: self.repr_c_unions.clone(),
+            flexible_array_structs: self.flexible_array_structs.clone(),
             namespaced_paths: self.namespaced_paths.clone(),
             main_takes_args: self.main_takes_args,
         }
@@ -644,6 +798,7 @@ impl Analyzer {
         self.trait_depth = 0;
         self.explicitly_imported_fns.clear(); // HashMap::clear
         self.struct_defs.clear();
+        self.struct_field_bit_widths.clear();
         self.struct_generic_params.clear();
         self.derived_traits.clear();
         self.trait_impls.clear();
@@ -653,6 +808,10 @@ impl Analyzer {
         self.fn_param_names.clear();
         self.exported_symbols.clear();
         self.repr_c_structs.clear();
+        self.repr_c_unions.clear();
+        self.repr_c_packed.clear();
+        self.repr_c_alignments.clear();
+        self.flexible_array_structs.clear();
         self.main_takes_args = false;
         self.current_fn_name_override = None;
         self.current_module_path = None;
@@ -952,6 +1111,12 @@ impl Analyzer {
                     elem_ty.span,
                 )),
                 len: *len,
+            },
+            TypeKind::FlexibleArray { elem_ty } => TypeKind::FlexibleArray {
+                elem_ty: Box::new(Spanned::new(
+                    self.resolve_type_aliases(&elem_ty.node),
+                    elem_ty.span,
+                )),
             },
             TypeKind::Slice { elem_ty } => TypeKind::Slice {
                 elem_ty: Box::new(Spanned::new(
@@ -3716,6 +3881,79 @@ fn main() void {
             report.errors.is_empty(),
             "byte-string operations should typecheck: {:?}",
             report.errors
+        );
+    }
+
+    #[test]
+    fn ffi_union_packed_alignment_and_bitfield_layouts_are_recorded() {
+        let report = analyze(
+            r#"
+@repr(C) union Number { integer: i32, decimal: f64 }
+@repr(C, packed, align=8) struct Header { tag: u8, value: u32 }
+@repr(C) struct Flags { low: u32:3, high: u32:5, tail: u16:4 }
+
+fn main() void {
+    var number = Number { integer: 7 };
+    unsafe {
+        var value: i32 = number.integer;
+        number.decimal = 1.0;
+    }
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "aggregate layouts: {:?}",
+            report.errors
+        );
+        assert!(report.repr_c_unions.contains("Number"));
+        assert_eq!(report.struct_sizes.get("Number"), Some(&8));
+        assert_eq!(
+            report.struct_field_offsets.get("Header"),
+            Some(&vec![("tag".to_string(), 0), ("value".to_string(), 1),])
+        );
+        assert_eq!(report.struct_sizes.get("Header"), Some(&8));
+        assert_eq!(report.struct_alignments.get("Header"), Some(&8));
+        let flags = report.bit_field_layouts.get("Flags").unwrap();
+        assert_eq!(flags["low"].bit_offset, 0);
+        assert_eq!(flags["high"].bit_offset, 3);
+        assert_eq!(flags["tail"].byte_offset, 4);
+        assert_eq!(report.struct_sizes.get("Flags"), Some(&8));
+    }
+
+    #[test]
+    fn ffi_flexible_array_is_final_pointer_only_and_has_zero_size_contribution() {
+        let report = analyze(
+            r#"
+@repr(C) struct Packet { length: u32, data: [u8; ..] }
+@api("consume") unsafe fn consume(packet: *Packet);
+unsafe fn first(packet: *Packet) u8 { ret (*packet).data[0]; }
+fn main() void { }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "flexible array layout: {:?}",
+            report.errors
+        );
+        assert_eq!(report.struct_sizes.get("Packet"), Some(&4));
+        assert_eq!(
+            report.struct_field_offsets.get("Packet"),
+            Some(&vec![("length".to_string(), 0), ("data".to_string(), 4),])
+        );
+
+        let by_value = analyze(
+            r#"
+@repr(C) struct Packet { length: u32, data: [u8; ..] }
+@api("consume") unsafe fn consume(packet: Packet);
+fn main() void { }
+"#,
+        );
+        assert!(
+            by_value
+                .errors
+                .iter()
+                .any(|error| { error.message.contains("unsupported C ABI type") })
         );
     }
 
