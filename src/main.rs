@@ -9,6 +9,7 @@ pub mod bytecode;
 pub mod cli;
 mod header;
 pub mod lexer;
+mod libraries;
 pub mod loader;
 mod lsp;
 pub mod parser;
@@ -441,6 +442,36 @@ fn project_output_name(name: &str, emit: EmitType) -> String {
     }
 }
 
+/// Путь до артефакта внутри `<root>/build/`. Создаёт директорию при необходимости.
+fn project_build_path(root: &Path, name: &str, emit: EmitType) -> PathBuf {
+    let dir = root.join("build");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
+            dir.display(),
+            e
+        );
+        std::process::exit(1);
+    }
+    dir.join(project_output_name(name, emit))
+}
+
+/// Путь до артефакта с произвольным именем файла внутри `<root>/build/`.
+/// Используется для библиотек (`libfoo.a` / `libfoo.so`), где имя не проходит
+/// через `project_output_name`.
+fn project_build_named(root: &Path, file_name: &str) -> PathBuf {
+    let dir = root.join("build");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
+            dir.display(),
+            e
+        );
+        std::process::exit(1);
+    }
+    dir.join(file_name)
+}
+
 fn abs_path(name: &str) -> PathBuf {
     let p = PathBuf::from(name);
     if p.is_absolute() {
@@ -469,7 +500,7 @@ fn load_project_context() -> ProjectContext {
 
 fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
     let mut flags = ctx.config.flags.clone();
-    let object_dir = ctx.config.root.join("target").join("ffi");
+    let object_dir = ctx.config.root.join("build").join("ffi");
     if !ctx.config.cc.sources.is_empty() {
         std::fs::create_dir_all(&object_dir).map_err(|e| {
             format!(
@@ -487,10 +518,12 @@ fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
             .ok_or_else(|| format!("invalid C source path: {}", source.display()))?;
         let object = object_dir.join(format!("{stem}.o"));
         let mut command = std::process::Command::new(&cc);
-        command.arg("-c").arg(source).arg("-o").arg(&object);
-        if !cfg!(target_os = "windows") {
-            command.arg("-fPIC");
-        }
+        command
+            .arg("-c")
+            .arg(source)
+            .arg("-o")
+            .arg(&object)
+            .arg("-fPIC");
         for include in &ctx.config.cc.include_paths {
             command.arg(format!("-I{}", include.display()));
         }
@@ -545,12 +578,12 @@ fn compile_direct_c_sources(sources: &[PathBuf]) -> Result<Vec<PathBuf>, String>
     let mut objects: Vec<PathBuf> = Vec::new();
     for (index, source) in sources.iter().enumerate() {
         let object = std::env::temp_dir().join(format!("qz_cc_{}_{}.o", std::process::id(), index));
-        let mut command = std::process::Command::new(&cc);
-        command.arg("-c").arg(source).arg("-o").arg(&object);
-        if !cfg!(target_os = "windows") {
-            command.arg("-fPIC");
-        }
-        let output = command
+        let output = std::process::Command::new(&cc)
+            .arg("-c")
+            .arg(source)
+            .arg("-o")
+            .arg(&object)
+            .arg("-fPIC")
             .output()
             .map_err(|e| format!("failed to run C compiler {:?}: {e}", cc))?;
         if !output.status.success() {
@@ -591,10 +624,12 @@ fn scaffold_project(root: &PathBuf, pkg_name: &str, lib: bool) {
         std::process::exit(1);
     });
 
+    let libraries_section = "\n[libraries]\nstd = { type = \"git\", url = \"https://github.com/quazilang/std.git\", path = \"~/.quazi/std\" }\n";
+
     if lib {
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\ntype = \"lib\"\n\n[build]\nentry = \"src/lib.qz\"\nsrc = \"src\"\n",
-            pkg_name
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\ntype = \"lib\"\n\n[build]\nentry = \"src/lib.qz\"\nsrc = \"src\"\n{}",
+            pkg_name, libraries_section
         );
         write_file(&root.join("quazi.toml"), &toml);
 
@@ -605,8 +640,8 @@ fn scaffold_project(root: &PathBuf, pkg_name: &str, lib: bool) {
         write_file(&src_dir.join("lib.qz"), &lib_src);
     } else {
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[build]\nentry = \"src/main.qz\"\nsrc = \"src\"\n",
-            pkg_name
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[build]\nentry = \"src/main.qz\"\nsrc = \"src\"\n{}",
+            pkg_name, libraries_section
         );
         write_file(&root.join("quazi.toml"), &toml);
 
@@ -704,27 +739,21 @@ fn format_project_sources() {
 fn clean_project_artifacts() {
     let ctx = load_project_context();
     let root = &ctx.config.root;
-    let bin_name = project_output_name(&ctx.config.name, EmitType::Binary);
 
-    let mut targets: HashSet<PathBuf> = HashSet::new();
-    targets.insert(root.join(&bin_name));
-    targets.insert(root.join(format!("{}.o", ctx.config.name)));
-    targets.insert(root.join(format!("{}.qzi", ctx.config.name)));
-
-    let mut removed = 0usize;
-    for path in targets {
-        if path.exists() {
-            std::fs::remove_file(&path).unwrap_or_else(|e| {
-                eprintln!(
-                    "\x1b[31;1merror:\x1b[0m cannot remove {}: {}",
-                    path.display(),
-                    e
-                );
-                std::process::exit(1);
-            });
-            removed += 1;
-        }
-    }
+    let build_dir = root.join("build");
+    let removed = if build_dir.exists() {
+        std::fs::remove_dir_all(&build_dir).unwrap_or_else(|e| {
+            eprintln!(
+                "\x1b[31;1merror:\x1b[0m cannot remove {}: {}",
+                build_dir.display(),
+                e
+            );
+            std::process::exit(1);
+        });
+        1usize
+    } else {
+        0usize
+    };
 
     if removed == 0 {
         println!("no build artifacts found");
@@ -1063,11 +1092,17 @@ fn main() {
                 let entry = ctx.config.entry.clone();
                 let out = output.clone().unwrap_or_else(|| {
                     if static_lib {
-                        format!("lib{}.a", ctx.config.name)
+                        project_build_named(&ctx.config.root, &format!("lib{}.a", ctx.config.name))
+                            .to_string_lossy()
+                            .into_owned()
                     } else if shared_lib {
-                        format!("lib{}.so", ctx.config.name)
+                        project_build_named(&ctx.config.root, &format!("lib{}.so", ctx.config.name))
+                            .to_string_lossy()
+                            .into_owned()
                     } else {
-                        project_output_name(&ctx.config.name, effective_emit.clone())
+                        project_build_path(&ctx.config.root, &ctx.config.name, effective_emit.clone())
+                            .to_string_lossy()
+                            .into_owned()
                     }
                 });
                 let mut link_flags = native_link_flags(&ctx).unwrap_or_else(|e| {

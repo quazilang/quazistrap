@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::libraries::RawLibrary;
 use crate::loader::{ModuleResolver, ModuleSpec};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +47,7 @@ pub struct LinkConfig {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedDependency {
+    // NOTE: also used to represent resolved `[libraries]` entries.
     pub name: String,
     pub root: PathBuf,
     pub requested_version: Option<String>,
@@ -63,6 +65,7 @@ struct RawConfig {
     package: Option<RawPackage>,
     build: Option<RawBuild>,
     dependencies: Option<BTreeMap<String, RawDependency>>,
+    libraries: Option<BTreeMap<String, RawLibrary>>,
     cc: Option<RawCc>,
     link: Option<RawLink>,
 }
@@ -118,6 +121,7 @@ struct ProjectMeta {
     src_dir: PathBuf,
     flags: Vec<String>,
     dependencies: Vec<DependencySpec>,
+    libraries: BTreeMap<String, RawLibrary>,
     cc: CcConfig,
     link: LinkConfig,
 }
@@ -192,6 +196,15 @@ impl ProjectContext {
             &mut resolver,
             &mut visited,
             None,
+            &config.name,
+            &mut dep_versions,
+        )?;
+
+        crate::libraries::resolve_libraries(
+            root,
+            &meta.libraries,
+            &mut resolver,
+            &mut visited,
             &config.name,
             &mut dep_versions,
         )?;
@@ -303,8 +316,14 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
     };
     let entry = root.join(build.entry.unwrap_or_else(|| default_entry.to_string()));
 
-    if !entry.exists() {
-        return Err(format!("entry file not found: {}", entry.to_string_lossy()));
+    // Only `src_dir` needs to exist to load this project's module graph.
+    // `entry` is only actually read when something does a bare
+    // `import <name>;` (no submodule) — validated lazily at that point
+    // (see loader.rs) instead of eagerly here, so dependencies/libraries
+    // whose `entry` happens to be stale/wrong (or simply unused) don't
+    // break builds that never touch it.
+    if !src_dir.exists() {
+        return Err(format!("src directory not found: {}", src_dir.to_string_lossy()));
     }
 
     let mut dependencies = Vec::new();
@@ -331,6 +350,7 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         src_dir,
         flags: build.flags.unwrap_or_default(),
         dependencies,
+        libraries: raw.libraries.unwrap_or_default(),
         cc,
         link,
     })
@@ -342,7 +362,7 @@ fn read_raw_config(path: &Path) -> Result<RawConfig, String> {
     toml::from_str(&text).map_err(|e| format!("cannot parse '{}': {}", path.to_string_lossy(), e))
 }
 
-fn collect_modules(
+pub(crate) fn collect_modules(
     root: &Path,
     resolver: &mut ModuleResolver,
     visited: &mut HashSet<PathBuf>,
