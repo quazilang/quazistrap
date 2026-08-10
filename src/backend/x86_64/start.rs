@@ -397,6 +397,8 @@ impl StartStub {
         let mut next_env = asm.create_label();
         emit!(asm.mov(rcx, qword_ptr(rbx))); // argc
         emit!(asm.lea(rsi, qword_ptr(rbx + rcx * 8 + 16i32))); // envp
+        lea_rip!(rax, "__quazi_envp");
+        emit!(asm.mov(qword_ptr(rax), rsi));
         emit!(asm.set_label(&mut env_loop));
         emit!(asm.mov(rax, qword_ptr(rsi)));
         emit!(asm.test(rax, rax));
@@ -659,6 +661,12 @@ impl StartStub {
         let startup_idx = asm.instructions().len();
 
         emit!(asm.xor(ebp, ebp));
+
+        emit!(asm.mov(rbx, rsp));
+        emit!(asm.mov(rcx, qword_ptr(rbx)));
+        emit!(asm.lea(rsi, qword_ptr(rbx + rcx * 8 + 16i32)));
+        lea_rip!(rax, "__quazi_envp");
+        emit!(asm.mov(qword_ptr(rax), rsi));
 
         // open("/proc/self/environ", O_RDONLY)
         emit!(asm.mov(rax, 2i64));

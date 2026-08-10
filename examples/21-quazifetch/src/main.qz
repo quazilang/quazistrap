@@ -1,0 +1,317 @@
+import std.core;
+import std.fs;
+import std.io;
+import std.os;
+
+fn str_eq(a: str, b: str) bool {
+    const a_len: usize = core.strlen(a);
+    const b_len: usize = core.strlen(b);
+    if (a_len != b_len) { ret false; }
+    var i: usize = 0;
+    for (i < a_len) {
+        if (core.str_byte_at(a, i) != core.str_byte_at(b, i)) { ret false; }
+        i++;
+    }
+    ret true;
+}
+
+@cfg(target_os = "linux")
+fn starts_at(text: str, offset: usize, needle: str) bool {
+    const text_len: usize = core.strlen(text);
+    const needle_len: usize = core.strlen(needle);
+    if (offset + needle_len > text_len) { ret false; }
+    var i: usize = 0;
+    for (i < needle_len) {
+        if (core.str_byte_at(text, offset + i) != core.str_byte_at(needle, i)) {
+            ret false;
+        }
+        i++;
+    }
+    ret true;
+}
+
+@cfg(target_os = "linux")
+fn find_byte(text: str, start: usize, target: u8) usize {
+    const length: usize = core.strlen(text);
+    var i: usize = start;
+    for (i < length) {
+        if (core.str_byte_at(text, i) == target) { ret i; }
+        i++;
+    }
+    ret length;
+}
+
+@cfg(target_os = "linux")
+fn skip_byte(text: str, start: usize, target: u8) usize {
+    if (start >= core.strlen(text)) { ret start; }
+    if (core.str_byte_at(text, start) != target) { ret start; }
+    ret skip_byte(text, start + 1, target);
+}
+
+// Copy trusted UTF-8 into an owned String. The raw allocation is immediately
+// transferred to String, so application code never needs a matching free call.
+fn copy_range(text: str, start: usize, end: usize) String {
+    if (end <= start) { ret String.new(); }
+    const length: usize = end - start;
+    var data: *u8 = 0;
+    unsafe { data = core.malloc(length + 1); }
+    if (data == 0) { ret String.new(); }
+    unsafe {
+        core.memcpy(data, core.str_as_ptr(text) + start, length);
+        *(data + length) = 0;
+    }
+    var result: String = String.new();
+    unsafe { result = String.from_raw(data, length, length + 1); }
+    ret result;
+}
+
+@cfg(target_os = "linux")
+fn trim_copy(text: str) String {
+    const length: usize = core.strlen(text);
+    var start: usize = 0;
+    for (start < length) {
+        const byte: u8 = core.str_byte_at(text, start);
+        if (byte == 9) { start++; continue; }
+        if (byte == 10) { start++; continue; }
+        if (byte == 13) { start++; continue; }
+        if (byte == 32) { start++; continue; }
+        break;
+    }
+    var end: usize = length;
+    for (end > start) {
+        const byte: u8 = core.str_byte_at(text, end - 1);
+        if (byte == 9) { end--; continue; }
+        if (byte == 10) { end--; continue; }
+        if (byte == 13) { end--; continue; }
+        if (byte == 32) { end--; continue; }
+        break;
+    }
+    ret copy_range(text, start, end);
+}
+
+@cfg(target_os = "linux")
+fn value_after_key(text: str, key: str) String {
+    const length: usize = core.strlen(text);
+    const key_len: usize = core.strlen(key);
+    var i: usize = 0;
+    for (i + key_len <= length) {
+        if (starts_at(text, i, key)) {
+            const colon: usize = find_byte(text, i + key_len, 58);
+            if (colon >= length) { ret String.from("unknown"); }
+            var start: usize = skip_byte(text, colon + 1, 9);
+            start = skip_byte(text, start, 32);
+            var end: usize = find_byte(text, start, 10);
+            if (end > start && core.str_byte_at(text, end - 1) == 13) { end--; }
+            ret copy_range(text, start, end);
+        }
+        i++;
+    }
+    ret String.from("unknown");
+}
+
+fn basename_of(path: String) String {
+    const text: str = path.as_str();
+    const length: usize = path.len();
+    var start: usize = 0;
+    var i: usize = 0;
+    for (i < length) {
+        const byte: u8 = core.str_byte_at(text, i);
+        if (byte == 47 || byte == 92) { start = i + 1; }
+        i++;
+    }
+    ret copy_range(text, start, length);
+}
+
+@cfg(target_os = "linux")
+fn capitalize(value: String) String {
+    if (value.is_empty()) { ret value; }
+    const text: str = value.as_str();
+    var first: u8 = core.str_byte_at(text, 0);
+    if (first >= 97 && first <= 122) { first = first - 32; }
+    var data: *u8 = 0;
+    unsafe { data = core.malloc(value.len() + 1); }
+    if (data == 0) { ret String.new(); }
+    unsafe {
+        core.memcpy(data, core.str_as_ptr(text), value.len() + 1);
+        *data = first;
+    }
+    var result: String = String.new();
+    unsafe { result = String.from_raw(data, value.len(), value.len() + 1); }
+    ret result;
+}
+
+// Adopt the primitive formatter's owning allocation into lexical String
+// ownership so Whole Program Analysis can destroy it automatically.
+fn owned_u64(value: u64) String {
+    const raw: str = value.to_string();
+    const length: usize = core.strlen(raw);
+    var result: String = String.new();
+    unsafe { result = String.from_raw(core.str_as_ptr(raw), length, 80); }
+    ret result;
+}
+
+@cfg(target_os = "linux")
+fn get_os() String {
+    const read: Result[String, i32] = fs.read_to_string("/proc/sys/kernel/osrelease");
+    if (read.is_ok()) {
+        const raw_release: String = read.unwrap();
+        const release: String = trim_copy(raw_release.as_str());
+        var result: String = String.from(os.name());
+        result = result.push_str(" ");
+        result = result.push_str(release.as_str());
+        ret result;
+    }
+    ret String.from(os.name());
+}
+
+@cfg(target_os = "windows")
+fn get_os() String { ret String.from(os.name()); }
+
+@cfg(target_os = "windows")
+fn get_cpu() String {
+    ret os.env("PROCESSOR_IDENTIFIER", "unknown");
+}
+
+@cfg(target_os = "linux")
+fn get_cpu() String {
+    const read: Result[String, i32] = fs.read_to_string("/proc/cpuinfo");
+    if (read.is_ok()) {
+        const info: String = read.unwrap();
+        const model: String = value_after_key(info.as_str(), "model name");
+        ret model;
+    }
+    ret String.from("unknown");
+}
+
+fn get_memory() String {
+    const total: u64 = os.memory_total();
+    const available: u64 = os.memory_available();
+    var used: u64 = 0;
+    if (available <= total) { used = total - available; }
+    const mib: u64 = 1048576;
+    const used_text: String = owned_u64(used / mib);
+    const total_text: String = owned_u64(total / mib);
+    var result: String = String.from(used_text.as_str());
+    result = result.push_str(" MiB / ");
+    result = result.push_str(total_text.as_str());
+    result = result.push_str(" MiB");
+    ret result;
+}
+
+@cfg(target_os = "windows")
+fn get_shell() String {
+    ret basename_of(os.env("COMSPEC", "unknown"));
+}
+
+@cfg(target_os = "linux")
+fn get_shell() String {
+    ret basename_of(os.env("SHELL", "unknown"));
+}
+
+@cfg(target_os = "windows")
+fn get_desktop() String {
+    ret os.env("SESSIONNAME", "Windows");
+}
+
+@cfg(target_os = "linux")
+fn get_desktop() String {
+    const desktop: String = os.env("XDG_CURRENT_DESKTOP", "");
+    const session: String = os.env("XDG_SESSION_TYPE", "");
+    if (desktop.is_empty() && session.is_empty()) { ret String.from("Unknown"); }
+    var result: String = String.from(desktop.as_str());
+    if (!session.is_empty()) {
+        const display_session: String = capitalize(session);
+        if (!result.is_empty()) { result = result.push_str(" ("); }
+        result = result.push_str(display_session.as_str());
+        if (!desktop.is_empty()) { result = result.push_str(")"); }
+    }
+    ret result;
+}
+
+fn normalized_terminal(value: String) String {
+    const terminal: str = value.as_str();
+    if (str_eq(terminal, "kgx")) { ret String.from("GNOME Console"); }
+    if (str_eq(terminal, "iTerm.app")) { ret String.from("iTerm2"); }
+    if (str_eq(terminal, "Terminal.app")) { ret String.from("Apple Terminal"); }
+    if (str_eq(terminal, "Hyper")) { ret String.from("HyperTerm"); }
+    if (str_eq(terminal, "rxvt-unicode-256color")) { ret String.from("urxvt"); }
+    if (str_eq(terminal, "xterm-256color")) { ret String.from("xterm"); }
+    if (str_eq(terminal, "xterm-kitty")) { ret String.from("kitty"); }
+    if (str_eq(terminal, "linux")) { ret String.from("tty"); }
+    ret value;
+}
+
+fn get_terminal() String {
+    @cfg(target_os = "windows") {
+        const windows_terminal: String = os.env("WT_SESSION", "");
+        if (!windows_terminal.is_empty()) { ret String.from("Windows Terminal"); }
+    }
+    const program: String = os.env("TERM_PROGRAM", "");
+    if (!program.is_empty()) { ret normalized_terminal(program); }
+    ret normalized_terminal(os.env("TERM", "unknown"));
+}
+
+fn append_tag(result: String, present: bool, tag: str) String {
+    if (!present) { ret result; }
+    if (!result.is_empty()) { result = result.push_str(", "); }
+    result = result.push_str(tag);
+    ret result;
+}
+
+fn get_packages() String {
+    var result: String = String.new();
+    @cfg(target_os = "linux") {
+        result = append_tag(result, fs.exists("/var/lib/dpkg/status"), "apt");
+        result = append_tag(result, fs.exists("/var/lib/pacman/local"), "pacman");
+        result = append_tag(result, fs.exists("/var/lib/rpm"), "rpm");
+        result = append_tag(result, fs.exists("/lib/apk/db/installed"), "apk");
+        result = append_tag(result, fs.exists("/var/db/xbps"), "xbps");
+        result = append_tag(result, fs.exists("/nix/store"), "nix");
+        result = append_tag(result, fs.exists("/var/lib/flatpak"), "flatpak");
+    }
+    @cfg(target_os = "windows") {
+        const chocolatey: String = os.env("ChocolateyInstall", "");
+        const scoop: String = os.env("SCOOP", "");
+        const local: String = os.env("LOCALAPPDATA", "");
+        result = append_tag(result, !chocolatey.is_empty(), "choco");
+        result = append_tag(result, !scoop.is_empty(), "scoop");
+        if (!local.is_empty()) {
+            var winget: String = String.from(local.as_str());
+            winget = winget.push_str("\\Microsoft\\WindowsApps\\winget.exe");
+            result = append_tag(result, fs.exists(winget.as_str()), "winget");
+        }
+    }
+    if (result.is_empty()) { ret String.from("unknown"); }
+    ret result;
+}
+
+fn row(color: str, label: str, value: str) void {
+    io.print("\e[{}m  {}\e[0m  {}\n", color, label, value);
+}
+
+fn main() void {
+    const hostname: String = os.hostname();
+    const system: String = get_os();
+    const cpu: String = get_cpu();
+    const memory: String = get_memory();
+    const shell: String = get_shell();
+    const desktop: String = get_desktop();
+    const terminal: String = get_terminal();
+    const packages: String = get_packages();
+
+    io.println("");
+    io.println("  \e[1;96m+--------------------+");
+    io.println("  |   \e[1;97m~ quazifetch ~\e[1;96m   |");
+    io.println("  +--------------------+\e[0m");
+    io.println("");
+    row("1;33", "host  ", hostname.as_str());
+    row("1;32", "os    ", system.as_str());
+    row("1;35", "pkgs  ", packages.as_str());
+    row("1;34", "shell ", shell.as_str());
+    row("1;31", "de/wm ", desktop.as_str());
+    row("1;36", "term  ", terminal.as_str());
+    io.println("");
+    row("1;32", "cpu   ", cpu.as_str());
+    row("1;31", "ram   ", memory.as_str());
+    io.println("");
+}

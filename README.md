@@ -223,13 +223,13 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 |--------|-------------|
 | `std.io` | `println`, `print`, `eprintln`, `read_line` |
 | `std.fmt` | `format("{}", ...)` — `{}` placeholder formatting |
-| `std.string` | `String`: owned heap string with push, free |
+| `std.string` | `String`: owned heap string with automatic lexical cleanup |
 | `std.collections.array` | `Array[T]`: dynamic array with index, push, iteration |
 | `std.collections.map` | Hash map with open-addressing |
 | `std.collections.set` | Hash set |
-| `std.fs` | File open/read/write/close/seek |
+| `std.fs` | Cross-platform owned files, whole-file reads, paths, and metadata |
 | `std.net` | `TcpListener`, `TcpStream`, `UdpSocket` |
-| `std.os` | exit, sleep, getpid, getenv, cwd |
+| `std.os` | Cross-platform environment, hostname, memory, process, and OS queries |
 | `std.thread` | spawn/join |
 | `std.option` | `Option[T]` + `?` operator |
 | `std.result` | `Result[T, E]` + `?` operator |
@@ -262,6 +262,8 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 | [`17-constfold`](examples/17-constfold/) | Cross-basic-block constant propagation |
 | [`18-formatting`](examples/18-formatting/) | Formatting, raw strings, ANSI, and escape sequences |
 | [`19-cvariadics`](examples/19-cvariadics/) | C-style variadic `@api` via bare `...` — calls libc `printf` |
+| [`20-ffi-abi`](examples/20-ffi-abi/) | Portable phase-two C ABI interoperation |
+| [`21-quazifetch`](examples/21-quazifetch/) | Shell-free Windows/Linux system information with automatic cleanup |
 
 ---
 

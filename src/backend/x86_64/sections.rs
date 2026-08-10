@@ -188,6 +188,8 @@ impl SectionAccumulator {
         // Trace-enable flag (set by _start when QUAZI_TRACE=1).
         let trace_offset = obj.append_section_data(self.data_id, &[0u8], 1);
         sym_table.define_data(obj, self.data_id, "__quazi_trace_enabled", trace_offset, 1);
+        let envp_offset = obj.append_section_data(self.data_id, &[0u8; 8], 8);
+        sym_table.define_data(obj, self.data_id, "__quazi_envp", envp_offset, 8);
 
         chunks
             .iter()
