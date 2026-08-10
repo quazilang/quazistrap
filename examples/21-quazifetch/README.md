@@ -17,14 +17,28 @@ cross-target flag.
 
 | Value | Linux | Windows |
 |---|---|---|
-| Hostname | `uname(2)` intrinsic | `GetComputerNameA` intrinsic |
+| Hostname | `uname(2)` intrinsic, normalized lowercase | `GetComputerNameA` intrinsic, normalized lowercase |
 | Memory | `sysinfo(2)` intrinsic | `GlobalMemoryStatusEx` intrinsic |
-| CPU | `/proc/cpuinfo` via `std.fs` | `PROCESSOR_IDENTIFIER` |
-| Packages | Known package databases | Package-manager environment/path probes |
+| CPU | `/proc/cpuinfo` via `std.fs` | CPUID processor brand leaves |
+| OS release | Kernel release | shared kernel build number plus `GetProductInfo` edition |
+| Shell | `$SHELL` | Toolhelp parent-process ancestry |
+| Terminal | `$TERM_PROGRAM` / `$TERM` | `WT_SESSION` plus parent-process ancestry |
+| Packages | Package databases and package directories | Package-manager-owned package directories |
 | Files | Linux syscalls via `std.fs.File` | Win32 handles via `std.fs.File` |
 
-Package output reports detected package-manager families instead of executing
-package managers. This is deterministic, safe, lightweight, and shell-free.
+Package output includes the discovered count, for example `apt (425)` or
+`choco (3)`. Debian/APK counts come from their installed-package databases;
+Pacman, XBPS, Nix, Flatpak, Chocolatey, Scoop, and WinGet portable-package
+counts use manager-owned directories through `std.fs.count_entries`. When no
+Windows package-manager metadata exists, the example counts the per-user
+AppX/MSIX store and reports `appx (N)`. Restricted/minimal Windows sessions
+fall back to the system package cache, then the immediate Program Files entries,
+reported explicitly as `package-cache (N)` or `programs (N)`. No package manager
+or shell is executed, and the label always identifies what was actually counted.
+
+Windows Terminal is detected from `WT_SESSION` when inherited, then from the
+process ancestry. A program launched through an ordinary console correctly
+reports `Windows Console` instead of claiming Windows Terminal.
 
 ## Ownership
 

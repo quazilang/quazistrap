@@ -221,7 +221,7 @@ If a `quazi.lock` file exists, it is used to pin dependency versions. When missi
 
 | Module | Status | Notes |
 |--------|--------|-------|
-| `core` | Done | write/read/exit, memory/string primitives, numeric formatting, hostname/memory intrinsics, and an explicit raw string-pointer escape hatch |
+| `core` | Done | write/read/exit, memory/string primitives, numeric formatting, hostname/memory/CPUID and Windows release intrinsics, and an explicit raw string-pointer escape hatch |
 | `io` | Done | println, print, eprintln, eprint, read_line — str_variadic |
 | `fmt` | Done | `format(template, ...args: str)` — `{}` placeholders, spec-aware coercion |
 | `string` | Done | `String`: new, push, push_str, len, as_str, free |
@@ -236,9 +236,9 @@ If a `quazi.lock` file exists, it is used to pin dependency versions. When missi
 | `collections/set` | Done | fallible, non-panicking `usize` open-addressing set |
 | `unix` | Done | raw syscall wrappers |
 | `windows` | Done | Win32 API wrappers |
-| `fs` | Done | Cross-platform owned OS handles, automatic close, whole-file reads, paths, metadata, and mutation; Linux syscalls and Win32 APIs |
+| `fs` | Done | Cross-platform owned OS handles, automatic close, whole-file reads, paths, immediate entry counts, metadata, and mutation; Linux syscalls and Win32 APIs |
 | `net` | Done | TcpListener, TcpStream, UdpSocket |
-| `os` | Done | Cross-platform owned environment/hostname values, OS name, memory totals, process control, cwd, sleep, and scheduling |
+| `os` | Done | Cross-platform owned environment/hostname values, release/edition, CPUID branding, shell/terminal ancestry, memory totals, process control, cwd, sleep, and scheduling |
 | `thread` | Done | spawn/join. No-capture only. |
 | `ffi` | Initial | Cross-platform C aliases, `nullptr[T]()`, `CStr`, and checked `CString.try_from(bytes)`. |
 
@@ -317,6 +317,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-10 | Corrected `21-quazifetch` system identity and package reporting: normalized hostnames, added CPUID CPU branding, unmanifested Windows build/edition detection, Toolhelp shell/terminal ancestry, Explorer labeling, and counted package metadata. Added automatically-owned cross-platform directory enumeration through `getdents64`/Win32 find handles and moved temporary stdlib buffers to destructor-backed ownership adapters. |
 | 2026-08-10 | Made `21-quazifetch` shell-free and portable across Windows/Linux using cross-platform `std.fs`/`std.os`; added hostname and memory intrinsics, kernel-provided Linux environment access, pointer-correct Win32 filesystem bindings, and CRT-free Windows allocation/string paths used by the example. Extended WPO-driven RAII so owned by-value parameters clean up on fallthrough and early returns without suppressing sibling-path cleanup, while returns transfer ownership and method receivers remain borrowed. |
 | 2026-08-10 | Documented the built-in linker as a public contract in `docs/LINKER.md` and the README: selection/fallback rules, source/QZI/object workflows, ELF symbol/relocation and segment guarantees, embedded runtime behavior, explicit libc opt-in, diagnostics, and experimental limitations. Enforced the documented relocatable-object and allocated-section checks. |
 | 2026-08-10 | Started the experimental self-hosted linker: added an in-process static x86-64 ELF writer with checked relocations, W^X load segments and a non-executable stack; made native libraries and libc explicit; removed Linux startup's libc environment lookup; and embedded on-demand mmap-backed allocation/memory routines in compiler objects. |

@@ -393,6 +393,9 @@ impl Instruction {
                     27 => "quazi.os.memory_available",
                     28 => "quazi.os.hostname",
                     29 => "quazi.str.as_ptr",
+                    30 => "quazi.os.cpu_name",
+                    31 => "quazi.os.windows_build",
+                    32 => "quazi.os.windows_product",
                     _ => "?",
                 };
                 format!(
