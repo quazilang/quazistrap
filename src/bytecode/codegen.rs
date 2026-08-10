@@ -6561,6 +6561,34 @@ mod tests {
     }
 
     #[test]
+    fn conditional_assignment_does_not_become_unconditional_constant() {
+        let chunks = compile(
+            r#"fn choose(run: bool) i32 {
+                   var enabled: bool = false;
+                   if (run) { enabled = true; }
+                   if (enabled) { ret 11; }
+                   ret 22;
+               }"#,
+        );
+        let choose = chunks.iter().find(|chunk| chunk.name == "choose").unwrap();
+        assert!(
+            choose
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::MovI as u8
+                    && instruction.ri16().1 == 11)
+        );
+        assert!(
+            choose
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::MovI as u8
+                    && instruction.ri16().1 == 22),
+            "the path where the conditional assignment does not run must remain"
+        );
+    }
+
+    #[test]
     fn const_fold_reduces_instruction_count() {
         // Without folding: MovI, MovI, Add, Mov, Ret = 5
         // With folding:    MovI(3), Mov, Ret = 3

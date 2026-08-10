@@ -11,6 +11,15 @@ qz run
 qz check
 ```
 
+The generated executable uses the rounded Unicode frame by default. Pass `-a`
+(or `--ascii`) when running the executable in a terminal without Unicode box
+drawing support:
+
+```sh
+./21-quazifetch -a
+# Windows: .\21-quazifetch.exe -a
+```
+
 Run `qz check` (or `qz build -c`) on both Windows and Linux when validating a
 cross-platform change. The current command targets the host and has no
 cross-target flag.

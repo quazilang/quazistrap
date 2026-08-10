@@ -16,9 +16,9 @@ fn str_eq(a: str, b: str) bool {
 }
 
 @cfg(target_os = "linux")
-fn starts_at(text: str, offset: usize, needle: str) bool {
-    const text_len: usize = core.strlen(text);
-    const needle_len: usize = core.strlen(needle);
+fn starts_at_bounded(
+    text: str, offset: usize, needle: str, text_len: usize, needle_len: usize
+) bool {
     if (offset + needle_len > text_len) { ret false; }
     var i: usize = 0;
     for (i < needle_len) {
@@ -28,6 +28,13 @@ fn starts_at(text: str, offset: usize, needle: str) bool {
         i++;
     }
     ret true;
+}
+
+@cfg(target_os = "linux")
+fn starts_at(text: str, offset: usize, needle: str) bool {
+    ret starts_at_bounded(
+        text, offset, needle, core.strlen(text), core.strlen(needle)
+    );
 }
 
 @cfg(target_os = "linux")
@@ -50,6 +57,7 @@ fn skip_byte(text: str, start: usize, target: u8) usize {
 
 // Copy trusted UTF-8 into an owned String. The raw allocation is immediately
 // transferred to String, so application code never needs a matching free call.
+@cfg(target_os = "linux")
 fn copy_range(text: str, start: usize, end: usize) String {
     if (end <= start) { ret String.new(); }
     const length: usize = end - start;
@@ -65,6 +73,7 @@ fn copy_range(text: str, start: usize, end: usize) String {
     ret result;
 }
 
+@cfg(target_os = "linux")
 fn trim_copy(text: str) String {
     const length: usize = core.strlen(text);
     var start: usize = 0;
@@ -295,7 +304,7 @@ fn count_occurrences(text: str, needle: str) usize {
     var count: usize = 0;
     var offset: usize = 0;
     for (offset + needle_length <= length) {
-        if (starts_at(text, offset, needle)) {
+        if (starts_at_bounded(text, offset, needle, length, needle_length)) {
             count++;
             offset = offset + needle_length;
             continue;
@@ -386,7 +395,16 @@ fn row(color: str, label: str, value: str) void {
     io.print("\e[{}m  {}\e[0m  {}\n", color, label, value);
 }
 
-fn main() void {
+fn main(args: Array[str]) void {
+    var ascii: bool = false;
+    var arg_index: usize = 1;
+    for (arg_index < args.len()) {
+        if (str_eq(args[arg_index], "-a") || str_eq(args[arg_index], "--ascii")) {
+            ascii = true;
+        }
+        arg_index++;
+    }
+
     const raw_hostname: String = os.hostname();
     const hostname: String = lowercase_copy(raw_hostname.as_str());
     const system: String = get_os();
@@ -398,9 +416,15 @@ fn main() void {
     const packages: String = get_packages();
 
     io.println("");
-    io.println("  \e[1;96m+--------------------+");
-    io.println("  |   \e[1;97m~ quazifetch ~\e[1;96m   |");
-    io.println("  +--------------------+\e[0m");
+    if (ascii) {
+        io.println("  \e[1;96m+--------------------+");
+        io.println("  |   \e[1;97m~ quazifetch ~\e[1;96m   |");
+        io.println("  +--------------------+\e[0m");
+    } else {
+        io.println("  \e[1;96m╭────────────────────╮");
+        io.println("  │   \e[1;97m~ quazifetch ~\e[1;96m   │");
+        io.println("  ╰────────────────────╯\e[0m");
+    }
     io.println("");
     row("1;33", "host  ", hostname.as_str());
     row("1;32", "os    ", system.as_str());

@@ -1285,7 +1285,12 @@ impl StartStub {
             emit!(asm.xor(eax, eax));
             emit!(asm.jmp(args_malloc_done));
             emit!(asm.set_label(&mut args_malloc));
-            call_ext!("malloc", RelocKind::Plt32);
+            emit!(asm.mov(qword_ptr(rsp + 64i32), rcx));
+            call_ext!("GetProcessHeap", RelocKind::Plt32);
+            emit!(asm.mov(rcx, rax));
+            emit!(asm.xor(edx, edx));
+            emit!(asm.mov(r8, qword_ptr(rsp + 64i32)));
+            call_ext!("HeapAlloc", RelocKind::Plt32);
             emit!(asm.set_label(&mut args_malloc_done));
             emit!(asm.mov(r14, rax));
             let mut args_storage_ready = asm.create_label();
@@ -1311,8 +1316,11 @@ impl StartStub {
             emit!(asm.mov(qword_ptr(rsp + 56i32), 0i32));
             call_ext!("WideCharToMultiByte", RelocKind::Plt32);
             emit!(asm.mov(dword_ptr(rsp + 64i32), eax));
-            emit!(asm.mov(ecx, eax));
-            call_ext!("malloc", RelocKind::Plt32);
+            call_ext!("GetProcessHeap", RelocKind::Plt32);
+            emit!(asm.mov(rcx, rax));
+            emit!(asm.xor(edx, edx));
+            emit!(asm.mov(r8d, dword_ptr(rsp + 64i32)));
+            call_ext!("HeapAlloc", RelocKind::Plt32);
             emit!(asm.mov(qword_ptr(r14 + r15 * 8), rax));
             emit!(asm.mov(ecx, 65001i32));
             emit!(asm.xor(edx, edx));
@@ -1586,7 +1594,12 @@ impl StartStub {
             emit!(asm.xor(eax, eax));
             emit!(asm.jmp(args_malloc_done));
             emit!(asm.set_label(&mut args_malloc));
-            call_ext!("malloc", RelocKind::Plt32);
+            emit!(asm.mov(qword_ptr(rsp + 64i32), rcx));
+            call_ext!("GetProcessHeap", RelocKind::Plt32);
+            emit!(asm.mov(rcx, rax));
+            emit!(asm.xor(edx, edx));
+            emit!(asm.mov(r8, qword_ptr(rsp + 64i32)));
+            call_ext!("HeapAlloc", RelocKind::Plt32);
             emit!(asm.set_label(&mut args_malloc_done));
             emit!(asm.mov(r14, rax));
             let mut args_storage_ready = asm.create_label();
@@ -1611,8 +1624,11 @@ impl StartStub {
             emit!(asm.mov(qword_ptr(rsp + 56i32), 0i32));
             call_ext!("WideCharToMultiByte", RelocKind::Plt32);
             emit!(asm.mov(dword_ptr(rsp + 64i32), eax));
-            emit!(asm.mov(ecx, eax));
-            call_ext!("malloc", RelocKind::Plt32);
+            call_ext!("GetProcessHeap", RelocKind::Plt32);
+            emit!(asm.mov(rcx, rax));
+            emit!(asm.xor(edx, edx));
+            emit!(asm.mov(r8d, dword_ptr(rsp + 64i32)));
+            call_ext!("HeapAlloc", RelocKind::Plt32);
             emit!(asm.mov(qword_ptr(r14 + r15 * 8), rax));
             emit!(asm.mov(ecx, 65001i32));
             emit!(asm.xor(edx, edx));
@@ -1716,6 +1732,9 @@ mod tests {
             assert!(symbols.contains(&"CommandLineToArgvW"));
             assert!(symbols.contains(&"WideCharToMultiByte"));
             assert!(symbols.contains(&"LocalFree"));
+            assert!(symbols.contains(&"GetProcessHeap"));
+            assert!(symbols.contains(&"HeapAlloc"));
+            assert!(!symbols.contains(&"malloc"));
             assert!(!symbols.contains(&"__getmainargs"));
         }
     }
