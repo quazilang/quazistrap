@@ -2759,6 +2759,87 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(rax, slot(dst)));
                         emit!(asm.mov(slot(dst), rax));
                     }
+                    30 => {
+                        // CPUID processor brand string (extended leaves 2..4).
+                        let mut failed = asm.create_label();
+                        let mut scan = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r8, slot(dst)));
+                        emit!(asm.mov(r9, slot(dst + 1)));
+                        emit!(asm.cmp(r9, 49i32));
+                        emit!(asm.jb(failed));
+                        emit!(asm.mov(eax, i32::MIN)); // 0x80000000
+                        emit!(asm.cpuid());
+                        emit!(asm.cmp(eax, 0x80000004u32));
+                        emit!(asm.jb(failed));
+                        for (leaf, offset) in [
+                            (0x80000002u32, 0i32),
+                            (0x80000003u32, 16i32),
+                            (0x80000004u32, 32i32),
+                        ] {
+                            emit!(asm.mov(eax, leaf));
+                            emit!(asm.cpuid());
+                            emit!(asm.mov(dword_ptr(r8 + offset), eax));
+                            emit!(asm.mov(dword_ptr(r8 + offset + 4), ebx));
+                            emit!(asm.mov(dword_ptr(r8 + offset + 8), ecx));
+                            emit!(asm.mov(dword_ptr(r8 + offset + 12), edx));
+                        }
+                        emit!(asm.mov(byte_ptr(r8 + 48i32), 0i32));
+                        emit!(asm.xor(ecx, ecx));
+                        emit!(asm.set_label(&mut scan));
+                        emit!(asm.cmp(ecx, 48i32));
+                        emit!(asm.je(finished));
+                        emit!(asm.cmp(byte_ptr(r8 + rcx), 0i32));
+                        emit!(asm.je(finished));
+                        emit!(asm.inc(ecx));
+                        emit!(asm.jmp(scan));
+                        emit!(asm.set_label(&mut finished));
+                        emit!(asm.mov(rax, rcx));
+                        let mut stored = asm.create_label();
+                        emit!(asm.jmp(stored));
+                        emit!(asm.set_label(&mut failed));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut stored));
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    31 => {
+                        // KUSER_SHARED_DATA.NtBuildNumber is mapped read-only in
+                        // every Windows process and is not subject to manifests.
+                        if is_win64 {
+                            emit!(asm.mov(rax, 0x7FFE0260i64));
+                            emit!(asm.movzx(eax, word_ptr(rax)));
+                        } else {
+                            emit!(asm.xor(eax, eax));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    32 => {
+                        // GetProductInfo(10, 0, 0, 0, &product_type).
+                        if is_win64 {
+                            let mut failed = asm.create_label();
+                            let mut finished = asm.create_label();
+                            emit!(asm.sub(rsp, 48i32));
+                            emit!(asm.mov(dword_ptr(rsp + 40i32), 0i32));
+                            emit!(asm.lea(rax, qword_ptr(rsp + 40i32)));
+                            emit!(asm.mov(qword_ptr(rsp + 32i32), rax));
+                            emit!(asm.mov(ecx, 10i32));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.xor(r8d, r8d));
+                            emit!(asm.xor(r9d, r9d));
+                            call_ext!("GetProductInfo".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.mov(eax, dword_ptr(rsp + 40i32)));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut failed));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.set_label(&mut finished));
+                            emit!(asm.add(rsp, 48i32));
+                        } else {
+                            emit!(asm.xor(eax, eax));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     _ => {
                         return Err(BackendError(format!("unknown intrinsic id {id}")));
                     }

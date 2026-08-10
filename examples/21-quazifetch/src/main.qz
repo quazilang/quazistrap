@@ -65,7 +65,6 @@ fn copy_range(text: str, start: usize, end: usize) String {
     ret result;
 }
 
-@cfg(target_os = "linux")
 fn trim_copy(text: str) String {
     const length: usize = core.strlen(text);
     var start: usize = 0;
@@ -89,6 +88,26 @@ fn trim_copy(text: str) String {
     ret copy_range(text, start, end);
 }
 
+fn lowercase_copy(text: str) String {
+    const length: usize = core.strlen(text);
+    if (length == 0) { ret String.new(); }
+    var data: *u8 = 0;
+    unsafe { data = core.malloc(length + 1); }
+    if (data == 0) { ret String.new(); }
+    var index: usize = 0;
+    unsafe {
+        core.memcpy(data, core.str_as_ptr(text), length + 1);
+        for (index < length) {
+            const byte: u8 = *(data + index);
+            if (byte >= 65 && byte <= 90) { *(data + index) = byte + 32; }
+            index++;
+        }
+    }
+    var result: String = String.new();
+    unsafe { result = String.from_raw(data, length, length + 1); }
+    ret result;
+}
+
 @cfg(target_os = "linux")
 fn value_after_key(text: str, key: str) String {
     const length: usize = core.strlen(text);
@@ -109,6 +128,7 @@ fn value_after_key(text: str, key: str) String {
     ret String.from("unknown");
 }
 
+@cfg(target_os = "linux")
 fn basename_of(path: String) String {
     const text: str = path.as_str();
     const length: usize = path.len();
@@ -165,11 +185,11 @@ fn get_os() String {
 }
 
 @cfg(target_os = "windows")
-fn get_os() String { ret String.from(os.name()); }
+fn get_os() String { ret os.version(); }
 
 @cfg(target_os = "windows")
 fn get_cpu() String {
-    ret os.env("PROCESSOR_IDENTIFIER", "unknown");
+    ret os.cpu_name();
 }
 
 @cfg(target_os = "linux")
@@ -200,7 +220,7 @@ fn get_memory() String {
 
 @cfg(target_os = "windows")
 fn get_shell() String {
-    ret basename_of(os.env("COMSPEC", "unknown"));
+    ret os.shell();
 }
 
 @cfg(target_os = "linux")
@@ -210,7 +230,7 @@ fn get_shell() String {
 
 @cfg(target_os = "windows")
 fn get_desktop() String {
-    ret os.env("SESSIONNAME", "Windows");
+    ret String.from("Explorer");
 }
 
 @cfg(target_os = "linux")
@@ -243,42 +263,119 @@ fn normalized_terminal(value: String) String {
 
 fn get_terminal() String {
     @cfg(target_os = "windows") {
-        const windows_terminal: String = os.env("WT_SESSION", "");
-        if (!windows_terminal.is_empty()) { ret String.from("Windows Terminal"); }
+        ret os.terminal();
     }
     const program: String = os.env("TERM_PROGRAM", "");
     if (!program.is_empty()) { ret normalized_terminal(program); }
     ret normalized_terminal(os.env("TERM", "unknown"));
 }
 
-fn append_tag(result: String, present: bool, tag: str) String {
-    if (!present) { ret result; }
-    if (!result.is_empty()) { result = result.push_str(", "); }
-    result = result.push_str(tag);
-    ret result;
+fn append_count(result: String, tag: str, count: usize) String {
+    var next: String = result;
+    if (!next.is_empty()) { next = next.push_str(", "); }
+    const amount: String = owned_u64(count as u64);
+    next = next.push_str(tag);
+    next = next.push_str(" (");
+    next = next.push_str(amount.as_str());
+    next = next.push_str(")");
+    ret next;
+}
+
+fn append_directory_count(result: String, path: str, tag: str) String {
+    const counted: Result[usize, i32] = fs.count_entries(path);
+    if (counted.is_err()) { ret result; }
+    ret append_count(result, tag, counted.unwrap());
+}
+
+@cfg(target_os = "linux")
+fn count_occurrences(text: str, needle: str) usize {
+    const length: usize = core.strlen(text);
+    const needle_length: usize = core.strlen(needle);
+    if (needle_length == 0 || needle_length > length) { ret 0; }
+    var count: usize = 0;
+    var offset: usize = 0;
+    for (offset + needle_length <= length) {
+        if (starts_at(text, offset, needle)) {
+            count++;
+            offset = offset + needle_length;
+            continue;
+        }
+        offset++;
+    }
+    ret count;
 }
 
 fn get_packages() String {
     var result: String = String.new();
     @cfg(target_os = "linux") {
-        result = append_tag(result, fs.exists("/var/lib/dpkg/status"), "apt");
-        result = append_tag(result, fs.exists("/var/lib/pacman/local"), "pacman");
-        result = append_tag(result, fs.exists("/var/lib/rpm"), "rpm");
-        result = append_tag(result, fs.exists("/lib/apk/db/installed"), "apk");
-        result = append_tag(result, fs.exists("/var/db/xbps"), "xbps");
-        result = append_tag(result, fs.exists("/nix/store"), "nix");
-        result = append_tag(result, fs.exists("/var/lib/flatpak"), "flatpak");
+        const dpkg: Result[String, i32] = fs.read_to_string("/var/lib/dpkg/status");
+        if (dpkg.is_ok()) {
+            const status: String = dpkg.unwrap();
+            result = append_count(
+                result, "apt", count_occurrences(status.as_str(), "Status: install ok installed")
+            );
+        }
+        const apk: Result[String, i32] = fs.read_to_string("/lib/apk/db/installed");
+        if (apk.is_ok()) {
+            const database: String = apk.unwrap();
+            result = append_count(
+                result, "apk", count_occurrences(database.as_str(), "P:")
+            );
+        }
+        result = append_directory_count(result, "/var/lib/pacman/local", "pacman");
+        result = append_directory_count(result, "/var/db/xbps", "xbps");
+        result = append_directory_count(result, "/nix/store", "nix");
+        result = append_directory_count(result, "/var/lib/flatpak/app", "flatpak");
     }
     @cfg(target_os = "windows") {
         const chocolatey: String = os.env("ChocolateyInstall", "");
         const scoop: String = os.env("SCOOP", "");
         const local: String = os.env("LOCALAPPDATA", "");
-        result = append_tag(result, !chocolatey.is_empty(), "choco");
-        result = append_tag(result, !scoop.is_empty(), "scoop");
+        if (!chocolatey.is_empty()) {
+            var choco_path: String = String.from(chocolatey.as_str());
+            choco_path = choco_path.push_str("\\lib");
+            result = append_directory_count(result, choco_path.as_str(), "choco");
+        } else {
+            result = append_directory_count(
+                result, "C:\\ProgramData\\chocolatey\\lib", "choco"
+            );
+        }
+        if (!scoop.is_empty()) {
+            var scoop_path: String = String.from(scoop.as_str());
+            scoop_path = scoop_path.push_str("\\apps");
+            result = append_directory_count(result, scoop_path.as_str(), "scoop");
+        }
         if (!local.is_empty()) {
             var winget: String = String.from(local.as_str());
-            winget = winget.push_str("\\Microsoft\\WindowsApps\\winget.exe");
-            result = append_tag(result, fs.exists(winget.as_str()), "winget");
+            winget = winget.push_str("\\Microsoft\\WinGet\\Packages");
+            const portable_count: Result[usize, i32] = fs.count_entries(winget.as_str());
+            if (portable_count.is_ok()) {
+                result = append_count(result, "winget", portable_count.unwrap());
+            } else {
+                var packaged: String = String.from(local.as_str());
+                packaged = packaged.push_str(
+                    "\\Packages\\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\\LocalState\\packages"
+                );
+                result = append_directory_count(result, packaged.as_str(), "winget");
+            }
+            // Not every Windows installation has a third-party package
+            // manager. Fall back to the per-user AppX/MSIX package store so
+            // the row still reports useful, countable Windows packages.
+            if (result.is_empty()) {
+                var appx: String = String.from(local.as_str());
+                appx = appx.push_str("\\Packages");
+                result = append_directory_count(result, appx.as_str(), "appx");
+            }
+        }
+        if (result.is_empty()) {
+            result = append_directory_count(
+                result, "C:\\ProgramData\\Package Cache", "package-cache"
+            );
+        }
+        if (result.is_empty()) {
+            result = append_directory_count(
+                result, "C:\\Program Files", "programs"
+            );
         }
     }
     if (result.is_empty()) { ret String.from("unknown"); }
@@ -290,7 +387,8 @@ fn row(color: str, label: str, value: str) void {
 }
 
 fn main() void {
-    const hostname: String = os.hostname();
+    const raw_hostname: String = os.hostname();
+    const hostname: String = lowercase_copy(raw_hostname.as_str());
     const system: String = get_os();
     const cpu: String = get_cpu();
     const memory: String = get_memory();

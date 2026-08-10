@@ -6150,6 +6150,9 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
         m.insert("quazi.os.memory_available", 27);
         m.insert("quazi.os.hostname", 28);
         m.insert("quazi.str.as_ptr", 29);
+        m.insert("quazi.os.cpu_name", 30);
+        m.insert("quazi.os.windows_build", 31);
+        m.insert("quazi.os.windows_product", 32);
         m
     });
     let name = attr
