@@ -71,6 +71,8 @@ pub struct Analyzer {
     pub(super) dependency_edges: BTreeSet<(DependencyKind, String, String)>,
     pub(super) call_counts: HashMap<String, usize>,
     pub(super) current_function: Vec<String>,
+    /// Generic parameters of the function currently being type-checked.
+    pub(super) current_generic_params: Vec<Vec<String>>,
     pub(super) math_optimizations: Vec<MathOptimization>,
     pub(super) lazy_import_accesses: HashMap<String, BTreeSet<String>>,
     pub(super) lazy_import_hints: Vec<LazyImportHint>,
@@ -540,6 +542,7 @@ impl Analyzer {
             dependency_edges: BTreeSet::new(),
             call_counts: HashMap::new(),
             current_function: Vec::new(),
+            current_generic_params: Vec::new(),
             math_optimizations: Vec::new(),
             lazy_import_accesses: HashMap::new(),
             lazy_import_hints: Vec::new(),
@@ -870,6 +873,7 @@ impl Analyzer {
         self.dependency_edges.clear();
         self.call_counts.clear();
         self.current_function.clear();
+        self.current_generic_params.clear();
         self.math_optimizations.clear();
         self.lazy_import_accesses.clear();
         self.lazy_import_hints.clear();
@@ -1413,6 +1417,16 @@ fn main() void {
                 .errors
                 .iter()
                 .any(|error| error.code == "S06")
+        );
+    }
+
+    #[test]
+    fn permits_ordering_inside_generic_functions() {
+        let report = analyze("fn max[T](a: T, b: T) T { if (a > b) { ret a; } ret b; }");
+        assert!(
+            report.errors.is_empty(),
+            "generic ordering must remain available to generic helper bodies: {:?}",
+            report.errors
         );
     }
 
