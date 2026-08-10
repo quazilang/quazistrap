@@ -2,13 +2,13 @@
 
 **A fast, strict, and expressive systems independent programming language**
 
-Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library — all without depending on LLVM, GCC, or libc.
+Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
 
 ---
 
 ## Features
 
-- **Zero-dependency native codegen** — compiles to ELF/PE via raw x86-64 assembly, no LLVM or GCC
+- **Self-contained Linux binaries** — emits and links static x86-64 ELF executables in-process, with no LLVM, system linker, libc, or CRT by default
 - **Generics** — `fn max[T](a: T, b: T) T` with compile-time monomorphization
 - **Traits** — `trait Foo { fn method(...) ...; }` with `impl Foo for Bar`
 - **Enums with payloads** — `enum Option[T] { Some(T), None }` + `match`
@@ -23,7 +23,11 @@ Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend
 
 ## Install & Build
 
-Requires **Rust 2024 edition** (latest stable recommended).
+Building the compiler requires **Rust 2024 edition** (latest stable recommended).
+Plain x86-64 Linux Quazi builds need no system linker or C toolchain. Windows
+executables currently require `lld-link`/`link.exe` and Windows SDK libraries;
+native C sources, archives, shared libraries, and explicit `-l` dependencies
+also use their corresponding external tools.
 
 ```bash
 git clone https://github.com/quazilang/quazistrap
@@ -123,8 +127,9 @@ all characters exactly and never decode escapes: `` `\n\e\x41\u{41}` ``.
 ## CLI Reference
 
 ```
-qz build <file|dir> [-o out] [-i] [-c] [-r] [-s] [--linker path]
-qz run                    # build and run (reads quazi.toml)
+qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
+         [--linker builtin|path] [-L dir] [-l name]
+qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz check                  # type-check without compiling
 qz fmt                    # trim trailing whitespace in .qz files
@@ -144,12 +149,52 @@ Quazi project.
 **Flags:**
 - `-i` — emit `.qzi` bytecode only (no backend)
 - `-c` — emit `.o` object file only (no linker)
-- `-r` — release mode
+- `-r` — run the emitted binary after `qz build`
 - `-s` — strip symbols
+- `--linker builtin` — require the in-process Linux ELF linker
+- `--linker <path>` — explicitly use an external linker
+- `-L <dir>` / `-l <name>` — opt into a native library search path/library
 
 **Environment variables:**
-- `QUAZI_LINKER=/path/to/linker` — override linker detection
+- `QUAZI_LINKER=builtin` — require the in-process Linux ELF linker
+- `QUAZI_LINKER=/path/to/linker` — select an external linker
 - `QUAZI_TRACE=1` — enable crash backtraces
+
+---
+
+## Built-in Linker and Runtime
+
+On x86-64 Linux, ordinary `qz build` and `qz run` commands use Quazi's built-in
+static ELF linker automatically. It accepts Quazi source or QZI plus any number
+of ELF `.o` inputs, and it also accepts an object-only input list:
+
+```bash
+qz build src/main.qz native/helper.o -o app
+qz build program.qzi native/helper.o -o app
+qz run program.o helper.o
+```
+
+No library is implicit. In particular, libc and libm are not linked merely
+because they exist on the host. Passing `-l`, an archive/shared-library input,
+an explicit external linker path, or a non-Linux target selects the external
+linking path. `--linker builtin` rejects unsupported native flags instead of
+silently falling back. To use libc intentionally:
+
+```bash
+qz build src/main.qz -l c -o app
+# or choose the exact linker as well:
+qz build src/main.qz --linker ld.lld -l c -o app
+```
+
+The compiler embeds only the pure-assembly Linux runtime routines referenced
+by the program. This currently covers allocation, memory/string primitives,
+and numeric formatting; allocation calls `mmap`/`munmap` directly.
+
+The linker is experimental and currently limited to static x86-64 ELF
+executables and relocatable `.o` inputs. PE/COFF, Mach-O, archives, shared
+objects, TLS, linker scripts, and general-purpose ELF compatibility are not yet
+implemented. See [docs/LINKER.md](docs/LINKER.md) for selection rules, supported
+ELF features, startup behavior, runtime details, diagnostics, and limitations.
 
 ---
 
