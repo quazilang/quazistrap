@@ -76,6 +76,19 @@ Angles use radians. The implementations are lightweight Quazi approximations
 and do not pull in libc or libm. They prioritize portability and small binaries,
 not correctly rounded scientific computation.
 
+## Division behavior
+
+Floating-point division follows IEEE-754. Division by positive or negative zero
+therefore produces signed infinity, while `0.0 / 0.0` produces NaN. These values
+remain ordinary `f32` or `f64` values and propagate through later calculations.
+
+Integer division by zero panics with `integer division by zero`. Integer
+remainder by zero likewise panics with `integer remainder by zero`. The same
+rules apply to `/=`, `%=` and all signed and unsigned integer widths. Panic
+diagnostics use the source location of the arithmetic expression. A `@no_std`
+program omits the panic runtime and therefore falls back to the target's integer
+divide trap.
+
 ## Windows Unicode output
 
 `std.io` accepts UTF-8 on every platform. On Windows it distinguishes an actual

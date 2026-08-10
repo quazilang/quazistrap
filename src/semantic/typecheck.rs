@@ -120,6 +120,7 @@ impl Analyzer {
                 let prev_module_path = self.current_module_path.clone();
                 self.current_module_path = self.module_path_for_span(item.span);
                 self.current_function.push(fn_name);
+                self.current_generic_params.push(generic_params.clone());
                 self.enter_scope();
                 let fn_is_str_variadic = params
                     .last()
@@ -234,6 +235,7 @@ impl Analyzer {
                     );
                 }
                 self.exit_scope_collect();
+                let _ = self.current_generic_params.pop();
                 let _ = self.current_function.pop();
                 self.current_module_path = prev_module_path;
                 if *unsafe_fn {
@@ -3233,7 +3235,23 @@ impl Analyzer {
         match op {
             BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div | BinOpKind::Mod => {
                 match (&left, &right) {
-                    (Some(l), Some(r)) if self.types_compatible(l, r) => Some(l.clone()),
+                    (Some(l), Some(r)) if self.types_compatible(l, r) => {
+                        // Integer division and remainder lower to an implicit panic guard.
+                        // Record that hidden call so whole-program dead-code elimination keeps
+                        // the prelude panic path reachable from the current function.
+                        if matches!(op, BinOpKind::Div | BinOpKind::Mod) && Self::is_integer(l) {
+                            let from = self
+                                .current_function
+                                .last()
+                                .cloned()
+                                .unwrap_or_else(|| "__program__".to_string());
+                            self.add_dependency_edge(DependencyKind::Call, &from, "panic.panic");
+                            // Non-namespaced/library compilation can expose the same
+                            // prelude-compatible function under its bare name.
+                            self.add_dependency_edge(DependencyKind::Call, &from, "panic");
+                        }
+                        Some(l.clone())
+                    }
                     (Some(l), Some(r)) => {
                         self.push_error(
                             span,
@@ -3261,9 +3279,28 @@ impl Analyzer {
             }
             BinOpKind::Lt | BinOpKind::Gt | BinOpKind::LtEq | BinOpKind::GtEq => {
                 if let (Some(l), Some(r)) = (&left, &right) {
+                    let generic_ordering = match (l, r) {
+                        (
+                            TypeKind::Named {
+                                name: left_name,
+                                type_args: left_args,
+                            },
+                            TypeKind::Named {
+                                name: right_name,
+                                type_args: right_args,
+                            },
+                        ) if left_args.is_empty()
+                            && right_args.is_empty()
+                            && left_name == right_name => self
+                            .current_generic_params
+                            .last()
+                            .is_some_and(|params| params.contains(left_name)),
+                        _ => false,
+                    };
                     let ordered = (Self::is_integer(l) && Self::is_integer(r))
                         || (Self::is_float(l) && Self::is_float(r))
-                        || (is_string_type(l) && is_string_type(r));
+                        || (is_string_type(l) && is_string_type(r))
+                        || generic_ordering;
                     if !ordered {
                         self.push_error(
                             span,

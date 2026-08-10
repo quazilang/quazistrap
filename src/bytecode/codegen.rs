@@ -4055,6 +4055,96 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// Emit the language-level panic used by integer `/` and `%` when the
+    /// divisor is zero. Floating-point operations intentionally skip this
+    /// guard and retain IEEE-754 NaN/infinity behavior.
+    fn emit_integer_zero_guard(&mut self, divisor: u8, span: Span, message: &str) {
+        let panic_name = if self.fn_index.contains_key("panic.panic") {
+            "panic.panic"
+        } else if self.fn_index.contains_key("panic") {
+            "panic"
+        } else {
+            // `@no_std` deliberately omits the panic runtime. Preserve support for
+            // such programs and let the target's integer divide trap terminate.
+            return;
+        };
+        let nonzero = self.chunk.emit(ri16(Opcode::Jnz, divisor, 0));
+
+        let message_idx = self
+            .chunk
+            .add_constant(ConstPoolEntry::Str(message.to_string()));
+        let message_reg = self.alloc_reg();
+        self.chunk
+            .emit(ri16(Opcode::MovConst, message_reg, message_idx));
+
+        let file_idx = self
+            .chunk
+            .add_constant(ConstPoolEntry::Str(source_file_for_span(
+                span,
+                self.source_files,
+            )));
+        let file_reg = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovConst, file_reg, file_idx));
+
+        let line = self
+            .source_files
+            .iter()
+            .find(|source| source.contains(span))
+            .map(|source| source.line_col(span).0 as i64)
+            .unwrap_or(span.line as i64);
+        let line_idx = self.chunk.add_constant(ConstPoolEntry::Int(line));
+        let line_reg = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovConst, line_reg, line_idx));
+
+        let variadic_ptr = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, variadic_ptr, 0));
+        let variadic_len = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, variadic_len, 0));
+        let ignored_result = self.alloc_reg();
+        self.emit_call_by_name(
+            panic_name,
+            &[message_reg, file_reg, line_reg, variadic_ptr, variadic_len],
+            ignored_result,
+        );
+
+        self.chunk.patch_jump(nonzero, self.chunk.len() as u16);
+    }
+
+    fn emit_compound_arithmetic(
+        &mut self,
+        op: &CompoundAssignOp,
+        is_float: bool,
+        dst: u8,
+        left: u8,
+        right: u8,
+        span: Span,
+    ) {
+        let opcode = match op {
+            CompoundAssignOp::Add => Opcode::Add,
+            CompoundAssignOp::Sub => Opcode::Sub,
+            CompoundAssignOp::Mul => Opcode::Mul,
+            CompoundAssignOp::Div => Opcode::Div,
+            CompoundAssignOp::Mod => Opcode::Mod,
+        };
+        if !is_float {
+            match op {
+                CompoundAssignOp::Div => {
+                    self.emit_integer_zero_guard(right, span, "integer division by zero")
+                }
+                CompoundAssignOp::Mod => {
+                    self.emit_integer_zero_guard(right, span, "integer remainder by zero")
+                }
+                _ => {}
+            }
+        }
+        let instruction = if is_float {
+            rrr_f(opcode, dst, left, right)
+        } else {
+            rrr(opcode, dst, left, right)
+        };
+        self.chunk.emit(instruction);
+    }
+
     fn emit_c_variadic_call(&mut self, name: &str, args: &[Expr], dst: u8) -> bool {
         let Some(declaration) = self.foreign_imports.get(name).cloned() else {
             return false;
@@ -4462,9 +4552,19 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.emit(arith(Opcode::Mul, dst, r1, r2));
                     }
                     BinOpKind::Div => {
+                        if !is_float {
+                            self.emit_integer_zero_guard(r2, expr.span, "integer division by zero");
+                        }
                         self.chunk.emit(arith(Opcode::Div, dst, r1, r2));
                     }
                     BinOpKind::Mod => {
+                        if !is_float {
+                            self.emit_integer_zero_guard(
+                                r2,
+                                expr.span,
+                                "integer remainder by zero",
+                            );
+                        }
                         self.chunk.emit(arith(Opcode::Mod, dst, r1, r2));
                     }
                     // Comparisons: materialize bool result into dst.
@@ -4673,47 +4773,29 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::CompoundAssign { target, op, value } => {
+                let is_float = self.is_float_span((target.span.start, target.span.end));
                 if let ExprKind::Ident(name) = &target.node {
                     if self.foreign_global_for_span(target.span).is_some() {
                         let addr = self.compute_lvalue_addr(target);
                         let old = self.load_lvalue(&addr);
                         let src = self.compile_expr(value);
-                        let opcode = match op {
-                            CompoundAssignOp::Add => Opcode::Add,
-                            CompoundAssignOp::Sub => Opcode::Sub,
-                            CompoundAssignOp::Mul => Opcode::Mul,
-                            CompoundAssignOp::Div => Opcode::Div,
-                            CompoundAssignOp::Mod => Opcode::Mod,
-                        };
                         let new_val = self.alloc_reg();
-                        self.chunk.emit(rrr(opcode, new_val, old, src));
+                        self.emit_compound_arithmetic(
+                            op, is_float, new_val, old, src, expr.span,
+                        );
                         self.store_lvalue(&addr, new_val);
                         return new_val;
                     }
                     let src = self.compile_expr(value);
                     let dst = self.reg_of(name);
-                    let opcode = match op {
-                        CompoundAssignOp::Add => Opcode::Add,
-                        CompoundAssignOp::Sub => Opcode::Sub,
-                        CompoundAssignOp::Mul => Opcode::Mul,
-                        CompoundAssignOp::Div => Opcode::Div,
-                        CompoundAssignOp::Mod => Opcode::Mod,
-                    };
-                    self.chunk.emit(rrr(opcode, dst, dst, src));
+                    self.emit_compound_arithmetic(op, is_float, dst, dst, src, expr.span);
                     dst
                 } else {
                     let addr = self.compute_lvalue_addr(target);
                     let old = self.load_lvalue(&addr);
                     let src = self.compile_expr(value);
-                    let opcode = match op {
-                        CompoundAssignOp::Add => Opcode::Add,
-                        CompoundAssignOp::Sub => Opcode::Sub,
-                        CompoundAssignOp::Mul => Opcode::Mul,
-                        CompoundAssignOp::Div => Opcode::Div,
-                        CompoundAssignOp::Mod => Opcode::Mod,
-                    };
                     let new_val = self.alloc_reg();
-                    self.chunk.emit(rrr(opcode, new_val, old, src));
+                    self.emit_compound_arithmetic(op, is_float, new_val, old, src, expr.span);
                     self.store_lvalue(&addr, new_val);
                     new_val
                 }
@@ -6716,6 +6798,82 @@ mod tests {
             "expected Add instruction"
         );
         assert_eq!(chunk.code.last().unwrap().opcode, Opcode::Ret as u8);
+    }
+
+    #[test]
+    fn integer_division_emits_language_panic_guard() {
+        let chunks = compile(
+            r#"fn panic(msg: str, file: str, line: usize, args: str, count: usize) void {
+                   var first: i32 = 1;
+                   var second: i32 = 2;
+                   var third: i32 = first + second;
+               }
+               fn divide(divisor: i32) i32 { ret 42 / divisor; }
+               fn main() i32 { ret divide(2); }"#,
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "divide").unwrap();
+        assert!(
+            main.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::Jnz as u8),
+            "integer division must branch around its zero panic path"
+        );
+        assert!(
+            main.constants.iter().any(
+                |constant| matches!(constant, ConstPoolEntry::Str(message) if message == "integer division by zero")
+            ),
+            "integer division must carry a useful panic message"
+        );
+    }
+
+    #[test]
+    fn floating_division_keeps_ieee_754_behavior() {
+        let chunks = compile("fn divide(divisor: f64) f64 { ret 42.0 / divisor; }");
+        let main = chunks.iter().find(|chunk| chunk.name == "divide").unwrap();
+        let division = main
+            .code
+            .iter()
+            .find(|instruction| instruction.opcode == Opcode::Div as u8)
+            .expect("floating division instruction");
+        assert_ne!(division.flags & FLOAT_FLAG, 0);
+        assert!(
+            main.code
+                .iter()
+                .all(|instruction| instruction.opcode != Opcode::Jnz as u8),
+            "floating division must not receive an integer zero guard"
+        );
+    }
+
+    #[test]
+    fn floating_compound_division_keeps_float_lowering() {
+        let chunks = compile(
+            "fn divide(divisor: f64) f64 { var value: f64 = 42.0; value /= divisor; ret value; }",
+        );
+        let function = chunks
+            .iter()
+            .find(|chunk| chunk.name == "divide")
+            .unwrap();
+        let division = function
+            .code
+            .iter()
+            .find(|instruction| instruction.opcode == Opcode::Div as u8)
+            .expect("floating compound division instruction");
+        assert_ne!(division.flags & FLOAT_FLAG, 0);
+    }
+
+    #[test]
+    fn integer_division_without_prelude_keeps_hardware_trap() {
+        let chunks = compile("fn divide(divisor: i32) i32 { ret 42 / divisor; }");
+        let function = chunks
+            .iter()
+            .find(|chunk| chunk.name == "divide")
+            .unwrap();
+        assert!(
+            function
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::Div as u8)
+        );
     }
 
     #[test]
