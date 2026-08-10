@@ -2096,48 +2096,64 @@ impl<'a> FnEncoder<'a> {
                     3 => {
                         // quazi.malloc(size) → ptr
                         if is_win64 {
-                            emit!(asm.mov(rcx, slot(dst)));
+                            call_ext!("GetProcessHeap".into(), RelocKind::Plt32);
+                            emit!(asm.mov(rcx, rax));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.mov(r8, slot(dst)));
+                            call_ext!("HeapAlloc".into(), RelocKind::Plt32);
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
+                            call_ext!("malloc".into(), RelocKind::Plt32);
                         }
-                        call_ext!("malloc".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rax));
                     }
                     4 => {
                         // quazi.free(ptr) → void
                         if is_win64 {
-                            emit!(asm.mov(rcx, slot(dst)));
+                            call_ext!("GetProcessHeap".into(), RelocKind::Plt32);
+                            emit!(asm.mov(rcx, rax));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.mov(r8, slot(dst)));
+                            call_ext!("HeapFree".into(), RelocKind::Plt32);
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
+                            call_ext!("free".into(), RelocKind::Plt32);
                         }
-                        call_ext!("free".into(), RelocKind::Plt32);
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
                     }
                     5 => {
                         // quazi.realloc(ptr, size) → usize
                         if is_win64 {
-                            emit!(asm.mov(rcx, slot(dst)));
-                            emit!(asm.mov(rdx, slot(dst + 1)));
+                            call_ext!("GetProcessHeap".into(), RelocKind::Plt32);
+                            emit!(asm.mov(rcx, rax));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.mov(r8, slot(dst)));
+                            emit!(asm.mov(r9, slot(dst + 1)));
+                            call_ext!("HeapReAlloc".into(), RelocKind::Plt32);
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
                             emit!(asm.mov(rsi, slot(dst + 1)));
+                            call_ext!("realloc".into(), RelocKind::Plt32);
                         }
-                        call_ext!("realloc".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rax));
                     }
                     6 => {
                         // quazi.memcpy(dst_ptr, src, n) → usize
-                        if is_win64 {
-                            emit!(asm.mov(rcx, slot(dst)));
-                            emit!(asm.mov(rdx, slot(dst + 1)));
-                            emit!(asm.mov(r8, slot(dst + 2)));
-                        } else {
-                            emit!(asm.mov(rdi, slot(dst)));
-                            emit!(asm.mov(rsi, slot(dst + 1)));
-                            emit!(asm.mov(rdx, slot(dst + 2)));
-                        }
-                        call_ext!("memcpy".into(), RelocKind::Plt32);
+                        let mut copy = asm.create_label();
+                        let mut done = asm.create_label();
+                        emit!(asm.mov(rax, slot(dst)));
+                        emit!(asm.mov(rcx, slot(dst + 1)));
+                        emit!(asm.mov(rdx, slot(dst + 2)));
+                        emit!(asm.xor(r8d, r8d));
+                        emit!(asm.set_label(&mut copy));
+                        emit!(asm.cmp(r8, rdx));
+                        emit!(asm.jae(done));
+                        emit!(asm.movzx(r9d, byte_ptr(rcx + r8)));
+                        emit!(asm.mov(byte_ptr(rax + r8), r9b));
+                        emit!(asm.inc(r8));
+                        emit!(asm.jmp(copy));
+                        emit!(asm.set_label(&mut done));
                         emit!(asm.mov(slot(dst), rax));
                     }
                     7 => {
@@ -2244,10 +2260,44 @@ impl<'a> FnEncoder<'a> {
                         // quazi.getenv(name) → usize (char*)
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
+                            call_ext!("getenv".into(), RelocKind::Plt32);
                         } else {
-                            emit!(asm.mov(rdi, slot(dst)));
+                            let mut env_loop = asm.create_label();
+                            let mut compare = asm.create_label();
+                            let mut name_end = asm.create_label();
+                            let mut next = asm.create_label();
+                            let mut found = asm.create_label();
+                            let mut not_found = asm.create_label();
+                            let mut done = asm.create_label();
+                            lea_rip!(rax, "__quazi_envp".to_string());
+                            emit!(asm.mov(rsi, qword_ptr(rax)));
+                            emit!(asm.mov(r8, slot(dst)));
+                            emit!(asm.set_label(&mut env_loop));
+                            emit!(asm.mov(rdx, qword_ptr(rsi)));
+                            emit!(asm.test(rdx, rdx));
+                            emit!(asm.jz(not_found));
+                            emit!(asm.xor(ecx, ecx));
+                            emit!(asm.set_label(&mut compare));
+                            emit!(asm.movzx(eax, byte_ptr(r8 + rcx)));
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(name_end));
+                            emit!(asm.cmp(al, byte_ptr(rdx + rcx)));
+                            emit!(asm.jne(next));
+                            emit!(asm.inc(rcx));
+                            emit!(asm.jmp(compare));
+                            emit!(asm.set_label(&mut name_end));
+                            emit!(asm.cmp(byte_ptr(rdx + rcx), '=' as i32));
+                            emit!(asm.je(found));
+                            emit!(asm.set_label(&mut next));
+                            emit!(asm.add(rsi, 8i32));
+                            emit!(asm.jmp(env_loop));
+                            emit!(asm.set_label(&mut found));
+                            emit!(asm.lea(rax, qword_ptr(rdx + rcx + 1i32)));
+                            emit!(asm.jmp(done));
+                            emit!(asm.set_label(&mut not_found));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.set_label(&mut done));
                         }
-                        call_ext!("getenv".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rax));
                     }
                     14 => {
@@ -2295,28 +2345,36 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.add(rax, rbx));
                         emit!(asm.inc(rax));
                         if is_win64 {
+                            emit!(asm.mov(qword_ptr(rsp + 32i32), rax));
+                            call_ext!("GetProcessHeap".into(), RelocKind::Plt32);
                             emit!(asm.mov(rcx, rax));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.mov(r8, qword_ptr(rsp + 32i32)));
+                            call_ext!("HeapAlloc".into(), RelocKind::Plt32);
                         } else {
                             emit!(asm.mov(rdi, rax));
+                            call_ext!("malloc".into(), RelocKind::Plt32);
                         }
-                        call_ext!("malloc".into(), RelocKind::Plt32); // rax = buf
                         emit!(asm.mov(rbx, rax)); // rbx = buf
-                        if is_win64 {
-                            emit!(asm.mov(rcx, rbx));
-                            emit!(asm.mov(rdx, r12));
-                        } else {
-                            emit!(asm.mov(rdi, rbx));
-                            emit!(asm.mov(rsi, r12));
-                        }
-                        call_ext!("strcpy".into(), RelocKind::Plt32);
-                        if is_win64 {
-                            emit!(asm.mov(rcx, rbx));
-                            emit!(asm.mov(rdx, r13));
-                        } else {
-                            emit!(asm.mov(rdi, rbx));
-                            emit!(asm.mov(rsi, r13));
-                        }
-                        call_ext!("strcat".into(), RelocKind::Plt32);
+                        let mut copy_first = asm.create_label();
+                        let mut copy_second = asm.create_label();
+                        let mut copy_done = asm.create_label();
+                        emit!(asm.xor(ecx, ecx));
+                        emit!(asm.set_label(&mut copy_first));
+                        emit!(asm.movzx(edx, byte_ptr(r12 + rcx)));
+                        emit!(asm.test(edx, edx));
+                        emit!(asm.je(copy_second));
+                        emit!(asm.mov(byte_ptr(rbx + rcx), dl));
+                        emit!(asm.inc(rcx));
+                        emit!(asm.jmp(copy_first));
+                        emit!(asm.set_label(&mut copy_second));
+                        emit!(asm.movzx(edx, byte_ptr(r13)));
+                        emit!(asm.mov(byte_ptr(rbx + rcx), dl));
+                        emit!(asm.inc(r13));
+                        emit!(asm.inc(rcx));
+                        emit!(asm.test(edx, edx));
+                        emit!(asm.jne(copy_second));
+                        emit!(asm.set_label(&mut copy_done));
                         emit!(asm.mov(slot(dst), rbx));
                         if is_win64 {
                             emit!(asm.add(rsp, 40i32));
@@ -2332,11 +2390,15 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(rax));
                         if is_win64 {
                             emit!(asm.sub(rsp, 32i32));
-                            emit!(asm.mov(rcx, 80i64));
+                            call_ext!("GetProcessHeap".into(), RelocKind::Plt32);
+                            emit!(asm.mov(rcx, rax));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.mov(r8, 80i64));
+                            call_ext!("HeapAlloc".into(), RelocKind::Plt32);
                         } else {
                             emit!(asm.mov(rdi, 80i64));
+                            call_ext!("malloc".into(), RelocKind::Plt32);
                         }
-                        call_ext!("malloc".into(), RelocKind::Plt32);
                         emit!(asm.mov(rbx, rax));
                         emit!(asm.mov(rax, slot(dst)));
                         emit!(asm.mov(r11, rbx));
@@ -2353,11 +2415,15 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(rax));
                         if is_win64 {
                             emit!(asm.sub(rsp, 32i32));
-                            emit!(asm.mov(rcx, 80i64));
+                            call_ext!("GetProcessHeap".into(), RelocKind::Plt32);
+                            emit!(asm.mov(rcx, rax));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.mov(r8, 80i64));
+                            call_ext!("HeapAlloc".into(), RelocKind::Plt32);
                         } else {
                             emit!(asm.mov(rdi, 80i64));
+                            call_ext!("malloc".into(), RelocKind::Plt32);
                         }
-                        call_ext!("malloc".into(), RelocKind::Plt32);
                         emit!(asm.mov(rbx, rax));
                         emit!(asm.mov(rax, slot(dst)));
                         emit!(asm.mov(r11, rbx));
@@ -2565,8 +2631,11 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(rax));
                         if is_win64 {
                             emit!(asm.sub(rsp, 32i32));
-                            emit!(asm.mov(rcx, 2i64));
-                            call_ext!("malloc".into(), RelocKind::Plt32);
+                            call_ext!("GetProcessHeap".into(), RelocKind::Plt32);
+                            emit!(asm.mov(rcx, rax));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.mov(r8, 2i64));
+                            call_ext!("HeapAlloc".into(), RelocKind::Plt32);
                             emit!(asm.add(rsp, 32i32));
                         } else {
                             emit!(asm.mov(rdi, 2i64));
@@ -2584,6 +2653,110 @@ impl<'a> FnEncoder<'a> {
                         // quazi.print_backtrace() → void
                         call_ext!("__quazi_print_backtrace".into(), RelocKind::Plt32);
                         emit!(asm.xor(rax, rax));
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    26 | 27 => {
+                        // Cross-platform physical-memory query. Linux uses
+                        // sysinfo(2); Windows uses GlobalMemoryStatusEx.
+                        if is_win64 {
+                            let mut failed = asm.create_label();
+                            let mut finished = asm.create_label();
+                            // 32-byte shadow space followed by MEMORYSTATUSEX.
+                            emit!(asm.sub(rsp, 96i32));
+                            emit!(asm.mov(dword_ptr(rsp + 32i32), 64i32));
+                            emit!(asm.lea(rcx, qword_ptr(rsp + 32i32)));
+                            call_ext!("GlobalMemoryStatusEx".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            let offset = if id == 26 { 40 } else { 48 };
+                            emit!(asm.mov(rax, qword_ptr(rsp + offset)));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut failed));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.set_label(&mut finished));
+                            emit!(asm.add(rsp, 96i32));
+                        } else {
+                            let mut failed = asm.create_label();
+                            let mut finished = asm.create_label();
+                            emit!(asm.sub(rsp, 112i32));
+                            emit!(asm.mov(rdi, rsp));
+                            emit!(asm.mov(eax, 99i32)); // SYS_sysinfo
+                            emit!(asm.syscall());
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                            let offset = if id == 26 { 32 } else { 40 };
+                            emit!(asm.mov(rax, qword_ptr(rsp + offset)));
+                            emit!(asm.mov(ecx, dword_ptr(rsp + 104i32))); // mem_unit
+                            emit!(asm.imul_2(rax, rcx));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut failed));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.set_label(&mut finished));
+                            emit!(asm.add(rsp, 112i32));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    28 => {
+                        // quazi.os.hostname(buf, capacity) -> byte length or -1.
+                        if is_win64 {
+                            let mut finished = asm.create_label();
+                            emit!(asm.mov(eax, dword_ptr(rbp + (-((dst as i32 + 2) * 8)))));
+                            emit!(asm.mov(dword_ptr(rsp + 32i32), eax));
+                            emit!(asm.mov(rcx, slot(dst)));
+                            emit!(asm.lea(rdx, qword_ptr(rsp + 32i32)));
+                            call_ext!("GetComputerNameA".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.mov(rax, -1i64));
+                            emit!(asm.jz(finished));
+                            emit!(asm.mov(eax, dword_ptr(rsp + 32i32)));
+                            emit!(asm.set_label(&mut finished));
+                        } else {
+                            let mut invalid = asm.create_label();
+                            let mut failed = asm.create_label();
+                            let mut copy = asm.create_label();
+                            let mut copied = asm.create_label();
+                            let mut finished = asm.create_label();
+                            emit!(asm.mov(r8, slot(dst))); // destination
+                            emit!(asm.mov(r9, slot(dst + 1))); // capacity
+                            emit!(asm.test(r9, r9));
+                            emit!(asm.jz(invalid));
+                            emit!(asm.sub(rsp, 400i32));
+                            emit!(asm.mov(rdi, rsp));
+                            emit!(asm.mov(eax, 63i32)); // SYS_uname
+                            emit!(asm.syscall());
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                            emit!(asm.lea(r10, qword_ptr(rsp + 65i32))); // nodename
+                            emit!(asm.xor(ecx, ecx));
+                            emit!(asm.set_label(&mut copy));
+                            emit!(asm.lea(rdx, qword_ptr(rcx + 1i32)));
+                            emit!(asm.cmp(rdx, r9));
+                            emit!(asm.jae(copied));
+                            emit!(asm.movzx(edx, byte_ptr(r10 + rcx)));
+                            emit!(asm.test(edx, edx));
+                            emit!(asm.je(copied));
+                            emit!(asm.mov(byte_ptr(r8 + rcx), dl));
+                            emit!(asm.inc(rcx));
+                            emit!(asm.jmp(copy));
+                            emit!(asm.set_label(&mut copied));
+                            emit!(asm.mov(byte_ptr(r8 + rcx), 0i32));
+                            emit!(asm.mov(rax, rcx));
+                            emit!(asm.add(rsp, 400i32));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut failed));
+                            emit!(asm.add(rsp, 400i32));
+                            emit!(asm.mov(rax, -1i64));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut invalid));
+                            emit!(asm.mov(rax, -1i64));
+                            emit!(asm.set_label(&mut finished));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    29 => {
+                        // Representation-only conversion from immutable UTF-8
+                        // text to a read-only byte pointer for native APIs.
+                        emit!(asm.mov(rax, slot(dst)));
                         emit!(asm.mov(slot(dst), rax));
                     }
                     _ => {
@@ -2862,13 +3035,16 @@ impl<'a> FnEncoder<'a> {
                 let (dst, size_bytes) = instr.ri16();
                 // calloc(1, size_bytes) — zero-initializes the allocation
                 if is_win64 {
-                    emit!(asm.mov(rcx, 1i64));
-                    emit!(asm.mov(rdx, size_bytes as i64));
+                    call_ext!("GetProcessHeap".into(), RelocKind::Plt32);
+                    emit!(asm.mov(rcx, rax));
+                    emit!(asm.mov(edx, 8i32));
+                    emit!(asm.mov(r8, size_bytes as i64));
+                    call_ext!("HeapAlloc".into(), RelocKind::Plt32);
                 } else {
                     emit!(asm.mov(rdi, 1i64));
                     emit!(asm.mov(rsi, size_bytes as i64));
+                    call_ext!("calloc".into(), RelocKind::Plt32);
                 }
-                call_ext!("calloc".into(), RelocKind::Plt32);
                 emit!(asm.mov(slot(dst), rax));
             }
 

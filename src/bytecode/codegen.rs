@@ -1366,6 +1366,11 @@ impl<'a> Codegen<'a> {
             &self.source_files,
             &self.report.annotated_exprs,
         );
+        // The function owns ordinary by-value parameters. Keep a function-wide
+        // cleanup scope outside the body scope so parameters are destroyed on
+        // every return and on fallthrough. Method `self` remains borrowed,
+        // matching the language's receiver semantics.
+        fc.drop_scopes.push(Vec::new());
         for p in params {
             if p.variadic {
                 fc.bind(p.name.clone());
@@ -1373,16 +1378,22 @@ impl<'a> Codegen<'a> {
                     .insert(p.name.clone(), fc.resolve_type(&p.ty.node));
                 fc.bind(format!("__len_{}", p.name));
             } else {
-                fc.bind(p.name.clone());
-                fc.local_types
-                    .insert(p.name.clone(), fc.resolve_type(&p.ty.node));
+                let reg = fc.bind(p.name.clone());
+                let param_ty = fc.resolve_type(&p.ty.node);
+                fc.local_types.insert(p.name.clone(), param_ty.clone());
+                if p.name != "self" {
+                    fc.register_drop_local(&p.name, reg, Some(param_ty));
+                }
             }
         }
         fc.compile_block(body);
         // Guarantee every path ends with Ret.
         if fc.chunk.code.last().map(|i| i.opcode) != Some(Opcode::Ret as u8) {
+            fc.emit_scope_cleanup();
+            fc.chunk.emit(ri16(Opcode::MovI, 0, 0));
             fc.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
         }
+        fc.drop_scopes.pop();
         if let Some(error) = fc.codegen_error {
             return Err(error);
         }
@@ -3127,11 +3138,10 @@ impl<'a> FnCompiler<'a> {
     fn emit_all_cleanup(&mut self) {
         for depth in (0..self.drop_scopes.len()).rev() {
             let drops = self.drop_scopes[depth]
-                .iter_mut()
+                .iter()
                 .rev()
                 .filter_map(|local| {
                     if local.active {
-                        local.active = false;
                         Some((local.reg, local.drop_fn.clone()))
                     } else {
                         None
@@ -6136,6 +6146,10 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
         m.insert("quazi.str.byte_at", 23);
         m.insert("quazi.str.from_byte", 24);
         m.insert("quazi.print_backtrace", 25);
+        m.insert("quazi.os.memory_total", 26);
+        m.insert("quazi.os.memory_available", 27);
+        m.insert("quazi.os.hostname", 28);
+        m.insert("quazi.str.as_ptr", 29);
         m
     });
     let name = attr
@@ -6483,6 +6497,64 @@ mod tests {
             "expected Add instruction"
         );
         assert_eq!(chunk.code.last().unwrap().opcode, Opcode::Ret as u8);
+    }
+
+    #[test]
+    fn owned_parameter_is_destroyed_on_fallthrough() {
+        let chunks = compile(
+            r#"struct Owned { value: i32 }
+               impl Owned { fn free(self: Owned) void {} }
+               fn take(value: Owned) void {}"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "a by-value parameter must be destroyed at function fallthrough"
+        );
+    }
+
+    #[test]
+    fn returning_owned_parameter_transfers_ownership() {
+        let chunks = compile(
+            r#"struct Owned { value: i32 }
+               impl Owned { fn free(self: Owned) void {} }
+               fn pass(value: Owned) Owned { ret value; }"#,
+        );
+        let pass = chunks.iter().find(|chunk| chunk.name == "pass").unwrap();
+        assert!(
+            pass.code
+                .iter()
+                .all(|instruction| instruction.opcode != Opcode::CallIdx as u8),
+            "a returned parameter must not be destroyed by its former owner"
+        );
+    }
+
+    #[test]
+    fn cleanup_for_early_return_does_not_disable_later_path() {
+        let chunks = compile(
+            r#"struct Owned { value: i32 }
+               impl Owned { fn free(self: Owned) void {} }
+               fn branch(value: Owned, early: bool) void {
+                   if (early) { ret; }
+               }"#,
+        );
+        let branch = chunks
+            .iter()
+            .find(|chunk| chunk.name == "branch")
+            .unwrap();
+        assert_eq!(
+            branch
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            2,
+            "both the early-return and fallthrough paths need cleanup"
+        );
     }
 
     #[test]

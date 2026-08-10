@@ -389,6 +389,10 @@ impl Instruction {
                     23 => "quazi.str.byte_at",
                     24 => "quazi.str.from_byte",
                     25 => "quazi.print_backtrace",
+                    26 => "quazi.os.memory_total",
+                    27 => "quazi.os.memory_available",
+                    28 => "quazi.os.hostname",
+                    29 => "quazi.str.as_ptr",
                     _ => "?",
                 };
                 format!(
