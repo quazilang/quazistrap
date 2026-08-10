@@ -316,6 +316,8 @@ pub struct DependencyEdge {
 #[derive(Debug, Clone, Default)]
 pub struct DependencyGraph {
     pub edges: Vec<DependencyEdge>,
+    /// Cached call adjacency used by whole-program reachability and codegen.
+    pub calls_from: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

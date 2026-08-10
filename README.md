@@ -279,6 +279,13 @@ automatic cleanup, and Windows UTF-8 console behavior are documented in
 source → Loader → Lexer → Parser → Analyzer → Codegen → Backend (iced-x86) → .o → Linker → binary
 ```
 
+The loader visits each source dependency once and reuses the merged parse for
+dependency symbol discovery. Whole-program reachability maintains a call-edge
+adjacency index, so tree shaking and codegen walk the used graph in `O(V + E)`
+instead of rescanning every edge for every reachable function. This cache is
+per compilation; persistent incremental artifact caching may be added
+separately.
+
 For full technical details, see [AGENTS.md](AGENTS.md).
 
 ---

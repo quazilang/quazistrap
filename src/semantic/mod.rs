@@ -69,6 +69,9 @@ pub struct Analyzer {
     pub(super) non_exhaustive_matches: Vec<MatchExhaustivenessIssue>,
     pub(super) exhaustiveness_checks: usize,
     pub(super) dependency_edges: BTreeSet<(DependencyKind, String, String)>,
+    /// Call-only adjacency index maintained with `dependency_edges`.
+    pub(super) call_dependencies: HashMap<String, BTreeSet<String>>,
+    pub(super) called_functions: BTreeSet<String>,
     pub(super) call_counts: HashMap<String, usize>,
     pub(super) current_function: Vec<String>,
     /// Generic parameters of the function currently being type-checked.
@@ -540,6 +543,8 @@ impl Analyzer {
             non_exhaustive_matches: Vec::new(),
             exhaustiveness_checks: 0,
             dependency_edges: BTreeSet::new(),
+            call_dependencies: HashMap::new(),
+            called_functions: BTreeSet::new(),
             call_counts: HashMap::new(),
             current_function: Vec::new(),
             current_generic_params: Vec::new(),
@@ -871,6 +876,8 @@ impl Analyzer {
         self.non_exhaustive_matches.clear();
         self.exhaustiveness_checks = 0;
         self.dependency_edges.clear();
+        self.call_dependencies.clear();
+        self.called_functions.clear();
         self.call_counts.clear();
         self.current_function.clear();
         self.current_generic_params.clear();
@@ -1010,8 +1017,16 @@ impl Analyzer {
     }
 
     pub(super) fn add_dependency_edge(&mut self, kind: DependencyKind, from: &str, to: &str) {
-        self.dependency_edges
+        let inserted = self
+            .dependency_edges
             .insert((kind, from.to_string(), to.to_string()));
+        if inserted && kind == DependencyKind::Call {
+            self.call_dependencies
+                .entry(from.to_string())
+                .or_default()
+                .insert(to.to_string());
+            self.called_functions.insert(to.to_string());
+        }
     }
 
     fn build_symbol_table(&self) -> SymbolTable {
@@ -1093,7 +1108,13 @@ impl Analyzer {
             })
             .collect();
 
-        DependencyGraph { edges }
+        let calls_from = self
+            .call_dependencies
+            .iter()
+            .map(|(from, targets)| (from.clone(), targets.iter().cloned().collect()))
+            .collect();
+
+        DependencyGraph { edges, calls_from }
     }
 
     pub(super) fn declare(&mut self, name: String, symbol: Symbol) {
@@ -1946,6 +1967,14 @@ fn main() void {
         assert!(report.dependency_graph.edges.iter().any(|edge| {
             edge.kind == DependencyKind::Call && edge.from == "main" && edge.to == "helper"
         }));
+        assert_eq!(
+            report
+                .dependency_graph
+                .calls_from
+                .get("main")
+                .map(Vec::as_slice),
+            Some(["helper".to_string()].as_slice())
+        );
     }
 
     #[test]

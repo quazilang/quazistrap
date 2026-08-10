@@ -214,54 +214,6 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         .map(|(p, _)| p.clone())
         .collect();
 
-    // Collect function names declared in namespaced (dependency) files.
-    // These are registered under their module-qualified names so collisions
-    // across modules are impossible.
-    let mut library_fn_names: HashSet<String> = HashSet::new();
-    for (path, src) in &sources {
-        if !namespaced_paths.contains(path) {
-            continue;
-        }
-        let module_name = path_module_name(path);
-        let mut lx = Lexer::new(src);
-        let toks = lx.tokenize();
-        let mut pr = Parser::new(toks);
-        if let Ok(prog) = pr.parse() {
-            for item in &prog.items {
-                if let ItemKind::Fn {
-                    name,
-                    pub_fn,
-                    attributes,
-                    ..
-                } = &item.node
-                    && *pub_fn
-                {
-                    // Stable ABI functions keep their bare/exported name in library_fn_names
-                    // so wildcard imports and cross-module resolution find them.
-                    let exported = attributes
-                        .iter()
-                        .find(|a| a.name == "export")
-                        .and_then(|a| {
-                            a.args.first().and_then(|arg| match arg {
-                                crate::parser::ast::AttrArg::Positional(
-                                    crate::parser::ast::AttrVal::Str(symbol),
-                                ) => Some(symbol.clone()),
-                                _ => None,
-                            })
-                        });
-                    let entry_name = if let Some(symbol) = exported {
-                        symbol
-                    } else if attributes.iter().any(|a| a.name == "no_mangle") {
-                        name.clone()
-                    } else {
-                        format!("{}.{}", module_name, name)
-                    };
-                    library_fn_names.insert(entry_name);
-                }
-            }
-        }
-    }
-
     let mut merged = String::new();
     let mut library_char_ranges: Vec<std::ops::Range<usize>> = Vec::new();
     let mut source_files: Vec<SourceFile> = Vec::new();
@@ -315,6 +267,54 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
             Some(e),
         ),
     };
+
+    // Reuse the merged parse to collect public dependency functions. Parsing
+    // every dependency again here made warm builds pay for each module three
+    // times: import discovery, name collection, and the merged program.
+    let mut library_fn_names: HashSet<String> = HashSet::new();
+    for item in &program.items {
+        let Some(source_file) = source_files.iter().find(|file| file.contains(item.span)) else {
+            continue;
+        };
+        let source_path = Path::new(&source_file.path);
+        if !namespaced_paths.contains(source_path) {
+            continue;
+        }
+        let ItemKind::Fn {
+            name,
+            pub_fn,
+            attributes,
+            ..
+        } = &item.node
+        else {
+            continue;
+        };
+        if !pub_fn {
+            continue;
+        }
+        let exported = attributes
+            .iter()
+            .find(|attribute| attribute.name == "export")
+            .and_then(|attribute| {
+                attribute.args.first().and_then(|argument| match argument {
+                    crate::parser::ast::AttrArg::Positional(crate::parser::ast::AttrVal::Str(
+                        symbol,
+                    )) => Some(symbol.clone()),
+                    _ => None,
+                })
+            });
+        let entry_name = if let Some(symbol) = exported {
+            symbol
+        } else if attributes
+            .iter()
+            .any(|attribute| attribute.name == "no_mangle")
+        {
+            name.clone()
+        } else {
+            format!("{}.{}", path_module_name(source_path), name)
+        };
+        library_fn_names.insert(entry_name);
+    }
 
     Ok(LoadResult {
         merged_source: merged,
