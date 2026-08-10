@@ -1,0 +1,101 @@
+import std.io;
+import std.math;
+
+fn fail(message: str) i32 {
+    io.errln(message);
+    ret 1;
+}
+
+fn near(actual: f64, expected: f64, tolerance: f64) bool {
+    ret (actual - expected).abs() <= tolerance;
+}
+
+fn parsed_i32(result: Result[i32, ParseError]) i32 {
+    ret match result {
+        Ok(value) => value,
+        Err(_) => 999,
+    };
+}
+
+fn check_strings() i32 {
+    const text: str = "Aλ🙂";
+    if (text.len() != 3) { ret fail("rune length"); }
+    if (text.bytes_len() != 7) { ret fail("UTF-8 byte length"); }
+    if (text[1] != 955) { ret fail("UTF-8 indexing"); }
+    if (text[-1] != 128578) { ret fail("negative UTF-8 indexing"); }
+
+    const sliced: String = text[1:];
+    if (sliced != "λ🙂") { ret fail("UTF-8 slicing"); }
+    const reversed: String = text[::-1];
+    if (reversed != "🙂λA") { ret fail("UTF-8 reverse"); }
+    if ("abcdef"[1:6:2] != "bdf") { ret fail("stepped slicing"); }
+    if (!("alpha" < "beta")) { ret fail("lexicographic comparison"); }
+    const first_owned: String = String.from("same");
+    const second_owned: String = String.from("same");
+    if (first_owned != second_owned) { ret fail("owned string comparison"); }
+
+    const lower: String = "QuAzI λ".lowercase();
+    if (lower != "quazi λ") { ret fail("lowercase"); }
+    const upper: String = lower.uppercase();
+    if (upper != "QUAZI λ") { ret fail("uppercase"); }
+    const capitalized: String = "quazi".capitalize();
+    if (capitalized != "Quazi") { ret fail("capitalize"); }
+    const trimmed: String = " \tquazi\r\n".trim();
+    if (trimmed != "quazi") { ret fail("trim"); }
+    if (!"developer experience".contains("experience")) { ret fail("contains"); }
+    ret 0;
+}
+
+fn check_parsing() i32 {
+    const integer: Result[i32, ParseError] = "-42".parse[i32]();
+    if (parsed_i32(integer) != -42) { ret fail("parse_i32 value"); }
+    if ("12x".parse[i32]().is_ok()) { ret fail("parse invalid input"); }
+    if ("18446744073709551615".parse[u64]().is_err()) { ret fail("parse_u64 max"); }
+    if ("18446744073709551616".parse[u64]().is_ok()) { ret fail("parse_u64 overflow"); }
+
+    const decimal: Result[f64, ParseError] = "6.25e1".parse[f64]();
+    if (decimal.is_err()) { ret fail("parse_f64 result"); }
+    if (!near(decimal.unwrap(), 62.5, 0.000001)) { ret fail("parse_f64 value"); }
+    ret 0;
+}
+
+fn check_math() i32 {
+    const base: i32 = 3;
+    if (base.pow(4 as u32) != 81) { ret fail("integer pow"); }
+    if (84.gcd(30) != 6 || 21.lcm(6) != 42) { ret fail("integer methods"); }
+    const maximum_u64: u64 = (-1 as i64) as u64;
+    if (maximum_u64.gcd(3) != 3) { ret fail("unsigned gcd"); }
+    if (!near(math.sqrt(81.0), 9.0, 0.000001)) { ret fail("sqrt"); }
+    const sine: f64 = math.sin(1.5707963267948966);
+    if (!near(sine, 1.0, 0.000001)) { ret fail("sin"); }
+    if (!near(math.arctan(1.0), 0.7853981633974483, 0.000001)) { ret fail("arctan"); }
+    if (!near(math.pow(2.0, 10.0), 1024.0, 0.001)) { ret fail("floating pow"); }
+    if (math.gcd(84, 30) != 6) { ret fail("gcd"); }
+    if (math.lcm(21, 6) != 42) { ret fail("lcm"); }
+    if (math.combinations(10, 3) != 120) { ret fail("combinations"); }
+    if (!near(math.hypot(3.0, 4.0), 5.0, 0.000001)) { ret fail("hypot"); }
+    if (!near(math.cbrt(27.0), 3.0, 0.000001)) { ret fail("cbrt"); }
+    const infinity: f64 = 1.0 / 0.0;
+    if (math.sqrt(infinity) != infinity) { ret fail("infinite sqrt"); }
+    if (math.exp(infinity) != infinity) { ret fail("infinite exp"); }
+    if (math.exp(-infinity) != 0.0) { ret fail("negative infinite exp"); }
+    if (math.ln(infinity) != infinity) { ret fail("infinite ln"); }
+    const nan: f64 = 0.0 / 0.0;
+    if (nan == nan) { ret fail("NaN equality"); }
+    if (!(nan != nan)) { ret fail("NaN inequality"); }
+    if (nan < 0.0) { ret fail("NaN less-than"); }
+    if (nan <= 0.0) { ret fail("NaN less-or-equal"); }
+    if (nan > 0.0) { ret fail("NaN greater-than"); }
+    if (nan >= 0.0) { ret fail("NaN greater-or-equal"); }
+    ret 0;
+}
+
+fn main() i32 {
+    io.print("");
+    if (check_strings() != 0) { ret 1; }
+    if (check_parsing() != 0) { ret 1; }
+    if (check_math() != 0) { ret 1; }
+    // All owning String values above are released automatically at scope exit.
+    io.println("stdlib DX checks passed: λ 🙂");
+    ret 0;
+}

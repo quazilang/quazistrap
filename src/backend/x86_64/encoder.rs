@@ -1733,7 +1733,12 @@ impl<'a> FnEncoder<'a> {
             Some(Opcode::Neg) => {
                 let (dst, src, _) = instr.rrr();
                 emit!(asm.mov(rax, slot(src)));
-                emit!(asm.neg(rax));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    emit!(asm.mov(rcx, 0x8000_0000_0000_0000_u64));
+                    emit!(asm.xor(rax, rcx));
+                } else {
+                    emit!(asm.neg(rax));
+                }
                 emit!(asm.mov(slot(dst), rax));
             }
 
@@ -1811,8 +1816,14 @@ impl<'a> FnEncoder<'a> {
 
             Some(Opcode::Cmp) => {
                 let (_, s1, s2) = instr.rrr();
-                emit!(asm.mov(rax, slot(s1)));
-                emit!(asm.cmp(rax, slot(s2)));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    emit!(asm.movq(xmm0, slot(s1)));
+                    emit!(asm.movq(xmm1, slot(s2)));
+                    emit!(asm.ucomisd(xmm0, xmm1));
+                } else {
+                    emit!(asm.mov(rax, slot(s1)));
+                    emit!(asm.cmp(rax, slot(s2)));
+                }
             }
 
             Some(Opcode::Jmp) => {
@@ -1825,32 +1836,80 @@ impl<'a> FnEncoder<'a> {
             Some(Opcode::Je) => {
                 let (_, t) = instr.ri16();
                 let lbl = *label_map.get(&(t as usize)).expect("Je target");
-                emit!(asm.je(lbl));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    let mut unordered = asm.create_label();
+                    emit!(asm.jp(unordered));
+                    emit!(asm.je(lbl));
+                    emit!(asm.set_label(&mut unordered));
+                } else {
+                    emit!(asm.je(lbl));
+                }
             }
             Some(Opcode::Jne) => {
                 let (_, t) = instr.ri16();
                 let lbl = *label_map.get(&(t as usize)).expect("Jne target");
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    emit!(asm.jp(lbl));
+                }
                 emit!(asm.jne(lbl));
             }
             Some(Opcode::Jg) => {
                 let (_, t) = instr.ri16();
                 let lbl = *label_map.get(&(t as usize)).expect("Jg target");
-                emit!(asm.jg(lbl));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    if instr.flags & crate::bytecode::instruction::NEGATED_COMPARE_FLAG != 0 {
+                        emit!(asm.jp(lbl));
+                    }
+                    emit!(asm.ja(lbl));
+                } else {
+                    emit!(asm.jg(lbl));
+                }
             }
             Some(Opcode::Jge) => {
                 let (_, t) = instr.ri16();
                 let lbl = *label_map.get(&(t as usize)).expect("Jge target");
-                emit!(asm.jge(lbl));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    if instr.flags & crate::bytecode::instruction::NEGATED_COMPARE_FLAG != 0 {
+                        emit!(asm.jp(lbl));
+                    }
+                    emit!(asm.jae(lbl));
+                } else {
+                    emit!(asm.jge(lbl));
+                }
             }
             Some(Opcode::Jl) => {
                 let (_, t) = instr.ri16();
                 let lbl = *label_map.get(&(t as usize)).expect("Jl target");
-                emit!(asm.jl(lbl));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    if instr.flags & crate::bytecode::instruction::NEGATED_COMPARE_FLAG != 0 {
+                        emit!(asm.jp(lbl));
+                        emit!(asm.jb(lbl));
+                    } else {
+                        let mut unordered = asm.create_label();
+                        emit!(asm.jp(unordered));
+                        emit!(asm.jb(lbl));
+                        emit!(asm.set_label(&mut unordered));
+                    }
+                } else {
+                    emit!(asm.jl(lbl));
+                }
             }
             Some(Opcode::Jle) => {
                 let (_, t) = instr.ri16();
                 let lbl = *label_map.get(&(t as usize)).expect("Jle target");
-                emit!(asm.jle(lbl));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    if instr.flags & crate::bytecode::instruction::NEGATED_COMPARE_FLAG != 0 {
+                        emit!(asm.jp(lbl));
+                        emit!(asm.jbe(lbl));
+                    } else {
+                        let mut unordered = asm.create_label();
+                        emit!(asm.jp(unordered));
+                        emit!(asm.jbe(lbl));
+                        emit!(asm.set_label(&mut unordered));
+                    }
+                } else {
+                    emit!(asm.jle(lbl));
+                }
             }
             Some(Opcode::Ja) => {
                 let (_, t) = instr.ri16();
@@ -2839,6 +2898,60 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.xor(eax, eax));
                         }
                         emit!(asm.mov(slot(dst), rax));
+                    }
+                    33 => {
+                        // Dependency-free lexicographic UTF-8 comparison.
+                        // UTF-8 byte order preserves Unicode scalar order.
+                        let mut compare = asm.create_label();
+                        let mut less = asm.create_label();
+                        let mut greater = asm.create_label();
+                        let mut equal = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r8, slot(dst)));
+                        emit!(asm.mov(r9, slot(dst + 1)));
+                        emit!(asm.set_label(&mut compare));
+                        emit!(asm.movzx(eax, byte_ptr(r8)));
+                        emit!(asm.movzx(ecx, byte_ptr(r9)));
+                        emit!(asm.cmp(eax, ecx));
+                        emit!(asm.jb(less));
+                        emit!(asm.ja(greater));
+                        emit!(asm.test(eax, eax));
+                        emit!(asm.je(equal));
+                        emit!(asm.inc(r8));
+                        emit!(asm.inc(r9));
+                        emit!(asm.jmp(compare));
+                        emit!(asm.set_label(&mut less));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut greater));
+                        emit!(asm.mov(rax, 1i64));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut equal));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.set_label(&mut finished));
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    34 => {
+                        // Count UTF-8 scalar values. Input contract guarantees valid UTF-8.
+                        let mut scan = asm.create_label();
+                        let mut continuation = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r8, slot(dst)));
+                        emit!(asm.xor(ecx, ecx));
+                        emit!(asm.set_label(&mut scan));
+                        emit!(asm.movzx(eax, byte_ptr(r8)));
+                        emit!(asm.test(eax, eax));
+                        emit!(asm.je(finished));
+                        emit!(asm.mov(edx, eax));
+                        emit!(asm.and(edx, 0xC0i32));
+                        emit!(asm.cmp(edx, 0x80i32));
+                        emit!(asm.je(continuation));
+                        emit!(asm.inc(rcx));
+                        emit!(asm.set_label(&mut continuation));
+                        emit!(asm.inc(r8));
+                        emit!(asm.jmp(scan));
+                        emit!(asm.set_label(&mut finished));
+                        emit!(asm.mov(slot(dst), rcx));
                     }
                     _ => {
                         return Err(BackendError(format!("unknown intrinsic id {id}")));

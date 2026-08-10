@@ -54,6 +54,11 @@ module gateways expose directory-backed APIs such as `std.collections`.
 Gateway imports of sibling files use the explicit `./name` form so dependency
 or package names cannot shadow prelude and standard-library implementation files.
 
+Generic `str.parse[T]()` and `String.parse[T]()` resolve to checked prelude
+parsers during type checking. Supported primitive targets return
+`Result[T, ParseError]`; unsupported targets produce S06 instead of silently
+lowering to an unchecked numeric conversion.
+
 ## `pub` Visibility
 
 - **Functions**: enforced. Private fn imported cross-module emits S04 error.

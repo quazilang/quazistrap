@@ -6,8 +6,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use super::instruction::{
-    FLOAT_FLAG, MemWidth, call_c_reg, field_load, field_load_typed, field_store,
-    field_store_typed, mem_lea, mem_load, mem_load_w, mem_store, mem_store_w, ri16, rrr, rrr_f,
+    FLOAT_FLAG, MemWidth, NEGATED_COMPARE_FLAG, call_c_reg, field_load, field_load_typed,
+    field_store, field_store_typed, mem_lea, mem_load, mem_load_w, mem_store, mem_store_w, ri16,
+    rrr, rrr_f,
 };
 use super::{Chunk, ConstPoolEntry, Opcode};
 use crate::abi::{
@@ -530,9 +531,8 @@ impl<'a> Codegen<'a> {
                     self.resolve_item_name(item.span, name, attributes)
                 };
                 if is_live(&index_name) || is_ph || is_export {
-                    let table_index = u16::try_from(idx).map_err(|_| {
-                        "program exceeds the QZI function-table limit".to_string()
-                    })?;
+                    let table_index = u16::try_from(idx)
+                        .map_err(|_| "program exceeds the QZI function-table limit".to_string())?;
                     self.fn_index.insert(index_name.clone(), table_index);
                     idx += 1;
                 }
@@ -940,6 +940,12 @@ impl<'a> Codegen<'a> {
                         op == Opcode::Jmp as u8
                             || op == Opcode::Je as u8
                             || op == Opcode::Jne as u8
+                            || op == Opcode::Jg as u8
+                            || op == Opcode::Jge as u8
+                            || op == Opcode::Jl as u8
+                            || op == Opcode::Jle as u8
+                            || op == Opcode::Ja as u8
+                            || op == Opcode::Jb as u8
                             || op == Opcode::Jz as u8
                             || op == Opcode::Jnz as u8
                     });
@@ -1233,23 +1239,76 @@ impl<'a> Codegen<'a> {
         // Fix: place each chunk that has an fn_index entry at that position; append
         // all closure/anonymous chunks (no fn_index entry) at the end.
         {
-            let max_idx = self
-                .fn_index
-                .values()
-                .copied()
-                .max()
-                .map(|v| v as usize)
-                .unwrap_or(0);
-            let mut ordered: Vec<Option<Chunk>> = (0..=max_idx).map(|_| None).collect();
+            // Function indices can contain holes after imports, conditional items, or
+            // optimisation remove a function. Flattening an indexed Option vector used
+            // to shift every later chunk without rewriting CallIdx, so a call could land
+            // in an unrelated function (including recursively in `main`). Compact from
+            // the chunks that actually exist and rewrite every index atomically.
+            let mut indexed: Vec<(u16, Chunk)> = Vec::new();
             let mut closures: Vec<Chunk> = Vec::new();
             for chunk in chunks {
                 if let Some(&idx) = self.fn_index.get(&chunk.name) {
-                    ordered[idx as usize] = Some(chunk);
+                    indexed.push((idx, chunk));
                 } else {
                     closures.push(chunk);
                 }
             }
-            chunks = ordered.into_iter().flatten().chain(closures).collect();
+            indexed.sort_unstable_by_key(|(idx, _)| *idx);
+
+            let mut old_to_new = HashMap::with_capacity(indexed.len());
+            for (new_idx, (old_idx, chunk)) in indexed.iter().enumerate() {
+                let new_idx = u16::try_from(new_idx)
+                    .map_err(|_| "program exceeds the QZI function-table limit".to_string())?;
+                if old_to_new.insert(*old_idx, new_idx).is_some() {
+                    return Err(format!(
+                        "internal error: duplicate QZI function index {} while placing `{}`",
+                        old_idx, chunk.name
+                    ));
+                }
+            }
+
+            for (_, chunk) in &mut indexed {
+                for ins in &mut chunk.code {
+                    if ins.opcode == Opcode::CallIdx as u8 {
+                        let old_idx = u16::from_le_bytes([ins.ops[1], ins.ops[2]]);
+                        let Some(&new_idx) = old_to_new.get(&old_idx) else {
+                            return Err(format!(
+                                "internal error: `{}` calls missing QZI function index {}",
+                                chunk.name, old_idx
+                            ));
+                        };
+                        let [lo, hi] = new_idx.to_le_bytes();
+                        ins.ops[1] = lo;
+                        ins.ops[2] = hi;
+                    }
+                }
+            }
+            for chunk in &mut closures {
+                for ins in &mut chunk.code {
+                    if ins.opcode == Opcode::CallIdx as u8 {
+                        let old_idx = u16::from_le_bytes([ins.ops[1], ins.ops[2]]);
+                        let Some(&new_idx) = old_to_new.get(&old_idx) else {
+                            return Err(format!(
+                                "internal error: `{}` calls missing QZI function index {}",
+                                chunk.name, old_idx
+                            ));
+                        };
+                        let [lo, hi] = new_idx.to_le_bytes();
+                        ins.ops[1] = lo;
+                        ins.ops[2] = hi;
+                    }
+                }
+            }
+
+            self.fn_index.retain(|_, idx| old_to_new.contains_key(idx));
+            for idx in self.fn_index.values_mut() {
+                *idx = old_to_new[idx];
+            }
+            chunks = indexed
+                .into_iter()
+                .map(|(_, chunk)| chunk)
+                .chain(closures)
+                .collect();
         }
 
         for chunk in &chunks {
@@ -1475,7 +1534,9 @@ impl<'a> Codegen<'a> {
             }
         }
         let Some(id) = intrinsic_id(attr) else {
-            return Err(format!("unknown intrinsic `{instr_name}` on function `{name}`"));
+            return Err(format!(
+                "unknown intrinsic `{instr_name}` on function `{name}`"
+            ));
         };
         let arg_count = params.len() as u8;
         let mut instr = ri16(Opcode::Intrinsic, 0, id);
@@ -1907,11 +1968,13 @@ impl<'a> FnCompiler<'a> {
 
     /// Look up the resolved function name annotation for a span, if any.
     fn resolved_fn_for_span(&self, span: crate::parser::ast::Span) -> Option<String> {
-        self.annotated_exprs
-            .iter()
-            .rev()
-            .find(|ann| ann.span.start == span.start && ann.span.end == span.end)
-            .and_then(|ann| ann.resolved_fn.clone())
+        self.annotated_exprs.iter().rev().find_map(|ann| {
+            if ann.span.start == span.start && ann.span.end == span.end {
+                ann.resolved_fn.clone()
+            } else {
+                None
+            }
+        })
     }
 
     fn foreign_global_for_span(
@@ -2046,10 +2109,37 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn is_str_span(&self, key: (usize, usize)) -> bool {
-        matches!(
-            self.type_of_span(key),
-            Some(TypeKind::Str | TypeKind::Ref { .. })
-        )
+        self.type_of_span(key).as_ref().is_some_and(is_string_type)
+    }
+
+    fn string_data_reg(&mut self, expr: &Expr, value: u8) -> u8 {
+        if self
+            .type_of_span((expr.span.start, expr.span.end))
+            .as_ref()
+            .is_some_and(is_owned_string_type)
+        {
+            let data = self.alloc_reg();
+            self.chunk.emit(field_load(data, value, 0));
+            data
+        } else {
+            value
+        }
+    }
+
+    /// Return -1, 0, or 1 for lexicographic UTF-8 string comparison.
+    fn emit_string_cmp(&mut self, left: &Expr, right: &Expr) -> u8 {
+        let left_value = self.compile_expr(left);
+        let left_data = self.string_data_reg(left, left_value);
+        let right_value = self.compile_expr(right);
+        let right_data = self.string_data_reg(right, right_value);
+        let result = self.alloc_reg();
+        let second = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mov, result, left_data, 0));
+        self.chunk.emit(rrr(Opcode::Mov, second, right_data, 0));
+        let mut compare = ri16(Opcode::Intrinsic, result, 33);
+        compare.flags = 2;
+        self.chunk.emit(compare);
+        result
     }
 
     /// Look up the monomorphized name for a generic function call.
@@ -2282,7 +2372,10 @@ impl<'a> FnCompiler<'a> {
             object,
             u16::try_from(layout.byte_offset).unwrap_or_else(|_| {
                 self.codegen_error.get_or_insert_with(|| {
-                    format!("bit-field byte offset {} exceeds the QZI limit", layout.byte_offset)
+                    format!(
+                        "bit-field byte offset {} exceeds the QZI limit",
+                        layout.byte_offset
+                    )
                 });
                 0
             }),
@@ -2334,7 +2427,10 @@ impl<'a> FnCompiler<'a> {
             object,
             u16::try_from(layout.byte_offset).unwrap_or_else(|_| {
                 self.codegen_error.get_or_insert_with(|| {
-                    format!("bit-field byte offset {} exceeds the QZI limit", layout.byte_offset)
+                    format!(
+                        "bit-field byte offset {} exceeds the QZI limit",
+                        layout.byte_offset
+                    )
                 });
                 0
             }),
@@ -2364,7 +2460,10 @@ impl<'a> FnCompiler<'a> {
             object,
             u16::try_from(layout.byte_offset).unwrap_or_else(|_| {
                 self.codegen_error.get_or_insert_with(|| {
-                    format!("bit-field byte offset {} exceeds the QZI limit", layout.byte_offset)
+                    format!(
+                        "bit-field byte offset {} exceeds the QZI limit",
+                        layout.byte_offset
+                    )
                 });
                 0
             }),
@@ -3290,7 +3389,14 @@ impl<'a> FnCompiler<'a> {
                     } else {
                         src
                     };
-                    self.regs.insert(name.clone(), coerced);
+                    // A binding is a new storage location, even when its initializer
+                    // is another local. Reusing the initializer register made `var
+                    // estimate = value` alias `value`, so assigning estimate silently
+                    // changed the original (particularly destructive inside loops).
+                    let reg = self.bind(name.clone());
+                    if reg != coerced {
+                        self.chunk.emit(rrr(Opcode::Mov, reg, coerced, 0));
+                    }
                     let local_ty = ty
                         .as_ref()
                         .map(|t| self.resolve_type(&t.node))
@@ -3298,7 +3404,7 @@ impl<'a> FnCompiler<'a> {
                     if let Some(local_ty) = local_ty.clone() {
                         self.local_types.insert(name.clone(), local_ty);
                     }
-                    self.register_drop_local(name, coerced, local_ty);
+                    self.register_drop_local(name, reg, local_ty);
                 } else {
                     let reg = self.bind(name.clone());
                     let local_ty = ty.as_ref().map(|t| self.resolve_type(&t.node));
@@ -3312,12 +3418,15 @@ impl<'a> FnCompiler<'a> {
             StmtKind::Const { name, value, .. } => {
                 self.mark_consumed_expr(value);
                 let src = self.compile_expr(value);
-                self.regs.insert(name.clone(), src);
+                let reg = self.bind(name.clone());
+                if reg != src {
+                    self.chunk.emit(rrr(Opcode::Mov, reg, src, 0));
+                }
                 let local_ty = self.type_of_span((value.span.start, value.span.end));
                 if let Some(local_ty) = local_ty.clone() {
                     self.local_types.insert(name.clone(), local_ty);
                 }
-                self.register_drop_local(name, src, local_ty);
+                self.register_drop_local(name, reg, local_ty);
                 false
             }
             StmtKind::Return(expr) => {
@@ -3714,7 +3823,9 @@ impl<'a> FnCompiler<'a> {
                                         {
                                             let slot = slots.iter().position(|m| m == "has_next");
                                             let slot_idx = match slot {
-                                                Some(slot) => self.qzi_u8(slot, "trait method slot"),
+                                                Some(slot) => {
+                                                    self.qzi_u8(slot, "trait method slot")
+                                                }
                                                 None => {
                                                     if self.codegen_error.is_none() {
                                                         self.codegen_error = Some(format!(
@@ -3785,7 +3896,9 @@ impl<'a> FnCompiler<'a> {
                                         {
                                             let slot = slots.iter().position(|m| m == "next");
                                             let slot_idx = match slot {
-                                                Some(slot) => self.qzi_u8(slot, "trait method slot"),
+                                                Some(slot) => {
+                                                    self.qzi_u8(slot, "trait method slot")
+                                                }
                                                 None => {
                                                     if self.codegen_error.is_none() {
                                                         self.codegen_error = Some(format!(
@@ -3839,11 +3952,8 @@ impl<'a> FnCompiler<'a> {
                                 self.chunk.emit(ri16(Opcode::MovI, r_one, 1));
                                 self.chunk.emit(rrr(Opcode::Cmp, 0, r_tag, r_one));
                                 let jump_none = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
-                                self.chunk.emit(field_load(
-                                    r_val,
-                                    r_next_opt,
-                                    ENUM_PAYLOAD_OFFSET,
-                                ));
+                                self.chunk
+                                    .emit(field_load(r_val, r_next_opt, ENUM_PAYLOAD_OFFSET));
 
                                 self.loop_stack.push(LoopFrame::new());
                                 self.compile_block(body);
@@ -3880,15 +3990,41 @@ impl<'a> FnCompiler<'a> {
     fn compile_condition_jump(&mut self, expr: &Expr, jump_if_false: bool) -> usize {
         match &expr.node {
             ExprKind::Binary { left, op, right } if is_comparison(op) => {
-                let r1 = self.compile_expr(left);
-                let r2 = self.compile_expr(right);
-                self.chunk.emit(rrr(Opcode::Cmp, 0, r1, r2));
+                let string_comparison = self
+                    .type_of_span((left.span.start, left.span.end))
+                    .as_ref()
+                    .is_some_and(is_string_type)
+                    && self
+                        .type_of_span((right.span.start, right.span.end))
+                        .as_ref()
+                        .is_some_and(is_string_type);
+                let (r1, r2) = if string_comparison {
+                    let result = self.emit_string_cmp(left, right);
+                    let zero = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+                    (result, zero)
+                } else {
+                    (self.compile_expr(left), self.compile_expr(right))
+                };
+                let is_float = self.is_float_span((left.span.start, left.span.end));
+                let mut comparison = rrr(Opcode::Cmp, 0, r1, r2);
+                if is_float {
+                    comparison.flags |= FLOAT_FLAG;
+                }
+                self.chunk.emit(comparison);
                 let jop = if jump_if_false {
                     negate_cmp(op)
                 } else {
                     direct_cmp(op)
                 };
-                self.chunk.emit(ri16(jop, 0, 0))
+                let mut jump = ri16(jop, 0, 0);
+                if is_float {
+                    jump.flags |= FLOAT_FLAG;
+                    if jump_if_false {
+                        jump.flags |= NEGATED_COMPARE_FLAG;
+                    }
+                }
+                self.chunk.emit(jump)
             }
             ExprKind::Group(inner) => self.compile_condition_jump(inner, jump_if_false),
             _ => {
@@ -4228,7 +4364,11 @@ impl<'a> FnCompiler<'a> {
                 UnaryOpKind::Neg => {
                     let src = self.compile_expr(inner);
                     let dst = self.alloc_reg();
-                    self.chunk.emit(rrr(Opcode::Neg, dst, src, 0));
+                    let mut instruction = rrr(Opcode::Neg, dst, src, 0);
+                    if self.is_float_span((inner.span.start, inner.span.end)) {
+                        instruction.flags |= FLOAT_FLAG;
+                    }
+                    self.chunk.emit(instruction);
                     dst
                 }
                 UnaryOpKind::Not => {
@@ -4283,8 +4423,22 @@ impl<'a> FnCompiler<'a> {
                 let left_key = (left.span.start, left.span.end);
                 let is_float = self.is_float_span(left_key);
                 let is_str = self.is_str_span(left_key);
-                let r1 = self.compile_expr(left);
-                let r2 = self.compile_expr(right);
+                let right_is_str = self.is_str_span((right.span.start, right.span.end));
+                let string_comparison = is_comparison(op) && is_str && right_is_str;
+                let (r1, r2) = if string_comparison {
+                    let result = self.emit_string_cmp(left, right);
+                    let zero = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+                    (result, zero)
+                } else if matches!(op, BinOpKind::Add) && is_str && right_is_str {
+                    let left_value = self.compile_expr(left);
+                    let left_data = self.string_data_reg(left, left_value);
+                    let right_value = self.compile_expr(right);
+                    let right_data = self.string_data_reg(right, right_value);
+                    (left_data, right_data)
+                } else {
+                    (self.compile_expr(left), self.compile_expr(right))
+                };
                 let dst = self.alloc_reg();
                 let arith = if is_float { rrr_f } else { rrr };
                 match op {
@@ -4315,9 +4469,13 @@ impl<'a> FnCompiler<'a> {
                     }
                     // Comparisons: materialize bool result into dst.
                     _ if is_comparison(op) => {
-                        self.chunk.emit(rrr(Opcode::Cmp, 0, r1, r2));
+                        self.chunk.emit(arith(Opcode::Cmp, 0, r1, r2));
                         self.chunk.emit(ri16(Opcode::MovI, dst, 1));
-                        let skip = self.chunk.emit(ri16(direct_cmp(op), 0, 0));
+                        let mut jump = ri16(direct_cmp(op), 0, 0);
+                        if is_float {
+                            jump.flags |= FLOAT_FLAG;
+                        }
+                        let skip = self.chunk.emit(jump);
                         self.chunk.emit(ri16(Opcode::MovI, dst, 0));
                         self.chunk.patch_jump(skip, self.chunk.len() as u16);
                     }
@@ -4918,7 +5076,6 @@ impl<'a> FnCompiler<'a> {
                     let mut call_target = self
                         .resolved_fn_for_span(expr.span)
                         .unwrap_or_else(|| format!("{}.{}", module_base, method));
-
                     if self.emit_c_variadic_call(&call_target, args, dst) {
                         return dst;
                     }
@@ -5120,13 +5277,17 @@ impl<'a> FnCompiler<'a> {
                 // so generic param `T` resolves to the concrete type (e.g., Int32).
                 let receiver_ty = self.type_of_expr(object);
 
-                // Static dispatch: Named type with a known impl method takes priority
-                // over built-in method dispatch so that user impls can override any name.
-                if let Some(TypeKind::Named {
-                    name: type_name,
-                    type_args: receiver_type_args,
-                }) = receiver_ty
-                {
+                // Static dispatch: library impls for named and primitive types take
+                // priority over builtins. This lets the prelude define most primitive
+                // ergonomics in Quazi rather than growing compiler-only method lists.
+                if let Some(receiver_ty) = receiver_ty {
+                    let prefer_primitive_builtin = !matches!(receiver_ty, TypeKind::Named { .. })
+                        && resolve_primitive_method(method, args, Some(&receiver_ty)).is_some();
+                    let type_name = type_kind_base_name(&receiver_ty);
+                    let receiver_type_args = match &receiver_ty {
+                        TypeKind::Named { type_args, .. } => type_args.clone(),
+                        _ => Vec::new(),
+                    };
                     // @format instance methods: pre-format args, call method with single string.
                     {
                         let mangled_check = format!("{}.{}", type_name, method);
@@ -5194,7 +5355,9 @@ impl<'a> FnCompiler<'a> {
                             receiver_type_args.iter().map(|t| t.node.clone()).collect();
                         crate::semantic::typecheck::mangle_monomorphized(&base_mangled, &type_kinds)
                     };
-                    let lookup = if self.fn_index.contains_key(&mangled) {
+                    let lookup = if prefer_primitive_builtin {
+                        None
+                    } else if self.fn_index.contains_key(&mangled) {
                         Some(mangled.clone())
                     } else if self.fn_index.contains_key(&base_mangled) {
                         Some(base_mangled.clone())
@@ -5231,9 +5394,8 @@ impl<'a> FnCompiler<'a> {
                         Some(slot) => self.qzi_u8(slot, "trait method slot"),
                         None => {
                             if self.codegen_error.is_none() {
-                                self.codegen_error = Some(format!(
-                                    "trait `{trait_name}` has no `{method}` slot"
-                                ));
+                                self.codegen_error =
+                                    Some(format!("trait `{trait_name}` has no `{method}` slot"));
                             }
                             0
                         }
@@ -5285,9 +5447,12 @@ impl<'a> FnCompiler<'a> {
                                 self.chunk.emit(rrr(Opcode::Mov, dst, len_reg, 0));
                                 return dst;
                             }
-                            // str / &str
+                            // str / &str: count UTF-8 scalar values, not bytes.
                             let dst = self.alloc_reg();
-                            self.chunk.emit(rrr(Opcode::StrLen, dst, obj, 0));
+                            self.chunk.emit(rrr(Opcode::Mov, dst, obj, 0));
+                            let mut instruction = ri16(Opcode::Intrinsic, dst, 34);
+                            instruction.flags = 1;
+                            self.chunk.emit(instruction);
                             return dst;
                         }
                         PrimitiveMethod::PrimToStr { tag } => {
@@ -5325,42 +5490,50 @@ impl<'a> FnCompiler<'a> {
                             self.chunk.emit(rrr(Opcode::Add, dst, obj, eight));
                             return dst;
                         }
-                        PrimitiveMethod::Parse { is_float } => {
+                        PrimitiveMethod::Parse => {
                             let dst = self.alloc_reg();
-                            let op = if is_float
-                                || matches!(
-                                    type_args.first().map(|t| &t.node),
-                                    Some(TypeKind::Float32 | TypeKind::Float64)
-                                ) {
-                                Opcode::StrToFloat
-                            } else {
-                                Opcode::StrToInt
-                            };
-                            self.chunk.emit(rrr(op, dst, obj, 0));
+                            let suffix = type_args
+                                .first()
+                                .and_then(|ty| parse_method_suffix(&ty.node));
+                            let prefix =
+                                if resolved_receiver.as_ref().is_some_and(is_owned_string_type) {
+                                    "String"
+                                } else {
+                                    "str"
+                                };
+                            if let Some(suffix) = suffix {
+                                self.emit_call_by_name(
+                                    &format!("{prefix}.parse_{suffix}"),
+                                    &[obj],
+                                    dst,
+                                );
+                            } else if self.codegen_error.is_none() {
+                                self.codegen_error = Some(
+                                    "unsupported parse[T]() target reached codegen".to_string(),
+                                );
+                            }
                             return dst;
                         }
                     }
                 }
                 // General vtable dispatch (fallback for dynamic/polymorphic calls).
                 // Determine method slot from trait_method_slots.
-                let resolved_method_slot = self
-                    .type_of_expr(object)
-                    .and_then(|ty| {
-                        let type_name = match &ty {
-                            TypeKind::Named { name, .. } => Some(name.clone()),
-                            _ => None,
-                        }?;
-                        // Find a trait implemented by this type that defines the method.
-                        let traits = self.trait_impls.get(type_name.as_str())?;
-                        for trait_name in traits {
-                            if let Some(slots) = self.trait_method_slots.get(trait_name)
-                                && let Some(idx) = slots.iter().position(|m| m == method)
-                            {
-                                return Some(idx);
-                            }
+                let resolved_method_slot = self.type_of_expr(object).and_then(|ty| {
+                    let type_name = match &ty {
+                        TypeKind::Named { name, .. } => Some(name.clone()),
+                        _ => None,
+                    }?;
+                    // Find a trait implemented by this type that defines the method.
+                    let traits = self.trait_impls.get(type_name.as_str())?;
+                    for trait_name in traits {
+                        if let Some(slots) = self.trait_method_slots.get(trait_name)
+                            && let Some(idx) = slots.iter().position(|m| m == method)
+                        {
+                            return Some(idx);
                         }
-                        None
-                    });
+                    }
+                    None
+                });
                 let method_slot = match resolved_method_slot {
                     Some(slot) => self.qzi_u8(slot, "trait method slot"),
                     None => {
@@ -5494,15 +5667,18 @@ impl<'a> FnCompiler<'a> {
                 let base = self.reserve_reg_block(elems.len());
                 for (i, elem) in elems.iter().enumerate() {
                     let val = self.compile_expr(elem);
-                    let dst = u8::try_from(i).ok().and_then(|i| base.checked_add(i)).unwrap_or_else(|| {
-                        self.codegen_error.get_or_insert_with(|| {
-                            format!(
-                                "array literal in `{}` exceeds the 256-register QZI limit",
-                                self.chunk.name
-                            )
+                    let dst = u8::try_from(i)
+                        .ok()
+                        .and_then(|i| base.checked_add(i))
+                        .unwrap_or_else(|| {
+                            self.codegen_error.get_or_insert_with(|| {
+                                format!(
+                                    "array literal in `{}` exceeds the 256-register QZI limit",
+                                    self.chunk.name
+                                )
+                            });
+                            0
                         });
-                        0
-                    });
                     if val != dst {
                         self.chunk.emit(rrr(Opcode::Mov, dst, val, 0));
                     }
@@ -5514,10 +5690,8 @@ impl<'a> FnCompiler<'a> {
                 // Named type that implements the Index trait → dispatch to Type.index.
                 // Checks trait_impls registry — no accidental dispatch from any "index" method.
                 let key = (object.span.start, object.span.end);
-                if let Some(TypeKind::Named {
-                    name: type_name, ..
-                }) = self.type_of_span(key)
-                {
+                if let Some(object_ty) = self.type_of_span(key) {
+                    let type_name = type_kind_base_name(&object_ty);
                     let implements_index = self
                         .trait_impls
                         .get(type_name.as_str())
@@ -5682,15 +5856,13 @@ impl<'a> FnCompiler<'a> {
                     .emit(rrr(Opcode::FieldLoad, disc, scr, ENUM_DISCRIM_OFFSET));
                 let tag_ok = self.alloc_reg();
                 let encoded_success = self.qzi_u16(success_tag, "result success tag");
-                self.chunk
-                    .emit(ri16(Opcode::MovI, tag_ok, encoded_success));
+                self.chunk.emit(ri16(Opcode::MovI, tag_ok, encoded_success));
                 self.chunk.emit(rrr(Opcode::Cmp, 0, disc, tag_ok));
                 let jne = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
 
                 // Success path: extract first payload.
                 let val = self.alloc_reg();
-                self.chunk
-                    .emit(field_load(val, scr, ENUM_PAYLOAD_OFFSET));
+                self.chunk.emit(field_load(val, scr, ENUM_PAYLOAD_OFFSET));
                 let jmp_end = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
 
                 // Failure path: build failure variant and early-return.
@@ -6049,8 +6221,8 @@ enum PrimitiveMethod {
     AsStr,
     /// .as_ptr() on bytes â€” skip the read-only length prefix.
     BytesAsPtr,
-    /// .parse[T]() — true=float, false=int
-    Parse { is_float: bool },
+    /// Checked `.parse[T]()` dispatched to a prelude parser.
+    Parse,
 }
 
 /// Maps receiver types to their `PrimToStr` tag value.
@@ -6078,7 +6250,15 @@ fn resolve_primitive_method(
     receiver_ty: Option<&TypeKind>,
 ) -> Option<PrimitiveMethod> {
     match method {
-        "len" if args.is_empty() => Some(PrimitiveMethod::Len),
+        "len"
+            if args.is_empty()
+                && receiver_ty.is_some_and(|ty| {
+                    matches!(ty, TypeKind::Bytes | TypeKind::Slice { .. })
+                        || is_string_view_type(ty)
+                }) =>
+        {
+            Some(PrimitiveMethod::Len)
+        }
         "to_str" if args.is_empty() => match receiver_ty {
             Some(TypeKind::Str) | Some(TypeKind::Ref { .. }) => Some(PrimitiveMethod::AsStr),
             _ => Some(PrimitiveMethod::PrimToStr {
@@ -6098,7 +6278,7 @@ fn resolve_primitive_method(
         "as_ptr" if args.is_empty() && matches!(receiver_ty, Some(TypeKind::Bytes)) => {
             Some(PrimitiveMethod::BytesAsPtr)
         }
-        "parse" => Some(PrimitiveMethod::Parse { is_float: false }),
+        "parse" => Some(PrimitiveMethod::Parse),
         _ => None,
     }
 }
@@ -6153,6 +6333,8 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
         m.insert("quazi.os.cpu_name", 30);
         m.insert("quazi.os.windows_build", 31);
         m.insert("quazi.os.windows_product", 32);
+        m.insert("quazi.str.cmp", 33);
+        m.insert("quazi.str.rune_len", 34);
         m
     });
     let name = attr
@@ -6390,6 +6572,40 @@ fn type_kind_base_name(ty: &TypeKind) -> String {
     }
 }
 
+fn is_string_view_type(ty: &TypeKind) -> bool {
+    match ty {
+        TypeKind::Str => true,
+        TypeKind::Ref { inner } => is_string_view_type(&inner.node),
+        _ => false,
+    }
+}
+
+fn is_owned_string_type(ty: &TypeKind) -> bool {
+    matches!(ty, TypeKind::Named { name, .. } if name == "String" || name.ends_with(".String"))
+}
+
+fn is_string_type(ty: &TypeKind) -> bool {
+    is_string_view_type(ty) || is_owned_string_type(ty)
+}
+
+fn parse_method_suffix(ty: &TypeKind) -> Option<&'static str> {
+    match ty {
+        TypeKind::Int8 => Some("i8"),
+        TypeKind::Int16 => Some("i16"),
+        TypeKind::Int32 => Some("i32"),
+        TypeKind::Int64 => Some("i64"),
+        TypeKind::Uint8 => Some("u8"),
+        TypeKind::Uint16 => Some("u16"),
+        TypeKind::Uint32 => Some("u32"),
+        TypeKind::Uint64 => Some("u64"),
+        TypeKind::Isize => Some("isize"),
+        TypeKind::Usize => Some("usize"),
+        TypeKind::Float32 => Some("f32"),
+        TypeKind::Float64 => Some("f64"),
+        _ => None,
+    }
+}
+
 /// Structural equality comparison for TypeKind (no PartialEq derive available).
 fn types_equal(a: &TypeKind, b: &TypeKind) -> bool {
     use TypeKind::*;
@@ -6545,10 +6761,7 @@ mod tests {
                    if (early) { ret; }
                }"#,
         );
-        let branch = chunks
-            .iter()
-            .find(|chunk| chunk.name == "branch")
-            .unwrap();
+        let branch = chunks.iter().find(|chunk| chunk.name == "branch").unwrap();
         assert_eq!(
             branch
                 .code
@@ -7197,15 +7410,23 @@ fn main() i32 {
     }
 
     #[test]
-    fn str_len_emits_strlen_opcode() {
+    fn str_len_emits_rune_count_intrinsic() {
         let chunks = compile(r#"fn f(s: str) any { ret s.len(); }"#);
         assert!(
             chunks[0]
                 .code
                 .iter()
-                .any(|i| i.opcode == Opcode::StrLen as u8),
-            "s.len() should emit StrLen"
+                .any(|i| i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 34),
+            "s.len() should count UTF-8 scalar values"
         );
+    }
+
+    #[test]
+    fn string_comparisons_use_content_intrinsic() {
+        let chunks = compile("fn equal(a: str, b: str) bool { ret a == b; }");
+        assert!(chunks[0].code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Intrinsic as u8 && instruction.ri16().1 == 33
+        }));
     }
 
     #[test]
@@ -7561,6 +7782,81 @@ fn main() i32 {
     }
 
     #[test]
+    fn initialized_binding_does_not_alias_its_source() {
+        let chunks = compile(
+            r#"
+            fn update(value: f64) f64 {
+                var estimate: f64 = value;
+                estimate = estimate + 1.0;
+                ret value + estimate;
+            }
+            "#,
+        );
+        let update = chunks.iter().find(|chunk| chunk.name == "update").unwrap();
+        assert!(update.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Add as u8 && instruction.flags & FLOAT_FLAG != 0 && {
+                let (_, left, right) = instruction.rrr();
+                (left == 0 && right != 0) || (right == 0 && left != 0)
+            }
+        }));
+    }
+
+    #[test]
+    fn relational_jump_functions_are_not_inlined_without_target_remapping() {
+        let chunks = compile(
+            r#"
+            fn ordered(a: i32, b: i32) bool { ret a <= b; }
+            fn main() void {
+                ordered(1, 2);
+                ordered(2, 3);
+                ordered(3, 4);
+                ordered(4, 5);
+            }
+            "#,
+        );
+        let ordered_index = chunks
+            .iter()
+            .position(|chunk| chunk.name == "ordered")
+            .expect("ordered function should remain in the table")
+            as u16;
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(main.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::CallIdx as u8 && instruction.ri16().1 == ordered_index
+        }));
+    }
+
+    #[test]
+    fn float_comparison_and_negation_keep_float_flags() {
+        let chunks = compile(
+            r#"
+            fn compare(a: f64, b: f64) bool { ret a < b; }
+            fn below(a: f64, b: f64) bool {
+                if (a < b) { ret true; }
+                ret false;
+            }
+            fn negate(value: f64) f64 { ret -value; }
+            "#,
+        );
+        let compare = chunks.iter().find(|chunk| chunk.name == "compare").unwrap();
+        assert!(compare.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Cmp as u8 && instruction.flags & FLOAT_FLAG != 0
+        }));
+        assert!(compare.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Jl as u8 && instruction.flags & FLOAT_FLAG != 0
+        }));
+        let below = chunks.iter().find(|chunk| chunk.name == "below").unwrap();
+        assert!(below.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Jge as u8
+                && instruction.flags & FLOAT_FLAG != 0
+                && instruction.flags & NEGATED_COMPARE_FLAG != 0
+        }));
+        let negate = chunks.iter().find(|chunk| chunk.name == "negate").unwrap();
+        assert!(negate.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Neg as u8 && instruction.flags & FLOAT_FLAG != 0
+        }));
+    }
+
+    #[test]
     fn try_preserves_payload_type_for_chained_inherent_method() {
         let chunks = compile(
             r#"
@@ -7573,8 +7869,11 @@ fn main() i32 {
             "#,
         );
         let answer = chunks.iter().find(|chunk| chunk.name == "answer").unwrap();
-        assert!(answer.code.iter().all(|instruction| {
-            instruction.opcode != Opcode::VtblLoad as u8
-        }));
+        assert!(
+            answer
+                .code
+                .iter()
+                .all(|instruction| { instruction.opcode != Opcode::VtblLoad as u8 })
+        );
     }
 }

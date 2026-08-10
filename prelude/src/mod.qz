@@ -7,6 +7,9 @@
 
 pub import ./array.Array;
 pub import ./string.String;
+pub import ./string.Rune;
+pub import ./string.ParseError;
+pub import ./number;
 pub import ./box.Box;
 pub import ./option;
 pub import ./result;

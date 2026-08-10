@@ -1140,10 +1140,68 @@ impl Parser {
                 self.restore(call_checkpoint);
             }
 
-            // subscript: expr[i] or expr[i, j, ...]
+            // Subscript: expr[i], expr[i, j, ...], or Python-style
+            // rune slicing: expr[start:end:step]. Missing slice bounds use a
+            // private sentinel interpreted by the string implementation.
             if self.at(TokenKind::LBracket) {
-                self.advance();
-                let first = self.parse_expr()?;
+                let lbracket = self.advance().span;
+                let first = if self.at(TokenKind::Colon) {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
+                if self.at(TokenKind::Colon) {
+                    self.advance();
+                    let end = if self.at(TokenKind::Colon) || self.at(TokenKind::RBracket) {
+                        None
+                    } else {
+                        Some(self.parse_expr()?)
+                    };
+                    let step = if self.at(TokenKind::Colon) {
+                        self.advance();
+                        if self.at(TokenKind::RBracket) {
+                            None
+                        } else {
+                            Some(self.parse_expr()?)
+                        }
+                    } else {
+                        None
+                    };
+                    let rbracket = self.expect(TokenKind::RBracket)?.span;
+                    let arg_span = to_ast_span(lbracket);
+                    let default_bound =
+                        || Spanned::new(ExprKind::Literal(Literal::Int(0)), arg_span);
+                    let default_step =
+                        || Spanned::new(ExprKind::Literal(Literal::Int(1)), arg_span);
+                    let start_omitted = first.is_none();
+                    let end_omitted = end.is_none();
+                    let span = Span::merge(expr.span, to_ast_span(rbracket));
+                    expr = Spanned::new(
+                        ExprKind::MethodCall {
+                            object: Box::new(expr),
+                            method: "__slice".to_string(),
+                            type_args: Vec::new(),
+                            args: vec![
+                                first.unwrap_or_else(default_bound),
+                                end.unwrap_or_else(default_bound),
+                                step.unwrap_or_else(default_step),
+                                Spanned::new(
+                                    ExprKind::Literal(Literal::Bool(start_omitted)),
+                                    arg_span,
+                                ),
+                                Spanned::new(
+                                    ExprKind::Literal(Literal::Bool(end_omitted)),
+                                    arg_span,
+                                ),
+                            ],
+                            named_args: Vec::new(),
+                        },
+                        span,
+                    );
+                    continue;
+                }
+
+                let first = first.expect("non-slice subscript has a first index");
                 let mut indices = vec![first];
                 while self.at(TokenKind::Comma) {
                     self.advance();
@@ -2288,6 +2346,30 @@ fn main() void {
         assert_eq!(method, "transform");
         assert!(args.is_empty());
         assert_eq!(type_args.len(), 1);
+    }
+
+    #[test]
+    fn lowers_python_style_string_slice_to_hidden_method() {
+        let program = parse_program("fn main() void { text[::-1]; }");
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+        let StmtKind::ExprStmt(expr) = &body.as_ref().unwrap().stmts[0].node else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::MethodCall { method, args, .. } = &expr.node else {
+            panic!("expected lowered slice method");
+        };
+        assert_eq!(method, "__slice");
+        assert_eq!(args.len(), 5);
+        assert!(matches!(
+            args[3].node,
+            ExprKind::Literal(Literal::Bool(true))
+        ));
+        assert!(matches!(
+            args[4].node,
+            ExprKind::Literal(Literal::Bool(true))
+        ));
     }
 
     #[test]

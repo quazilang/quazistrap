@@ -116,6 +116,9 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 ### Intrinsic Dispatch
 
 - `INTRINSIC_MAP` HashMap; array ops via `INTRINSIC_OPCODE_MAP` HashMap.
+- Intrinsic 33 compares UTF-8 string contents lexicographically; intrinsic 34
+  counts Unicode scalar values for `str.len()`. Both are dependency-free native
+  loops. `bytes_len()` continues to use byte-oriented `StrLen`.
 - `compile_intrinsic_fn` for `ArrayStore`/`ArrayLoad` must emit `rrr(op, param_reg, ...)` matching the callee param registers, not hardcoded `rrr(op, 0, 0, 0)`. The inline pass remaps registers via `base + r`, so hardcoded zeros become `base+0` for all operands — wrong.
 - **str_variadic module call**: `ExprKind::Field` path (e.g. `io.println("{}", x)`) must pack coerced args into `(ptr, len)` before calling `format`, just like the `ExprKind::Ident` path does.
 

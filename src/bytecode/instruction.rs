@@ -396,6 +396,8 @@ impl Instruction {
                     30 => "quazi.os.cpu_name",
                     31 => "quazi.os.windows_build",
                     32 => "quazi.os.windows_product",
+                    33 => "quazi.str.cmp",
+                    34 => "quazi.str.rune_len",
                     _ => "?",
                 };
                 format!(
@@ -445,6 +447,9 @@ impl Instruction {
 
 /// Flag bit: instruction operands are f64 (use SSE float ops in encoder).
 pub const FLOAT_FLAG: u8 = 0x01;
+/// A relational jump is the logical inverse of its source comparison.
+/// This distinction preserves unordered (NaN) floating-point behavior.
+pub const NEGATED_COMPARE_FLAG: u8 = 0x02;
 
 const MEM_WIDTH_SHIFT: u8 = 1;
 const MEM_WIDTH_MASK: u8 = 0x06;
@@ -481,7 +486,13 @@ pub fn rrr_f(op: Opcode, dst: u8, src1: u8, src2: u8) -> Instruction {
     Instruction::new(op, [dst, src1, src2, 0], FLOAT_FLAG)
 }
 
-pub fn field_load_w(dst: u8, object: u8, offset: u16, width: MemWidth, signed: bool) -> Instruction {
+pub fn field_load_w(
+    dst: u8,
+    object: u8,
+    offset: u16,
+    width: MemWidth,
+    signed: bool,
+) -> Instruction {
     field_load_typed(dst, object, offset, width, signed, false)
 }
 
