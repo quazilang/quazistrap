@@ -26,8 +26,13 @@ qz lsp
 
 Output: `<stem>.qzi` (bytecode), `<stem>.o` (object), `<stem>`/`<stem>.exe` (binary).  
 `.qzi` as input: skips frontend, goes straight to backend. Binary emission also reuses the current project's `[cc]` and `[link]` inputs, so the same target-neutral QZI can be linked against the host's native C objects and libraries.
-Linker: `QUAZI_LINKER` env → `ld.lld` → `mold` → `ld` (Linux/macOS); `lld-link` → `link` (Windows). Linux uses `-dynamic-linker` and links `libc.so.6` / `libm.so.6` by full path to avoid GNU linker scripts that `ld.lld` cannot parse.  
-`qz build myprog.o` — planned built-in linker path (P1).  
+Linker: plain Linux binaries use the in-process static ELF linker with no
+implicit libraries. `--linker builtin` forces it. Archives/shared libraries,
+`-l`, an explicit linker path, or `QUAZI_LINKER` opt into the external path
+(`ld.lld`/`mold`/`ld` or `lld-link`/`link`); libc/CRT libraries are never added
+implicitly. Linux ELF `.o` files passed to `qz build`/`qz run` are linked by
+the built-in pipeline; archives, shared libraries, and `-l` remain explicit
+external-linker features.
 Rust edition 2024.
 
 ---
@@ -265,7 +270,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **`else if` chains** | ✅ Done |
 | **`unsafe` block sugar** | ✅ Done |
 | **AOT `@cfg` stripping** | ✅ Done |
-| **`qz link` built-in linker** | Pending |
+| **Built-in linker** | Experimental — static multi-object x86-64 ELF, cross-object symbol resolution, checked relocations, W^X segments, no implicit libc, and a minimal `main` entry for object-only builds; PE/COFF and archives pending |
 | **`qz test` runner** | Pending |
 | **`pub` on types** | ✅ Done |
 | **Unified formatting for `print`/`println`/`err`/`errln`/`format`** | In progress — support shared placeholder behavior, escaped braces, and format specifications; begin with `{:X}` and `{name:X}` uppercase hexadecimal |
@@ -312,6 +317,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-10 | Started the experimental self-hosted linker: added an in-process static x86-64 ELF writer with checked relocations, W^X load segments and a non-executable stack; made native libraries and libc explicit; removed Linux startup's libc environment lookup; and embedded on-demand mmap-backed allocation/memory routines in compiler objects. |
 | 2026-08-10 | Hardened QZI generation/loading with checked encoding limits, malformed-input and ABI validation, shared register accounting, and error-returning backend fallbacks. Widened field offsets to 16 bits, preserved `?` payload types for method dispatch, fixed directory-backed lazy re-exports and imported static constructors, corrected Win64 intrinsic stack/shadow-space handling and 64-bit formatting, and tightened standard-library I/O/string/collection ownership contracts. |
 | 2026-08-10 | Completed the example compile matrix: made sibling gateway imports explicitly relative to avoid package-name shadowing, accepted CRLF string continuations, stopped target-neutral QZI builds from invoking native C tools, and normalized Windows extended paths before invoking external compilers/linkers. |
 | 2026-08-06 | Made the C ABI phase-two example self-explanatory on stdout: it now introduces the test, reports each of its nine checks as PASS or FAIL, explains nonzero exit codes at the failure site, and prints a final success summary. |

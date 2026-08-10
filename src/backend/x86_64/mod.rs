@@ -4,6 +4,7 @@
 
 pub mod encoder;
 pub mod relocations;
+pub mod runtime;
 pub mod sections;
 pub mod start;
 pub mod symbols;
@@ -179,6 +180,32 @@ fn emit_native_object(
         text_bytes.extend_from_slice(&stub.bytes);
     }
 
+    if target.os == target::Os::Linux {
+        let requested_runtime_symbols: std::collections::HashSet<String> = all_relocs
+            .iter()
+            .filter_map(|(reloc, _)| {
+                sym_table
+                    .get_defined(&reloc.symbol)
+                    .is_none()
+                    .then(|| reloc.symbol.clone())
+            })
+            .collect();
+        for function in
+            runtime::generate_required(&requested_runtime_symbols).map_err(BackendError)?
+        {
+            let offset = text_bytes.len();
+            sym_table.define_function(
+                &mut obj,
+                section_acc.text_id,
+                function.name,
+                offset as u64,
+                function.bytes.len() as u64,
+                SymbolScope::Compilation,
+            );
+            text_bytes.extend_from_slice(&function.bytes);
+        }
+    }
+
     section_acc.write_text(&mut obj, &text_bytes);
 
     // Collect VtableAddr refs from all chunks; only emit vtables actually used.
@@ -309,5 +336,56 @@ mod tests {
                 "symbol `{expected}` must be defined"
             );
         }
+    }
+
+    #[test]
+    fn linux_primitive_formatting_does_not_import_sprintf() {
+        let mut main = Chunk::new("main");
+        main.reg_count = 2;
+        let value = main.add_constant(ConstPoolEntry::Float(1.5));
+        main.emit(ri16(Opcode::MovConst, 0, value));
+        main.emit(rrr(Opcode::PrimToStr, 1, 0, 1));
+        main.emit(rrr(Opcode::Ret, 1, 0, 0));
+        let target = TargetSpec {
+            arch: Arch::X86_64,
+            os: Os::Linux,
+            abi: Abi::SysV,
+            emit_start: false,
+            no_crash: false,
+        };
+        let output = ElfBackend
+            .compile(&[main], &target, None)
+            .expect("ELF output should compile");
+        let object = object::File::parse(output.bytes.as_slice()).expect("valid ELF object");
+        assert!(
+            object
+                .symbols()
+                .all(|symbol| symbol.name() != Ok("sprintf"))
+        );
+    }
+
+    #[test]
+    fn linux_objects_embed_requested_allocator_runtime() {
+        let mut main = Chunk::new("main");
+        main.reg_count = 1;
+        main.emit(ri16(Opcode::MovI, 0, 32));
+        main.emit(ri16(Opcode::Intrinsic, 0, 3));
+        main.emit(rrr(Opcode::Ret, 0, 0, 0));
+        let target = TargetSpec {
+            arch: Arch::X86_64,
+            os: Os::Linux,
+            abi: Abi::SysV,
+            emit_start: false,
+            no_crash: false,
+        };
+        let output = ElfBackend
+            .compile(&[main], &target, None)
+            .expect("ELF output should compile");
+        let object = object::File::parse(output.bytes.as_slice()).expect("valid ELF object");
+        let malloc = object
+            .symbols()
+            .find(|symbol| symbol.name() == Ok("malloc"))
+            .expect("malloc symbol");
+        assert!(!malloc.is_undefined());
     }
 }

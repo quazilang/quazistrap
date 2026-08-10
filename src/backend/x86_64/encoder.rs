@@ -508,6 +508,195 @@ fn safe_fn_label(name: &str) -> String {
 
 // ── FnEncoder ────────────────────────────────────────────────────────────────
 
+/// Format `rax` into the 80-byte buffer at `r11` without libc. Only registers
+/// that are caller-saved in both SysV and Win64 are clobbered.
+fn emit_integer_to_string(
+    asm: &mut CodeAssembler,
+    base: u64,
+    uppercase: bool,
+    signed: bool,
+) -> Result<(), IcedError> {
+    let mut magnitude_ready = asm.create_label();
+    let mut digit_loop = asm.create_label();
+    let mut numeric_digit = asm.create_label();
+    let mut digit_ready = asm.create_label();
+    let mut sign_done = asm.create_label();
+    let mut reverse_loop = asm.create_label();
+    let mut reverse_done = asm.create_label();
+
+    asm.xor(r8d, r8d)?;
+    if signed {
+        asm.test(rax, rax)?;
+        asm.jns(magnitude_ready)?;
+        asm.mov(r8d, 1i32)?;
+        asm.neg(rax)?;
+        asm.set_label(&mut magnitude_ready)?;
+    }
+
+    asm.mov(r10, r11)?;
+    asm.mov(r9, base)?;
+    asm.set_label(&mut digit_loop)?;
+    asm.xor(edx, edx)?;
+    asm.div(r9)?;
+    asm.cmp(edx, 9i32)?;
+    asm.jbe(numeric_digit)?;
+    asm.add(edx, if uppercase { 55i32 } else { 87i32 })?;
+    asm.jmp(digit_ready)?;
+    asm.set_label(&mut numeric_digit)?;
+    asm.add(edx, '0' as i32)?;
+    asm.set_label(&mut digit_ready)?;
+    asm.mov(byte_ptr(r10), dl)?;
+    asm.inc(r10)?;
+    asm.test(rax, rax)?;
+    asm.jne(digit_loop)?;
+
+    if signed {
+        asm.test(r8d, r8d)?;
+        asm.je(sign_done)?;
+        asm.mov(byte_ptr(r10), '-' as i32)?;
+        asm.inc(r10)?;
+        asm.set_label(&mut sign_done)?;
+    }
+    asm.mov(byte_ptr(r10), 0i32)?;
+
+    asm.mov(r8, r11)?;
+    asm.lea(r9, qword_ptr(r10 - 1i32))?;
+    asm.set_label(&mut reverse_loop)?;
+    asm.cmp(r8, r9)?;
+    asm.jae(reverse_done)?;
+    asm.mov(al, byte_ptr(r8))?;
+    asm.mov(dl, byte_ptr(r9))?;
+    asm.mov(byte_ptr(r8), dl)?;
+    asm.mov(byte_ptr(r9), al)?;
+    asm.inc(r8)?;
+    asm.dec(r9)?;
+    asm.jmp(reverse_loop)?;
+    asm.set_label(&mut reverse_done)?;
+    Ok(())
+}
+
+/// Format the f64 bits in `rax` into the 80-byte buffer at `r11`.
+/// `trim_zeroes` provides the compact default representation; explicit
+/// precision keeps exactly the requested number of fractional digits.
+fn emit_float_to_string(
+    asm: &mut CodeAssembler,
+    precision: u8,
+    trim_zeroes: bool,
+) -> Result<(), IcedError> {
+    let mut positive = asm.create_label();
+    let mut finite = asm.create_label();
+    let mut nan = asm.create_label();
+    let mut scan_end = asm.create_label();
+    let mut end_found = asm.create_label();
+    let mut fraction_ready = asm.create_label();
+    let mut fraction_loop = asm.create_label();
+    let mut trim_loop = asm.create_label();
+    let mut trim_done = asm.create_label();
+    let mut done = asm.create_label();
+
+    asm.mov(rdx, rax)?;
+    asm.mov(r8, 0x7fff_ffff_ffff_ffffu64)?;
+    asm.and(rax, r8)?; // absolute-value bits
+    asm.test(rdx, rdx)?;
+    asm.jns(positive)?;
+    asm.mov(byte_ptr(r11), '-' as i32)?;
+    asm.inc(r11)?;
+    asm.set_label(&mut positive)?;
+
+    asm.mov(r8, rax)?;
+    asm.shr(r8, 52i32)?;
+    asm.cmp(r8, 0x7ffi32)?;
+    asm.jne(finite)?;
+    asm.mov(r8, rax)?;
+    asm.shl(r8, 12i32)?;
+    asm.test(r8, r8)?;
+    asm.jne(nan)?;
+    asm.mov(dword_ptr(r11), 0x0066_6e69i32)?; // "inf\0"
+    asm.jmp(done)?;
+    asm.set_label(&mut nan)?;
+    asm.mov(dword_ptr(r11), 0x006e_616ei32)?; // "nan\0"
+    asm.jmp(done)?;
+
+    asm.set_label(&mut finite)?;
+    asm.movq(xmm1, rax)?;
+    asm.cvttsd2si(rax, xmm1)?;
+    asm.movq(xmm3, rax)?; // integer component, preserved while rounding
+    asm.cvtsi2sd(xmm2, rax)?;
+    asm.subsd(xmm1, xmm2)?;
+
+    let scale_integer = 10u64.pow(precision as u32);
+    let scale = scale_integer as f64;
+    asm.mov(rax, scale.to_bits())?;
+    asm.movq(xmm2, rax)?;
+    asm.mulsd(xmm1, xmm2)?;
+    asm.mov(rax, 0.5f64.to_bits())?;
+    asm.movq(xmm2, rax)?;
+    asm.addsd(xmm1, xmm2)?;
+    asm.cvttsd2si(rax, xmm1)?;
+    asm.cmp(rax, scale_integer as i32)?;
+    asm.jb(fraction_ready)?;
+    // Rounding 9.999... must carry into the integer component rather than
+    // emitting an out-of-range fractional digit sequence.
+    asm.xor(eax, eax)?;
+    asm.movq(rcx, xmm3)?;
+    asm.inc(rcx)?;
+    asm.movq(xmm3, rcx)?;
+    asm.set_label(&mut fraction_ready)?;
+    asm.push(rax)?; // preserve rounded fractional digits across integer format
+    asm.movq(rax, xmm3)?;
+    emit_integer_to_string(asm, 10, false, false)?;
+    asm.pop(rax)?;
+
+    if precision == 0 {
+        asm.jmp(done)?;
+    } else {
+        asm.mov(r10, r11)?;
+        asm.set_label(&mut scan_end)?;
+        asm.cmp(byte_ptr(r10), 0i32)?;
+        asm.je(end_found)?;
+        asm.inc(r10)?;
+        asm.jmp(scan_end)?;
+        asm.set_label(&mut end_found)?;
+        asm.mov(byte_ptr(r10), '.' as i32)?;
+        asm.inc(r10)?;
+        asm.mov(r8, r10)?; // first fractional digit
+        asm.add(r10, precision as i32)?;
+        asm.mov(byte_ptr(r10), 0i32)?;
+
+        asm.mov(rcx, precision as u64)?;
+        asm.mov(r9, 10u64)?;
+        asm.set_label(&mut fraction_loop)?;
+        asm.xor(edx, edx)?;
+        asm.div(r9)?;
+        asm.add(edx, '0' as i32)?;
+        asm.dec(r10)?;
+        asm.mov(byte_ptr(r10), dl)?;
+        asm.dec(rcx)?;
+        asm.jne(fraction_loop)?;
+
+        if trim_zeroes {
+            asm.add(r8, precision as i32)?;
+            asm.set_label(&mut trim_loop)?;
+            asm.cmp(r8, r10)?;
+            asm.jbe(trim_done)?;
+            asm.cmp(byte_ptr(r8 - 1i32), '0' as i32)?;
+            asm.jne(trim_done)?;
+            asm.dec(r8)?;
+            asm.jmp(trim_loop)?;
+            asm.set_label(&mut trim_done)?;
+            asm.cmp(byte_ptr(r8 - 1i32), '.' as i32)?;
+            let mut keep_decimal = asm.create_label();
+            asm.jne(keep_decimal)?;
+            asm.dec(r8)?;
+            asm.set_label(&mut keep_decimal)?;
+            asm.mov(byte_ptr(r8), 0i32)?;
+        }
+    }
+
+    asm.set_label(&mut done)?;
+    Ok(())
+}
+
 pub struct FnEncoder<'a> {
     pub chunk: &'a Chunk,
     pub fn_table: &'a [String],
@@ -1787,9 +1976,11 @@ impl<'a> FnEncoder<'a> {
                 } else {
                     let syscall_num = match chunk.constants.get(idx as usize) {
                         Some(ConstPoolEntry::Int(n)) if *n >= 0 => *n as u64,
-                        Some(ConstPoolEntry::Str(s)) => resolve_x86_64_syscall(s).ok_or_else(|| {
-                            BackendError(format!("unknown x86-64 Linux syscall `{s}`"))
-                        })?,
+                        Some(ConstPoolEntry::Str(s)) => {
+                            resolve_x86_64_syscall(s).ok_or_else(|| {
+                                BackendError(format!("unknown x86-64 Linux syscall `{s}`"))
+                            })?
+                        }
                         _ => {
                             return Err(BackendError(
                                 "syscall instruction is missing valid number/name metadata"
@@ -2137,29 +2328,19 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     15 => {
-                        // quazi.int_to_str(n: i64) → str (heap-allocated, null-terminated)
-                        // slot(dst) = n; malloc(32), sprintf(buf, "%ld", n), return buf
-                        // Push rbx + rax (2*8=16 bytes) to keep rsp 16-byte aligned.
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax));
                         if is_win64 {
                             emit!(asm.sub(rsp, 32i32));
-                            emit!(asm.mov(rcx, 32i64));
+                            emit!(asm.mov(rcx, 80i64));
                         } else {
-                            emit!(asm.mov(rdi, 32i64));
+                            emit!(asm.mov(rdi, 80i64));
                         }
                         call_ext!("malloc".into(), RelocKind::Plt32);
                         emit!(asm.mov(rbx, rax));
-                        if is_win64 {
-                            emit!(asm.mov(rcx, rbx));
-                            lea_rip!(rdx, "__quazi_fmt_ld".into());
-                            emit!(asm.mov(r8, slot(dst)));
-                        } else {
-                            emit!(asm.mov(rdi, rbx));
-                            lea_rip!(rsi, "__quazi_fmt_ld".into());
-                            emit!(asm.mov(rdx, slot(dst)));
-                        }
-                        call_ext!("sprintf".into(), RelocKind::Plt32);
+                        emit!(asm.mov(rax, slot(dst)));
+                        emit!(asm.mov(r11, rbx));
+                        emit_integer_to_string(asm, 10, false, true).map_err(err)?;
                         emit!(asm.mov(slot(dst), rbx));
                         if is_win64 {
                             emit!(asm.add(rsp, 32i32));
@@ -2168,32 +2349,19 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     16 => {
-                        // quazi.float_to_str(f: f64) → str (heap-allocated, null-terminated)
-                        // slot(dst) = f (64-bit IEEE754); malloc(32), sprintf(buf, "%g", f), return buf
-                        // Push rbx + rax (2*8=16 bytes) to keep rsp 16-byte aligned.
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax));
                         if is_win64 {
                             emit!(asm.sub(rsp, 32i32));
-                            emit!(asm.mov(rcx, 32i64));
+                            emit!(asm.mov(rcx, 80i64));
                         } else {
-                            emit!(asm.mov(rdi, 32i64));
+                            emit!(asm.mov(rdi, 80i64));
                         }
                         call_ext!("malloc".into(), RelocKind::Plt32);
                         emit!(asm.mov(rbx, rax));
                         emit!(asm.mov(rax, slot(dst)));
-                        if is_win64 {
-                            emit!(asm.mov(rcx, rbx));
-                            lea_rip!(rdx, "__quazi_fmt_g".into());
-                            emit!(asm.movq(xmm2, rax));
-                            emit!(asm.mov(r8, rax));
-                        } else {
-                            emit!(asm.mov(rdi, rbx));
-                            lea_rip!(rsi, "__quazi_fmt_g".into());
-                            emit!(asm.movq(xmm0, rax));
-                            emit!(asm.mov(eax, 1i32));
-                        }
-                        call_ext!("sprintf".into(), RelocKind::Plt32);
+                        emit!(asm.mov(r11, rbx));
+                        emit_float_to_string(asm, 6, true).map_err(err)?;
                         emit!(asm.mov(slot(dst), rbx));
                         if is_win64 {
                             emit!(asm.add(rsp, 32i32));
@@ -2517,20 +2685,9 @@ impl<'a> FnEncoder<'a> {
 
                 match type_tag {
                     1 => {
-                        // float: load 64-bit bits → XMM, sprintf with "%g"
                         emit!(asm.mov(rax, slot(src)));
-                        if is_win64 {
-                            lea_rip!(rcx, buf_sym.clone());
-                            lea_rip!(rdx, "__quazi_fmt_g".into());
-                            emit!(asm.movq(xmm2, rax));
-                            emit!(asm.mov(r8, rax));
-                        } else {
-                            lea_rip!(rdi, buf_sym.clone());
-                            lea_rip!(rsi, "__quazi_fmt_g".into());
-                            emit!(asm.movq(xmm0, rax));
-                            emit!(asm.mov(eax, 1i32));
-                        }
-                        call_ext!("sprintf".into(), RelocKind::Plt32);
+                        lea_rip!(r11, buf_sym.clone());
+                        emit_float_to_string(asm, 6, true).map_err(err)?;
                     }
                     2 => {
                         // bool: emit "true" or "false" directly into static buffer
@@ -2573,23 +2730,17 @@ impl<'a> FnEncoder<'a> {
                         }
                         emit!(asm.set_label(&mut lbl_end));
                     }
-                    // Integer hex/octal: sprintf(buf, fmt, val)
+                    // Integer hex/octal: compact inline conversion, no libc.
                     3..=5 => {
-                        let fmt_sym = match type_tag {
-                            3 => "__quazi_fmt_llx",
-                            4 => "__quazi_fmt_llX",
-                            _ => "__quazi_fmt_llo",
-                        };
-                        if is_win64 {
-                            lea_rip!(rcx, buf_sym.clone());
-                            lea_rip!(rdx, fmt_sym.into());
-                            emit!(asm.mov(r8, slot(src)));
-                        } else {
-                            lea_rip!(rdi, buf_sym.clone());
-                            lea_rip!(rsi, fmt_sym.into());
-                            emit!(asm.mov(rdx, slot(src)));
-                        }
-                        call_ext!("sprintf".into(), RelocKind::Plt32);
+                        emit!(asm.mov(rax, slot(src)));
+                        lea_rip!(r11, buf_sym.clone());
+                        emit_integer_to_string(
+                            asm,
+                            if type_tag == 5 { 8 } else { 16 },
+                            type_tag == 4,
+                            false,
+                        )
+                        .map_err(err)?;
                     }
                     // Binary: inline bit-loop using BSR, no libc needed.
                     // Output: strip leading zeros, write '0'/'1' chars, null-terminate.
@@ -2631,36 +2782,17 @@ impl<'a> FnEncoder<'a> {
 
                         emit!(asm.set_label(&mut lbl_done));
                     }
-                    // Float with precision: sprintf(buf, "%.Nf", val) where N = tag - 20
+                    // Fixed-precision float conversion, emitted inline without libc.
                     t @ 20..=29 => {
                         let prec = t - 20;
-                        let fmt_sym = format!("__quazi_fmt_prec_{}", prec);
                         emit!(asm.mov(rax, slot(src)));
-                        if is_win64 {
-                            lea_rip!(rcx, buf_sym.clone());
-                            lea_rip!(rdx, fmt_sym);
-                            emit!(asm.movq(xmm2, rax));
-                            emit!(asm.mov(r8, rax));
-                        } else {
-                            lea_rip!(rdi, buf_sym.clone());
-                            lea_rip!(rsi, fmt_sym);
-                            emit!(asm.movq(xmm0, rax));
-                            emit!(asm.mov(eax, 1i32));
-                        }
-                        call_ext!("sprintf".into(), RelocKind::Plt32);
+                        lea_rip!(r11, buf_sym.clone());
+                        emit_float_to_string(asm, prec, false).map_err(err)?;
                     }
                     _ => {
-                        // int (type_tag=0 or any other): existing "%ld" path
-                        if is_win64 {
-                            lea_rip!(rcx, buf_sym.clone());
-                            lea_rip!(rdx, "__quazi_fmt_ld".into());
-                            emit!(asm.mov(r8, slot(src)));
-                        } else {
-                            lea_rip!(rdi, buf_sym.clone());
-                            lea_rip!(rsi, "__quazi_fmt_ld".into());
-                            emit!(asm.mov(rdx, slot(src)));
-                        }
-                        call_ext!("sprintf".into(), RelocKind::Plt32);
+                        emit!(asm.mov(rax, slot(src)));
+                        lea_rip!(r11, buf_sym.clone());
+                        emit_integer_to_string(asm, 10, false, true).map_err(err)?;
                     }
                 }
                 lea_rip!(rax, buf_sym);

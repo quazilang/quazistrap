@@ -45,8 +45,7 @@ impl SectionAccumulator {
         }
     }
 
-    /// Lay out .rodata: string constants and the portable 64-bit decimal format.
-    /// Adds a data symbol for each string entry and for __quazi_fmt_ld.
+    /// Lay out .rodata and add a data symbol for each string entry.
     /// Returns the symbol name for each const-pool slot (None for non-Str entries).
     pub fn build_rodata(
         &self,
@@ -129,76 +128,6 @@ impl SectionAccumulator {
         sym_table.define_data(obj, self.rodata_id, "__quazi_at_0x", at_0x_offset, 7);
         let nl_offset = obj.append_section_data(self.rodata_id, b"\n", 1);
         sym_table.define_data(obj, self.rodata_id, "__quazi_nl", nl_offset, 1);
-
-        let needs_fmt_ld = chunks.iter().any(|c| {
-            c.code.iter().any(|i| {
-                i.opcode == Opcode::PrimToStr as u8
-                    || (i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 15)
-            })
-        });
-        if needs_fmt_ld {
-            // `long` is 32-bit on Win64 and 64-bit on SysV. Quazi integers use
-            // 64-bit slots, so `long long` is the portable C varargs type.
-            let fmt = b"%lld\0";
-            let offset = obj.append_section_data(self.rodata_id, fmt, 1);
-            sym_table.define_data(
-                obj,
-                self.rodata_id,
-                "__quazi_fmt_ld",
-                offset,
-                fmt.len() as u64,
-            );
-        }
-
-        let needs_fmt_g = chunks.iter().any(|c| {
-            c.code.iter().any(|i| {
-                (i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 16)
-                    || (i.opcode == Opcode::PrimToStr as u8 && i.ops[2] == 1)
-            })
-        });
-        if needs_fmt_g {
-            let fmt = b"%g\0";
-            let offset = obj.append_section_data(self.rodata_id, fmt, 1);
-            sym_table.define_data(
-                obj,
-                self.rodata_id,
-                "__quazi_fmt_g",
-                offset,
-                fmt.len() as u64,
-            );
-        }
-
-        // Format strings for PrimToStr extended tags (hex, octal, float precision).
-        let fmt_specs: &[(u8, &[u8], &str)] = &[
-            (3, b"%llx\0", "__quazi_fmt_llx"),
-            (4, b"%llX\0", "__quazi_fmt_llX"),
-            (5, b"%llo\0", "__quazi_fmt_llo"),
-        ];
-        for &(tag, fmt, sym) in fmt_specs {
-            if chunks.iter().any(|c| {
-                c.code
-                    .iter()
-                    .any(|i| i.opcode == Opcode::PrimToStr as u8 && i.ops[2] == tag)
-            }) {
-                let offset = obj.append_section_data(self.rodata_id, fmt, 1);
-                sym_table.define_data(obj, self.rodata_id, sym, offset, fmt.len() as u64);
-            }
-        }
-        for prec in 0u8..=9 {
-            let tag = 20 + prec;
-            if chunks.iter().any(|c| {
-                c.code
-                    .iter()
-                    .any(|i| i.opcode == Opcode::PrimToStr as u8 && i.ops[2] == tag)
-            }) {
-                let fmt = format!("%.{}f\0", prec);
-                let bytes = fmt.as_bytes().to_vec();
-                let len = bytes.len() as u64;
-                let offset = obj.append_section_data(self.rodata_id, &bytes, 1);
-                let sym = format!("__quazi_fmt_prec_{}", prec);
-                sym_table.define_data(obj, self.rodata_id, &sym, offset, len);
-            }
-        }
 
         chunks
             .iter()

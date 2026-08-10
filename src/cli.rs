@@ -45,7 +45,7 @@ pub enum Command {
         /// print loaded files and bytecode disassembly to stderr
         #[arg(short = 'd', long = "debug")]
         debug: bool,
-        /// explicit linker binary (overrides QUAZI_LINKER env var)
+        /// external linker path, or `builtin` for the experimental in-process linker
         #[arg(long = "linker")]
         linker: Option<PathBuf>,
         /// strip debug symbols from the output binary
@@ -67,7 +67,7 @@ pub enum Command {
     /// build and run files or project (if no files given, reads quazi.toml)
     Run {
         files: Vec<PathBuf>,
-        /// explicit linker binary
+        /// external linker path, or `builtin` for the experimental in-process linker
         #[arg(long = "linker")]
         linker: Option<PathBuf>,
         /// strip debug symbols from the output binary
@@ -143,6 +143,7 @@ mod tests {
             "qz",
             "run",
             "src/main.qz",
+            "native/helper.o",
             "native/helper.c",
             "-L",
             "native/lib",
@@ -162,6 +163,7 @@ mod tests {
                     files,
                     [
                         PathBuf::from("src/main.qz"),
+                        PathBuf::from("native/helper.o"),
                         PathBuf::from("native/helper.c")
                     ]
                 );
