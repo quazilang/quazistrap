@@ -13,7 +13,7 @@ use std::path::Path;
 
 use object::{
     Object as _, ObjectSection as _, ObjectSymbol as _, RelocationKind, RelocationTarget,
-    SectionIndex, SectionKind, SymbolIndex, SymbolSection,
+    SectionFlags, SectionIndex, SectionKind, SymbolIndex, SymbolSection,
 };
 
 const ELF_BASE: u64 = 0x400000;
@@ -67,9 +67,11 @@ pub fn link_elf_objects(objects: &[&[u8]], output: &Path) -> Result<(), String> 
     for (index, file) in files.iter().enumerate() {
         if file.format() != object::BinaryFormat::Elf
             || file.architecture() != object::Architecture::X86_64
+            || file.endianness() != object::Endianness::Little
+            || file.kind() != object::ObjectKind::Relocatable
         {
             return Err(format!(
-                "built-in linker: input object #{} is not x86-64 ELF",
+                "built-in linker: input object #{} is not a little-endian x86-64 ELF relocatable object",
                 index + 1
             ));
         }
@@ -87,6 +89,17 @@ pub fn link_elf_objects(objects: &[&[u8]], output: &Path) -> Result<(), String> 
                     | SectionKind::Data
                     | SectionKind::UninitializedData
             ) {
+                let allocated = matches!(
+                    section.flags(),
+                    SectionFlags::Elf { sh_flags } if sh_flags & 0x2 != 0
+                );
+                if allocated {
+                    let name = section.name().unwrap_or("<unnamed>");
+                    return Err(format!(
+                        "built-in linker: unsupported allocated section `{name}` in input object #{}",
+                        object + 1
+                    ));
+                }
                 continue;
             }
             let memory_size = section.size();
@@ -662,6 +675,25 @@ mod tests {
         object.write().expect("object")
     }
 
+    fn object_with_tls_section() -> Vec<u8> {
+        let mut object = Object::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let text = object.section_id(StandardSection::Text);
+        object.append_section_data(text, &[0x31, 0xff, 0xb8, 60, 0, 0, 0, 0x0f, 0x05], 16);
+        object.add_symbol(Symbol {
+            name: b"_start".to_vec(),
+            value: 0,
+            size: 9,
+            kind: SymbolKind::Text,
+            scope: SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Section(text),
+            flags: SymbolFlags::None,
+        });
+        let tls = object.add_section(Vec::new(), b".tdata".to_vec(), SectionKind::Tls);
+        object.append_section_data(tls, &[1], 1);
+        object.write().expect("object")
+    }
+
     #[test]
     fn links_a_static_elf_without_an_external_tool() {
         let directory = std::env::temp_dir();
@@ -720,6 +752,15 @@ mod tests {
             &bytes[(PAGE_SIZE + 1) as usize..(PAGE_SIZE + 5) as usize],
             &[0; 4]
         );
+    }
+
+    #[test]
+    fn rejects_unsupported_allocated_sections() {
+        let object = object_with_tls_section();
+        let output =
+            std::env::temp_dir().join(format!("qz_builtin_linker_tls_{}", std::process::id()));
+        let error = link_elf_objects(&[&object], &output).expect_err("TLS must be rejected");
+        assert!(error.contains("unsupported allocated section `.tdata`"));
     }
 
     #[test]
