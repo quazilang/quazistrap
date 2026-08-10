@@ -80,6 +80,8 @@ Now unsupported opcodes and unknown intrinsic IDs return `BackendError` instead
 of emitting plausible but incorrect machine code or panicking.
 
 Win64 runtime intrinsic calls reserve the required 32-byte shadow space plus
-aligned stack arguments. Linux integer and floating-point formatting is emitted
+aligned stack arguments. `ReadFile`/`WriteFile` store their byte counts in the
+reserved scratch slot outside callee-owned shadow space and map API failure to
+`-1`. Linux integer and floating-point formatting is emitted
 inline and does not import `sprintf`; Windows keeps its target-specific native
 formatting path.

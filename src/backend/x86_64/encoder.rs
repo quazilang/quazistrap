@@ -2080,12 +2080,21 @@ impl<'a> FnEncoder<'a> {
                             if arg_count > 2 {
                                 emit!(asm.mov(r8, slot(dst + 2)));
                             }
-                            // r9 = &n_written (at [rsp], in our shadow area); 5th arg (overlapped) = null at [rsp+32]
-                            emit!(asm.lea(r9, qword_ptr(rsp)));
+                            // Keep the result outside the callee-owned 32-byte shadow space.
+                            // The frame reserves 48 outgoing bytes: shadow space, the fifth
+                            // argument, then an 8-byte result scratch slot.
+                            emit!(asm.lea(r9, qword_ptr(rsp + 40i32)));
                             emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
                             call_ext!("WriteFile".into(), RelocKind::Plt32);
-                            // WriteFile returns BOOL in rax; actual bytes written are at [rsp] (via r9 ptr)
-                            emit!(asm.mov(eax, dword_ptr(rsp)));
+                            let mut failed = asm.create_label();
+                            let mut done = asm.create_label();
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.je(failed));
+                            emit!(asm.mov(eax, dword_ptr(rsp + 40i32)));
+                            emit!(asm.jmp(done));
+                            emit!(asm.set_label(&mut failed));
+                            emit!(asm.mov(rax, -1i64));
+                            emit!(asm.set_label(&mut done));
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
                             if arg_count > 1 {
@@ -2116,12 +2125,18 @@ impl<'a> FnEncoder<'a> {
                             if arg_count > 2 {
                                 emit!(asm.mov(r8, slot(dst + 2)));
                             }
-                            // r9 = &n_read (at [rsp], in our shadow area); 5th arg (overlapped) = null at [rsp+32]
-                            emit!(asm.lea(r9, qword_ptr(rsp)));
+                            emit!(asm.lea(r9, qword_ptr(rsp + 40i32)));
                             emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
                             call_ext!("ReadFile".into(), RelocKind::Plt32);
-                            // ReadFile returns BOOL in rax; actual bytes read are at [rsp] (via r9 ptr)
-                            emit!(asm.mov(eax, dword_ptr(rsp)));
+                            let mut failed = asm.create_label();
+                            let mut done = asm.create_label();
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.je(failed));
+                            emit!(asm.mov(eax, dword_ptr(rsp + 40i32)));
+                            emit!(asm.jmp(done));
+                            emit!(asm.set_label(&mut failed));
+                            emit!(asm.mov(rax, -1i64));
+                            emit!(asm.set_label(&mut done));
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
                             if arg_count > 1 {
@@ -2286,9 +2301,18 @@ impl<'a> FnEncoder<'a> {
                             if arg_count > 1 {
                                 emit!(asm.mov(r8, slot(dst + 1)));
                             }
-                            emit!(asm.lea(r9, qword_ptr(rsp)));
+                            emit!(asm.lea(r9, qword_ptr(rsp + 40i32)));
                             emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
                             call_ext!("WriteFile".into(), RelocKind::Plt32);
+                            let mut failed = asm.create_label();
+                            let mut done = asm.create_label();
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.je(failed));
+                            emit!(asm.mov(eax, dword_ptr(rsp + 40i32)));
+                            emit!(asm.jmp(done));
+                            emit!(asm.set_label(&mut failed));
+                            emit!(asm.mov(rax, -1i64));
+                            emit!(asm.set_label(&mut done));
                             emit!(asm.mov(slot(dst), rax));
                         } else {
                             emit!(asm.mov(rdi, 2i64));

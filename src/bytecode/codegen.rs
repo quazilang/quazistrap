@@ -3150,6 +3150,20 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    fn register_uninitialized_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
+        let Some(drop_fn) = ty.as_ref().and_then(|t| self.drop_fn_for_type(t)) else {
+            return;
+        };
+        if let Some(scope) = self.drop_scopes.last_mut() {
+            scope.push(DropLocal {
+                name: name.to_string(),
+                reg,
+                drop_fn,
+                active: false,
+            });
+        }
+    }
+
     fn deactivate_drop_local(&mut self, name: &str) {
         for scope in self.drop_scopes.iter_mut().rev() {
             if let Some(local) = scope.iter_mut().rev().find(|local| local.name == name) {
@@ -3409,7 +3423,7 @@ impl<'a> FnCompiler<'a> {
                     if let Some(local_ty) = local_ty.clone() {
                         self.local_types.insert(name.clone(), local_ty);
                     }
-                    self.register_drop_local(name, reg, local_ty);
+                    self.register_uninitialized_drop_local(name, reg, local_ty);
                 }
                 false
             }
@@ -6905,6 +6919,29 @@ mod tests {
                 .iter()
                 .all(|instruction| instruction.opcode != Opcode::CallIdx as u8),
             "a returned parameter must not be destroyed by its former owner"
+        );
+    }
+
+    #[test]
+    fn assigning_uninitialized_owned_local_does_not_drop_garbage() {
+        let chunks = compile(
+            r#"struct Owned { value: i32 }
+               impl Owned { fn free(self: Owned) void {} }
+               fn make() Owned { ret Owned { value: 1 }; }
+               fn assign() void {
+                   var value: Owned;
+                   value = make();
+               }"#,
+        );
+        let assign = chunks.iter().find(|chunk| chunk.name == "assign").unwrap();
+        assert_eq!(
+            assign
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "only the initialized value should be destroyed"
         );
     }
 
