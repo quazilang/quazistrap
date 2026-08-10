@@ -171,13 +171,11 @@ impl Analyzer {
         let mut queue: Vec<String> = vec!["main".to_string()];
 
         while let Some(fn_name) = queue.pop() {
-            for (kind, from, to) in &self.dependency_edges {
-                if *kind == DependencyKind::Call
-                    && from == &fn_name
-                    && all_fns.contains(to)
-                    && reachable.insert(to.clone())
-                {
-                    queue.push(to.clone());
+            if let Some(targets) = self.call_dependencies.get(&fn_name) {
+                for to in targets {
+                    if all_fns.contains(to) && reachable.insert(to.clone()) {
+                        queue.push(to.clone());
+                    }
                 }
             }
         }
@@ -192,10 +190,7 @@ impl Analyzer {
             .clone();
 
         for fn_name in all_fns.difference(&reachable) {
-            let is_called_by_someone = self
-                .dependency_edges
-                .iter()
-                .any(|(k, _, to)| *k == DependencyKind::Call && to == fn_name);
+            let is_called_by_someone = self.called_functions.contains(fn_name);
             if is_called_by_someone && let Some(sym) = global_scope.get(fn_name) {
                 self.push_warning_with_suggestion(
                     sym.span,
@@ -342,14 +337,13 @@ impl Analyzer {
             if !visited.insert(current.clone()) {
                 continue;
             }
-            for (kind, from, to) in &self.dependency_edges {
-                if *kind != DependencyKind::Call || from != &current {
-                    continue;
+            if let Some(targets) = self.call_dependencies.get(&current) {
+                for to in targets {
+                    if to == name {
+                        return true;
+                    }
+                    stack.push(to.clone());
                 }
-                if to == name {
-                    return true;
-                }
-                stack.push(to.clone());
             }
         }
 
@@ -359,9 +353,9 @@ impl Analyzer {
     fn is_hot_call_target(&self, name: &str) -> (bool, usize, bool) {
         let call_count = self.call_counts.get(name).copied().unwrap_or(0);
         let called_from_main = self
-            .dependency_edges
-            .iter()
-            .any(|(kind, from, to)| *kind == DependencyKind::Call && from == "main" && to == name);
+            .call_dependencies
+            .get("main")
+            .is_some_and(|targets| targets.contains(name));
         let hot = call_count >= 1;
         (hot, call_count, called_from_main)
     }

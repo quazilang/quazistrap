@@ -4,10 +4,9 @@
 
 //! Animated build progress display.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 const SPIN: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -101,12 +100,12 @@ fn short_label(path: &Path, lib_prefix: Option<&Path>) -> String {
 
 fn build_inner(
     file: &Path,
-    edges: &[(PathBuf, PathBuf)],
-    lib_files: &[PathBuf],
+    edges: &HashMap<PathBuf, Vec<PathBuf>>,
+    lib_files: &HashSet<PathBuf>,
     lib_prefix: Option<&Path>,
     visited: &mut HashSet<PathBuf>,
 ) -> TreeNode {
-    let is_lib = lib_files.iter().any(|l| l == file);
+    let is_lib = lib_files.contains(file);
     let label = short_label(file, if is_lib { lib_prefix } else { None });
     if !visited.insert(file.to_path_buf()) {
         return TreeNode {
@@ -117,9 +116,10 @@ fn build_inner(
         };
     }
     let children = edges
-        .iter()
-        .filter(|(from, _)| from == file)
-        .map(|(_, to)| build_inner(to, edges, lib_files, lib_prefix, visited))
+        .get(file)
+        .into_iter()
+        .flatten()
+        .map(|to| build_inner(to, edges, lib_files, lib_prefix, visited))
         .collect();
     TreeNode {
         label,
@@ -135,10 +135,21 @@ pub fn build_dep_tree(
     lib_files: &[PathBuf],
     lib_prefix: Option<&Path>,
 ) -> TreeNode {
-    build_inner(entry, edges, lib_files, lib_prefix, &mut HashSet::new())
+    let mut adjacency: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    for (from, to) in edges {
+        adjacency.entry(from.clone()).or_default().push(to.clone());
+    }
+    let library_set: HashSet<PathBuf> = lib_files.iter().cloned().collect();
+    build_inner(
+        entry,
+        &adjacency,
+        &library_set,
+        lib_prefix,
+        &mut HashSet::new(),
+    )
 }
 
-fn render_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool, is_tty: bool) {
+fn render_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool) {
     let line = if is_root {
         format!("  \x1b[1m{}\x1b[0m", node.label)
     } else {
@@ -159,10 +170,6 @@ fn render_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool, is_t
     eprintln!("{}{}", line, tag);
     let _ = std::io::stderr().flush();
 
-    if is_tty && !is_root {
-        std::thread::sleep(Duration::from_millis(28));
-    }
-
     if !node.is_dup {
         let cp = if is_root {
             String::new()
@@ -172,7 +179,7 @@ fn render_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool, is_t
             format!("{}\x1b[2m│\x1b[0m  ", prefix)
         };
         for (i, child) in node.children.iter().enumerate() {
-            render_node(child, &cp, false, i == node.children.len() - 1, is_tty);
+            render_node(child, &cp, false, i == node.children.len() - 1);
         }
     }
 }
@@ -262,7 +269,7 @@ impl BuildProgress {
             eprint!("\x1b[?25l"); // hide cursor during animation
             let _ = std::io::stderr().flush();
         }
-        render_node(root, "", true, true, self.is_tty);
+        render_node(root, "", true, true);
         eprintln!();
         if self.is_tty {
             eprint!("\x1b[?25h");

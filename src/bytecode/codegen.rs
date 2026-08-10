@@ -16,7 +16,7 @@ use crate::abi::{
 };
 use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
-use crate::semantic::{ConstValue, DependencyKind, SemanticReport};
+use crate::semantic::{ConstValue, SemanticReport};
 
 /// Find the source file path for a given span.
 fn source_file_for_span(span: Span, source_files: &[SourceFile]) -> String {
@@ -475,12 +475,11 @@ impl<'a> Codegen<'a> {
             }
             let mut queue = set.iter().cloned().collect::<Vec<_>>();
             while let Some(fn_name) = queue.pop() {
-                for edge in &self.report.dependency_graph.edges {
-                    if edge.kind == DependencyKind::Call
-                        && edge.from == fn_name
-                        && set.insert(edge.to.clone())
-                    {
-                        queue.push(edge.to.clone());
+                if let Some(targets) = self.report.dependency_graph.calls_from.get(&fn_name) {
+                    for target in targets {
+                        if set.insert(target.clone()) {
+                            queue.push(target.clone());
+                        }
                     }
                 }
             }
@@ -493,12 +492,11 @@ impl<'a> Codegen<'a> {
             {
                 let mut q2 = vec![ph_name.clone()];
                 while let Some(fn_name) = q2.pop() {
-                    for edge in &self.report.dependency_graph.edges {
-                        if edge.kind == DependencyKind::Call
-                            && edge.from == fn_name
-                            && set.insert(edge.to.clone())
-                        {
-                            q2.push(edge.to.clone());
+                    if let Some(targets) = self.report.dependency_graph.calls_from.get(&fn_name) {
+                        for target in targets {
+                            if set.insert(target.clone()) {
+                                q2.push(target.clone());
+                            }
                         }
                     }
                 }
