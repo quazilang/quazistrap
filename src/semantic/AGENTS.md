@@ -44,6 +44,14 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 
 For `Named` receivers with concrete type args, substitute receiver generics into method params before checking args (`Array[i32].push("x")` must error because `T = i32`).
 
+`Result[T, E]?` and `Option[T]?` retain `T` in expression annotations. Codegen
+also retains explicit local types so fallible construction followed by an
+inherent method remains statically dispatched. Imported type identifiers take
+priority over module-namespace interpretation for static constructors.
+
+Lazy public re-exports may target either `name.qz` or `name/mod.qz`; this lets
+module gateways expose directory-backed APIs such as `std.collections`.
+
 ## `pub` Visibility
 
 - **Functions**: enforced. Private fn imported cross-module emits S04 error.

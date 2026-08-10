@@ -101,6 +101,14 @@ impl AbiType {
     }
 
     pub(crate) fn decode(input: &[u8], pos: &mut usize) -> Result<Self, String> {
+        Self::decode_with_depth(input, pos, 0)
+    }
+
+    fn decode_with_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<Self, String> {
+        const MAX_ABI_DEPTH: usize = 64;
+        if depth > MAX_ABI_DEPTH {
+            return Err(format!("ABI type nesting exceeds {MAX_ABI_DEPTH} levels"));
+        }
         let tag = take_u8(input, pos, "ABI type tag")?;
         match tag {
             0 => Ok(Self::Void),
@@ -119,10 +127,19 @@ impl AbiType {
                 let size = take_u16(input, pos, "ABI aggregate size")?;
                 let align = take_u8(input, pos, "ABI aggregate alignment")?;
                 let field_count = take_u16(input, pos, "ABI aggregate field count")? as usize;
-                let mut fields = Vec::with_capacity(field_count);
+                if align == 0 || !align.is_power_of_two() {
+                    return Err(format!("invalid ABI aggregate alignment {align}"));
+                }
+                let mut fields = Vec::new();
+                fields
+                    .try_reserve_exact(field_count)
+                    .map_err(|_| "ABI field count is too large".to_string())?;
                 for _ in 0..field_count {
                     let offset = take_u16(input, pos, "ABI field offset")?;
-                    let ty = Self::decode(input, pos)?;
+                    let ty = Self::decode_with_depth(input, pos, depth + 1)?;
+                    if offset as usize + ty.size() > size as usize {
+                        return Err("ABI field extends past aggregate size".to_string());
+                    }
                     fields.push(AbiField { offset, ty });
                 }
                 Ok(Self::Aggregate {
@@ -149,7 +166,10 @@ impl AbiSignature {
     pub(crate) fn decode(input: &[u8], pos: &mut usize) -> Result<Self, String> {
         let variadic = take_u8(input, pos, "ABI variadic flag")? != 0;
         let param_count = take_u16(input, pos, "ABI parameter count")? as usize;
-        let mut params = Vec::with_capacity(param_count);
+        let mut params = Vec::new();
+        params
+            .try_reserve_exact(param_count)
+            .map_err(|_| "ABI parameter count is too large".to_string())?;
         for _ in 0..param_count {
             params.push(AbiType::decode(input, pos)?);
         }

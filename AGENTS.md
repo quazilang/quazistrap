@@ -227,8 +227,8 @@ If a `quazi.lock` file exists, it is used to pin dependency versions. When missi
 | `traits` | Done | Display, Debug, Clone, Copy, Drop, Iterator, Eq, Ord, Hash, Default, Into, From, Index, Write, arithmetic traits |
 | `prelude/mod.qz` | Done | re-exports String, Box, Array, option, result, traits, fmt, panic. Auto-injected always. |
 | `collections/array` | Done | `Array[T]`: push, get, set, len, free, from, Index impl. Index assignment supported. |
-| `collections/map` | Done | open-addressing hash map with tombstones |
-| `collections/set` | Done | open-addressing hash set |
+| `collections/map` | Done | fallible, non-panicking `usize -> usize` open-addressing map; lookup returns `Option` |
+| `collections/set` | Done | fallible, non-panicking `usize` open-addressing set |
 | `unix` | Done | raw syscall wrappers |
 | `windows` | Done | Win32 API wrappers |
 | `fs` | Done | File open/read/write/close/seek/sync etc. |
@@ -312,6 +312,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-10 | Hardened QZI generation/loading with checked encoding limits, malformed-input and ABI validation, shared register accounting, and error-returning backend fallbacks. Widened field offsets to 16 bits, preserved `?` payload types for method dispatch, fixed directory-backed lazy re-exports and imported static constructors, corrected Win64 intrinsic stack/shadow-space handling and 64-bit formatting, and tightened standard-library I/O/string/collection ownership contracts. |
 | 2026-08-06 | Made the C ABI phase-two example self-explanatory on stdout: it now introduces the test, reports each of its nine checks as PASS or FAIL, explains nonzero exit codes at the failure site, and prints a final success summary. |
 | 2026-08-06 | Fixed native callback-address linkage by defining each export adapter under both its stable C symbol and its compilation-local synthetic symbol. This preserves existing portable QZI callback relocations on ELF and COFF. |
 | 2026-08-06 | Added `qz header` for deterministic C/C++-compatible declarations of `@export` functions and their `@repr(C)` dependencies. It supports callbacks, unions, packed/aligned structs, bitfields, flexible array members, aliases, opaque handles, target `@cfg`, and Linux/Windows C data models without compiling or linking. |

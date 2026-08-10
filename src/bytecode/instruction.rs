@@ -63,6 +63,17 @@ impl Instruction {
         (self.ops[0], self.ops[1], offset)
     }
 
+    /// FIELD layout: (value/destination register, object register, byte offset).
+    /// The fourth operand byte was reserved by the original RRR encoding, so
+    /// using both bytes for the offset remains backward-compatible with QZI v1-v5.
+    pub fn field(&self) -> (u8, u8, u16) {
+        (
+            self.ops[0],
+            self.ops[1],
+            u16::from_le_bytes([self.ops[2], self.ops[3]]),
+        )
+    }
+
     pub fn opcode(&self) -> Option<Opcode> {
         Opcode::from_u8(self.opcode)
     }
@@ -371,7 +382,12 @@ impl Instruction {
                     14 => "quazi.str_concat",
                     15 => "quazi.int_to_str",
                     16 => "quazi.float_to_str",
-                    17 => "quazi.format",
+                    18 => "quazi.thread.spawn",
+                    19 => "quazi.thread.join",
+                    20 => "quazi.net.bind_tcp",
+                    21 => "quazi.net.connect_tcp",
+                    23 => "quazi.str.byte_at",
+                    24 => "quazi.str.from_byte",
                     25 => "quazi.print_backtrace",
                     _ => "?",
                 };
@@ -386,7 +402,13 @@ impl Instruction {
                 let (d, v) = self.ri16();
                 format!("{cop}{}, {}", r(d), imm(v))
             }
-            _ => todo!("disasm for {op:?}"),
+            _ => format!(
+                "{cop}{}, {}, {}, {}",
+                r(self.ops[0]),
+                r(self.ops[1]),
+                r(self.ops[2]),
+                imm(self.ops[3] as u16)
+            ),
         }
     }
 
@@ -452,8 +474,12 @@ pub fn rrr_f(op: Opcode, dst: u8, src1: u8, src2: u8) -> Instruction {
     Instruction::new(op, [dst, src1, src2, 0], FLOAT_FLAG)
 }
 
-pub fn field_load_w(dst: u8, object: u8, offset: u8, width: MemWidth, signed: bool) -> Instruction {
+pub fn field_load_w(dst: u8, object: u8, offset: u16, width: MemWidth, signed: bool) -> Instruction {
     field_load_typed(dst, object, offset, width, signed, false)
+}
+
+pub fn field_load(dst: u8, object: u8, offset: u16) -> Instruction {
+    field_load_w(dst, object, offset, MemWidth::Qword, false)
 }
 
 pub fn call_c_reg(dst: u8, function: u8, signature: u16) -> Instruction {
@@ -474,33 +500,39 @@ impl Instruction {
 pub fn field_load_typed(
     dst: u8,
     object: u8,
-    offset: u8,
+    offset: u16,
     width: MemWidth,
     signed: bool,
     float32: bool,
 ) -> Instruction {
     let flags = ((width as u8) << MEM_WIDTH_SHIFT) | if signed { MEM_SIGNED_FLAG } else { 0 };
+    let [offset_lo, offset_hi] = offset.to_le_bytes();
     Instruction::new(
         Opcode::FieldLoad,
-        [dst, object, offset, 0],
+        [dst, object, offset_lo, offset_hi],
         flags | if float32 { FLOAT_FLAG } else { 0 },
     )
 }
 
-pub fn field_store_w(val: u8, object: u8, offset: u8, width: MemWidth) -> Instruction {
+pub fn field_store_w(val: u8, object: u8, offset: u16, width: MemWidth) -> Instruction {
     field_store_typed(val, object, offset, width, false)
+}
+
+pub fn field_store(val: u8, object: u8, offset: u16) -> Instruction {
+    field_store_w(val, object, offset, MemWidth::Qword)
 }
 
 pub fn field_store_typed(
     val: u8,
     object: u8,
-    offset: u8,
+    offset: u16,
     width: MemWidth,
     float32: bool,
 ) -> Instruction {
+    let [offset_lo, offset_hi] = offset.to_le_bytes();
     Instruction::new(
         Opcode::FieldStore,
-        [val, object, offset, 0],
+        [val, object, offset_lo, offset_hi],
         ((width as u8) << MEM_WIDTH_SHIFT) | if float32 { FLOAT_FLAG } else { 0 },
     )
 }
@@ -595,6 +627,13 @@ mod tests {
         }
         assert_eq!(mem_load(0, 1, 0).flags, 0);
         assert_eq!(mem_store(0, 1, 0).flags, 0);
+    }
+
+    #[test]
+    fn field_offset_uses_all_sixteen_bits() {
+        let load = field_load(3, 4, 0xABCD);
+        assert_eq!(load.field(), (3, 4, 0xABCD));
+        assert_eq!(Instruction::from_bytes(load.to_bytes()).field().2, 0xABCD);
     }
 
     #[test]

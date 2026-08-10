@@ -463,71 +463,8 @@ fn emit_win64_export_prologue(
 fn max_reg_used(chunk: &Chunk) -> usize {
     let mut max = chunk.param_count.saturating_sub(1);
     for instr in &chunk.code {
-        let (r0, r1, r2) = (
-            instr.ops[0] as usize,
-            instr.ops[1] as usize,
-            instr.ops[2] as usize,
-        );
-        match Opcode::from_u8(instr.opcode) {
-            Some(
-                Opcode::Mov
-                | Opcode::Add
-                | Opcode::Sub
-                | Opcode::Mul
-                | Opcode::Div
-                | Opcode::Mod
-                | Opcode::Neg
-                | Opcode::Not
-                | Opcode::Inc
-                | Opcode::Dec
-                | Opcode::And
-                | Opcode::Or
-                | Opcode::Xor
-                | Opcode::Shl
-                | Opcode::Shr
-                | Opcode::Sar
-                | Opcode::VtblLoad
-                | Opcode::FieldLoad
-                | Opcode::FieldStore
-                | Opcode::CallReg
-                | Opcode::CallCReg
-                | Opcode::StrLen
-                | Opcode::StrConcat
-                | Opcode::StrToInt
-                | Opcode::StrToFloat
-                | Opcode::PrimToStr
-                | Opcode::StrAsStr
-                | Opcode::Pow
-                | Opcode::ArrayStore
-                | Opcode::ArrayLoad,
-            ) => {
-                max = max.max(r0).max(r1).max(r2);
-            }
-            Some(Opcode::Cmp) => {
-                max = max.max(r1).max(r2);
-            }
-            Some(Opcode::Load | Opcode::Store | Opcode::Lea) => {
-                max = max.max(r0).max(r1);
-            }
-            Some(
-                Opcode::MovI
-                | Opcode::MovConst
-                | Opcode::Jz
-                | Opcode::Jnz
-                | Opcode::CallArg
-                | Opcode::CallIdx
-                | Opcode::CallExt
-                | Opcode::Syscall
-                | Opcode::New,
-            ) => {
-                max = max.max(r0);
-            }
-            Some(Opcode::Intrinsic) => {
-                // Intrinsic accesses dst through dst+flags-1 (flags = arg_count).
-                let last = r0 + instr.flags.saturating_sub(1) as usize;
-                max = max.max(last);
-            }
-            _ => {}
+        for register in crate::bytecode::regalloc::instruction_registers(instr) {
+            max = max.max(register as usize);
         }
     }
     max
@@ -1844,14 +1781,21 @@ impl<'a> FnEncoder<'a> {
             Some(Opcode::Syscall) => {
                 let (dst, idx) = instr.ri16();
                 if is_win64 {
-                    // Raw syscalls are not safe on Windows; @syscall is Linux-only.
-                    emit!(asm.xor(rax, rax));
-                    emit!(asm.mov(slot(dst), rax));
+                    return Err(BackendError(
+                        "@syscall is unsupported by the Win64 backend".to_string(),
+                    ));
                 } else {
                     let syscall_num = match chunk.constants.get(idx as usize) {
-                        Some(ConstPoolEntry::Int(n)) => *n as u64,
-                        Some(ConstPoolEntry::Str(s)) => resolve_x86_64_syscall(s),
-                        _ => 0,
+                        Some(ConstPoolEntry::Int(n)) if *n >= 0 => *n as u64,
+                        Some(ConstPoolEntry::Str(s)) => resolve_x86_64_syscall(s).ok_or_else(|| {
+                            BackendError(format!("unknown x86-64 Linux syscall `{s}`"))
+                        })?,
+                        _ => {
+                            return Err(BackendError(
+                                "syscall instruction is missing valid number/name metadata"
+                                    .to_string(),
+                            ));
+                        }
                     };
                     let arg_count = instr.flags as usize;
                     for (i, &reg) in SYSCALL_REGS.iter().enumerate().take(arg_count) {
@@ -2123,6 +2067,12 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(rbx));
                         emit!(asm.push(r12));
                         emit!(asm.push(r13));
+                        if is_win64 {
+                            // 32-byte home space plus 8 bytes to restore 16-byte alignment.
+                            emit!(asm.sub(rsp, 40i32));
+                        } else {
+                            emit!(asm.sub(rsp, 8i32));
+                        }
                         emit!(asm.mov(r12, slot(dst))); // r12 = s1
                         emit!(asm.mov(r13, slot(dst + 1))); // r13 = s2
                         let mut len1_loop = asm.create_label();
@@ -2177,6 +2127,11 @@ impl<'a> FnEncoder<'a> {
                         }
                         call_ext!("strcat".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rbx));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 40i32));
+                        } else {
+                            emit!(asm.add(rsp, 8i32));
+                        }
                         emit!(asm.pop(r13));
                         emit!(asm.pop(r12));
                         emit!(asm.pop(rbx));
@@ -2188,6 +2143,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax));
                         if is_win64 {
+                            emit!(asm.sub(rsp, 32i32));
                             emit!(asm.mov(rcx, 32i64));
                         } else {
                             emit!(asm.mov(rdi, 32i64));
@@ -2205,6 +2161,9 @@ impl<'a> FnEncoder<'a> {
                         }
                         call_ext!("sprintf".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rbx));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 32i32));
+                        }
                         emit!(asm.pop(rax));
                         emit!(asm.pop(rbx));
                     }
@@ -2215,6 +2174,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax));
                         if is_win64 {
+                            emit!(asm.sub(rsp, 32i32));
                             emit!(asm.mov(rcx, 32i64));
                         } else {
                             emit!(asm.mov(rdi, 32i64));
@@ -2235,6 +2195,9 @@ impl<'a> FnEncoder<'a> {
                         }
                         call_ext!("sprintf".into(), RelocKind::Plt32);
                         emit!(asm.mov(slot(dst), rbx));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 32i32));
+                        }
                         emit!(asm.pop(rax));
                         emit!(asm.pop(rbx));
                     }
@@ -2244,6 +2207,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // align rsp to 16
                         if is_win64 {
+                            emit!(asm.sub(rsp, 48i32));
                             // CreateThread(NULL, 0, fn_ptr, NULL, 0, NULL)
                             emit!(asm.xor(rcx, rcx));
                             emit!(asm.xor(rdx, rdx));
@@ -2252,6 +2216,7 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32)); // flags
                             emit!(asm.mov(qword_ptr(rsp + 40i32), 0i32)); // thread_id
                             call_ext!("CreateThread".into(), RelocKind::Plt32);
+                            emit!(asm.add(rsp, 48i32));
                         } else {
                             // malloc(8) for pthread_t storage
                             emit!(asm.mov(rdi, 8i64));
@@ -2275,11 +2240,13 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // align
                         if is_win64 {
+                            emit!(asm.sub(rsp, 32i32));
                             emit!(asm.mov(rcx, slot(dst)));
                             emit!(asm.mov(edx, u32::MAX as i32)); // INFINITE
                             call_ext!("WaitForSingleObject".into(), RelocKind::Plt32);
                             emit!(asm.mov(rcx, slot(dst)));
                             call_ext!("CloseHandle".into(), RelocKind::Plt32);
+                            emit!(asm.add(rsp, 32i32));
                         } else {
                             // pthread_join(*(pthread_t*)handle, NULL)
                             emit!(asm.mov(rbx, slot(dst))); // rbx = thread_storage_ptr
@@ -2299,19 +2266,33 @@ impl<'a> FnEncoder<'a> {
                         // Builds sockaddr_in on stack — quazi has no byte-level memory writes
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // keep rsp 16-byte aligned
-                        emit!(asm.sub(rsp, 32i32)); // 16 bytes sockaddr_in + 16 shadow (Win64)
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 48i32));
+                        } else {
+                            emit!(asm.sub(rsp, 32i32));
+                        }
                         emit!(asm.xor(rax, rax));
-                        emit!(asm.mov(qword_ptr(rsp), rax)); // zero first 8 bytes
-                        emit!(asm.mov(qword_ptr(rsp + 8i32), rax)); // zero last 8 bytes
-                        emit!(asm.mov(word_ptr(rsp), 2i32)); // sa_family = AF_INET
+                        if is_win64 {
+                            emit!(asm.mov(qword_ptr(rsp + 32i32), rax));
+                            emit!(asm.mov(qword_ptr(rsp + 40i32), rax));
+                            emit!(asm.mov(word_ptr(rsp + 32i32), 2i32));
+                        } else {
+                            emit!(asm.mov(qword_ptr(rsp), rax));
+                            emit!(asm.mov(qword_ptr(rsp + 8i32), rax));
+                            emit!(asm.mov(word_ptr(rsp), 2i32));
+                        }
                         // port: host→big-endian byte swap
                         emit!(asm.mov(rax, slot(dst + 1)));
                         emit!(asm.rol(ax, 8u32));
-                        emit!(asm.mov(word_ptr(rsp + 2i32), ax)); // sin_port (big-endian)
+                        if is_win64 {
+                            emit!(asm.mov(word_ptr(rsp + 34i32), ax));
+                        } else {
+                            emit!(asm.mov(word_ptr(rsp + 2i32), ax));
+                        }
                         // sin_addr = INADDR_ANY = 0 (already zeroed)
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst))); // sockfd
-                            emit!(asm.lea(rdx, qword_ptr(rsp))); // &sockaddr_in
+                            emit!(asm.lea(rdx, qword_ptr(rsp + 32i32))); // &sockaddr_in
                             emit!(asm.mov(r8d, 16i32)); // addrlen
                             call_ext!("bind".into(), RelocKind::Plt32);
                         } else {
@@ -2321,7 +2302,11 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rax, 49i64)); // bind syscall
                             emit!(asm.syscall());
                         }
-                        emit!(asm.add(rsp, 32i32));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 48i32));
+                        } else {
+                            emit!(asm.add(rsp, 32i32));
+                        }
                         emit!(asm.mov(slot(dst), rax));
                         emit!(asm.pop(rax));
                         emit!(asm.pop(rbx));
@@ -2333,16 +2318,34 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(r12));
                         emit!(asm.push(rax));
                         emit!(asm.push(rax)); // 4 pushes = 32 bytes, rsp stays 16-aligned
-                        emit!(asm.sub(rsp, 32i32)); // 16 sockaddr_in + 16 shadow
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 48i32));
+                        } else {
+                            emit!(asm.sub(rsp, 32i32));
+                        }
                         emit!(asm.xor(rax, rax));
-                        emit!(asm.mov(qword_ptr(rsp), rax));
-                        emit!(asm.mov(qword_ptr(rsp + 8i32), rax));
-                        emit!(asm.mov(word_ptr(rsp), 2i32)); // sa_family = AF_INET
+                        if is_win64 {
+                            emit!(asm.mov(qword_ptr(rsp + 32i32), rax));
+                            emit!(asm.mov(qword_ptr(rsp + 40i32), rax));
+                            emit!(asm.mov(word_ptr(rsp + 32i32), 2i32));
+                        } else {
+                            emit!(asm.mov(qword_ptr(rsp), rax));
+                            emit!(asm.mov(qword_ptr(rsp + 8i32), rax));
+                            emit!(asm.mov(word_ptr(rsp), 2i32));
+                        }
                         emit!(asm.mov(rax, slot(dst + 2)));
                         emit!(asm.rol(ax, 8u32));
-                        emit!(asm.mov(word_ptr(rsp + 2i32), ax)); // sin_port (big-endian)
+                        if is_win64 {
+                            emit!(asm.mov(word_ptr(rsp + 34i32), ax));
+                        } else {
+                            emit!(asm.mov(word_ptr(rsp + 2i32), ax));
+                        }
                         // inet_pton(AF_INET, ip_str, &sin_addr) — sin_addr at rsp+4
-                        emit!(asm.lea(r12, qword_ptr(rsp + 4i32)));
+                        if is_win64 {
+                            emit!(asm.lea(r12, qword_ptr(rsp + 36i32)));
+                        } else {
+                            emit!(asm.lea(r12, qword_ptr(rsp + 4i32)));
+                        }
                         if is_win64 {
                             emit!(asm.mov(ecx, 2i32));
                             emit!(asm.mov(rdx, slot(dst + 1)));
@@ -2357,7 +2360,7 @@ impl<'a> FnEncoder<'a> {
                         // connect(sockfd, &sockaddr_in, 16)
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
-                            emit!(asm.lea(rdx, qword_ptr(rsp)));
+                            emit!(asm.lea(rdx, qword_ptr(rsp + 32i32)));
                             emit!(asm.mov(r8d, 16i32));
                             call_ext!("connect".into(), RelocKind::Plt32);
                         } else {
@@ -2367,7 +2370,11 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rax, 42i64)); // connect syscall
                             emit!(asm.syscall());
                         }
-                        emit!(asm.add(rsp, 32i32));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 48i32));
+                        } else {
+                            emit!(asm.add(rsp, 32i32));
+                        }
                         emit!(asm.mov(slot(dst), rax));
                         emit!(asm.pop(rax));
                         emit!(asm.pop(rax));
@@ -2412,8 +2419,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     _ => {
-                        emit!(asm.xor(rax, rax));
-                        emit!(asm.mov(slot(dst), rax));
+                        return Err(BackendError(format!("unknown intrinsic id {id}")));
                     }
                 }
             }
@@ -2672,7 +2678,7 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::FieldLoad) => {
-                let (dst, obj, byte_off) = instr.rrr();
+                let (dst, obj, byte_off) = instr.field();
                 emit!(asm.mov(rax, slot(obj)));
                 if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0
                     && instr.mem_width() == MemWidth::Dword
@@ -2701,7 +2707,7 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::FieldStore) => {
-                let (val, obj, byte_off) = instr.rrr();
+                let (val, obj, byte_off) = instr.field();
                 emit!(asm.mov(rax, slot(obj)));
                 if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0
                     && instr.mem_width() == MemWidth::Dword
@@ -2744,10 +2750,10 @@ impl<'a> FnEncoder<'a> {
             }
 
             _ => {
-                panic!(
-                    "encoder: unimplemented opcode {:?}",
+                return Err(BackendError(format!(
+                    "encoder does not implement opcode {:?}",
                     Opcode::from_u8(instr.opcode)
-                );
+                )));
             }
         }
 
@@ -2755,8 +2761,8 @@ impl<'a> FnEncoder<'a> {
     }
 }
 
-fn resolve_x86_64_syscall(name: &str) -> u64 {
-    match name {
+fn resolve_x86_64_syscall(name: &str) -> Option<u64> {
+    Some(match name {
         // File I/O
         "read" => 0,
         "write" => 1,
@@ -3037,8 +3043,8 @@ fn resolve_x86_64_syscall(name: &str) -> u64 {
         "preadv2" => 327,
         "pwritev2" => 328,
         "statx" => 332,
-        _ => 0,
-    }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

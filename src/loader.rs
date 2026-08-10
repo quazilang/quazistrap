@@ -1024,6 +1024,13 @@ fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
             if file_path.exists() {
                 return Some(file_path);
             }
+            // A lazy re-export can name an opaque module directory rather than
+            // a flat source file (`pub reexport collections;`). Resolve its
+            // gateway just as `resolve_module_file` does.
+            let directory_entry = file_path.with_extension("").join("mod.qz");
+            if directory_entry.exists() {
+                return Some(directory_entry);
+            }
         }
     }
     None
@@ -1226,6 +1233,47 @@ mod tests {
     }
 
     #[test]
+    fn lazy_reexport_resolves_directory_module_entry() {
+        let root = temp_dir("quazi_loader_directory_reexport");
+        let foo_dir = root.join("foo");
+        let nested_dir = foo_dir.join("nested");
+        fs::create_dir_all(&nested_dir).expect("create nested module");
+        fs::write(foo_dir.join("mod.qz"), "pub reexport nested;")
+            .expect("write foo gateway");
+        fs::write(nested_dir.join("mod.qz"), "pub import item.make;")
+            .expect("write nested gateway");
+        fs::write(nested_dir.join("item.qz"), "pub fn make() i32 { ret 7; }")
+            .expect("write nested item");
+
+        let main_path = root.join("main.qz");
+        fs::write(
+            &main_path,
+            "import foo.nested.make;\nfn main() i32 { ret make(); }",
+        )
+        .expect("write entry");
+
+        let result = load_programs(&[main_path]).expect("load directory re-export");
+        assert!(
+            result
+                .loaded_files
+                .iter()
+                .any(|path| path.ends_with(Path::new("nested").join("mod.qz"))),
+            "expected nested/mod.qz, got {:?}",
+            result.loaded_files
+        );
+        assert!(
+            result
+                .loaded_files
+                .iter()
+                .any(|path| path.ends_with(Path::new("nested").join("item.qz"))),
+            "expected nested/item.qz, got {:?}",
+            result.loaded_files
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn no_std_keeps_prelude_and_std_resolver() {
         let root = temp_dir("quazi_loader_no_std");
         let main_path = root.join("main.qz");
@@ -1287,7 +1335,7 @@ fn sleep_ms() void { }
 
 fn main() i32 {
     const msg: str = "hey!\n";
-    write(1, msg, msg.len());
+    unsafe { write(1, msg, msg.len()); }
     sleep_ms();
     ret 0;
 }
@@ -1376,14 +1424,14 @@ fn main() i32 {
 
         fs::write(
             src.join("helper.qz"),
-            "pub struct PublicStruct { value: i32, }\npub fn make() PublicStruct { ret PublicStruct { value: 1 }; }",
+            "pub struct PublicStruct { value: i32, }\nimpl PublicStruct { pub fn new() PublicStruct { ret PublicStruct { value: 1 }; } }",
         )
         .expect("write helper.qz");
 
         let main_path = src.join("main.qz");
         fs::write(
             &main_path,
-            "import helper.PublicStruct;\nimport helper.make;\nfn main() void { var _s: PublicStruct = make(); ret; }",
+            "import helper.PublicStruct;\nfn main() void { var _s: PublicStruct = PublicStruct.new(); ret; }",
         )
         .expect("write main.qz");
 

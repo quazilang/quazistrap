@@ -457,28 +457,36 @@ fn run_dataflow(
 
 // ── Rewrite ───────────────────────────────────────────────────────────────────
 
-fn add_or_find_const(chunk: &mut Chunk, val: &ConstVal) -> u16 {
+fn add_or_find_const(chunk: &mut Chunk, val: &ConstVal) -> Option<u16> {
     match val {
         ConstVal::Int(v) => {
             for (i, c) in chunk.constants.iter().enumerate() {
                 if let ConstPoolEntry::Int(existing) = c {
                     if *existing == *v {
-                        return i as u16;
+                        return u16::try_from(i).ok();
                     }
                 }
             }
-            chunk.add_constant(ConstPoolEntry::Int(*v)) as u16
+            if chunk.constants.len() >= u16::MAX as usize {
+                None
+            } else {
+                Some(chunk.add_constant(ConstPoolEntry::Int(*v)))
+            }
         }
         ConstVal::Float(bits) => {
             let f = f64::from_bits(*bits);
             for (i, c) in chunk.constants.iter().enumerate() {
                 if let ConstPoolEntry::Float(existing) = c {
                     if existing.to_bits() == *bits {
-                        return i as u16;
+                        return u16::try_from(i).ok();
                     }
                 }
             }
-            chunk.add_constant(ConstPoolEntry::Float(f)) as u16
+            if chunk.constants.len() >= u16::MAX as usize {
+                None
+            } else {
+                Some(chunk.add_constant(ConstPoolEntry::Float(f)))
+            }
         }
     }
 }
@@ -489,13 +497,15 @@ fn emit_const_instr(chunk: &mut Chunk, i: usize, dst: u8, val: &ConstVal) {
             if *v >= i16::MIN as i64 && *v <= i16::MAX as i64 {
                 chunk.code[i] = ri16(Opcode::MovI, dst, *v as u16);
             } else {
-                let idx = add_or_find_const(chunk, val);
-                chunk.code[i] = ri16(Opcode::MovConst, dst, idx);
+                if let Some(idx) = add_or_find_const(chunk, val) {
+                    chunk.code[i] = ri16(Opcode::MovConst, dst, idx);
+                }
             }
         }
         ConstVal::Float(_) => {
-            let idx = add_or_find_const(chunk, val);
-            chunk.code[i] = ri16(Opcode::MovConst, dst, idx);
+            if let Some(idx) = add_or_find_const(chunk, val) {
+                chunk.code[i] = ri16(Opcode::MovConst, dst, idx);
+            }
         }
     }
 }

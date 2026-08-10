@@ -8,6 +8,11 @@ When a QZI is emitted as a binary directly, the CLI reuses the current project's
 
 Operand layouts: **RRR** (dst/src1/src2), **RI16** (dst/imm16 LE), **MEM** (val/base/offset16 LE signed).
 
+`FieldLoad` and `FieldStore` encode their unsigned 16-bit byte offset across
+operand bytes 2 and 3. Register, constant, function, size, tag, and offset
+conversions are checked before serialization; code generation returns an error
+instead of wrapping a value into a smaller QZI field.
+
 For `Load`/`Store`, flags bits 1–2 encode `MemWidth` (`00=qword`,
 `01=byte`, `10=word`, `11=dword`) and bit 3 marks a signed sub-word
 `Load`. Bit 0 remains `FLOAT_FLAG`. A zero flags byte therefore preserves the
@@ -59,6 +64,8 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 - Pass 2: compile via `FnCompiler` (virtual reg allocator).
 - Post-pass: inline expansion with jump-target fixup.
 - Then: `elim_dead_regs` + `linear_scan_alloc` per chunk.
+- Finally: validate register operands, branch targets, constant/function
+  indices, consecutive intrinsic arguments, ABI metadata, and encoding limits.
 
 ### Key Codegen Behaviours
 
@@ -164,6 +171,9 @@ Two passes run on each chunk after inline expansion:
 2. **`linear_scan_alloc`**: builds live intervals, finds **pinned** regs (params; Intrinsic/Syscall consecutive arg groups when `flags>1`; Lea(offset=0) adjacent MovI base groups), then linear scans non-pinned with slot reuse. Back-edge extension: for each backward jump at `j` targeting `t`, any reg with `start < t && end >= t` gets `end = j` — prevents slot recycling across loop iterations.
 
 Key: `Ret` has `ops[0]` = return-value register (remapped by `remap_instr_regs`; encoder uses `slot(ops[0])` not hardcoded `slot(0)`).
+
+Register operand discovery is shared by validation, allocation, and native frame
+sizing so less-common opcodes cannot access slots outside the allocated frame.
 
 ## Missing / Planned
 

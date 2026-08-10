@@ -497,6 +497,19 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
     }
 }
 
+/// Registers explicitly addressed by an instruction. QZI validation and the
+/// native frame layout share this with regalloc so their opcode knowledge
+/// cannot drift apart.
+pub(crate) fn instruction_registers(instr: &Instruction) -> Vec<u8> {
+    let mut registers = instr_uses(instr);
+    if let Some(register) = instr_def(instr) {
+        registers.push(register);
+    }
+    registers.sort_unstable();
+    registers.dedup();
+    registers
+}
+
 fn is_side_effect_free(op: Opcode) -> bool {
     matches!(
         op,

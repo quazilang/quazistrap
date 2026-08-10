@@ -45,7 +45,7 @@ impl SectionAccumulator {
         }
     }
 
-    /// Lay out .rodata: string constants and the "%ld" format string for PrimToStr.
+    /// Lay out .rodata: string constants and the portable 64-bit decimal format.
     /// Adds a data symbol for each string entry and for __quazi_fmt_ld.
     /// Returns the symbol name for each const-pool slot (None for non-Str entries).
     pub fn build_rodata(
@@ -137,7 +137,9 @@ impl SectionAccumulator {
             })
         });
         if needs_fmt_ld {
-            let fmt = b"%ld\0";
+            // `long` is 32-bit on Win64 and 64-bit on SysV. Quazi integers use
+            // 64-bit slots, so `long long` is the portable C varargs type.
+            let fmt = b"%lld\0";
             let offset = obj.append_section_data(self.rodata_id, fmt, 1);
             sym_table.define_data(
                 obj,

@@ -13,6 +13,6 @@ fn main() i32 {
     	    ret 0;
 	}
     }
-    core.write(1,"other\n",7);
+    unsafe { core.write(1,"other\n",7); }
     ret 0;
 }

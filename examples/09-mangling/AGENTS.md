@@ -1,6 +1,6 @@
 # Example: 09-mangling
 
-Demonstrates module-level function namespacing / mangling.
+Demonstrates module-level function namespacing and mangling.
 
 ## Running
 
@@ -11,10 +11,10 @@ qz build -o mangling
 
 ## Features shown
 
-- `core.write()` — qualified call into `std.core`
-- `unix.write()` — qualified call into `std.unix`
-- `@cfg(target_os = "linux")` for platform-specific branches
-- Multiple modules can define the same bare function name without collision
+- `core.write()` is a qualified raw call; caller-controlled lengths require an `unsafe` block.
+- `unix.write()` is a qualified call into `std.unix`.
+- `@cfg(target_os = "linux")` selects platform-specific branches.
+- Multiple modules can define the same bare function name without collision.
 
 ## Files
 

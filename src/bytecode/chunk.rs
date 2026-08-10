@@ -39,6 +39,9 @@ pub struct Chunk {
     pub c_variadic: bool,
     /// C-facing entry point metadata for a synthetic export adapter chunk.
     pub export: Option<ForeignSymbol>,
+    /// Set when a caller attempted to allocate an unencodable constant index.
+    /// Validation turns this into a compile error before bytes are emitted.
+    constant_pool_overflowed: bool,
 }
 
 impl Chunk {
@@ -72,6 +75,10 @@ impl Chunk {
     }
 
     pub fn add_constant(&mut self, val: ConstPoolEntry) -> u16 {
+        if self.constants.len() >= u16::MAX as usize {
+            self.constant_pool_overflowed = true;
+            return 0;
+        }
         let idx = self.constants.len() as u16;
         self.constants.push(val);
         idx
@@ -199,7 +206,14 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
     let chunk_count = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
 
-    let mut chunks = Vec::with_capacity(chunk_count);
+    let min_chunk_bytes = if version >= 2 { 12 } else { 8 };
+    if chunk_count > buf.len().saturating_sub(pos) / min_chunk_bytes {
+        return Err("QZI chunk count exceeds remaining file size".to_string());
+    }
+    let mut chunks = Vec::new();
+    chunks
+        .try_reserve_exact(chunk_count)
+        .map_err(|_| "QZI chunk count is too large".to_string())?;
     for _ in 0..chunk_count {
         if buf.len() < pos + 2 {
             return Err("truncated chunk name length".to_string());
@@ -220,6 +234,9 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
                 return Err("truncated chunk params/regs/flags".to_string());
             }
             let pc = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+            if pc > u8::MAX as usize {
+                return Err(format!("QZI chunk parameter count {pc} exceeds 255"));
+            }
             let rc = buf[pos + 2];
             let flags = buf[pos + 3];
             pos += 4;
@@ -247,7 +264,13 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
         let const_count = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
         pos += 2;
 
-        let mut constants = Vec::with_capacity(const_count);
+        if const_count > buf.len().saturating_sub(pos) {
+            return Err("QZI constant count exceeds remaining file size".to_string());
+        }
+        let mut constants = Vec::new();
+        constants
+            .try_reserve_exact(const_count)
+            .map_err(|_| "QZI constant count is too large".to_string())?;
         for _ in 0..const_count {
             if buf.len() <= pos {
                 return Err("truncated const tag".to_string());
@@ -359,15 +382,23 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
         let instr_count = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
 
-        let instr_bytes = instr_count * 6;
+        let instr_bytes = instr_count
+            .checked_mul(Instruction::SIZE)
+            .ok_or_else(|| "QZI instruction byte count overflow".to_string())?;
         if buf.len() < pos + instr_bytes {
             return Err("truncated instructions".to_string());
         }
-        let mut code = Vec::with_capacity(instr_count);
+        let mut code = Vec::new();
+        code.try_reserve_exact(instr_count)
+            .map_err(|_| "QZI instruction count is too large".to_string())?;
         for _ in 0..instr_count {
             let mut arr = [0u8; 6];
             arr.copy_from_slice(&buf[pos..pos + 6]);
-            code.push(Instruction::from_bytes(arr));
+            let instruction = Instruction::from_bytes(arr);
+            if instruction.opcode().is_none() {
+                return Err(format!("unknown QZI opcode 0x{:02x}", instruction.opcode));
+            }
+            code.push(instruction);
             pos += 6;
         }
 
@@ -381,16 +412,153 @@ pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             export,
             constants,
             code,
+            constant_pool_overflowed: false,
         });
     }
 
+    if pos != buf.len() {
+        return Err(format!("QZI has {} trailing byte(s)", buf.len() - pos));
+    }
+    validate_qzi_chunks(&chunks)?;
     Ok(chunks)
+}
+
+pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
+    use super::opcode::Opcode;
+
+    for (chunk_index, chunk) in chunks.iter().enumerate() {
+        if chunk.constant_pool_overflowed {
+            return Err(format!("chunk `{}` exceeded the QZI constant-pool limit", chunk.name));
+        }
+        if chunk.param_count > u8::MAX as usize {
+            return Err(format!("chunk `{}` has too many parameters", chunk.name));
+        }
+        if chunk.param_count > chunk.reg_count as usize {
+            return Err(format!(
+                "chunk `{}` has fewer register slots than parameters",
+                chunk.name
+            ));
+        }
+        for (instruction_index, instruction) in chunk.code.iter().enumerate() {
+            let opcode = instruction
+                .opcode()
+                .ok_or_else(|| format!("unknown opcode in chunk `{}`", chunk.name))?;
+            let fail = |message: &str| {
+                Err(format!(
+                    "invalid QZI chunk `{}` instruction {}: {}",
+                    chunk.name, instruction_index, message
+                ))
+            };
+            for register in crate::bytecode::regalloc::instruction_registers(instruction) {
+                // A zero-register void function still carries `Ret r0` by the
+                // historical QZI convention. The backend reserves that return slot.
+                let legacy_void_return = chunk.reg_count == 0
+                    && opcode == Opcode::Ret
+                    && register == 0;
+                if !legacy_void_return && register as usize >= chunk.reg_count as usize {
+                    return fail("register operand is outside the declared frame");
+                }
+            }
+            if matches!(
+                opcode,
+                Opcode::Jmp
+                    | Opcode::Je
+                    | Opcode::Jne
+                    | Opcode::Jg
+                    | Opcode::Jge
+                    | Opcode::Jl
+                    | Opcode::Jle
+                    | Opcode::Ja
+                    | Opcode::Jb
+                    | Opcode::Jz
+                    | Opcode::Jnz
+            ) && instruction.ri16().1 as usize > chunk.code.len()
+            {
+                return fail("jump target is outside the chunk");
+            }
+            if matches!(opcode, Opcode::MovConst | Opcode::Syscall | Opcode::CallExt)
+                && instruction.ri16().1 as usize >= chunk.constants.len()
+            {
+                return fail("constant-pool index is out of bounds");
+            }
+            if opcode == Opcode::CallCReg
+                && instruction.call_c_reg_parts().2 as usize >= chunk.constants.len()
+            {
+                return fail("C callback signature index is out of bounds");
+            }
+            if opcode == Opcode::CallIdx && instruction.ri16().1 as usize >= chunks.len() {
+                return fail("function-table index is out of bounds");
+            }
+            if matches!(opcode, Opcode::Intrinsic | Opcode::Syscall) {
+                let start = instruction.ops[0] as usize;
+                let count = instruction.flags as usize;
+                if start + count > u8::MAX as usize {
+                    return fail("consecutive argument register range overflows QZI slots");
+                }
+            }
+            if opcode == Opcode::Intrinsic {
+                let id = instruction.ri16().1;
+                if !matches!(id, 0..=16 | 18..=21 | 23..=25) {
+                    return fail("unknown intrinsic id");
+                }
+            }
+        }
+        let _ = chunk_index;
+    }
+    Ok(())
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
 pub const QZI_VERSION: u8 = 5;
 
-pub fn serialize_qzi(chunks: &[Chunk]) -> Vec<u8> {
+pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
+    validate_qzi_chunks(chunks)?;
+    if chunks.len() > u32::MAX as usize {
+        return Err("too many QZI chunks".to_string());
+    }
+    for chunk in chunks {
+        if chunk.name.len() > u16::MAX as usize {
+            return Err(format!("QZI chunk name `{}` is too long", chunk.name));
+        }
+        if chunk.param_count > u16::MAX as usize {
+            return Err(format!("QZI chunk `{}` has too many parameters", chunk.name));
+        }
+        if chunk.constants.len() > u16::MAX as usize {
+            return Err(format!("QZI chunk `{}` has too many constants", chunk.name));
+        }
+        if chunk.code.len() > u32::MAX as usize {
+            return Err(format!("QZI chunk `{}` has too many instructions", chunk.name));
+        }
+        for constant in &chunk.constants {
+            match constant {
+                ConstPoolEntry::Str(value) | ConstPoolEntry::FnAddr(value)
+                    if value.len() > u16::MAX as usize =>
+                {
+                    return Err(format!("QZI string constant in `{}` is too long", chunk.name));
+                }
+                ConstPoolEntry::VtableAddr(type_name, trait_name)
+                    if type_name.len() > u16::MAX as usize
+                        || trait_name.len() > u16::MAX as usize =>
+                {
+                    return Err(format!("QZI vtable name in `{}` is too long", chunk.name));
+                }
+                ConstPoolEntry::Bytes(value) if value.len() > u32::MAX as usize => {
+                    return Err(format!("QZI byte constant in `{}` is too large", chunk.name));
+                }
+                ConstPoolEntry::ForeignSymbol(symbol) => validate_foreign_symbol(symbol)?,
+                ConstPoolEntry::ForeignGlobal(global) => {
+                    if global.symbol.len() > u16::MAX as usize {
+                        return Err("QZI foreign-global symbol is too long".to_string());
+                    }
+                    validate_abi_type(&global.ty, 0)?;
+                }
+                _ => {}
+            }
+        }
+        if let Some(export) = &chunk.export {
+            validate_foreign_symbol(export)?;
+        }
+    }
     let mut buf = Vec::new();
     buf.extend_from_slice(QZI_MAGIC);
     buf.push(QZI_VERSION);
@@ -398,7 +566,51 @@ pub fn serialize_qzi(chunks: &[Chunk]) -> Vec<u8> {
     for chunk in chunks {
         buf.extend_from_slice(&chunk.serialize());
     }
-    buf
+    Ok(buf)
+}
+
+fn validate_foreign_symbol(symbol: &crate::abi::ForeignSymbol) -> Result<(), String> {
+    if symbol.symbol.len() > u16::MAX as usize {
+        return Err("QZI foreign symbol is too long".to_string());
+    }
+    if symbol.signature.params.len() > u16::MAX as usize {
+        return Err("QZI ABI signature has too many parameters".to_string());
+    }
+    for ty in &symbol.signature.params {
+        validate_abi_type(ty, 0)?;
+    }
+    validate_abi_type(&symbol.signature.return_type, 0)
+}
+
+fn validate_abi_type(ty: &crate::abi::AbiType, depth: usize) -> Result<(), String> {
+    if depth > 64 {
+        return Err("QZI ABI type nesting exceeds 64 levels".to_string());
+    }
+    match ty {
+        crate::abi::AbiType::Integer { bytes, .. } if !matches!(*bytes, 1 | 2 | 4 | 8) => {
+            return Err(format!("QZI ABI integer has invalid width {bytes}"));
+        }
+        crate::abi::AbiType::Aggregate {
+            size,
+            align,
+            fields,
+        } => {
+            if *align == 0 || !align.is_power_of_two() {
+                return Err(format!("QZI ABI aggregate has invalid alignment {align}"));
+            }
+            if fields.len() > u16::MAX as usize {
+                return Err("QZI ABI aggregate has too many fields".to_string());
+            }
+            for field in fields {
+                validate_abi_type(&field.ty, depth + 1)?;
+                if field.offset as usize + field.ty.size() > *size as usize {
+                    return Err("QZI ABI field extends past aggregate size".to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 impl std::fmt::Display for Chunk {
@@ -549,6 +761,7 @@ mod tests {
             variadic: false,
         };
         let mut chunk = Chunk::with_params("sin_adapter", 1);
+        chunk.reg_count = 1;
         chunk.export = Some(ForeignSymbol {
             symbol: "quazi_sin".to_string(),
             signature: signature.clone(),
@@ -573,7 +786,7 @@ mod tests {
             }));
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
 
-        let encoded = serialize_qzi(&[chunk]);
+        let encoded = serialize_qzi(&[chunk]).expect("QZI v5 should encode");
         let decoded = deserialize_qzi(&encoded).expect("QZI v5 should decode");
         assert_eq!(decoded[0].export.as_ref().unwrap().symbol, "quazi_sin");
         assert!(matches!(
@@ -581,5 +794,47 @@ mod tests {
             [ConstPoolEntry::ForeignSymbol(symbol), ConstPoolEntry::Bytes(bytes), ConstPoolEntry::ForeignGlobal(global)]
                 if symbol.symbol == "sin" && bytes == &[0, 0xff, 1] && global.symbol == "native_counter"
         ));
+    }
+
+    #[test]
+    fn qzi_rejects_unknown_opcodes_and_trailing_bytes() {
+        let mut chunk = Chunk::new("main");
+        chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let encoded = serialize_qzi(&[chunk]).expect("valid QZI should encode");
+
+        let mut unknown_opcode = encoded.clone();
+        let instruction_start = unknown_opcode.len() - 6;
+        unknown_opcode[instruction_start] = 0xff;
+        assert!(deserialize_qzi(&unknown_opcode).is_err());
+
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(deserialize_qzi(&trailing).is_err());
+    }
+
+    #[test]
+    fn qzi_rejects_registers_outside_the_declared_frame() {
+        let mut chunk = Chunk::new("bad");
+        chunk.reg_count = 1;
+        chunk.emit_rrr(Opcode::Add, 0, 0, 1);
+        chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let error = serialize_qzi(&[chunk]).expect_err("invalid frame must be rejected");
+        assert!(error.contains("outside the declared frame"));
+    }
+
+    #[test]
+    fn qzi_rejects_impossible_chunk_counts_before_allocating() {
+        let mut encoded = Vec::from(QZI_MAGIC.as_slice());
+        encoded.push(QZI_VERSION);
+        encoded.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert!(deserialize_qzi(&encoded).is_err());
+    }
+
+    #[test]
+    fn qzi_rejects_a_constant_pool_that_overflowed_during_codegen() {
+        let mut chunk = Chunk::new("overflowed");
+        chunk.constant_pool_overflowed = true;
+        let error = serialize_qzi(&[chunk]).expect_err("overflow must not be serialized");
+        assert!(error.contains("constant-pool limit"));
     }
 }

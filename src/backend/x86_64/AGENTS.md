@@ -69,4 +69,9 @@ File-level directive (like `@no_std`). When present, the entry stub omits crash-
 
 Previously at `encoder.rs:1607–1612`, unimplemented opcodes (`NewObj`, `Move`, `Drop`, `Dup`, `Spawn`, `AtomicAdd`, `AtomicCas`, `StrConcat`) emitted `xor rax,rax; mov slot(0), rax` — producing wrong code instead of crashing.
 
-Now they `panic!("encoder: unimplemented opcode {:?}", ...)` instead.
+Now unsupported opcodes and unknown intrinsic IDs return `BackendError` instead
+of emitting plausible but incorrect machine code or panicking.
+
+Win64 runtime intrinsic calls reserve the required 32-byte shadow space plus
+aligned stack arguments. Integer formatting uses `%lld`, because Win64 `long`
+is only 32 bits while Quazi integer slots are 64 bits.

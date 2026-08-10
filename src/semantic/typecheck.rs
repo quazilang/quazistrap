@@ -2600,20 +2600,29 @@ impl Analyzer {
 
             ExprKind::Try { expr: inner } => {
                 let inner_eval = self.type_check_expr(inner, reachable);
-                // Validate the inner expression is Result or Option.
-                match &inner_eval.ty {
-                    Some(TypeKind::Named { name, .. }) if name == "Result" || name == "Option" => {}
-                    Some(ty) => self.push_error(
-                        expr.span,
-                        "S14",
-                        format!("`?` operator requires Result or Option, got {}", ty),
-                    ),
-                    None => {}
-                }
-                // Result type of `?` is the unwrapped payload — can't resolve generics
-                // at this stage, so annotate as Any for now.
+                // Validate the wrapper and retain its payload type when known.
+                let payload_ty = match &inner_eval.ty {
+                    Some(TypeKind::Named { name, type_args })
+                        if (name == "Result" || name == "Option")
+                            && !type_args.is_empty() =>
+                    {
+                        Some(type_args[0].node.clone())
+                    }
+                    Some(TypeKind::Named { name, .. }) if name == "Result" || name == "Option" => {
+                        Some(TypeKind::Any)
+                    }
+                    Some(ty) => {
+                        self.push_error(
+                            expr.span,
+                            "S14",
+                            format!("`?` operator requires Result or Option, got {}", ty),
+                        );
+                        Some(TypeKind::Any)
+                    }
+                    None => None,
+                };
                 ExprEval {
-                    ty: Some(TypeKind::Any),
+                    ty: payload_ty,
                     const_value: None,
                 }
             }
@@ -2667,6 +2676,12 @@ impl Analyzer {
         let Some((base, _)) = Self::extract_field_chain(object) else {
             return false;
         };
+        // An imported type name is a static-method namespace, not a module
+        // namespace. Treating it as a module made `Map.new()` and equivalent
+        // imported constructors fail before static method resolution.
+        if self.struct_defs.contains_key(&base) {
+            return false;
+        }
         self.resolve_symbol(&base).is_some_and(|sym| sym.is_import)
     }
 

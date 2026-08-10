@@ -80,7 +80,10 @@ fn run_pipeline(
     }
 
     let mut cg = Codegen::new(&sema_report);
-    let chunks = cg.compile_program(program, &source_files);
+    let chunks = cg.compile_program(program, &source_files).unwrap_or_else(|error| {
+        eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
+        std::process::exit(1);
+    });
 
     if debug {
         for chunk in &chunks {
@@ -90,7 +93,10 @@ fn run_pipeline(
 
     match emit {
         EmitType::Bytecode => {
-            let bytes = serialize_qzi(&chunks);
+            let bytes = serialize_qzi(&chunks).unwrap_or_else(|error| {
+                eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
+                std::process::exit(1);
+            });
             let mut f = std::fs::File::create(output_file_name).unwrap_or_else(|e| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
@@ -331,7 +337,10 @@ fn emit_chunks(
 
     match emit {
         EmitType::Bytecode => {
-            let bytes = serialize_qzi(chunks);
+            let bytes = serialize_qzi(chunks).unwrap_or_else(|error| {
+                eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
+                std::process::exit(1);
+            });
             let mut f = std::fs::File::create(output_file_name).unwrap_or_else(|e| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
@@ -845,8 +854,17 @@ fn build_with_progress(
         namespaced_paths,
     );
     let has_errors = !sema.errors.is_empty();
-    let mut cg = bytecode::Codegen::new(&sema);
-    let chunks = cg.compile_program(&result.program, &result.source_files);
+    let chunks = if has_errors {
+        Vec::new()
+    } else {
+        let mut cg = bytecode::Codegen::new(&sema);
+        cg.compile_program(&result.program, &result.source_files)
+            .unwrap_or_else(|error| {
+                prog.fail("error");
+                eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
+                std::process::exit(1);
+            })
+    };
 
     if has_errors {
         prog.fail("error");
@@ -882,7 +900,11 @@ fn build_with_progress(
 
     match emit {
         EmitType::Bytecode => {
-            let bytes = bytecode::serialize_qzi(&chunks);
+            let bytes = bytecode::serialize_qzi(&chunks).unwrap_or_else(|error| {
+                prog.fail("error");
+                eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
+                std::process::exit(1);
+            });
             let mut f = std::fs::File::create(out).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {}", out, e);
                 std::process::exit(1);

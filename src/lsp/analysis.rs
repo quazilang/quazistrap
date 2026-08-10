@@ -236,7 +236,7 @@ mod tests {
 import std.core.write;
 
 fn main() void {
-    write(1, "x", 1);
+    unsafe { write(1, "x", 1); }
     ret;
 }
 "#,
@@ -308,7 +308,7 @@ fn exit() void {
 
 fn main() i32 {
     const msg: str = "hey!\n";
-    write(1, msg, msg.len());
+    unsafe { write(1, msg, msg.len()); }
     exit();
     ret 0;
 }

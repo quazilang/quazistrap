@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use super::instruction::{
-    FLOAT_FLAG, MemWidth, call_c_reg, field_load_typed, field_store_typed, mem_lea, mem_load,
-    mem_load_w, mem_store, mem_store_w, ri16, rrr, rrr_f,
+    FLOAT_FLAG, MemWidth, call_c_reg, field_load, field_load_typed, field_store,
+    field_store_typed, mem_lea, mem_load, mem_load_w, mem_store, mem_store_w, ri16, rrr, rrr_f,
 };
 use super::{Chunk, ConstPoolEntry, Opcode};
 use crate::abi::{
@@ -47,7 +47,7 @@ fn module_name_for_span(span: Span, source_files: &[SourceFile]) -> Option<Strin
 //   - discriminant (tag) is stored at ENUM_DISCRIM_OFFSET (8 bytes)
 //   - variant payloads start at ENUM_PAYLOAD_OFFSET (8 bytes each)
 const ENUM_DISCRIM_OFFSET: u8 = 0;
-const ENUM_PAYLOAD_OFFSET: u8 = 8;
+const ENUM_PAYLOAD_OFFSET: u16 = 8;
 
 /// Compute the allocation size (in bytes) for an enum variant with `payload_count` payloads.
 /// The layout is: discriminant (8 bytes) + payload_count * 8 bytes per payload,
@@ -289,7 +289,7 @@ impl<'a> Codegen<'a> {
         &mut self,
         program: &Program,
         source_files: &[SourceFile],
-    ) -> Vec<Chunk> {
+    ) -> Result<Vec<Chunk>, String> {
         self.source_files = source_files.to_vec();
         self.foreign_imports.clear();
         self.foreign_exports.clear();
@@ -511,7 +511,7 @@ impl<'a> Codegen<'a> {
 
         // Pass 1: assign each live function a table index.
         // Namespaced modules use `module.name`; entry files keep the bare name.
-        let mut idx = 0u16;
+        let mut idx = 0usize;
         for item in &program.items {
             if let ItemKind::Fn {
                 name, attributes, ..
@@ -530,7 +530,10 @@ impl<'a> Codegen<'a> {
                     self.resolve_item_name(item.span, name, attributes)
                 };
                 if is_live(&index_name) || is_ph || is_export {
-                    self.fn_index.insert(index_name.clone(), idx);
+                    let table_index = u16::try_from(idx).map_err(|_| {
+                        "program exceeds the QZI function-table limit".to_string()
+                    })?;
+                    self.fn_index.insert(index_name.clone(), table_index);
                     idx += 1;
                 }
             }
@@ -546,7 +549,10 @@ impl<'a> Codegen<'a> {
                     if let ItemKind::Fn { name, .. } = &method.node {
                         let mangled = format!("{}.{}", type_name, name);
                         if is_live(&mangled) {
-                            self.fn_index.insert(mangled.clone(), idx);
+                            let table_index = u16::try_from(idx).map_err(|_| {
+                                "program exceeds the QZI function-table limit".to_string()
+                            })?;
+                            self.fn_index.insert(mangled.clone(), table_index);
                             idx += 1;
                         }
                     }
@@ -559,7 +565,9 @@ impl<'a> Codegen<'a> {
             let mono_name = &mono.mangled_name;
             // Only add if the specialized name is reachable.
             if is_live(mono_name) && !self.fn_index.contains_key(mono_name) {
-                self.fn_index.insert(mono_name.clone(), idx);
+                let table_index = u16::try_from(idx)
+                    .map_err(|_| "program exceeds the QZI function-table limit".to_string())?;
+                self.fn_index.insert(mono_name.clone(), table_index);
                 idx += 1;
             }
         }
@@ -639,7 +647,7 @@ impl<'a> Codegen<'a> {
                         *c_variadic,
                         &mut chunks,
                         &mut next_closure_idx,
-                    )
+                    )?
                 {
                     chunks.push(chunk);
                     if let Some(foreign) = self.foreign_exports.get(&compile_name).cloned() {
@@ -691,7 +699,7 @@ impl<'a> Codegen<'a> {
                                 *c_variadic,
                                 &mut chunks,
                                 &mut next_closure_idx,
-                            )
+                            )?
                         {
                             chunks.push(chunk);
                         }
@@ -764,7 +772,7 @@ impl<'a> Codegen<'a> {
                                     &mut chunks,
                                     &mut next_closure_idx,
                                     subst,
-                                ) {
+                                )? {
                                     chunks.push(chunk);
                                 }
                                 found = true;
@@ -817,7 +825,7 @@ impl<'a> Codegen<'a> {
                             &mut chunks,
                             &mut next_closure_idx,
                             subst,
-                        ) {
+                        )? {
                             chunks.push(chunk);
                         }
                     }
@@ -861,7 +869,7 @@ impl<'a> Codegen<'a> {
                         &mut chunks,
                         &mut next_closure_idx,
                         subst,
-                    ) {
+                    )? {
                         chunks.push(chunk);
                     }
                 }
@@ -974,6 +982,26 @@ impl<'a> Codegen<'a> {
                         (start, regs)
                     };
 
+                    if arg_regs.len() > u8::MAX as usize {
+                        return Err(format!(
+                            "call in `{}` passes more than {} QZI register arguments",
+                            chunk.name,
+                            u8::MAX
+                        ));
+                    }
+                    let base = chunk.reg_count;
+                    let needed = callee.reg_count.max(arg_regs.len() as u8);
+                    let Some(inlined_reg_count) = base.checked_add(needed) else {
+                        // Inlining is optional. Keep the call when the combined virtual
+                        // frame would exceed the QZI register encoding.
+                        i += 1;
+                        continue;
+                    };
+                    if chunk.constants.len() + callee.constants.len() > u16::MAX as usize {
+                        i += 1;
+                        continue;
+                    }
+
                     // Merge callee's constant pool into caller's, recording index offset.
                     let const_base = chunk.constants.len() as u16;
                     for entry in &callee.constants {
@@ -981,8 +1009,7 @@ impl<'a> Codegen<'a> {
                     }
 
                     // Remap and inline.
-                    let base = chunk.reg_count;
-                    let remap = |r: u8| base.wrapping_add(r);
+                    let remap = |r: u8| base + r;
 
                     let mut inlined: Vec<crate::bytecode::instruction::Instruction> = Vec::new();
 
@@ -1012,7 +1039,7 @@ impl<'a> Codegen<'a> {
                         // Remap MovConst constant pool index.
                         if r.opcode == Opcode::MovConst as u8 {
                             let old_idx = u16::from_le_bytes([r.ops[1], r.ops[2]]);
-                            let new_idx = old_idx.wrapping_add(const_base);
+                            let new_idx = old_idx + const_base;
                             let bytes = new_idx.to_le_bytes();
                             r.ops[1] = bytes[0];
                             r.ops[2] = bytes[1];
@@ -1062,8 +1089,13 @@ impl<'a> Codegen<'a> {
                                 let target =
                                     u16::from_le_bytes([instr.ops[1], instr.ops[2]]) as isize;
                                 if target >= splice_end as isize {
-                                    let new_target =
-                                        (target + delta).clamp(0, u16::MAX as isize) as u16;
+                                    let adjusted = target + delta;
+                                    let new_target = u16::try_from(adjusted).map_err(|_| {
+                                        format!(
+                                            "inlining `{}` makes a jump target unrepresentable",
+                                            callee.name
+                                        )
+                                    })?;
                                     let [lo, hi] = new_target.to_le_bytes();
                                     instr.ops[1] = lo;
                                     instr.ops[2] = hi;
@@ -1074,8 +1106,7 @@ impl<'a> Codegen<'a> {
 
                     // For variadic callees the actual slot count is arg_regs.len()
                     // (may exceed callee.reg_count which was fixed at declaration time).
-                    let needed = callee.reg_count.max(arg_regs.len() as u8);
-                    chunk.reg_count = base.wrapping_add(needed);
+                    chunk.reg_count = inlined_reg_count;
                     // Adjust i: we removed (arg_count + 1) instrs, restart from call_start.
                     i = call_start;
                 }
@@ -1221,7 +1252,24 @@ impl<'a> Codegen<'a> {
             chunks = ordered.into_iter().flatten().chain(closures).collect();
         }
 
-        chunks
+        for chunk in &chunks {
+            if chunk.code.len() > u16::MAX as usize {
+                return Err(format!(
+                    "function `{}` has {} instructions, exceeding the QZI jump-address limit",
+                    chunk.name,
+                    chunk.code.len()
+                ));
+            }
+            if chunk.constants.len() > u16::MAX as usize {
+                return Err(format!(
+                    "function `{}` has too many constants for QZI",
+                    chunk.name
+                ));
+            }
+        }
+        crate::bytecode::chunk::validate_qzi_chunks(&chunks)
+            .map_err(|error| format!("invalid generated bytecode: {error}"))?;
+        Ok(chunks)
     }
 
     fn compile_fn(
@@ -1233,7 +1281,7 @@ impl<'a> Codegen<'a> {
         c_variadic: bool,
         output_chunks: &mut Vec<Chunk>,
         next_closure_idx: &mut u16,
-    ) -> Option<Chunk> {
+    ) -> Result<Option<Chunk>, String> {
         self.compile_fn_with_subst(
             name,
             params,
@@ -1256,24 +1304,33 @@ impl<'a> Codegen<'a> {
         output_chunks: &mut Vec<Chunk>,
         next_closure_idx: &mut u16,
         type_subst: HashMap<String, TypeKind>,
-    ) -> Option<Chunk> {
+    ) -> Result<Option<Chunk>, String> {
+        if params.len() > u8::MAX as usize {
+            return Err(format!(
+                "function `{name}` has {} parameters, exceeding the QZI limit of {}",
+                params.len(),
+                u8::MAX
+            ));
+        }
         // @intrinsic: emit a platform-neutral Intrinsic instruction.
         if let Some(attr) = attributes.iter().find(|a| a.name == "intrinsic") {
-            return Some(self.compile_intrinsic_fn(name, params, attr));
+            return Ok(Some(self.compile_intrinsic_fn(name, params, attr)?));
         }
 
         // @syscall: emit a single Syscall instruction instead of the function body.
         if let Some(attr) = attributes.iter().find(|a| a.name == "syscall") {
-            return Some(self.compile_syscall_fn(name, params, attr));
+            return Ok(Some(self.compile_syscall_fn(name, params, attr)));
         }
 
         // @api: emit a single CallExt instruction instead of the function body.
         if let Some(attr) = attributes.iter().find(|a| a.name == "api") {
-            return Some(self.compile_api_fn(name, params, attr, c_variadic));
+            return Ok(Some(self.compile_api_fn(name, params, attr, c_variadic)));
         }
 
         // Bodyless declaration — no code to emit; linker must resolve calls.
-        let body = body?;
+        let Some(body) = body else {
+            return Ok(None);
+        };
 
         // Variadic param needs 2 registers: ptr (the param name) + len (__len_<name>).
         let has_variadic = params.last().map(|p| p.variadic).unwrap_or(false);
@@ -1312,9 +1369,13 @@ impl<'a> Codegen<'a> {
         for p in params {
             if p.variadic {
                 fc.bind(p.name.clone());
+                fc.local_types
+                    .insert(p.name.clone(), fc.resolve_type(&p.ty.node));
                 fc.bind(format!("__len_{}", p.name));
             } else {
                 fc.bind(p.name.clone());
+                fc.local_types
+                    .insert(p.name.clone(), fc.resolve_type(&p.ty.node));
             }
         }
         fc.compile_block(body);
@@ -1322,8 +1383,11 @@ impl<'a> Codegen<'a> {
         if fc.chunk.code.last().map(|i| i.opcode) != Some(Opcode::Ret as u8) {
             fc.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
         }
-        fc.chunk.reg_count = fc.next_reg;
-        Some(fc.chunk)
+        if let Some(error) = fc.codegen_error {
+            return Err(error);
+        }
+        fc.chunk.reg_count = fc.next_reg as u8;
+        Ok(Some(fc.chunk))
     }
 
     fn compile_syscall_fn(
@@ -1354,7 +1418,7 @@ impl<'a> Codegen<'a> {
         name: &str,
         params: &[crate::parser::ast::Param],
         attr: &crate::parser::ast::Attribute,
-    ) -> Chunk {
+    ) -> Result<Chunk, String> {
         let mut chunk = Chunk::with_params(name, params.len());
         let instr_name = attr
             .args
@@ -1373,6 +1437,7 @@ impl<'a> Codegen<'a> {
                     let mut m = HashMap::new();
                     m.insert("quazi.array.store", Opcode::ArrayStore);
                     m.insert("quazi.array.load", Opcode::ArrayLoad);
+                    m.insert("quazi.str.from_ptr", Opcode::StrAsStr);
                     m
                 });
             if let Some(&op) = INTRINSIC_OPCODE_MAP.get(instr_name) {
@@ -1395,10 +1460,12 @@ impl<'a> Codegen<'a> {
                 }
                 chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
                 chunk.reg_count = params.len() as u8;
-                return chunk;
+                return Ok(chunk);
             }
         }
-        let id = intrinsic_id(attr);
+        let Some(id) = intrinsic_id(attr) else {
+            return Err(format!("unknown intrinsic `{instr_name}` on function `{name}`"));
+        };
         let arg_count = params.len() as u8;
         let mut instr = ri16(Opcode::Intrinsic, 0, id);
         instr.flags = arg_count;
@@ -1407,7 +1474,7 @@ impl<'a> Codegen<'a> {
         chunk.intrinsic = true;
         chunk.reg_count = arg_count; // ensure frame covers all param slots
         chunk.variadic = params.last().map(|p| p.variadic).unwrap_or(false);
-        chunk
+        Ok(chunk)
     }
 
     fn compile_api_fn(
@@ -1453,7 +1520,15 @@ impl<'a> Codegen<'a> {
 struct FnCompiler<'a> {
     chunk: Chunk,
     regs: HashMap<String, u8>,
-    next_reg: u8,
+    /// Declared or inferred local types. Expression annotations can be `Any`
+    /// after a generic helper call, but an explicit local annotation remains
+    /// authoritative for direct method dispatch.
+    local_types: HashMap<String, TypeKind>,
+    /// Monotonic virtual-register counter.  Keep this wider than the QZI
+    /// physical register encoding so exhaustion is diagnosed instead of
+    /// silently wrapping back to r0.
+    next_reg: u16,
+    codegen_error: Option<String>,
     drop_scopes: Vec<Vec<DropLocal>>,
     fn_index: &'a HashMap<String, u16>,
     const_map: &'a HashMap<(usize, usize), ConstValue>,
@@ -1534,7 +1609,7 @@ enum LvalueAddr {
     },
     Field {
         obj: u8,
-        offset: u8,
+        offset: u16,
     },
     BitField {
         obj: u8,
@@ -1601,7 +1676,9 @@ impl<'a> FnCompiler<'a> {
         Self {
             chunk: Chunk::with_params(name, param_count),
             regs: HashMap::new(),
+            local_types: HashMap::new(),
             next_reg: 0,
+            codegen_error: None,
             drop_scopes: Vec::new(),
             fn_index,
             const_map,
@@ -1737,6 +1814,19 @@ impl<'a> FnCompiler<'a> {
     /// the monomorphization substitution map.
     fn type_of_span(&self, key: (usize, usize)) -> Option<TypeKind> {
         self.type_map.get(&key).map(|ty| self.resolve_type(ty))
+    }
+
+    fn type_of_expr(&self, expr: &Expr) -> Option<TypeKind> {
+        let annotated = self.type_of_span((expr.span.start, expr.span.end));
+        if !matches!(annotated, None | Some(TypeKind::Any)) {
+            return annotated;
+        }
+        if let ExprKind::Ident(name) = &expr.node
+            && let Some(ty) = self.local_types.get(name)
+        {
+            return Some(self.resolve_type(ty));
+        }
+        annotated
     }
 
     /// Resolve the physical access required by an explicit raw-pointer
@@ -1989,8 +2079,8 @@ impl<'a> FnCompiler<'a> {
                 }
             }
         }
-        // Fall back to raw match (may be in the mono list but not in fn_index — caller
-        // will emit_call_by_name which silently no-ops for unknown names).
+        // Fall back to a raw match. emit_call_by_name reports a codegen error if
+        // the resulting specialization was not registered in the function table.
         self.monomorphizations
             .iter()
             .find(|m| m.fn_name == fn_name && types_equal_slice(&m.type_args, &raw_kinds))
@@ -2021,11 +2111,19 @@ impl<'a> FnCompiler<'a> {
         0
     }
 
-    fn field_offset_by_name(&self, struct_name: &str, field_name: &str) -> u8 {
+    fn field_offset_by_name(&mut self, struct_name: &str, field_name: &str) -> u16 {
         if let Some(offsets) = self.struct_field_offsets.get(struct_name) {
             for (fname, offset) in offsets {
                 if fname == field_name {
-                    return *offset as u8;
+                    return u16::try_from(*offset).unwrap_or_else(|_| {
+                        self.codegen_error.get_or_insert_with(|| {
+                            format!(
+                                "field `{struct_name}.{field_name}` has byte offset {offset}, exceeding the QZI limit of {}",
+                                u16::MAX
+                            )
+                        });
+                        0
+                    });
                 }
             }
         }
@@ -2115,6 +2213,48 @@ impl<'a> FnCompiler<'a> {
         reg
     }
 
+    fn qzi_u16(&mut self, value: usize, description: &str) -> u16 {
+        match u16::try_from(value) {
+            Ok(value) => value,
+            Err(_) => {
+                if self.codegen_error.is_none() {
+                    self.codegen_error = Some(format!(
+                        "{description} {value} exceeds the QZI u16 encoding limit"
+                    ));
+                }
+                0
+            }
+        }
+    }
+
+    fn qzi_u16_from_u64(&mut self, value: u64, description: &str) -> u16 {
+        match u16::try_from(value) {
+            Ok(value) => value,
+            Err(_) => {
+                if self.codegen_error.is_none() {
+                    self.codegen_error = Some(format!(
+                        "{description} {value} exceeds the QZI u16 encoding limit"
+                    ));
+                }
+                0
+            }
+        }
+    }
+
+    fn qzi_u8(&mut self, value: usize, description: &str) -> u8 {
+        match u8::try_from(value) {
+            Ok(value) => value,
+            Err(_) => {
+                if self.codegen_error.is_none() {
+                    self.codegen_error = Some(format!(
+                        "{description} {value} exceeds the QZI u8 encoding limit"
+                    ));
+                }
+                0
+            }
+        }
+    }
+
     fn bit_storage_width(bytes: u8) -> MemWidth {
         match bytes {
             1 => MemWidth::Byte,
@@ -2129,7 +2269,12 @@ impl<'a> FnCompiler<'a> {
         self.chunk.emit(field_load_typed(
             value,
             object,
-            layout.byte_offset as u8,
+            u16::try_from(layout.byte_offset).unwrap_or_else(|_| {
+                self.codegen_error.get_or_insert_with(|| {
+                    format!("bit-field byte offset {} exceeds the QZI limit", layout.byte_offset)
+                });
+                0
+            }),
             Self::bit_storage_width(layout.storage_bytes),
             false,
             false,
@@ -2176,7 +2321,12 @@ impl<'a> FnCompiler<'a> {
         self.chunk.emit(field_load_typed(
             old,
             object,
-            layout.byte_offset as u8,
+            u16::try_from(layout.byte_offset).unwrap_or_else(|_| {
+                self.codegen_error.get_or_insert_with(|| {
+                    format!("bit-field byte offset {} exceeds the QZI limit", layout.byte_offset)
+                });
+                0
+            }),
             Self::bit_storage_width(layout.storage_bytes),
             false,
             false,
@@ -2201,7 +2351,12 @@ impl<'a> FnCompiler<'a> {
         self.chunk.emit(field_store_typed(
             merged,
             object,
-            layout.byte_offset as u8,
+            u16::try_from(layout.byte_offset).unwrap_or_else(|_| {
+                self.codegen_error.get_or_insert_with(|| {
+                    format!("bit-field byte offset {} exceeds the QZI limit", layout.byte_offset)
+                });
+                0
+            }),
             Self::bit_storage_width(layout.storage_bytes),
             false,
         ));
@@ -2218,7 +2373,7 @@ impl<'a> FnCompiler<'a> {
         names
     }
 
-    fn field_offset(&self, object: &Expr, field_name: &str) -> u8 {
+    fn field_offset(&mut self, object: &Expr, field_name: &str) -> u16 {
         let key = (object.span.start, object.span.end);
         if let Some(TypeKind::Named {
             name: struct_name, ..
@@ -2227,7 +2382,15 @@ impl<'a> FnCompiler<'a> {
         {
             for (fname, offset) in offsets {
                 if fname == field_name {
-                    return *offset as u8;
+                    return u16::try_from(*offset).unwrap_or_else(|_| {
+                        self.codegen_error.get_or_insert_with(|| {
+                            format!(
+                                "field `{struct_name}.{field_name}` has byte offset {offset}, exceeding the QZI limit of {}",
+                                u16::MAX
+                            )
+                        });
+                        0
+                    });
                 }
             }
         }
@@ -2255,8 +2418,7 @@ impl<'a> FnCompiler<'a> {
                 let byte_offset = self.field_offset(object, field_name);
                 let obj = self.compile_expr(object);
                 let dst = self.alloc_reg();
-                self.chunk
-                    .emit(rrr(Opcode::FieldLoad, dst, obj, byte_offset));
+                self.chunk.emit(field_load(dst, obj, byte_offset));
                 dst
             }
             ExprKind::Index { object, indices } => {
@@ -2361,8 +2523,7 @@ impl<'a> FnCompiler<'a> {
             } => {
                 let byte_offset = self.field_offset(object, field_name);
                 let obj = self.compile_expr(object);
-                self.chunk
-                    .emit(rrr(Opcode::FieldStore, src, obj, byte_offset));
+                self.chunk.emit(field_store(src, obj, byte_offset));
                 src
             }
             ExprKind::Index { object, indices } => {
@@ -2577,7 +2738,7 @@ impl<'a> FnCompiler<'a> {
             } => self.emit_c_load(*ptr, *width, *signed, *float32),
             LvalueAddr::Field { obj, offset } => {
                 let dst = self.alloc_reg();
-                self.chunk.emit(rrr(Opcode::FieldLoad, dst, *obj, *offset));
+                self.chunk.emit(field_load(dst, *obj, *offset));
                 dst
             }
             LvalueAddr::BitField { obj, layout } => self.emit_bit_field_load(*obj, *layout),
@@ -2642,7 +2803,7 @@ impl<'a> FnCompiler<'a> {
                 ..
             } => self.emit_c_store(*ptr, src, *width, *float32),
             LvalueAddr::Field { obj, offset } => {
-                self.chunk.emit(rrr(Opcode::FieldStore, src, *obj, *offset));
+                self.chunk.emit(field_store(src, *obj, *offset));
             }
             LvalueAddr::BitField { obj, layout } => {
                 self.emit_bit_field_store(*obj, src, *layout);
@@ -2684,9 +2845,38 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn alloc_reg(&mut self) -> u8 {
-        let r = self.next_reg;
-        self.next_reg = self.next_reg.wrapping_add(1);
+        if self.next_reg >= u8::MAX as u16 {
+            self.codegen_error.get_or_insert_with(|| {
+                format!(
+                    "function `{}` needs more than 255 QZI register slots; split the function or reduce expression complexity",
+                    self.chunk.name
+                )
+            });
+            return 0;
+        }
+        let r = self.next_reg as u8;
+        self.next_reg += 1;
         r
+    }
+
+    fn next_reg_slot(&mut self) -> u8 {
+        if self.next_reg >= u8::MAX as u16 {
+            let _ = self.alloc_reg();
+            0
+        } else {
+            self.next_reg as u8
+        }
+    }
+
+    fn reserve_reg_block(&mut self, count: usize) -> u8 {
+        if count == 0 {
+            return self.next_reg_slot();
+        }
+        let base = self.next_reg_slot();
+        for _ in 0..count {
+            let _ = self.alloc_reg();
+        }
+        base
     }
 
     /// Recursively compile a pattern match against `value_reg`.
@@ -2789,14 +2979,14 @@ impl<'a> FnCompiler<'a> {
                 self.chunk
                     .emit(rrr(Opcode::FieldLoad, disc, value_reg, ENUM_DISCRIM_OFFSET));
                 let tag_reg = self.alloc_reg();
-                self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
+                let encoded_tag = self.qzi_u16(tag, "enum variant tag");
+                self.chunk.emit(ri16(Opcode::MovI, tag_reg, encoded_tag));
                 self.chunk.emit(rrr(Opcode::Cmp, 0, disc, tag_reg));
                 skip_patches.push(self.chunk.emit(ri16(Opcode::Jne, 0, 0)));
                 for (i, sub) in sub_patterns.iter().enumerate() {
                     let payload_reg = self.alloc_reg();
-                    let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
-                    self.chunk
-                        .emit(rrr(Opcode::FieldLoad, payload_reg, value_reg, off));
+                    let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
+                    self.chunk.emit(field_load(payload_reg, value_reg, off));
                     self.compile_pattern_match(sub, payload_reg, skip_patches);
                 }
             }
@@ -2809,8 +2999,18 @@ impl<'a> FnCompiler<'a> {
         r
     }
 
-    fn reg_of(&self, name: &str) -> u8 {
-        self.regs.get(name).copied().unwrap_or(0)
+    fn reg_of(&mut self, name: &str) -> u8 {
+        match self.regs.get(name).copied() {
+            Some(register) => register,
+            None => {
+                if self.codegen_error.is_none() {
+                    self.codegen_error = Some(format!(
+                        "internal codegen error: no register is bound for `{name}`"
+                    ));
+                }
+                0
+            }
+        }
     }
 
     fn drop_fn_for_type(&self, ty: &TypeKind) -> Option<String> {
@@ -3085,10 +3285,16 @@ impl<'a> FnCompiler<'a> {
                         .as_ref()
                         .map(|t| self.resolve_type(&t.node))
                         .or_else(|| self.type_of_span((expr.span.start, expr.span.end)));
+                    if let Some(local_ty) = local_ty.clone() {
+                        self.local_types.insert(name.clone(), local_ty);
+                    }
                     self.register_drop_local(name, coerced, local_ty);
                 } else {
                     let reg = self.bind(name.clone());
                     let local_ty = ty.as_ref().map(|t| self.resolve_type(&t.node));
+                    if let Some(local_ty) = local_ty.clone() {
+                        self.local_types.insert(name.clone(), local_ty);
+                    }
                     self.register_drop_local(name, reg, local_ty);
                 }
                 false
@@ -3098,6 +3304,9 @@ impl<'a> FnCompiler<'a> {
                 let src = self.compile_expr(value);
                 self.regs.insert(name.clone(), src);
                 let local_ty = self.type_of_span((value.span.start, value.span.end));
+                if let Some(local_ty) = local_ty.clone() {
+                    self.local_types.insert(name.clone(), local_ty);
+                }
                 self.register_drop_local(name, src, local_ty);
                 false
             }
@@ -3301,7 +3510,9 @@ impl<'a> FnCompiler<'a> {
                                 self.mark_consumed_expr(&original_expr);
                             }
                             let static_array_len: Option<u16> = match &iter_ty {
-                                Some(TypeKind::Array { len, .. }) => Some(*len as u16),
+                                Some(TypeKind::Array { len, .. }) => {
+                                    Some(self.qzi_u16_from_u64(*len, "fixed array length"))
+                                }
                                 _ => None,
                             };
                             if matches!(
@@ -3491,11 +3702,18 @@ impl<'a> FnCompiler<'a> {
                                     Some(TypeKind::Dyn { trait_name }) => {
                                         if let Some(slots) = self.trait_method_slots.get(trait_name)
                                         {
-                                            let slot_idx = slots
-                                                .iter()
-                                                .position(|m| m == "has_next")
-                                                .unwrap_or(0)
-                                                as u8;
+                                            let slot = slots.iter().position(|m| m == "has_next");
+                                            let slot_idx = match slot {
+                                                Some(slot) => self.qzi_u8(slot, "trait method slot"),
+                                                None => {
+                                                    if self.codegen_error.is_none() {
+                                                        self.codegen_error = Some(format!(
+                                                            "trait `{trait_name}` has no `has_next` slot"
+                                                        ));
+                                                    }
+                                                    0
+                                                }
+                                            };
                                             let vtbl_ptr = self.alloc_reg();
                                             self.chunk.emit(rrr(
                                                 Opcode::FieldLoad,
@@ -3555,9 +3773,18 @@ impl<'a> FnCompiler<'a> {
                                     Some(TypeKind::Dyn { trait_name }) => {
                                         if let Some(slots) = self.trait_method_slots.get(trait_name)
                                         {
-                                            let slot_idx =
-                                                slots.iter().position(|m| m == "next").unwrap_or(0)
-                                                    as u8;
+                                            let slot = slots.iter().position(|m| m == "next");
+                                            let slot_idx = match slot {
+                                                Some(slot) => self.qzi_u8(slot, "trait method slot"),
+                                                None => {
+                                                    if self.codegen_error.is_none() {
+                                                        self.codegen_error = Some(format!(
+                                                            "trait `{trait_name}` has no `next` slot"
+                                                        ));
+                                                    }
+                                                    0
+                                                }
+                                            };
                                             let vtbl_ptr = self.alloc_reg();
                                             self.chunk.emit(rrr(
                                                 Opcode::FieldLoad,
@@ -3602,8 +3829,7 @@ impl<'a> FnCompiler<'a> {
                                 self.chunk.emit(ri16(Opcode::MovI, r_one, 1));
                                 self.chunk.emit(rrr(Opcode::Cmp, 0, r_tag, r_one));
                                 let jump_none = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
-                                self.chunk.emit(rrr(
-                                    Opcode::FieldLoad,
+                                self.chunk.emit(field_load(
                                     r_val,
                                     r_next_opt,
                                     ENUM_PAYLOAD_OFFSET,
@@ -3675,10 +3901,11 @@ impl<'a> FnCompiler<'a> {
             }
             self.chunk.emit(ri16(Opcode::CallIdx, dst, idx));
         } else {
-            panic!(
-                "emit_call_by_name: function not found in fn_index: {}",
-                name
-            );
+            if self.codegen_error.is_none() {
+                self.codegen_error = Some(format!(
+                    "internal codegen error: function `{name}` is missing from the function table"
+                ));
+            }
         }
     }
 
@@ -3700,7 +3927,7 @@ impl<'a> FnCompiler<'a> {
             .collect();
         let mut params = declaration.signature.params.clone();
         for arg in args.iter().skip(fixed_count) {
-            let ty = self
+            let Some(ty) = self
                 .type_of_span((arg.span.start, arg.span.end))
                 .and_then(|ty| {
                     abi_type_from_layout(
@@ -3714,12 +3941,15 @@ impl<'a> FnCompiler<'a> {
                         self.type_aliases,
                     )
                 })
-                .unwrap_or_else(|| {
-                    panic!(
+            else {
+                if self.codegen_error.is_none() {
+                    self.codegen_error = Some(format!(
                         "unsupported C variadic argument type at {}:{}",
                         arg.span.line, arg.span.col
-                    )
-                });
+                    ));
+                }
+                return true;
+            };
             params.push(match ty {
                 // C default argument promotions.
                 AbiType::Float32 => AbiType::Float64,
@@ -3913,7 +4143,8 @@ impl<'a> FnCompiler<'a> {
                         self.chunk
                             .emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(0)));
                         let tag_reg = self.alloc_reg();
-                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
+                        let encoded_tag = self.qzi_u16(tag, "enum variant tag");
+                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, encoded_tag));
                         self.chunk
                             .emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
                         self.chunk.emit(rrr(Opcode::Mov, dst, ptr, 0));
@@ -4243,8 +4474,17 @@ impl<'a> FnCompiler<'a> {
                     .get(name)
                     .copied()
                     .unwrap_or_else(|| field_order.len() * 8);
+                let struct_size = u16::try_from(struct_size).unwrap_or_else(|_| {
+                    self.codegen_error.get_or_insert_with(|| {
+                        format!(
+                            "struct `{name}` is larger than the QZI allocation limit of {} bytes",
+                            u16::MAX
+                        )
+                    });
+                    0
+                });
                 let dst = self.alloc_reg();
-                self.chunk.emit(ri16(Opcode::New, dst, struct_size as u16));
+                self.chunk.emit(ri16(Opcode::New, dst, struct_size));
 
                 // Compile and store each field in declaration order using computed offsets
                 for field_name in &field_order {
@@ -4434,7 +4674,7 @@ impl<'a> FnCompiler<'a> {
                                     self.compile_expr(a)
                                 })
                                 .collect();
-                            let first_slot = self.next_reg;
+                            let first_slot = self.next_reg_slot();
                             for &r in &var_regs {
                                 let slot = self.alloc_reg();
                                 if r != slot {
@@ -4486,7 +4726,7 @@ impl<'a> FnCompiler<'a> {
                             }
 
                             let fmt_dst = if !coerced_var.is_empty() {
-                                let first_slot = self.next_reg;
+                                let first_slot = self.next_reg_slot();
                                 for &r in &coerced_var {
                                     let slot = self.alloc_reg();
                                     if r != slot {
@@ -4546,7 +4786,7 @@ impl<'a> FnCompiler<'a> {
                                 })
                                 .collect();
                             // Copy into fresh consecutive slots so Lea gives a contiguous block.
-                            let first_slot = self.next_reg;
+                            let first_slot = self.next_reg_slot();
                             for (i, &r) in var_regs.iter().enumerate() {
                                 let slot = self.alloc_reg(); // = first_slot + i
                                 if r != slot {
@@ -4582,12 +4822,13 @@ impl<'a> FnCompiler<'a> {
                             enum_variant_alloc_size(payload_regs.len()),
                         ));
                         let tag_reg = self.alloc_reg();
-                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
+                        let encoded_tag = self.qzi_u16(tag, "enum variant tag");
+                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, encoded_tag));
                         self.chunk
                             .emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
                         for (i, &payload) in payload_regs.iter().enumerate() {
-                            let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
-                            self.chunk.emit(rrr(Opcode::FieldStore, payload, ptr, off));
+                            let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
+                            self.chunk.emit(field_store(payload, ptr, off));
                         }
                         if dst != ptr {
                             self.chunk.emit(rrr(Opcode::Mov, dst, ptr, 0));
@@ -4707,7 +4948,7 @@ impl<'a> FnCompiler<'a> {
                             } else {
                                 let fmt_dst = if coerced.len() > 1 {
                                     let coerced_args = &coerced[1..];
-                                    let first_slot = self.next_reg;
+                                    let first_slot = self.next_reg_slot();
                                     for &r in coerced_args {
                                         let slot = self.alloc_reg();
                                         if r != slot {
@@ -4774,12 +5015,13 @@ impl<'a> FnCompiler<'a> {
                             enum_variant_alloc_size(payload_regs.len()),
                         ));
                         let tag_reg = self.alloc_reg();
-                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
+                        let encoded_tag = self.qzi_u16(tag, "enum variant tag");
+                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, encoded_tag));
                         self.chunk
                             .emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
                         for (i, &payload) in payload_regs.iter().enumerate() {
-                            let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
-                            self.chunk.emit(rrr(Opcode::FieldStore, payload, ptr, off));
+                            let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
+                            self.chunk.emit(field_store(payload, ptr, off));
                         }
                         let dst = self.alloc_reg();
                         if dst != ptr {
@@ -4837,9 +5079,36 @@ impl<'a> FnCompiler<'a> {
                 let obj = self.compile_expr(object);
                 let key = (object.span.start, object.span.end);
 
+                // Semantic analysis records the exact target for imported and
+                // otherwise disambiguated inherent methods. Prefer that target
+                // before reconstructing it from the receiver annotation: calls
+                // chained through generic helpers such as `Result.unwrap()` can
+                // lose enough surface type information for reconstruction.
+                if let Some(call_target) = self.resolved_fn_for_span(expr.span)
+                    && self.fn_index.contains_key(&call_target)
+                {
+                    let arg_regs: Vec<u8> = args
+                        .iter()
+                        .map(|arg| {
+                            self.mark_consumed_expr(arg);
+                            self.compile_expr(arg)
+                        })
+                        .collect();
+                    let dst = self.alloc_reg();
+                    let mut all_args = vec![obj];
+                    all_args.extend_from_slice(&arg_regs);
+                    self.emit_call_by_name(&call_target, &all_args, dst);
+                    if method == "free"
+                        && let ExprKind::Ident(name) = &object.node
+                    {
+                        self.deactivate_drop_local(name);
+                    }
+                    return dst;
+                }
+
                 // Resolve the receiver type through monomorphization substitution,
                 // so generic param `T` resolves to the concrete type (e.g., Int32).
-                let receiver_ty = self.type_of_span(key);
+                let receiver_ty = self.type_of_expr(object);
 
                 // Static dispatch: Named type with a known impl method takes priority
                 // over built-in method dispatch so that user impls can override any name.
@@ -4875,7 +5144,7 @@ impl<'a> FnCompiler<'a> {
                                         coerced.push(cr);
                                     }
                                     let coerced_args = &coerced[1..];
-                                    let first_slot = self.next_reg;
+                                    let first_slot = self.next_reg_slot();
                                     for &r in coerced_args {
                                         let slot = self.alloc_reg();
                                         if r != slot {
@@ -4947,8 +5216,18 @@ impl<'a> FnCompiler<'a> {
                 if let Some(TypeKind::Dyn { trait_name }) = self.type_of_span(key)
                     && let Some(slots) = self.trait_method_slots.get(&trait_name)
                 {
-                    let slot_idx =
-                        slots.iter().position(|m: &String| m == method).unwrap_or(0) as u8;
+                    let slot = slots.iter().position(|m: &String| m == method);
+                    let slot_idx = match slot {
+                        Some(slot) => self.qzi_u8(slot, "trait method slot"),
+                        None => {
+                            if self.codegen_error.is_none() {
+                                self.codegen_error = Some(format!(
+                                    "trait `{trait_name}` has no `{method}` slot"
+                                ));
+                            }
+                            0
+                        }
+                    };
                     // Load vtable ptr from fat_ptr[8], then fn ptr from vtable[slot*8].
                     let vtbl_ptr = self.alloc_reg();
                     self.chunk.emit(rrr(Opcode::FieldLoad, vtbl_ptr, obj, 8));
@@ -4972,7 +5251,7 @@ impl<'a> FnCompiler<'a> {
                 }
 
                 // Built-in methods for primitive and known types.
-                let resolved_receiver = self.type_of_span(key);
+                let resolved_receiver = self.type_of_expr(object);
                 if let Some(pm) = resolve_primitive_method(method, args, resolved_receiver.as_ref())
                 {
                     match pm {
@@ -5054,8 +5333,8 @@ impl<'a> FnCompiler<'a> {
                 }
                 // General vtable dispatch (fallback for dynamic/polymorphic calls).
                 // Determine method slot from trait_method_slots.
-                let method_slot: u8 = self
-                    .type_of_span(key)
+                let resolved_method_slot = self
+                    .type_of_expr(object)
                     .and_then(|ty| {
                         let type_name = match &ty {
                             TypeKind::Named { name, .. } => Some(name.clone()),
@@ -5067,12 +5346,26 @@ impl<'a> FnCompiler<'a> {
                             if let Some(slots) = self.trait_method_slots.get(trait_name)
                                 && let Some(idx) = slots.iter().position(|m| m == method)
                             {
-                                return Some(idx as u8);
+                                return Some(idx);
                             }
                         }
                         None
-                    })
-                    .unwrap_or(0);
+                    });
+                let method_slot = match resolved_method_slot {
+                    Some(slot) => self.qzi_u8(slot, "trait method slot"),
+                    None => {
+                        if self.codegen_error.is_none() {
+                            let receiver = self
+                                .type_of_expr(object)
+                                .map(|ty| format!("{ty:?}"))
+                                .unwrap_or_else(|| "unknown receiver type".to_string());
+                            self.codegen_error = Some(format!(
+                                "no direct or trait method resolves `{method}` for {receiver}"
+                            ));
+                        }
+                        0
+                    }
+                };
                 let arg_regs: Vec<u8> = args
                     .iter()
                     .map(|a| {
@@ -5144,7 +5437,8 @@ impl<'a> FnCompiler<'a> {
                         self.chunk
                             .emit(ri16(Opcode::New, ptr, enum_variant_alloc_size(0)));
                         let tag_reg = self.alloc_reg();
-                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, tag as u16));
+                        let encoded_tag = self.qzi_u16(tag, "enum variant tag");
+                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, encoded_tag));
                         self.chunk
                             .emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
                         let dst = self.alloc_reg();
@@ -5187,12 +5481,18 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::ArrayLit(elems) => {
-                let n = elems.len() as u8;
-                let base = self.next_reg;
-                self.next_reg = self.next_reg.wrapping_add(n);
+                let base = self.reserve_reg_block(elems.len());
                 for (i, elem) in elems.iter().enumerate() {
                     let val = self.compile_expr(elem);
-                    let dst = base + i as u8;
+                    let dst = u8::try_from(i).ok().and_then(|i| base.checked_add(i)).unwrap_or_else(|| {
+                        self.codegen_error.get_or_insert_with(|| {
+                            format!(
+                                "array literal in `{}` exceeds the 256-register QZI limit",
+                                self.chunk.name
+                            )
+                        });
+                        0
+                    });
                     if val != dst {
                         self.chunk.emit(rrr(Opcode::Mov, dst, val, 0));
                     }
@@ -5371,15 +5671,16 @@ impl<'a> FnCompiler<'a> {
                 self.chunk
                     .emit(rrr(Opcode::FieldLoad, disc, scr, ENUM_DISCRIM_OFFSET));
                 let tag_ok = self.alloc_reg();
+                let encoded_success = self.qzi_u16(success_tag, "result success tag");
                 self.chunk
-                    .emit(ri16(Opcode::MovI, tag_ok, success_tag as u16));
+                    .emit(ri16(Opcode::MovI, tag_ok, encoded_success));
                 self.chunk.emit(rrr(Opcode::Cmp, 0, disc, tag_ok));
                 let jne = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
 
                 // Success path: extract first payload.
                 let val = self.alloc_reg();
                 self.chunk
-                    .emit(rrr(Opcode::FieldLoad, val, scr, ENUM_PAYLOAD_OFFSET));
+                    .emit(field_load(val, scr, ENUM_PAYLOAD_OFFSET));
                 let jmp_end = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
 
                 // Failure path: build failure variant and early-return.
@@ -5390,8 +5691,9 @@ impl<'a> FnCompiler<'a> {
                     self.chunk
                         .emit(ri16(Opcode::New, none_ptr, enum_variant_alloc_size(0)));
                     let tag_fail = self.alloc_reg();
+                    let encoded_failure = self.qzi_u16(failure_tag, "result failure tag");
                     self.chunk
-                        .emit(ri16(Opcode::MovI, tag_fail, failure_tag as u16));
+                        .emit(ri16(Opcode::MovI, tag_fail, encoded_failure));
                     self.chunk.emit(rrr(
                         Opcode::FieldStore,
                         tag_fail,
@@ -5404,30 +5706,23 @@ impl<'a> FnCompiler<'a> {
                 } else {
                     // Return Err(payload) — copy scrutinee payload into new Err object.
                     let err_payload = self.alloc_reg();
-                    self.chunk.emit(rrr(
-                        Opcode::FieldLoad,
-                        err_payload,
-                        scr,
-                        ENUM_PAYLOAD_OFFSET,
-                    ));
+                    self.chunk
+                        .emit(field_load(err_payload, scr, ENUM_PAYLOAD_OFFSET));
                     let err_ptr = self.alloc_reg();
                     self.chunk
                         .emit(ri16(Opcode::New, err_ptr, enum_variant_alloc_size(1)));
                     let tag_fail = self.alloc_reg();
+                    let encoded_failure = self.qzi_u16(failure_tag, "result failure tag");
                     self.chunk
-                        .emit(ri16(Opcode::MovI, tag_fail, failure_tag as u16));
+                        .emit(ri16(Opcode::MovI, tag_fail, encoded_failure));
                     self.chunk.emit(rrr(
                         Opcode::FieldStore,
                         tag_fail,
                         err_ptr,
                         ENUM_DISCRIM_OFFSET,
                     ));
-                    self.chunk.emit(rrr(
-                        Opcode::FieldStore,
-                        err_payload,
-                        err_ptr,
-                        ENUM_PAYLOAD_OFFSET,
-                    ));
+                    self.chunk
+                        .emit(field_store(err_payload, err_ptr, ENUM_PAYLOAD_OFFSET));
                     if err_ptr != 0 {
                         self.chunk.emit(rrr(Opcode::Mov, 0, err_ptr, 0));
                     }
@@ -5493,8 +5788,8 @@ impl<'a> FnCompiler<'a> {
                     // Load each captured variable from the env struct.
                     for (i, cap_name) in captures.iter().enumerate() {
                         let cap_reg = anon.alloc_reg();
-                        let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
-                        anon.chunk.emit(rrr(Opcode::FieldLoad, cap_reg, 0, off));
+                        let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
+                        anon.chunk.emit(field_load(cap_reg, 0, off));
                         anon.regs.insert(cap_name.clone(), cap_reg);
                     }
                     // Bind user params starting at r1.
@@ -5507,7 +5802,10 @@ impl<'a> FnCompiler<'a> {
                     anon.chunk.emit(rrr(Opcode::Mov, 0, body_reg, 0));
                 }
                 anon.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
-                anon.chunk.reg_count = anon.next_reg;
+                if let Some(error) = anon.codegen_error.take() {
+                    self.codegen_error.get_or_insert(error);
+                }
+                anon.chunk.reg_count = anon.next_reg.min(u8::MAX as u16) as u8;
 
                 // Push the closure chunk and any nested closures into
                 // the parent's output queue.
@@ -5547,9 +5845,8 @@ impl<'a> FnCompiler<'a> {
 
                     for (i, cap_name) in captures.iter().enumerate() {
                         let cap_reg = self.reg_of(cap_name);
-                        let off = ENUM_PAYLOAD_OFFSET + (i as u8 * 8);
-                        self.chunk
-                            .emit(rrr(Opcode::FieldStore, cap_reg, env_ptr, off));
+                        let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
+                        self.chunk.emit(field_store(cap_reg, env_ptr, off));
                     }
 
                     self.closure_env_regs.insert(env_ptr);
@@ -5809,7 +6106,7 @@ fn extract_field_chain(expr: &Expr) -> Option<(String, Vec<String>)> {
 }
 
 /// Maps `@intrinsic("quazi.X")` attribute strings to case IDs for the `Intrinsic` opcode.
-fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> u16 {
+fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
     static INTRINSIC_MAP: LazyLock<HashMap<&'static str, u16>> = LazyLock::new(|| {
         let mut m = HashMap::new();
         m.insert("quazi.write", 0);
@@ -5851,7 +6148,7 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> u16 {
             _ => None,
         })
         .unwrap_or("");
-    INTRINSIC_MAP.get(name).copied().unwrap_or(0)
+    INTRINSIC_MAP.get(name).copied()
 }
 
 fn api_symbol(attr: &crate::parser::ast::Attribute) -> Option<String> {
@@ -6170,7 +6467,9 @@ mod tests {
             "semantic errors: {:?}",
             report.errors
         );
-        Codegen::new(&report).compile_program(&program, &[])
+        Codegen::new(&report)
+            .compile_program(&program, &[])
+            .expect("code generation should succeed")
     }
 
     #[test]
@@ -6809,12 +7108,13 @@ fn main() i32 {
     #[test]
     fn method_call_emits_call_arg_and_vtbl_load() {
         let chunks = compile(
-            r#"fn main() void {
-                   var s: any = 0;
-                   s.doSomething(1);
-               }"#,
+            r#"
+            struct Worker { id: i32, }
+            trait Runnable { fn run(self: Worker, value: i32) void; }
+            fn invoke(worker: dyn Runnable) void { worker.run(1); }
+            "#,
         );
-        let main_chunk = chunks.iter().find(|c| c.name == "main").unwrap();
+        let main_chunk = chunks.iter().find(|c| c.name == "invoke").unwrap();
         assert!(
             main_chunk
                 .code
@@ -7154,6 +7454,24 @@ fn main() i32 {
         ));
         assert!(main.code.iter().any(|instruction| {
             instruction.opcode == Opcode::Load as u8 && instruction.mem_width() == MemWidth::Byte
+        }));
+    }
+
+    #[test]
+    fn try_preserves_payload_type_for_chained_inherent_method() {
+        let chunks = compile(
+            r#"
+            struct Value { n: i32, }
+            impl Value {
+                fn increment(self: Value) i32 { ret self.n + 1; }
+            }
+            fn make() Result[Value, i32] { ret Ok(Value { n: 41 }); }
+            fn answer() Result[i32, i32] { ret Ok(make()?.increment()); }
+            "#,
+        );
+        let answer = chunks.iter().find(|chunk| chunk.name == "answer").unwrap();
+        assert!(answer.code.iter().all(|instruction| {
+            instruction.opcode != Opcode::VtblLoad as u8
         }));
     }
 }
