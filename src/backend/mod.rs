@@ -2,6 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
+pub mod builtin_linker;
 pub mod linker;
 pub mod target;
 pub mod x86_64;

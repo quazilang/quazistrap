@@ -17,7 +17,7 @@ mod project;
 pub mod semantic;
 
 use analysis::{analyze_program_with_source_files, format_quazi_source};
-use backend::linker::{LinkerInvocation, remove_temp, write_temp_object};
+use backend::linker::{LinkerInvocation, link_object, remove_temp, write_temp_object};
 use backend::{TargetSpec, select_backend};
 use bytecode::{Codegen, serialize_qzi};
 use clap::Parser as ClapParser;
@@ -80,10 +80,12 @@ fn run_pipeline(
     }
 
     let mut cg = Codegen::new(&sema_report);
-    let chunks = cg.compile_program(program, &source_files).unwrap_or_else(|error| {
-        eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
-        std::process::exit(1);
-    });
+    let chunks = cg
+        .compile_program(program, &source_files)
+        .unwrap_or_else(|error| {
+            eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
+            std::process::exit(1);
+        });
 
     if debug {
         for chunk in &chunks {
@@ -134,40 +136,18 @@ fn run_pipeline(
         EmitType::Binary => {
             let no_crash = source_contains_no_crash(src);
             let obj_bytes = compile_to_object(&chunks, true, no_crash, Some(&sema_report));
-            let stem = Path::new(output_file_name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(output_file_name);
-            let tmp_obj = write_temp_object(&obj_bytes, stem).unwrap_or_else(|e| {
-                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
-            });
-
-            // Override linker if the user passed --linker.
             let flags = link_flags.unwrap_or(&[]);
-            let mut inv = LinkerInvocation::new(
-                tmp_obj.clone(),
-                PathBuf::from(output_file_name),
+            link_object(
+                &obj_bytes,
+                Path::new(output_file_name),
                 TargetSpec::host(),
-                flags.to_vec(),
+                flags,
+                explicit_linker,
             )
             .unwrap_or_else(|e| {
-                remove_temp(&tmp_obj);
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
             });
-
-            if let Some(lnk) = explicit_linker {
-                inv.linker = lnk.to_path_buf();
-            }
-
-            inv.run().unwrap_or_else(|e| {
-                remove_temp(&tmp_obj);
-                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
-            });
-
-            remove_temp(&tmp_obj);
             println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
         }
     }
@@ -376,39 +356,18 @@ fn emit_chunks(
 
         EmitType::Binary => {
             let obj_bytes = compile_to_object(chunks, true, false, None);
-            let stem = Path::new(output_file_name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(output_file_name);
-            let tmp_obj = write_temp_object(&obj_bytes, stem).unwrap_or_else(|e| {
-                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
-            });
-
             let flags = link_flags.unwrap_or(&[]);
-            let mut inv = LinkerInvocation::new(
-                tmp_obj.clone(),
-                PathBuf::from(output_file_name),
+            link_object(
+                &obj_bytes,
+                Path::new(output_file_name),
                 TargetSpec::host(),
-                flags.to_vec(),
+                flags,
+                explicit_linker,
             )
             .unwrap_or_else(|e| {
-                remove_temp(&tmp_obj);
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
             });
-
-            if let Some(lnk) = explicit_linker {
-                inv.linker = lnk.to_path_buf();
-            }
-
-            inv.run().unwrap_or_else(|e| {
-                remove_temp(&tmp_obj);
-                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
-            });
-
-            remove_temp(&tmp_obj);
             println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
         }
     }
@@ -966,41 +925,19 @@ fn build_with_progress(
 
             // ── Step 4: Linking ───────────────────────────────────────────────
             prog.begin("Linking");
-            let stem = Path::new(out)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(out);
-            let tmp_obj =
-                backend::linker::write_temp_object(&obj_bytes, stem).unwrap_or_else(|e| {
-                    prog.fail("error");
-                    eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                    std::process::exit(1);
-                });
-
             let flags = link_flags.unwrap_or(&[]);
-            let mut inv = backend::linker::LinkerInvocation::new(
-                tmp_obj.clone(),
-                PathBuf::from(out),
+            backend::linker::link_object(
+                &obj_bytes,
+                Path::new(out),
                 TargetSpec::host(),
-                flags.to_vec(),
+                flags,
+                explicit_linker,
             )
             .unwrap_or_else(|e| {
-                backend::linker::remove_temp(&tmp_obj);
                 prog.fail("error");
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
             });
-            if let Some(lnk) = explicit_linker {
-                inv.linker = lnk.to_path_buf();
-            }
-
-            inv.run().unwrap_or_else(|e| {
-                backend::linker::remove_temp(&tmp_obj);
-                prog.fail("error");
-                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
-            });
-            backend::linker::remove_temp(&tmp_obj);
 
             let bin_size = std::fs::metadata(out).map(|m| m.len()).ok();
             let link_info = match bin_size {
@@ -1160,19 +1097,26 @@ fn main() {
                 .iter()
                 .any(|f| f.extension().is_some_and(|e| e == "qzi"))
             {
-                // .qzi input — deserialize and compile to native directly.
-                for qzi_file in &files {
-                    if qzi_file.extension().is_some_and(|e| e != "qzi") {
+                // .qzi input — deserialize and compile to native directly;
+                // ELF objects may be supplied alongside it for final linking.
+                for input in &files {
+                    if !input
+                        .extension()
+                        .is_some_and(|extension| matches!(extension.to_str(), Some("qzi" | "o")))
+                    {
                         eprintln!(
-                            "\x1b[31;1merror:\x1b[0m cannot mix .qzi and source files: {}",
-                            qzi_file.display()
+                            "\x1b[31;1merror:\x1b[0m .qzi builds accept only .qzi and .o inputs: {}",
+                            input.display()
                         );
                         std::process::exit(1);
                     }
                 }
 
                 let mut all_chunks: Vec<bytecode::Chunk> = Vec::new();
-                for qzi_file in &files {
+                for qzi_file in files
+                    .iter()
+                    .filter(|path| path.extension().is_some_and(|extension| extension == "qzi"))
+                {
                     let bytes = std::fs::read(qzi_file).unwrap_or_else(|e| {
                         eprintln!(
                             "\x1b[31;1merror:\x1b[0m cannot read '{}': {}",
@@ -1193,7 +1137,10 @@ fn main() {
                 }
 
                 let out = output.clone().unwrap_or_else(|| {
-                    let stem = files[0]
+                    let stem = files
+                        .iter()
+                        .find(|path| path.extension().is_some_and(|extension| extension == "qzi"))
+                        .expect("qzi branch has a qzi input")
                         .file_stem()
                         .unwrap_or_default()
                         .to_string_lossy()
@@ -1211,17 +1158,21 @@ fn main() {
                     }
                 });
 
-                let mut qzi_link_flags = Vec::new();
+                let mut qzi_link_flags: Vec<String> = files
+                    .iter()
+                    .filter(|path| path.extension().is_some_and(|extension| extension == "o"))
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
                 if matches!(emit, EmitType::Binary) {
                     let cwd = std::env::current_dir().unwrap_or_default();
                     if let Some(ctx) = ProjectContext::discover(&cwd).unwrap_or_else(|e| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {e}");
                         std::process::exit(1);
                     }) {
-                        qzi_link_flags = native_link_flags(&ctx).unwrap_or_else(|e| {
+                        qzi_link_flags.extend(native_link_flags(&ctx).unwrap_or_else(|e| {
                             eprintln!("\x1b[31;1merror:\x1b[0m {e}");
                             std::process::exit(1);
-                        });
+                        }));
                     }
                     qzi_link_flags.extend(
                         library_paths
@@ -1230,6 +1181,15 @@ fn main() {
                     );
                     qzi_link_flags.extend(libraries.iter().map(|name| format!("-l{name}")));
                 }
+                let mut seen_objects = HashSet::new();
+                qzi_link_flags.retain(|flag| {
+                    !Path::new(flag)
+                        .extension()
+                        .is_some_and(|extension| extension == "o")
+                        || seen_objects.insert(
+                            std::fs::canonicalize(flag).unwrap_or_else(|_| PathBuf::from(flag)),
+                        )
+                });
                 emit_chunks(
                     &all_chunks,
                     emit,
@@ -1263,13 +1223,9 @@ fn main() {
                 let native_objects: Vec<String> = files
                     .iter()
                     .filter(|path| {
-                        path.extension()
-                            .is_some_and(|ext| {
-                                matches!(
-                                    ext.to_str(),
-                                    Some("o" | "a" | "so" | "obj" | "lib")
-                                )
-                            })
+                        path.extension().is_some_and(|ext| {
+                            matches!(ext.to_str(), Some("o" | "a" | "so" | "obj" | "lib"))
+                        })
                     })
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
@@ -1283,10 +1239,81 @@ fn main() {
                     std::process::exit(1);
                 });
                 if source_files.is_empty() {
-                    eprintln!(
-                        "\x1b[31;1merror:\x1b[0m build requires at least one .qz source file"
+                    if !matches!(emit, EmitType::Binary)
+                        || (native_objects.is_empty() && compiled_c_objects.is_empty())
+                    {
+                        eprintln!(
+                            "\x1b[31;1merror:\x1b[0m build requires a .qz source or a linkable object"
+                        );
+                        std::process::exit(1);
+                    }
+                    let mut objects = native_objects;
+                    objects.extend(
+                        compiled_c_objects
+                            .iter()
+                            .map(|path| path.to_string_lossy().into_owned()),
                     );
-                    std::process::exit(1);
+                    let primary_index = objects
+                        .iter()
+                        .position(|path| Path::new(path).extension().is_some_and(|ext| ext == "o"))
+                        .unwrap_or_else(|| {
+                            eprintln!(
+                                "\x1b[31;1merror:\x1b[0m object-only builds require at least one .o input"
+                            );
+                            std::process::exit(1);
+                        });
+                    let primary = objects.remove(primary_index);
+                    let primary_bytes = std::fs::read(&primary).unwrap_or_else(|error| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m cannot read object {primary}: {error}");
+                        std::process::exit(1);
+                    });
+                    objects.extend(
+                        library_paths
+                            .iter()
+                            .map(|path| format!("-L{}", path.display())),
+                    );
+                    objects.extend(libraries.iter().map(|name| format!("-l{name}")));
+                    let out = output.clone().unwrap_or_else(|| {
+                        let stem = Path::new(&primary)
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        if cfg!(target_os = "windows") {
+                            format!("{stem}.exe")
+                        } else {
+                            stem.into_owned()
+                        }
+                    });
+                    link_object(
+                        &primary_bytes,
+                        Path::new(&out),
+                        TargetSpec::host(),
+                        &objects,
+                        explicit_linker,
+                    )
+                    .unwrap_or_else(|error| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                        std::process::exit(1);
+                    });
+                    for object in &compiled_c_objects {
+                        remove_temp(object);
+                    }
+                    if do_strip {
+                        strip_binary(Path::new(&out));
+                    }
+                    println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{out}\x1b[0m");
+                    if run {
+                        let status = std::process::Command::new(abs_path(&out))
+                            .status()
+                            .unwrap_or_else(|error| {
+                                eprintln!("\x1b[31;1merror:\x1b[0m failed to run binary: {error}");
+                                std::process::exit(1);
+                            });
+                        if !status.success() {
+                            std::process::exit(status.code().unwrap_or(1));
+                        }
+                    }
+                    return;
                 }
                 let out = output.clone().unwrap_or_else(|| {
                     if static_lib {

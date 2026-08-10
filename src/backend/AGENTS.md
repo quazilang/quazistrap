@@ -4,7 +4,8 @@
 src/backend/
 ├── mod.rs         # Backend trait, select_backend()
 ├── target.rs      # TargetSpec { arch, os, abi, emit_start }
-├── linker.rs      # find + exec external linker
+├── builtin_linker.rs # static multi-object x86-64 ELF linker
+├── linker.rs      # choose built-in or invoke an explicit external linker
 └── x86_64/
     ├── encoder.rs # FnEncoder: Chunk → (bytes, PendingReloc[])
     ├── sections.rs / symbols.rs / relocations.rs / start.rs
@@ -41,6 +42,24 @@ src/backend/
 Emits dummy `call fn_start` / `lea rax,[fn_start]`, records pending relocs, zeros displacement bytes after assembly.
 
 ## Target Support
+
+Plain Linux executable builds use the built-in linker automatically. It links
+compiler-produced and passed ELF objects into a static ELF with separate RX/R/RW load
+segments, a non-executable stack, checked PC-relative/absolute relocations, and
+no implicit native libraries. `--linker builtin` forces this path. Native
+objects/libraries or an explicit external linker select the external path;
+libc/libm are linked only when the user requests them with `-l`.
+
+`qz build` and `qz run` accept ELF `.o` files alongside Quazi source/QZI input,
+or as an object-only input list. When `_start` is absent, the linker synthesizes
+a minimal 15-byte entry that calls `main` and exits with the Linux syscall. This
+minimal path does not construct command-line arguments or install the full
+compiler-generated crash handler.
+
+The experimental linker intentionally rejects unsupported sections,
+relocations, native inputs, and unresolved external symbols with actionable
+errors. Its current target is x86-64 Linux; PE/COFF and multi-object/archive
+linking remain follow-up work.
 
 | OS | Format | ABI | Status |
 |----|--------|-----|--------|

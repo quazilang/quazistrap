@@ -14,6 +14,12 @@ Both Linux and Windows stubs are generated via `iced-x86` `CodeAssembler` — ra
 
 ## Portable C ABI lowering
 
+Linux objects embed only the allocation/memory runtime routines they reference:
+`malloc`, `calloc`, `realloc`, `free`, `memcpy`, `memmove`, `memset`, and
+`memcmp`, `strcpy`, and `strcat`. Allocation uses direct `mmap`/`munmap`
+syscalls with a private
+16-byte size header; no libc allocator is required.
+
 - `ForeignSymbol` QZI constants describe source widths and aggregate fields;
   the encoder performs target-specific classification.
 - SysV supports GP/SSE bank allocation, stack fallback, variadic `AL`, register
@@ -60,7 +66,8 @@ File-level directive (like `@no_std`). When present, the entry stub omits crash-
 ## `QUAZI_TRACE=1` Detection
 
 - Windows `mainCRTStartup` uses `GetEnvironmentVariableA`.
-- Linux `_start` calls `getenv` (libc is already linked, the dynamic linker initialises `environ` before entry).
+- Linux `_start` walks `envp` from the kernel-provided initial stack; it does
+  not require libc or a dynamic loader.
 - Both set the `__quazi_trace_enabled` byte in `.data`.
 
 ---

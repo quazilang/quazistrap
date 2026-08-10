@@ -357,6 +357,7 @@ impl StartStub {
         let startup_idx = asm.instructions().len();
 
         emit!(asm.xor(ebp, ebp));
+        emit!(asm.mov(rbx, rsp)); // preserve the kernel-provided initial stack
 
         // Allocate 672 bytes on stack (sigaction struct + environ read buffer)
         emit!(asm.sub(rsp, 0x40i32));
@@ -389,17 +390,30 @@ impl StartStub {
         emit!(asm.mov(rdi, 7i64)); // SIGBUS
         emit!(asm.syscall());
 
-        // getenv("QUAZI_TRACE") — libc is already linked, dynamic linker has
-        // initialised environ before _start runs, so this works without CRT.
-        lea_rip!(rdi, "__quazi_env_var_name");
-        call_ext!("getenv", RelocKind::Plt32);
+        // Locate envp directly on the kernel-provided initial stack. This keeps
+        // the entry path independent of libc and a dynamic loader.
         let mut no_trace = asm.create_label();
+        let mut env_loop = asm.create_label();
+        let mut next_env = asm.create_label();
+        emit!(asm.mov(rcx, qword_ptr(rbx))); // argc
+        emit!(asm.lea(rsi, qword_ptr(rbx + rcx * 8 + 16i32))); // envp
+        emit!(asm.set_label(&mut env_loop));
+        emit!(asm.mov(rax, qword_ptr(rsi)));
         emit!(asm.test(rax, rax));
         emit!(asm.je(no_trace));
-        emit!(asm.cmp(byte_ptr(rax), '1' as i32));
-        emit!(asm.jne(no_trace));
+        emit!(asm.mov(rdx, 0x5254_5f49_5a41_5551u64)); // "QUAZI_TR"
+        emit!(asm.cmp(qword_ptr(rax), rdx));
+        emit!(asm.jne(next_env));
+        emit!(asm.cmp(dword_ptr(rax + 8i32), 0x3d45_4341u32 as i32)); // "ACE="
+        emit!(asm.jne(next_env));
+        emit!(asm.cmp(word_ptr(rax + 12i32), 0x0031i32)); // "1\0"
+        emit!(asm.jne(next_env));
         lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.mov(byte_ptr(rax), 1i32));
+        emit!(asm.jmp(no_trace));
+        emit!(asm.set_label(&mut next_env));
+        emit!(asm.add(rsi, 8i32));
+        emit!(asm.jmp(env_loop));
         emit!(asm.set_label(&mut no_trace));
         emit!(asm.add(rsp, 0x40i32));
 
