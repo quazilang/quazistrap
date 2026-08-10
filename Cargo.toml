@@ -16,4 +16,4 @@ toml      = "0.8"
 object    = { version = "0.36",  features = ["write"] }
 iced-x86  = { version = "1",     features = ["code_asm"] }
 tower-lsp = "0.20"
-tokio     = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "sync"] }
+tokio     = { version = "1", features = ["full"] }

@@ -10,7 +10,6 @@ target/*
 *.qzi
 *.s
 *.o
-*.so
 .idea/*
 .claude/*
 .cargo/*

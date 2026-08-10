@@ -742,13 +742,6 @@ fn local_import_paths(
             }
 
             let target = if remainder.is_empty() {
-                if !spec.entry.exists() {
-                    return Err(format!(
-                        "module '{}': entry file not found: {}",
-                        base,
-                        spec.entry.to_string_lossy()
-                    ));
-                }
                 spec.entry.clone()
             } else {
                 let root_mod_entry = spec.src_dir.join("mod.qz");
