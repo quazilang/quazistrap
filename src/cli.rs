@@ -32,6 +32,7 @@ pub struct Args {
 pub enum Command {
     /// build files or project (if no files given, reads quazi.toml)
     Build {
+        /// Quazi source/QZI files and optional native object inputs
         files: Vec<PathBuf>,
         #[arg(short, long)]
         output: Option<String>,
@@ -66,6 +67,7 @@ pub enum Command {
     },
     /// build and run files or project (if no files given, reads quazi.toml)
     Run {
+        /// Quazi source/QZI files and optional native object inputs
         files: Vec<PathBuf>,
         /// external linker path, or `builtin` for the experimental in-process linker
         #[arg(long = "linker")]

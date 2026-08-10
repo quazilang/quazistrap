@@ -80,5 +80,6 @@ Now unsupported opcodes and unknown intrinsic IDs return `BackendError` instead
 of emitting plausible but incorrect machine code or panicking.
 
 Win64 runtime intrinsic calls reserve the required 32-byte shadow space plus
-aligned stack arguments. Integer formatting uses `%lld`, because Win64 `long`
-is only 32 bits while Quazi integer slots are 64 bits.
+aligned stack arguments. Linux integer and floating-point formatting is emitted
+inline and does not import `sprintf`; Windows keeps its target-specific native
+formatting path.

@@ -16,8 +16,8 @@ cargo fmt                # format
 
 CLI (dep: `clap 4.6`):
 ```bash
-qz build <file> [-i|-c] [-o out] [-r] [-s] [--linker path]
-qz run [file ...] [--linker path] / qz check / qz fmt / qz clean
+qz build [source.qz|program.qzi|native.o ...] [-i|-c] [-o out] [-r] [-s] [--linker builtin|path]
+qz run [source.qz|program.qzi|native.o ...] [--linker builtin|path] / qz check / qz fmt / qz clean
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz new <name> [--lib] / qz init [--lib]
 qz debug [-i]
@@ -317,6 +317,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-10 | Documented the built-in linker as a public contract in `docs/LINKER.md` and the README: selection/fallback rules, source/QZI/object workflows, ELF symbol/relocation and segment guarantees, embedded runtime behavior, explicit libc opt-in, diagnostics, and experimental limitations. Enforced the documented relocatable-object and allocated-section checks. |
 | 2026-08-10 | Started the experimental self-hosted linker: added an in-process static x86-64 ELF writer with checked relocations, W^X load segments and a non-executable stack; made native libraries and libc explicit; removed Linux startup's libc environment lookup; and embedded on-demand mmap-backed allocation/memory routines in compiler objects. |
 | 2026-08-10 | Hardened QZI generation/loading with checked encoding limits, malformed-input and ABI validation, shared register accounting, and error-returning backend fallbacks. Widened field offsets to 16 bits, preserved `?` payload types for method dispatch, fixed directory-backed lazy re-exports and imported static constructors, corrected Win64 intrinsic stack/shadow-space handling and 64-bit formatting, and tightened standard-library I/O/string/collection ownership contracts. |
 | 2026-08-10 | Completed the example compile matrix: made sibling gateway imports explicitly relative to avoid package-name shadowing, accepted CRLF string continuations, stopped target-neutral QZI builds from invoking native C tools, and normalized Windows extended paths before invoking external compilers/linkers. |

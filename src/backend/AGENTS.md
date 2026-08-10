@@ -46,9 +46,10 @@ Emits dummy `call fn_start` / `lea rax,[fn_start]`, records pending relocs, zero
 Plain Linux executable builds use the built-in linker automatically. It links
 compiler-produced and passed ELF objects into a static ELF with separate RX/R/RW load
 segments, a non-executable stack, checked PC-relative/absolute relocations, and
-no implicit native libraries. `--linker builtin` forces this path. Native
-objects/libraries or an explicit external linker select the external path;
-libc/libm are linked only when the user requests them with `-l`.
+no implicit native libraries. `--linker builtin` forces this path. Additional
+ELF `.o` files remain on the built-in path; archives, shared libraries, `-l`,
+`-L`, or an explicit external linker select the external path. libc/libm are
+linked only when the user requests them with `-l`.
 
 `qz build` and `qz run` accept ELF `.o` files alongside Quazi source/QZI input,
 or as an object-only input list. When `_start` is absent, the linker synthesizes
@@ -56,10 +57,12 @@ a minimal 15-byte entry that calls `main` and exits with the Linux syscall. This
 minimal path does not construct command-line arguments or install the full
 compiler-generated crash handler.
 
-The experimental linker intentionally rejects unsupported sections,
-relocations, native inputs, and unresolved external symbols with actionable
-errors. Its current target is x86-64 Linux; PE/COFF and multi-object/archive
-linking remain follow-up work.
+The experimental linker rejects unsupported allocated sections, relocations,
+native flags, duplicate strong symbols, and unresolved external symbols with
+actionable errors. Non-loaded metadata/debug sections are omitted. Its current
+target is x86-64 Linux; PE/COFF, Mach-O, archives, shared objects, TLS, COMDAT,
+and linker scripts remain follow-up work. See `docs/LINKER.md` for the complete
+input, output, runtime, selection, and limitation contracts.
 
 | OS | Format | ABI | Status |
 |----|--------|-----|--------|
@@ -70,7 +73,7 @@ linking remain follow-up work.
 Windows argument-taking entry points parse the Unicode command line with
 `GetCommandLineW`/`CommandLineToArgvW`, convert each argument to UTF-8, and keep
 the Quazi `Array[str]` outside the Win64 caller shadow space. This requires
-`shell32.lib` in addition to the existing Kernel32 and CRT imports.
+`shell32.lib` in addition to Kernel32; CRT libraries remain opt-in.
 
 ## Native FFI and libraries
 
