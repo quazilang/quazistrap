@@ -1233,23 +1233,27 @@ impl StartStub {
 
         // Build `Array[str] args` if `fn main(args: Array[str])` was declared.
         if main_takes_args {
-            // Use the shadow-space slots at [rsp+8], [rsp+16], [rsp+24] for
-            // argc/argv/envp and call __getmainargs to obtain a parsed argv.
-            emit!(asm.lea(rcx, qword_ptr(rsp + 8i32)));
-            emit!(asm.lea(rdx, qword_ptr(rsp + 16i32)));
-            emit!(asm.lea(r8, qword_ptr(rsp + 24i32)));
-            emit!(asm.xor(r9d, r9d));
-            emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
-            call_ext!("__getmainargs", RelocKind::Plt32);
+            // Parse the Unicode command line with the public Win32 API. Using
+            // __getmainargs here tied generated programs to a legacy msvcrt
+            // import that is absent from modern UCRT import libraries.
+            call_ext!("GetCommandLineW", RelocKind::Plt32);
+            emit!(asm.mov(rcx, rax));
+            emit!(asm.lea(rdx, qword_ptr(rsp + 8i32)));
+            emit!(asm.mov(dword_ptr(rsp + 8i32), 0i32));
+            call_ext!("CommandLineToArgvW", RelocKind::Plt32);
+            emit!(asm.mov(r13, rax)); // UTF-16 argv
+            emit!(asm.xor(r12, r12));
+            let mut args_parsed = asm.create_label();
+            emit!(asm.test(r13, r13));
+            emit!(asm.je(args_parsed));
+            emit!(asm.movsxd(r12, dword_ptr(rsp + 8i32))); // argc
+            emit!(asm.set_label(&mut args_parsed));
 
-            // r12 = argc, r13 = argv
-            emit!(asm.mov(r12, qword_ptr(rsp + 8i32)));
-            emit!(asm.mov(r13, qword_ptr(rsp + 16i32)));
+            // Reserve Win64 shadow/stack-argument space, one scratch slot, and
+            // the 24-byte Array value. The Array must not overlap shadow space.
+            emit!(asm.sub(rsp, 96i32));
 
-            // Allocate the Array struct on the stack (24 bytes).
-            emit!(asm.sub(rsp, 24i32));
-
-            // Allocate the fat-pointer array: malloc(argc * 16).
+            // Allocate the Array[str] pointer storage.
             emit!(asm.mov(rcx, r12));
             emit!(asm.shl(rcx, 3i32));
             let mut args_malloc = asm.create_label();
@@ -1261,35 +1265,61 @@ impl StartStub {
             emit!(asm.set_label(&mut args_malloc));
             call_ext!("malloc", RelocKind::Plt32);
             emit!(asm.set_label(&mut args_malloc_done));
+            emit!(asm.mov(r14, rax));
+            let mut args_storage_ready = asm.create_label();
+            emit!(asm.test(r14, r14));
+            emit!(asm.jne(args_storage_ready));
+            emit!(asm.xor(r12, r12));
+            emit!(asm.set_label(&mut args_storage_ready));
 
-            emit!(asm.mov(qword_ptr(rsp), rax)); // ptr
-            emit!(asm.mov(qword_ptr(rsp + 8i32), r12)); // len
-            emit!(asm.mov(qword_ptr(rsp + 16i32), r12)); // cap
-
-            // Copy argv[i] pointers into the array.
+            // Convert each UTF-16 argument to an owned UTF-8 C string.
             let mut args_loop = asm.create_label();
             let mut args_loop_end = asm.create_label();
-            emit!(asm.xor(r14, r14));
+            emit!(asm.xor(r15, r15));
             emit!(asm.set_label(&mut args_loop));
-            emit!(asm.cmp(r14, r12));
+            emit!(asm.cmp(r15, r12));
             emit!(asm.jae(args_loop_end));
-            emit!(asm.mov(r15, qword_ptr(rsp))); // array base
-            emit!(asm.mov(rcx, qword_ptr(r13 + r14 * 8))); // argv[i]
-            emit!(asm.mov(qword_ptr(r15 + r14 * 8), rcx)); // array[i]
-            emit!(asm.inc(r14));
+            emit!(asm.mov(ecx, 65001i32)); // CP_UTF8
+            emit!(asm.xor(edx, edx));
+            emit!(asm.mov(r8, qword_ptr(r13 + r15 * 8)));
+            emit!(asm.mov(r9d, -1i32));
+            emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
+            emit!(asm.mov(qword_ptr(rsp + 40i32), 0i32));
+            emit!(asm.mov(qword_ptr(rsp + 48i32), 0i32));
+            emit!(asm.mov(qword_ptr(rsp + 56i32), 0i32));
+            call_ext!("WideCharToMultiByte", RelocKind::Plt32);
+            emit!(asm.mov(dword_ptr(rsp + 64i32), eax));
+            emit!(asm.mov(ecx, eax));
+            call_ext!("malloc", RelocKind::Plt32);
+            emit!(asm.mov(qword_ptr(r14 + r15 * 8), rax));
+            emit!(asm.mov(ecx, 65001i32));
+            emit!(asm.xor(edx, edx));
+            emit!(asm.mov(r8, qword_ptr(r13 + r15 * 8)));
+            emit!(asm.mov(r9d, -1i32));
+            emit!(asm.mov(qword_ptr(rsp + 32i32), rax));
+            emit!(asm.mov(eax, dword_ptr(rsp + 64i32)));
+            emit!(asm.mov(qword_ptr(rsp + 40i32), rax));
+            emit!(asm.mov(qword_ptr(rsp + 48i32), 0i32));
+            emit!(asm.mov(qword_ptr(rsp + 56i32), 0i32));
+            call_ext!("WideCharToMultiByte", RelocKind::Plt32);
+            emit!(asm.inc(r15));
             emit!(asm.jmp(args_loop));
             emit!(asm.set_label(&mut args_loop_end));
 
-            // Pass pointer to the stack-allocated Array struct in rcx.
-            emit!(asm.mov(rcx, rsp));
+            emit!(asm.mov(rcx, r13));
+            call_ext!("LocalFree", RelocKind::Plt32);
+
+            emit!(asm.mov(qword_ptr(rsp + 72i32), r14));
+            emit!(asm.mov(qword_ptr(rsp + 80i32), r12));
+            emit!(asm.mov(qword_ptr(rsp + 88i32), r12));
+            emit!(asm.lea(rcx, qword_ptr(rsp + 72i32)));
         }
 
         // call main
         call_ext!("main", RelocKind::Plt32);
 
         if main_takes_args {
-            // Pop the stack-allocated Array struct.
-            emit!(asm.add(rsp, 24i32));
+            emit!(asm.add(rsp, 96i32));
         }
 
         // ExitProcess(result)
@@ -1511,20 +1541,20 @@ impl StartStub {
         emit!(asm.set_label(&mut no_env));
 
         if main_takes_args {
-            // Use the shadow-space slots at [rsp+8], [rsp+16], [rsp+24] for
-            // argc/argv/envp and call __getmainargs to obtain a parsed argv.
-            emit!(asm.lea(rcx, qword_ptr(rsp + 8i32)));
-            emit!(asm.lea(rdx, qword_ptr(rsp + 16i32)));
-            emit!(asm.lea(r8, qword_ptr(rsp + 24i32)));
-            emit!(asm.xor(r9d, r9d));
-            emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
-            call_ext!("__getmainargs", RelocKind::Plt32);
+            call_ext!("GetCommandLineW", RelocKind::Plt32);
+            emit!(asm.mov(rcx, rax));
+            emit!(asm.lea(rdx, qword_ptr(rsp + 8i32)));
+            emit!(asm.mov(dword_ptr(rsp + 8i32), 0i32));
+            call_ext!("CommandLineToArgvW", RelocKind::Plt32);
+            emit!(asm.mov(r13, rax));
+            emit!(asm.xor(r12, r12));
+            let mut args_parsed = asm.create_label();
+            emit!(asm.test(r13, r13));
+            emit!(asm.je(args_parsed));
+            emit!(asm.movsxd(r12, dword_ptr(rsp + 8i32)));
+            emit!(asm.set_label(&mut args_parsed));
 
-            emit!(asm.mov(r12, qword_ptr(rsp + 8i32)));
-            emit!(asm.mov(r13, qword_ptr(rsp + 16i32)));
-
-            emit!(asm.sub(rsp, 24i32));
-
+            emit!(asm.sub(rsp, 96i32));
             emit!(asm.mov(rcx, r12));
             emit!(asm.shl(rcx, 3i32));
             let mut args_malloc = asm.create_label();
@@ -1536,32 +1566,60 @@ impl StartStub {
             emit!(asm.set_label(&mut args_malloc));
             call_ext!("malloc", RelocKind::Plt32);
             emit!(asm.set_label(&mut args_malloc_done));
-
-            emit!(asm.mov(qword_ptr(rsp), rax));
-            emit!(asm.mov(qword_ptr(rsp + 8i32), r12));
-            emit!(asm.mov(qword_ptr(rsp + 16i32), r12));
+            emit!(asm.mov(r14, rax));
+            let mut args_storage_ready = asm.create_label();
+            emit!(asm.test(r14, r14));
+            emit!(asm.jne(args_storage_ready));
+            emit!(asm.xor(r12, r12));
+            emit!(asm.set_label(&mut args_storage_ready));
 
             let mut args_loop = asm.create_label();
             let mut args_loop_end = asm.create_label();
-            emit!(asm.xor(r14, r14));
+            emit!(asm.xor(r15, r15));
             emit!(asm.set_label(&mut args_loop));
-            emit!(asm.cmp(r14, r12));
+            emit!(asm.cmp(r15, r12));
             emit!(asm.jae(args_loop_end));
-            emit!(asm.mov(r15, qword_ptr(rsp)));
-            emit!(asm.mov(rcx, qword_ptr(r13 + r14 * 8)));
-            emit!(asm.mov(qword_ptr(r15 + r14 * 8), rcx));
-            emit!(asm.inc(r14));
+            emit!(asm.mov(ecx, 65001i32));
+            emit!(asm.xor(edx, edx));
+            emit!(asm.mov(r8, qword_ptr(r13 + r15 * 8)));
+            emit!(asm.mov(r9d, -1i32));
+            emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32));
+            emit!(asm.mov(qword_ptr(rsp + 40i32), 0i32));
+            emit!(asm.mov(qword_ptr(rsp + 48i32), 0i32));
+            emit!(asm.mov(qword_ptr(rsp + 56i32), 0i32));
+            call_ext!("WideCharToMultiByte", RelocKind::Plt32);
+            emit!(asm.mov(dword_ptr(rsp + 64i32), eax));
+            emit!(asm.mov(ecx, eax));
+            call_ext!("malloc", RelocKind::Plt32);
+            emit!(asm.mov(qword_ptr(r14 + r15 * 8), rax));
+            emit!(asm.mov(ecx, 65001i32));
+            emit!(asm.xor(edx, edx));
+            emit!(asm.mov(r8, qword_ptr(r13 + r15 * 8)));
+            emit!(asm.mov(r9d, -1i32));
+            emit!(asm.mov(qword_ptr(rsp + 32i32), rax));
+            emit!(asm.mov(eax, dword_ptr(rsp + 64i32)));
+            emit!(asm.mov(qword_ptr(rsp + 40i32), rax));
+            emit!(asm.mov(qword_ptr(rsp + 48i32), 0i32));
+            emit!(asm.mov(qword_ptr(rsp + 56i32), 0i32));
+            call_ext!("WideCharToMultiByte", RelocKind::Plt32);
+            emit!(asm.inc(r15));
             emit!(asm.jmp(args_loop));
             emit!(asm.set_label(&mut args_loop_end));
 
-            emit!(asm.mov(rcx, rsp));
+            emit!(asm.mov(rcx, r13));
+            call_ext!("LocalFree", RelocKind::Plt32);
+
+            emit!(asm.mov(qword_ptr(rsp + 72i32), r14));
+            emit!(asm.mov(qword_ptr(rsp + 80i32), r12));
+            emit!(asm.mov(qword_ptr(rsp + 88i32), r12));
+            emit!(asm.lea(rcx, qword_ptr(rsp + 72i32)));
         }
 
         // call main
         call_ext!("main", RelocKind::Plt32);
 
         if main_takes_args {
-            emit!(asm.add(rsp, 24i32));
+            emit!(asm.add(rsp, 96i32));
         }
 
         // ExitProcess(result)
@@ -1614,6 +1672,29 @@ impl StartStub {
                 print_bt_size,
             )],
             start_offset: startup_off,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StartStub;
+
+    #[test]
+    fn windows_argument_startup_uses_supported_win32_apis() {
+        for no_crash in [false, true] {
+            let stub = StartStub::generate_windows(0, no_crash, true);
+            let symbols: Vec<&str> = stub
+                .relocs
+                .iter()
+                .map(|reloc| reloc.symbol.as_str())
+                .collect();
+
+            assert!(symbols.contains(&"GetCommandLineW"));
+            assert!(symbols.contains(&"CommandLineToArgvW"));
+            assert!(symbols.contains(&"WideCharToMultiByte"));
+            assert!(symbols.contains(&"LocalFree"));
+            assert!(!symbols.contains(&"__getmainargs"));
         }
     }
 }

@@ -3,8 +3,9 @@
 ## QZI Format
 
 Platform-independent, AOT-only. **6 bytes/instruction**: `[opcode u8][operands 4B][flags u8]`.
-When a QZI is emitted as a binary directly, the CLI reuses the current project's
-`[cc]` and `[link]` inputs to rebuild and link host-specific native dependencies.
+Emitting QZI is target-neutral and does not compile the current project's `[cc]`
+sources or require a host linker. Native inputs are used only for object/binary
+outputs.
 
 Operand layouts: **RRR** (dst/src1/src2), **RI16** (dst/imm16 LE), **MEM** (val/base/offset16 LE signed).
 

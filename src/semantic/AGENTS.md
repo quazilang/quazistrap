@@ -51,6 +51,8 @@ priority over module-namespace interpretation for static constructors.
 
 Lazy public re-exports may target either `name.qz` or `name/mod.qz`; this lets
 module gateways expose directory-backed APIs such as `std.collections`.
+Gateway imports of sibling files use the explicit `./name` form so dependency
+or package names cannot shadow prelude and standard-library implementation files.
 
 ## `pub` Visibility
 

@@ -166,6 +166,7 @@ impl LinkerInvocation {
                 args.push("/OPT:REF,ICF".into()); // dead-strip + fold identical functions
                 args.push("/MERGE:.rdata=.text".into()); // fold rodata into text — saves 512B PE alignment
                 args.push("kernel32.lib".into()); // ExitProcess
+                args.push("shell32.lib".into()); // CommandLineToArgvW
                 args.push("ucrt.lib".into()); // malloc, strlen, atoll, strtod, pow, calloc
                 args.push("vcruntime.lib".into()); // memset, memcpy, memmove, memcmp
                 args.push("libcmt.lib".into()); // compiler support such as `_fltused`
@@ -281,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_link_args_include_float_compiler_support() {
+    fn windows_link_args_include_required_runtime_libraries() {
         let inv = LinkerInvocation {
             output: PathBuf::from("hello.exe"),
             object: PathBuf::from("hello.obj"),
@@ -301,5 +302,6 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         assert!(args.contains(&"libcmt.lib".to_string()));
+        assert!(args.contains(&"shell32.lib".to_string()));
     }
 }

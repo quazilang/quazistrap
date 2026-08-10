@@ -459,6 +459,23 @@ fn abs_path(name: &str) -> PathBuf {
     }
 }
 
+/// Windows canonical paths use the `\\?\` namespace, which several otherwise
+/// supported GNU-style tools parse as switches or malformed UNC paths. Keep
+/// extended paths internally and normalize only at the external-tool boundary.
+fn external_tool_path(path: &std::path::Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let value = path.to_string_lossy();
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = value.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
 fn load_with_optional_project(files: &[PathBuf]) -> Result<loader::LoadResult, String> {
     let ctx = ProjectContext::discover(&files[0])?;
     let resolver_owned: Option<loader::ModuleResolver> = ctx.map(|c| c.resolver);
@@ -496,12 +513,16 @@ fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
             .ok_or_else(|| format!("invalid C source path: {}", source.display()))?;
         let object = object_dir.join(format!("{stem}.o"));
         let mut command = std::process::Command::new(&cc);
-        command.arg("-c").arg(source).arg("-o").arg(&object);
+        command
+            .arg("-c")
+            .arg(external_tool_path(source))
+            .arg("-o")
+            .arg(external_tool_path(&object));
         if !cfg!(target_os = "windows") {
             command.arg("-fPIC");
         }
         for include in &ctx.config.cc.include_paths {
-            command.arg(format!("-I{}", include.display()));
+            command.arg(format!("-I{}", external_tool_path(include).display()));
         }
         for define in &ctx.config.cc.defines {
             command.arg(format!("-D{define}"));
@@ -522,7 +543,7 @@ fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
                 String::from_utf8_lossy(&output.stdout)
             ));
         }
-        flags.push(object.to_string_lossy().into_owned());
+        flags.push(external_tool_path(&object).to_string_lossy().into_owned());
     }
 
     flags.extend(
@@ -530,14 +551,14 @@ fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
             .link
             .objects
             .iter()
-            .map(|path| path.to_string_lossy().into_owned()),
+            .map(|path| external_tool_path(path).to_string_lossy().into_owned()),
     );
     flags.extend(
         ctx.config
             .link
             .library_paths
             .iter()
-            .map(|path| format!("-L{}", path.display())),
+            .map(|path| format!("-L{}", external_tool_path(path).display())),
     );
     flags.extend(
         ctx.config
@@ -555,7 +576,11 @@ fn compile_direct_c_sources(sources: &[PathBuf]) -> Result<Vec<PathBuf>, String>
     for (index, source) in sources.iter().enumerate() {
         let object = std::env::temp_dir().join(format!("qz_cc_{}_{}.o", std::process::id(), index));
         let mut command = std::process::Command::new(&cc);
-        command.arg("-c").arg(source).arg("-o").arg(&object);
+        command
+            .arg("-c")
+            .arg(external_tool_path(source))
+            .arg("-o")
+            .arg(external_tool_path(&object));
         if !cfg!(target_os = "windows") {
             command.arg("-fPIC");
         }
@@ -1092,10 +1117,17 @@ fn main() {
                         project_output_name(&ctx.config.name, effective_emit.clone())
                     }
                 });
-                let mut link_flags = native_link_flags(&ctx).unwrap_or_else(|e| {
-                    eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                    std::process::exit(1);
-                });
+                // Portable bytecode contains no native objects. Requiring a C
+                // compiler for `qz build -i` made FFI projects impossible to
+                // validate on machines that only consume the QZI elsewhere.
+                let mut link_flags = if matches!(effective_emit, EmitType::Bytecode) {
+                    Vec::new()
+                } else {
+                    native_link_flags(&ctx).unwrap_or_else(|e| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                        std::process::exit(1);
+                    })
+                };
                 link_flags.extend(
                     library_paths
                         .iter()

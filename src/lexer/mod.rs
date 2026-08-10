@@ -127,6 +127,13 @@ impl Lexer {
                 }
                 return Ok(None);
             }
+            '\r' if self.peek() == Some('\n') => {
+                self.advance();
+                while self.peek().is_some_and(char::is_whitespace) {
+                    self.advance();
+                }
+                return Ok(None);
+            }
             'x' => return self.read_hex_escape().map(Some),
             'u' => return self.read_unicode_escape().map(Some),
             'U' => return self.read_fixed_unicode_escape(8).map(Some),
@@ -277,6 +284,13 @@ impl Lexer {
             '"' => b'"',
             '?' => b'?',
             '\n' => {
+                while self.peek().is_some_and(char::is_whitespace) {
+                    self.advance();
+                }
+                return Ok(None);
+            }
+            '\r' if self.peek() == Some('\n') => {
+                self.advance();
                 while self.peek().is_some_and(char::is_whitespace) {
                     self.advance();
                 }
@@ -701,6 +715,11 @@ mod string_tests {
     }
 
     #[test]
+    fn quoted_strings_support_crlf_line_continuations() {
+        assert_eq!(string_value("\"first\\\r\n    second\""), "firstsecond");
+    }
+
+    #[test]
     fn malformed_escapes_are_errors() {
         assert!(escape_error(r#""\q""#).contains("unknown escape"));
         assert!(escape_error(r#""\xG0""#).contains("invalid digit"));
@@ -731,4 +750,5 @@ mod string_tests {
     fn raw_strings_can_span_lines() {
         assert_eq!(string_value("`first\nsecond`"), "first\nsecond");
     }
+
 }

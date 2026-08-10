@@ -5,11 +5,11 @@
 // prelude — commonly needed types, auto-loaded by the compiler.
 // Option[T] and Result[T, E] are builtin — no import needed.
 
-pub import array.Array;
-pub import string.String;
-pub import box.Box;
-pub import option;
-pub import result;
-pub import traits;
-pub import fmt;
-pub import panic.panic;
+pub import ./array.Array;
+pub import ./string.String;
+pub import ./box.Box;
+pub import ./option;
+pub import ./result;
+pub import ./traits;
+pub import ./fmt;
+pub import ./panic.panic;

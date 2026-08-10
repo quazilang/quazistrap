@@ -48,6 +48,11 @@ Emits dummy `call fn_start` / `lea rax,[fn_start]`, records pending relocs, zero
 | Windows x86-64 | PE/COFF | Win64 | Full (needs `lld-link` + `LIB`) |
 | macOS x86-64 | ~~Mach-O~~ ELF | SysV | Broken — `select_backend()` maps macOS to `ElfBackend`, `emit_start: false`, no Mach-O relocations |
 
+Windows argument-taking entry points parse the Unicode command line with
+`GetCommandLineW`/`CommandLineToArgvW`, convert each argument to UTF-8, and keep
+the Quazi `Array[str]` outside the Win64 caller shadow space. This requires
+`shell32.lib` in addition to the existing Kernel32 and CRT imports.
+
 ## Native FFI and libraries
 
 - Exported functions use `SymbolScope::Dynamic`; ordinary Quazi functions use

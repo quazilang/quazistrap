@@ -23,4 +23,5 @@ fn main() void {
     io.println("\e[33;44myellow on blue\e[0m");
     io.println("\e[38;5;208m256-color orange\e[0m");
     io.println("\e[38;2;255;105;180mRGB pink\e[0m");
+    ret;
 }
