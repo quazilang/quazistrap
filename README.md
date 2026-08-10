@@ -222,6 +222,7 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 | Module | Description |
 |--------|-------------|
 | `std.io` | `println`, `print`, `eprintln`, `read_line` |
+| `std.math` | Dependency-free GCD/LCM, combinatorics, floating arithmetic, trig, powers, roots, and logarithms |
 | `std.fmt` | `format("{}", ...)` — `{}` placeholder formatting |
 | `std.string` | `String`: owned heap string with automatic lexical cleanup |
 | `std.collections.array` | `Array[T]`: dynamic array with index, push, iteration |
@@ -264,6 +265,11 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 | [`19-cvariadics`](examples/19-cvariadics/) | C-style variadic `@api` via bare `...` — calls libc `printf` |
 | [`20-ffi-abi`](examples/20-ffi-abi/) | Portable phase-two C ABI interoperation |
 | [`21-quazifetch`](examples/21-quazifetch/) | Shell-free Windows/Linux system information with automatic cleanup |
+| [`22-stdlib-dx`](examples/22-stdlib-dx/) | Executable UTF-8 string, checked parsing, numeric-method, and `std.math` checks |
+
+String indexing/slicing, checked parsing, numeric methods, math accuracy goals,
+automatic cleanup, and Windows UTF-8 console behavior are documented in
+[Primitive APIs and portable text output](docs/PRIMITIVE_APIS.md).
 
 ---
 

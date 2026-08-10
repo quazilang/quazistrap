@@ -33,6 +33,9 @@ assign → logical-or → logical-and → equality → comparison → term → f
 - **Variadics**: `...args: T` in param list; inside fn body `args` is `Slice[T]` with `.len()`.
 - **Pattern matching**: wildcard, bind, literal, variant, and **guards** (`pat if expr =>`).
 - **Named arguments**: `foo(x=1, y=2)` — all positional args must precede named args. Resolved to param position at compile time; unknown name or position conflict = S09 error.
+- **String slicing**: `text[start:end:step]` lowers during parsing to the hidden
+  `__slice(start, end, step, start_omitted, end_omitted)` method. Bounds and step
+  remain ordinary expressions; omitted-bound flags preserve dynamic-step semantics.
 
 ## Missing / Planned
 

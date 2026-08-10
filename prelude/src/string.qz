@@ -2,7 +2,11 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-// prelude.string — owned heap string (null-terminated, heap-allocated copy)
+// Owned and borrowed UTF-8 string APIs. User-facing indexes and lengths count
+// Unicode scalar values. Explicit byte views expose encoded UTF-8 bytes.
+
+import traits;
+import panic.panic;
 
 @intrinsic("quazi.strlen")
 fn __string_strlen(s: str) usize;
@@ -13,10 +17,28 @@ fn __string_str_concat(s1: str, s2: str) str;
 @intrinsic("quazi.free")
 fn __string_free(s: str) void;
 
-// Representation-only conversion used after a caller has established that a
-// NUL-terminated raw allocation contains valid UTF-8.
+@intrinsic("quazi.malloc")
+unsafe fn __string_malloc(size: usize) *u8;
+
+@intrinsic("quazi.memcpy")
+unsafe fn __string_memcpy(dst: *u8, src: *u8, n: usize) *u8;
+
+@intrinsic("quazi.str.byte_at")
+fn __string_byte_at(s: str, index: usize) u8;
+
+@intrinsic("quazi.str.as_ptr")
+unsafe fn __string_as_ptr(s: str) *u8;
+
 @intrinsic("quazi.str.from_ptr")
 unsafe fn __string_from_ptr(s: *u8) str;
+
+pub type Rune = u32;
+
+pub enum ParseError {
+    Empty,
+    InvalidDigit(usize),
+    Overflow,
+}
 
 pub struct String {
     data: str,
@@ -24,50 +46,561 @@ pub struct String {
     cap: usize,
 }
 
-impl String {
-    pub fn new() String {
-        ret String { data: "", len: 0, cap: 0 };
+fn __utf8_width(first: u8) usize {
+    if (first < 128) { ret 1; }
+    if (first < 224) { ret 2; }
+    if (first < 240) { ret 3; }
+    ret 4;
+}
+
+fn __digit_f64(byte: u8) f64 {
+    if (byte == 48) { ret 0.0; }
+    if (byte == 49) { ret 1.0; }
+    if (byte == 50) { ret 2.0; }
+    if (byte == 51) { ret 3.0; }
+    if (byte == 52) { ret 4.0; }
+    if (byte == 53) { ret 5.0; }
+    if (byte == 54) { ret 6.0; }
+    if (byte == 55) { ret 7.0; }
+    if (byte == 56) { ret 8.0; }
+    ret 9.0;
+}
+
+fn __rune_byte_offset(text: str, rune_index: usize) usize {
+    const byte_len: usize = __string_strlen(text);
+    var byte_index: usize = 0;
+    var current: usize = 0;
+    for (current < rune_index && byte_index < byte_len) {
+        byte_index = byte_index + __utf8_width(__string_byte_at(text, byte_index));
+        current++;
+    }
+    ret byte_index;
+}
+
+fn __previous_rune_offset(text: str, current: usize) usize {
+    if (current == 0) { ret 0; }
+    var offset: usize = current - 1;
+    for (offset > 0 && (__string_byte_at(text, offset) & 192) == 128) { offset--; }
+    ret offset;
+}
+
+fn __owned_range(text: str, start: usize, end: usize) String {
+    if (end <= start) { ret String.new(); }
+    const length: usize = end - start;
+    var data: *u8 = 0;
+    unsafe { data = __string_malloc(length + 1); }
+    if (data == 0) { ret String.new(); }
+    unsafe {
+        __string_memcpy(data, __string_as_ptr(text) + start, length);
+        *(data + length) = 0;
+    }
+    var result: String = String.new();
+    unsafe { result = String.from_raw(data, length, length + 1); }
+    ret result;
+}
+
+impl str {
+    pub fn len(self: str) usize { ret self.rune_len(); }
+
+    pub fn rune_len(self: str) usize {
+        const byte_len: usize = __string_strlen(self);
+        var byte_index: usize = 0;
+        var count: usize = 0;
+        for (byte_index < byte_len) {
+            byte_index = byte_index + __utf8_width(__string_byte_at(self, byte_index));
+            count++;
+        }
+        ret count;
     }
 
+    pub fn bytes_len(self: str) usize { ret __string_strlen(self); }
+    pub fn is_empty(self: str) bool { ret self.bytes_len() == 0; }
+
+    pub fn get(self: str, index: isize) Option[Rune] {
+        const rune_count: isize = self.rune_len() as isize;
+        var normalized: isize = index;
+        if (normalized < 0) { normalized = normalized + rune_count; }
+        if (normalized < 0 || normalized >= rune_count) { ret None; }
+        const byte_len: usize = __string_strlen(self);
+        const offset: usize = __rune_byte_offset(self, normalized as usize);
+        if (offset >= byte_len) { ret None; }
+        const first: u8 = __string_byte_at(self, offset);
+        if (first < 128) { ret Some(first as Rune); }
+        if (first < 224) {
+            ret Some((((first & 31) as Rune) << 6)
+                | ((__string_byte_at(self, offset + 1) & 63) as Rune));
+        }
+        if (first < 240) {
+            ret Some((((first & 15) as Rune) << 12)
+                | (((__string_byte_at(self, offset + 1) & 63) as Rune) << 6)
+                | ((__string_byte_at(self, offset + 2) & 63) as Rune));
+        }
+        ret Some((((first & 7) as Rune) << 18)
+            | (((__string_byte_at(self, offset + 1) & 63) as Rune) << 12)
+            | (((__string_byte_at(self, offset + 2) & 63) as Rune) << 6)
+            | ((__string_byte_at(self, offset + 3) & 63) as Rune));
+    }
+
+    // Compiler target for Python-style `text[start:end:step]` syntax.
+    pub fn __slice(self: str, start_value: isize, end_value: isize, step: isize,
+        start_omitted: bool, end_omitted: bool) String {
+        if (step == 0) { panic("string slice step cannot be zero"); }
+        const rune_count: isize = self.rune_len() as isize;
+        var start: isize = start_value;
+        var end: isize = end_value;
+
+        if (step > 0) {
+            if (start_omitted) { start = 0; }
+            else {
+                if (start < 0) { start = start + rune_count; }
+                if (start < 0) { start = 0; }
+                if (start > rune_count) { start = rune_count; }
+            }
+            if (end_omitted) { end = rune_count; }
+            else {
+                if (end < 0) { end = end + rune_count; }
+                if (end < 0) { end = 0; }
+                if (end > rune_count) { end = rune_count; }
+            }
+            if (start >= end) { ret String.new(); }
+        } else {
+            if (start_omitted) { start = rune_count - 1; }
+            else {
+                if (start < 0) { start = start + rune_count; }
+                if (start < -1) { start = -1; }
+                if (start >= rune_count) { start = rune_count - 1; }
+            }
+            if (end_omitted) { end = 0; }
+            else {
+                if (end < 0) { end = end + rune_count; }
+                if (end < -1) { end = -1; }
+                if (end >= rune_count) { end = rune_count - 1; }
+                end = end + 1;
+            }
+            if (start < end || start < 0) { ret String.new(); }
+        }
+
+        const byte_len: usize = self.bytes_len();
+        var data: *u8 = 0;
+        unsafe { data = __string_malloc(byte_len + 1); }
+        if (data == 0) { ret String.new(); }
+        var source: usize = __rune_byte_offset(self, start as usize);
+        var destination: usize = 0;
+        var rune_index: isize = start;
+
+        if (step > 0) {
+            for (rune_index < end) {
+                const width: usize = __utf8_width(__string_byte_at(self, source));
+                unsafe { __string_memcpy(data + destination, __string_as_ptr(self) + source, width); }
+                destination = destination + width;
+                var remaining: isize = step;
+                for (remaining > 0 && rune_index < rune_count) {
+                    source = source + __utf8_width(__string_byte_at(self, source));
+                    rune_index++;
+                    remaining--;
+                }
+            }
+        } else {
+            for (rune_index >= end) {
+                const width: usize = __utf8_width(__string_byte_at(self, source));
+                unsafe { __string_memcpy(data + destination, __string_as_ptr(self) + source, width); }
+                destination = destination + width;
+                var remaining: isize = step;
+                for (remaining < 0 && rune_index >= 0) {
+                    rune_index--;
+                    if (rune_index >= 0) { source = __previous_rune_offset(self, source); }
+                    remaining++;
+                }
+            }
+        }
+        unsafe { *(data + destination) = 0; }
+        var result: String = String.new();
+        unsafe { result = String.from_raw(data, destination, byte_len + 1); }
+        ret result;
+    }
+
+    pub fn reverse(self: str) String {
+        const length: usize = __string_strlen(self);
+        if (length == 0) { ret String.new(); }
+        var data: *u8 = 0;
+        unsafe { data = __string_malloc(length + 1); }
+        if (data == 0) { ret String.new(); }
+        var source: usize = 0;
+        for (source < length) {
+            const width: usize = __utf8_width(__string_byte_at(self, source));
+            const destination: usize = length - source - width;
+            unsafe {
+                __string_memcpy(data + destination, __string_as_ptr(self) + source, width);
+            }
+            source = source + width;
+        }
+        unsafe { *(data + length) = 0; }
+        var result: String = String.new();
+        unsafe { result = String.from_raw(data, length, length + 1); }
+        ret result;
+    }
+
+    // Case conversion currently covers ASCII and preserves all non-ASCII runes.
+    pub fn to_lowercase(self: str) String {
+        const length: usize = __string_strlen(self);
+        const result: String = __owned_range(self, 0, length);
+        var index: usize = 0;
+        unsafe {
+            const data: *u8 = __string_as_ptr(result.as_str());
+            for (index < length) {
+                const byte: u8 = *(data + index);
+                if (byte >= 65 && byte <= 90) { *(data + index) = byte + 32; }
+                index++;
+            }
+        }
+        ret result;
+    }
+
+    pub fn to_uppercase(self: str) String {
+        const length: usize = __string_strlen(self);
+        const result: String = __owned_range(self, 0, length);
+        var index: usize = 0;
+        unsafe {
+            const data: *u8 = __string_as_ptr(result.as_str());
+            for (index < length) {
+                const byte: u8 = *(data + index);
+                if (byte >= 97 && byte <= 122) { *(data + index) = byte - 32; }
+                index++;
+            }
+        }
+        ret result;
+    }
+
+    pub fn lowercase(self: str) String { ret self.to_lowercase(); }
+    pub fn uppercase(self: str) String { ret self.to_uppercase(); }
+
+    pub fn capitalize(self: str) String {
+        const result: String = __owned_range(self, 0, __string_strlen(self));
+        if (!result.is_empty()) {
+            unsafe {
+                const data: *u8 = __string_as_ptr(result.as_str());
+                const first: u8 = *data;
+                if (first >= 97 && first <= 122) { *data = first - 32; }
+            }
+        }
+        ret result;
+    }
+
+    pub fn trim(self: str) String {
+        const length: usize = __string_strlen(self);
+        var start: usize = 0;
+        for (start < length) {
+            const byte: u8 = __string_byte_at(self, start);
+            if (byte == 9 || byte == 10 || byte == 13 || byte == 32) {
+                start++;
+                continue;
+            }
+            break;
+        }
+        var end: usize = length;
+        for (end > start) {
+            const byte: u8 = __string_byte_at(self, end - 1);
+            if (byte == 9 || byte == 10 || byte == 13 || byte == 32) {
+                end--;
+                continue;
+            }
+            break;
+        }
+        ret __owned_range(self, start, end);
+    }
+
+    pub fn starts_with(self: str, prefix: str) bool {
+        const length: usize = __string_strlen(self);
+        const prefix_len: usize = __string_strlen(prefix);
+        if (prefix_len > length) { ret false; }
+        var index: usize = 0;
+        for (index < prefix_len) {
+            if (__string_byte_at(self, index) != __string_byte_at(prefix, index)) { ret false; }
+            index++;
+        }
+        ret true;
+    }
+
+    pub fn ends_with(self: str, suffix: str) bool {
+        const length: usize = __string_strlen(self);
+        const suffix_len: usize = __string_strlen(suffix);
+        if (suffix_len > length) { ret false; }
+        const start: usize = length - suffix_len;
+        var index: usize = 0;
+        for (index < suffix_len) {
+            if (__string_byte_at(self, start + index) != __string_byte_at(suffix, index)) {
+                ret false;
+            }
+            index++;
+        }
+        ret true;
+    }
+
+    // Like Rust, find() returns a UTF-8 byte offset.
+    pub fn find(self: str, needle: str) Option[usize] {
+        const length: usize = __string_strlen(self);
+        const needle_len: usize = __string_strlen(needle);
+        if (needle_len == 0) { ret Some(0); }
+        if (needle_len > length) { ret None; }
+        var offset: usize = 0;
+        for (offset + needle_len <= length) {
+            var matched: bool = true;
+            var index: usize = 0;
+            for (index < needle_len) {
+                if (__string_byte_at(self, offset + index) != __string_byte_at(needle, index)) {
+                    matched = false;
+                    break;
+                }
+                index++;
+            }
+            if (matched) { ret Some(offset); }
+            offset++;
+        }
+        ret None;
+    }
+
+    pub fn contains(self: str, needle: str) bool { ret self.find(needle).is_some(); }
+
+    pub fn parse_i64(self: str) Result[i64, ParseError] {
+        const length: usize = __string_strlen(self);
+        if (length == 0) { ret Err(ParseError.Empty); }
+        var index: usize = 0;
+        var negative: bool = false;
+        const first: u8 = __string_byte_at(self, 0);
+        if (first == 43 || first == 45) {
+            negative = first == 45;
+            index = 1;
+            if (index == length) { ret Err(ParseError.InvalidDigit(index)); }
+        }
+        var value: i64 = 0;
+        for (index < length) {
+            const byte: u8 = __string_byte_at(self, index);
+            if (byte < 48 || byte > 57) { ret Err(ParseError.InvalidDigit(index)); }
+            const digit: i64 = (byte - 48) as i64;
+            if (negative) {
+                if (value < ((-9223372036854775807 - 1) + digit) / 10) {
+                    ret Err(ParseError.Overflow);
+                }
+                value = value * 10 - digit;
+            } else {
+                if (value > (9223372036854775807 - digit) / 10) {
+                    ret Err(ParseError.Overflow);
+                }
+                value = value * 10 + digit;
+            }
+            index++;
+        }
+        ret Ok(value);
+    }
+
+    pub fn parse_i32(self: str) Result[i32, ParseError] {
+        const value: i64 = self.parse_i64()?;
+        if (value < -2147483648 || value > 2147483647) { ret Err(ParseError.Overflow); }
+        ret Ok(value as i32);
+    }
+
+    pub fn parse_i8(self: str) Result[i8, ParseError] {
+        const value: i64 = self.parse_i64()?;
+        if (value < -128 || value > 127) { ret Err(ParseError.Overflow); }
+        ret Ok(value as i8);
+    }
+
+    pub fn parse_i16(self: str) Result[i16, ParseError] {
+        const value: i64 = self.parse_i64()?;
+        if (value < -32768 || value > 32767) { ret Err(ParseError.Overflow); }
+        ret Ok(value as i16);
+    }
+
+    pub fn parse_isize(self: str) Result[isize, ParseError] {
+        const value: i64 = self.parse_i64()?;
+        ret Ok(value as isize);
+    }
+
+    pub fn parse_u64(self: str) Result[u64, ParseError] {
+        const length: usize = __string_strlen(self);
+        if (length == 0) { ret Err(ParseError.Empty); }
+        var index: usize = 0;
+        if (__string_byte_at(self, 0) == 43) {
+            index = 1;
+            if (index == length) { ret Err(ParseError.InvalidDigit(index)); }
+        }
+        var value: u64 = 0;
+        for (index < length) {
+            const byte: u8 = __string_byte_at(self, index);
+            if (byte < 48 || byte > 57) { ret Err(ParseError.InvalidDigit(index)); }
+            const digit: u64 = (byte - 48) as u64;
+            if (value > 1844674407370955161
+                || (value == 1844674407370955161 && digit > 5)) {
+                ret Err(ParseError.Overflow);
+            }
+            value = value * 10 + digit;
+            index++;
+        }
+        ret Ok(value);
+    }
+
+    pub fn parse_u8(self: str) Result[u8, ParseError] {
+        const value: u64 = self.parse_u64()?;
+        if (value > 255) { ret Err(ParseError.Overflow); }
+        ret Ok(value as u8);
+    }
+
+    pub fn parse_u16(self: str) Result[u16, ParseError] {
+        const value: u64 = self.parse_u64()?;
+        if (value > 65535) { ret Err(ParseError.Overflow); }
+        ret Ok(value as u16);
+    }
+
+    pub fn parse_u32(self: str) Result[u32, ParseError] {
+        const value: u64 = self.parse_u64()?;
+        if (value > 4294967295) { ret Err(ParseError.Overflow); }
+        ret Ok(value as u32);
+    }
+
+    pub fn parse_usize(self: str) Result[usize, ParseError] {
+        const value: u64 = self.parse_u64()?;
+        ret Ok(value as usize);
+    }
+
+    pub fn parse_f64(self: str) Result[f64, ParseError] {
+        const length: usize = __string_strlen(self);
+        if (length == 0) { ret Err(ParseError.Empty); }
+        var index: usize = 0;
+        var sign: f64 = 1.0;
+        const first: u8 = __string_byte_at(self, 0);
+        if (first == 43 || first == 45) {
+            if (first == 45) { sign = -1.0; }
+            index = 1;
+        }
+        var value: f64 = 0.0;
+        var digits: usize = 0;
+        for (index < length) {
+            const byte: u8 = __string_byte_at(self, index);
+            if (byte < 48 || byte > 57) { break; }
+            value = value * 10.0 + __digit_f64(byte);
+            digits++;
+            index++;
+        }
+        if (index < length && __string_byte_at(self, index) == 46) {
+            index++;
+            var place: f64 = 0.1;
+            for (index < length) {
+                const byte: u8 = __string_byte_at(self, index);
+                if (byte < 48 || byte > 57) { break; }
+                value = value + __digit_f64(byte) * place;
+                place = place * 0.1;
+                digits++;
+                index++;
+            }
+        }
+        if (digits == 0) { ret Err(ParseError.InvalidDigit(index)); }
+        if (index < length) {
+            const marker: u8 = __string_byte_at(self, index);
+            if (marker == 69 || marker == 101) {
+                index++;
+                var exponent_negative: bool = false;
+                if (index < length) {
+                    const sign_byte: u8 = __string_byte_at(self, index);
+                    if (sign_byte == 43 || sign_byte == 45) {
+                        exponent_negative = sign_byte == 45;
+                        index++;
+                    }
+                }
+                const exponent_start: usize = index;
+                var exponent: usize = 0;
+                for (index < length) {
+                    const byte: u8 = __string_byte_at(self, index);
+                    if (byte < 48 || byte > 57) { break; }
+                    exponent = exponent * 10 + ((byte - 48) as usize);
+                    index++;
+                }
+                if (index == exponent_start) { ret Err(ParseError.InvalidDigit(index)); }
+                var factor: f64 = 1.0;
+                var power: usize = 0;
+                for (power < exponent) { factor = factor * 10.0; power++; }
+                if (exponent_negative) { value = value / factor; }
+                else { value = value * factor; }
+            }
+        }
+        if (index != length) { ret Err(ParseError.InvalidDigit(index)); }
+        ret Ok(sign * value);
+    }
+
+    pub fn parse_f32(self: str) Result[f32, ParseError] {
+        ret Ok(self.parse_f64()? as f32);
+    }
+}
+
+impl Index[isize, Rune] for str {
+    pub fn index(self: str, index: isize) Rune {
+        const value: Option[Rune] = self.get(index);
+        if (value.is_none()) { panic("string index out of bounds"); }
+        ret value.unwrap();
+    }
+}
+
+impl String {
+    pub fn new() String { ret String { data: "", len: 0, cap: 0 }; }
+
     pub fn from(s: str) String {
-        var n: usize = __string_strlen(s);
-        var buf: str = __string_str_concat(s, "");
+        const n: usize = __string_strlen(s);
+        const buf: str = __string_str_concat(s, "");
         ret String { data: buf, len: n, cap: n + 1 };
     }
 
-    // Takes ownership of a NUL-terminated allocation. The caller must ensure
-    // data is valid UTF-8, len excludes the terminator, and cap > len.
+    // Takes ownership of a writable NUL-terminated UTF-8 allocation.
     pub unsafe fn from_raw(data: *u8, len: usize, cap: usize) String {
-        var text: str = __string_from_ptr(data);
+        const text: str = __string_from_ptr(data);
         ret String { data: text, len: len, cap: cap };
     }
 
-    pub fn len(self: String) usize {
-        ret self.len;
-    }
-
-    pub fn is_empty(self: String) bool {
-        ret self.len == 0;
-    }
-
-    pub fn as_str(self: String) str {
-        ret self.data;
-    }
+    pub fn len(self: String) usize { ret self.data.rune_len(); }
+    pub fn rune_len(self: String) usize { ret self.data.rune_len(); }
+    pub fn bytes_len(self: String) usize { ret self.len; }
+    pub fn is_empty(self: String) bool { ret self.len == 0; }
+    pub fn as_str(self: String) str { ret self.data; }
 
     pub fn push_str(self: String, s: str) String {
-        var combined: str = __string_str_concat(self.data, s);
-        var slen: usize = __string_strlen(s);
-        var new_len: usize = self.len + slen;
+        const combined: str = __string_str_concat(self.data, s);
+        const new_len: usize = self.len + __string_strlen(s);
         ret String { data: combined, len: new_len, cap: new_len + 1 };
     }
 
-    pub fn concat(a: String, b: String) String {
-        ret a.push_str(b.data);
+    pub fn concat(a: String, b: String) String { ret a.push_str(b.data); }
+    pub fn get(self: String, index: isize) Option[Rune] { ret self.data.get(index); }
+    pub fn __slice(self: String, start: isize, end: isize, step: isize,
+        start_omitted: bool, end_omitted: bool) String {
+        ret self.data.__slice(start, end, step, start_omitted, end_omitted);
     }
+    pub fn reverse(self: String) String { ret self.data.reverse(); }
+    pub fn to_lowercase(self: String) String { ret self.data.to_lowercase(); }
+    pub fn to_uppercase(self: String) String { ret self.data.to_uppercase(); }
+    pub fn lowercase(self: String) String { ret self.data.to_lowercase(); }
+    pub fn uppercase(self: String) String { ret self.data.to_uppercase(); }
+    pub fn capitalize(self: String) String { ret self.data.capitalize(); }
+    pub fn trim(self: String) String { ret self.data.trim(); }
+    pub fn starts_with(self: String, prefix: str) bool { ret self.data.starts_with(prefix); }
+    pub fn ends_with(self: String, suffix: str) bool { ret self.data.ends_with(suffix); }
+    pub fn find(self: String, needle: str) Option[usize] { ret self.data.find(needle); }
+    pub fn contains(self: String, needle: str) bool { ret self.data.contains(needle); }
+    pub fn parse_i64(self: String) Result[i64, ParseError] { ret self.data.parse_i64(); }
+    pub fn parse_i8(self: String) Result[i8, ParseError] { ret self.data.parse_i8(); }
+    pub fn parse_i16(self: String) Result[i16, ParseError] { ret self.data.parse_i16(); }
+    pub fn parse_i32(self: String) Result[i32, ParseError] { ret self.data.parse_i32(); }
+    pub fn parse_isize(self: String) Result[isize, ParseError] { ret self.data.parse_isize(); }
+    pub fn parse_u8(self: String) Result[u8, ParseError] { ret self.data.parse_u8(); }
+    pub fn parse_u16(self: String) Result[u16, ParseError] { ret self.data.parse_u16(); }
+    pub fn parse_u32(self: String) Result[u32, ParseError] { ret self.data.parse_u32(); }
+    pub fn parse_u64(self: String) Result[u64, ParseError] { ret self.data.parse_u64(); }
+    pub fn parse_usize(self: String) Result[usize, ParseError] { ret self.data.parse_usize(); }
+    pub fn parse_f32(self: String) Result[f32, ParseError] { ret self.data.parse_f32(); }
+    pub fn parse_f64(self: String) Result[f64, ParseError] { ret self.data.parse_f64(); }
 
     pub fn free(self: String) void {
-        if (self.cap > 0) {
-            __string_free(self.data);
-        }
+        if (self.cap > 0) { __string_free(self.data); }
     }
+}
+
+impl Index[isize, Rune] for String {
+    pub fn index(self: String, index: isize) Rune { ret self.data[index]; }
 }

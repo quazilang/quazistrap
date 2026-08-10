@@ -1402,6 +1402,21 @@ fn main() void {
     }
 
     #[test]
+    fn rejects_nonsensical_string_and_struct_comparisons() {
+        let string_report = analyze("fn bad(s: str) bool { ret s == 1; }");
+        assert!(string_report.errors.iter().any(|error| error.code == "S01"));
+
+        let ordering_report =
+            analyze("struct Value { n: i32, } fn bad(a: Value, b: Value) bool { ret a < b; }");
+        assert!(
+            ordering_report
+                .errors
+                .iter()
+                .any(|error| error.code == "S06")
+        );
+    }
+
+    #[test]
     fn reports_type_mismatch_in_var() {
         let report = analyze(
             r#"

@@ -156,6 +156,14 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 
 ### String Model
 
+- `str` and `String` use Unicode scalar indexes. `len()` counts scalars,
+  `bytes_len()` reports encoded bytes, negative indexes count from the end, and
+  `text[start:end:step]` follows Python slicing without splitting UTF-8.
+  String comparison operators compare contents, not addresses. Case conversion
+  is deliberately ASCII-only until Unicode tables are bundled.
+- Checked `parse[T]()` supports signed, unsigned, pointer-sized, and floating
+  primitives and returns `Result[T, ParseError]`. Search uses exact UTF-8 bytes
+  and `find` returns a byte offset.
 - `str` / `&str` — interchangeable. Immutable, valid UTF-8, fat pointer internally.
 - `String` — owned heap string (`ptr+len+cap`). Local variables auto-clean via `String.free`.
 - `Rune = u32` — Unicode codepoint.
@@ -224,7 +232,7 @@ If a `quazi.lock` file exists, it is used to pin dependency versions. When missi
 | `core` | Done | write/read/exit, memory/string primitives, numeric formatting, hostname/memory/CPUID and Windows release intrinsics, and an explicit raw string-pointer escape hatch |
 | `io` | Done | println, print, eprintln, eprint, read_line — str_variadic |
 | `fmt` | Done | `format(template, ...args: str)` — `{}` placeholders, spec-aware coercion |
-| `string` | Done | `String`: new, push, push_str, len, as_str, free |
+| `string` | Done | UTF-8 `str`/`String`: rune lengths, Python slicing, content comparison, ASCII case conversion, search, generic checked parsing, and automatic cleanup |
 | `panic` | Done | PanicInfo, __quazi_panic_handler, panic. Codegen injects file/line at call sites. |
 | `result` | Done | ok/is_ok/is_err/unwrap/unwrap_err/unwrap_or; `?` operator |
 | `option` | Done | is_some/is_none/unwrap/unwrap_or; `?` operator |
@@ -241,6 +249,7 @@ If a `quazi.lock` file exists, it is used to pin dependency versions. When missi
 | `os` | Done | Cross-platform owned environment/hostname values, release/edition, CPUID branding, shell/terminal ancestry, memory totals, process control, cwd, sleep, and scheduling |
 | `thread` | Done | spawn/join. No-capture only. |
 | `ffi` | Initial | Cross-platform C aliases, `nullptr[T]()`, `CStr`, and checked `CString.try_from(bytes)`. |
+| `math` | Done | Dependency-free integer combinatorics/GCD/LCM and lightweight f64 arithmetic, roots, trig, hyperbolic functions, exp/log, interpolation, and powers |
 
 ---
 
@@ -317,6 +326,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-10 | Expanded primitive DX with rune-based `len`, `bytes_len`, negative indexing, Python-style slices, content comparison operators, generic checked `parse[T]()`, numeric methods, broader dependency-free `std.math`, and `examples/22-stdlib-dx`; made Windows console output UTF-16-safe while preserving redirected UTF-8. Fixed initialized-binding aliasing, incomplete jump-aware inlining, float comparison/negation lowering, and function-table hole compaction found by the executable checks. |
 | 2026-08-10 | Restored `21-quazifetch`'s Unicode frame by default with an executable `-a`/`--ascii` fallback and made Linux package counting linear instead of repeatedly rescanning the status buffer. Fixed semantic constant tracking so assignments to mutable variables invalidate compile-time values instead of incorrectly collapsing runtime branches, and made Windows `main(args: Array[str])` allocations use the process heap to match automatic `core.free` cleanup without importing the CRT. |
 | 2026-08-10 | Corrected `21-quazifetch` system identity and package reporting: normalized hostnames, added CPUID CPU branding, unmanifested Windows build/edition detection, Toolhelp shell/terminal ancestry, Explorer labeling, and counted package metadata. Added automatically-owned cross-platform directory enumeration through `getdents64`/Win32 find handles and moved temporary stdlib buffers to destructor-backed ownership adapters. |
 | 2026-08-10 | Made `21-quazifetch` shell-free and portable across Windows/Linux using cross-platform `std.fs`/`std.os`; added hostname and memory intrinsics, kernel-provided Linux environment access, pointer-correct Win32 filesystem bindings, and CRT-free Windows allocation/string paths used by the example. Extended WPO-driven RAII so owned by-value parameters clean up on fallthrough and early returns without suppressing sibling-path cleanup, while returns transfer ownership and method receivers remain borrowed. |

@@ -3,18 +3,6 @@ import std.fs;
 import std.io;
 import std.os;
 
-fn str_eq(a: str, b: str) bool {
-    const a_len: usize = core.strlen(a);
-    const b_len: usize = core.strlen(b);
-    if (a_len != b_len) { ret false; }
-    var i: usize = 0;
-    for (i < a_len) {
-        if (core.str_byte_at(a, i) != core.str_byte_at(b, i)) { ret false; }
-        i++;
-    }
-    ret true;
-}
-
 @cfg(target_os = "linux")
 fn starts_at_bounded(
     text: str, offset: usize, needle: str, text_len: usize, needle_len: usize
@@ -74,50 +62,6 @@ fn copy_range(text: str, start: usize, end: usize) String {
 }
 
 @cfg(target_os = "linux")
-fn trim_copy(text: str) String {
-    const length: usize = core.strlen(text);
-    var start: usize = 0;
-    for (start < length) {
-        const byte: u8 = core.str_byte_at(text, start);
-        if (byte == 9) { start++; continue; }
-        if (byte == 10) { start++; continue; }
-        if (byte == 13) { start++; continue; }
-        if (byte == 32) { start++; continue; }
-        break;
-    }
-    var end: usize = length;
-    for (end > start) {
-        const byte: u8 = core.str_byte_at(text, end - 1);
-        if (byte == 9) { end--; continue; }
-        if (byte == 10) { end--; continue; }
-        if (byte == 13) { end--; continue; }
-        if (byte == 32) { end--; continue; }
-        break;
-    }
-    ret copy_range(text, start, end);
-}
-
-fn lowercase_copy(text: str) String {
-    const length: usize = core.strlen(text);
-    if (length == 0) { ret String.new(); }
-    var data: *u8 = 0;
-    unsafe { data = core.malloc(length + 1); }
-    if (data == 0) { ret String.new(); }
-    var index: usize = 0;
-    unsafe {
-        core.memcpy(data, core.str_as_ptr(text), length + 1);
-        for (index < length) {
-            const byte: u8 = *(data + index);
-            if (byte >= 65 && byte <= 90) { *(data + index) = byte + 32; }
-            index++;
-        }
-    }
-    var result: String = String.new();
-    unsafe { result = String.from_raw(data, length, length + 1); }
-    ret result;
-}
-
-@cfg(target_os = "linux")
 fn value_after_key(text: str, key: str) String {
     const length: usize = core.strlen(text);
     const key_len: usize = core.strlen(key);
@@ -151,24 +95,6 @@ fn basename_of(path: String) String {
     ret copy_range(text, start, length);
 }
 
-@cfg(target_os = "linux")
-fn capitalize(value: String) String {
-    if (value.is_empty()) { ret value; }
-    const text: str = value.as_str();
-    var first: u8 = core.str_byte_at(text, 0);
-    if (first >= 97 && first <= 122) { first = first - 32; }
-    var data: *u8 = 0;
-    unsafe { data = core.malloc(value.len() + 1); }
-    if (data == 0) { ret String.new(); }
-    unsafe {
-        core.memcpy(data, core.str_as_ptr(text), value.len() + 1);
-        *data = first;
-    }
-    var result: String = String.new();
-    unsafe { result = String.from_raw(data, value.len(), value.len() + 1); }
-    ret result;
-}
-
 // Adopt the primitive formatter's owning allocation into lexical String
 // ownership so Whole Program Analysis can destroy it automatically.
 fn owned_u64(value: u64) String {
@@ -184,7 +110,7 @@ fn get_os() String {
     const read: Result[String, i32] = fs.read_to_string("/proc/sys/kernel/osrelease");
     if (read.is_ok()) {
         const raw_release: String = read.unwrap();
-        const release: String = trim_copy(raw_release.as_str());
+        const release: String = raw_release.trim();
         var result: String = String.from(os.name());
         result = result.push_str(" ");
         result = result.push_str(release.as_str());
@@ -249,7 +175,7 @@ fn get_desktop() String {
     if (desktop.is_empty() && session.is_empty()) { ret String.from("Unknown"); }
     var result: String = String.from(desktop.as_str());
     if (!session.is_empty()) {
-        const display_session: String = capitalize(session);
+        const display_session: String = session.capitalize();
         if (!result.is_empty()) { result = result.push_str(" ("); }
         result = result.push_str(display_session.as_str());
         if (!desktop.is_empty()) { result = result.push_str(")"); }
@@ -259,14 +185,14 @@ fn get_desktop() String {
 
 fn normalized_terminal(value: String) String {
     const terminal: str = value.as_str();
-    if (str_eq(terminal, "kgx")) { ret String.from("GNOME Console"); }
-    if (str_eq(terminal, "iTerm.app")) { ret String.from("iTerm2"); }
-    if (str_eq(terminal, "Terminal.app")) { ret String.from("Apple Terminal"); }
-    if (str_eq(terminal, "Hyper")) { ret String.from("HyperTerm"); }
-    if (str_eq(terminal, "rxvt-unicode-256color")) { ret String.from("urxvt"); }
-    if (str_eq(terminal, "xterm-256color")) { ret String.from("xterm"); }
-    if (str_eq(terminal, "xterm-kitty")) { ret String.from("kitty"); }
-    if (str_eq(terminal, "linux")) { ret String.from("tty"); }
+    if (terminal == "kgx") { ret String.from("GNOME Console"); }
+    if (terminal == "iTerm.app") { ret String.from("iTerm2"); }
+    if (terminal == "Terminal.app") { ret String.from("Apple Terminal"); }
+    if (terminal == "Hyper") { ret String.from("HyperTerm"); }
+    if (terminal == "rxvt-unicode-256color") { ret String.from("urxvt"); }
+    if (terminal == "xterm-256color") { ret String.from("xterm"); }
+    if (terminal == "xterm-kitty") { ret String.from("kitty"); }
+    if (terminal == "linux") { ret String.from("tty"); }
     ret value;
 }
 
@@ -399,14 +325,15 @@ fn main(args: Array[str]) void {
     var ascii: bool = false;
     var arg_index: usize = 1;
     for (arg_index < args.len()) {
-        if (str_eq(args[arg_index], "-a") || str_eq(args[arg_index], "--ascii")) {
+        const arg: str = args[arg_index];
+        if (arg == "-a" || arg == "--ascii") {
             ascii = true;
         }
         arg_index++;
     }
 
     const raw_hostname: String = os.hostname();
-    const hostname: String = lowercase_copy(raw_hostname.as_str());
+    const hostname: String = raw_hostname.to_lowercase();
     const system: String = get_os();
     const cpu: String = get_cpu();
     const memory: String = get_memory();

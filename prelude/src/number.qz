@@ -1,0 +1,237 @@
+// Primitive numeric convenience methods implemented in Quazi.
+
+import panic.panic;
+
+fn __u64_greater(left: u64, right: u64) bool {
+    const left_high: u64 = left >> 63;
+    const right_high: u64 = right >> 63;
+    if (left_high != right_high) { ret left_high != 0; }
+    ret left > right;
+}
+
+fn __gcd_u64(left_value: u64, right_value: u64) u64 {
+    var left: u64 = left_value;
+    var right: u64 = right_value;
+    if (left == 0) { ret right; }
+    if (right == 0) { ret left; }
+    var shift: u32 = 0;
+    for (((left | right) & 1) == 0) {
+        left = left >> 1;
+        right = right >> 1;
+        shift++;
+    }
+    for ((left & 1) == 0) { left = left >> 1; }
+    for (right != 0) {
+        for ((right & 1) == 0) { right = right >> 1; }
+        if (__u64_greater(left, right)) {
+            const swap: u64 = left;
+            left = right;
+            right = swap;
+        }
+        right = right - left;
+    }
+    ret left << shift;
+}
+
+fn __magnitude_i64(value: i64) u64 {
+    if (value < 0) { ret ((-(value + 1)) as u64) + 1; }
+    ret value as u64;
+}
+
+impl i32 {
+    pub fn abs(self: i32) i32 {
+        if (self == -2147483648) { panic("i32.abs() overflow"); }
+        if (self < 0) { ret -self; }
+        ret self;
+    }
+
+    pub fn pow(self: i32, exponent: u32) i32 {
+        var base: i32 = self;
+        var power: u32 = exponent;
+        var result: i32 = 1;
+        for (power > 0) {
+            if ((power & 1) == 1) { result = result * base; }
+            power = power >> 1;
+            if (power > 0) { base = base * base; }
+        }
+        ret result;
+    }
+
+    pub fn gcd(self: i32, other: i32) i32 {
+        const value: u64 = __gcd_u64(__magnitude_i64(self as i64), __magnitude_i64(other as i64));
+        if (value > 2147483647) { panic("i32.gcd() result overflow"); }
+        ret value as i32;
+    }
+    pub fn lcm(self: i32, other: i32) i32 {
+        if (self == 0 || other == 0) { ret 0; }
+        ret (self / self.gcd(other) * other).abs();
+    }
+    pub fn is_even(self: i32) bool { ret self % 2 == 0; }
+    pub fn is_odd(self: i32) bool { ret self % 2 != 0; }
+}
+
+impl i64 {
+    pub fn abs(self: i64) i64 {
+        if (self == (-9223372036854775807 - 1)) { panic("i64.abs() overflow"); }
+        if (self < 0) { ret -self; }
+        ret self;
+    }
+
+    pub fn pow(self: i64, exponent: u32) i64 {
+        var base: i64 = self;
+        var power: u32 = exponent;
+        var result: i64 = 1;
+        for (power > 0) {
+            if ((power & 1) == 1) { result = result * base; }
+            power = power >> 1;
+            if (power > 0) { base = base * base; }
+        }
+        ret result;
+    }
+
+    pub fn gcd(self: i64, other: i64) i64 {
+        const value: u64 = __gcd_u64(__magnitude_i64(self), __magnitude_i64(other));
+        if (value > 9223372036854775807) { panic("i64.gcd() result overflow"); }
+        ret value as i64;
+    }
+    pub fn lcm(self: i64, other: i64) i64 {
+        if (self == 0 || other == 0) { ret 0; }
+        ret (self / self.gcd(other) * other).abs();
+    }
+    pub fn is_even(self: i64) bool { ret self % 2 == 0; }
+    pub fn is_odd(self: i64) bool { ret self % 2 != 0; }
+}
+
+impl isize {
+    pub fn abs(self: isize) isize {
+        if (self == ((-9223372036854775807 - 1) as isize)) { panic("isize.abs() overflow"); }
+        if (self < 0) { ret -self; }
+        ret self;
+    }
+
+    pub fn pow(self: isize, exponent: u32) isize {
+        var base: isize = self;
+        var power: u32 = exponent;
+        var result: isize = 1;
+        for (power > 0) {
+            if ((power & 1) == 1) { result = result * base; }
+            power = power >> 1;
+            if (power > 0) { base = base * base; }
+        }
+        ret result;
+    }
+
+    pub fn gcd(self: isize, other: isize) isize {
+        const value: u64 = __gcd_u64(
+            __magnitude_i64(self as i64), __magnitude_i64(other as i64)
+        );
+        if (value > 9223372036854775807) { panic("isize.gcd() result overflow"); }
+        ret value as isize;
+    }
+    pub fn lcm(self: isize, other: isize) isize {
+        if (self == 0 || other == 0) { ret 0; }
+        ret (self / self.gcd(other) * other).abs();
+    }
+    pub fn is_even(self: isize) bool { ret self % 2 == 0; }
+    pub fn is_odd(self: isize) bool { ret self % 2 != 0; }
+}
+
+impl u32 {
+    pub fn pow(self: u32, exponent: u32) u32 {
+        var base: u32 = self;
+        var power: u32 = exponent;
+        var result: u32 = 1;
+        for (power > 0) {
+            if ((power & 1) == 1) { result = result * base; }
+            power = power >> 1;
+            if (power > 0) { base = base * base; }
+        }
+        ret result;
+    }
+    pub fn gcd(self: u32, other: u32) u32 { ret __gcd_u64(self as u64, other as u64) as u32; }
+    pub fn lcm(self: u32, other: u32) u32 {
+        if (self == 0 || other == 0) { ret 0; }
+        ret self / self.gcd(other) * other;
+    }
+    pub fn is_even(self: u32) bool { ret self % 2 == 0; }
+    pub fn is_odd(self: u32) bool { ret self % 2 != 0; }
+}
+
+impl u64 {
+    pub fn pow(self: u64, exponent: u32) u64 {
+        var base: u64 = self;
+        var power: u32 = exponent;
+        var result: u64 = 1;
+        for (power > 0) {
+            if ((power & 1) == 1) { result = result * base; }
+            power = power >> 1;
+            if (power > 0) { base = base * base; }
+        }
+        ret result;
+    }
+    pub fn gcd(self: u64, other: u64) u64 { ret __gcd_u64(self, other); }
+    pub fn lcm(self: u64, other: u64) u64 {
+        if (self == 0 || other == 0) { ret 0; }
+        ret self / self.gcd(other) * other;
+    }
+    pub fn is_even(self: u64) bool { ret self % 2 == 0; }
+    pub fn is_odd(self: u64) bool { ret self % 2 != 0; }
+}
+
+impl usize {
+    pub fn pow(self: usize, exponent: u32) usize {
+        var base: usize = self;
+        var power: u32 = exponent;
+        var result: usize = 1;
+        for (power > 0) {
+            if ((power & 1) == 1) { result = result * base; }
+            power = power >> 1;
+            if (power > 0) { base = base * base; }
+        }
+        ret result;
+    }
+    pub fn gcd(self: usize, other: usize) usize {
+        ret __gcd_u64(self as u64, other as u64) as usize;
+    }
+    pub fn lcm(self: usize, other: usize) usize {
+        if (self == 0 || other == 0) { ret 0; }
+        ret self / self.gcd(other) * other;
+    }
+    pub fn is_even(self: usize) bool { ret self % 2 == 0; }
+    pub fn is_odd(self: usize) bool { ret self % 2 != 0; }
+}
+
+impl f32 {
+    pub fn abs(self: f32) f32 { if (self < 0.0) { ret -self; } ret self; }
+    pub fn min(self: f32, other: f32) f32 { if (self < other) { ret self; } ret other; }
+    pub fn max(self: f32, other: f32) f32 { if (self > other) { ret self; } ret other; }
+    pub fn clamp(self: f32, low: f32, high: f32) f32 {
+        if (self < low) { ret low; }
+        if (self > high) { ret high; }
+        ret self;
+    }
+}
+
+impl f64 {
+    pub fn abs(self: f64) f64 { if (self < 0.0) { ret -self; } ret self; }
+    pub fn min(self: f64, other: f64) f64 { if (self < other) { ret self; } ret other; }
+    pub fn max(self: f64, other: f64) f64 { if (self > other) { ret self; } ret other; }
+    pub fn clamp(self: f64, low: f64, high: f64) f64 {
+        if (self < low) { ret low; }
+        if (self > high) { ret high; }
+        ret self;
+    }
+
+    pub fn powi(self: f64, exponent: i32) f64 {
+        var base: f64 = self;
+        var power: i32 = exponent;
+        if (power < 0) { base = 1.0 / base; power = -power; }
+        var result: f64 = 1.0;
+        for (power > 0) {
+            if ((power & 1) == 1) { result = result * base; }
+            power = power >> 1;
+            if (power > 0) { base = base * base; }
+        }
+        ret result;
+    }
+}
