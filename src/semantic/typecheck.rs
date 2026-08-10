@@ -1392,7 +1392,12 @@ impl Analyzer {
                     }
 
                     self.mark_initialized(name);
-                    self.set_symbol_const_value(name, value_eval.const_value.clone());
+                    // Mutable assignments may occur on only one control-flow
+                    // path (or in a loop that executes zero times). Treating
+                    // the assigned literal as globally constant makes later
+                    // branches unsound. The bytecode dataflow pass still folds
+                    // values where reaching definitions prove constancy.
+                    self.set_symbol_const_value(name, None);
                 }
 
                 // Never propagate const_value from an assign expression — the assign
