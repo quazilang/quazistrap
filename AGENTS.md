@@ -167,7 +167,7 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 - `str` / `&str` — interchangeable. Immutable, valid UTF-8, fat pointer internally.
 - `String` — owned heap string (`ptr+len+cap`). Local variables auto-clean via `String.free`.
 - `Rune = u32` — Unicode codepoint.
-- Quoted strings decode `\0`, `\a`, `\b`, `\e`, `\f`, `\n`, `\r`, `\t`, `\v`, punctuation escapes, `\xNN` ASCII escapes, one-to-three-digit octal escapes, C-style `\uNNNN`/`\UNNNNNNNN` and Rust-style `\u{H...}` Unicode scalar escapes, and escaped-newline continuations. Invalid escapes are lexer errors. Raw backtick strings decode nothing.
+- Quoted strings decode `\0`, `\a`, `\b`, `\e`, `\f`, `\n`, `\r`, `\t`, `\v`, punctuation escapes, `\xNN` ASCII escapes, one-to-three-digit octal escapes, C-style `\uNNNN`/`\UNNNNNNNN` and Rust-style `\u{H...}` Unicode scalar escapes, and escaped-newline continuations. Invalid escapes are lexer errors. Raw backtick strings decode nothing, may span lines, and must be terminated.
 
 ---
 
@@ -326,6 +326,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-11 | Fixed Windows interactive input so CRLF/CR Enter becomes `\n` instead of returning the cursor to column zero; changed `std.io.read` from numeric bytes to non-empty UTF-8 string delimiters, including multi-byte sequences. Documented `str`/`&str`/`String`, demonstrated multiline raw strings, and made unterminated raw literals a lexer error. |
 | 2026-08-11 | Made custom-delimiter and single-key terminal reads immediate on Windows/Linux while preserving redirected and line-buffered input. Hardened Win64 `ReadFile`/`WriteFile` lowering so result counts live outside shadow space and API failures return `-1`; stopped RAII from destroying uninitialized owned locals before their first assignment. |
 | 2026-08-10 | Expanded primitive DX with rune-based `len`, `bytes_len`, negative indexing, Python-style slices, content comparison operators, generic checked `parse[T]()`, numeric methods, broader dependency-free `std.math`, and `examples/22-stdlib-dx`; made Windows console output UTF-16-safe while preserving redirected UTF-8. Fixed initialized-binding aliasing, incomplete jump-aware inlining, float comparison/negation lowering, and function-table hole compaction found by the executable checks. |
 | 2026-08-10 | Restored `21-quazifetch`'s Unicode frame by default with an executable `-a`/`--ascii` fallback and made Linux package counting linear instead of repeatedly rescanning the status buffer. Fixed semantic constant tracking so assignments to mutable variables invalidate compile-time values instead of incorrectly collapsing runtime branches, and made Windows `main(args: Array[str])` allocations use the process heap to match automatic `core.free` cleanup without importing the CRT. |

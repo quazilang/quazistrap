@@ -8,6 +8,8 @@ fn main() void {
     io.println("escaped braces: {{ value = {} }}", value);
 
     io.println(`raw string keeps \n, \e, \x41, \101, \u263A, and \u{1F980} unchanged`);
+    io.println(`raw strings also
+span multiple lines`);
 
     io.println("escaped quote: \" and backslash: \\");
     io.println("tab-separated:\tleft\tright");

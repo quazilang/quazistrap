@@ -122,7 +122,25 @@ Ordinary double-quoted strings support C- and Rust-style escapes:
 | Backslash + newline | Continue the string, ignoring following whitespace |
 
 Malformed and unknown escapes are compile errors. Backtick raw strings preserve
-all characters exactly and never decode escapes: `` `\n\e\x41\u{41}` ``.
+all characters exactly, never decode escapes, and may span lines:
+
+```quazi
+const escaped = `\n\e\x41\u{41}`;
+const message = `first line
+second line`;
+```
+
+An unterminated raw string is a compile error.
+
+### String types
+
+- `str` is an immutable borrowed UTF-8 view. String literals have this type.
+  It does not own or free its bytes.
+- `&str` currently has the same representation and accepted operations as
+  `str`; it makes borrowing explicit for readers and future lifetime checking.
+- `String` owns a UTF-8 allocation and stores data, byte length, and capacity.
+  Local `String` values are automatically freed; use `.as_str()` to borrow one
+  without transferring ownership.
 
 ---
 

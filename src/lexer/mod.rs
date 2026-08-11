@@ -233,7 +233,7 @@ impl Lexer {
         }
 
         let span = self.make_span(start, self.pos, line, col);
-        Token::new(TokenKind::StringLit(s), span)
+        Token::new(TokenKind::Error("unterminated raw string".to_string()), span)
     }
 
     fn read_byte_string(&mut self, start: usize, line: usize, col: usize, raw: bool) -> Token {
@@ -749,6 +749,11 @@ mod string_tests {
     #[test]
     fn raw_strings_can_span_lines() {
         assert_eq!(string_value("`first\nsecond`"), "first\nsecond");
+    }
+
+    #[test]
+    fn unterminated_multiline_raw_strings_are_errors() {
+        assert!(escape_error("`first\nsecond").contains("unterminated raw string"));
     }
 
 }

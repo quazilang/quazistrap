@@ -12,9 +12,9 @@ fn main() i32 {
     io.println("You pressed: {}", key.as_str());
 
     // Test 3: read_until — read until a custom delimiter
-    // Using '.' (byte 46) as delimiter
+    // UTF-8 delimiters are strings, so callers never need numeric byte values.
     io.println("Type something (end with '.'):");
-    var text: String = io.read(46).unwrap();
+    var text: String = io.read(".").unwrap();
     io.println("You typed: {}", text.as_str());
 
     io.println("Done!");
