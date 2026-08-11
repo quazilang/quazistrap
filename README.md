@@ -1,5 +1,7 @@
 # quazilang
 
+[![AI Slop Inside](https://sladge.net/badge.svg)](https://sladge.net)
+
 **A fast, strict, and expressive systems independent programming language**
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
