@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::loader::{ModuleResolver, ModuleSpec};
+use crate::package::{
+    DependencyKind, LockedSource, materialize_path, materialize_qzi_interface, materialize_url,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProjectKind {
@@ -25,6 +28,7 @@ pub struct ProjectConfig {
     pub src_dir: PathBuf,
     pub flags: Vec<String>,
     pub dependencies: Vec<ResolvedDependency>,
+    pub qzi_dependencies: Vec<PathBuf>,
     pub cc: CcConfig,
     pub link: LinkConfig,
 }
@@ -48,7 +52,10 @@ pub struct LinkConfig {
 pub struct ResolvedDependency {
     pub name: String,
     pub root: PathBuf,
-    pub requested_version: Option<String>,
+    pub kind: DependencyKind,
+    pub url: Option<String>,
+    pub revision: Option<String>,
+    pub checksum: Option<String>,
     pub version: Option<String>,
 }
 
@@ -104,8 +111,13 @@ struct RawBuild {
 enum RawDependency {
     Path(String),
     Table {
-        path: String,
+        #[serde(rename = "type")]
+        kind: Option<DependencyKind>,
+        path: Option<String>,
+        url: Option<String>,
         version: Option<String>,
+        rev: Option<String>,
+        checksum: Option<String>,
     },
 }
 
@@ -125,8 +137,12 @@ struct ProjectMeta {
 #[derive(Debug, Clone)]
 struct DependencySpec {
     name: String,
-    path: PathBuf,
+    kind: Option<DependencyKind>,
+    path: Option<String>,
+    url: Option<String>,
     requested_version: Option<String>,
+    revision: Option<String>,
+    checksum: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -134,11 +150,16 @@ struct Lockfile {
     package: Vec<LockPackage>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LockPackage {
     name: String,
     version: Option<String>,
-    path: String,
+    #[serde(default)]
+    kind: DependencyKind,
+    path: Option<String>,
+    url: Option<String>,
+    revision: Option<String>,
+    checksum: Option<String>,
 }
 
 impl ProjectContext {
@@ -162,10 +183,43 @@ impl ProjectContext {
         let lock_path = self.config.root.join("quazi.lock");
         if lock_path.exists() {
             let lock = load_lockfile(&lock_path)?;
-            validate_lockfile(&lock, &self.resolver, &self.config.name)
+            validate_lockfile(&lock, &self.config.dependencies)
         } else {
-            write_lockfile(&lock_path, &self.resolver, &self.config.name)
+            write_lockfile(&lock_path, &self.config.dependencies)
         }
+    }
+
+    pub fn incremental_cache_path(&self) -> PathBuf {
+        self.config
+            .root
+            .join("target")
+            .join("quazi")
+            .join(format!(
+                "{}-{}",
+                std::env::consts::ARCH,
+                std::env::consts::OS
+            ))
+            .join("default")
+            .join("incremental.qzc")
+    }
+
+    pub fn incremental_inputs(&self) -> Vec<PathBuf> {
+        let mut inputs = vec![self.config.root.join("quazi.toml")];
+        let lock = self.config.root.join("quazi.lock");
+        if lock.exists() {
+            inputs.push(lock);
+        }
+        for dependency in &self.config.dependencies {
+            if dependency.root.is_file() {
+                inputs.push(dependency.root.clone());
+            } else {
+                let manifest = dependency.root.join("quazi.toml");
+                if manifest.exists() {
+                    inputs.push(manifest);
+                }
+            }
+        }
+        inputs
     }
 
     fn load_from_root(root: &Path) -> Result<Self, String> {
@@ -179,6 +233,7 @@ impl ProjectContext {
             src_dir: meta.src_dir.clone(),
             flags: meta.flags.clone(),
             dependencies: Vec::new(),
+            qzi_dependencies: Vec::new(),
             cc: meta.cc.clone(),
             link: meta.link.clone(),
         };
@@ -186,6 +241,22 @@ impl ProjectContext {
         let mut resolver = ModuleResolver::default();
         let mut visited = HashSet::new();
         let mut dep_versions: HashMap<String, ResolvedDependency> = HashMap::new();
+        let lock_path = root.join("quazi.lock");
+        let existing_lock = lock_path
+            .exists()
+            .then(|| load_lockfile(&lock_path))
+            .transpose()?;
+        let locked_packages: HashMap<String, LockPackage> = existing_lock
+            .as_ref()
+            .map(|lock| {
+                lock.package
+                    .iter()
+                    .map(|package| (package.name.clone(), package.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut qzi_dependencies = Vec::new();
+        let interface_cache = root.join("target").join("quazi").join("interfaces");
 
         collect_modules(
             root,
@@ -194,6 +265,9 @@ impl ProjectContext {
             None,
             &config.name,
             &mut dep_versions,
+            &locked_packages,
+            &mut qzi_dependencies,
+            &interface_cache,
         )?;
 
         let mut dependencies: Vec<ResolvedDependency> = dep_versions.into_values().collect();
@@ -202,6 +276,7 @@ impl ProjectContext {
         Ok(Self {
             config: ProjectConfig {
                 dependencies,
+                qzi_dependencies,
                 ..config
             },
             resolver,
@@ -310,15 +385,47 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
     let mut dependencies = Vec::new();
     if let Some(raw_deps) = raw.dependencies {
         for (name, spec) in raw_deps {
-            let (path, version) = match spec {
-                RawDependency::Path(path) => (path, None),
-                RawDependency::Table { path, version } => (path, version),
+            if !is_quazi_identifier(&name) {
+                return Err(format!(
+                    "dependency name '{name}' must be a Quazi identifier because it is used by import"
+                ));
+            }
+            let (kind, path, url, version, revision, checksum) = match spec {
+                RawDependency::Path(path) => (None, Some(path), None, None, None, None),
+                RawDependency::Table {
+                    kind,
+                    path,
+                    url,
+                    version,
+                    rev,
+                    checksum,
+                } => (kind, path, url, version, rev, checksum),
             };
-            let dep_root = root.join(path);
+            if path.is_some() == url.is_some() {
+                return Err(format!(
+                    "dependency '{name}' must specify exactly one of 'path' or 'url'"
+                ));
+            }
+            if url.is_some() && kind.is_none() {
+                return Err(format!(
+                    "dependency '{name}' uses 'url' and must specify type = \"git\", \"archive\", \"source\", or \"qzi\""
+                ));
+            }
+            if path.is_some() && matches!(kind, Some(DependencyKind::Git | DependencyKind::Archive))
+            {
+                return Err(format!(
+                    "dependency '{name}' cannot use type = \"{}\" with 'path'",
+                    kind.unwrap().as_str()
+                ));
+            }
             dependencies.push(DependencySpec {
                 name,
-                path: dep_root,
+                kind,
+                path,
+                url,
                 requested_version: version,
+                revision,
+                checksum,
             });
         }
     }
@@ -336,6 +443,14 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
     })
 }
 
+fn is_quazi_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
 fn read_raw_config(path: &Path) -> Result<RawConfig, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read '{}': {}", path.to_string_lossy(), e))?;
@@ -349,14 +464,15 @@ fn collect_modules(
     expected: Option<(&str, Option<&str>)>,
     root_name: &str,
     dep_versions: &mut HashMap<String, ResolvedDependency>,
+    locked_packages: &HashMap<String, LockPackage>,
+    qzi_dependencies: &mut Vec<PathBuf>,
+    interface_cache: &Path,
 ) -> Result<(), String> {
     let canonical = root
         .canonicalize()
         .map_err(|e| format!("cannot resolve '{}': {}", root.to_string_lossy(), e))?;
 
     let meta = load_project_meta(&canonical)?;
-
-    let requested_version = expected.and_then(|(_, v)| v.map(|s| s.to_string()));
 
     if let Some((expect_name, expect_version)) = expected {
         if meta.name != expect_name {
@@ -392,7 +508,10 @@ fn collect_modules(
             ResolvedDependency {
                 name: meta.name.clone(),
                 root: canonical.clone(),
-                requested_version,
+                kind: DependencyKind::Path,
+                url: None,
+                revision: None,
+                checksum: None,
                 version: meta.version.clone(),
             },
         );
@@ -403,15 +522,160 @@ fn collect_modules(
     }
 
     for dep in meta.dependencies {
-        let dep_expected = (dep.name.as_str(), dep.requested_version.as_deref());
-        collect_modules(
-            dep.path.as_path(),
-            resolver,
-            visited,
-            Some(dep_expected),
-            root_name,
-            dep_versions,
-        )?;
+        let locked = locked_packages.get(&dep.name);
+        if let (Some(locked), Some(url)) = (locked, dep.url.as_deref()) {
+            let requested_checksum = dep
+                .checksum
+                .as_deref()
+                .map(|value| value.strip_prefix("sha256:").unwrap_or(value));
+            let locked_checksum = locked
+                .checksum
+                .as_deref()
+                .map(|value| value.strip_prefix("sha256:").unwrap_or(value));
+            if locked.url.as_deref() != Some(url)
+                || Some(locked.kind) != dep.kind
+                || dep
+                    .revision
+                    .as_deref()
+                    .is_some_and(|revision| locked.revision.as_deref() != Some(revision))
+                || requested_checksum.is_some_and(|checksum| locked_checksum != Some(checksum))
+            {
+                return Err(format!(
+                    "dependency '{}' differs from quazi.lock; delete quazi.lock and run `qz fetch`",
+                    dep.name
+                ));
+            }
+        }
+        let materialized = if let Some(path) = dep.path.as_deref() {
+            materialize_path(&canonical, path, dep.kind)?
+        } else {
+            let url = dep.url.as_deref().expect("validated URL dependency");
+            let kind = dep.kind.expect("validated URL dependency type");
+            let locked_source = locked.map(|package| LockedSource {
+                revision: package.revision.clone(),
+                checksum: package.checksum.clone(),
+            });
+            materialize_url(
+                &dep.name,
+                kind,
+                url,
+                dep.revision.as_deref(),
+                dep.checksum.as_deref(),
+                locked_source.as_ref(),
+            )?
+        };
+        match materialized.kind {
+            DependencyKind::Qzi => {
+                let bytes = std::fs::read(&materialized.path).map_err(|error| {
+                    format!(
+                        "cannot read QZI dependency '{}': {error}",
+                        materialized.path.display()
+                    )
+                })?;
+                let module = crate::bytecode::deserialize_qzi_module(&bytes)
+                    .map_err(|error| format!("invalid QZI dependency '{}': {error}", dep.name))?;
+                if !module.metadata.name.is_empty() && module.metadata.name != dep.name {
+                    return Err(format!(
+                        "QZI dependency name mismatch: expected '{}', got '{}'",
+                        dep.name, module.metadata.name
+                    ));
+                }
+                if module.metadata.kind != crate::bytecode::QziModuleKind::Library {
+                    return Err(format!(
+                        "QZI dependency '{}' is executable; dependencies must be library QZI modules",
+                        dep.name
+                    ));
+                }
+                if let Some(expected_version) = dep.requested_version.as_deref()
+                    && module.metadata.version.as_deref() != Some(expected_version)
+                {
+                    return Err(format!(
+                        "QZI dependency '{}' version mismatch: expected {}, got {}",
+                        dep.name,
+                        expected_version,
+                        module.metadata.version.as_deref().unwrap_or("<none>")
+                    ));
+                }
+                let interface = materialize_qzi_interface(
+                    interface_cache,
+                    &dep.name,
+                    &materialized.path,
+                    &module.interface,
+                )?;
+                resolver.insert(ModuleSpec {
+                    name: dep.name.clone(),
+                    root: interface.root,
+                    src_dir: interface.src_dir,
+                    entry: interface.entry,
+                    version: module.metadata.version.clone(),
+                })?;
+                qzi_dependencies.push(materialized.path.clone());
+                dep_versions.insert(
+                    dep.name.clone(),
+                    ResolvedDependency {
+                        name: dep.name,
+                        root: materialized.path,
+                        kind: DependencyKind::Qzi,
+                        url: dep.url,
+                        revision: materialized.revision,
+                        checksum: materialized.checksum,
+                        version: module.metadata.version,
+                    },
+                );
+            }
+            DependencyKind::Source => {
+                if dep.requested_version.is_some() {
+                    return Err(format!(
+                        "source dependency '{}' cannot request a package version",
+                        dep.name
+                    ));
+                }
+                let source_root = materialized
+                    .path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .to_path_buf();
+                resolver.insert(ModuleSpec {
+                    name: dep.name.clone(),
+                    root: source_root.clone(),
+                    src_dir: source_root,
+                    entry: materialized.path.clone(),
+                    version: None,
+                })?;
+                dep_versions.insert(
+                    dep.name.clone(),
+                    ResolvedDependency {
+                        name: dep.name,
+                        root: materialized.path,
+                        kind: DependencyKind::Source,
+                        url: dep.url,
+                        revision: None,
+                        checksum: materialized.checksum,
+                        version: None,
+                    },
+                );
+            }
+            DependencyKind::Path | DependencyKind::Git | DependencyKind::Archive => {
+                let dep_expected = (dep.name.as_str(), dep.requested_version.as_deref());
+                collect_modules(
+                    &materialized.path,
+                    resolver,
+                    visited,
+                    Some(dep_expected),
+                    root_name,
+                    dep_versions,
+                    locked_packages,
+                    qzi_dependencies,
+                    interface_cache,
+                )?;
+                if let Some(resolved) = dep_versions.get_mut(&dep.name) {
+                    resolved.kind = materialized.kind;
+                    resolved.url = dep.url;
+                    resolved.revision = materialized.revision;
+                    resolved.checksum = materialized.checksum;
+                }
+            }
+        }
     }
 
     Ok(())
@@ -423,29 +687,46 @@ fn load_lockfile(path: &Path) -> Result<Lockfile, String> {
     toml::from_str(&text).map_err(|e| format!("cannot parse '{}': {}", path.to_string_lossy(), e))
 }
 
-fn validate_lockfile(
-    lock: &Lockfile,
-    resolver: &ModuleResolver,
-    root_name: &str,
-) -> Result<(), String> {
+fn validate_lockfile(lock: &Lockfile, dependencies: &[ResolvedDependency]) -> Result<(), String> {
+    if lock.package.len() != dependencies.len() {
+        return Err(
+            "lockfile dependency set differs from quazi.toml; delete quazi.lock and run `qz fetch`"
+                .to_string(),
+        );
+    }
     let mut map: HashMap<&str, &LockPackage> = HashMap::new();
     for pkg in &lock.package {
         map.insert(pkg.name.as_str(), pkg);
     }
 
-    for (name, spec) in &resolver.modules {
-        if name == root_name {
-            continue;
-        }
-        let Some(pkg) = map.get(name.as_str()) else {
-            return Err(format!("lockfile missing package '{}'", name));
+    for dependency in dependencies {
+        let Some(pkg) = map.get(dependency.name.as_str()) else {
+            return Err(format!("lockfile missing package '{}'", dependency.name));
         };
-        if pkg.version.as_deref() != spec.version.as_deref() {
+        if pkg.version.as_deref() != dependency.version.as_deref() {
             return Err(format!(
                 "lockfile version mismatch for '{}': expected {}, got {}",
-                name,
-                spec.version.clone().unwrap_or_else(|| "<none>".to_string()),
+                dependency.name,
+                dependency
+                    .version
+                    .clone()
+                    .unwrap_or_else(|| "<none>".to_string()),
                 pkg.version.clone().unwrap_or_else(|| "<none>".to_string())
+            ));
+        }
+        if pkg.kind != dependency.kind
+            || pkg.path
+                != dependency
+                    .url
+                    .is_none()
+                    .then(|| dependency.root.to_string_lossy().into_owned())
+            || pkg.url != dependency.url
+            || pkg.revision != dependency.revision
+            || pkg.checksum != dependency.checksum
+        {
+            return Err(format!(
+                "lockfile source mismatch for '{}'; delete quazi.lock and run `qz fetch`",
+                dependency.name
             ));
         }
     }
@@ -453,15 +734,20 @@ fn validate_lockfile(
     Ok(())
 }
 
-fn write_lockfile(path: &Path, resolver: &ModuleResolver, root_name: &str) -> Result<(), String> {
-    let mut packages: Vec<LockPackage> = resolver
-        .modules
+fn write_lockfile(path: &Path, dependencies: &[ResolvedDependency]) -> Result<(), String> {
+    let mut packages: Vec<LockPackage> = dependencies
         .iter()
-        .filter(|(name, _)| name.as_str() != root_name)
-        .map(|(name, spec)| LockPackage {
-            name: name.clone(),
-            version: spec.version.clone(),
-            path: spec.root.to_string_lossy().into_owned(),
+        .map(|dependency| LockPackage {
+            name: dependency.name.clone(),
+            version: dependency.version.clone(),
+            kind: dependency.kind,
+            path: dependency
+                .url
+                .is_none()
+                .then(|| dependency.root.to_string_lossy().into_owned()),
+            url: dependency.url.clone(),
+            revision: dependency.revision.clone(),
+            checksum: dependency.checksum.clone(),
         })
         .collect();
     packages.sort_by(|a, b| a.name.cmp(&b.name));
@@ -476,6 +762,12 @@ fn write_lockfile(path: &Path, resolver: &ModuleResolver, root_name: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::analyze_program_with_source_files;
+    use crate::bytecode::instruction::{ri16, rrr};
+    use crate::bytecode::interface::{QziInterfaceBundle, QziInterfaceModule};
+    use crate::bytecode::opcode::Opcode;
+    use crate::bytecode::{Chunk, Codegen, QziMetadata, QziModule, QziModuleKind};
+    use std::collections::{HashMap as StdHashMap, HashSet as StdHashSet};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -537,6 +829,125 @@ version = "1.2.3"
         let lock = load_lockfile(&lock_path).expect("load lockfile");
         assert_eq!(lock.package.len(), 1);
         assert_eq!(lock.package[0].name, "dep");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_project_imports_and_links_qzi_library_dependency() {
+        let root = temp_dir("qz_qzi_dependency");
+        let src_dir = root.join("src");
+        fs::create_dir_all(&src_dir).expect("create src");
+        fs::write(
+            src_dir.join("main.qz"),
+            "import dep.answer;\nfn main() i32 { ret answer(); }",
+        )
+        .expect("write main");
+
+        let interface = toml::to_string(&QziInterfaceBundle {
+            modules: vec![QziInterfaceModule {
+                name: "dep".to_string(),
+                exports: vec!["answer".to_string()],
+                source: "pub fn answer() i32;\n".to_string(),
+            }],
+        })
+        .expect("serialize interface");
+        let mut answer = Chunk::new("dep.answer");
+        answer.reg_count = 1;
+        answer.emit(ri16(Opcode::MovI, 0, 42));
+        answer.emit(rrr(Opcode::Ret, 0, 0, 0));
+        let dependency = QziModule {
+            metadata: QziMetadata {
+                name: "dep".to_string(),
+                version: Some("1.0.0".to_string()),
+                kind: QziModuleKind::Library,
+                main_takes_args: false,
+            },
+            interface,
+            call_relocations: Vec::new(),
+            chunks: vec![answer],
+        };
+        let dependency_path = root.join("dep.qzi");
+        fs::write(
+            &dependency_path,
+            crate::bytecode::serialize_qzi_module(&dependency).expect("serialize dependency"),
+        )
+        .expect("write dependency");
+        fs::write(
+            root.join("quazi.toml"),
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+dep = { path = "dep.qzi" }
+"#,
+        )
+        .expect("write manifest");
+
+        let context = ProjectContext::load(&root).expect("load QZI project");
+        assert_eq!(
+            context.config.qzi_dependencies,
+            [dependency_path.canonicalize().unwrap()]
+        );
+        let loaded = crate::loader::load_programs_with_resolver(
+            std::slice::from_ref(&context.config.entry),
+            Some(&context.resolver),
+        )
+        .expect("load source against QZI interface");
+        let namespaced_paths: StdHashSet<String> = loaded
+            .namespaced_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let report = analyze_program_with_source_files(
+            &loaded.merged_source,
+            &loaded.program,
+            loaded.library_fn_names.clone(),
+            loaded.library_char_ranges.clone(),
+            loaded.source_files.clone(),
+            namespaced_paths,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
+        let mut codegen = Codegen::new(&report);
+        let chunks = codegen
+            .compile_program(&loaded.program, &loaded.source_files)
+            .expect("compile application");
+        assert!(
+            codegen
+                .external_call_relocations()
+                .iter()
+                .any(|relocation| relocation.symbol == "dep.answer")
+        );
+        let generated = QziModule {
+            metadata: QziMetadata {
+                name: "app".to_string(),
+                version: None,
+                kind: QziModuleKind::Executable,
+                main_takes_args: false,
+            },
+            interface: String::new(),
+            call_relocations: codegen.external_call_relocations().to_vec(),
+            chunks,
+        };
+        let linked = crate::bytecode::link_qzi_modules(&[generated, dependency])
+            .expect("link QZI dependency");
+        let symbols: StdHashMap<_, _> = linked
+            .iter()
+            .enumerate()
+            .map(|(index, chunk)| (chunk.name.as_str(), index as u16))
+            .collect();
+        let main = linked.iter().find(|chunk| chunk.name == "main").unwrap();
+        let call = main
+            .code
+            .iter()
+            .find(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+            .expect("main should call dependency");
+        assert_eq!(call.ri16().1, symbols["dep.answer"]);
 
         let _ = fs::remove_dir_all(root);
     }

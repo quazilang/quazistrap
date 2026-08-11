@@ -7,6 +7,82 @@ use super::instruction::{ri16, rrr};
 use super::opcode::Opcode;
 use crate::abi::{ForeignGlobal, ForeignSymbol};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QziModuleKind {
+    Executable,
+    Library,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QziMetadata {
+    pub name: String,
+    pub version: Option<String>,
+    pub kind: QziModuleKind,
+    pub main_takes_args: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QziCallRelocation {
+    pub chunk_index: u32,
+    pub instruction_index: u32,
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct QziModule {
+    pub metadata: QziMetadata,
+    /// Quazi declarations exposed to source consumers. QZI v6 keeps this as
+    /// UTF-8 so newer compilers can reject unsupported syntax explicitly.
+    pub interface: String,
+    pub call_relocations: Vec<QziCallRelocation>,
+    pub chunks: Vec<Chunk>,
+}
+
+impl QziModule {
+    pub fn from_chunks(chunks: Vec<Chunk>) -> Self {
+        let kind = if chunks.iter().any(|chunk| chunk.name == "main") {
+            QziModuleKind::Executable
+        } else {
+            QziModuleKind::Library
+        };
+        Self {
+            metadata: QziMetadata {
+                name: String::new(),
+                version: None,
+                kind,
+                main_takes_args: false,
+            },
+            interface: String::new(),
+            call_relocations: infer_call_relocations(&chunks).unwrap_or_default(),
+            chunks,
+        }
+    }
+
+    pub fn qualify_library_root_symbols(&mut self) {
+        if self.metadata.kind != QziModuleKind::Library || self.metadata.name.is_empty() {
+            return;
+        }
+        let mut renamed = std::collections::HashMap::new();
+        for chunk in &mut self.chunks {
+            if !chunk.name.contains('.') {
+                let old = chunk.name.clone();
+                chunk.name = format!("{}.{}", self.metadata.name, old);
+                renamed.insert(old, chunk.name.clone());
+            }
+        }
+        for chunk in &mut self.chunks {
+            for constant in &mut chunk.constants {
+                if let ConstPoolEntry::FnAddr(name) = constant
+                    && let Some(replacement) = renamed.get(name)
+                {
+                    *name = replacement.clone();
+                }
+            }
+        }
+        self.call_relocations = infer_call_relocations(&self.chunks).unwrap_or_default();
+    }
+}
+
 /// Constant pool value — lives alongside bytecode, referenced by MovConst.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstPoolEntry {
@@ -25,7 +101,7 @@ pub enum ConstPoolEntry {
 }
 
 /// A single function's bytecode + its constant pool.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Chunk {
     pub code: Vec<Instruction>,
     pub constants: Vec<ConstPoolEntry>,
@@ -181,7 +257,7 @@ impl Chunk {
     }
 }
 
-pub fn deserialize_qzi(buf: &[u8]) -> Result<Vec<Chunk>, String> {
+fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
     use super::instruction::Instruction;
 
     let mut pos = 0;
@@ -428,7 +504,10 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
 
     for (chunk_index, chunk) in chunks.iter().enumerate() {
         if chunk.constant_pool_overflowed {
-            return Err(format!("chunk `{}` exceeded the QZI constant-pool limit", chunk.name));
+            return Err(format!(
+                "chunk `{}` exceeded the QZI constant-pool limit",
+                chunk.name
+            ));
         }
         if chunk.param_count > u8::MAX as usize {
             return Err(format!("chunk `{}` has too many parameters", chunk.name));
@@ -452,9 +531,8 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
             for register in crate::bytecode::regalloc::instruction_registers(instruction) {
                 // A zero-register void function still carries `Ret r0` by the
                 // historical QZI convention. The backend reserves that return slot.
-                let legacy_void_return = chunk.reg_count == 0
-                    && opcode == Opcode::Ret
-                    && register == 0;
+                let legacy_void_return =
+                    chunk.reg_count == 0 && opcode == Opcode::Ret && register == 0;
                 if !legacy_void_return && register as usize >= chunk.reg_count as usize {
                     return fail("register operand is outside the declared frame");
                 }
@@ -509,9 +587,10 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 5;
+pub const QZI_VERSION: u8 = 6;
+const QZI_LEGACY_VERSION: u8 = 5;
 
-pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
+fn serialize_qzi_legacy(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
     validate_qzi_chunks(chunks)?;
     if chunks.len() > u32::MAX as usize {
         return Err("too many QZI chunks".to_string());
@@ -521,20 +600,29 @@ pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
             return Err(format!("QZI chunk name `{}` is too long", chunk.name));
         }
         if chunk.param_count > u16::MAX as usize {
-            return Err(format!("QZI chunk `{}` has too many parameters", chunk.name));
+            return Err(format!(
+                "QZI chunk `{}` has too many parameters",
+                chunk.name
+            ));
         }
         if chunk.constants.len() > u16::MAX as usize {
             return Err(format!("QZI chunk `{}` has too many constants", chunk.name));
         }
         if chunk.code.len() > u32::MAX as usize {
-            return Err(format!("QZI chunk `{}` has too many instructions", chunk.name));
+            return Err(format!(
+                "QZI chunk `{}` has too many instructions",
+                chunk.name
+            ));
         }
         for constant in &chunk.constants {
             match constant {
                 ConstPoolEntry::Str(value) | ConstPoolEntry::FnAddr(value)
                     if value.len() > u16::MAX as usize =>
                 {
-                    return Err(format!("QZI string constant in `{}` is too long", chunk.name));
+                    return Err(format!(
+                        "QZI string constant in `{}` is too long",
+                        chunk.name
+                    ));
                 }
                 ConstPoolEntry::VtableAddr(type_name, trait_name)
                     if type_name.len() > u16::MAX as usize
@@ -543,7 +631,10 @@ pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
                     return Err(format!("QZI vtable name in `{}` is too long", chunk.name));
                 }
                 ConstPoolEntry::Bytes(value) if value.len() > u32::MAX as usize => {
-                    return Err(format!("QZI byte constant in `{}` is too large", chunk.name));
+                    return Err(format!(
+                        "QZI byte constant in `{}` is too large",
+                        chunk.name
+                    ));
                 }
                 ConstPoolEntry::ForeignSymbol(symbol) => validate_foreign_symbol(symbol)?,
                 ConstPoolEntry::ForeignGlobal(global) => {
@@ -561,12 +652,428 @@ pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
     }
     let mut buf = Vec::new();
     buf.extend_from_slice(QZI_MAGIC);
-    buf.push(QZI_VERSION);
+    buf.push(QZI_LEGACY_VERSION);
     buf.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
     for chunk in chunks {
         buf.extend_from_slice(&chunk.serialize());
     }
     Ok(buf)
+}
+
+const QZI_SECTION_METADATA: u8 = 1;
+const QZI_SECTION_INTERFACE: u8 = 2;
+const QZI_SECTION_CALL_RELOCATIONS: u8 = 3;
+const QZI_SECTION_BYTECODE: u8 = 4;
+const QZI_SECTION_ENTRY_SIZE: usize = 12;
+
+fn infer_call_relocations(chunks: &[Chunk]) -> Result<Vec<QziCallRelocation>, String> {
+    let mut relocations = Vec::new();
+    for (chunk_index, chunk) in chunks.iter().enumerate() {
+        for (instruction_index, instruction) in chunk.code.iter().enumerate() {
+            if instruction.opcode == Opcode::CallIdx as u8 {
+                let target = instruction.ri16().1 as usize;
+                let target_chunk = chunks.get(target).ok_or_else(|| {
+                    format!(
+                        "QZI call in `{}` references missing function index {}",
+                        chunk.name, target
+                    )
+                })?;
+                relocations.push(QziCallRelocation {
+                    chunk_index: u32::try_from(chunk_index)
+                        .map_err(|_| "too many QZI chunks".to_string())?,
+                    instruction_index: u32::try_from(instruction_index)
+                        .map_err(|_| "QZI function has too many instructions".to_string())?,
+                    symbol: target_chunk.name.clone(),
+                });
+            }
+        }
+    }
+    Ok(relocations)
+}
+
+fn encode_qzi_metadata(metadata: &QziMetadata) -> Result<Vec<u8>, String> {
+    if metadata.kind == QziModuleKind::Library && metadata.main_takes_args {
+        return Err("QZI library cannot declare an executable entry signature".to_string());
+    }
+    if metadata.name.len() > u16::MAX as usize {
+        return Err("QZI module name is too long".to_string());
+    }
+    let version = metadata.version.as_deref().unwrap_or("");
+    if version.len() > u16::MAX as usize {
+        return Err("QZI module version is too long".to_string());
+    }
+    let mut bytes = Vec::new();
+    bytes.push(match metadata.kind {
+        QziModuleKind::Executable => 0,
+        QziModuleKind::Library => 1,
+    });
+    bytes.push(u8::from(metadata.main_takes_args));
+    bytes.extend_from_slice(&(metadata.name.len() as u16).to_le_bytes());
+    bytes.extend_from_slice(metadata.name.as_bytes());
+    bytes.extend_from_slice(&(version.len() as u16).to_le_bytes());
+    bytes.extend_from_slice(version.as_bytes());
+    Ok(bytes)
+}
+
+fn decode_qzi_metadata(bytes: &[u8]) -> Result<QziMetadata, String> {
+    let mut pos = 0usize;
+    let kind = match read_u8(bytes, &mut pos, "QZI module kind")? {
+        0 => QziModuleKind::Executable,
+        1 => QziModuleKind::Library,
+        value => return Err(format!("unknown QZI module kind {value}")),
+    };
+    let main_takes_args = match read_u8(bytes, &mut pos, "QZI entry flags")? {
+        0 => false,
+        1 => true,
+        value => return Err(format!("invalid QZI entry flags {value}")),
+    };
+    let name = read_short_string(bytes, &mut pos, "QZI module name")?;
+    let version = read_short_string(bytes, &mut pos, "QZI module version")?;
+    if pos != bytes.len() {
+        return Err("QZI metadata has trailing bytes".to_string());
+    }
+    Ok(QziMetadata {
+        name,
+        version: (!version.is_empty()).then_some(version),
+        kind,
+        main_takes_args,
+    })
+}
+
+fn encode_call_relocations(relocations: &[QziCallRelocation]) -> Result<Vec<u8>, String> {
+    if relocations.len() > u32::MAX as usize {
+        return Err("too many QZI call relocations".to_string());
+    }
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(relocations.len() as u32).to_le_bytes());
+    for relocation in relocations {
+        if relocation.symbol.len() > u16::MAX as usize {
+            return Err("QZI relocation symbol is too long".to_string());
+        }
+        bytes.extend_from_slice(&relocation.chunk_index.to_le_bytes());
+        bytes.extend_from_slice(&relocation.instruction_index.to_le_bytes());
+        bytes.extend_from_slice(&(relocation.symbol.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(relocation.symbol.as_bytes());
+    }
+    Ok(bytes)
+}
+
+fn decode_call_relocations(bytes: &[u8]) -> Result<Vec<QziCallRelocation>, String> {
+    let mut pos = 0usize;
+    let count = read_u32(bytes, &mut pos, "QZI relocation count")? as usize;
+    if count > bytes.len().saturating_sub(pos) / 10 {
+        return Err("QZI relocation count exceeds section size".to_string());
+    }
+    let mut relocations = Vec::new();
+    relocations
+        .try_reserve_exact(count)
+        .map_err(|_| "QZI relocation count is too large".to_string())?;
+    for _ in 0..count {
+        let chunk_index = read_u32(bytes, &mut pos, "QZI relocation chunk")?;
+        let instruction_index = read_u32(bytes, &mut pos, "QZI relocation instruction")?;
+        let symbol = read_short_string(bytes, &mut pos, "QZI relocation symbol")?;
+        relocations.push(QziCallRelocation {
+            chunk_index,
+            instruction_index,
+            symbol,
+        });
+    }
+    if pos != bytes.len() {
+        return Err("QZI relocation section has trailing bytes".to_string());
+    }
+    Ok(relocations)
+}
+
+fn read_u8(bytes: &[u8], pos: &mut usize, what: &str) -> Result<u8, String> {
+    let value = *bytes.get(*pos).ok_or_else(|| format!("truncated {what}"))?;
+    *pos += 1;
+    Ok(value)
+}
+
+fn read_u16(bytes: &[u8], pos: &mut usize, what: &str) -> Result<u16, String> {
+    let end = pos
+        .checked_add(2)
+        .ok_or_else(|| format!("truncated {what}"))?;
+    let slice = bytes
+        .get(*pos..end)
+        .ok_or_else(|| format!("truncated {what}"))?;
+    *pos = end;
+    Ok(u16::from_le_bytes(slice.try_into().unwrap()))
+}
+
+fn read_u32(bytes: &[u8], pos: &mut usize, what: &str) -> Result<u32, String> {
+    let end = pos
+        .checked_add(4)
+        .ok_or_else(|| format!("truncated {what}"))?;
+    let slice = bytes
+        .get(*pos..end)
+        .ok_or_else(|| format!("truncated {what}"))?;
+    *pos = end;
+    Ok(u32::from_le_bytes(slice.try_into().unwrap()))
+}
+
+fn read_short_string(bytes: &[u8], pos: &mut usize, what: &str) -> Result<String, String> {
+    let len = read_u16(bytes, pos, what)? as usize;
+    let end = pos
+        .checked_add(len)
+        .ok_or_else(|| format!("truncated {what}"))?;
+    let slice = bytes
+        .get(*pos..end)
+        .ok_or_else(|| format!("truncated {what}"))?;
+    *pos = end;
+    String::from_utf8(slice.to_vec()).map_err(|_| format!("invalid UTF-8 in {what}"))
+}
+
+pub fn serialize_qzi_module(module: &QziModule) -> Result<Vec<u8>, String> {
+    validate_qzi_chunks(&module.chunks)?;
+    if module.interface.len() > u32::MAX as usize {
+        return Err("QZI interface is too large".to_string());
+    }
+    let mut relocation_map = std::collections::BTreeMap::new();
+    for relocation in infer_call_relocations(&module.chunks)? {
+        relocation_map.insert(
+            (relocation.chunk_index, relocation.instruction_index),
+            relocation,
+        );
+    }
+    for relocation in &module.call_relocations {
+        relocation_map.insert(
+            (relocation.chunk_index, relocation.instruction_index),
+            relocation.clone(),
+        );
+    }
+    let relocations: Vec<_> = relocation_map.into_values().collect();
+    let sections = [
+        (QZI_SECTION_METADATA, encode_qzi_metadata(&module.metadata)?),
+        (QZI_SECTION_INTERFACE, module.interface.as_bytes().to_vec()),
+        (
+            QZI_SECTION_CALL_RELOCATIONS,
+            encode_call_relocations(&relocations)?,
+        ),
+        (QZI_SECTION_BYTECODE, serialize_qzi_legacy(&module.chunks)?),
+    ];
+    let directory_len = sections
+        .len()
+        .checked_mul(QZI_SECTION_ENTRY_SIZE)
+        .ok_or_else(|| "QZI section directory overflow".to_string())?;
+    let mut offset = 7usize
+        .checked_add(directory_len)
+        .ok_or_else(|| "QZI section directory overflow".to_string())?;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(QZI_MAGIC);
+    bytes.push(QZI_VERSION);
+    bytes.extend_from_slice(&(sections.len() as u16).to_le_bytes());
+    for (kind, payload) in &sections {
+        let section_offset = u32::try_from(offset)
+            .map_err(|_| "QZI file exceeds the 4 GiB section limit".to_string())?;
+        let section_len = u32::try_from(payload.len())
+            .map_err(|_| "QZI section exceeds the 4 GiB limit".to_string())?;
+        bytes.push(*kind);
+        bytes.extend_from_slice(&[0, 0, 0]);
+        bytes.extend_from_slice(&section_offset.to_le_bytes());
+        bytes.extend_from_slice(&section_len.to_le_bytes());
+        offset = offset
+            .checked_add(payload.len())
+            .ok_or_else(|| "QZI file size overflow".to_string())?;
+    }
+    for (_, payload) in sections {
+        bytes.extend_from_slice(&payload);
+    }
+    Ok(bytes)
+}
+
+pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
+    serialize_qzi_module(&QziModule::from_chunks(chunks.to_vec()))
+}
+
+pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
+    if bytes.len() < 5 || &bytes[..4] != QZI_MAGIC.as_slice() {
+        return Err("invalid QZI magic".to_string());
+    }
+    let version = bytes[4];
+    if version <= QZI_LEGACY_VERSION {
+        let chunks = deserialize_qzi_legacy(bytes)?;
+        let relocations = infer_call_relocations(&chunks)?;
+        return Ok(QziModule {
+            metadata: QziMetadata {
+                name: String::new(),
+                version: None,
+                kind: if chunks.iter().any(|chunk| chunk.name == "main") {
+                    QziModuleKind::Executable
+                } else {
+                    QziModuleKind::Library
+                },
+                main_takes_args: false,
+            },
+            interface: String::new(),
+            call_relocations: relocations,
+            chunks,
+        });
+    }
+    if version != QZI_VERSION {
+        return Err(format!("unsupported QZI version {version}"));
+    }
+    let mut pos = 5usize;
+    let section_count = read_u16(bytes, &mut pos, "QZI section count")? as usize;
+    let directory_end = pos
+        .checked_add(
+            section_count
+                .checked_mul(QZI_SECTION_ENTRY_SIZE)
+                .ok_or_else(|| "QZI section count overflow".to_string())?,
+        )
+        .ok_or_else(|| "QZI section directory overflow".to_string())?;
+    if directory_end > bytes.len() {
+        return Err("truncated QZI section directory".to_string());
+    }
+    let mut sections = std::collections::HashMap::new();
+    let mut section_ranges = Vec::with_capacity(section_count);
+    for _ in 0..section_count {
+        let kind = read_u8(bytes, &mut pos, "QZI section kind")?;
+        pos += 3;
+        let offset = read_u32(bytes, &mut pos, "QZI section offset")? as usize;
+        let len = read_u32(bytes, &mut pos, "QZI section length")? as usize;
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| "QZI section range overflow".to_string())?;
+        if offset < directory_end || end > bytes.len() {
+            return Err("QZI section is outside the file".to_string());
+        }
+        section_ranges.push((offset, end));
+        if sections.insert(kind, &bytes[offset..end]).is_some() {
+            return Err(format!("duplicate QZI section {kind}"));
+        }
+    }
+    section_ranges.sort_unstable();
+    let mut expected_offset = directory_end;
+    for (offset, end) in section_ranges {
+        if offset != expected_offset {
+            return Err("QZI sections contain a gap or overlap".to_string());
+        }
+        expected_offset = end;
+    }
+    if expected_offset != bytes.len() {
+        return Err(format!(
+            "QZI has {} trailing byte(s)",
+            bytes.len() - expected_offset
+        ));
+    }
+    let metadata = decode_qzi_metadata(
+        sections
+            .remove(&QZI_SECTION_METADATA)
+            .ok_or_else(|| "QZI metadata section is missing".to_string())?,
+    )?;
+    let interface = String::from_utf8(
+        sections
+            .remove(&QZI_SECTION_INTERFACE)
+            .unwrap_or_default()
+            .to_vec(),
+    )
+    .map_err(|_| "invalid UTF-8 in QZI interface".to_string())?;
+    let call_relocations = decode_call_relocations(
+        sections
+            .remove(&QZI_SECTION_CALL_RELOCATIONS)
+            .ok_or_else(|| "QZI relocation section is missing".to_string())?,
+    )?;
+    let chunks = deserialize_qzi_legacy(
+        sections
+            .remove(&QZI_SECTION_BYTECODE)
+            .ok_or_else(|| "QZI bytecode section is missing".to_string())?,
+    )?;
+    for relocation in &call_relocations {
+        let chunk = chunks
+            .get(relocation.chunk_index as usize)
+            .ok_or_else(|| "QZI relocation references a missing chunk".to_string())?;
+        let instruction = chunk
+            .code
+            .get(relocation.instruction_index as usize)
+            .ok_or_else(|| "QZI relocation references a missing instruction".to_string())?;
+        if instruction.opcode != Opcode::CallIdx as u8 {
+            return Err("QZI call relocation does not reference CallIdx".to_string());
+        }
+    }
+    Ok(QziModule {
+        metadata,
+        interface,
+        call_relocations,
+        chunks,
+    })
+}
+
+pub fn deserialize_qzi(bytes: &[u8]) -> Result<Vec<Chunk>, String> {
+    Ok(deserialize_qzi_module(bytes)?.chunks)
+}
+
+pub fn link_qzi_modules(modules: &[QziModule]) -> Result<Vec<Chunk>, String> {
+    let mut symbols = std::collections::HashMap::new();
+    let mut chunk_maps = Vec::with_capacity(modules.len());
+    let mut linked = Vec::new();
+    for module in modules {
+        let mut chunk_map = Vec::with_capacity(module.chunks.len());
+        for chunk in &module.chunks {
+            let global_index = if let Some(&existing) = symbols.get(&chunk.name) {
+                if !equivalent_relocatable_chunks(&linked[existing as usize], chunk) {
+                    return Err(format!(
+                        "conflicting QZI definitions for symbol `{}`",
+                        chunk.name
+                    ));
+                }
+                existing
+            } else {
+                let index = u16::try_from(linked.len())
+                    .map_err(|_| "linked QZI exceeds the function-table limit".to_string())?;
+                symbols.insert(chunk.name.clone(), index);
+                linked.push(chunk.clone());
+                index
+            };
+            chunk_map.push(global_index);
+        }
+        chunk_maps.push(chunk_map);
+    }
+
+    let mut patched_targets = std::collections::HashMap::new();
+    for (module_index, module) in modules.iter().enumerate() {
+        for relocation in &module.call_relocations {
+            let target = symbols
+                .get(&relocation.symbol)
+                .copied()
+                .ok_or_else(|| format!("unresolved QZI symbol `{}`", relocation.symbol))?;
+            let source = *chunk_maps[module_index]
+                .get(relocation.chunk_index as usize)
+                .ok_or_else(|| "QZI relocation source is out of bounds".to_string())?;
+            let patch_key = (source, relocation.instruction_index);
+            if let Some(previous) = patched_targets.insert(patch_key, target)
+                && previous != target
+            {
+                return Err(format!(
+                    "conflicting QZI relocations in symbol `{}`",
+                    linked[source as usize].name
+                ));
+            }
+            let instruction = linked
+                .get_mut(source as usize)
+                .and_then(|chunk| chunk.code.get_mut(relocation.instruction_index as usize))
+                .ok_or_else(|| "QZI relocation target is out of bounds".to_string())?;
+            let [lo, hi] = target.to_le_bytes();
+            instruction.ops[1] = lo;
+            instruction.ops[2] = hi;
+        }
+    }
+    validate_qzi_chunks(&linked)?;
+    Ok(linked)
+}
+
+fn equivalent_relocatable_chunks(left: &Chunk, right: &Chunk) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    for chunk in [&mut left, &mut right] {
+        for instruction in &mut chunk.code {
+            if instruction.opcode == Opcode::CallIdx as u8 {
+                instruction.ops[1] = 0;
+                instruction.ops[2] = 0;
+            }
+        }
+    }
+    left == right
 }
 
 fn validate_foreign_symbol(symbol: &crate::abi::ForeignSymbol) -> Result<(), String> {
@@ -754,7 +1261,7 @@ mod tests {
     }
 
     #[test]
-    fn qzi_v5_roundtrips_foreign_abi_metadata_bytes_and_globals() {
+    fn qzi_v6_preserves_v5_chunk_metadata_bytes_and_globals() {
         let signature = AbiSignature {
             params: vec![AbiType::Float64],
             return_type: AbiType::Float64,
@@ -786,14 +1293,105 @@ mod tests {
             }));
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
 
-        let encoded = serialize_qzi(&[chunk]).expect("QZI v5 should encode");
-        let decoded = deserialize_qzi(&encoded).expect("QZI v5 should decode");
+        let encoded = serialize_qzi(&[chunk]).expect("QZI v6 should encode");
+        let decoded = deserialize_qzi(&encoded).expect("QZI v6 should decode");
         assert_eq!(decoded[0].export.as_ref().unwrap().symbol, "quazi_sin");
         assert!(matches!(
             decoded[0].constants.as_slice(),
             [ConstPoolEntry::ForeignSymbol(symbol), ConstPoolEntry::Bytes(bytes), ConstPoolEntry::ForeignGlobal(global)]
                 if symbol.symbol == "sin" && bytes == &[0, 0xff, 1] && global.symbol == "native_counter"
         ));
+    }
+
+    #[test]
+    fn qzi_v6_roundtrips_module_metadata_and_interface() {
+        let mut chunk = Chunk::new("math.add");
+        chunk.reg_count = 1;
+        chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let module = QziModule {
+            metadata: QziMetadata {
+                name: "math".to_string(),
+                version: Some("1.2.3".to_string()),
+                kind: QziModuleKind::Executable,
+                main_takes_args: true,
+            },
+            interface: "pub fn add(a: i32, b: i32) i32;".to_string(),
+            call_relocations: Vec::new(),
+            chunks: vec![chunk],
+        };
+
+        let encoded = serialize_qzi_module(&module).expect("serialize QZI v6 module");
+        let decoded = deserialize_qzi_module(&encoded).expect("deserialize QZI v6 module");
+        assert_eq!(decoded.metadata, module.metadata);
+        assert_eq!(decoded.interface, module.interface);
+        assert_eq!(decoded.chunks[0].name, "math.add");
+    }
+
+    #[test]
+    fn qzi_linker_resolves_symbolic_calls_between_modules() {
+        let mut main = Chunk::new("main");
+        main.reg_count = 1;
+        main.emit_ri16(Opcode::CallIdx, 0, 0);
+        main.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let app = QziModule {
+            metadata: QziMetadata {
+                name: "app".to_string(),
+                version: None,
+                kind: QziModuleKind::Executable,
+                main_takes_args: false,
+            },
+            interface: String::new(),
+            call_relocations: vec![QziCallRelocation {
+                chunk_index: 0,
+                instruction_index: 0,
+                symbol: "math.add".to_string(),
+            }],
+            chunks: vec![main],
+        };
+        let mut add = Chunk::new("math.add");
+        add.reg_count = 1;
+        add.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let math = QziModule {
+            metadata: QziMetadata {
+                name: "math".to_string(),
+                version: None,
+                kind: QziModuleKind::Library,
+                main_takes_args: false,
+            },
+            interface: String::new(),
+            call_relocations: Vec::new(),
+            chunks: vec![add],
+        };
+
+        let linked = link_qzi_modules(&[app, math]).expect("link QZI modules");
+        assert_eq!(linked[0].code[0].ri16().1, 1);
+    }
+
+    #[test]
+    fn qzi_linker_deduplicates_equivalent_dependency_chunks() {
+        let ret_chunk = |name: &str| {
+            let mut chunk = Chunk::new(name);
+            chunk.reg_count = 1;
+            chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+            chunk
+        };
+        let mut main = Chunk::new("main");
+        main.reg_count = 1;
+        main.emit_ri16(Opcode::CallIdx, 0, 1);
+        main.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let mut shared_from_app = Chunk::new("std.shared");
+        shared_from_app.reg_count = 1;
+        shared_from_app.emit_ri16(Opcode::CallIdx, 0, 2);
+        shared_from_app.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let mut shared_from_library = shared_from_app.clone();
+        shared_from_library.code[0] = ri16(Opcode::CallIdx, 0, 1);
+
+        let app = QziModule::from_chunks(vec![main, shared_from_app, ret_chunk("std.helper")]);
+        let library = QziModule::from_chunks(vec![shared_from_library, ret_chunk("std.helper")]);
+        let linked = link_qzi_modules(&[app, library]).expect("deduplicate shared chunks");
+        assert_eq!(linked.len(), 3);
+        assert_eq!(linked[0].code[0].ri16().1, 1);
+        assert_eq!(linked[1].code[0].ri16().1, 2);
     }
 
     #[test]

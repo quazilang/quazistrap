@@ -716,11 +716,6 @@ fn local_import_paths(
             continue;
         };
 
-        // Lazy re-export declarations: just a gateway hint, don't load the file.
-        if ip.is_reexport {
-            continue;
-        }
-
         let Some((base, remainder)) = import_base_and_remainder(ip) else {
             continue;
         };
@@ -802,6 +797,11 @@ fn local_import_paths(
                         }
                         if found.is_none() {
                             found = resolve_module_file(spec, &remainder[0]);
+                        }
+                        if found.is_none() && spec.entry.exists() {
+                            // A package may expose its API directly from its entry
+                            // file, including singular `type = "source"` dependencies.
+                            found = Some(spec.entry.clone());
                         }
                         // If nothing found, use the full path so the error message is useful.
                         found.unwrap_or_else(|| {
@@ -1024,9 +1024,8 @@ fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
             if file_path.exists() {
                 return Some(file_path);
             }
-            // A lazy re-export can name an opaque module directory rather than
-            // a flat source file (`pub reexport collections;`). Resolve its
-            // gateway just as `resolve_module_file` does.
+            // A public import can name a module directory rather than a flat
+            // source file. Resolve its gateway just as `resolve_module_file` does.
             let directory_entry = file_path.with_extension("").join("mod.qz");
             if directory_entry.exists() {
                 return Some(directory_entry);
@@ -1233,13 +1232,12 @@ mod tests {
     }
 
     #[test]
-    fn lazy_reexport_resolves_directory_module_entry() {
-        let root = temp_dir("quazi_loader_directory_reexport");
+    fn public_import_resolves_directory_module_entry() {
+        let root = temp_dir("quazi_loader_directory_public_import");
         let foo_dir = root.join("foo");
         let nested_dir = foo_dir.join("nested");
         fs::create_dir_all(&nested_dir).expect("create nested module");
-        fs::write(foo_dir.join("mod.qz"), "pub reexport nested;")
-            .expect("write foo gateway");
+        fs::write(foo_dir.join("mod.qz"), "pub import nested;").expect("write foo gateway");
         fs::write(nested_dir.join("mod.qz"), "pub import item.make;")
             .expect("write nested gateway");
         fs::write(nested_dir.join("item.qz"), "pub fn make() i32 { ret 7; }")

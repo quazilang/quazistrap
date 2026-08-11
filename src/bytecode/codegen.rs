@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: 0BSD
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use super::instruction::{
@@ -10,7 +11,7 @@ use super::instruction::{
     field_store, field_store_typed, mem_lea, mem_load, mem_load_w, mem_store, mem_store_w, ri16,
     rrr, rrr_f,
 };
-use super::{Chunk, ConstPoolEntry, Opcode};
+use super::{Chunk, ConstPoolEntry, Opcode, QziCallRelocation};
 use crate::abi::{
     AbiField, AbiSignature, AbiType, ForeignGlobal as AbiForeignGlobal, ForeignSymbol,
 };
@@ -203,6 +204,8 @@ pub struct Codegen<'a> {
     /// Resolved Quazi function name -> portable C export description.
     foreign_exports: HashMap<String, ForeignSymbol>,
     source_files: Vec<SourceFile>,
+    external_call_relocations: Vec<QziCallRelocation>,
+    library_export_exclusions: Option<HashSet<PathBuf>>,
 }
 
 impl<'a> Codegen<'a> {
@@ -248,7 +251,17 @@ impl<'a> Codegen<'a> {
             foreign_imports: HashMap::new(),
             foreign_exports: HashMap::new(),
             source_files: Vec::new(),
+            external_call_relocations: Vec::new(),
+            library_export_exclusions: None,
         }
+    }
+
+    pub fn external_call_relocations(&self) -> &[QziCallRelocation] {
+        &self.external_call_relocations
+    }
+
+    pub fn retain_public_library_api(&mut self, excluded_paths: HashSet<PathBuf>) {
+        self.library_export_exclusions = Some(excluded_paths);
     }
 
     /// Return the resolved symbol name for a top-level item defined at `span`.
@@ -292,6 +305,7 @@ impl<'a> Codegen<'a> {
         source_files: &[SourceFile],
     ) -> Result<Vec<Chunk>, String> {
         self.source_files = source_files.to_vec();
+        self.external_call_relocations.clear();
         self.foreign_imports.clear();
         self.foreign_exports.clear();
         for item in &program.items {
@@ -497,6 +511,54 @@ impl<'a> Codegen<'a> {
                             if set.insert(target.clone()) {
                                 q2.push(target.clone());
                             }
+                        }
+                    }
+                }
+            }
+            Some(set)
+        } else if let Some(excluded_paths) = &self.library_export_exclusions {
+            let is_project_item = |span: Span| {
+                self.source_files
+                    .iter()
+                    .find(|source| source.contains(span))
+                    .is_none_or(|source| !excluded_paths.contains(Path::new(&source.path)))
+            };
+            let mut set = std::collections::HashSet::new();
+            for item in &program.items {
+                match &item.node {
+                    ItemKind::Fn {
+                        name,
+                        attributes,
+                        pub_fn: true,
+                        ..
+                    } if is_project_item(item.span) => {
+                        set.insert(self.resolve_item_name(item.span, name, attributes));
+                    }
+                    ItemKind::Impl {
+                        trait_ty,
+                        for_ty,
+                        methods,
+                    } if is_project_item(item.span) => {
+                        let type_name = type_kind_base_name(&for_ty.node);
+                        for method in methods {
+                            if matches!(&method.node, ItemKind::Fn { pub_fn: true, .. })
+                                || trait_ty.is_some()
+                            {
+                                if let ItemKind::Fn { name, .. } = &method.node {
+                                    set.insert(format!("{}.{}", type_name, name));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut queue = set.iter().cloned().collect::<Vec<_>>();
+            while let Some(fn_name) = queue.pop() {
+                if let Some(targets) = self.report.dependency_graph.calls_from.get(&fn_name) {
+                    for target in targets {
+                        if set.insert(target.clone()) {
+                            queue.push(target.clone());
                         }
                     }
                 }
@@ -1265,15 +1327,39 @@ impl<'a> Codegen<'a> {
                 }
             }
 
+            let mut external_symbols: HashMap<u16, String> = HashMap::new();
+            for (name, index) in &self.fn_index {
+                if old_to_new.contains_key(index) {
+                    continue;
+                }
+                let replace = external_symbols
+                    .get(index)
+                    .is_none_or(|current| !current.contains('.') && name.contains('.'));
+                if replace {
+                    external_symbols.insert(*index, name.clone());
+                }
+            }
+            let mut pending_external = Vec::new();
+
             for (_, chunk) in &mut indexed {
-                for ins in &mut chunk.code {
+                for (instruction_index, ins) in chunk.code.iter_mut().enumerate() {
                     if ins.opcode == Opcode::CallIdx as u8 {
                         let old_idx = u16::from_le_bytes([ins.ops[1], ins.ops[2]]);
                         let Some(&new_idx) = old_to_new.get(&old_idx) else {
-                            return Err(format!(
-                                "internal error: `{}` calls missing QZI function index {}",
-                                chunk.name, old_idx
+                            let symbol = external_symbols.get(&old_idx).ok_or_else(|| {
+                                format!(
+                                    "internal error: `{}` calls missing QZI function index {}",
+                                    chunk.name, old_idx
+                                )
+                            })?;
+                            pending_external.push((
+                                chunk.name.clone(),
+                                instruction_index,
+                                symbol.clone(),
                             ));
+                            ins.ops[1] = 0;
+                            ins.ops[2] = 0;
+                            continue;
                         };
                         let [lo, hi] = new_idx.to_le_bytes();
                         ins.ops[1] = lo;
@@ -1282,14 +1368,24 @@ impl<'a> Codegen<'a> {
                 }
             }
             for chunk in &mut closures {
-                for ins in &mut chunk.code {
+                for (instruction_index, ins) in chunk.code.iter_mut().enumerate() {
                     if ins.opcode == Opcode::CallIdx as u8 {
                         let old_idx = u16::from_le_bytes([ins.ops[1], ins.ops[2]]);
                         let Some(&new_idx) = old_to_new.get(&old_idx) else {
-                            return Err(format!(
-                                "internal error: `{}` calls missing QZI function index {}",
-                                chunk.name, old_idx
+                            let symbol = external_symbols.get(&old_idx).ok_or_else(|| {
+                                format!(
+                                    "internal error: `{}` calls missing QZI function index {}",
+                                    chunk.name, old_idx
+                                )
+                            })?;
+                            pending_external.push((
+                                chunk.name.clone(),
+                                instruction_index,
+                                symbol.clone(),
                             ));
+                            ins.ops[1] = 0;
+                            ins.ops[2] = 0;
+                            continue;
                         };
                         let [lo, hi] = new_idx.to_le_bytes();
                         ins.ops[1] = lo;
@@ -1307,6 +1403,19 @@ impl<'a> Codegen<'a> {
                 .map(|(_, chunk)| chunk)
                 .chain(closures)
                 .collect();
+            for (caller, instruction_index, symbol) in pending_external {
+                let chunk_index = chunks
+                    .iter()
+                    .position(|chunk| chunk.name == caller)
+                    .ok_or_else(|| format!("internal error: missing QZI caller `{caller}`"))?;
+                self.external_call_relocations.push(QziCallRelocation {
+                    chunk_index: u32::try_from(chunk_index)
+                        .map_err(|_| "too many QZI chunks".to_string())?,
+                    instruction_index: u32::try_from(instruction_index)
+                        .map_err(|_| "QZI function has too many instructions".to_string())?,
+                    symbol,
+                });
+            }
         }
 
         for chunk in &chunks {
@@ -4792,9 +4901,7 @@ impl<'a> FnCompiler<'a> {
                         let old = self.load_lvalue(&addr);
                         let src = self.compile_expr(value);
                         let new_val = self.alloc_reg();
-                        self.emit_compound_arithmetic(
-                            op, is_float, new_val, old, src, expr.span,
-                        );
+                        self.emit_compound_arithmetic(op, is_float, new_val, old, src, expr.span);
                         self.store_lvalue(&addr, new_val);
                         return new_val;
                     }
@@ -6813,6 +6920,23 @@ mod tests {
     }
 
     #[test]
+    fn library_mode_keeps_public_api_closure_only() {
+        let src = "pub fn api() i32 { ret helper(); } fn helper() i32 { ret 7; } fn unused() i32 { ret 9; }";
+        let program = Parser::new(Lexer::new(src).tokenize())
+            .parse()
+            .expect("parse library");
+        let report = Analyzer::new().analyze_program(&program);
+        assert!(report.errors.is_empty());
+        let mut codegen = Codegen::new(&report);
+        codegen.retain_public_library_api(HashSet::new());
+        let chunks = codegen
+            .compile_program(&program, &[])
+            .expect("compile library");
+        let names: HashSet<&str> = chunks.iter().map(|chunk| chunk.name.as_str()).collect();
+        assert_eq!(names, HashSet::from(["api"]));
+    }
+
+    #[test]
     fn integer_division_emits_language_panic_guard() {
         let chunks = compile(
             r#"fn panic(msg: str, file: str, line: usize, args: str, count: usize) void {
@@ -6861,10 +6985,7 @@ mod tests {
         let chunks = compile(
             "fn divide(divisor: f64) f64 { var value: f64 = 42.0; value /= divisor; ret value; }",
         );
-        let function = chunks
-            .iter()
-            .find(|chunk| chunk.name == "divide")
-            .unwrap();
+        let function = chunks.iter().find(|chunk| chunk.name == "divide").unwrap();
         let division = function
             .code
             .iter()
@@ -6876,10 +6997,7 @@ mod tests {
     #[test]
     fn integer_division_without_prelude_keeps_hardware_trap() {
         let chunks = compile("fn divide(divisor: i32) i32 { ret 42 / divisor; }");
-        let function = chunks
-            .iter()
-            .find(|chunk| chunk.name == "divide")
-            .unwrap();
+        let function = chunks.iter().find(|chunk| chunk.name == "divide").unwrap();
         assert!(
             function
                 .code

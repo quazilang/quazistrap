@@ -488,9 +488,6 @@ pub struct ImportPath {
     pub items: ImportItems,
     pub span: Span,
     pub pub_import: bool,
-    /// Lazy re-export declaration — does not load the file eagerly.
-    /// Used in mod.qz gateway files: `pub reexport X.Y;`
-    pub is_reexport: bool,
     /// True when the import starts with `./` — forces local-only file resolution,
     /// bypassing the module resolver. Resolves relative to the importing file's directory.
     pub relative: bool,

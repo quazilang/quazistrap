@@ -17,7 +17,7 @@ cargo fmt                # format
 CLI (dep: `clap 4.6`):
 ```bash
 qz build [source.qz|program.qzi|native.o ...] [-i|-c] [-o out] [-r] [-s] [--linker builtin|path]
-qz run [source.qz|program.qzi|native.o ...] [--linker builtin|path] / qz check / qz fmt / qz clean
+qz run [source.qz|program.qzi|native.o ...] [--linker builtin|path] / qz check / qz fetch / qz deps / qz fmt / qz clean
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz new <name> [--lib] / qz init [--lib]
 qz debug [-i]
@@ -88,7 +88,10 @@ Object (`-c`): backend only, no linker.
 
 ### Project (`src/project.rs`)
 
-- `quazi.toml`: `[package]`, `[build]`, `[dependencies]` (path + optional version). `quazi.lock` validated on build.
+- `quazi.toml`: `[package]`, `[build]`, and `[dependencies]`. Dependencies support local projects, singular `.qz`, compiled `.qzi`, and internet `git`/`archive`/`source`/`qzi` sources. `quazi.lock` records exact revisions/checksums and is validated on build.
+- `pub import` is the only public-import/re-export syntax. Quazi module and symbol paths use `.`, never `::`.
+- QZI v6 is a sectioned executable/library bytecode container with package metadata, a public source interface, named call relocations, and legacy chunk payloads. QZI libraries work without original source; generic template bodies remain source-only for now.
+- QZC v1 (`target/quazi/<arch>-<os>/default/incremental.qzc`) is one disposable exact-build snapshot. Matching compiler identity and input hashes reuse linked QZI; misses preserve whole-program analysis and rebuild fully.
 - `type = "lib"` → lib project; default entry `src/lib.qz`; default output `.qzi`.
 
 ---

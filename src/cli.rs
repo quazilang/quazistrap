@@ -20,7 +20,7 @@ pub enum HeaderTarget {
     X86_64Windows,
 }
 
-/// quazilang compiler
+/// Quazi compiler and package toolchain
 #[derive(Parser, Debug)]
 #[command(name = "qz", version, about, long_about = None)]
 pub struct Args {
@@ -30,17 +30,20 @@ pub struct Args {
 
 #[derive(Clone, Subcommand, Debug)]
 pub enum Command {
-    /// build files or project (if no files given, reads quazi.toml)
+    /// Build source, QZI, or the current project
     Build {
         /// Quazi source/QZI files and optional native object inputs
         files: Vec<PathBuf>,
+        /// output file name
         #[arg(short, long)]
         output: Option<String>,
+        /// emit portable QZI bytecode instead of native output
         #[arg(short = 'i', long = "bytecode")]
         emit_bytecode: bool,
         /// emit relocatable object file (.o) without linking
         #[arg(short = 'c', long = "obj")]
         emit_object: bool,
+        /// run the binary after a successful build
         #[arg(short, long)]
         run: bool,
         /// print loaded files and bytecode disassembly to stderr
@@ -64,8 +67,11 @@ pub enum Command {
         /// emit a native shared library (.so on Linux)
         #[arg(long = "shared-lib", conflicts_with = "static_lib")]
         shared_lib: bool,
+        /// ignore and do not update the project incremental cache
+        #[arg(long)]
+        no_incremental: bool,
     },
-    /// build and run files or project (if no files given, reads quazi.toml)
+    /// Build and run source, QZI, or the current project
     Run {
         /// Quazi source/QZI files and optional native object inputs
         files: Vec<PathBuf>,
@@ -81,10 +87,17 @@ pub enum Command {
         /// link a native library (uses the platform linker's -l convention)
         #[arg(short = 'l', value_name = "NAME")]
         libraries: Vec<String>,
+        /// ignore and do not update the project incremental cache
+        #[arg(long)]
+        no_incremental: bool,
     },
-    /// check project without compiling (reads quazi.toml)
+    /// Type-check the current project without code generation
     Check,
-    /// generate a C header for exported functions and C-compatible types
+    /// Download, verify, and lock project dependencies
+    Fetch,
+    /// Show resolved dependencies and local cache paths
+    Deps,
+    /// Generate a C header for exported functions and compatible types
     Header {
         /// source files, or the current project when omitted
         files: Vec<PathBuf>,
@@ -95,29 +108,29 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "x86_64-linux")]
         target: HeaderTarget,
     },
-    /// create new project
+    /// Create a new project
     New {
         name: String,
         /// create a library project instead of a binary
         #[arg(short = 'l', long = "lib")]
         lib: bool,
     },
-    /// initialize a project in the current directory
+    /// Initialize a project in the current directory
     Init {
         /// create a library project instead of a binary
         #[arg(short = 'l', long = "lib")]
         lib: bool,
     },
-    /// format source files
+    /// Format project source files
     Fmt,
-    /// clean build artifacts
+    /// Remove project build artifacts
     Clean,
-    /// debug (use preset code and nothing more)
+    /// Run the compiler's internal debug program
     Debug {
         #[arg(short = 'i', long = "bytecode")]
         emit_bytecode: bool,
     },
-    /// start language server (stdio mode)
+    /// Start the language server
     Lsp {
         #[arg(long, default_value_t = true)]
         stdio: bool,

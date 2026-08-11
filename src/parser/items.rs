@@ -429,12 +429,8 @@ impl Parser {
         ))
     }
 
-    pub fn parse_import(&mut self, pub_import: bool, is_reexport: bool) -> Result<Item, String> {
-        let start = if is_reexport {
-            self.peek().span
-        } else {
-            self.expect(TokenKind::Import)?.span
-        };
+    pub fn parse_import(&mut self, pub_import: bool) -> Result<Item, String> {
+        let start = self.expect(TokenKind::Import)?.span;
 
         // Detect `./` prefix: Dot + Slash → relative import (local-only, skips module resolver).
         let relative = if self.at(TokenKind::Dot) && matches!(self.peek_n(1).kind, TokenKind::Slash)
@@ -529,7 +525,6 @@ impl Parser {
                 path,
                 items,
                 pub_import,
-                is_reexport,
                 relative,
                 span: to_ast_span(span_tok),
             }),

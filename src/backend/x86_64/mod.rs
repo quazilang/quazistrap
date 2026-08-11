@@ -46,8 +46,11 @@ fn emit_native_object(
     output_format: ObjectFormat,
     entry_name: &[u8],
     report: Option<&SemanticReport>,
+    main_takes_args: bool,
 ) -> Result<ObjectOutput, BackendError> {
-    let main_takes_args = report.map(|r| r.main_takes_args).unwrap_or(false);
+    let main_takes_args = report
+        .map(|report| report.main_takes_args)
+        .unwrap_or(main_takes_args);
     let mut obj = Object::new(
         target.binary_format(),
         target.object_architecture(),
@@ -260,8 +263,16 @@ impl Backend for ElfBackend {
         chunks: &[Chunk],
         target: &TargetSpec,
         report: Option<&SemanticReport>,
+        main_takes_args: bool,
     ) -> Result<ObjectOutput, BackendError> {
-        emit_native_object(chunks, target, ObjectFormat::Elf, b"_start", report)
+        emit_native_object(
+            chunks,
+            target,
+            ObjectFormat::Elf,
+            b"_start",
+            report,
+            main_takes_args,
+        )
     }
 }
 
@@ -271,6 +282,7 @@ impl Backend for PeBackend {
         chunks: &[Chunk],
         target: &TargetSpec,
         report: Option<&SemanticReport>,
+        main_takes_args: bool,
     ) -> Result<ObjectOutput, BackendError> {
         emit_native_object(
             chunks,
@@ -278,6 +290,7 @@ impl Backend for PeBackend {
             ObjectFormat::PeCoff,
             b"mainCRTStartup",
             report,
+            main_takes_args,
         )
     }
 }
@@ -322,7 +335,7 @@ mod tests {
             no_crash: false,
         };
         let output = PeBackend
-            .compile(&[main, adapter], &target, None)
+            .compile(&[main, adapter], &target, None, false)
             .expect("COFF output should compile");
         let object = object::File::parse(output.bytes.as_slice()).expect("valid COFF object");
 
@@ -354,7 +367,7 @@ mod tests {
             no_crash: false,
         };
         let output = ElfBackend
-            .compile(&[main], &target, None)
+            .compile(&[main], &target, None, false)
             .expect("ELF output should compile");
         let object = object::File::parse(output.bytes.as_slice()).expect("valid ELF object");
         assert!(
@@ -379,7 +392,7 @@ mod tests {
             no_crash: false,
         };
         let output = ElfBackend
-            .compile(&[main], &target, None)
+            .compile(&[main], &target, None, false)
             .expect("ELF output should compile");
         let object = object::File::parse(output.bytes.as_slice()).expect("valid ELF object");
         let malloc = object

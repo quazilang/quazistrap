@@ -17,7 +17,7 @@ Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend
 - **Move semantics** — non-primitive types are moved by default, borrow with `&`
 - **First-class functions & closures** — `|x, y| x + y` stored as `fn(i32, i32) i32`
 - **Unsafe system** — `unsafe fn` / `unsafe { ... }` for raw pointer work
-- **Module system** — `import std.io;` / `quazi.toml` project manifest
+- **Modules and libraries** — dotted imports, `pub import`, downloadable dependencies, and compiled QZI libraries
 - **LSP support** — hover, diagnostics, go-to-definition, completion, formatting
 - **Cross-platform** — Linux (ELF) and Windows (PE) targets
 
@@ -152,12 +152,19 @@ qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
 qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz check                  # type-check without compiling
+qz fetch                  # download, verify, and lock dependencies
+qz deps                   # show resolved dependency sources
 qz fmt                    # trim trailing whitespace in .qz files
 qz clean                  # remove build artifacts
 qz new <name> [--lib]     # scaffold a new project
 qz init [--lib]           # init in current directory
 qz lsp                    # start language server
 ```
+
+Project builds use `target/quazi/<target>/default/incremental.qzc` for exact
+warm-build reuse. Pass `--no-incremental` to bypass it. See
+[Libraries, QZI, and incremental builds](docs/LIBRARIES.md) for dependency TOML,
+QZI v6 library rules, lockfile behavior, and cache guarantees.
 
 `qz header` reads the current project when no files are supplied and emits the
 public C surface formed by `@export` functions and their C-compatible type

@@ -17,3 +17,8 @@ object    = { version = "0.36",  features = ["write"] }
 iced-x86  = { version = "1",     features = ["code_asm"] }
 tower-lsp = "0.20"
 tokio     = { version = "1", features = ["full"] }
+flate2    = "1"
+sha2      = "0.10"
+tar       = "0.4"
+ureq      = { version = "2.12", default-features = true }
+zip       = { version = "2.2", default-features = false, features = ["deflate"] }

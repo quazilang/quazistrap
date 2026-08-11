@@ -90,15 +90,11 @@ impl Parser {
         } else {
             false
         };
-        if is_pub && matches!(self.peek_kind(), TokenKind::Ident(s) if s == "reexport") {
-            self.advance();
-            return self.parse_import(is_pub, true);
-        }
         match self.peek_kind() {
             TokenKind::Error(msg) => {
                 Err(self.err_here_with_code("E00", format!("lexer error: {}", msg)))
             }
-            TokenKind::Import => self.parse_import(is_pub, false),
+            TokenKind::Import => self.parse_import(is_pub),
             TokenKind::Unsafe => {
                 self.advance(); // consume 'unsafe'
                 self.parse_fn(attributes, true, is_pub)

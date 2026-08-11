@@ -783,7 +783,7 @@ mod tests {
             no_crash: false,
         };
         let object = crate::backend::x86_64::ElfBackend
-            .compile(&[main], &target, None)
+            .compile(&[main], &target, None, false)
             .expect("compile Linux object");
         let output = std::env::temp_dir().join(format!(
             "qz_builtin_linker_real_object_{}",

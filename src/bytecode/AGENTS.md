@@ -2,7 +2,7 @@
 
 ## QZI Format
 
-Platform-independent, AOT-only. **6 bytes/instruction**: `[opcode u8][operands 4B][flags u8]`.
+Platform-independent bytecode. **6 bytes/instruction**: `[opcode u8][operands 4B][flags u8]`.
 Emitting QZI is target-neutral and does not compile the current project's `[cc]`
 sources or require a host linker. Native inputs are used only for object/binary
 outputs.
@@ -39,10 +39,15 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x05` (readers retain v1/v2/v3/v4 compatibility)
-- chunk_count: u32 LE
-- Per chunk: name, param_count, reg_count, flags, optional export ABI metadata,
-  consts, instrs. Chunk flags bit 3 marks the export metadata extension.
+- Version: `0x06` (readers retain v1-v5 compatibility)
+- section directory: metadata, public interface, symbolic call relocations, bytecode
+- metadata identifies package name/version, executable/library kind, and entry signature
+- bytecode embeds a validated v5 chunk stream: names, parameters, registers,
+  flags, optional export ABI metadata, constants, and instructions
+- named relocations let independently compiled libraries resolve dotted symbols
+- library builds retain public API roots and their whole-program dependency
+  closure; the QZI linker deduplicates equivalent shared chunks and rejects
+  conflicting definitions
 
 ### Const Pool Tags
 

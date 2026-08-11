@@ -8,9 +8,11 @@ mod backend;
 pub mod bytecode;
 pub mod cli;
 mod header;
+mod incremental;
 pub mod lexer;
 pub mod loader;
 mod lsp;
+mod package;
 pub mod parser;
 mod progress;
 mod project;
@@ -121,7 +123,13 @@ fn run_pipeline(
 
         EmitType::Object => {
             let no_crash = source_contains_no_crash(src);
-            let obj_bytes = compile_to_object(&chunks, false, no_crash, Some(&sema_report));
+            let obj_bytes = compile_to_object(
+                &chunks,
+                false,
+                no_crash,
+                Some(&sema_report),
+                sema_report.main_takes_args,
+            );
             write_or_package_object(
                 &obj_bytes,
                 output_file_name,
@@ -135,7 +143,13 @@ fn run_pipeline(
 
         EmitType::Binary => {
             let no_crash = source_contains_no_crash(src);
-            let obj_bytes = compile_to_object(&chunks, true, no_crash, Some(&sema_report));
+            let obj_bytes = compile_to_object(
+                &chunks,
+                true,
+                no_crash,
+                Some(&sema_report),
+                sema_report.main_takes_args,
+            );
             let flags = link_flags.unwrap_or(&[]);
             link_object(
                 &obj_bytes,
@@ -282,6 +296,7 @@ fn compile_to_object(
     emit_start: bool,
     no_crash: bool,
     report: Option<&crate::semantic::SemanticReport>,
+    main_takes_args: bool,
 ) -> Vec<u8> {
     let mut target = TargetSpec::host();
     if !emit_start {
@@ -292,7 +307,7 @@ fn compile_to_object(
     }
     let backend = select_backend(&target);
     backend
-        .compile(chunks, &target, report)
+        .compile(chunks, &target, report, main_takes_args)
         .unwrap_or_else(|e| {
             eprintln!("\x1b[31;1merror:\x1b[0m codegen failed: {}", e);
             std::process::exit(1);
@@ -308,6 +323,9 @@ fn emit_chunks(
     link_flags: Option<&[String]>,
     explicit_linker: Option<&Path>,
     debug: bool,
+    no_crash: bool,
+    main_takes_args: bool,
+    announce: bool,
 ) {
     if debug {
         for chunk in chunks {
@@ -332,30 +350,31 @@ fn emit_chunks(
                 eprintln!("\x1b[31;1merror:\x1b[0m write failed: {}", e);
                 std::process::exit(1);
             });
-            println!(
-                "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m({} bytes)\x1b[0m",
-                bytes.len()
-            );
-            for chunk in chunks {
-                print!("{}", chunk);
+            if announce {
+                println!(
+                    "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m({} bytes)\x1b[0m",
+                    bytes.len()
+                );
             }
         }
 
         EmitType::Object => {
-            let obj_bytes = compile_to_object(chunks, false, false, None);
+            let obj_bytes = compile_to_object(chunks, false, no_crash, None, main_takes_args);
             write_or_package_object(
                 &obj_bytes,
                 output_file_name,
                 link_flags.unwrap_or(&[]),
                 explicit_linker,
             );
-            println!(
-                "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m[object]\x1b[0m"
-            );
+            if announce {
+                println!(
+                    "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m[object]\x1b[0m"
+                );
+            }
         }
 
         EmitType::Binary => {
-            let obj_bytes = compile_to_object(chunks, true, false, None);
+            let obj_bytes = compile_to_object(chunks, true, no_crash, None, main_takes_args);
             let flags = link_flags.unwrap_or(&[]);
             link_object(
                 &obj_bytes,
@@ -368,7 +387,9 @@ fn emit_chunks(
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 std::process::exit(1);
             });
-            println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
+            if announce {
+                println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
+            }
         }
     }
 }
@@ -751,6 +772,10 @@ fn build_with_progress(
     link_flags: Option<&[String]>,
     explicit_linker: Option<&Path>,
     do_strip: bool,
+    qzi_metadata: Option<bytecode::QziMetadata>,
+    qzi_dependencies: &[PathBuf],
+    qzc_path: Option<&Path>,
+    extra_cache_inputs: &[PathBuf],
 ) {
     use progress::{
         BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count,
@@ -766,6 +791,51 @@ fn build_with_progress(
         .unwrap_or(out);
     prog.header(input_name, out_name);
 
+    if let Some(cache_path) = qzc_path {
+        match incremental::load(cache_path) {
+            Ok(Some(hit)) => {
+                prog.begin("Cache");
+                let module = bytecode::deserialize_qzi_module(&hit.qzi).unwrap_or_else(|error| {
+                    prog.fail("invalid");
+                    eprintln!("\x1b[31;1merror:\x1b[0m invalid cached QZI: {error}");
+                    std::process::exit(1);
+                });
+                prog.done(&format!("hit · {} functions", module.chunks.len()));
+                if debug {
+                    for chunk in &module.chunks {
+                        eprint!("{chunk}");
+                    }
+                }
+                if matches!(emit, EmitType::Bytecode) {
+                    std::fs::write(out, &hit.qzi).unwrap_or_else(|error| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m cannot write {out}: {error}");
+                        std::process::exit(1);
+                    });
+                } else {
+                    emit_chunks(
+                        &module.chunks,
+                        emit.clone(),
+                        out,
+                        link_flags,
+                        explicit_linker,
+                        debug,
+                        hit.no_crash,
+                        module.metadata.main_takes_args,
+                        false,
+                    );
+                    if do_strip {
+                        strip_binary(Path::new(out));
+                    }
+                }
+                let size = std::fs::metadata(out).ok().map(|metadata| metadata.len());
+                prog.success(out, size);
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("\x1b[33;1mwarning:\x1b[0m ignoring QZC: {error}"),
+        }
+    }
+
     // ── Step 1: Lexing (file I/O + tokenize) ─────────────────────────────────
     prog.begin("Lexing");
     let result = match load_with_optional_project(files) {
@@ -776,6 +846,9 @@ fn build_with_progress(
             std::process::exit(1);
         }
     };
+    if debug {
+        print_debug_files(&result.loaded_files, &result.library_file_paths);
+    }
     let tok_info = format!(
         "{} tokens · {} file{}",
         fmt_count(result.token_count),
@@ -833,22 +906,70 @@ fn build_with_progress(
         &result.merged_source,
         &result.program,
         result.library_fn_names,
-        result.library_char_ranges,
+        result.library_char_ranges.clone(),
         result.source_files.clone(),
         namespaced_paths,
     );
     let has_errors = !sema.errors.is_empty();
-    let chunks = if has_errors {
-        Vec::new()
+    let (mut chunks, external_call_relocations) = if has_errors {
+        (Vec::new(), Vec::new())
     } else {
         let mut cg = bytecode::Codegen::new(&sema);
-        cg.compile_program(&result.program, &result.source_files)
+        if qzi_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.kind == bytecode::QziModuleKind::Library)
+        {
+            cg.retain_public_library_api(result.library_file_paths.iter().cloned().collect());
+        }
+        let chunks = cg
+            .compile_program(&result.program, &result.source_files)
             .unwrap_or_else(|error| {
                 prog.fail("error");
                 eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
                 std::process::exit(1);
-            })
+            });
+        (chunks, cg.external_call_relocations().to_vec())
     };
+
+    if !has_errors && !qzi_dependencies.is_empty() {
+        let generated = bytecode::QziModule {
+            metadata: qzi_metadata.clone().unwrap_or(bytecode::QziMetadata {
+                name: String::new(),
+                version: None,
+                kind: bytecode::QziModuleKind::Executable,
+                main_takes_args: sema.main_takes_args,
+            }),
+            interface: String::new(),
+            call_relocations: external_call_relocations,
+            chunks,
+        };
+        let mut modules = vec![generated];
+        for dependency in qzi_dependencies {
+            let bytes = std::fs::read(dependency).unwrap_or_else(|error| {
+                prog.fail("error");
+                eprintln!(
+                    "\x1b[31;1merror:\x1b[0m cannot read QZI dependency '{}': {error}",
+                    dependency.display()
+                );
+                std::process::exit(1);
+            });
+            modules.push(
+                bytecode::deserialize_qzi_module(&bytes).unwrap_or_else(|error| {
+                    prog.fail("error");
+                    eprintln!(
+                        "\x1b[31;1merror:\x1b[0m invalid QZI dependency '{}': {error}",
+                        dependency.display()
+                    );
+                    std::process::exit(1);
+                }),
+            );
+        }
+        chunks = bytecode::link_qzi_modules(&modules).unwrap_or_else(|error| {
+            prog.fail("error");
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot link QZI dependencies: {error}");
+            std::process::exit(1);
+        });
+    }
 
     if has_errors {
         prog.fail("error");
@@ -882,13 +1003,59 @@ fn build_with_progress(
         std::process::exit(1);
     }
 
+    let no_crash = source_contains_no_crash(&result.merged_source);
+    let project_qzi = qzi_metadata.clone().map(|mut metadata| {
+        metadata.main_takes_args = sema.main_takes_args;
+        let excluded_paths: HashSet<PathBuf> = result.library_file_paths.iter().cloned().collect();
+        let interface = bytecode::build_qzi_interface(
+            &metadata.name,
+            &result.program,
+            &result.source_files,
+            &result.namespaced_paths,
+            &excluded_paths,
+        )
+        .unwrap_or_else(|error| {
+            prog.fail("error");
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot build QZI interface: {error}");
+            std::process::exit(1);
+        });
+        let mut module = bytecode::QziModule {
+            metadata,
+            interface,
+            call_relocations: Vec::new(),
+            chunks: chunks.clone(),
+        };
+        module.qualify_library_root_symbols();
+        bytecode::serialize_qzi_module(&module).unwrap_or_else(|error| {
+            prog.fail("error");
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
+            std::process::exit(1);
+        })
+    });
+
+    if let (Some(cache_path), Some(qzi)) = (qzc_path, project_qzi.as_deref()) {
+        let mut cache_inputs = result.loaded_files.clone();
+        cache_inputs.extend_from_slice(extra_cache_inputs);
+        cache_inputs.extend_from_slice(qzi_dependencies);
+        if let Err(error) = incremental::store(cache_path, &cache_inputs, qzi, no_crash) {
+            eprintln!("\x1b[33;1mwarning:\x1b[0m cannot update QZC: {error}");
+        }
+    }
+
     match emit {
         EmitType::Bytecode => {
-            let bytes = bytecode::serialize_qzi(&chunks).unwrap_or_else(|error| {
-                prog.fail("error");
-                eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
-                std::process::exit(1);
+            let bytes = project_qzi.unwrap_or_else(|| {
+                bytecode::serialize_qzi(&chunks).unwrap_or_else(|error| {
+                    prog.fail("error");
+                    eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
+                    std::process::exit(1);
+                })
             });
+            if bytes.is_empty() {
+                prog.fail("error");
+                eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize empty QZI");
+                std::process::exit(1);
+            }
             let mut f = std::fs::File::create(out).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {}", out, e);
                 std::process::exit(1);
@@ -905,8 +1072,13 @@ fn build_with_progress(
             // ── Step 3: Native ────────────────────────────────────────────────
             let arch = arch_label();
             prog.begin(&format!("Native  {}", arch));
-            let no_crash = source_contains_no_crash(&result.merged_source);
-            let obj_bytes = compile_to_object(&chunks, false, no_crash, Some(&sema));
+            let obj_bytes = compile_to_object(
+                &chunks,
+                false,
+                no_crash,
+                Some(&sema),
+                sema.main_takes_args,
+            );
             write_or_package_object(&obj_bytes, out, link_flags.unwrap_or(&[]), explicit_linker);
             prog.done(&format!("{:.1} KB", obj_bytes.len() as f64 / 1024.0));
             prog.success(out, Some(obj_bytes.len() as u64));
@@ -916,8 +1088,13 @@ fn build_with_progress(
             // ── Step 3: Native ────────────────────────────────────────────────
             let arch = arch_label();
             prog.begin(&format!("Native  {}", arch));
-            let no_crash = source_contains_no_crash(&result.merged_source);
-            let obj_bytes = compile_to_object(&chunks, true, no_crash, Some(&sema));
+            let obj_bytes = compile_to_object(
+                &chunks,
+                true,
+                no_crash,
+                Some(&sema),
+                sema.main_takes_args,
+            );
             prog.done(&format!(
                 "{:.1} KB  object",
                 obj_bytes.len() as f64 / 1024.0
@@ -977,6 +1154,7 @@ fn main() {
             strip,
             library_paths,
             libraries,
+            no_incremental,
         } => CliCmd::Build {
             files,
             output: None,
@@ -990,6 +1168,7 @@ fn main() {
             libraries,
             static_lib: false,
             shared_lib: false,
+            no_incremental,
         },
         command => command,
     };
@@ -1008,6 +1187,7 @@ fn main() {
             libraries,
             static_lib,
             shared_lib,
+            no_incremental,
         } => {
             let emit = if emit_bytecode {
                 EmitType::Bytecode
@@ -1071,6 +1251,8 @@ fn main() {
                         .map(|path| format!("-L{}", path.display())),
                 );
                 link_flags.extend(libraries.iter().map(|name| format!("-l{name}")));
+                let qzc_path = (!no_incremental).then(|| ctx.incremental_cache_path());
+                let cache_inputs = ctx.incremental_inputs();
                 build_with_progress(
                     &[entry],
                     &out,
@@ -1079,6 +1261,19 @@ fn main() {
                     Some(&link_flags),
                     explicit_linker,
                     effective_strip,
+                    Some(bytecode::QziMetadata {
+                        name: ctx.config.name.clone(),
+                        version: ctx.config.version.clone(),
+                        kind: if is_lib {
+                            bytecode::QziModuleKind::Library
+                        } else {
+                            bytecode::QziModuleKind::Executable
+                        },
+                        main_takes_args: false,
+                    }),
+                    &ctx.config.qzi_dependencies,
+                    qzc_path.as_deref(),
+                    &cache_inputs,
                 );
                 let _ = (emit, do_strip);
 
@@ -1112,7 +1307,7 @@ fn main() {
                     }
                 }
 
-                let mut all_chunks: Vec<bytecode::Chunk> = Vec::new();
+                let mut qzi_modules = Vec::new();
                 for qzi_file in files
                     .iter()
                     .filter(|path| path.extension().is_some_and(|extension| extension == "qzi"))
@@ -1125,7 +1320,7 @@ fn main() {
                         );
                         std::process::exit(1);
                     });
-                    let chunks = bytecode::deserialize_qzi(&bytes).unwrap_or_else(|e| {
+                    let module = bytecode::deserialize_qzi_module(&bytes).unwrap_or_else(|e| {
                         eprintln!(
                             "\x1b[31;1merror:\x1b[0m invalid .qzi '{}': {}",
                             qzi_file.display(),
@@ -1133,8 +1328,16 @@ fn main() {
                         );
                         std::process::exit(1);
                     });
-                    all_chunks.extend(chunks);
+                    qzi_modules.push(module);
                 }
+                let all_chunks = bytecode::link_qzi_modules(&qzi_modules).unwrap_or_else(|e| {
+                    eprintln!("\x1b[31;1merror:\x1b[0m cannot link QZI modules: {e}");
+                    std::process::exit(1);
+                });
+                let main_takes_args = qzi_modules.iter().any(|module| {
+                    module.metadata.kind == bytecode::QziModuleKind::Executable
+                        && module.metadata.main_takes_args
+                });
 
                 let out = output.clone().unwrap_or_else(|| {
                     let stem = files
@@ -1197,6 +1400,9 @@ fn main() {
                     Some(&qzi_link_flags),
                     explicit_linker,
                     debug,
+                    false,
+                    main_takes_args,
+                    true,
                 );
 
                 if do_strip {
@@ -1368,6 +1574,10 @@ fn main() {
                     Some(&link_flags),
                     explicit_linker,
                     do_strip,
+                    None,
+                    &[],
+                    None,
+                    &[],
                 );
                 for object in &compiled_c_objects {
                     remove_temp(object);
@@ -1480,6 +1690,45 @@ fn main() {
                 result.source_files,
                 namespaced_paths,
             );
+        }
+
+        CliCmd::Fetch => {
+            let ctx = load_project_context();
+            ctx.ensure_lockfile().unwrap_or_else(|error| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                std::process::exit(1);
+            });
+            if ctx.config.dependencies.is_empty() {
+                eprintln!("  Dependencies  ·  none");
+            } else {
+                eprintln!(
+                    "  \x1b[32m✓\x1b[0m  Dependencies  ·  {} resolved  ·  quazi.lock updated",
+                    ctx.config.dependencies.len()
+                );
+            }
+        }
+
+        CliCmd::Deps => {
+            let ctx = load_project_context();
+            ctx.ensure_lockfile().unwrap_or_else(|error| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                std::process::exit(1);
+            });
+            eprintln!(
+                "\n  \x1b[1mDependencies\x1b[0m  ({})\n",
+                ctx.config.dependencies.len()
+            );
+            for dependency in &ctx.config.dependencies {
+                let version = dependency.version.as_deref().unwrap_or("unversioned");
+                eprintln!(
+                    "  \x1b[36m{}\x1b[0m  \x1b[2m{} · {}\x1b[0m\n      \x1b[2m{}\x1b[0m",
+                    dependency.name,
+                    version,
+                    dependency.kind.as_str(),
+                    dependency.root.display()
+                );
+            }
+            eprintln!();
         }
 
         CliCmd::New { name, lib } => {

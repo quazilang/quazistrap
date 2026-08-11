@@ -39,6 +39,7 @@ pub trait Backend {
         chunks: &[Chunk],
         target: &TargetSpec,
         report: Option<&SemanticReport>,
+        main_takes_args: bool,
     ) -> Result<ObjectOutput, BackendError>;
 }
 
