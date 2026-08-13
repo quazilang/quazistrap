@@ -917,7 +917,11 @@ fn build_with_progress(
                 prog.success(out, size);
                 return;
             }
-            Ok(None) => prog.done("miss"),
+            Ok(None) => prog.done(if incremental::has_codegen_units(cache_path) {
+                "partial"
+            } else {
+                "miss"
+            }),
             Err(error) => {
                 prog.fail("ignored");
                 if !prog.silent {
@@ -974,6 +978,27 @@ fn build_with_progress(
         backend::target::Os::MacOs => ("macos", "sysv"),
     };
     let target_program = semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
+    let source_hashes = result.source_hashes.clone();
+    let mut context_inputs = extra_cache_inputs.to_vec();
+    context_inputs.extend_from_slice(qzi_dependencies);
+    let incremental_context =
+        incremental::semantic_context_hash(&target_program, target.triple(), &context_inputs)
+            .unwrap_or_else(|error| {
+                prog.fail("error");
+                eprintln!("\x1b[31;1merror:\x1b[0m cannot fingerprint semantic context: {error}");
+                std::process::exit(1);
+            });
+    let cached_codegen_units = qzc_path
+        .map(|cache_path| {
+            incremental::load_codegen_units(cache_path, incremental_context, &source_hashes)
+                .unwrap_or_else(|error| {
+                    if !prog.silent {
+                        eprintln!("\x1b[33;1mwarning:\x1b[0m ignoring reusable QZC units: {error}");
+                    }
+                    Vec::new()
+                })
+        })
+        .unwrap_or_default();
     let user_items = result
         .program
         .items
@@ -1040,6 +1065,7 @@ fn build_with_progress(
 
     prog.begin("bytecode");
     let mut cg = bytecode::Codegen::new(&sema);
+    cg.set_incremental_codegen(cached_codegen_units, source_hashes);
     if qzi_metadata
         .as_ref()
         .is_some_and(|metadata| metadata.kind == bytecode::QziModuleKind::Library)
@@ -1054,7 +1080,14 @@ fn build_with_progress(
             std::process::exit(1);
         });
     let external_call_relocations = cg.external_call_relocations().to_vec();
-    prog.done(&codegen_stats(&chunks, prog.is_tty));
+    let incremental_stats = cg.incremental_codegen_stats();
+    let incremental_snapshot = cg.incremental_codegen_snapshot().to_vec();
+    prog.done(&format!(
+        "{} · {} restored · {} compiled",
+        codegen_stats(&chunks, prog.is_tty),
+        incremental_stats.restored,
+        incremental_stats.compiled
+    ));
 
     if !qzi_dependencies.is_empty() {
         prog.begin("qzi linking");
@@ -1147,7 +1180,15 @@ fn build_with_progress(
         let mut cache_inputs = result.loaded_files.clone();
         cache_inputs.extend_from_slice(extra_cache_inputs);
         cache_inputs.extend_from_slice(qzi_dependencies);
-        if let Err(error) = incremental::store(cache_path, &cache_inputs, qzi, no_crash) {
+        if let Err(error) = incremental::store(
+            cache_path,
+            &cache_inputs,
+            &result.source_hashes,
+            qzi,
+            no_crash,
+            incremental_context,
+            &incremental_snapshot,
+        ) {
             prog.fail("not saved");
             if !prog.silent {
                 eprintln!("\x1b[33;1mwarning:\x1b[0m cannot update QZC: {error}");

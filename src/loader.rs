@@ -5,6 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 use crate::lexer::Lexer;
 use crate::lexer::token::TokenKind;
 use crate::parser::Parser;
@@ -15,6 +17,8 @@ pub struct LoadResult {
     pub merged_source: String,
     pub program: Program,
     pub loaded_files: Vec<PathBuf>,
+    /// SHA-256 of the exact source text parsed for each canonical file path.
+    pub source_hashes: HashMap<String, [u8; 32]>,
     /// Function names declared in dependency (library) files.
     pub library_fn_names: HashSet<String>,
     /// Paths of files that were loaded from external modules (not user source).
@@ -209,6 +213,18 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         entry_paths,
     } = collection;
 
+    // Capture exactly what was read from disk before compatibility filtering
+    // rewrites the in-memory source used by the merged parser.
+    let source_hashes = sources
+        .iter()
+        .map(|(path, source)| {
+            (
+                path.to_string_lossy().into_owned(),
+                Sha256::digest(source.as_bytes()).into(),
+            )
+        })
+        .collect();
+
     let namespaced_paths: HashSet<PathBuf> = sources
         .iter()
         .map(|(p, _)| p)
@@ -359,6 +375,7 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         merged_source: merged,
         program,
         loaded_files,
+        source_hashes,
         library_fn_names,
         library_file_paths,
         library_char_ranges,

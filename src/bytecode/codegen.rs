@@ -209,6 +209,31 @@ pub struct Codegen<'a> {
     source_files: Vec<SourceFile>,
     external_call_relocations: Vec<QziCallRelocation>,
     library_export_exclusions: Option<HashSet<PathBuf>>,
+    incremental_seed: HashMap<String, CachedCodegenUnit>,
+    incremental_source_hashes: HashMap<String, [u8; 32]>,
+    incremental_snapshot: Vec<CachedCodegenUnit>,
+    incremental_hits: usize,
+    incremental_misses: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedCodegenCall {
+    pub instruction_index: usize,
+    pub target: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedCodegenUnit {
+    pub source_path: String,
+    pub source_hash: [u8; 32],
+    pub chunk: Chunk,
+    pub calls: Vec<CachedCodegenCall>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IncrementalCodegenStats {
+    pub restored: usize,
+    pub compiled: usize,
 }
 
 impl<'a> Codegen<'a> {
@@ -256,6 +281,34 @@ impl<'a> Codegen<'a> {
             source_files: Vec::new(),
             external_call_relocations: Vec::new(),
             library_export_exclusions: None,
+            incremental_seed: HashMap::new(),
+            incremental_source_hashes: HashMap::new(),
+            incremental_snapshot: Vec::new(),
+            incremental_hits: 0,
+            incremental_misses: 0,
+        }
+    }
+
+    pub fn set_incremental_codegen(
+        &mut self,
+        units: Vec<CachedCodegenUnit>,
+        source_hashes: HashMap<String, [u8; 32]>,
+    ) {
+        self.incremental_seed = units
+            .into_iter()
+            .map(|unit| (unit.chunk.name.clone(), unit))
+            .collect();
+        self.incremental_source_hashes = source_hashes;
+    }
+
+    pub fn incremental_codegen_snapshot(&self) -> &[CachedCodegenUnit] {
+        &self.incremental_snapshot
+    }
+
+    pub fn incremental_codegen_stats(&self) -> IncrementalCodegenStats {
+        IncrementalCodegenStats {
+            restored: self.incremental_hits,
+            compiled: self.incremental_misses,
         }
     }
 
@@ -265,6 +318,98 @@ impl<'a> Codegen<'a> {
 
     pub fn retain_public_library_api(&mut self, excluded_paths: HashSet<PathBuf>) {
         self.library_export_exclusions = Some(excluded_paths);
+    }
+
+    fn source_path_for_span(&self, span: Span) -> Option<String> {
+        self.source_files
+            .iter()
+            .find(|source| source.contains(span))
+            .map(|source| source.path.clone())
+    }
+
+    fn restore_codegen_unit(&mut self, name: &str, source_path: &str) -> Option<Chunk> {
+        let unit = self.incremental_seed.get(name)?;
+        let current_hash = self.incremental_source_hashes.get(source_path)?;
+        if unit.source_path != source_path || &unit.source_hash != current_hash {
+            return None;
+        }
+        let mut chunk = unit.chunk.clone();
+        for call in &unit.calls {
+            let instruction = chunk.code.get_mut(call.instruction_index)?;
+            if instruction.opcode != Opcode::CallIdx as u8 {
+                return None;
+            }
+            let target = *self.fn_index.get(&call.target)?;
+            let [lo, hi] = target.to_le_bytes();
+            instruction.ops[1] = lo;
+            instruction.ops[2] = hi;
+        }
+        self.incremental_hits += 1;
+        Some(chunk)
+    }
+
+    fn capture_codegen_snapshot(
+        &mut self,
+        chunks: &[Chunk],
+        unit_sources: &HashMap<String, String>,
+    ) {
+        let chunk_names: HashSet<&str> = chunks.iter().map(|chunk| chunk.name.as_str()).collect();
+        let mut index_names = HashMap::<u16, String>::new();
+        for (name, index) in &self.fn_index {
+            if chunk_names.contains(name.as_str()) || !index_names.contains_key(index) {
+                index_names.insert(*index, name.clone());
+            }
+        }
+        self.incremental_snapshot.clear();
+        for chunk in chunks {
+            let Some(source_path) = unit_sources.get(&chunk.name) else {
+                continue;
+            };
+            if chunk.constants.iter().any(
+                |constant| matches!(constant, ConstPoolEntry::FnAddr(name) if name.starts_with("__quazi_closure_")),
+            ) {
+                continue;
+            }
+            let Some(source_hash) = self.incremental_source_hashes.get(source_path).copied() else {
+                continue;
+            };
+            let mut cached_chunk = chunk.clone();
+            let mut calls = Vec::new();
+            let mut valid = true;
+            for (instruction_index, instruction) in cached_chunk.code.iter_mut().enumerate() {
+                if instruction.opcode != Opcode::CallIdx as u8 {
+                    continue;
+                }
+                let target_index = instruction.ri16().1;
+                let Some(target) = index_names.get(&target_index).cloned() else {
+                    valid = false;
+                    break;
+                };
+                calls.push(CachedCodegenCall {
+                    instruction_index,
+                    target,
+                });
+                instruction.ops[1] = 0;
+                instruction.ops[2] = 0;
+            }
+            if valid {
+                let required_registers = cached_chunk
+                    .code
+                    .iter()
+                    .flat_map(crate::bytecode::regalloc::instruction_registers)
+                    .max()
+                    .map_or(0, |register| register.saturating_add(1));
+                cached_chunk.reg_count = cached_chunk.reg_count.max(required_registers);
+                self.incremental_snapshot.push(CachedCodegenUnit {
+                    source_path: source_path.clone(),
+                    source_hash,
+                    chunk: cached_chunk,
+                    calls,
+                });
+            }
+        }
+        self.incremental_snapshot
+            .sort_by(|left, right| left.chunk.name.cmp(&right.chunk.name));
     }
 
     /// Return the resolved symbol name for a top-level item defined at `span`.
@@ -309,6 +454,10 @@ impl<'a> Codegen<'a> {
     ) -> Result<Vec<Chunk>, String> {
         self.source_files = source_files.to_vec();
         self.external_call_relocations.clear();
+        self.incremental_snapshot.clear();
+        self.incremental_hits = 0;
+        self.incremental_misses = 0;
+        let mut incremental_unit_sources = HashMap::<String, String>::new();
         self.foreign_imports.clear();
         self.foreign_exports.clear();
         for item in &program.items {
@@ -679,6 +828,7 @@ impl<'a> Codegen<'a> {
         for item in &program.items {
             if let ItemKind::Fn {
                 name,
+                generic_params,
                 params,
                 body,
                 attributes,
@@ -701,33 +851,52 @@ impl<'a> Codegen<'a> {
                     self.resolve_item_name(item.span, name, attributes)
                 };
                 let is_export = attributes.iter().any(|a| a.name == "export");
-                if (is_live(&compile_name) || is_ph || is_export)
-                    && let Some(chunk) = self.compile_fn(
-                        &compile_name,
-                        params,
-                        body.as_ref().map(|b| b as &Block),
-                        attributes,
-                        *c_variadic,
-                        &mut chunks,
-                        &mut next_closure_idx,
-                    )?
-                {
-                    chunks.push(chunk);
-                    if let Some(foreign) = self.foreign_exports.get(&compile_name).cloned() {
-                        let fn_idx = *self
-                            .fn_index
-                            .get(&compile_name)
-                            .expect("exported function must have a function-table index");
-                        let adapter_name = export_adapter_name(&compile_name, fn_idx);
-                        let mut adapter = Chunk::with_params(adapter_name, params.len());
-                        adapter.export = Some(foreign);
-                        adapter.reg_count = params.len().max(1) as u8;
-                        for index in 0..params.len() {
-                            adapter.emit(rrr(Opcode::CallArg, index as u8, 0, 0));
+                if is_live(&compile_name) || is_ph || is_export {
+                    let source_path = self.source_path_for_span(item.span);
+                    let restored = if generic_params.is_empty() {
+                        source_path
+                            .as_deref()
+                            .and_then(|path| self.restore_codegen_unit(&compile_name, path))
+                    } else {
+                        None
+                    };
+                    let chunk = if let Some(chunk) = restored {
+                        Some(chunk)
+                    } else {
+                        self.incremental_misses += 1;
+                        self.compile_fn(
+                            &compile_name,
+                            params,
+                            body.as_ref().map(|b| b as &Block),
+                            attributes,
+                            *c_variadic,
+                            &mut chunks,
+                            &mut next_closure_idx,
+                        )?
+                    };
+                    if let Some(chunk) = chunk {
+                        if generic_params.is_empty()
+                            && let Some(source_path) = source_path
+                        {
+                            incremental_unit_sources.insert(compile_name.clone(), source_path);
                         }
-                        adapter.emit(ri16(Opcode::CallIdx, 0, fn_idx));
-                        adapter.emit(rrr(Opcode::Ret, 0, 0, 0));
-                        chunks.push(adapter);
+                        chunks.push(chunk);
+                        if let Some(foreign) = self.foreign_exports.get(&compile_name).cloned() {
+                            let fn_idx = *self
+                                .fn_index
+                                .get(&compile_name)
+                                .expect("exported function must have a function-table index");
+                            let adapter_name = export_adapter_name(&compile_name, fn_idx);
+                            let mut adapter = Chunk::with_params(adapter_name, params.len());
+                            adapter.export = Some(foreign);
+                            adapter.reg_count = params.len().max(1) as u8;
+                            for index in 0..params.len() {
+                                adapter.emit(rrr(Opcode::CallArg, index as u8, 0, 0));
+                            }
+                            adapter.emit(ri16(Opcode::CallIdx, 0, fn_idx));
+                            adapter.emit(rrr(Opcode::Ret, 0, 0, 0));
+                            chunks.push(adapter);
+                        }
                     }
                 }
             }
@@ -742,6 +911,7 @@ impl<'a> Codegen<'a> {
                 for method in methods {
                     if let ItemKind::Fn {
                         name,
+                        generic_params,
                         params,
                         body,
                         attributes,
@@ -753,18 +923,37 @@ impl<'a> Codegen<'a> {
                             continue;
                         }
                         let mangled = format!("{}.{}", type_name, name);
-                        if is_live(&mangled)
-                            && let Some(chunk) = self.compile_fn(
-                                &mangled,
-                                params,
-                                body.as_ref().map(|b| b as &Block),
-                                attributes,
-                                *c_variadic,
-                                &mut chunks,
-                                &mut next_closure_idx,
-                            )?
-                        {
-                            chunks.push(chunk);
+                        if is_live(&mangled) {
+                            let source_path = self.source_path_for_span(method.span);
+                            let restored = if generic_params.is_empty() {
+                                source_path
+                                    .as_deref()
+                                    .and_then(|path| self.restore_codegen_unit(&mangled, path))
+                            } else {
+                                None
+                            };
+                            let chunk = if let Some(chunk) = restored {
+                                Some(chunk)
+                            } else {
+                                self.incremental_misses += 1;
+                                self.compile_fn(
+                                    &mangled,
+                                    params,
+                                    body.as_ref().map(|b| b as &Block),
+                                    attributes,
+                                    *c_variadic,
+                                    &mut chunks,
+                                    &mut next_closure_idx,
+                                )?
+                            };
+                            if let Some(chunk) = chunk {
+                                if generic_params.is_empty()
+                                    && let Some(source_path) = source_path
+                                {
+                                    incremental_unit_sources.insert(mangled.clone(), source_path);
+                                }
+                                chunks.push(chunk);
+                            }
                         }
                     }
                 }
@@ -938,6 +1127,10 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
+
+        // Preserve reusable, pre-WPO function units. Restored and freshly compiled
+        // chunks enter the same global optimization pipeline below.
+        self.capture_codegen_snapshot(&chunks, &incremental_unit_sources);
 
         // Post-pass: inline small functions that are inline candidates.
         let inline_set: std::collections::HashSet<String> = self
@@ -6922,6 +7115,36 @@ mod tests {
             "expected Add instruction"
         );
         assert_eq!(chunk.code.last().unwrap().opcode, Opcode::Ret as u8);
+    }
+
+    #[test]
+    fn reusable_units_reenter_whole_program_optimization() {
+        let source =
+            "fn helper(value: i32) i32 { ret value + 1; } fn main() i32 { ret helper(4); }";
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let mut analyzer = Analyzer::new();
+        let source_files = vec![SourceFile {
+            path: "cache-test.qz".to_string(),
+            module_name: None,
+            start: 0,
+            end: source.chars().count(),
+            line_start: 1,
+        }];
+        analyzer.set_source_files(source_files.clone());
+        let report = analyzer.analyze_program(&program);
+        assert!(report.errors.is_empty());
+        let hashes = HashMap::from([("cache-test.qz".to_string(), [3; 32])]);
+        let mut cold = Codegen::new(&report);
+        cold.set_incremental_codegen(Vec::new(), hashes.clone());
+        let cold_chunks = cold.compile_program(&program, &source_files).unwrap();
+        let snapshot = cold.incremental_codegen_snapshot().to_vec();
+        assert!(!snapshot.is_empty());
+
+        let mut warm = Codegen::new(&report);
+        warm.set_incremental_codegen(snapshot, hashes);
+        let warm_chunks = warm.compile_program(&program, &source_files).unwrap();
+        assert_eq!(cold_chunks, warm_chunks);
+        assert!(warm.incremental_codegen_stats().restored >= 1);
     }
 
     #[test]

@@ -176,8 +176,10 @@ retaining the discovered package identity in `quazi.lock`; no separate
 then validates it against downloaded package metadata. Git `--version` accepts
 a tag, commit hash, or `latest`.
 
-Project builds use `build/quazi/<target>/<artifact>/incremental.qzc` for exact
-warm-build reuse. Progress reports cache lookup hits/misses and cache writes.
+Project builds use QZC v2 at `build/quazi/<target>/<artifact>/incremental.qzc`.
+Exact hits reuse linked QZI; partial hits restore unchanged pre-WPO functions,
+compile changed files, and rerun full WPO. Progress reports hit/partial/miss,
+restored/compiled function counts, and cache writes.
 Pass `--no-incremental` to bypass both reads and writes. See
 [Libraries, QZI, and incremental builds](docs/LIBRARIES.md) for dependency TOML,
 QZI v6 library rules, lockfile behavior, and cache guarantees.

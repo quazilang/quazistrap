@@ -110,7 +110,7 @@ Generic bodies are not yet a stable binary-library ABI. The compiler rejects a
 QZI library with public generic declarations and tells the author to distribute
 source until generic templates gain a portable representation.
 
-## QZC v1
+## QZC v2
 
 QZC means **Quazi Compilation Cache**. A project uses one cache file:
 
@@ -119,20 +119,25 @@ build/quazi/<architecture>-<os>/default/incremental.qzc
 ```
 
 After a successful build it stores compiler/target identity, canonical input
-paths and SHA-256 hashes, validated linked QZI, and backend build metadata.
+paths and SHA-256 hashes, validated linked QZI, backend metadata, and reusable
+pre-WPO function chunks keyed by source hash and semantic-context fingerprint.
 
-On the next build, an exact match skips parsing, analysis, optimization, and
-bytecode generation. The backend reuses QZI and links requested native output.
-Any changed input, dependency, manifest, lockfile, compiler identity, or corrupt
-cache causes a safe full rebuild. `--no-incremental` bypasses reads and writes;
+An exact hit skips frontend and WPO and reuses linked QZI. On a partial hit the
+compiler parses and analyzes the complete program for sound WPO, restores
+unchanged pre-WPO function chunks, compiles only functions in changed source
+files, then reruns global reachability, inlining, constant propagation, dead
+elimination, register allocation, QZI linking, and native emission over both.
+Changing any declaration signature, type/import context, target, manifest,
+lockfile, or QZI dependency conservatively invalidates all function chunks.
+Corrupt caches are ignored. `--no-incremental` bypasses reads and writes;
 `qz clean` removes the configured output directory.
 
-Normal build output reports `cache lookup` as `hit` or `miss`, then `cache
-write` as `saved` after a successful cold build. These stages follow the same
+Normal build output reports `cache lookup` as `hit`, `partial`, or `miss`.
+The bytecode stage reports restored and compiled function counts, then `cache
+write` reports `saved`. These stages follow the same
 `--silent`, `--no-progress`, `--no-color`, and `--no-unicode` output controls as
 the compiler stages.
 
-QZC v1 is an exact warm-build cache, not per-function incremental WPO. WPO stays
-unchanged: every cache miss still analyzes and optimizes the complete linked
-program. Fine-grained query caching can evolve later with dependency
-fingerprints and invalidation tests; QZC already supplies its container.
+QZC deliberately stores pre-WPO QZI units, not native objects. This keeps WPO
+whole-program: cached functions never bypass the final global optimization pass.
+Generic specializations and closure-owning functions are conservatively rebuilt.

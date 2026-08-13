@@ -92,7 +92,7 @@ Object (`-c`): backend only, no linker.
 - `quazi.toml`: `[package]` including `out_dir = "build"`, `[lib]`, `[[bin]]`, `[dependencies]`, `[cc]`, `[link]`, and target link overrides. Dependencies support local projects, singular `.qz`, compiled `.qzi`, and internet `git`/`archive`/`source`/`qzi` sources. `quazi.lock` records exact revisions/checksums and is validated on build.
 - `pub import` is the only public-import/re-export syntax. Quazi module and symbol paths use `.`, never `::`.
 - QZI v6 is a sectioned executable/library bytecode container with package metadata, a public source interface, named call relocations, and legacy chunk payloads. QZI libraries work without original source; generic template bodies remain source-only for now.
-- QZC v1 (`build/quazi/<target>/<artifact>/incremental.qzc` by default) is one disposable exact-build snapshot. Downloaded dependencies live in `<out_dir>/deps`. Matching compiler identity and input hashes reuse linked QZI; misses preserve whole-program analysis and rebuild fully.
+- QZC v2 (`build/quazi/<target>/<artifact>/incremental.qzc` by default) stores exact-hit linked QZI plus source-hashed pre-WPO function chunks. Partial misses restore unchanged chunks, compile changed files, then rerun full-program WPO. Signature/type/import/config changes conservatively invalidate all chunks. Downloaded dependencies live in `<out_dir>/deps`.
 - `type = "lib"` → lib project; default entry `src/lib.qz`; default output `.qzi`.
 
 ---
@@ -330,6 +330,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-13 | Replaced exact-only QZC v1 with QZC v2: partial misses restore unchanged pre-WPO function chunks, compile changed-file functions, and rerun complete global WPO over the combined program; declaration/config fingerprints conservatively invalidate reusable units. |
 | 2026-08-13 | Added first-class exclusive/inclusive `Range` expressions and OS-CSPRNG-backed `std.random` lowering with explicit availability failure and unbiased range selection. |
 | 2026-08-13 | Added `[package].out_dir` with `build/` default, moved dependency materialization to `<out_dir>/deps`, added Git tag/hash/`latest` selectors, simplified `qz add` to one positional path/URL form, and made Git progress percentage-driven after the build header. |
 | 2026-08-13 | Replaced filesystem-derived dependency-tree labels with stable logical import names and added diamond-based animated Git fetch/update progress. |

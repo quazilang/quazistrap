@@ -49,8 +49,9 @@ cache namespace, and linker. CLI linker wins over target `[link]`, then base
 objects. Native libraries or custom linker flags select an external linker.
 `libc = true` is explicit opt-in; no C runtime is inferred.
 
-QZC means Quazi Compilation Cache. Each artifact/target snapshot lives at
-`build/quazi/<target>/<artifact>/incremental.qzc` by default. It stores exact input hashes
-plus linked QZI. `quazi.lock` alone stores dependency resolution. QZC is always
-safe to delete. `[package].out_dir` changes the `build` root; it must remain
-inside the project. Compiled artifacts and downloaded dependencies live there.
+QZC means Quazi Compilation Cache. Each artifact/target QZC v2 snapshot lives at
+`build/quazi/<target>/<artifact>/incremental.qzc` by default. It stores exact-hit
+linked QZI plus source-hashed pre-WPO function chunks for partial rebuilds. The
+compiler still reruns complete-program analysis and WPO after restoring chunks.
+`quazi.lock` alone stores dependency resolution. QZC is always safe to delete.
+`[package].out_dir` changes the `build` root; it must remain inside the project.
