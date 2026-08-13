@@ -78,6 +78,8 @@ fn dll_for(symbol: &str) -> Option<&'static str> {
             | "connect"
             | "send"
             | "recv"
+            | "sendto"
+            | "recvfrom"
             | "inet_pton"
             | "setsockopt"
             | "shutdown"

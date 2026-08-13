@@ -1331,6 +1331,18 @@ impl Analyzer {
                     Some(src) if Self::is_integer(src) && Self::is_integer(&target_ty) => true,
                     Some(src) if Self::is_float(src) && Self::is_float(&target_ty) => true,
                     Some(src)
+                        if (Self::is_integer(src) || matches!(src, TypeKind::RawPtr { .. }))
+                            && matches!(&target_ty, TypeKind::CFn { .. }) =>
+                    {
+                        true
+                    }
+                    Some(TypeKind::CFn { .. })
+                        if Self::is_integer(&target_ty)
+                            || matches!(&target_ty, TypeKind::RawPtr { .. }) =>
+                    {
+                        true
+                    }
+                    Some(src)
                         if std::mem::discriminant(src) == std::mem::discriminant(&target_ty) =>
                     {
                         true
@@ -1347,6 +1359,16 @@ impl Analyzer {
                         expr.span,
                         "S06",
                         format!("invalid cast from {} to {}", src_name, target_ty),
+                    );
+                }
+                if (matches!(&target_ty, TypeKind::CFn { .. })
+                    || matches!(inner_eval.ty.as_ref(), Some(TypeKind::CFn { .. })))
+                    && self.unsafe_depth == 0
+                {
+                    self.push_error(
+                        expr.span,
+                        "S11",
+                        "casting a raw C function pointer requires unsafe context".to_string(),
                     );
                 }
                 ExprEval {
@@ -3291,10 +3313,12 @@ impl Analyzer {
                             },
                         ) if left_args.is_empty()
                             && right_args.is_empty()
-                            && left_name == right_name => self
-                            .current_generic_params
-                            .last()
-                            .is_some_and(|params| params.contains(left_name)),
+                            && left_name == right_name =>
+                        {
+                            self.current_generic_params
+                                .last()
+                                .is_some_and(|params| params.contains(left_name))
+                        }
                         _ => false,
                     };
                     let ordered = (Self::is_integer(l) && Self::is_integer(r))

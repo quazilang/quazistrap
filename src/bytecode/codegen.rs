@@ -2130,11 +2130,21 @@ impl<'a> FnCompiler<'a> {
     /// Generic param references `T` → concrete type; all others pass through.
     fn resolve_type(&self, ty: &TypeKind) -> TypeKind {
         match ty {
-            TypeKind::Named { name, type_args } if type_args.is_empty() => self
-                .type_subst
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| ty.clone()),
+            TypeKind::Named { name, type_args } if type_args.is_empty() => {
+                if let Some(concrete) = self.type_subst.get(name) {
+                    return concrete.clone();
+                }
+                let alias = self.type_aliases.get(name).or_else(|| {
+                    name.rsplit_once('.')
+                        .and_then(|(_, leaf)| self.type_aliases.get(leaf))
+                });
+                if let Some((params, target)) = alias
+                    && params.is_empty()
+                {
+                    return self.resolve_type(target);
+                }
+                ty.clone()
+            }
             TypeKind::Named { name, type_args } => {
                 let resolved_args: Vec<Type> = type_args
                     .iter()
@@ -2192,14 +2202,23 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn type_of_expr(&self, expr: &Expr) -> Option<TypeKind> {
-        let annotated = self.type_of_span((expr.span.start, expr.span.end));
-        if !matches!(annotated, None | Some(TypeKind::Any)) {
-            return annotated;
+        if let ExprKind::Group(inner) = &expr.node {
+            return self.type_of_expr(inner);
+        }
+        if let ExprKind::Cast { ty, .. } = &expr.node {
+            return Some(self.resolve_type(&ty.node));
         }
         if let ExprKind::Ident(name) = &expr.node
             && let Some(ty) = self.local_types.get(name)
         {
-            return Some(self.resolve_type(ty));
+            let local = self.resolve_type(ty);
+            if matches!(local, TypeKind::CFn { .. }) {
+                return Some(local);
+            }
+        }
+        let annotated = self.type_of_span((expr.span.start, expr.span.end));
+        if !matches!(annotated, None | Some(TypeKind::Any)) {
+            return annotated;
         }
         annotated
     }
@@ -5401,7 +5420,7 @@ impl<'a> FnCompiler<'a> {
                         return dst;
                     } else if self.regs.contains_key(call_name.as_str()) {
                         // Local variable — fn pointer or closure env pointer.
-                        let callee_type = self.type_of_span((callee.span.start, callee.span.end));
+                        let callee_type = self.type_of_expr(callee);
                         let fn_reg = self.compile_expr(callee);
                         let arg_regs: Vec<u8> = args
                             .iter()
@@ -5430,7 +5449,7 @@ impl<'a> FnCompiler<'a> {
                     }
                 } else {
                     // Indirect call: callee is an expression (variable, closure, etc.)
-                    let callee_type = self.type_of_span((callee.span.start, callee.span.end));
+                    let callee_type = self.type_of_expr(callee);
                     let fn_reg = self.compile_expr(callee);
                     let arg_regs: Vec<u8> = args
                         .iter()
@@ -7913,6 +7932,28 @@ fn main() i32 {
                         && symbol.signature.params.len() == 1
             )
         }));
+    }
+
+    #[test]
+    fn cast_native_address_uses_c_indirect_call() {
+        let chunks = compile(
+            r#"
+@repr(C) type Callback = fn(i32) i32;
+unsafe fn invoke(address: usize) i32 {
+    const callback: Callback = address as Callback;
+    ret callback(7);
+}
+"#,
+        );
+        let invoke = chunks.iter().find(|chunk| chunk.name == "invoke").unwrap();
+        assert_eq!(
+            invoke
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallCReg as u8)
+                .count(),
+            1
+        );
     }
 
     #[test]

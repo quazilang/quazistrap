@@ -380,3 +380,8 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 The authoritative 28-project user curriculum is
 [examples/README.md](examples/README.md). Historical work-log references above
 record old names at the time of each change; they are not current paths.
+
+Native FFI artifacts support target-specific Windows `.dll`, Linux `.so`, and
+`qz header` `.h` output. Shared libraries omit process startup and expose only
+explicit `@export` symbols through an external linker. `std.dylib` provides
+runtime DLL/SO loading; raw symbol casts remain unsafe.

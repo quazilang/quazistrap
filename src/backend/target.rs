@@ -25,7 +25,8 @@ pub struct TargetSpec {
     pub arch: Arch,
     pub os: Os,
     pub abi: Abi,
-    /// Whether to emit a _start stub (false for -c / shared lib).
+    /// Whether to emit the platform process entry stub (`_start` on Linux,
+    /// `mainCRTStartup` on Windows). False for compile-only objects and shared libraries.
     pub emit_start: bool,
     /// Whether to omit crash-handler registration in the entry stub.
     pub no_crash: bool,

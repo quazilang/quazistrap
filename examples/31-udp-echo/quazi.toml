@@ -1,0 +1,15 @@
+[package]
+name = "udp-echo"
+version = "0.1.0"
+out_dir = "build"
+
+[[bin]]
+name = "udp-server"
+path = "src/server.qz"
+
+[[bin]]
+name = "udp-echo"
+path = "src/client.qz"
+
+[target.x86_64-linux.link]
+libc = true

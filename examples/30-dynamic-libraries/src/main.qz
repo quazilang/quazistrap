@@ -1,0 +1,38 @@
+import std.dylib.{DynamicLibrary, DynamicLibraryError};
+import std.io;
+
+@repr(C)
+type ProcessId = fn() i32;
+
+fn main() i32 {
+    var library_name: str = "libc.so.6";
+    var symbol_name: str = "getpid";
+    @cfg(target_os = "windows") {
+        library_name = "kernel32.dll";
+        symbol_name = "GetCurrentProcessId";
+    }
+
+    const opened: Result[DynamicLibrary, DynamicLibraryError] = DynamicLibrary.open(library_name);
+    if (opened.is_err()) {
+        const error: DynamicLibraryError = opened.unwrap_err();
+        io.errln("open failed: {}", error.message());
+        ret 1;
+    }
+
+    const library: DynamicLibrary = opened.unwrap();
+    var process_id: i32 = 0;
+    unsafe {
+        const found: Result[usize, DynamicLibraryError] = library.symbol(symbol_name);
+        if (found.is_err()) {
+            const error: DynamicLibraryError = found.unwrap_err();
+            io.errln("symbol failed: {}", error.message());
+            ret 1;
+        }
+        const address: usize = found.unwrap();
+        io.println("resolved {} at {}", symbol_name, address);
+        process_id = (address as ProcessId)();
+    }
+
+    io.println("loaded {} dynamically; process id = {}", library_name, process_id);
+    ret 0;
+}

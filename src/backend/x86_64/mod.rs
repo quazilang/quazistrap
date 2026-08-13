@@ -183,6 +183,26 @@ fn emit_native_object(
         text_bytes.extend_from_slice(&stub.bytes);
     }
 
+    // Object/static/shared-library outputs have no process startup stub. Keep
+    // panic paths linkable by providing the startup-owned backtrace hook as a
+    // no-op; an embedding executable may replace diagnostics at its boundary.
+    if !target.emit_start
+        && all_relocs
+            .iter()
+            .any(|(reloc, _)| reloc.symbol == "__quazi_print_backtrace")
+    {
+        let offset = text_bytes.len();
+        sym_table.define_function(
+            &mut obj,
+            section_acc.text_id,
+            "__quazi_print_backtrace",
+            offset as u64,
+            1,
+            SymbolScope::Compilation,
+        );
+        text_bytes.push(0xC3); // ret
+    }
+
     if target.os == target::Os::Linux {
         let requested_runtime_symbols: std::collections::HashSet<String> = all_relocs
             .iter()
@@ -305,6 +325,56 @@ mod tests {
     use crate::bytecode::chunk::ConstPoolEntry;
     use crate::bytecode::instruction::{ri16, rrr};
     use crate::bytecode::opcode::Opcode;
+
+    fn returning_main() -> Chunk {
+        let mut main = Chunk::new("main");
+        main.reg_count = 1;
+        main.emit(ri16(Opcode::MovI, 0, 0));
+        main.emit(rrr(Opcode::Ret, 0, 0, 0));
+        main
+    }
+
+    #[test]
+    fn executable_objects_define_platform_entry_points() {
+        for (target, expected) in [
+            (TargetSpec::x86_64_linux(), "_start"),
+            (TargetSpec::x86_64_windows(), "mainCRTStartup"),
+        ] {
+            let output = match target.os {
+                Os::Linux => ElfBackend.compile(&[returning_main()], &target, None, false),
+                Os::Windows => PeBackend.compile(&[returning_main()], &target, None, false),
+                Os::MacOs => unreachable!("test only covers supported native backends"),
+            }
+            .expect("executable object should compile");
+            let object = object::File::parse(output.bytes.as_slice()).expect("valid object");
+            let entry = object
+                .symbols()
+                .find(|symbol| symbol.name() == Ok(expected))
+                .unwrap_or_else(|| panic!("missing platform entry point `{expected}`"));
+            assert!(!entry.is_undefined());
+        }
+    }
+
+    #[test]
+    fn shared_library_objects_omit_process_entry_points() {
+        for target in [
+            TargetSpec::x86_64_linux().without_start(),
+            TargetSpec::x86_64_windows().without_start(),
+        ] {
+            let output = match target.os {
+                Os::Linux => ElfBackend.compile(&[returning_main()], &target, None, false),
+                Os::Windows => PeBackend.compile(&[returning_main()], &target, None, false),
+                Os::MacOs => unreachable!("test only covers supported native backends"),
+            }
+            .expect("shared-library object should compile");
+            let object = object::File::parse(output.bytes.as_slice()).expect("valid object");
+            assert!(
+                object
+                    .symbols()
+                    .all(|symbol| { !matches!(symbol.name(), Ok("_start" | "mainCRTStartup")) })
+            );
+        }
+    }
 
     #[test]
     fn coff_export_adapter_defines_stable_and_callback_symbols() {

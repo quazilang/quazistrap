@@ -80,12 +80,18 @@ built-in linker path; `[link].libraries` or `[link].library-paths` select the
 external path.
 
 `qz build -c` remains compile-only and emits a relocatable object. Normal
-source/QZI executable builds contain the compiler's full `_start`. If an
-Linux object-only build defines `main` but not `_start`, the linker adds a minimal
+source/QZI executable builds contain the compiler's full platform entry stub:
+`_start` on Linux and `mainCRTStartup` on Windows. DLL/SO outputs intentionally
+have no process entry because the operating-system loader calls their exports.
+If a Linux object-only build defines `main` but not `_start`, the linker adds a minimal
 15-byte entry stub which calls `main`, passes its return value to `SYS_exit`,
 and performs the syscall. This fallback does not construct `Array[str]`, scan
 `QUAZI_TRACE`, or install Quazi's crash signal handlers; use a normal source or
 QZI executable build when those facilities are required.
+
+`--shared-lib` emits a Windows `.dll` or Linux `.so`, omits process startup,
+exports explicit `@export` symbols, and selects an external linker. `qz header`
+generates the matching target-specific C declarations.
 
 ## PE/COFF input contract
 
@@ -189,8 +195,8 @@ linker.
 ## Current limitations
 
 - x86-64 Linux static executables only;
-- no PE/COFF, Mach-O, or cross-target built-in linker;
-- no `.a` archive extraction or `.so` dynamic linking;
+- no Mach-O linker;
+- no archive extraction or shared-library handling inside the built-in linker;
 - no TLS, COMDAT/group selection, symbol versions, linker scripts, or section
   garbage collection;
 - only the relocation forms listed above;

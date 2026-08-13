@@ -38,3 +38,16 @@ caller responsibilities.
 Native inputs use `[cc]`/`[link]` or CLI object/library flags. Ordinary Quazi
 programs use built-in ELF/PE linkers; archives, shared libraries, and arbitrary
 native dependencies may select external tools. See [LINKER.md](LINKER.md).
+
+Native library artifacts use one C ABI surface:
+
+```bash
+qz build src/lib.qz --shared-lib --target x86_64-windows -o build/acme.dll
+qz build src/lib.qz --shared-lib --target x86_64-linux -o build/libacme.so
+qz header src/lib.qz --target x86_64-windows -o build/acme.h
+```
+
+Only `@export` symbols enter a DLL/SO export table. Windows DLL and Linux SO
+creation use an external linker. `std.dylib.DynamicLibrary` loads DLL/SO files
+at runtime and returns untyped symbol addresses. Casting an address to an exact
+`@repr(C)` callback and calling it both require `unsafe`; keep the library open.

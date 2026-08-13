@@ -157,6 +157,12 @@ fn run_pipeline(
                 output_file_name,
                 link_flags.unwrap_or(&[]),
                 explicit_linker,
+                &TargetSpec::host(),
+                &sema_report
+                    .exported_symbols
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>(),
             );
             println!(
                 "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m[object]\x1b[0m"
@@ -195,6 +201,8 @@ fn write_or_package_object(
     output: &str,
     link_flags: &[String],
     explicit_linker: Option<&Path>,
+    target: &TargetSpec,
+    export_symbols: &[String],
 ) {
     match Path::new(output).extension().and_then(|ext| ext.to_str()) {
         Some("a") => {
@@ -235,24 +243,25 @@ fn write_or_package_object(
                 std::process::exit(1);
             }
         }
-        Some("so") => {
+        Some("so" | "dll") => {
             let object = write_temp_object(bytes, "ffi_shared").unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {e}");
                 std::process::exit(1);
             });
             let mut flags = vec!["-shared".to_string()];
             flags.extend_from_slice(link_flags);
-            let mut invocation = LinkerInvocation::new(
-                object.clone(),
-                PathBuf::from(output),
-                TargetSpec::host(),
-                flags,
-            )
-            .unwrap_or_else(|e| {
-                remove_temp(&object);
-                eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                std::process::exit(1);
-            });
+            if target.os == backend::target::Os::Windows {
+                for symbol in export_symbols {
+                    flags.push(format!("/export:{symbol}"));
+                }
+            }
+            let mut invocation =
+                LinkerInvocation::new(object.clone(), PathBuf::from(output), target.clone(), flags)
+                    .unwrap_or_else(|e| {
+                        remove_temp(&object);
+                        eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                        std::process::exit(1);
+                    });
             if let Some(linker) = explicit_linker {
                 invocation.linker = linker.to_path_buf();
             }
@@ -391,6 +400,11 @@ fn emit_chunks(
                 output_file_name,
                 link_flags.unwrap_or(&[]),
                 explicit_linker,
+                target,
+                &chunks
+                    .iter()
+                    .filter_map(|chunk| chunk.export.as_ref().map(|export| export.symbol.clone()))
+                    .collect::<Vec<_>>(),
             );
             if announce {
                 println!(
@@ -454,6 +468,14 @@ fn target_output_name(name: &str, emit: EmitType, target: &TargetSpec) -> String
             backend::target::Os::Windows => format!("{name}.exe"),
             _ => name.into(),
         },
+    }
+}
+
+fn shared_library_name(name: &str, target: &TargetSpec) -> String {
+    match target.os {
+        backend::target::Os::Windows => format!("{name}.dll"),
+        backend::target::Os::Linux => format!("lib{name}.so"),
+        backend::target::Os::MacOs => format!("lib{name}.dylib"),
     }
 }
 
@@ -1236,7 +1258,14 @@ fn build_with_progress(
                 sema.main_takes_args,
                 target,
             );
-            write_or_package_object(&obj_bytes, out, link_flags.unwrap_or(&[]), explicit_linker);
+            write_or_package_object(
+                &obj_bytes,
+                out,
+                link_flags.unwrap_or(&[]),
+                explicit_linker,
+                target,
+                &sema.exported_symbols.values().cloned().collect::<Vec<_>>(),
+            );
             prog.done(&format!("{:.1} KB", obj_bytes.len() as f64 / 1024.0));
             prog.success(out, Some(obj_bytes.len() as u64));
         }
@@ -1419,7 +1448,7 @@ fn main() {
                     let name = if static_lib {
                         format!("lib{}.a", preview.name)
                     } else if shared_lib {
-                        format!("lib{}.so", preview.name)
+                        shared_library_name(&preview.name, &target)
                     } else {
                         target_output_name(&preview.name, preview_emit, &target)
                     };
@@ -1484,7 +1513,7 @@ fn main() {
                     let name = if static_lib {
                         format!("lib{}.a", ctx.config.name)
                     } else if shared_lib {
-                        format!("lib{}.so", ctx.config.name)
+                        shared_library_name(&ctx.config.name, &target)
                     } else {
                         target_output_name(&ctx.config.name, effective_emit.clone(), &target)
                     };
@@ -1792,7 +1821,7 @@ fn main() {
                             .file_stem()
                             .unwrap_or_default()
                             .to_string_lossy();
-                        return format!("lib{stem}.so");
+                        return shared_library_name(&stem, &target);
                     }
                     let stem = source_files[0]
                         .file_stem()

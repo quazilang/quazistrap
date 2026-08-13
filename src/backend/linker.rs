@@ -236,7 +236,9 @@ impl LinkerInvocation {
                 args.push(out_flag.into());
                 args.push(self.object.as_os_str().into());
                 for flag in &self.extra_flags {
-                    if let Some(path) = flag.strip_prefix("-L") {
+                    if flag == "-shared" {
+                        continue;
+                    } else if let Some(path) = flag.strip_prefix("-L") {
                         args.push(format!("/libpath:{path}").into());
                     } else if let Some(library) = flag.strip_prefix("-l") {
                         if library == "c" {
@@ -249,8 +251,13 @@ impl LinkerInvocation {
                         args.push(flag.into());
                     }
                 }
-                args.push("/subsystem:console".into());
-                args.push("/entry:mainCRTStartup".into());
+                if is_shared {
+                    args.push("/dll".into());
+                    args.push("/noentry".into());
+                } else {
+                    args.push("/subsystem:console".into());
+                    args.push("/entry:mainCRTStartup".into());
+                }
                 args.push("/debug:none".into());
                 args.push("/OPT:REF,ICF".into()); // dead-strip + fold identical functions
                 args.push("/MERGE:.rdata=.text".into()); // fold rodata into text — saves 512B PE alignment

@@ -4195,6 +4195,29 @@ fn main() void { var callback: Callback = ordinary; }
     }
 
     #[test]
+    fn ffi_c_function_pointer_address_cast_requires_unsafe() {
+        let safe = analyze(
+            r#"
+@repr(C) type Callback = fn(i32) i32;
+fn cast(address: usize) Callback { ret address as Callback; }
+"#,
+        );
+        assert!(safe.errors.iter().any(|error| error.code == "S11"));
+
+        let unsafe_cast = analyze(
+            r#"
+@repr(C) type Callback = fn(i32) i32;
+unsafe fn cast(address: usize) Callback { ret address as Callback; }
+"#,
+        );
+        assert!(
+            unsafe_cast.errors.is_empty(),
+            "unsafe callback cast: {:?}",
+            unsafe_cast.errors
+        );
+    }
+
+    #[test]
     fn ffi_flexible_array_is_final_pointer_only_and_has_zero_size_contribution() {
         let report = analyze(
             r#"

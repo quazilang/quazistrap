@@ -37,6 +37,9 @@ qz run
 | 26 | `http-client-server` | TCP-backed HTTP client and local server |
 | 27 | `text-and-math` | Unicode text, checked parsing, practical math |
 | 28 | `git-library-dependency` | Downloaded Git library and recursive factorial |
+| 29 | `guess-the-number` | Small game using secure standard-library randomness |
+| 30 | `dynamic-libraries` | Runtime DLL/SO loading and typed C function pointers |
+| 31 | `udp-echo` | UDP bind, datagrams, peer addresses, and echo |
 
 Examples 19–21 need a C toolchain. Example 26 runs as two processes:
 
@@ -49,3 +52,17 @@ qz run --bin http-client
 
 Example 28 needs network access and the published `namnam1105/qz-test-lib`
 repository. It calls the dependency's recursive factorial function five times.
+
+Example 30 loads `kernel32.dll` on Windows or `libc.so.6` on Linux, resolves a
+process-ID function at runtime, casts it to an exact `@repr(C)` signature, and
+calls it while the library remains open. Linux uses the external linker because
+`dlopen` is a native runtime-loader API.
+
+Example 31 runs as two processes:
+
+```bash
+cd examples/31-udp-echo
+qz run --bin udp-server
+# In another terminal:
+qz run
+```

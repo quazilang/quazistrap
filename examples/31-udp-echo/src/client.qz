@@ -1,0 +1,17 @@
+import std.io;
+import std.net.{NetError, SocketAddress, UdpSocket};
+
+fn main() i32 {
+    const opened: Result[UdpSocket, NetError] = UdpSocket.bind(0);
+    if (opened.is_err()) { io.errln("UDP socket failed"); ret 1; }
+    const socket: UdpSocket = opened.unwrap();
+    const address: Result[SocketAddress, NetError] = SocketAddress.new("127.0.0.1", 8081);
+    if (address.is_err()) { ret 1; }
+    const sent: Result[usize, NetError] = socket.send_to("hello over UDP", address.unwrap());
+    if (sent.is_err()) { io.errln("UDP send failed"); ret 1; }
+    const response: Result[String, NetError] = socket.receive(4096);
+    if (response.is_err()) { io.errln("UDP receive failed"); ret 1; }
+    const text: String = response.unwrap();
+    io.println("{}", text.as_str());
+    ret 0;
+}
