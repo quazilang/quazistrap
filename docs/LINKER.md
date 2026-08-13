@@ -17,7 +17,8 @@ The built-in linker is selected when all of the following are true:
 
 - the target is x86-64 Linux or Windows;
 - neither `--linker <external-path>` nor an external `QUAZI_LINKER` is set;
-- every additional native input is an ELF `.o` file; and
+- every additional native input is a target-compatible ELF `.o` or COFF
+  `.o`/`.obj` file; and
 - no library, archive, shared object, library path, or other native linker flag
   was requested.
 
@@ -27,8 +28,8 @@ The command-line `--linker` value takes precedence over `QUAZI_LINKER`.
 
 The external path is selected by any explicit external linker, `-l`, `-L`,
 archive/shared-library input, shared-library output, or unsupported target.
-External Linux linking still adds neither libc nor libm automatically. Windows
-adds the OS import libraries needed by its generated startup code
+External Linux linking still adds neither libc nor libm automatically. The
+external Windows path adds OS import libraries needed by generated startup code
 (`kernel32.lib` and `shell32.lib`), but does not add the Universal CRT,
 `libcmt`, `vcruntime`, or legacy stdio libraries.
 
@@ -80,11 +81,20 @@ external path.
 
 `qz build -c` remains compile-only and emits a relocatable object. Normal
 source/QZI executable builds contain the compiler's full `_start`. If an
-object-only build defines `main` but not `_start`, the linker adds a minimal
+Linux object-only build defines `main` but not `_start`, the linker adds a minimal
 15-byte entry stub which calls `main`, passes its return value to `SYS_exit`,
 and performs the syscall. This fallback does not construct `Array[str]`, scan
 `QUAZI_TRACE`, or install Quazi's crash signal handlers; use a normal source or
 QZI executable build when those facilities are required.
+
+## PE/COFF input contract
+
+The Windows linker consumes x86-64 COFF objects, merges text/read-only/data
+sections, applies AMD64 PC-relative, image-relative, and 64-bit absolute
+relocations, and emits a PE32+ console executable. Undefined Win32, Shell32,
+Winsock, and supported UCRT symbols become import-table entries with generated
+IAT jump thunks. Native `.pdata`/`.xdata`, TLS, COMDAT folding, `.lib` archives,
+exports, and arbitrary DLL selection remain external-linker features.
 
 ## ELF input contract
 

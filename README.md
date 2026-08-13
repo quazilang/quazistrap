@@ -178,12 +178,12 @@ Quazi project.
 - `-c` — emit `.o` object file only (no linker)
 - `-r` — run the emitted binary after `qz build`
 - `-s` — strip symbols
-- `--linker builtin` — require the in-process Linux ELF linker
+- `--linker builtin` — require the in-process ELF/PE linker
 - `--linker <path>` — explicitly use an external linker
 - `-L <dir>` / `-l <name>` — opt into a native library search path/library
 
 **Environment variables:**
-- `QUAZI_LINKER=builtin` — require the in-process Linux ELF linker
+- `QUAZI_LINKER=builtin` — require the in-process ELF/PE linker
 - `QUAZI_LINKER=/path/to/linker` — select an external linker
 - `QUAZI_TRACE=1` — enable crash backtraces
 

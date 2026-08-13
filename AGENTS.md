@@ -27,12 +27,12 @@ qz lsp
 
 Output: `<stem>.qzi` (bytecode), `<stem>.o` (object), `<stem>`/`<stem>.exe` (binary).  
 `.qzi` as input: skips frontend, goes straight to backend. Binary emission also reuses the current project's `[cc]` and `[link]` inputs, so the same target-neutral QZI can be linked against the host's native C objects and libraries.
-Linker: plain Linux binaries use the in-process static ELF linker with no
-implicit libraries. `--linker builtin` forces it. Archives/shared libraries,
+Linker: plain Linux and Windows binaries use in-process ELF/PE linkers with no
+implicit native libraries. `--linker builtin` forces them. Archives/shared libraries,
 `-l`, an explicit linker path, or `QUAZI_LINKER` opt into the external path
 (`ld.lld`/`mold`/`ld` or `lld-link`/`link`); libc/CRT libraries are never added
-implicitly. Linux ELF `.o` files passed to `qz build`/`qz run` are linked by
-the built-in pipeline; archives, shared libraries, and `-l` remain explicit
+implicitly. Target-compatible ELF/COFF objects passed to `qz build`/`qz run`
+are linked by the built-in pipeline; archives, shared libraries, and `-l` remain explicit
 external-linker features.
 Rust edition 2024.
 
@@ -283,7 +283,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **`else if` chains** | ✅ Done |
 | **`unsafe` block sugar** | ✅ Done |
 | **AOT `@cfg` stripping** | ✅ Done |
-| **Built-in linker** | Experimental — static multi-object x86-64 ELF, cross-object symbol resolution, checked relocations, W^X segments, no implicit libc, and a minimal `main` entry for object-only builds; PE/COFF and archives pending |
+| **Built-in linker** | Experimental x86-64 ELF and PE32+ linking, cross-object symbols, checked relocations, generated Windows imports, and no implicit libc; archives pending |
 | **`qz test` runner** | Pending |
 | **`pub` on types** | ✅ Done |
 | **Unified formatting for `print`/`println`/`err`/`errln`/`format`** | In progress — support shared placeholder behavior, escaped braces, and format specifications; begin with `{:X}` and `{name:X}` uppercase hexadecimal |
