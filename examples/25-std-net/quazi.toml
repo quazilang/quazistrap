@@ -1,0 +1,7 @@
+[package]
+name = "std_net_example"
+version = "0.1.0"
+
+[build]
+entry = "src/main.qz"
+src = "src"

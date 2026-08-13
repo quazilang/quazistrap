@@ -1,0 +1,31 @@
+import std.io;
+import std.net;
+
+fn run_server() i32 {
+    const server_result: Result[net.HttpServer, i32] = net.HttpServer.bind(8080);
+    if (server_result.is_err()) { io.errln("bind failed: {}", server_result.unwrap_err()); ret 1; }
+    const server: net.HttpServer = server_result.unwrap();
+    io.println("listening on http://127.0.0.1:8080");
+    const request: Result[String, i32] = net.HttpServer.serve_once(
+        server,
+        net.HttpResponse.text(200, "hello from Quazi\n"),
+        65536
+    );
+    if (request.is_ok()) { io.println("request:\n{}", request.unwrap()); }
+    ret 0;
+}
+
+fn run_client() i32 {
+    const response: Result[String, i32] = net.http_get("127.0.0.1", 8080, "/");
+    if (response.is_err()) { io.errln("request failed: {}", response.unwrap_err()); ret 1; }
+    io.println("{}", response.unwrap());
+    ret 0;
+}
+
+fn main(args: Array[str]) i32 {
+    if (args.len() > 1) {
+        const mode: str = args[1];
+        if (mode == "server") { ret run_server(); }
+    }
+    ret run_client();
+}

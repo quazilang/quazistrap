@@ -1,0 +1,1 @@
+pub fn double(value: i32) i32 { ret value * 2; }

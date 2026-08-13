@@ -1731,6 +1731,54 @@ fn main() {
             eprintln!();
         }
 
+        CliCmd::Add {
+            name,
+            path,
+            url,
+            kind,
+            version,
+            rev,
+            checksum,
+        } => {
+            let kind = kind.map(|kind| format!("{kind:?}").to_ascii_lowercase());
+            let context = project::add_dependency(
+                Path::new("."),
+                project::DependencyEdit {
+                    name: name.clone(),
+                    path,
+                    url,
+                    kind,
+                    version,
+                    revision: rev,
+                    checksum,
+                },
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                std::process::exit(1);
+            });
+            let dependency = context
+                .config
+                .dependencies
+                .iter()
+                .find(|dependency| dependency.name == name)
+                .expect("added dependency resolved");
+            println!(
+                "\x1b[32;1madded\x1b[0m  {}  \x1b[2m{} · {}\x1b[0m",
+                dependency.name,
+                dependency.kind.as_str(),
+                dependency.root.display()
+            );
+        }
+
+        CliCmd::Remove { name } => {
+            project::remove_dependency(Path::new("."), &name).unwrap_or_else(|error| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                std::process::exit(1);
+            });
+            println!("\x1b[32;1mremoved\x1b[0m  {name}");
+        }
+
         CliCmd::New { name, lib } => {
             create_new_project(&name, lib);
         }

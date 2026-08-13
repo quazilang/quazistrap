@@ -65,6 +65,118 @@ pub struct ProjectContext {
     pub resolver: ModuleResolver,
 }
 
+pub struct DependencyEdit {
+    pub name: String,
+    pub path: Option<PathBuf>,
+    pub url: Option<String>,
+    pub kind: Option<String>,
+    pub version: Option<String>,
+    pub revision: Option<String>,
+    pub checksum: Option<String>,
+}
+
+pub fn add_dependency(start: &Path, edit: DependencyEdit) -> Result<ProjectContext, String> {
+    if edit.name.is_empty()
+        || !edit
+            .name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        return Err("dependency name must contain only ASCII letters, digits, or '_'".into());
+    }
+    if edit.path.is_some() == edit.url.is_some() {
+        return Err("use exactly one of --path or --url".into());
+    }
+    if edit.url.is_some() && edit.kind.is_none() {
+        return Err("internet dependencies require --type git|archive|source|qzi".into());
+    }
+    mutate_dependencies(start, |dependencies| {
+        if dependencies.contains_key(&edit.name) {
+            return Err(format!("dependency '{}' already exists", edit.name));
+        }
+        let mut value = toml::map::Map::new();
+        if let Some(path) = edit.path {
+            value.insert(
+                "path".into(),
+                toml::Value::String(path.to_string_lossy().into_owned()),
+            );
+        }
+        if let Some(url) = edit.url {
+            value.insert("url".into(), toml::Value::String(url));
+        }
+        if let Some(kind) = edit.kind {
+            value.insert("type".into(), toml::Value::String(kind));
+        }
+        if let Some(version) = edit.version {
+            value.insert("version".into(), toml::Value::String(version));
+        }
+        if let Some(revision) = edit.revision {
+            value.insert("rev".into(), toml::Value::String(revision));
+        }
+        if let Some(checksum) = edit.checksum {
+            value.insert("checksum".into(), toml::Value::String(checksum));
+        }
+        dependencies.insert(edit.name, toml::Value::Table(value));
+        Ok(())
+    })
+}
+
+pub fn remove_dependency(start: &Path, name: &str) -> Result<ProjectContext, String> {
+    mutate_dependencies(start, |dependencies| {
+        dependencies
+            .remove(name)
+            .ok_or_else(|| format!("dependency '{name}' does not exist"))?;
+        Ok(())
+    })
+}
+
+fn mutate_dependencies(
+    start: &Path,
+    mutate: impl FnOnce(&mut toml::map::Map<String, toml::Value>) -> Result<(), String>,
+) -> Result<ProjectContext, String> {
+    let root = find_project_root(start)
+        .ok_or_else(|| "quazi.toml not found in this directory or parents".to_string())?;
+    let manifest_path = root.join("quazi.toml");
+    let lock_path = root.join("quazi.lock");
+    let old_manifest = std::fs::read(&manifest_path)
+        .map_err(|error| format!("cannot read '{}': {error}", manifest_path.display()))?;
+    let old_lock = std::fs::read(&lock_path).ok();
+    let manifest_text = std::str::from_utf8(&old_manifest)
+        .map_err(|error| format!("invalid UTF-8 in '{}': {error}", manifest_path.display()))?;
+    let mut document: toml::Value = toml::from_str(manifest_text)
+        .map_err(|error| format!("invalid '{}': {error}", manifest_path.display()))?;
+    let table = document
+        .as_table_mut()
+        .ok_or("quazi.toml root must be a table")?;
+    let dependencies = table
+        .entry("dependencies")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or("[dependencies] must be a table")?;
+    mutate(dependencies)?;
+    let rendered = toml::to_string_pretty(&document)
+        .map_err(|error| format!("cannot serialize quazi.toml: {error}"))?;
+    std::fs::write(&manifest_path, rendered)
+        .map_err(|error| format!("cannot write '{}': {error}", manifest_path.display()))?;
+    let _ = std::fs::remove_file(&lock_path);
+    let result = ProjectContext::load_from_root(&root).and_then(|context| {
+        context.ensure_lockfile()?;
+        Ok(context)
+    });
+    if result.is_err() {
+        let _ = std::fs::write(&manifest_path, old_manifest);
+        match old_lock {
+            Some(lock) => {
+                let _ = std::fs::write(&lock_path, lock);
+            }
+            None => {
+                let _ = std::fs::remove_file(&lock_path);
+            }
+        }
+    }
+    result
+}
+
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     package: Option<RawPackage>,

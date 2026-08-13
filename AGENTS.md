@@ -20,6 +20,7 @@ qz build [source.qz|program.qzi|native.o ...] [-i|-c] [-o out] [-r] [-s] [--link
 qz run [source.qz|program.qzi|native.o ...] [--linker builtin|path] / qz check / qz fetch / qz deps / qz fmt / qz clean
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz new <name> [--lib] / qz init [--lib]
+qz add <name> (--path <path> | --url <url> --type git|archive|source|qzi) / qz remove <name>
 qz debug [-i]
 qz lsp
 ```
@@ -329,6 +330,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-13 | Added transactional `qz add`/`qz remove` manifest and lockfile updates, relative path dependency examples, and an HTTP client/local-server example. Expanded `std.net` with complete sends, bounded receives, HTTP requests, response encoding, and one-request serving. |
 | 2026-08-11 | Fixed Windows interactive input so CRLF/CR Enter becomes `\n` instead of returning the cursor to column zero; changed `std.io.read` from numeric bytes to non-empty UTF-8 string delimiters, including multi-byte sequences. Documented `str`/`&str`/`String`, demonstrated multiline raw strings, and made unterminated raw literals a lexer error. |
 | 2026-08-11 | Made custom-delimiter and single-key terminal reads immediate on Windows/Linux while preserving redirected and line-buffered input. Hardened Win64 `ReadFile`/`WriteFile` lowering so result counts live outside shadow space and API failures return `-1`; stopped RAII from destroying uninitialized owned locals before their first assignment. |
 | 2026-08-10 | Expanded primitive DX with rune-based `len`, `bytes_len`, negative indexing, Python-style slices, content comparison operators, generic checked `parse[T]()`, numeric methods, broader dependency-free `std.math`, and `examples/22-stdlib-dx`; made Windows console output UTF-16-safe while preserving redirected UTF-8. Fixed initialized-binding aliasing, incomplete jump-aware inlining, float comparison/negation lowering, and function-table hole compaction found by the executable checks. |

@@ -1,0 +1,7 @@
+import std.io;
+import incremental_math.math;
+
+fn main() i32 {
+    io.println("local dependency says: {}", math.double(21));
+    ret 0;
+}

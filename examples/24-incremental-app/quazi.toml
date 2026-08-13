@@ -1,0 +1,10 @@
+[package]
+name = "incremental_app"
+version = "0.1.0"
+
+[build]
+entry = "src/main.qz"
+src = "src"
+
+[dependencies]
+incremental_math = { path = "../23-incremental-lib", version = "0.1.0" }

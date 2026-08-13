@@ -20,6 +20,14 @@ pub enum HeaderTarget {
     X86_64Windows,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DependencyType {
+    Git,
+    Archive,
+    Source,
+    Qzi,
+}
+
 /// Quazi compiler and package toolchain
 #[derive(Parser, Debug)]
 #[command(name = "qz", version, about, long_about = None)]
@@ -97,6 +105,28 @@ pub enum Command {
     Fetch,
     /// Show resolved dependencies and local cache paths
     Deps,
+    /// Add a dependency and refresh quazi.lock
+    Add {
+        /// dependency name used by imports
+        name: String,
+        /// installed project, source file, or QZI path
+        #[arg(long, conflicts_with = "url")]
+        path: Option<PathBuf>,
+        /// internet dependency URL
+        #[arg(long, conflicts_with = "path")]
+        url: Option<String>,
+        /// internet dependency format
+        #[arg(long = "type", value_enum, requires = "url")]
+        kind: Option<DependencyType>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        rev: Option<String>,
+        #[arg(long)]
+        checksum: Option<String>,
+    },
+    /// Remove a dependency and refresh quazi.lock
+    Remove { name: String },
     /// Generate a C header for exported functions and compatible types
     Header {
         /// source files, or the current project when omitted
@@ -213,5 +243,26 @@ mod tests {
             }
             command => panic!("expected header command, got {command:?}"),
         }
+    }
+
+    #[test]
+    fn add_accepts_local_and_remote_dependencies() {
+        let local = Args::try_parse_from(["qz", "add", "math", "--path", "../math"])
+            .expect("local dependency should parse");
+        assert!(
+            matches!(local.command, Command::Add { name, path: Some(_), .. } if name == "math")
+        );
+
+        let remote = Args::try_parse_from([
+            "qz",
+            "add",
+            "web",
+            "--url",
+            "https://example.test/web.qzi",
+            "--type",
+            "qzi",
+        ])
+        .expect("remote dependency should parse");
+        assert!(matches!(remote.command, Command::Add { name, url: Some(_), .. } if name == "web"));
     }
 }
