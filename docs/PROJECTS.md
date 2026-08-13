@@ -8,6 +8,9 @@ expose one library and several binaries.
 name = "acme"
 version = "0.1.0"
 out_dir = "build"
+std = true
+crash_handler = true
+mangling = true
 
 [lib]
 name = "acme"
@@ -38,6 +41,13 @@ are output names. `qz build --lib` selects the library;
 `qz build --bin acme_cli` selects a binary. One artifact is automatic. With
 several artifacts, the binary matching `package.name` is default; otherwise
 selection is required. Libraries emit target-neutral QZI by default.
+
+Package runtime/codegen switches default to `true`. `std = false` omits both
+automatic prelude injection and `std` resolution. `crash_handler = false`
+keeps process startup but omits crash-handler registration. `mangling = false`
+uses bare native function names; duplicate bare names are compile errors.
+These fields replace removed `@no_std`, `@no_crash`, and
+`@no_mangle`/`@no_mangling` source attributes.
 
 Legacy `package.type` plus `[build].entry` remains accepted only when artifact
 tables are absent. New manifests use `[lib]` and `[[bin]]`. `qz new --lib` and

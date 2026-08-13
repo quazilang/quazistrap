@@ -31,10 +31,6 @@ fn std_symbols_for_source(
         return (HashSet::new(), Vec::new());
     };
 
-    if source_contains_no_std(source) {
-        return (HashSet::new(), Vec::new());
-    }
-
     let user_fn_names = user_function_names(program);
     let explicitly_imported = explicitly_imported_std_leaf_names(program);
     let shadowed_names: HashSet<String> = user_fn_names
@@ -156,15 +152,6 @@ fn explicitly_imported_std_leaf_names(program: &Program) -> HashSet<String> {
         }
     }
     names
-}
-
-fn source_contains_no_std(source: &str) -> bool {
-    let mut lexer = Lexer::new(source);
-    let tokens = lexer.tokenize();
-    tokens.windows(2).any(|pair| {
-        matches!(pair[0].kind, TokenKind::At)
-            && matches!(&pair[1].kind, TokenKind::Ident(name) if name == "no_std")
-    })
 }
 
 fn used_std_modules(source: &str) -> HashSet<String> {

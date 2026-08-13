@@ -149,6 +149,17 @@ pub enum Command {
         #[arg(long, value_enum)]
         target: Option<TargetTriple>,
     },
+    /// Compile and run functions annotated with @test
+    Test {
+        /// Run tests whose module-qualified name contains this text
+        filter: Option<String>,
+        /// disable ANSI colors
+        #[arg(long)]
+        no_color: bool,
+        /// use ASCII-only status markers
+        #[arg(long)]
+        no_unicode: bool,
+    },
     /// Download, verify, and lock project dependencies
     Fetch,
     /// Show resolved dependencies and local cache paths
@@ -365,5 +376,19 @@ mod tests {
         ));
 
         assert!(Args::try_parse_from(["qz", "add", "math", "--path", "../math"]).is_err());
+    }
+
+    #[test]
+    fn test_accepts_an_optional_name_filter() {
+        let args = Args::try_parse_from(["qz", "test", "network", "--no-color"])
+            .expect("test command should parse");
+        assert!(matches!(
+            args.command,
+            Command::Test {
+                filter: Some(filter),
+                no_color: true,
+                ..
+            } if filter == "network"
+        ));
     }
 }

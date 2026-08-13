@@ -51,7 +51,7 @@ impl Analyzer {
                 }
                 // Exported functions are roots invoked by native consumers, so they are
                 // never dead merely because no Quazi call site references them.
-                if attr_names.iter().any(|a| a == "export")
+                if attr_names.iter().any(|a| matches!(a.as_str(), "export" | "test"))
                     && !attr_names.contains(&"ignore".to_string())
                 {
                     attr_names.push("ignore".to_string());
@@ -90,12 +90,9 @@ impl Analyzer {
                 let is_syscall_or_api = attr_names
                     .iter()
                     .any(|a| matches!(a.as_str(), "syscall" | "api"));
-                let is_no_mangle = attr_names
-                    .iter()
-                    .any(|a| matches!(a.as_str(), "no_mangle" | "export"));
+                let has_export = attr_names.iter().any(|a| a == "export");
                 // Internal runtime symbols (e.g. __quazi_panic_handler) keep their bare
                 // names so the runtime stub can find them.
-                // @no_mangle functions keep their bare name to allow stable symbol references.
                 let export_name = attributes
                     .iter()
                     .find(|a| a.name == "export")
@@ -105,13 +102,18 @@ impl Analyzer {
                             _ => None,
                         })
                     });
-                let register_name = if name.starts_with("__quazi_") || is_no_mangle {
+                let register_name = if name.starts_with("__quazi_") || has_export {
                     name.clone()
                 } else if let Some(module) = self.module_path_for_span(item.span) {
                     format!("{}.{}", module, name)
                 } else {
                     name.clone()
                 };
+                if attr_names.iter().any(|attribute| attribute == "test")
+                    && !self.is_library_span(item.span)
+                {
+                    self.test_functions.push(register_name.clone());
+                }
                 if attr_names.iter().any(|a| a == "export") {
                     self.exported_symbols.insert(
                         register_name.clone(),

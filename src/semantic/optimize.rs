@@ -261,7 +261,7 @@ impl Analyzer {
         attributes: &[Attribute],
         span: Span,
     ) {
-        if name == "main" {
+        if name == "main" || attributes.iter().any(|attribute| attribute.name == "test") {
             return;
         }
 

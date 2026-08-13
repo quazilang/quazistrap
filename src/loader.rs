@@ -87,17 +87,21 @@ pub fn load_programs_with_resolver(
     entries: &[PathBuf],
     resolver: Option<&ModuleResolver>,
 ) -> Result<LoadResult, String> {
-    // First pass: lenient — only checks for @no_std, skips import errors.
-    let _initial = collect_sources(entries, resolver, false)?;
+    load_programs_configured(entries, resolver, true, &[])
+}
 
-    // Build resolver that always includes both prelude and std.
-    // @no_std does not disable prelude or std; both are always available.
-    let effective_resolver = resolver_with_builtin_modules(resolver, true);
+pub fn load_programs_configured(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    additional_roots: &[PathBuf],
+) -> Result<LoadResult, String> {
+    let effective_resolver = resolver_with_builtin_modules(resolver, include_std);
 
     // Auto-inject prelude before user entries (as a library file).
-    let prelude_path: Option<PathBuf> = effective_resolver
-        .as_ref()
-        .and_then(|r| r.modules.get("prelude"))
+    let prelude_path: Option<PathBuf> = include_std
+        .then_some(())
+        .and(effective_resolver.as_ref().and_then(|r| r.modules.get("prelude")))
         .and_then(|spec| {
             let mod_entry = spec.src_dir.join("mod.qz");
             if mod_entry.exists() {
@@ -111,6 +115,7 @@ pub fn load_programs_with_resolver(
         entries,
         effective_resolver.as_ref(),
         prelude_path.as_deref(),
+        additional_roots,
         true,
     )
     .and_then(finalize_sources)
@@ -132,6 +137,7 @@ fn collect_sources_with_prelude(
     entries: &[PathBuf],
     resolver: Option<&ModuleResolver>,
     prelude: Option<&Path>,
+    additional_roots: &[PathBuf],
     strict: bool,
 ) -> Result<SourceCollection, String> {
     let mut visited: HashSet<PathBuf> = HashSet::new();
@@ -185,6 +191,19 @@ fn collect_sources_with_prelude(
         )?;
     }
 
+    for root in additional_roots {
+        collect(
+            root,
+            false,
+            &mut visited,
+            &mut sources,
+            &mut library_paths,
+            resolver,
+            strict,
+            &mut dep_edges,
+        )?;
+    }
+
     Ok(SourceCollection {
         sources,
         library_paths,
@@ -193,14 +212,6 @@ fn collect_sources_with_prelude(
         module_specs,
         entry_paths,
     })
-}
-
-fn collect_sources(
-    entries: &[PathBuf],
-    resolver: Option<&ModuleResolver>,
-    strict: bool,
-) -> Result<SourceCollection, String> {
-    collect_sources_with_prelude(entries, resolver, None, strict)
 }
 
 fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> {
@@ -355,11 +366,6 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
             });
         let entry_name = if let Some(symbol) = exported {
             symbol
-        } else if attributes
-            .iter()
-            .any(|attribute| attribute.name == "no_mangle")
-        {
-            name.clone()
         } else {
             let module_name = source_file
                 .module_name
@@ -588,7 +594,7 @@ fn resolver_with_builtin_modules(
 ) -> Option<ModuleResolver> {
     let mut combined = resolver.cloned().unwrap_or_default();
 
-    if let Some(prelude_spec) = builtin_prelude_module_spec() {
+    if include_std && let Some(prelude_spec) = builtin_prelude_module_spec() {
         combined
             .modules
             .entry("prelude".to_string())
@@ -705,19 +711,6 @@ fn find_builtin_prelude_root() -> Option<PathBuf> {
     }
 
     None
-}
-
-fn sources_contain_no_std(sources: &[(PathBuf, String)]) -> bool {
-    sources.iter().any(|(_, src)| source_contains_no_std(src))
-}
-
-fn source_contains_no_std(src: &str) -> bool {
-    let mut lexer = Lexer::new(src);
-    let tokens = lexer.tokenize();
-    tokens.windows(2).any(|pair| {
-        matches!(pair[0].kind, TokenKind::At)
-            && matches!(&pair[1].kind, TokenKind::Ident(name) if name == "no_std")
-    })
 }
 
 fn used_std_modules(src: &str) -> HashSet<String> {
@@ -1485,30 +1478,18 @@ mod tests {
     }
 
     #[test]
-    fn no_std_keeps_prelude_and_std_resolver() {
-        let root = temp_dir("quazi_loader_no_std");
+    fn configured_std_false_omits_prelude_and_std() {
+        let root = temp_dir("quazi_loader_without_std");
         let main_path = root.join("main.qz");
-        fs::write(&main_path, "@no_std\nfn main() void { ret; }").expect("write main.qz");
+        fs::write(&main_path, "fn main() void { ret; }").expect("write main.qz");
 
-        let result = load_programs(&[main_path]).expect("load programs");
+        let result = load_programs_configured(&[main_path], None, false, &[])
+            .expect("load freestanding program");
         assert!(
-            !result.library_file_paths.is_empty(),
-            "expected prelude library files, got {:?}",
+            result.library_file_paths.is_empty(),
+            "freestanding program loaded libraries: {:?}",
             result.library_file_paths
         );
-        assert!(
-            result
-                .library_file_paths
-                .iter()
-                .any(|p| p.ends_with(Path::new("prelude").join("src").join("mod.qz"))),
-            "expected prelude/src/mod.qz to be loaded, got {:?}",
-            result.library_file_paths
-        );
-        // The prelude is now fully self-contained (uses @intrinsic, no import std),
-        // so std/src/core.qz is not a transitive dependency of the prelude.
-        // std is still available for explicit imports even with @no_std
-        // (the resolver registers it), but it won't appear in library_file_paths
-        // unless the user program imports it.
 
         let _ = fs::remove_dir_all(root);
     }

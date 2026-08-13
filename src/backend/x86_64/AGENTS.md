@@ -57,9 +57,12 @@ Identical output format on Linux & Windows:
 
 ---
 
-## `@no_crash`
+## Package startup and symbol settings
 
-File-level directive (like `@no_std`). When present, the entry stub omits crash-handler registration (Linux `sigaction`, Windows `AddVectoredExceptionHandler`). `__quazi_print_backtrace` is still emitted so panic backtraces work. Produces a smaller binary (~1 KB smaller).
+`[package].crash_handler = false` omits crash-handler registration while keeping
+the platform process entry. `[package].mangling = false` emits bare native
+function names and rejects collisions. Both settings default to `true`; removed
+source attributes must not be reintroduced.
 
 ---
 

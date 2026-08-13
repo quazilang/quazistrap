@@ -151,6 +151,9 @@ pub struct Chunk {
     /// True when this is an @api function wrapping a C variadic (ends with bare `...`).
     /// Portable call-site metadata records the promoted actual argument types.
     pub c_variadic: bool,
+    /// Emit this package function under its source-level name in native objects.
+    /// This bit is stored in QZI so incremental and library builds preserve it.
+    pub native_unmangled: bool,
     /// C-facing entry point metadata for a synthetic export adapter chunk.
     pub export: Option<ForeignSymbol>,
     /// Set when a caller attempted to allocate an unencodable constant index.
@@ -237,6 +240,9 @@ impl Chunk {
         }
         if self.export.is_some() {
             flags |= 8;
+        }
+        if self.native_unmangled {
+            flags |= 16;
         }
         buf.push(flags);
         if let Some(export) = &self.export {
@@ -342,8 +348,15 @@ fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             .map_err(|_| "invalid UTF-8 in chunk name".to_string())?;
         pos += name_len;
 
-        let (param_count, reg_count, intrinsic, variadic, c_variadic, has_export) = if version >= 2
-        {
+        let (
+            param_count,
+            reg_count,
+            intrinsic,
+            variadic,
+            c_variadic,
+            has_export,
+            native_unmangled,
+        ) = if version >= 2 {
             if buf.len() < pos + 4 {
                 return Err("truncated chunk params/regs/flags".to_string());
             }
@@ -361,9 +374,10 @@ fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
                 (flags & 2) != 0,
                 (flags & 4) != 0,
                 (flags & 8) != 0,
+                (flags & 16) != 0,
             )
         } else {
-            (0, 0, false, false, false, false)
+            (0, 0, false, false, false, false, false)
         };
 
         let export = if version >= 3 && has_export {
@@ -523,6 +537,7 @@ fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             intrinsic,
             variadic,
             c_variadic,
+            native_unmangled,
             export,
             constants,
             code,

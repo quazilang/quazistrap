@@ -208,11 +208,14 @@ do not consume their owner. See [TYPES_AND_MEMORY.md](TYPES_AND_MEMORY.md).
 - `@inline`: request inlining; recursive functions remain excluded.
 - `@derive(...)`: register derived traits.
 - `@ignore`, `@ignore(unused_vars)`, `@ignore(dead_code)`: warning control.
-- `@no_mangle`: retain a bare native symbol.
-- `@no_crash`: file-level omission of executable crash registration.
+- `@test`: declare a zero-argument `void` test run by `qz test`.
 - `@panic_handler`: declare the validated panic handler.
 - `@repr(C)`, `@opaque`, `@api`, `@export`: C interoperability.
 - `@intrinsic`, `@syscall`: compiler/standard-library implementation tools.
+
+Standard-library inclusion, crash registration, and native symbol mangling are
+package settings in `quazi.toml`, not source attributes. See
+[PROJECTS.md](PROJECTS.md) and [TESTING.md](TESTING.md).
 
 ## Platform code
 

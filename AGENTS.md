@@ -18,6 +18,7 @@ CLI (dep: `clap 4.6`):
 ```bash
 qz build [source.qz|program.qzi|native.o ...] [-i|-c] [-o out] [-r] [-s] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode]
 qz run [source.qz|program.qzi|native.o ...] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode] / qz check / qz fetch / qz deps / qz fmt / qz clean
+qz test [filter] [--no-color] [--no-unicode]
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz new <name> [--lib] / qz init [--lib]
 qz add <path-or-url> [--alias name] [--type git|archive|source|qzi] [--version tag|hash|latest] / qz remove <name>
@@ -192,8 +193,7 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 | `@intrinsic("quazi.X")` | Safe stdlib wrapper; dispatched by encoder case number. |
 | `@derive(Trait, ...)` | Register derived traits for struct. |
 | `@panic_handler` | Validate signature; mark as panic handler. |
-| `@no_mangle` | Keep function symbol name bare (no module prefix). Useful for entry points and FFI symbols. |
-| `@no_crash` | File-level: disable crash handler in entry stub. |
+| `@test` | Mark a zero-argument `void` function for `qz test`. |
 
 ---
 
@@ -205,6 +205,9 @@ Minimal example:
 [package]
 name = "hello"
 version = "0.1.0"
+std = true
+crash_handler = true
+mangling = true
 
 [build]
 entry = "src/main.qz"   # optional, defaults to src/main.qz
@@ -284,7 +287,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **`unsafe` block sugar** | ✅ Done |
 | **AOT `@cfg` stripping** | ✅ Done |
 | **Built-in linker** | Experimental x86-64 ELF and PE32+ linking, cross-object symbols, checked relocations, generated Windows imports, and no implicit libc; archives pending |
-| **`qz test` runner** | Pending |
+| **`qz test` runner** | ✅ Done — discovers `@test` in `src/` and `tests/`, compiles once, runs each test in an isolated process, and supports name filtering |
 | **`pub` on types** | ✅ Done |
 | **Unified formatting for `print`/`println`/`err`/`errln`/`format`** | In progress — support shared placeholder behavior, escaped braces, and format specifications; begin with `{:X}` and `{name:X}` uppercase hexadecimal |
 | **Raw backtick string literals** | ✅ Done — contents are preserved exactly with no backslash escape decoding |
@@ -330,6 +333,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-14 | Added `qz test [filter]` with `@test fn name() void`, project-wide source discovery, one shared compilation, isolated native runners, and readable summaries. Replaced source-level `@no_std`, `@no_crash`, and `@no_mangle`/`@no_mangling` controls with default-true `[package]` fields `std`, `crash_handler`, and `mangling`. |
 | 2026-08-13 | Replaced exact-only QZC v1 with QZC v2: partial misses restore unchanged pre-WPO function chunks, compile changed-file functions, and rerun complete global WPO over the combined program; declaration/config fingerprints conservatively invalidate reusable units. |
 | 2026-08-13 | Added first-class exclusive/inclusive `Range` expressions and OS-CSPRNG-backed `std.random` lowering with explicit availability failure and unbiased range selection. |
 | 2026-08-13 | Added `[package].out_dir` with `build/` default, moved dependency materialization to `<out_dir>/deps`, added Git tag/hash/`latest` selectors, simplified `qz add` to one positional path/URL form, and made Git progress percentage-driven after the build header. |

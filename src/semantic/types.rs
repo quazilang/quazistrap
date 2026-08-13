@@ -404,6 +404,10 @@ pub struct SemanticReport {
     pub namespaced_paths: std::collections::HashSet<String>,
     /// Whether the entry point is `fn main(args: Array[str])`.
     pub main_takes_args: bool,
+    /// Module-qualified functions declared with `@test`.
+    pub test_functions: Vec<String>,
+    /// Character ranges belonging to dependencies, used by package-scoped code generation.
+    pub library_char_ranges: Vec<std::ops::Range<usize>>,
 }
 
 /// Records a call to a generic function with concrete type arguments.

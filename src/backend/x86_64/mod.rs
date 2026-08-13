@@ -83,11 +83,22 @@ fn emit_native_object(
                 .filter(|symbol| !embedded_export_symbols.contains(symbol.as_str()))
             {
                 symbol.clone()
+            } else if c.native_unmangled && !c.name.starts_with("__quazi_") {
+                safe_label(c.name.rsplit('.').next().unwrap_or(&c.name))
             } else {
                 safe_label(&c.name)
             }
         })
         .collect();
+    let mut native_names = std::collections::HashSet::new();
+    if let Some(duplicate) = fn_names
+        .iter()
+        .find(|name| !native_names.insert(name.as_str()))
+    {
+        return Err(BackendError(format!(
+            "native symbol collision `{duplicate}` with package.mangling = false"
+        )));
+    }
 
     for (chunk_idx, chunk) in chunks.iter().enumerate() {
         let fn_offset = text_bytes.len();
@@ -374,6 +385,43 @@ mod tests {
                     .all(|symbol| { !matches!(symbol.name(), Ok("_start" | "mainCRTStartup")) })
             );
         }
+    }
+
+    #[test]
+    fn package_can_disable_native_symbol_mangling() {
+        let mut first = returning_main();
+        first.name = "alpha.first".to_string();
+        first.native_unmangled = true;
+        let mut second = returning_main();
+        second.name = "beta.second".to_string();
+        second.native_unmangled = true;
+        let target = TargetSpec::x86_64_linux().without_start();
+        let output = ElfBackend
+            .compile(&[first, second], &target, None, false)
+            .expect("unmangled object should compile");
+        let object = object::File::parse(output.bytes.as_slice()).expect("valid object");
+        let symbols: std::collections::HashSet<_> = object
+            .symbols()
+            .filter_map(|symbol| symbol.name().ok())
+            .collect();
+        assert!(symbols.contains("first"));
+        assert!(symbols.contains("second"));
+        assert!(!symbols.contains("alpha_first"));
+    }
+
+    #[test]
+    fn unmangled_native_symbol_collisions_are_errors() {
+        let mut first = returning_main();
+        first.name = "alpha.same".to_string();
+        first.native_unmangled = true;
+        let mut second = returning_main();
+        second.name = "beta.same".to_string();
+        second.native_unmangled = true;
+        let target = TargetSpec::x86_64_linux().without_start();
+        let error = ElfBackend
+            .compile(&[first, second], &target, None, false)
+            .expect_err("duplicate bare names must fail");
+        assert!(error.0.contains("native symbol collision `same`"));
     }
 
     #[test]

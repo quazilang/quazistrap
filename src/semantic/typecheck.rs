@@ -23,6 +23,33 @@ impl Analyzer {
         {
             return;
         }
+        if let Some(attributes) = attrs {
+            for attribute in attributes {
+                let field = match attribute.name.as_str() {
+                    "no_std" => Some("package.std = false"),
+                    "no_crash" => Some("package.crash_handler = false"),
+                    "no_mangle" | "no_mangling" => Some("package.mangling = false"),
+                    _ => None,
+                };
+                if let Some(field) = field {
+                    self.push_error(
+                        attribute.span,
+                        "S06",
+                        format!(
+                            "@{} was removed; configure `{field}` in quazi.toml",
+                            attribute.name
+                        ),
+                    );
+                }
+                if attribute.name == "test" && !matches!(item.node, ItemKind::Fn { .. }) {
+                    self.push_error(
+                        attribute.span,
+                        "S06",
+                        "@test can only annotate a function".to_string(),
+                    );
+                }
+            }
+        }
         match &item.node {
             ItemKind::Fn {
                 name,
@@ -524,12 +551,14 @@ impl Analyzer {
         let mut syscall_attr: Option<&Attribute> = None;
         let mut api_attr: Option<&Attribute> = None;
         let mut export_attr: Option<&Attribute> = None;
+        let mut test_attr: Option<&Attribute> = None;
 
         for attr in attributes {
             match attr.name.as_str() {
                 "syscall" => syscall_attr = Some(attr),
                 "api" => api_attr = Some(attr),
                 "export" => export_attr = Some(attr),
+                "test" => test_attr = Some(attr),
                 _ => {}
             }
         }
@@ -590,6 +619,33 @@ impl Analyzer {
                 );
             }
             self.validate_ffi_signature(name, generic_params, params, return_ty, item_span, false);
+        }
+
+        if let Some(attr) = test_attr {
+            if !attr.args.is_empty() {
+                self.push_error(attr.span, "S06", "@test takes no arguments".to_string());
+            }
+            if body.is_none() {
+                self.push_error(
+                    item_span,
+                    "S06",
+                    format!("@test function `{name}` must have a body"),
+                );
+            }
+            if !generic_params.is_empty() || !params.is_empty() || !matches!(return_ty.node, TypeKind::Void) {
+                self.push_error(
+                    item_span,
+                    "S06",
+                    format!("@test function `{name}` must have signature `fn {name}() void`"),
+                );
+            }
+            if syscall_attr.is_some() || api_attr.is_some() || export_attr.is_some() {
+                self.push_error(
+                    attr.span,
+                    "S06",
+                    "@test cannot be combined with FFI attributes".to_string(),
+                );
+            }
         }
     }
 

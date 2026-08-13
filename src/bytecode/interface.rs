@@ -388,7 +388,7 @@ fn render_attributes(attributes: &[Attribute]) -> String {
     for attribute in attributes {
         // Code-generation-only export identity remains in QZI metadata. Keeping
         // it on a bodyless interface declaration would create a second adapter.
-        if matches!(attribute.name.as_str(), "export" | "no_mangle" | "inline") {
+        if matches!(attribute.name.as_str(), "export" | "inline" | "test") {
             continue;
         }
         output.push('@');

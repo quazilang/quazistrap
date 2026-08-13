@@ -209,6 +209,8 @@ pub struct Codegen<'a> {
     source_files: Vec<SourceFile>,
     external_call_relocations: Vec<QziCallRelocation>,
     library_export_exclusions: Option<HashSet<PathBuf>>,
+    test_mode: bool,
+    native_mangling: bool,
     incremental_seed: HashMap<String, CachedCodegenUnit>,
     incremental_source_hashes: HashMap<String, [u8; 32]>,
     incremental_snapshot: Vec<CachedCodegenUnit>,
@@ -281,12 +283,31 @@ impl<'a> Codegen<'a> {
             source_files: Vec::new(),
             external_call_relocations: Vec::new(),
             library_export_exclusions: None,
+            test_mode: false,
+            native_mangling: true,
             incremental_seed: HashMap::new(),
             incremental_source_hashes: HashMap::new(),
             incremental_snapshot: Vec::new(),
             incremental_hits: 0,
             incremental_misses: 0,
         }
+    }
+
+    pub fn enable_test_mode(&mut self) {
+        self.test_mode = true;
+    }
+
+    pub fn set_native_mangling(&mut self, enabled: bool) {
+        self.native_mangling = enabled;
+    }
+
+    fn configure_native_symbol(&self, chunk: &mut Chunk, span: Span) {
+        chunk.native_unmangled = !self.native_mangling
+            && !self
+                .report
+                .library_char_ranges
+                .iter()
+                .any(|range| range.contains(&span.start));
     }
 
     pub fn set_incremental_codegen(
@@ -415,14 +436,10 @@ impl<'a> Codegen<'a> {
     /// Return the resolved symbol name for a top-level item defined at `span`.
     /// Namespaced files use `module.name`; entry files use the bare `name`.
     /// Internal runtime symbols (`__quazi_*`) keep their bare names.
-    /// `@no_mangle` functions keep their bare name regardless of file namespace.
     /// `@export` functions keep their source identity here; a synthetic adapter
     /// receives the external symbol and C ABI metadata after body compilation.
-    fn resolve_item_name(&self, span: Span, name: &str, attributes: &[Attribute]) -> String {
+    fn resolve_item_name(&self, span: Span, name: &str, _attributes: &[Attribute]) -> String {
         if name.starts_with("__quazi_") {
-            return name.to_string();
-        }
-        if attributes.iter().any(|a| a.name == "no_mangle") {
             return name.to_string();
         }
         if let Some(sf) = self.source_files.iter().find(|f| f.contains(span))
@@ -626,7 +643,7 @@ impl<'a> Codegen<'a> {
 
         // Compute the set of functions reachable from main via the call graph.
         // Library mode (no main) compiles everything.
-        let has_main = program
+        let has_main = self.test_mode || program
             .items
             .iter()
             .any(|item| matches!(&item.node, ItemKind::Fn { name, .. } if name == "main"));
@@ -634,7 +651,11 @@ impl<'a> Codegen<'a> {
         let destructor_roots = collect_destructor_roots(program);
         let reachable: Option<std::collections::HashSet<String>> = if has_main {
             let mut set = std::collections::HashSet::new();
-            set.insert("main".to_string());
+            if self.test_mode {
+                set.extend(self.report.test_functions.iter().cloned());
+            } else {
+                set.insert("main".to_string());
+            }
             set.extend(self.foreign_exports.keys().cloned());
             for root in &destructor_roots {
                 set.insert(root.clone());
@@ -874,7 +895,8 @@ impl<'a> Codegen<'a> {
                             &mut next_closure_idx,
                         )?
                     };
-                    if let Some(chunk) = chunk {
+                    if let Some(mut chunk) = chunk {
+                        self.configure_native_symbol(&mut chunk, item.span);
                         if generic_params.is_empty()
                             && let Some(source_path) = source_path
                         {
@@ -946,7 +968,8 @@ impl<'a> Codegen<'a> {
                                     &mut next_closure_idx,
                                 )?
                             };
-                            if let Some(chunk) = chunk {
+                            if let Some(mut chunk) = chunk {
+                                self.configure_native_symbol(&mut chunk, method.span);
                                 if generic_params.is_empty()
                                     && let Some(source_path) = source_path
                                 {
@@ -1015,7 +1038,7 @@ impl<'a> Codegen<'a> {
                                     .zip(mono.type_args.iter())
                                     .map(|(p, t)| (p.clone(), t.clone()))
                                     .collect();
-                                if let Some(chunk) = self.compile_fn_with_subst(
+                                if let Some(mut chunk) = self.compile_fn_with_subst(
                                     mono_name,
                                     params,
                                     body.as_ref().map(|b| b as &Block),
@@ -1025,6 +1048,7 @@ impl<'a> Codegen<'a> {
                                     &mut next_closure_idx,
                                     subst,
                                 )? {
+                                    self.configure_native_symbol(&mut chunk, m.span);
                                     chunks.push(chunk);
                                 }
                                 found = true;
@@ -1051,6 +1075,7 @@ impl<'a> Codegen<'a> {
                         }
                     });
                     if let Some(Item {
+                        span,
                         node:
                             ItemKind::Fn {
                                 params,
@@ -1068,7 +1093,7 @@ impl<'a> Codegen<'a> {
                             .zip(mono.type_args.iter())
                             .map(|(p, t)| (p.clone(), t.clone()))
                             .collect();
-                        if let Some(chunk) = self.compile_fn_with_subst(
+                        if let Some(mut chunk) = self.compile_fn_with_subst(
                             mono_name,
                             params,
                             body.as_ref().map(|b| b as &Block),
@@ -1078,6 +1103,7 @@ impl<'a> Codegen<'a> {
                             &mut next_closure_idx,
                             subst,
                         )? {
+                            self.configure_native_symbol(&mut chunk, *span);
                             chunks.push(chunk);
                         }
                     }
@@ -1095,6 +1121,7 @@ impl<'a> Codegen<'a> {
                     }
                 });
                 if let Some(Item {
+                    span,
                     node:
                         ItemKind::Fn {
                             params,
@@ -1112,7 +1139,7 @@ impl<'a> Codegen<'a> {
                         .zip(mono.type_args.iter())
                         .map(|(p, t)| (p.clone(), t.clone()))
                         .collect();
-                    if let Some(chunk) = self.compile_fn_with_subst(
+                    if let Some(mut chunk) = self.compile_fn_with_subst(
                         mono_name,
                         params,
                         body.as_ref().map(|b| b as &Block),
@@ -1122,6 +1149,7 @@ impl<'a> Codegen<'a> {
                         &mut next_closure_idx,
                         subst,
                     )? {
+                        self.configure_native_symbol(&mut chunk, *span);
                         chunks.push(chunk);
                     }
                 }
@@ -4400,8 +4428,8 @@ impl<'a> FnCompiler<'a> {
         } else if self.fn_index.contains_key("panic") {
             "panic"
         } else {
-            // `@no_std` deliberately omits the panic runtime. Preserve support for
-            // such programs and let the target's integer divide trap terminate.
+            // A package built with `std = false` has no panic runtime. Preserve
+            // hardware divide traps for that explicit freestanding mode.
             return;
         };
         let nonzero = self.chunk.emit(ri16(Opcode::Jnz, divisor, 0));

@@ -85,8 +85,8 @@ remain ordinary `f32` or `f64` values and propagate through later calculations.
 Integer division by zero panics with `integer division by zero`. Integer
 remainder by zero likewise panics with `integer remainder by zero`. The same
 rules apply to `/=`, `%=` and all signed and unsigned integer widths. Panic
-diagnostics use the source location of the arithmetic expression. A `@no_std`
-program omits the panic runtime and therefore falls back to the target's integer
+diagnostics use the source location of the arithmetic expression. A package
+with `std = false` omits the panic runtime and therefore falls back to the target's integer
 divide trap.
 
 ## Windows Unicode output

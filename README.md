@@ -18,6 +18,7 @@ Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend
 - **First-class functions & closures** — `|x, y| x + y` stored as `fn(i32, i32) i32`
 - **Unsafe system** — `unsafe fn` / `unsafe { ... }` for raw pointer work
 - **Modules and libraries** — dotted imports, `pub import`, downloadable dependencies, and compiled QZI libraries
+- **Native test runner** — `@test` discovery with isolated `qz test` execution
 - **LSP support** — hover, diagnostics, go-to-definition, completion, formatting
 - **Cross-platform** — Linux (ELF) and Windows (PE) targets
 
@@ -153,6 +154,7 @@ qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
 qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz check                  # type-check without compiling
+qz test [filter]          # run @test functions from src/ and tests/
 qz fetch                  # download, verify, and lock dependencies
 qz deps                   # show resolved dependency sources
 qz add <path-or-url> [--alias name]  # infer package name and add dependency

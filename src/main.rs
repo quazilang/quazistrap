@@ -17,6 +17,7 @@ pub mod parser;
 mod progress;
 mod project;
 pub mod semantic;
+mod test_runner;
 
 use analysis::{analyze_program_with_source_files, format_quazi_source};
 use backend::linker::{LinkerInvocation, link_object, remove_temp, write_temp_object};
@@ -103,6 +104,7 @@ fn run_pipeline(
     }
 
     let mut cg = Codegen::new(&sema_report);
+    cg.set_native_mangling(true);
     let chunks = cg
         .compile_program(program, &source_files)
         .unwrap_or_else(|error| {
@@ -143,11 +145,10 @@ fn run_pipeline(
         }
 
         EmitType::Object => {
-            let no_crash = source_contains_no_crash(src);
             let obj_bytes = compile_to_object(
                 &chunks,
                 false,
-                no_crash,
+                false,
                 Some(&sema_report),
                 sema_report.main_takes_args,
                 &TargetSpec::host(),
@@ -170,11 +171,10 @@ fn run_pipeline(
         }
 
         EmitType::Binary => {
-            let no_crash = source_contains_no_crash(src);
             let obj_bytes = compile_to_object(
                 &chunks,
                 true,
-                no_crash,
+                false,
                 Some(&sema_report),
                 sema_report.main_takes_args,
                 &TargetSpec::host(),
@@ -312,15 +312,6 @@ fn strip_binary(path: &Path) {
             );
         }
     }
-}
-
-fn source_contains_no_crash(src: &str) -> bool {
-    let mut lexer = Lexer::new(src);
-    let tokens = lexer.tokenize();
-    tokens.windows(2).any(|pair| {
-        matches!(pair[0].kind, lexer::token::TokenKind::At)
-            && matches!(&pair[1].kind, lexer::token::TokenKind::Ident(name) if name == "no_crash")
-    })
 }
 
 fn compile_to_object(
@@ -507,8 +498,22 @@ fn external_tool_path(path: &std::path::Path) -> PathBuf {
 
 fn load_with_optional_project(files: &[PathBuf]) -> Result<loader::LoadResult, String> {
     let ctx = ProjectContext::discover(&files[0])?;
-    let resolver_owned: Option<loader::ModuleResolver> = ctx.map(|c| c.resolver);
-    loader::load_programs_with_resolver(files, resolver_owned.as_ref())
+    let settings = ctx
+        .as_ref()
+        .map(|context| context.config.package)
+        .unwrap_or_default();
+    let resolver_owned = ctx.map(|context| context.resolver);
+    loader::load_programs_configured(files, resolver_owned.as_ref(), settings.std, &[])
+}
+
+fn apply_package_settings(
+    mut target: TargetSpec,
+    settings: project::PackageSettings,
+) -> TargetSpec {
+    if !settings.crash_handler {
+        target = target.with_no_crash();
+    }
+    target
 }
 
 fn load_project_context() -> ProjectContext {
@@ -680,7 +685,7 @@ fn scaffold_project(root: &Path, pkg_name: &str, lib: bool) {
     if lib {
         let library_name = scaffold_library_name(pkg_name);
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nout_dir = \"build\"\n\n[lib]\nname = \"{}\"\npath = \"src/lib.qz\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nout_dir = \"build\"\nstd = true\ncrash_handler = true\nmangling = true\n\n[lib]\nname = \"{}\"\npath = \"src/lib.qz\"\n",
             library_name, library_name
         );
         write_file(&root.join("quazi.toml"), &toml);
@@ -692,7 +697,7 @@ fn scaffold_project(root: &Path, pkg_name: &str, lib: bool) {
         write_file(&src_dir.join("lib.qz"), &lib_src);
     } else {
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nout_dir = \"build\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.qz\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nout_dir = \"build\"\nstd = true\ncrash_handler = true\nmangling = true\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.qz\"\n",
             pkg_name, pkg_name
         );
         write_file(&root.join("quazi.toml"), &toml);
@@ -867,6 +872,7 @@ fn build_with_progress(
     no_progress: bool,
     initial_progress: Option<progress::BuildProgress>,
     project_resolver: Option<&loader::ModuleResolver>,
+    package_settings: project::PackageSettings,
 ) {
     use progress::{
         BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count,
@@ -956,7 +962,14 @@ fn build_with_progress(
     // ── Step 1: Lexing (file I/O + tokenize) ─────────────────────────────────
     prog.begin("frontend");
     let result = match project_resolver
-        .map(|resolver| loader::load_programs_with_resolver(files, Some(resolver)))
+        .map(|resolver| {
+            loader::load_programs_configured(
+                files,
+                Some(resolver),
+                package_settings.std,
+                &[],
+            )
+        })
         .unwrap_or_else(|| load_with_optional_project(files))
     {
         Ok(r) => r,
@@ -1087,6 +1100,7 @@ fn build_with_progress(
 
     prog.begin("bytecode");
     let mut cg = bytecode::Codegen::new(&sema);
+    cg.set_native_mangling(package_settings.mangling);
     cg.set_incremental_codegen(cached_codegen_units, source_hashes);
     if qzi_metadata
         .as_ref()
@@ -1162,7 +1176,7 @@ fn build_with_progress(
             eprint!("{}", chunk);
         }
     }
-    let no_crash = source_contains_no_crash(&result.merged_source);
+    let no_crash = !package_settings.crash_handler;
     let project_qzi = qzi_metadata.clone().map(|mut metadata| {
         metadata.main_takes_args = sema.main_takes_args;
         let interface = if metadata.kind == bytecode::QziModuleKind::Library {
@@ -1335,7 +1349,9 @@ fn main() {
     let args = Args::parse();
     let no_color_output = matches!(
         &args.command,
-        CliCmd::Build { no_color: true, .. } | CliCmd::Run { no_color: true, .. }
+        CliCmd::Build { no_color: true, .. }
+            | CliCmd::Run { no_color: true, .. }
+            | CliCmd::Test { no_color: true, .. }
     );
     NO_COLOR_OUTPUT.store(no_color_output, Ordering::Relaxed);
 
@@ -1473,6 +1489,7 @@ fn main() {
                         eprintln!("\x1b[31;1merror:\x1b[0m {e}");
                         std::process::exit(1);
                     });
+                let target = apply_package_settings(target, ctx.config.package);
                 let manifest_link = ctx.link_for_target(target.triple());
                 let manifest_linker = manifest_link
                     .linker
@@ -1567,6 +1584,7 @@ fn main() {
                     no_progress,
                     Some(preview_progress),
                     Some(&ctx.resolver),
+                    ctx.config.package,
                 );
                 let _ = (emit, do_strip);
 
@@ -1652,12 +1670,18 @@ fn main() {
                     })
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let qzi_context = ProjectContext::discover(&cwd).unwrap_or_else(|e| {
+                    eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                    std::process::exit(1);
+                });
+                let package_settings = qzi_context
+                    .as_ref()
+                    .map(|context| context.config.package)
+                    .unwrap_or_default();
+                let target = apply_package_settings(target, package_settings);
                 if matches!(emit, EmitType::Binary) {
-                    let cwd = std::env::current_dir().unwrap_or_default();
-                    if let Some(ctx) = ProjectContext::discover(&cwd).unwrap_or_else(|e| {
-                        eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                        std::process::exit(1);
-                    }) {
+                    if let Some(ctx) = qzi_context {
                         qzi_link_flags.extend(native_link_flags(&ctx).unwrap_or_else(|e| {
                             eprintln!("\x1b[31;1merror:\x1b[0m {e}");
                             std::process::exit(1);
@@ -1686,7 +1710,7 @@ fn main() {
                     Some(&qzi_link_flags),
                     explicit_linker,
                     debug,
-                    false,
+                    !package_settings.crash_handler,
                     main_takes_args,
                     true,
                     &target,
@@ -1853,6 +1877,14 @@ fn main() {
                         .map(|path| format!("-L{}", path.display())),
                 );
                 link_flags.extend(libraries.iter().map(|name| format!("-l{name}")));
+                let package_settings = ProjectContext::discover(&source_files[0])
+                    .unwrap_or_else(|error| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                        std::process::exit(1);
+                    })
+                    .map(|context| context.config.package)
+                    .unwrap_or_default();
+                let target = apply_package_settings(target, package_settings);
                 build_with_progress(
                     &source_files,
                     &out,
@@ -1872,6 +1904,7 @@ fn main() {
                     no_progress,
                     None,
                     None,
+                    package_settings,
                 );
                 for object in &compiled_c_objects {
                     remove_temp(object);
@@ -1900,7 +1933,12 @@ fn main() {
         } => {
             let result = if files.is_empty() {
                 let ctx = load_project_context();
-                loader::load_programs_with_resolver(&[ctx.config.entry], Some(&ctx.resolver))
+                loader::load_programs_configured(
+                    &[ctx.config.entry],
+                    Some(&ctx.resolver),
+                    ctx.config.package.std,
+                    &[],
+                )
             } else {
                 load_with_optional_project(&files)
             }
@@ -1967,7 +2005,12 @@ fn main() {
                     std::process::exit(1);
                 });
             let entry = ctx.config.entry.clone();
-            let result = loader::load_programs_with_resolver(&[entry], Some(&ctx.resolver))
+            let result = loader::load_programs_configured(
+                &[entry],
+                Some(&ctx.resolver),
+                ctx.config.package.std,
+                &[],
+            )
                 .unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                     std::process::exit(1);
@@ -2001,6 +2044,21 @@ fn main() {
                 result.source_files,
                 namespaced_paths,
             );
+        }
+
+        CliCmd::Test {
+            filter,
+            no_color,
+            no_unicode,
+        } => {
+            let success = test_runner::run(filter.as_deref(), no_color, no_unicode)
+                .unwrap_or_else(|error| {
+                    eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                    std::process::exit(1);
+                });
+            if !success {
+                std::process::exit(1);
+            }
         }
 
         CliCmd::Fetch => {

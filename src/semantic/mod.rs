@@ -142,6 +142,7 @@ pub struct Analyzer {
     pub(super) foreign_globals: HashMap<String, ForeignGlobalInfo>,
     /// Whether the entry point is `fn main(args: Array[str])`.
     pub(super) main_takes_args: bool,
+    pub(super) test_functions: Vec<String>,
 }
 
 pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
@@ -556,6 +557,7 @@ impl Analyzer {
             loop_depth: 0,
             trait_depth: 0,
             main_takes_args: false,
+            test_functions: Vec::new(),
             library_char_ranges: Vec::new(),
             source_files: Vec::new(),
             namespaced_paths: std::collections::HashSet::new(),
@@ -852,6 +854,8 @@ impl Analyzer {
             flexible_array_structs: self.flexible_array_structs.clone(),
             namespaced_paths: self.namespaced_paths.clone(),
             main_takes_args: self.main_takes_args,
+            test_functions: self.test_functions.clone(),
+            library_char_ranges: self.library_char_ranges.clone(),
         }
     }
 
@@ -902,6 +906,7 @@ impl Analyzer {
         self.repr_c_alignments.clear();
         self.flexible_array_structs.clear();
         self.main_takes_args = false;
+        self.test_functions.clear();
         self.current_fn_name_override = None;
         self.current_module_path = None;
         self.init_builtins();
@@ -4271,5 +4276,30 @@ fn main() void {
             "byte-string writes should be rejected: {:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn test_attribute_requires_a_zero_argument_void_function() {
+        let valid = analyze("@test fn works() void { ret; }");
+        assert!(valid.errors.is_empty(), "valid test: {:?}", valid.errors);
+        assert_eq!(valid.test_functions, ["works"]);
+
+        let invalid = analyze("@test fn wrong(value: i32) i32 { ret value; }");
+        assert!(invalid.errors.iter().any(|error| {
+            error.message.contains("must have signature `fn wrong() void`")
+        }));
+    }
+
+    #[test]
+    fn removed_source_configuration_attributes_point_to_manifest_fields() {
+        for (attribute, field) in [
+            ("no_std", "package.std"),
+            ("no_crash", "package.crash_handler"),
+            ("no_mangle", "package.mangling"),
+            ("no_mangling", "package.mangling"),
+        ] {
+            let report = analyze(&format!("@{attribute} fn main() void {{ ret; }}"));
+            assert!(report.errors.iter().any(|error| error.message.contains(field)));
+        }
     }
 }
