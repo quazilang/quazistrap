@@ -1,0 +1,15 @@
+import std.io;
+import qz_test_lib.factorial;
+
+fn show_factorial(n: u64) void {
+    io.println("{}! = {}", n, factorial(n));
+}
+
+fn main() i32 {
+    show_factorial(0);
+    show_factorial(1);
+    show_factorial(5);
+    show_factorial(7);
+    show_factorial(10);
+    ret 0;
+}

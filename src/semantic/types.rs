@@ -9,6 +9,8 @@ use crate::parser::ast::{Span, TypeKind};
 #[derive(Debug, Clone)]
 pub struct SourceFile {
     pub path: String,
+    /// Logical package/module namespace when it cannot be derived from the file name.
+    pub module_name: Option<String>,
     pub start: usize,
     pub end: usize,
     pub line_start: usize,

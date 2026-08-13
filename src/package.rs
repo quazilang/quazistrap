@@ -3,13 +3,27 @@
 // SPDX-License-Identifier: 0BSD
 
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+static OUTPUT_SILENT: AtomicBool = AtomicBool::new(false);
+static OUTPUT_NO_COLOR: AtomicBool = AtomicBool::new(false);
+static OUTPUT_NO_UNICODE: AtomicBool = AtomicBool::new(false);
+static OUTPUT_NO_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+pub fn configure_output(silent: bool, no_color: bool, no_unicode: bool, no_progress: bool) {
+    OUTPUT_SILENT.store(silent, Ordering::Relaxed);
+    OUTPUT_NO_COLOR.store(no_color, Ordering::Relaxed);
+    OUTPUT_NO_UNICODE.store(no_unicode, Ordering::Relaxed);
+    OUTPUT_NO_PROGRESS.store(no_progress, Ordering::Relaxed);
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -174,45 +188,42 @@ pub fn materialize_url(
     name: &str,
     kind: DependencyKind,
     url: &str,
-    requested_revision: Option<&str>,
+    git_selector: Option<&str>,
     requested_checksum: Option<&str>,
     locked: Option<&LockedSource>,
+    cache: &Path,
 ) -> Result<MaterializedDependency, String> {
     if matches!(kind, DependencyKind::Path) {
         return Err("URL dependency cannot use type 'path'".to_string());
     }
-    let cache = package_cache_root()?;
     fs::create_dir_all(&cache)
         .map_err(|error| format!("cannot create package cache '{}': {error}", cache.display()))?;
     let cache_key = sha256_bytes(url.as_bytes());
     let locked_revision = locked.and_then(|entry| entry.revision.as_deref());
     let locked_checksum = locked.and_then(|entry| entry.checksum.as_deref());
-    let revision = locked_revision.or(requested_revision);
+    let revision = if git_selector == Some("latest") {
+        Some("origin/HEAD")
+    } else {
+        locked_revision.or(git_selector)
+    };
     let checksum = locked_checksum.or(requested_checksum);
 
     match kind {
-        DependencyKind::Git => {
-            materialize_git(name, url, revision, locked.is_some(), &cache, &cache_key)
-        }
-        DependencyKind::Archive => materialize_archive(name, url, checksum, &cache, &cache_key),
+        DependencyKind::Git => materialize_git(
+            name,
+            url,
+            revision,
+            locked.is_some(),
+            git_selector == Some("latest"),
+            cache,
+            &cache_key,
+        ),
+        DependencyKind::Archive => materialize_archive(name, url, checksum, cache, &cache_key),
         DependencyKind::Source | DependencyKind::Qzi => {
-            materialize_file(name, kind, url, checksum, &cache, &cache_key)
+            materialize_file(name, kind, url, checksum, cache, &cache_key)
         }
         DependencyKind::Path => unreachable!(),
     }
-}
-
-fn package_cache_root() -> Result<PathBuf, String> {
-    if let Some(root) = std::env::var_os("QUAZI_HOME") {
-        return Ok(PathBuf::from(root).join("cache").join("packages"));
-    }
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .ok_or_else(|| "cannot locate home directory for Quazi package cache".to_string())?;
-    Ok(PathBuf::from(home)
-        .join(".quazi")
-        .join("cache")
-        .join("packages"))
 }
 
 fn materialize_git(
@@ -220,6 +231,7 @@ fn materialize_git(
     url: &str,
     revision: Option<&str>,
     locked: bool,
+    floating: bool,
     cache: &Path,
     cache_key: &str,
 ) -> Result<MaterializedDependency, String> {
@@ -232,7 +244,6 @@ fn materialize_git(
                 cache.display()
             )
         })?;
-        eprintln!("  Fetching  {name}  ·  {url}");
         let temporary = temporary_sibling(&destination);
         if temporary.exists() {
             fs::remove_dir_all(&temporary).map_err(|error| {
@@ -242,11 +253,16 @@ fn materialize_git(
                 )
             })?;
         }
-        let status = Command::new("git")
-            .args(["clone", "--quiet", "--no-checkout", url])
-            .arg(&temporary)
-            .status()
-            .map_err(|error| format!("cannot start git for dependency '{name}': {error}"))?;
+        let status = run_git_with_progress(
+            Command::new("git")
+                .args(["clone", "--progress", "--no-checkout", url])
+                .arg(git_path(&temporary)),
+            "fetching",
+            "fetched",
+            name,
+            url,
+        )
+        .map_err(|error| format!("cannot start git for dependency '{name}': {error}"))?;
         if !status.success() {
             return Err(format!("git clone failed for dependency '{name}'"));
         }
@@ -259,14 +275,18 @@ fn materialize_git(
             })?;
         }
     }
-    if cached && !locked {
-        eprintln!("  Updating  {name}  ·  {url}");
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(&destination)
-            .args(["fetch", "--quiet", "--tags", "origin"])
-            .status()
-            .map_err(|error| format!("cannot update dependency '{name}': {error}"))?;
+    if cached && (!locked || floating) {
+        let status = run_git_with_progress(
+            Command::new("git")
+                .arg("-C")
+                .arg(git_path(&destination))
+                .args(["fetch", "--progress", "--tags", "origin"]),
+            "updating",
+            "updated",
+            name,
+            url,
+        )
+        .map_err(|error| format!("cannot update dependency '{name}': {error}"))?;
         if !status.success() {
             return Err(format!("git fetch failed for dependency '{name}'"));
         }
@@ -274,7 +294,7 @@ fn materialize_git(
     let checkout = revision.unwrap_or("origin/HEAD");
     let status = Command::new("git")
         .arg("-C")
-        .arg(&destination)
+        .arg(git_path(&destination))
         .args(["checkout", "--quiet", "--detach", checkout])
         .status()
         .map_err(|error| format!("cannot checkout dependency '{name}': {error}"))?;
@@ -285,7 +305,7 @@ fn materialize_git(
     }
     let output = Command::new("git")
         .arg("-C")
-        .arg(&destination)
+        .arg(git_path(&destination))
         .args(["rev-parse", "HEAD"])
         .output()
         .map_err(|error| format!("cannot resolve git revision for '{name}': {error}"))?;
@@ -304,6 +324,136 @@ fn materialize_git(
         revision: Some(resolved_revision),
         checksum: None,
     })
+}
+
+fn run_git_with_progress(
+    command: &mut Command,
+    active: &str,
+    complete: &str,
+    name: &str,
+    url: &str,
+) -> io::Result<std::process::ExitStatus> {
+    let silent =
+        OUTPUT_SILENT.load(Ordering::Relaxed) || OUTPUT_NO_PROGRESS.load(Ordering::Relaxed);
+    let no_unicode = OUTPUT_NO_UNICODE.load(Ordering::Relaxed);
+    let is_tty =
+        !OUTPUT_NO_COLOR.load(Ordering::Relaxed) && !no_unicode && crate::progress::stderr_is_tty();
+    let started = Instant::now();
+    command.stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let stderr = child.stderr.take().expect("Git stderr was piped");
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stderr);
+        let mut captured = String::new();
+        let mut fragment = Vec::new();
+        loop {
+            fragment.clear();
+            let Ok(read) = reader.read_until(b'\r', &mut fragment) else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            let text = String::from_utf8_lossy(&fragment)
+                .trim_matches(['\r', '\n'])
+                .to_string();
+            if !text.is_empty() {
+                captured.push_str(&text);
+                captured.push('\n');
+                if let Some(percent) = git_progress_percent(&text) {
+                    let _ = progress_tx.send(percent);
+                }
+            }
+        }
+        captured
+    });
+
+    if !silent && !is_tty && !no_unicode {
+        eprintln!("  ◇  {active:<9}  {name}  ·  {url}");
+    } else if !silent && no_unicode {
+        eprintln!("[..] {active:<9}  {name}  |  {url}");
+    }
+    let mut last_percent = None;
+    let status = loop {
+        match progress_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(percent) if !silent && is_tty && last_percent != Some(percent) => {
+                const WIDTH: usize = 20;
+                let filled = percent * WIDTH / 100;
+                let bar = format!("{}{}", "━".repeat(filled), "─".repeat(WIDTH - filled));
+                eprint!(
+                    "\r\x1b[K  \x1b[36m◇\x1b[0m  \x1b[1m{active:<9}\x1b[0m  {name}  \x1b[2m[{bar}]\x1b[0m {percent:>3}%"
+                );
+                let _ = io::stderr().flush();
+                let _ = io::stdout().flush();
+                last_percent = Some(percent);
+            }
+            _ => {}
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+    };
+    let captured = reader.join().unwrap_or_default();
+
+    let elapsed = if started.elapsed().as_secs() >= 1 {
+        format!("{:.2}s", started.elapsed().as_secs_f64())
+    } else {
+        format!("{}ms", started.elapsed().as_millis())
+    };
+    if silent {
+        return Ok(status);
+    }
+    if status.success() {
+        if is_tty {
+            eprintln!(
+                "\r\x1b[K  \x1b[32m◆\x1b[0m  \x1b[1m{complete:<9}\x1b[0m  {name}  \x1b[2m· {elapsed}\x1b[0m"
+            );
+        } else if no_unicode {
+            eprintln!("[ok] {complete:<9}  {name}  |  {elapsed}");
+        } else {
+            eprintln!("  ◆  {complete:<9}  {name}  ·  {elapsed}");
+        }
+    } else if is_tty {
+        eprintln!(
+            "\r\x1b[K  \x1b[31m◆\x1b[0m  \x1b[1m{active:<9}\x1b[0m  {name}  \x1b[2m· failed\x1b[0m"
+        );
+    } else if no_unicode {
+        eprintln!("[fail] {active:<9}  {name}");
+    } else {
+        eprintln!("  ◆  {active:<9}  {name}  ·  failed");
+    }
+    if !status.success() && !captured.trim().is_empty() {
+        eprint!("{captured}");
+    }
+    Ok(status)
+}
+
+fn git_progress_percent(text: &str) -> Option<usize> {
+    let percent = text.find('%')?;
+    let digits: String = text[..percent]
+        .chars()
+        .rev()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    digits.parse::<usize>().ok().filter(|value| *value <= 100)
+}
+
+fn git_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy();
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = value.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path.to_path_buf()
 }
 
 fn materialize_archive(
@@ -546,4 +696,22 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
 
 pub fn sha256_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::git_progress_percent;
+
+    #[test]
+    fn parses_real_git_progress_percentages() {
+        assert_eq!(
+            git_progress_percent("remote: Receiving objects:  42% (21/50)"),
+            Some(42)
+        );
+        assert_eq!(
+            git_progress_percent("Resolving deltas: 100% (8/8)"),
+            Some(100)
+        );
+        assert_eq!(git_progress_percent("Cloning into 'dep'..."), None);
+    }
 }

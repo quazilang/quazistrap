@@ -1,0 +1,11 @@
+[package]
+name = "git_library_dependency"
+version = "0.1.0"
+out_dir = "build"
+
+[[bin]]
+name = "git_library_dependency"
+path = "src/main.qz"
+
+[dependencies]
+qz_test_lib = { url = "https://github.com/namnam1105/qz-test-lib.git", type = "git", version = "latest" }

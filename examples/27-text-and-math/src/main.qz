@@ -1,0 +1,26 @@
+import std.io;
+import std.math;
+
+fn main() i32 {
+    const raw_destination: str = "  Москва λ🙂  ";
+    const destination: String = raw_destination.trim();
+    const parsed_distance: Result[f64, ParseError] = "42.5".parse[f64]();
+
+    if (parsed_distance.is_err()) {
+        io.errln("distance must be a number");
+        ret 1;
+    }
+
+    const distance: f64 = parsed_distance.unwrap();
+    const direct_route: f64 = math.hypot(30.0, 40.0);
+    const estimated_minutes: f64 = (distance / 35.0) * 60.0;
+
+    io.println("Delivery estimate");
+    io.println("  destination: {}", destination.as_str());
+    io.println("  characters: {}", destination.len());
+    io.println("  UTF-8 bytes: {}", destination.bytes_len());
+    io.println("  entered distance: {} km", distance);
+    io.println("  reference direct route: {} km", direct_route);
+    io.println("  estimated travel: {} minutes", estimated_minutes);
+    ret 0;
+}

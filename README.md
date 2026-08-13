@@ -149,11 +149,14 @@ An unterminated raw string is a compile error.
 qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
          [--bin name|--lib] [--target x86_64-linux|x86_64-windows]
          [--linker builtin|path] [-L dir] [-l name]
+         [--silent|--no-progress] [--no-color] [--no-unicode]
 qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz check                  # type-check without compiling
 qz fetch                  # download, verify, and lock dependencies
 qz deps                   # show resolved dependency sources
+qz add <path-or-url> [--alias name]  # infer package name and add dependency
+qz remove <name>          # remove dependency
 qz fmt                    # trim trailing whitespace in .qz files
 qz clean                  # remove build artifacts
 qz new <name> [--lib]     # scaffold a new project
@@ -161,8 +164,21 @@ qz init [--lib]           # init in current directory
 qz lsp                    # start language server
 ```
 
-Project builds use `target/quazi/<target>/<artifact>/incremental.qzc` for exact
-warm-build reuse. Pass `--no-incremental` to bypass it. See
+`qz new` and `qz init` initialize a Git repository when Git is available and
+create a project `.gitignore` for `build/` and native/QZI artifacts.
+`quazi.lock` stays tracked for reproducible dependency builds.
+
+`qz add ../math` reads the local package name from `quazi.toml`.
+`qz add https://host/math.git --type git` derives an identifier from the URL,
+and `qz add ../math --alias numbers` selects a different import name while
+retaining the discovered package identity in `quazi.lock`; no separate
+`package` manifest field is required.
+then validates it against downloaded package metadata. Git `--version` accepts
+a tag, commit hash, or `latest`.
+
+Project builds use `build/quazi/<target>/<artifact>/incremental.qzc` for exact
+warm-build reuse. Progress reports cache lookup hits/misses and cache writes.
+Pass `--no-incremental` to bypass both reads and writes. See
 [Libraries, QZI, and incremental builds](docs/LIBRARIES.md) for dependency TOML,
 QZI v6 library rules, lockfile behavior, and cache guarantees.
 
@@ -181,6 +197,11 @@ Quazi project.
 - `--linker builtin` — require the in-process ELF/PE linker
 - `--linker <path>` — explicitly use an external linker
 - `-L <dir>` / `-l <name>` — opt into a native library search path/library
+
+- `-q`, `--silent` â€” emit nothing for successful builds; errors still print
+- `--no-progress` â€” hide stages and print only `built <name>` on success
+- `--no-color` â€” remove ANSI color from progress and diagnostics
+- `--no-unicode` â€” use ASCII headers, trees, and `[ok]`/`[fail]` markers
 
 **Environment variables:**
 - `QUAZI_LINKER=builtin` — require the in-process ELF/PE linker
@@ -298,6 +319,8 @@ See [project and manifest documentation](docs/PROJECTS.md) and
 | [`24-local-library`](examples/24-local-library/) | Source/QZI library artifact |
 | [`25-local-dependency`](examples/25-local-dependency/) | Relative dependency and QZC cache |
 | [`26-http-client-server`](examples/26-http-client-server/) | HTTP client and local server |
+| [`27-text-and-math`](examples/27-text-and-math/) | Unicode text, checked parsing, practical math |
+| [`28-git-library-dependency`](examples/28-git-library-dependency/) | Git dependency and repeated recursive factorial calls |
 
 String indexing/slicing, checked parsing, numeric methods, math accuracy goals,
 automatic cleanup, and Windows UTF-8 console behavior are documented in

@@ -631,16 +631,13 @@ impl Analyzer {
     /// Return the module path for the source file containing `span`, if that
     /// file is marked as namespaced.
     pub(super) fn module_path_for_span(&self, span: Span) -> Option<String> {
-        let path = self
-            .source_files
-            .iter()
-            .find(|f| f.contains(span))?
-            .path
-            .clone();
-        if !self.namespaced_paths.contains(&path) {
+        let file = self.source_files.iter().find(|file| file.contains(span))?;
+        if !self.namespaced_paths.contains(&file.path) {
             return None;
         }
-        self.module_name_for_path(&path)
+        file.module_name
+            .clone()
+            .or_else(|| self.module_name_for_path(&file.path))
     }
 
     /// Return true if the source file containing `span` is a namespaced module.

@@ -81,6 +81,44 @@ impl QziModule {
         }
         self.call_relocations = infer_call_relocations(&self.chunks).unwrap_or_default();
     }
+
+    pub fn alias_library_namespace(&mut self, alias: &str) {
+        let original = self.metadata.name.clone();
+        if self.metadata.kind != QziModuleKind::Library || original.is_empty() || original == alias
+        {
+            return;
+        }
+        let rename = |symbol: &str| {
+            if symbol == original {
+                alias.to_string()
+            } else {
+                symbol
+                    .strip_prefix(&format!("{original}."))
+                    .map(|suffix| format!("{alias}.{suffix}"))
+                    .unwrap_or_else(|| symbol.to_string())
+            }
+        };
+        self.metadata.name = alias.to_string();
+        for chunk in &mut self.chunks {
+            chunk.name = rename(&chunk.name);
+            for constant in &mut chunk.constants {
+                if let ConstPoolEntry::FnAddr(symbol) = constant {
+                    *symbol = rename(symbol);
+                }
+            }
+        }
+        for relocation in &mut self.call_relocations {
+            relocation.symbol = rename(&relocation.symbol);
+        }
+        if let Ok(mut bundle) = crate::bytecode::interface::parse_qzi_interface(&self.interface) {
+            for module in &mut bundle.modules {
+                module.name = rename(&module.name);
+            }
+            if let Ok(interface) = toml::to_string(&bundle) {
+                self.interface = interface;
+            }
+        }
+    }
 }
 
 /// Constant pool value — lives alongside bytecode, referenced by MovConst.

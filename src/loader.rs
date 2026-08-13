@@ -25,6 +25,8 @@ pub struct LoadResult {
     pub source_files: Vec<SourceFile>,
     /// (importer, importee) pairs from the final resolved pass — used for dep tree rendering.
     pub dep_edges: Vec<(PathBuf, PathBuf)>,
+    /// Stable logical names used by dependency-tree output.
+    pub display_names: HashMap<PathBuf, String>,
     /// Token count across user (non-library) source files.
     pub token_count: usize,
     /// Parse error message, if parsing failed. IO errors are returned as `Err` from the loader.
@@ -41,6 +43,8 @@ pub struct ModuleSpec {
     pub root: PathBuf,
     pub src_dir: PathBuf,
     pub entry: PathBuf,
+    /// Whether declarations in `entry` belong directly to the package namespace.
+    pub entry_is_package_root: bool,
     pub version: Option<String>,
 }
 
@@ -112,6 +116,9 @@ struct SourceCollection {
     sources: Vec<(PathBuf, String)>,
     library_paths: HashSet<PathBuf>,
     dep_edges: Vec<(PathBuf, PathBuf)>,
+    /// Configured package entries use the package name, not `lib`/`src`, as namespace.
+    module_name_overrides: HashMap<PathBuf, String>,
+    module_specs: Vec<ModuleSpec>,
     /// Canonicalized paths of the original entry files; everything else is a
     /// dependency and gets namespaced/mangled.
     entry_paths: HashSet<PathBuf>,
@@ -128,6 +135,21 @@ fn collect_sources_with_prelude(
     let mut library_paths: HashSet<PathBuf> = HashSet::new();
     let mut dep_edges: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut entry_paths: HashSet<PathBuf> = HashSet::new();
+    let module_name_overrides = resolver
+        .into_iter()
+        .flat_map(|resolver| resolver.modules.values())
+        .filter(|spec| spec.entry_is_package_root)
+        .filter_map(|spec| {
+            spec.entry
+                .canonicalize()
+                .ok()
+                .map(|entry| (entry, spec.name.clone()))
+        })
+        .collect();
+    let module_specs = resolver
+        .into_iter()
+        .flat_map(|resolver| resolver.modules.values().cloned())
+        .collect();
 
     if let Some(p) = prelude {
         collect(
@@ -163,6 +185,8 @@ fn collect_sources_with_prelude(
         sources,
         library_paths,
         dep_edges,
+        module_name_overrides,
+        module_specs,
         entry_paths,
     })
 }
@@ -180,6 +204,8 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         mut sources,
         library_paths,
         dep_edges,
+        module_name_overrides,
+        module_specs,
         entry_paths,
     } = collection;
 
@@ -188,6 +214,13 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         .map(|(p, _)| p)
         .filter(|p| !entry_paths.contains(*p))
         .cloned()
+        .collect();
+    let display_names = sources
+        .iter()
+        .filter(|(path, _)| !entry_paths.contains(path))
+        .filter_map(|(path, _)| {
+            logical_module_name(path, &module_specs).map(|name| (path.clone(), name))
+        })
         .collect();
 
     let user_fn_names = collect_user_function_names(&sources, &library_paths, &entry_paths);
@@ -229,6 +262,7 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         let src_char_len = src.chars().count();
         source_files.push(SourceFile {
             path: path.to_string_lossy().into_owned(),
+            module_name: module_name_overrides.get(path).cloned(),
             start: char_pos,
             end: char_pos + src_char_len,
             line_start: line_pos,
@@ -311,7 +345,12 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         {
             name.clone()
         } else {
-            format!("{}.{}", path_module_name(source_path), name)
+            let module_name = source_file
+                .module_name
+                .as_deref()
+                .map(str::to_owned)
+                .unwrap_or_else(|| path_module_name(source_path));
+            format!("{}.{}", module_name, name)
         };
         library_fn_names.insert(entry_name);
     }
@@ -325,10 +364,42 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         library_char_ranges,
         source_files,
         dep_edges,
+        display_names,
         token_count,
         parse_error,
         namespaced_paths,
     })
+}
+
+fn logical_module_name(path: &Path, specs: &[ModuleSpec]) -> Option<String> {
+    for spec in specs {
+        let Ok(src_dir) = spec.src_dir.canonicalize() else {
+            continue;
+        };
+        let Ok(relative) = path.strip_prefix(&src_dir) else {
+            continue;
+        };
+        if spec.entry_is_package_root && spec.entry.canonicalize().is_ok_and(|entry| path == entry)
+        {
+            return Some(spec.name.clone());
+        }
+        let mut parts: Vec<String> = relative
+            .components()
+            .filter_map(|component| component.as_os_str().to_str().map(str::to_owned))
+            .collect();
+        let file = parts.last_mut()?;
+        *file = Path::new(file).file_stem()?.to_str()?.to_string();
+        if file == "mod" {
+            parts.pop();
+        }
+        let mut name = spec.name.clone();
+        if !parts.is_empty() {
+            name.push('.');
+            name.push_str(&parts.join("."));
+        }
+        return Some(name);
+    }
+    None
 }
 
 fn collect_user_function_names(
@@ -533,6 +604,7 @@ fn builtin_std_module_spec() -> Option<ModuleSpec> {
         root,
         src_dir,
         entry,
+        entry_is_package_root: false,
         version: None,
     })
 }
@@ -549,6 +621,7 @@ fn builtin_prelude_module_spec() -> Option<ModuleSpec> {
         root,
         src_dir,
         entry,
+        entry_is_package_root: true,
         version: None,
     })
 }
@@ -737,6 +810,14 @@ fn local_import_paths(
             }
 
             let target = if remainder.is_empty() {
+                spec.entry.clone()
+            } else if spec.entry_is_package_root
+                && remainder.len() == 1
+                && is_public_item_in_entry(&spec.entry, &remainder[0])?
+            {
+                // A library entry is its package root. Public declarations in
+                // that file are exported directly; mod.qz is not required to
+                // re-import declarations that already live in the entry.
                 spec.entry.clone()
             } else {
                 let root_mod_entry = spec.src_dir.join("mod.qz");
@@ -940,6 +1021,46 @@ fn resolve_module_file(spec: &ModuleSpec, module: &str) -> Option<PathBuf> {
     None
 }
 
+fn is_public_item_in_entry(entry: &Path, name: &str) -> Result<bool, String> {
+    let source = std::fs::read_to_string(entry)
+        .map_err(|error| format!("cannot read '{}': {error}", entry.display()))?;
+    let program = parse_source(&source)
+        .map_err(|error| format!("cannot parse library entry '{}': {error}", entry.display()))?;
+    Ok(program.items.iter().any(|item| match &item.node {
+        ItemKind::Fn {
+            name: item_name,
+            pub_fn,
+            ..
+        } => item_name == name && *pub_fn,
+        ItemKind::Struct {
+            name: item_name,
+            public,
+            ..
+        }
+        | ItemKind::Trait {
+            name: item_name,
+            public,
+            ..
+        }
+        | ItemKind::Enum {
+            name: item_name,
+            public,
+            ..
+        }
+        | ItemKind::TypeAlias {
+            name: item_name,
+            public,
+            ..
+        }
+        | ItemKind::ForeignGlobal {
+            name: item_name,
+            public,
+            ..
+        } => item_name == name && *public,
+        _ => false,
+    }))
+}
+
 /// Find the file that a `mod.qz` pub-exports `name` from.
 /// e.g. `pub import map.Map` → returns `mod_entry_dir/map.qz`
 fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
@@ -1126,6 +1247,7 @@ mod tests {
                 root: dep_root.clone(),
                 src_dir: dep_src.clone(),
                 entry: dep_src.join("main.qz"),
+                entry_is_package_root: true,
                 version: Some("0.1.0".to_string()),
             })
             .expect("insert module");
@@ -1135,6 +1257,79 @@ mod tests {
         assert!(
             result.loaded_files.iter().any(|p| p.ends_with("util.qz")),
             "expected util.qz to be loaded"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn public_entry_declaration_is_a_direct_package_export() {
+        let root = temp_dir("quazi_loader_entry_export");
+        let main_path = root.join("main.qz");
+        fs::write(
+            &main_path,
+            "import dep.factorial; fn main() i32 { factorial(5); ret 0; }",
+        )
+        .expect("write app entry");
+
+        let dep_root = root.join("dep");
+        let dep_src = dep_root.join("src");
+        fs::create_dir_all(&dep_src).expect("create dependency src");
+        let dep_entry = dep_src.join("mod.qz");
+        fs::write(
+            &dep_entry,
+            "pub fn factorial(n: u64) u64 { if (n <= 1) { ret 1; } ret n * factorial(n - 1); }",
+        )
+        .expect("write dependency entry");
+
+        let mut resolver = ModuleResolver::default();
+        resolver
+            .insert(ModuleSpec {
+                name: "dep".to_string(),
+                root: dep_root,
+                src_dir: dep_src,
+                entry: dep_entry.clone(),
+                entry_is_package_root: true,
+                version: Some("0.1.0".to_string()),
+            })
+            .expect("insert dependency");
+
+        let result = load_programs_with_resolver(&[main_path], Some(&resolver))
+            .expect("load public entry declaration");
+        assert!(
+            result
+                .loaded_files
+                .iter()
+                .any(|path| path.ends_with(Path::new("dep").join("src").join("mod.qz")))
+        );
+        assert!(result.parse_error.is_none());
+        assert!(result.library_fn_names.contains("dep.factorial"));
+        assert_eq!(
+            result.display_names.get(
+                &dep_entry
+                    .canonicalize()
+                    .expect("canonical dependency entry")
+            ),
+            Some(&"dep".to_string())
+        );
+
+        let namespaced_paths = result
+            .namespaced_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let report = crate::analysis::analyze_program_with_source_files(
+            &result.merged_source,
+            &result.program,
+            result.library_fn_names,
+            result.library_char_ranges,
+            result.source_files,
+            namespaced_paths,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "expected direct package export to analyze, got {:?}",
+            report.errors
         );
 
         let _ = fs::remove_dir_all(root);
@@ -1160,6 +1355,7 @@ mod tests {
             result.library_file_paths
         );
         assert!(result.library_fn_names.contains("core.write"));
+        assert!(result.display_names.values().any(|name| name == "std.core"));
 
         let _ = fs::remove_dir_all(root);
     }

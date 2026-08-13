@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const SPIN: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -72,7 +73,14 @@ pub fn common_lib_prefix(lib_files: &[PathBuf]) -> Option<PathBuf> {
     Some(prefix)
 }
 
-fn short_label(path: &Path, lib_prefix: Option<&Path>) -> String {
+fn short_label(
+    path: &Path,
+    lib_prefix: Option<&Path>,
+    display_names: &HashMap<PathBuf, String>,
+) -> String {
+    if let Some(name) = display_names.get(path) {
+        return name.clone();
+    }
     if let Some(prefix) = lib_prefix
         && let Ok(rel) = path.strip_prefix(prefix)
     {
@@ -103,10 +111,11 @@ fn build_inner(
     edges: &HashMap<PathBuf, Vec<PathBuf>>,
     lib_files: &HashSet<PathBuf>,
     lib_prefix: Option<&Path>,
+    display_names: &HashMap<PathBuf, String>,
     visited: &mut HashSet<PathBuf>,
 ) -> TreeNode {
     let is_lib = lib_files.contains(file);
-    let label = short_label(file, if is_lib { lib_prefix } else { None });
+    let label = short_label(file, if is_lib { lib_prefix } else { None }, display_names);
     if !visited.insert(file.to_path_buf()) {
         return TreeNode {
             label,
@@ -119,7 +128,7 @@ fn build_inner(
         .get(file)
         .into_iter()
         .flatten()
-        .map(|to| build_inner(to, edges, lib_files, lib_prefix, visited))
+        .map(|to| build_inner(to, edges, lib_files, lib_prefix, display_names, visited))
         .collect();
     TreeNode {
         label,
@@ -134,6 +143,7 @@ pub fn build_dep_tree(
     edges: &[(PathBuf, PathBuf)],
     lib_files: &[PathBuf],
     lib_prefix: Option<&Path>,
+    display_names: &HashMap<PathBuf, String>,
 ) -> TreeNode {
     let mut adjacency: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
     for (from, to) in edges {
@@ -145,27 +155,48 @@ pub fn build_dep_tree(
         &adjacency,
         &library_set,
         lib_prefix,
+        display_names,
         &mut HashSet::new(),
     )
 }
 
-fn render_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool) {
-    let line = if is_root {
-        format!("  \x1b[1m{}\x1b[0m", node.label)
+pub fn tree_file_count(root: &TreeNode) -> usize {
+    if root.is_dup {
+        0
     } else {
-        let conn = if is_last {
-            "\x1b[2m└─\x1b[0m ".to_string()
+        1 + root.children.iter().map(tree_file_count).sum::<usize>()
+    }
+}
+
+fn render_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool, color: bool) {
+    let line = if is_root {
+        if color {
+            format!("  \x1b[1m{}\x1b[0m", node.label)
         } else {
-            "\x1b[2m├─\x1b[0m ".to_string()
+            format!("  {}", node.label)
+        }
+    } else {
+        let connector = if is_last { "└─" } else { "├─" };
+        let conn = if color {
+            format!("\x1b[2m{}\x1b[0m ", connector)
+        } else {
+            format!("{} ", connector)
         };
         format!("  {}{}{}", prefix, conn, node.label)
     };
-    let tag = if node.is_dup {
-        "  \x1b[2mdup\x1b[0m"
+    let tag_text = if node.is_dup {
+        "dup"
     } else if node.is_lib {
-        "  \x1b[2mlib\x1b[0m"
+        "lib"
     } else {
         ""
+    };
+    let tag = if tag_text.is_empty() {
+        String::new()
+    } else if color {
+        format!("  \x1b[2m{}\x1b[0m", tag_text)
+    } else {
+        format!("  {}", tag_text)
     };
     eprintln!("{}{}", line, tag);
     let _ = std::io::stderr().flush();
@@ -176,10 +207,14 @@ fn render_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool) {
         } else if is_last {
             format!("{}   ", prefix)
         } else {
-            format!("{}\x1b[2m│\x1b[0m  ", prefix)
+            if color {
+                format!("{}\x1b[2m│\x1b[0m  ", prefix)
+            } else {
+                format!("{}│  ", prefix)
+            }
         };
         for (i, child) in node.children.iter().enumerate() {
-            render_node(child, &cp, false, i == node.children.len() - 1);
+            render_node(child, &cp, false, i == node.children.len() - 1, color);
         }
     }
 }
@@ -188,33 +223,62 @@ fn render_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool) {
 
 pub struct BuildProgress {
     pub is_tty: bool,
+    pub silent: bool,
+    no_unicode: bool,
+    no_progress: bool,
     current_label: String,
+    build_started: Instant,
+    stage_started: Instant,
 }
 
 impl BuildProgress {
-    pub fn new() -> Self {
+    pub fn new(silent: bool, no_color: bool, no_unicode: bool, no_progress: bool) -> Self {
         Self {
-            is_tty: stderr_is_tty(),
+            is_tty: !no_color && stderr_is_tty(),
+            silent,
+            no_unicode,
+            no_progress,
             current_label: String::new(),
+            build_started: Instant::now(),
+            stage_started: Instant::now(),
         }
     }
 
-    /// Print header: `  quazi  ›  input → output`
+    fn elapsed_label(duration: Duration) -> String {
+        if duration.as_secs() >= 1 {
+            format!("{:.2}s", duration.as_secs_f64())
+        } else {
+            format!("{}ms", duration.as_millis())
+        }
+    }
+
+    /// Print the compact build header: `quazi  ›  input  →  output`.
     pub fn header(&self, input: &str, output: &str) {
+        if self.silent || self.no_progress {
+            return;
+        }
+        if self.no_unicode {
+            eprintln!("\nquazi  >  {}  ->  {}\n", input, output);
+            return;
+        }
         if self.is_tty {
             eprintln!(
-                "\n  \x1b[2mquazi\x1b[0m  \x1b[2m›\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m→\x1b[0m  \x1b[1m{}\x1b[0m\n",
+                "\n  \x1b[1;36mquazi\x1b[0m  \x1b[2m›\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m→\x1b[0m  \x1b[1m{}\x1b[0m\n",
                 input, output
             );
         } else {
-            eprintln!("\nquazi  {}  →  {}\n", input, output);
+            eprintln!("\nquazi  ›  {}  →  {}\n", input, output);
         }
     }
 
     /// Print "  ⠋ label" (no newline) — overwritable by done/fail.
     pub fn begin(&mut self, label: &str) {
         self.current_label = label.to_string();
-        if self.is_tty {
+        self.stage_started = Instant::now();
+        if self.silent || self.no_progress {
+            return;
+        }
+        if self.is_tty && !self.no_unicode {
             eprint!("  \x1b[2m{}\x1b[0m  \x1b[1m{}\x1b[0m", SPIN[0], label);
             let _ = std::io::stderr().flush();
         }
@@ -222,54 +286,79 @@ impl BuildProgress {
 
     /// Overwrite spinner with "  ✓  label  ·  info".
     pub fn done(&mut self, info: &str) {
-        if self.is_tty {
-            if info.is_empty() {
-                eprintln!(
-                    "\r\x1b[K  \x1b[32m✓\x1b[0m  \x1b[1m{}\x1b[0m",
-                    self.current_label
-                );
-            } else {
-                eprintln!(
-                    "\r\x1b[K  \x1b[32m✓\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m·\x1b[0m  \x1b[2m{}\x1b[0m",
-                    self.current_label, info
-                );
-            }
-        } else if info.is_empty() {
-            eprintln!("✓  {}", self.current_label);
+        if self.silent || self.no_progress {
+            return;
+        }
+        let elapsed = Self::elapsed_label(self.stage_started.elapsed());
+        let info = if self.no_unicode {
+            info.replace('·', "|")
         } else {
-            eprintln!("✓  {}  ·  {}", self.current_label, info);
+            info.to_string()
+        };
+        let details = if info.is_empty() {
+            elapsed
+        } else {
+            format!("{} · {}", info, elapsed)
+        };
+        if self.no_unicode {
+            let label = self.current_label.replace('·', ".");
+            eprintln!("[ok] {:<12}  {}", label, details.replace('·', "|"));
+        } else if self.is_tty {
+            eprintln!(
+                "\r\x1b[K  \x1b[32m◆\x1b[0m  \x1b[1m{:<12}\x1b[0m  \x1b[2m{}\x1b[0m",
+                self.current_label, details
+            );
+        } else {
+            eprintln!("ok  {:<12}  {}", self.current_label, details);
         }
     }
 
     /// Overwrite spinner with "  ✗  label  ·  info".
     pub fn fail(&mut self, info: &str) {
-        if self.is_tty {
+        if self.silent || self.no_progress {
+            return;
+        }
+        if self.no_unicode {
+            let label = self.current_label.replace('·', ".");
+            if info.is_empty() {
+                eprintln!("[fail] {}", label);
+            } else {
+                eprintln!("[fail] {}  -  {}", label, info.replace('·', "|"));
+            }
+        } else if self.is_tty {
             if info.is_empty() {
                 eprintln!(
-                    "\r\x1b[K  \x1b[31m✗\x1b[0m  \x1b[1m{}\x1b[0m",
+                    "\r\x1b[K  \x1b[31m◆\x1b[0m  \x1b[1m{}\x1b[0m",
                     self.current_label
                 );
             } else {
                 eprintln!(
-                    "\r\x1b[K  \x1b[31m✗\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m·\x1b[0m  \x1b[2m{}\x1b[0m",
+                    "\r\x1b[K  \x1b[31m◆\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m·\x1b[0m  \x1b[2m{}\x1b[0m",
                     self.current_label, info
                 );
             }
         } else if info.is_empty() {
-            eprintln!("✗  {}", self.current_label);
+            eprintln!("◆  {}", self.current_label);
         } else {
-            eprintln!("✗  {}  ·  {}", self.current_label, info);
+            eprintln!("◆  {}  ·  {}", self.current_label, info);
         }
     }
 
     /// Render the dependency tree below the last ✓ line.
     pub fn dep_tree(&self, root: &TreeNode) {
+        if self.silent || self.no_progress {
+            return;
+        }
         eprintln!();
         if self.is_tty {
             eprint!("\x1b[?25l"); // hide cursor during animation
             let _ = std::io::stderr().flush();
         }
-        render_node(root, "", true, true);
+        if self.no_unicode {
+            render_ascii_node(root, "", true, true);
+        } else {
+            render_node(root, "", true, true, self.is_tty);
+        }
         eprintln!();
         if self.is_tty {
             eprint!("\x1b[?25h");
@@ -279,27 +368,83 @@ impl BuildProgress {
 
     /// Print "  ✓  output  (N KB)" final line.
     pub fn success(&self, output: &str, size_bytes: Option<u64>) {
+        if self.silent {
+            return;
+        }
         let name = Path::new(output)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or(output);
+        let elapsed = Self::elapsed_label(self.build_started.elapsed());
+        if self.no_progress {
+            eprintln!("built {}", name);
+            return;
+        }
         eprintln!();
-        if self.is_tty {
+        if self.no_unicode {
+            match size_bytes {
+                Some(bytes) => eprintln!(
+                    "[built] {}  {:.1} KB | {}",
+                    name,
+                    bytes as f64 / 1024.0,
+                    elapsed
+                ),
+                None => eprintln!("[built] {}  {}", name, elapsed),
+            }
+        } else if self.is_tty {
             match size_bytes {
                 Some(b) => eprintln!(
-                    "  \x1b[32m✓\x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m({:.1} KB)\x1b[0m",
+                    "  \x1b[30;42m built \x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m{:.1} KB · {}\x1b[0m",
                     name,
-                    b as f64 / 1024.0
+                    b as f64 / 1024.0,
+                    elapsed
                 ),
-                None => eprintln!("  \x1b[32m✓\x1b[0m  \x1b[1m{}\x1b[0m", name),
+                None => eprintln!(
+                    "  \x1b[30;42m built \x1b[0m  \x1b[1m{}\x1b[0m  \x1b[2m{}\x1b[0m",
+                    name, elapsed
+                ),
             }
         } else {
             match size_bytes {
-                Some(b) => eprintln!("✓  {}  ({:.1} KB)", name, b as f64 / 1024.0),
-                None => eprintln!("✓  {}", name),
+                Some(b) => eprintln!("built  {}  {:.1} KB  {}", name, b as f64 / 1024.0, elapsed),
+                None => eprintln!("built  {}  {}", name, elapsed),
             }
         }
         eprintln!();
+    }
+}
+
+fn render_ascii_node(node: &TreeNode, prefix: &str, is_root: bool, is_last: bool) {
+    let line = if is_root {
+        format!("  {}", node.label)
+    } else {
+        let connector = if is_last { "`--" } else { "|--" };
+        format!("  {}{} {}", prefix, connector, node.label)
+    };
+    let tag = if node.is_dup {
+        "  dup"
+    } else if node.is_lib {
+        "  lib"
+    } else {
+        ""
+    };
+    eprintln!("{}{}", line, tag);
+    if !node.is_dup {
+        let child_prefix = if is_root {
+            String::new()
+        } else if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}|   ", prefix)
+        };
+        for (index, child) in node.children.iter().enumerate() {
+            render_ascii_node(
+                child,
+                &child_prefix,
+                false,
+                index == node.children.len() - 1,
+            );
+        }
     }
 }
 

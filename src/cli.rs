@@ -89,6 +89,18 @@ pub enum Command {
         /// native compilation target
         #[arg(long, value_enum)]
         target: Option<TargetTriple>,
+        /// suppress successful build output and warnings; errors still print
+        #[arg(short = 'q', long = "silent")]
+        silent: bool,
+        /// disable ANSI colors even when stderr is a terminal
+        #[arg(long)]
+        no_color: bool,
+        /// use ASCII-only build output
+        #[arg(long)]
+        no_unicode: bool,
+        /// hide build stages and print only `built <name>` on success
+        #[arg(long)]
+        no_progress: bool,
     },
     /// Build and run source, QZI, or the current project
     Run {
@@ -115,6 +127,18 @@ pub enum Command {
         lib: bool,
         #[arg(long, value_enum)]
         target: Option<TargetTriple>,
+        /// suppress successful build output and warnings; errors still print
+        #[arg(short = 'q', long = "silent")]
+        silent: bool,
+        /// disable ANSI colors even when stderr is a terminal
+        #[arg(long)]
+        no_color: bool,
+        /// use ASCII-only build output
+        #[arg(long)]
+        no_unicode: bool,
+        /// hide build stages and print only `built <name>` on success
+        #[arg(long)]
+        no_progress: bool,
     },
     /// Type-check the current project without code generation
     Check {
@@ -131,21 +155,17 @@ pub enum Command {
     Deps,
     /// Add a dependency and refresh quazi.lock
     Add {
-        /// dependency name used by imports
-        name: String,
-        /// installed project, source file, or QZI path
-        #[arg(long, conflicts_with = "url")]
-        path: Option<PathBuf>,
-        /// internet dependency URL
-        #[arg(long, conflicts_with = "path")]
-        url: Option<String>,
+        /// local path or internet URL
+        dependency: String,
         /// internet dependency format
-        #[arg(long = "type", value_enum, requires = "url")]
+        #[arg(long = "type", value_enum)]
         kind: Option<DependencyType>,
+        /// local import name; package identity remains validated from metadata
+        #[arg(long)]
+        alias: Option<String>,
+        /// Git tag, commit hash, or `latest`; QZI/package version otherwise
         #[arg(long)]
         version: Option<String>,
-        #[arg(long)]
-        rev: Option<String>,
         #[arg(long)]
         checksum: Option<String>,
     },
@@ -193,9 +213,17 @@ pub enum Command {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, Command};
+    use super::{Args, Command, DependencyType};
     use clap::Parser;
     use std::path::PathBuf;
+
+    #[test]
+    fn project_gitignore_keeps_lockfile_tracked() {
+        assert!(super::super::PROJECT_GITIGNORE.contains("/build/"));
+        assert!(super::super::PROJECT_GITIGNORE.contains("*.qzi"));
+        assert!(!super::super::PROJECT_GITIGNORE.contains("quazi.lock"));
+        assert!(!super::super::PROJECT_GITIGNORE.contains("*.lock"));
+    }
 
     #[test]
     fn run_without_files_selects_project_mode() {
@@ -244,6 +272,30 @@ mod tests {
     }
 
     #[test]
+    fn build_accepts_output_control_flags() {
+        let args = Args::try_parse_from([
+            "qz",
+            "build",
+            "--silent",
+            "--no-color",
+            "--no-unicode",
+            "--no-progress",
+        ])
+        .expect("output controls should parse");
+
+        assert!(matches!(
+            args.command,
+            Command::Build {
+                silent: true,
+                no_color: true,
+                no_unicode: true,
+                no_progress: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn header_accepts_files_output_and_target() {
         let args = Args::try_parse_from([
             "qz",
@@ -271,22 +323,47 @@ mod tests {
 
     #[test]
     fn add_accepts_local_and_remote_dependencies() {
-        let local = Args::try_parse_from(["qz", "add", "math", "--path", "../math"])
-            .expect("local dependency should parse");
+        let local =
+            Args::try_parse_from(["qz", "add", "../math"]).expect("local dependency should parse");
         assert!(
-            matches!(local.command, Command::Add { name, path: Some(_), .. } if name == "math")
+            matches!(local.command, Command::Add { dependency, .. } if dependency == "../math")
         );
 
-        let remote = Args::try_parse_from([
+        let remote =
+            Args::try_parse_from(["qz", "add", "https://example.test/web.qzi", "--type", "qzi"])
+                .expect("remote dependency should parse");
+        assert!(
+            matches!(remote.command, Command::Add { dependency, .. } if dependency == "https://example.test/web.qzi")
+        );
+
+        let inferred_local = Args::try_parse_from(["qz", "add", "../math"])
+            .expect("path-only dependency should parse");
+        assert!(matches!(
+            inferred_local.command,
+            Command::Add { dependency, .. } if dependency == "../math"
+        ));
+
+        let inferred_remote = Args::try_parse_from([
             "qz",
             "add",
-            "web",
-            "--url",
-            "https://example.test/web.qzi",
+            "https://example.test/qz-math.git",
             "--type",
-            "qzi",
+            "git",
         ])
-        .expect("remote dependency should parse");
-        assert!(matches!(remote.command, Command::Add { name, url: Some(_), .. } if name == "web"));
+        .expect("URL-only dependency should parse");
+        assert!(matches!(
+            inferred_remote.command,
+            Command::Add { dependency, kind: Some(DependencyType::Git), .. }
+                if dependency == "https://example.test/qz-math.git"
+        ));
+
+        let aliased = Args::try_parse_from(["qz", "add", "../math", "--alias", "numbers"])
+            .expect("aliased dependency should parse");
+        assert!(matches!(
+            aliased.command,
+            Command::Add { alias: Some(alias), .. } if alias == "numbers"
+        ));
+
+        assert!(Args::try_parse_from(["qz", "add", "math", "--path", "../math"]).is_err());
     }
 }

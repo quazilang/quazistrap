@@ -16,6 +16,10 @@ Conversions that may change representation are explicit with `as`. Integer
 overflow checking is not a substitute for input validation; parsing returns
 `Result` and rejects malformed/out-of-range values.
 
+Fallible public APIs use typed error enums. Match variants for recovery logic;
+use each enum's `message()` method for display. Raw numeric error codes remain
+inside low-level unsafe/platform modules or an explicit `Native(code)` fallback.
+
 ## Text and bytes
 
 `str` is borrowed immutable UTF-8. `String` owns writable UTF-8 storage with

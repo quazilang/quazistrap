@@ -1,6 +1,7 @@
 [package]
 name = "closures"
 version = "0.1.0"
+out_dir = "build"
 
 [build]
 entry = "src/main.qz"

@@ -107,7 +107,7 @@ fn owned_u64(value: u64) String {
 
 @cfg(target_os = "linux")
 fn get_os() String {
-    const read: Result[String, i32] = fs.read_to_string("/proc/sys/kernel/osrelease");
+    const read: Result[String, fs.FsError] = fs.read_to_string("/proc/sys/kernel/osrelease");
     if (read.is_ok()) {
         const raw_release: String = read.unwrap();
         const release: String = raw_release.trim();
@@ -129,7 +129,7 @@ fn get_cpu() String {
 
 @cfg(target_os = "linux")
 fn get_cpu() String {
-    const read: Result[String, i32] = fs.read_to_string("/proc/cpuinfo");
+    const read: Result[String, fs.FsError] = fs.read_to_string("/proc/cpuinfo");
     if (read.is_ok()) {
         const info: String = read.unwrap();
         const model: String = value_after_key(info.as_str(), "model name");
@@ -217,7 +217,7 @@ fn append_count(result: String, tag: str, count: usize) String {
 }
 
 fn append_directory_count(result: String, path: str, tag: str) String {
-    const counted: Result[usize, i32] = fs.count_entries(path);
+    const counted: Result[usize, fs.FsError] = fs.count_entries(path);
     if (counted.is_err()) { ret result; }
     ret append_count(result, tag, counted.unwrap());
 }
@@ -243,14 +243,14 @@ fn count_occurrences(text: str, needle: str) usize {
 fn get_packages() String {
     var result: String = String.new();
     @cfg(target_os = "linux") {
-        const dpkg: Result[String, i32] = fs.read_to_string("/var/lib/dpkg/status");
+        const dpkg: Result[String, fs.FsError] = fs.read_to_string("/var/lib/dpkg/status");
         if (dpkg.is_ok()) {
             const status: String = dpkg.unwrap();
             result = append_count(
                 result, "apt", count_occurrences(status.as_str(), "Status: install ok installed")
             );
         }
-        const apk: Result[String, i32] = fs.read_to_string("/lib/apk/db/installed");
+        const apk: Result[String, fs.FsError] = fs.read_to_string("/lib/apk/db/installed");
         if (apk.is_ok()) {
             const database: String = apk.unwrap();
             result = append_count(
@@ -283,7 +283,7 @@ fn get_packages() String {
         if (!local.is_empty()) {
             var winget: String = String.from(local.as_str());
             winget = winget.push_str("\\Microsoft\\WinGet\\Packages");
-            const portable_count: Result[usize, i32] = fs.count_entries(winget.as_str());
+            const portable_count: Result[usize, fs.FsError] = fs.count_entries(winget.as_str());
             if (portable_count.is_ok()) {
                 result = append_count(result, "winget", portable_count.unwrap());
             } else {

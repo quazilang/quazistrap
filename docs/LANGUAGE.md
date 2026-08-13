@@ -73,6 +73,11 @@ their integer type.
 
 ## Functions and closures
 
+Functions may call themselves directly or through other functions. Recursion
+uses normal call semantics; a terminating base case remains the programmer's
+responsibility. Example 28 uses a recursive factorial library through a Git
+dependency.
+
 ```quazi
 fn clamp(value: i32, min: i32, max: i32) i32 {
     if (value < min) { ret min; }

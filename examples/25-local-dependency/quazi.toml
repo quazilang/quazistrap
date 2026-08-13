@@ -1,6 +1,7 @@
 [package]
 name = "incremental_app"
 version = "0.1.0"
+out_dir = "build"
 
 [[bin]]
 name = "incremental_app"

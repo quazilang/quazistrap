@@ -7,6 +7,7 @@ expose one library and several binaries.
 [package]
 name = "acme"
 version = "0.1.0"
+out_dir = "build"
 
 [lib]
 name = "acme"
@@ -49,6 +50,7 @@ objects. Native libraries or custom linker flags select an external linker.
 `libc = true` is explicit opt-in; no C runtime is inferred.
 
 QZC means Quazi Compilation Cache. Each artifact/target snapshot lives at
-`target/quazi/<target>/<artifact>/incremental.qzc`. It stores exact input hashes
+`build/quazi/<target>/<artifact>/incremental.qzc` by default. It stores exact input hashes
 plus linked QZI. `quazi.lock` alone stores dependency resolution. QZC is always
-safe to delete.
+safe to delete. `[package].out_dir` changes the `build` root; it must remain
+inside the project. Compiled artifacts and downloaded dependencies live there.

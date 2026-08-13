@@ -4,7 +4,7 @@
 
 mod analysis;
 mod completion;
-mod diagnostics;
+pub(crate) mod diagnostics;
 mod document;
 mod formatting;
 mod goto_def;

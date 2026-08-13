@@ -35,6 +35,8 @@ qz run
 | 24 | `local-library` | Publishable source/QZI library artifact |
 | 25 | `local-dependency` | Relative dependency plus incremental QZC reuse |
 | 26 | `http-client-server` | TCP-backed HTTP client and local server |
+| 27 | `text-and-math` | Unicode text, checked parsing, practical math |
+| 28 | `git-library-dependency` | Downloaded Git library and recursive factorial |
 
 Examples 19–21 need a C toolchain. Example 26 runs as two processes:
 
@@ -44,3 +46,6 @@ qz run --bin http-server
 # In another terminal:
 qz run --bin http-client
 ```
+
+Example 28 needs network access and the published `namnam1105/qz-test-lib`
+repository. It calls the dependency's recursive factorial function five times.

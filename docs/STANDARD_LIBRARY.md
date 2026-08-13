@@ -21,3 +21,8 @@ explicit imports.
 Fallible APIs return `Result`; absence uses `Option`. Resource-owning values
 clean up at scope exit. Details for text/primitives are in
 [PRIMITIVE_APIS.md](PRIMITIVE_APIS.md); networking is in [NETWORK.md](NETWORK.md).
+
+Public failures use domain enums, never unexplained operating-system integers.
+`std.fs` returns `FsError`; `std.net` returns `NetError`; console input returns
+`ReadError`; parsing returns `ParseError`. `message()` provides user-facing text,
+while `Native(code)` preserves an unclassified platform code for diagnostics.

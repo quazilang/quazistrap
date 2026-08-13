@@ -29,10 +29,31 @@ use parser::Parser;
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use cli::Command as CliCmd;
 use cli::EmitType;
 use project::ProjectContext;
+
+static NO_COLOR_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+fn print_stderr_line(arguments: std::fmt::Arguments<'_>) {
+    let rendered = arguments.to_string();
+    if NO_COLOR_OUTPUT.load(Ordering::Relaxed) || std::env::var_os("NO_COLOR").is_some() {
+        std::eprintln!("{}", lsp::diagnostics::strip_ansi(&rendered));
+    } else {
+        std::eprintln!("{rendered}");
+    }
+}
+
+macro_rules! eprintln {
+    () => {
+        print_stderr_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        print_stderr_line(format_args!($($arg)*))
+    };
+}
 
 fn report_diagnostics(
     report: &semantic::SemanticReport,
@@ -422,20 +443,6 @@ fn run_check(
     }
 }
 
-fn project_output_name(name: &str, emit: EmitType) -> String {
-    match emit {
-        EmitType::Bytecode => format!("{}.qzi", name),
-        EmitType::Object => format!("{}.o", name),
-        EmitType::Binary => {
-            if cfg!(target_os = "windows") {
-                format!("{}.exe", name)
-            } else {
-                name.to_string()
-            }
-        }
-    }
-}
-
 fn target_output_name(name: &str, emit: EmitType, target: &TargetSpec) -> String {
     match emit {
         EmitType::Bytecode => format!("{name}.qzi"),
@@ -495,7 +502,7 @@ fn load_project_context() -> ProjectContext {
 
 fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
     let mut flags = ctx.config.flags.clone();
-    let object_dir = ctx.config.root.join("target").join("ffi");
+    let object_dir = ctx.config.out_dir.join("ffi");
     if !ctx.config.cc.sources.is_empty() {
         std::fs::create_dir_all(&object_dir).map_err(|e| {
             format!(
@@ -634,6 +641,8 @@ fn scaffold_library_name(name: &str) -> String {
     result
 }
 
+const PROJECT_GITIGNORE: &str = "# Quazi build output\n/build/\n\n# Compiled artifacts\n*.qzi\n*.o\n*.obj\n*.a\n*.so\n*.dll\n*.dylib\n*.exe\n*.pdb\n";
+
 fn scaffold_project(root: &Path, pkg_name: &str, lib: bool) {
     let src_dir = root.join("src");
     std::fs::create_dir_all(&src_dir).unwrap_or_else(|e| {
@@ -644,11 +653,12 @@ fn scaffold_project(root: &Path, pkg_name: &str, lib: bool) {
         );
         std::process::exit(1);
     });
+    write_file(&root.join(".gitignore"), PROJECT_GITIGNORE);
 
     if lib {
         let library_name = scaffold_library_name(pkg_name);
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"{}\"\npath = \"src/lib.qz\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nout_dir = \"build\"\n\n[lib]\nname = \"{}\"\npath = \"src/lib.qz\"\n",
             library_name, library_name
         );
         write_file(&root.join("quazi.toml"), &toml);
@@ -660,13 +670,39 @@ fn scaffold_project(root: &Path, pkg_name: &str, lib: bool) {
         write_file(&src_dir.join("lib.qz"), &lib_src);
     } else {
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.qz\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nout_dir = \"build\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.qz\"\n",
             pkg_name, pkg_name
         );
         write_file(&root.join("quazi.toml"), &toml);
 
         let main_src = "import std.io;\n\nfn main() i32 {\n    io.println(\"Hello, World!\");\n    ret 0;\n}\n";
         write_file(&src_dir.join("main.qz"), main_src);
+    }
+}
+
+fn initialize_git_repository(root: &Path) {
+    if root.join(".git").exists() {
+        return;
+    }
+
+    match std::process::Command::new("git")
+        .arg("init")
+        .arg("--quiet")
+        .arg("--initial-branch=main")
+        .arg(root)
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!(
+            "\x1b[33;1mwarning:\x1b[0m git init failed with status {}; project was still created",
+            status
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => eprintln!(
+            "\x1b[33;1mwarning:\x1b[0m git was not found; project was created without a repository"
+        ),
+        Err(error) => {
+            eprintln!("\x1b[33;1mwarning:\x1b[0m cannot initialize Git repository: {error}")
+        }
     }
 }
 
@@ -682,6 +718,7 @@ fn create_new_project(name: &str, lib: bool) {
 
     let pkg_name = root.file_name().and_then(|n| n.to_str()).unwrap_or(name);
     scaffold_project(&root, pkg_name, lib);
+    initialize_git_repository(&root);
     let kind = if lib { "library" } else { "binary" };
     println!("created {} project '{}'", kind, root.display());
 }
@@ -705,6 +742,7 @@ fn init_project(lib: bool) {
         .and_then(|n| n.to_str())
         .unwrap_or("project");
     scaffold_project(&cwd, pkg_name, lib);
+    initialize_git_repository(&cwd);
     let kind = if lib { "library" } else { "binary" };
     println!("initialized {} project '{}'", kind, pkg_name);
 }
@@ -757,38 +795,21 @@ fn format_project_sources() {
 }
 
 fn clean_project_artifacts() {
-    let ctx = load_project_context();
-    let root = &ctx.config.root;
-    let bin_name = project_output_name(&ctx.config.name, EmitType::Binary);
-
-    let mut targets: HashSet<PathBuf> = HashSet::new();
-    targets.insert(root.join(&bin_name));
-    targets.insert(root.join(format!("{}.o", ctx.config.name)));
-    targets.insert(root.join(format!("{}.qzi", ctx.config.name)));
-
-    let mut removed = 0usize;
-    for path in targets {
-        if path.exists() {
-            std::fs::remove_file(&path).unwrap_or_else(|e| {
-                eprintln!(
-                    "\x1b[31;1merror:\x1b[0m cannot remove {}: {}",
-                    path.display(),
-                    e
-                );
-                std::process::exit(1);
-            });
-            removed += 1;
-        }
-    }
-
-    if removed == 0 {
+    let preview = project::preview(Path::new("."), None, false).unwrap_or_else(|error| {
+        eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+        std::process::exit(1);
+    });
+    if !preview.out_dir.exists() {
         println!("no build artifacts found");
     } else {
-        println!(
-            "removed {} artifact{}",
-            removed,
-            if removed == 1 { "" } else { "s" }
-        );
+        std::fs::remove_dir_all(&preview.out_dir).unwrap_or_else(|error| {
+            eprintln!(
+                "\x1b[31;1merror:\x1b[0m cannot remove {}: {error}",
+                preview.out_dir.display()
+            );
+            std::process::exit(1);
+        });
+        println!("removed {}", preview.out_dir.display());
     }
 }
 
@@ -818,12 +839,32 @@ fn build_with_progress(
     qzc_path: Option<&Path>,
     extra_cache_inputs: &[PathBuf],
     target: &TargetSpec,
+    silent: bool,
+    no_color: bool,
+    no_unicode: bool,
+    no_progress: bool,
+    initial_progress: Option<progress::BuildProgress>,
+    project_resolver: Option<&loader::ModuleResolver>,
 ) {
     use progress::{
         BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count,
+        tree_file_count,
     };
 
-    let mut prog = BuildProgress::new();
+    let header_already_printed = initial_progress.is_some();
+    let mut prog = initial_progress
+        .unwrap_or_else(|| BuildProgress::new(silent, no_color, no_unicode, no_progress));
+    if let Some(parent) = Path::new(out).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).unwrap_or_else(|error| {
+            eprintln!(
+                "\x1b[31;1merror:\x1b[0m cannot create {}: {error}",
+                parent.display()
+            );
+            std::process::exit(1);
+        });
+    }
 
     // Header line.
     let input_name = files[0].file_name().and_then(|s| s.to_str()).unwrap_or("?");
@@ -831,12 +872,14 @@ fn build_with_progress(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(out);
-    prog.header(input_name, out_name);
+    if !header_already_printed {
+        prog.header(input_name, out_name);
+    }
 
     if let Some(cache_path) = qzc_path {
+        prog.begin("cache lookup");
         match incremental::load(cache_path) {
             Ok(Some(hit)) => {
-                prog.begin("Cache");
                 let module = bytecode::deserialize_qzi_module(&hit.qzi).unwrap_or_else(|error| {
                     prog.fail("invalid");
                     eprintln!("\x1b[31;1merror:\x1b[0m invalid cached QZI: {error}");
@@ -874,14 +917,22 @@ fn build_with_progress(
                 prog.success(out, size);
                 return;
             }
-            Ok(None) => {}
-            Err(error) => eprintln!("\x1b[33;1mwarning:\x1b[0m ignoring QZC: {error}"),
+            Ok(None) => prog.done("miss"),
+            Err(error) => {
+                prog.fail("ignored");
+                if !prog.silent {
+                    eprintln!("\x1b[33;1mwarning:\x1b[0m ignoring QZC: {error}");
+                }
+            }
         }
     }
 
     // ── Step 1: Lexing (file I/O + tokenize) ─────────────────────────────────
-    prog.begin("Lexing");
-    let result = match load_with_optional_project(files) {
+    prog.begin("frontend");
+    let result = match project_resolver
+        .map(|resolver| loader::load_programs_with_resolver(files, Some(resolver)))
+        .unwrap_or_else(|| load_with_optional_project(files))
+    {
         Ok(r) => r,
         Err(e) => {
             prog.fail("");
@@ -892,30 +943,26 @@ fn build_with_progress(
     if debug {
         print_debug_files(&result.loaded_files, &result.library_file_paths);
     }
-    let tok_info = format!(
-        "{} tokens · {} file{}",
-        fmt_count(result.token_count),
-        result.loaded_files.len(),
-        if result.loaded_files.len() == 1 {
-            ""
-        } else {
-            "s"
-        }
-    );
-    prog.done(&tok_info);
-
-    // Dependency tree (animated).
     let lib_prefix = common_lib_prefix(&result.library_file_paths);
     let tree_root = build_dep_tree(
         &files[0],
         &result.dep_edges,
         &result.library_file_paths,
         lib_prefix.as_deref(),
+        &result.display_names,
     );
+    let visible_files = tree_file_count(&tree_root);
+    let tok_info = format!(
+        "{} tokens · {} file{}",
+        fmt_count(result.token_count),
+        visible_files,
+        if visible_files == 1 { "" } else { "s" }
+    );
+    prog.done(&tok_info);
     prog.dep_tree(&tree_root);
 
     // ── Step 2: Parsing ───────────────────────────────────────────────────────
-    prog.begin("Parsing");
+    prog.begin("parsing");
     if let Some(parse_err) = &result.parse_error {
         prog.fail("");
         eprintln!("{}", parse_err);
@@ -945,7 +992,7 @@ fn build_with_progress(
     ));
 
     // ── Step 3: Codegen (analyze + bytecode) ─────────────────────────────────
-    prog.begin("Codegen");
+    prog.begin("analysis");
     let namespaced_paths: HashSet<String> = result
         .namespaced_paths
         .iter()
@@ -960,27 +1007,57 @@ fn build_with_progress(
         namespaced_paths,
     );
     let has_errors = !sema.errors.is_empty();
-    let (mut chunks, external_call_relocations) = if has_errors {
-        (Vec::new(), Vec::new())
+    if has_errors {
+        prog.fail("error");
     } else {
-        let mut cg = bytecode::Codegen::new(&sema);
-        if qzi_metadata
-            .as_ref()
-            .is_some_and(|metadata| metadata.kind == bytecode::QziModuleKind::Library)
-        {
-            cg.retain_public_library_api(result.library_file_paths.iter().cloned().collect());
-        }
-        let chunks = cg
-            .compile_program(&target_program, &result.source_files)
-            .unwrap_or_else(|error| {
-                prog.fail("error");
-                eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
-                std::process::exit(1);
-            });
-        (chunks, cg.external_call_relocations().to_vec())
-    };
+        prog.done(&format!(
+            "{} warning{}",
+            sema.warnings.len(),
+            if sema.warnings.len() == 1 { "" } else { "s" }
+        ));
+    }
 
-    if !has_errors && !qzi_dependencies.is_empty() {
+    if !prog.silent {
+        for w in &sema.warnings {
+            eprintln!(
+                "{}",
+                w.render_with_source_files(&result.merged_source, &result.source_files)
+            );
+        }
+        for hint in &sema.suggestions {
+            eprintln!("\x1b[2mhint: {}\x1b[0m", hint.message);
+        }
+    }
+    if has_errors {
+        for e in &sema.errors {
+            eprintln!(
+                "{}",
+                e.render_with_source_files(&result.merged_source, &result.source_files)
+            );
+        }
+        std::process::exit(1);
+    }
+
+    prog.begin("bytecode");
+    let mut cg = bytecode::Codegen::new(&sema);
+    if qzi_metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.kind == bytecode::QziModuleKind::Library)
+    {
+        cg.retain_public_library_api(result.library_file_paths.iter().cloned().collect());
+    }
+    let mut chunks = cg
+        .compile_program(&target_program, &result.source_files)
+        .unwrap_or_else(|error| {
+            prog.fail("error");
+            eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
+            std::process::exit(1);
+        });
+    let external_call_relocations = cg.external_call_relocations().to_vec();
+    prog.done(&codegen_stats(&chunks, prog.is_tty));
+
+    if !qzi_dependencies.is_empty() {
+        prog.begin("qzi linking");
         let generated = bytecode::QziModule {
             metadata: qzi_metadata.clone().unwrap_or(bytecode::QziMetadata {
                 name: String::new(),
@@ -1018,12 +1095,11 @@ fn build_with_progress(
             eprintln!("\x1b[31;1merror:\x1b[0m cannot link QZI dependencies: {error}");
             std::process::exit(1);
         });
-    }
-
-    if has_errors {
-        prog.fail("error");
-    } else {
-        prog.done(&codegen_stats(&chunks, prog.is_tty));
+        prog.done(&format!(
+            "{} module{}",
+            modules.len(),
+            if modules.len() == 1 { "" } else { "s" }
+        ));
     }
 
     if debug {
@@ -1031,27 +1107,6 @@ fn build_with_progress(
             eprint!("{}", chunk);
         }
     }
-
-    // Print warnings + errors.
-    for w in &sema.warnings {
-        eprintln!(
-            "{}",
-            w.render_with_source_files(&result.merged_source, &result.source_files)
-        );
-    }
-    for hint in &sema.suggestions {
-        eprintln!("\x1b[2mhint: {}\x1b[0m", hint.message);
-    }
-    if has_errors {
-        for e in &sema.errors {
-            eprintln!(
-                "{}",
-                e.render_with_source_files(&result.merged_source, &result.source_files)
-            );
-        }
-        std::process::exit(1);
-    }
-
     let no_crash = source_contains_no_crash(&result.merged_source);
     let project_qzi = qzi_metadata.clone().map(|mut metadata| {
         metadata.main_takes_args = sema.main_takes_args;
@@ -1088,11 +1143,17 @@ fn build_with_progress(
     });
 
     if let (Some(cache_path), Some(qzi)) = (qzc_path, project_qzi.as_deref()) {
+        prog.begin("cache write");
         let mut cache_inputs = result.loaded_files.clone();
         cache_inputs.extend_from_slice(extra_cache_inputs);
         cache_inputs.extend_from_slice(qzi_dependencies);
         if let Err(error) = incremental::store(cache_path, &cache_inputs, qzi, no_crash) {
-            eprintln!("\x1b[33;1mwarning:\x1b[0m cannot update QZC: {error}");
+            prog.fail("not saved");
+            if !prog.silent {
+                eprintln!("\x1b[33;1mwarning:\x1b[0m cannot update QZC: {error}");
+            }
+        } else {
+            prog.done("saved");
         }
     }
 
@@ -1125,7 +1186,7 @@ fn build_with_progress(
         EmitType::Object => {
             // ── Step 3: Native ────────────────────────────────────────────────
             let arch = arch_label();
-            prog.begin(&format!("Native  {}", arch));
+            prog.begin(&format!("native  {}", arch));
             let obj_bytes = compile_to_object(
                 &chunks,
                 false,
@@ -1142,7 +1203,7 @@ fn build_with_progress(
         EmitType::Binary => {
             // ── Step 3: Native ────────────────────────────────────────────────
             let arch = arch_label();
-            prog.begin(&format!("Native  {}", arch));
+            prog.begin(&format!("native  {}", arch));
             let obj_bytes = compile_to_object(
                 &chunks,
                 true,
@@ -1157,7 +1218,7 @@ fn build_with_progress(
             ));
 
             // ── Step 4: Linking ───────────────────────────────────────────────
-            prog.begin("Linking");
+            prog.begin("linking");
             let flags = link_flags.unwrap_or(&[]);
             backend::linker::link_object(
                 &obj_bytes,
@@ -1180,7 +1241,7 @@ fn build_with_progress(
             prog.done(&link_info);
 
             if do_strip {
-                prog.begin("Stripping");
+                prog.begin("stripping");
                 strip_binary(Path::new(out));
                 prog.done("");
             }
@@ -1202,6 +1263,11 @@ fn main() {
         }
     }
     let args = Args::parse();
+    let no_color_output = matches!(
+        &args.command,
+        CliCmd::Build { no_color: true, .. } | CliCmd::Run { no_color: true, .. }
+    );
+    NO_COLOR_OUTPUT.store(no_color_output, Ordering::Relaxed);
 
     let command = match args.command {
         CliCmd::Run {
@@ -1214,6 +1280,10 @@ fn main() {
             bin,
             lib,
             target,
+            silent,
+            no_color,
+            no_unicode,
+            no_progress,
         } => CliCmd::Build {
             files,
             output: None,
@@ -1231,6 +1301,10 @@ fn main() {
             bin,
             lib,
             target,
+            silent,
+            no_color,
+            no_unicode,
+            no_progress,
         },
         command => command,
     };
@@ -1253,7 +1327,12 @@ fn main() {
             bin,
             lib,
             target,
+            silent,
+            no_color,
+            no_unicode,
+            no_progress,
         } => {
+            package::configure_output(silent, no_color, no_unicode, no_progress);
             let target = match target {
                 Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
                 Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
@@ -1280,6 +1359,44 @@ fn main() {
             let do_strip = strip && matches!(emit, EmitType::Binary);
 
             if files.is_empty() {
+                let preview =
+                    project::preview(Path::new("."), bin.as_deref(), lib).unwrap_or_else(|error| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                        std::process::exit(1);
+                    });
+                let preview_is_lib = preview.kind == project::ProjectKind::Lib;
+                let preview_emit = if preview_is_lib
+                    && matches!(emit, EmitType::Binary)
+                    && !emit_bytecode
+                    && !emit_object
+                {
+                    EmitType::Bytecode
+                } else {
+                    emit.clone()
+                };
+                let preview_output = output.clone().unwrap_or_else(|| {
+                    let name = if static_lib {
+                        format!("lib{}.a", preview.name)
+                    } else if shared_lib {
+                        format!("lib{}.so", preview.name)
+                    } else {
+                        target_output_name(&preview.name, preview_emit, &target)
+                    };
+                    preview.out_dir.join(name).to_string_lossy().into_owned()
+                });
+                let preview_progress =
+                    progress::BuildProgress::new(silent, no_color, no_unicode, no_progress);
+                preview_progress.header(
+                    preview
+                        .entry
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("?"),
+                    Path::new(&preview_output)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(&preview_output),
+                );
                 let mut ctx = load_project_context();
                 ctx.select_artifact(bin.as_deref(), lib)
                     .unwrap_or_else(|e| {
@@ -1310,7 +1427,12 @@ fn main() {
                     };
                 let effective_strip = strip && matches!(effective_emit, EmitType::Binary);
 
-                if is_lib && matches!(emit, EmitType::Binary) && !emit_bytecode && !emit_object {
+                if !silent
+                    && is_lib
+                    && matches!(emit, EmitType::Binary)
+                    && !emit_bytecode
+                    && !emit_object
+                {
                     eprintln!(
                         "\x1b[33;1mnote:\x1b[0m library project — emitting bytecode (.qzi). Use -c for object file."
                     );
@@ -1318,13 +1440,14 @@ fn main() {
 
                 let entry = ctx.config.entry.clone();
                 let out = output.clone().unwrap_or_else(|| {
-                    if static_lib {
+                    let name = if static_lib {
                         format!("lib{}.a", ctx.config.name)
                     } else if shared_lib {
                         format!("lib{}.so", ctx.config.name)
                     } else {
                         target_output_name(&ctx.config.name, effective_emit.clone(), &target)
-                    }
+                    };
+                    ctx.config.out_dir.join(name).to_string_lossy().into_owned()
                 });
                 // Portable bytecode contains no native objects. Requiring a C
                 // compiler for `qz build -i` made FFI projects impossible to
@@ -1368,6 +1491,12 @@ fn main() {
                     qzc_path.as_deref(),
                     &cache_inputs,
                     &target,
+                    silent,
+                    no_color,
+                    no_unicode,
+                    no_progress,
+                    Some(preview_progress),
+                    Some(&ctx.resolver),
                 );
                 let _ = (emit, do_strip);
 
@@ -1667,6 +1796,12 @@ fn main() {
                     None,
                     &[],
                     &target,
+                    silent,
+                    no_color,
+                    no_unicode,
+                    no_progress,
+                    None,
+                    None,
                 );
                 for object in &compiled_c_objects {
                     remove_temp(object);
@@ -1799,6 +1934,20 @@ fn main() {
         }
 
         CliCmd::Fetch => {
+            let preview = project::preview(Path::new("."), None, false).unwrap_or_else(|error| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                std::process::exit(1);
+            });
+            progress::BuildProgress::new(false, false, false, false).header(
+                "quazi.toml",
+                preview
+                    .out_dir
+                    .join("deps")
+                    .strip_prefix(&preview.root)
+                    .unwrap_or_else(|_| Path::new("deps"))
+                    .to_string_lossy()
+                    .as_ref(),
+            );
             let ctx = load_project_context();
             ctx.ensure_lockfile().unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {error}");
@@ -1808,7 +1957,7 @@ fn main() {
                 eprintln!("  Dependencies  ·  none");
             } else {
                 eprintln!(
-                    "  \x1b[32m✓\x1b[0m  Dependencies  ·  {} resolved  ·  quazi.lock updated",
+                    "  \x1b[32m◆\x1b[0m  dependencies  ·  {} resolved  ·  quazi.lock updated",
                     ctx.config.dependencies.len()
                 );
             }
@@ -1838,15 +1987,50 @@ fn main() {
         }
 
         CliCmd::Add {
-            name,
-            path,
-            url,
+            dependency,
             kind,
+            alias,
             version,
-            rev,
             checksum,
         } => {
             let kind = kind.map(|kind| format!("{kind:?}").to_ascii_lowercase());
+            let (inferred_name, path, url) = if dependency.starts_with("https://")
+                || dependency.starts_with("http://")
+            {
+                let url = Some(dependency);
+                let name =
+                    project::infer_dependency_name(None, url.as_deref()).unwrap_or_else(|error| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                        std::process::exit(1);
+                    });
+                (name, None, url)
+            } else {
+                let path = Some(PathBuf::from(dependency));
+                let name =
+                    project::infer_dependency_name(path.as_deref(), None).unwrap_or_else(|error| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                        std::process::exit(1);
+                    });
+                (name, path, None)
+            };
+            let name = alias.unwrap_or(inferred_name);
+            if url.is_some() {
+                let preview =
+                    project::preview(Path::new("."), None, false).unwrap_or_else(|error| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                        std::process::exit(1);
+                    });
+                progress::BuildProgress::new(false, false, false, false).header(
+                    "quazi.toml",
+                    preview
+                        .out_dir
+                        .join("deps")
+                        .strip_prefix(&preview.root)
+                        .unwrap_or_else(|_| Path::new("deps"))
+                        .to_string_lossy()
+                        .as_ref(),
+                );
+            }
             let context = project::add_dependency(
                 Path::new("."),
                 project::DependencyEdit {
@@ -1855,7 +2039,7 @@ fn main() {
                     url,
                     kind,
                     version,
-                    revision: rev,
+                    revision: None,
                     checksum,
                 },
             )

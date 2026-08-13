@@ -16,11 +16,11 @@ cargo fmt                # format
 
 CLI (dep: `clap 4.6`):
 ```bash
-qz build [source.qz|program.qzi|native.o ...] [-i|-c] [-o out] [-r] [-s] [--linker builtin|path]
-qz run [source.qz|program.qzi|native.o ...] [--linker builtin|path] / qz check / qz fetch / qz deps / qz fmt / qz clean
+qz build [source.qz|program.qzi|native.o ...] [-i|-c] [-o out] [-r] [-s] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode]
+qz run [source.qz|program.qzi|native.o ...] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode] / qz check / qz fetch / qz deps / qz fmt / qz clean
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz new <name> [--lib] / qz init [--lib]
-qz add <name> (--path <path> | --url <url> --type git|archive|source|qzi) / qz remove <name>
+qz add <path-or-url> [--alias name] [--type git|archive|source|qzi] [--version tag|hash|latest] / qz remove <name>
 qz debug [-i]
 qz lsp
 ```
@@ -89,10 +89,10 @@ Object (`-c`): backend only, no linker.
 
 ### Project (`src/project.rs`)
 
-- `quazi.toml`: `[package]`, `[lib]`, `[[bin]]`, `[dependencies]`, `[cc]`, `[link]`, and target link overrides. Dependencies support local projects, singular `.qz`, compiled `.qzi`, and internet `git`/`archive`/`source`/`qzi` sources. `quazi.lock` records exact revisions/checksums and is validated on build.
+- `quazi.toml`: `[package]` including `out_dir = "build"`, `[lib]`, `[[bin]]`, `[dependencies]`, `[cc]`, `[link]`, and target link overrides. Dependencies support local projects, singular `.qz`, compiled `.qzi`, and internet `git`/`archive`/`source`/`qzi` sources. `quazi.lock` records exact revisions/checksums and is validated on build.
 - `pub import` is the only public-import/re-export syntax. Quazi module and symbol paths use `.`, never `::`.
 - QZI v6 is a sectioned executable/library bytecode container with package metadata, a public source interface, named call relocations, and legacy chunk payloads. QZI libraries work without original source; generic template bodies remain source-only for now.
-- QZC v1 (`target/quazi/<target>/<artifact>/incremental.qzc`) is one disposable exact-build snapshot. Matching compiler identity and input hashes reuse linked QZI; misses preserve whole-program analysis and rebuild fully.
+- QZC v1 (`build/quazi/<target>/<artifact>/incremental.qzc` by default) is one disposable exact-build snapshot. Downloaded dependencies live in `<out_dir>/deps`. Matching compiler identity and input hashes reuse linked QZI; misses preserve whole-program analysis and rebuild fully.
 - `type = "lib"` → lib project; default entry `src/lib.qz`; default output `.qzi`.
 
 ---
@@ -330,8 +330,12 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-13 | Added `[package].out_dir` with `build/` default, moved dependency materialization to `<out_dir>/deps`, added Git tag/hash/`latest` selectors, simplified `qz add` to one positional path/URL form, and made Git progress percentage-driven after the build header. |
+| 2026-08-13 | Replaced filesystem-derived dependency-tree labels with stable logical import names and added diamond-based animated Git fetch/update progress. |
+| 2026-08-13 | Made public declarations in a configured library entry point direct package exports under the manifest package name; child-file declarations still require explicit module imports or `pub import` re-exports. |
+| 2026-08-13 | Replaced raw safe `std.net`/`std.fs` failures with portable `NetError`/`FsError` enums and readable messages; added minimal lowercase, timed CLI stages for cache lookup/write, frontend, parsing, analysis, bytecode, QZI linking, native emission, and linking; added `--silent`, `--no-progress`, `--no-color`, and `--no-unicode`; made `qz new`/`qz init` initialize Git and scaffold `.gitignore` files while keeping `quazi.lock` tracked; made `qz add <path-or-url>` infer package identity and support `--alias` without a redundant manifest identity field; added recursive factorial Git-dependency example 28; hid auto-prelude internals from the displayed file count; retained the former stdlib-DX topic as practical `27-text-and-math`. |
 | 2026-08-13 | Split the HTTP example into launcher, server, and client artifacts so plain `qz run` prints safe instructions and `qz run --bin http-server` / `http-client` work on Windows/Linux without unsupported runtime-argument forwarding. |
-| 2026-08-13 | Reorganized all 26 examples into a numbered, topic-named learning path; replaced regression-style output with practical programs; added full language, type/ownership, module/package, standard-library, and FFI documentation indexes. Validated 320 tests and every example build on Windows and Linux. |
+| 2026-08-13 | Reorganized examples into a numbered, topic-named learning path; replaced regression-style output with practical programs; added full language, type/ownership, module/package, standard-library, and FFI documentation indexes. |
 | 2026-08-13 | Corrected QZI v6 emission so executable projects store no source-library interface and library interfaces exclude dependency generics before validation. Added Winsock-backed `std.net`, automatic `ws2_32` linkage, Windows socket error preservation, package-command regression coverage, and a full Windows check/build/run example matrix. |
 | 2026-08-13 | Added transactional `qz add`/`qz remove` manifest and lockfile updates, relative path dependency examples, and an HTTP client/local-server example. Expanded `std.net` with complete sends, bounded receives, HTTP requests, response encoding, and one-request serving. |
 | 2026-08-11 | Fixed Windows interactive input so CRLF/CR Enter becomes `\n` instead of returning the cursor to column zero; changed `std.io.read` from numeric bytes to non-empty UTF-8 string delimiters, including multi-byte sequences. Documented `str`/`&str`/`String`, demonstrated multiline raw strings, and made unterminated raw literals a lexer error. |
@@ -371,6 +375,6 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 ## Examples
 
-The authoritative 26-project user curriculum is
+The authoritative 28-project user curriculum is
 [examples/README.md](examples/README.md). Historical work-log references above
 record old names at the time of each change; they are not current paths.

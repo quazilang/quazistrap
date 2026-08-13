@@ -35,6 +35,9 @@ fn module_name_for_span(span: Span, source_files: &[SourceFile]) -> Option<Strin
         .iter()
         .find(|sf| sf.contains(span))
         .and_then(|sf| {
+            if let Some(module_name) = &sf.module_name {
+                return Some(module_name.clone());
+            }
             let path = std::path::Path::new(&sf.path);
             let stem = path.file_stem()?.to_str()?;
             if stem == "mod" {

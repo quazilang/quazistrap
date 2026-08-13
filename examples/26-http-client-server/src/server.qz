@@ -1,22 +1,24 @@
 import std.io;
-import std.net.{HttpResponse, HttpServer};
+import std.net.{HttpResponse, HttpServer, NetError};
 
 fn main() i32 {
-    const server_result: Result[HttpServer, i32] = HttpServer.bind(8080);
+    const server_result: Result[HttpServer, NetError] = HttpServer.bind(8080);
     if (server_result.is_err()) {
-        io.errln("bind failed: {}", server_result.unwrap_err());
+        const error: NetError = server_result.unwrap_err();
+        io.errln("bind failed: {}", error.message());
         ret 1;
     }
 
     const server: HttpServer = server_result.unwrap();
     io.println("listening on http://127.0.0.1:8080");
-    const request: Result[String, i32] = HttpServer.serve_once(
+    const request: Result[String, NetError] = HttpServer.serve_once(
         server,
         HttpResponse.text(200, "hello from Quazi\n"),
         65536
     );
     if (request.is_err()) {
-        io.errln("server failed: {}", request.unwrap_err());
+        const error: NetError = request.unwrap_err();
+        io.errln("server failed: {}", error.message());
         ret 1;
     }
 

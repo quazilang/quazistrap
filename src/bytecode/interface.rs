@@ -437,6 +437,7 @@ mod tests {
         let program = parser.parse().expect("parse source");
         let files = vec![SourceFile {
             path: "src/lib.qz".to_string(),
+            module_name: None,
             start: 0,
             end: source.chars().count(),
             line_start: 1,
@@ -468,6 +469,7 @@ pub type Coordinate = i32;
         let program = Parser::new(lexer.tokenize()).parse().expect("parse source");
         let files = vec![SourceFile {
             path: "src/types.qz".to_string(),
+            module_name: None,
             start: 0,
             end: source.chars().count(),
             line_start: 1,
@@ -511,6 +513,7 @@ pub type Coordinate = i32;
         let path = PathBuf::from("std/traits.qz");
         let files = vec![SourceFile {
             path: path.to_string_lossy().into_owned(),
+            module_name: None,
             start: 0,
             end: source.chars().count(),
             line_start: 1,
