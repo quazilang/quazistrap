@@ -40,10 +40,7 @@ Examples 19–21 need a C toolchain. Example 26 runs as two processes:
 
 ```bash
 cd examples/26-http-client-server
-qz build
-./http-client-server server
+qz run --bin http-server
 # In another terminal:
-./http-client-server
+qz run --bin http-client
 ```
-
-On Windows, use `http-client-server.exe` for both commands.

@@ -330,6 +330,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-13 | Split the HTTP example into launcher, server, and client artifacts so plain `qz run` prints safe instructions and `qz run --bin http-server` / `http-client` work on Windows/Linux without unsupported runtime-argument forwarding. |
 | 2026-08-13 | Reorganized all 26 examples into a numbered, topic-named learning path; replaced regression-style output with practical programs; added full language, type/ownership, module/package, standard-library, and FFI documentation indexes. Validated 320 tests and every example build on Windows and Linux. |
 | 2026-08-13 | Corrected QZI v6 emission so executable projects store no source-library interface and library interfaces exclude dependency generics before validation. Added Winsock-backed `std.net`, automatic `ws2_32` linkage, Windows socket error preservation, package-command regression coverage, and a full Windows check/build/run example matrix. |
 | 2026-08-13 | Added transactional `qz add`/`qz remove` manifest and lockfile updates, relative path dependency examples, and an HTTP client/local-server example. Expanded `std.net` with complete sends, bounded receives, HTTP requests, response encoding, and one-request serving. |

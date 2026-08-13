@@ -1,0 +1,15 @@
+import std.io;
+import std.net.http_get;
+
+fn main() i32 {
+    const response: Result[String, i32] = http_get("127.0.0.1", 8080, "/");
+    if (response.is_err()) {
+        io.errln("request failed: {}", response.unwrap_err());
+        io.errln("start `qz run --bin http-server` first");
+        ret 1;
+    }
+
+    const response_text: String = response.unwrap();
+    io.println("{}", response_text.as_str());
+    ret 0;
+}
