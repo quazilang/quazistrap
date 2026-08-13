@@ -2991,6 +2991,65 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.set_label(&mut finished));
                         emit!(asm.mov(slot(dst), rcx));
                     }
+                    35 => {
+                        // OS CSPRNG: BCryptGenRandom on Windows, getrandom on Linux.
+                        if is_win64 {
+                            emit!(asm.xor(ecx, ecx));
+                            emit!(asm.mov(rdx, slot(dst)));
+                            emit!(asm.mov(r8d, 8i32));
+                            emit!(asm.mov(r9d, 2i32)); // BCRYPT_USE_SYSTEM_PREFERRED_RNG
+                            call_ext!("BCryptGenRandom".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.sete(al));
+                            emit!(asm.movzx(eax, al));
+                        } else {
+                            emit!(asm.mov(rdi, slot(dst)));
+                            emit!(asm.mov(esi, 8i32));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.mov(eax, 318i32)); // x86-64 getrandom
+                            emit!(asm.syscall());
+                            emit!(asm.cmp(rax, 8i32));
+                            emit!(asm.sete(al));
+                            emit!(asm.movzx(eax, al));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    36 => {
+                        // Uniform f64 in [0, 1), produced from 53 OS-CSPRNG bits.
+                        let mut failure = asm.create_label();
+                        let mut finished = asm.create_label();
+                        if is_win64 {
+                            emit!(asm.xor(ecx, ecx));
+                            emit!(asm.mov(rdx, slot(dst)));
+                            emit!(asm.mov(r8d, 8i32));
+                            emit!(asm.mov(r9d, 2i32));
+                            call_ext!("BCryptGenRandom".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failure));
+                        } else {
+                            emit!(asm.mov(rdi, slot(dst)));
+                            emit!(asm.mov(esi, 8i32));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.mov(eax, 318i32));
+                            emit!(asm.syscall());
+                            emit!(asm.cmp(rax, 8i32));
+                            emit!(asm.jne(failure));
+                        }
+                        emit!(asm.mov(r8, slot(dst)));
+                        emit!(asm.mov(rax, qword_ptr(r8)));
+                        emit!(asm.shr(rax, 11u32));
+                        emit!(asm.cvtsi2sd(xmm0, rax));
+                        emit!(asm.mov(r10, 0x4340000000000000u64)); // 2^53 as f64
+                        emit!(asm.movq(xmm1, r10));
+                        emit!(asm.divsd(xmm0, xmm1));
+                        emit!(asm.movq(qword_ptr(r8), xmm0));
+                        emit!(asm.mov(eax, 1i32));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut failure));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.set_label(&mut finished));
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     _ => {
                         return Err(BackendError(format!("unknown intrinsic id {id}")));
                     }
@@ -3639,6 +3698,29 @@ mod tests {
         }
         .encode()
         .expect("ABI adapter should encode")
+    }
+
+    #[test]
+    fn system_random_intrinsics_encode_for_sysv_and_win64() {
+        for id in [35, 36] {
+            let mut chunk = Chunk::with_params("system_random", 1);
+            let mut random = ri16(Opcode::Intrinsic, 0, id);
+            random.flags = 1;
+            chunk.emit(random);
+            chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+            let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+            assert!(!linux_bytes.is_empty());
+            assert!(linux_relocs.is_empty());
+
+            let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
+            assert!(!windows_bytes.is_empty());
+            assert!(
+                windows_relocs
+                    .iter()
+                    .any(|reloc| reloc.symbol == "BCryptGenRandom")
+            );
+        }
     }
 
     #[test]

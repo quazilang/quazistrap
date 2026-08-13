@@ -476,7 +476,7 @@ impl Parser {
             if self.at(TokenKind::Colon) {
                 // Each form: `for var i : 0..10` or `for var e : collection`
                 self.advance(); // consume `:`
-                let lhs = self.parse_expr()?;
+                let lhs = self.parse_logical_or()?;
                 let iter = if self.at(TokenKind::DotDot) {
                     self.advance();
                     let rhs = self.parse_expr()?;
@@ -570,7 +570,7 @@ impl Parser {
                 vars.push(v2);
             }
             self.advance(); // consume `:`
-            let lhs = self.parse_expr()?;
+            let lhs = self.parse_logical_or()?;
             let iter = if self.at(TokenKind::DotDot) {
                 self.advance();
                 let rhs = self.parse_expr()?;
@@ -676,7 +676,7 @@ impl Parser {
     }
 
     fn parse_assignment(&mut self) -> Result<Expr, String> {
-        let left = self.parse_logical_or()?;
+        let left = self.parse_range()?;
 
         if self.at(TokenKind::Eq) {
             self.advance();
@@ -715,6 +715,43 @@ impl Parser {
         }
 
         Ok(left)
+    }
+
+    fn parse_range(&mut self) -> Result<Expr, String> {
+        let start = self.parse_logical_or()?;
+        let (inclusive, operator_span) = if self.at(TokenKind::DotDotEq) {
+            (true, to_ast_span(self.advance().span))
+        } else if self.at(TokenKind::DotDot) {
+            (false, to_ast_span(self.advance().span))
+        } else {
+            return Ok(start);
+        };
+        let end = self.parse_logical_or()?;
+        let span = Span::merge(start.span, end.span);
+        let cast = |expr: Expr| {
+            let expr_span = expr.span;
+            Spanned::new(
+                ExprKind::Cast {
+                    expr: Box::new(expr),
+                    ty: Spanned::new(TypeKind::Int64, expr_span),
+                },
+                expr_span,
+            )
+        };
+        Ok(Spanned::new(
+            ExprKind::StructInit {
+                name: "Range".to_string(),
+                fields: vec![
+                    ("start".to_string(), cast(start)),
+                    ("end".to_string(), cast(end)),
+                    (
+                        "inclusive".to_string(),
+                        Spanned::new(ExprKind::Literal(Literal::Bool(inclusive)), operator_span),
+                    ),
+                ],
+            },
+            span,
+        ))
     }
 
     fn parse_logical_or(&mut self) -> Result<Expr, String> {
@@ -1947,6 +1984,28 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new_with_source(tokens, src);
         parser.parse().expect_err("source should fail to parse")
+    }
+
+    #[test]
+    fn lowers_range_expressions_to_prelude_range_values() {
+        let program = parse_program("fn main() void { const die = 1..=6; }");
+        let ItemKind::Fn { body, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+        let StmtKind::Const { value, .. } = &body.as_ref().unwrap().stmts[0].node else {
+            panic!("expected range initializer");
+        };
+        let ExprKind::StructInit { name, fields } = &value.node else {
+            panic!("expected Range struct initializer");
+        };
+        assert_eq!(name, "Range");
+        assert_eq!(fields.len(), 3);
+        assert!(matches!(fields[0].1.node, ExprKind::Cast { .. }));
+        assert!(matches!(fields[1].1.node, ExprKind::Cast { .. }));
+        assert!(matches!(
+            fields[2].1.node,
+            ExprKind::Literal(Literal::Bool(true))
+        ));
     }
 
     #[test]

@@ -257,6 +257,7 @@ impl LinkerInvocation {
                 args.push("kernel32.lib".into()); // ExitProcess
                 args.push("shell32.lib".into()); // CommandLineToArgvW
                 args.push("ws2_32.lib".into()); // Winsock used by std.net
+                args.push("bcrypt.lib".into()); // CSPRNG used by std.random
             }
         }
 
@@ -372,6 +373,7 @@ mod tests {
             .collect();
         assert!(args.contains(&"shell32.lib".to_string()));
         assert!(args.contains(&"ws2_32.lib".to_string()));
+        assert!(args.contains(&"bcrypt.lib".to_string()));
         assert!(args.contains(&"/libpath:C:/native".to_string()));
         assert!(args.contains(&"ucrt.lib".to_string()));
         assert!(!args.contains(&"libcmt.lib".to_string()));

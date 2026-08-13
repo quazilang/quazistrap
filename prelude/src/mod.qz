@@ -6,6 +6,7 @@
 // Option[T] and Result[T, E] are builtin — no import needed.
 
 pub import ./array.Array;
+pub import ./range.Range;
 pub import ./string.String;
 pub import ./string.Rune;
 pub import ./string.ParseError;

@@ -59,6 +59,9 @@ mod tests {
 }
 
 fn dll_for(symbol: &str) -> Option<&'static str> {
+    if symbol == "BCryptGenRandom" {
+        return Some("BCRYPT.dll");
+    }
     if matches!(symbol, "CommandLineToArgvW") {
         return Some("SHELL32.dll");
     }

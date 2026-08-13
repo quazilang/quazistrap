@@ -112,6 +112,9 @@ for { ... }
 
 `break;` exits the nearest loop; `continue;` begins its next iteration. Quazi
 uses `for` for range, iterator, C-style, while-like, and infinite loops.
+Outside loop headers, `start..end` and `start..=end` produce the prelude `Range`
+value with an exclusive or inclusive upper bound. APIs such as
+`std.random.range(0..=5)` consume that value.
 
 ## Structs, enums, and matching
 

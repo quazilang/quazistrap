@@ -6539,6 +6539,8 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
         m.insert("quazi.os.windows_product", 32);
         m.insert("quazi.str.cmp", 33);
         m.insert("quazi.str.rune_len", 34);
+        m.insert("quazi.random.system_u64", 35);
+        m.insert("quazi.random.system_f64", 36);
         m
     });
     let name = attr

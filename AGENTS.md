@@ -330,6 +330,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-13 | Added first-class exclusive/inclusive `Range` expressions and OS-CSPRNG-backed `std.random` lowering with explicit availability failure and unbiased range selection. |
 | 2026-08-13 | Added `[package].out_dir` with `build/` default, moved dependency materialization to `<out_dir>/deps`, added Git tag/hash/`latest` selectors, simplified `qz add` to one positional path/URL form, and made Git progress percentage-driven after the build header. |
 | 2026-08-13 | Replaced filesystem-derived dependency-tree labels with stable logical import names and added diamond-based animated Git fetch/update progress. |
 | 2026-08-13 | Made public declarations in a configured library entry point direct package exports under the manifest package name; child-file declarations still require explicit module imports or `pub import` re-exports. |

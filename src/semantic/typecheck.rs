@@ -3640,7 +3640,7 @@ impl Analyzer {
         let ok = self.types_compatible(expected, actual);
         if ok {
             if let TypeKind::Ref { inner } = actual {
-                if !matches!(expected, TypeKind::Ref { .. })
+                if !matches!(expected, TypeKind::Ref { .. } | TypeKind::RawPtr { .. })
                     && Self::is_autoderef_value(expected)
                     && self.types_compatible(expected, &inner.node)
                 {

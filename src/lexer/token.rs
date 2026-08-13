@@ -92,6 +92,7 @@ pub enum TokenKind {
     Hash,      // #
     At,        // @
     DotDot,    // ..
+    DotDotEq,  // ..=
     DotDotDot, // ...
     Percent,   // %
 
@@ -223,6 +224,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Hash => write!(f, "#"),
             TokenKind::At => write!(f, "@"),
             TokenKind::DotDot => write!(f, ".."),
+            TokenKind::DotDotEq => write!(f, "..="),
             TokenKind::DotDotDot => write!(f, "..."),
             TokenKind::Percent => write!(f, "%"),
 

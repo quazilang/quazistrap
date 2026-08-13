@@ -9,6 +9,8 @@ explicit imports.
 - `std.string`: owned/borrowed UTF-8 operations, slicing, search, case helpers,
   trimming, and generic checked parsing.
 - `std.math`: dependency-free integer combinatorics and floating approximations.
+- `std.random`: OS-CSPRNG-backed secure values, unbiased ranges, choice,
+  shuffling, probabilities, and random bytes.
 - `std.collections.array`: growable `Array[T]`; map/set currently use `usize`.
 - `std.fs`: owned files, whole-file reads, metadata, directories, path helpers.
 - `std.os`: environment, hostname, OS/version, CPU, memory, shell, terminal.
@@ -20,7 +22,8 @@ explicit imports.
 
 Fallible APIs return `Result`; absence uses `Option`. Resource-owning values
 clean up at scope exit. Details for text/primitives are in
-[PRIMITIVE_APIS.md](PRIMITIVE_APIS.md); networking is in [NETWORK.md](NETWORK.md).
+[PRIMITIVE_APIS.md](PRIMITIVE_APIS.md); networking is in [NETWORK.md](NETWORK.md);
+randomness is in [RANDOM.md](RANDOM.md).
 
 Public failures use domain enums, never unexplained operating-system integers.
 `std.fs` returns `FsError`; `std.net` returns `NetError`; console input returns

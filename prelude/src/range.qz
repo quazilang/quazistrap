@@ -1,0 +1,10 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
+// Integer range produced by `start..end` and `start..=end` expressions.
+pub struct Range {
+    start: i64,
+    end: i64,
+    inclusive: bool,
+}

@@ -461,6 +461,9 @@ impl Lexer {
                             if self.peek() == Some('.') {
                                 self.advance();
                                 TokenKind::DotDotDot
+                            } else if self.peek() == Some('=') {
+                                self.advance();
+                                TokenKind::DotDotEq
                             } else {
                                 TokenKind::DotDot
                             }
@@ -662,6 +665,13 @@ mod tests {
         assert!(matches!(tokens[8].kind, TokenKind::Float16));
         assert!(matches!(tokens[9].kind, TokenKind::Float32));
         assert!(matches!(tokens[10].kind, TokenKind::Float64));
+    }
+
+    #[test]
+    fn lexes_exclusive_and_inclusive_ranges() {
+        let tokens = Lexer::new("0..5 0..=5").tokenize();
+        assert!(matches!(tokens[1].kind, TokenKind::DotDot));
+        assert!(matches!(tokens[4].kind, TokenKind::DotDotEq));
     }
 
     #[test]
