@@ -1,0 +1,23 @@
+import std.io;
+
+fn grade(score: u32) str {
+    if score >= 90 {
+        ret "A";
+    } else if score >= 80 {
+        ret "B";
+    } else if score >= 70 {
+        ret "C";
+    } else if score >= 60 {
+        ret "D";
+    } else {
+        ret "F";
+    }
+}
+
+fn main() i32 {
+    io.println("Exam results");
+    io.println("Ada: 95 points, grade {}", grade(95));
+    io.println("Linus: 82 points, grade {}", grade(82));
+    io.println("Grace: 76 points, grade {}", grade(76));
+    ret 0;
+}

@@ -1,0 +1,10 @@
+[package]
+name = "c-abi-aggregates"
+version = "0.1.0"
+
+[build]
+entry = "src/main.qz"
+
+[cc]
+sources = ["native/abi.c"]
+flags = ["-Wall", "-Wextra"]

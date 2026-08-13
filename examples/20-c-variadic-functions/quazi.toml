@@ -1,0 +1,6 @@
+[package]
+name = "c-variadic-functions"
+version = "0.1.0"
+
+[link]
+libc = true

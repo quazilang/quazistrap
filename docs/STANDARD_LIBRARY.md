@@ -1,0 +1,23 @@
+# Standard Library Guide
+
+The prelude supplies `String`, `Array`, `Box`, `Option`, `Result`, common
+traits, formatting, parsing errors, and panic support. Other modules are
+explicit imports.
+
+- `std.io`: UTF-8-safe console output; owned fallible `read`, `readln`, `readkey`.
+- `std.fmt`: `{}` formatting and format specifications used by I/O functions.
+- `std.string`: owned/borrowed UTF-8 operations, slicing, search, case helpers,
+  trimming, and generic checked parsing.
+- `std.math`: dependency-free integer combinatorics and floating approximations.
+- `std.collections.array`: growable `Array[T]`; map/set currently use `usize`.
+- `std.fs`: owned files, whole-file reads, metadata, directories, path helpers.
+- `std.os`: environment, hostname, OS/version, CPU, memory, shell, terminal.
+- `std.net`: TCP, HTTP/1.1 client requests, and local one-request servers.
+- `std.thread`: spawn/join primitives.
+- `std.ffi`: C scalar aliases, `CStr`, `CString`, callbacks, null pointers.
+- `std.unix` / `std.windows`: platform-specific low-level operations; portable
+  application code should prefer `std.fs`, `std.os`, `std.io`, and `std.net`.
+
+Fallible APIs return `Result`; absence uses `Option`. Resource-owning values
+clean up at scope exit. Details for text/primitives are in
+[PRIMITIVE_APIS.md](PRIMITIVE_APIS.md); networking is in [NETWORK.md](NETWORK.md).

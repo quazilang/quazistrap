@@ -330,6 +330,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-13 | Reorganized all 26 examples into a numbered, topic-named learning path; replaced regression-style output with practical programs; added full language, type/ownership, module/package, standard-library, and FFI documentation indexes. Validated 320 tests and every example build on Windows and Linux. |
 | 2026-08-13 | Corrected QZI v6 emission so executable projects store no source-library interface and library interfaces exclude dependency generics before validation. Added Winsock-backed `std.net`, automatic `ws2_32` linkage, Windows socket error preservation, package-command regression coverage, and a full Windows check/build/run example matrix. |
 | 2026-08-13 | Added transactional `qz add`/`qz remove` manifest and lockfile updates, relative path dependency examples, and an HTTP client/local-server example. Expanded `std.net` with complete sends, bounded receives, HTTP requests, response encoding, and one-request serving. |
 | 2026-08-11 | Fixed Windows interactive input so CRLF/CR Enter becomes `\n` instead of returning the cursor to column zero; changed `std.io.read` from numeric bytes to non-empty UTF-8 string delimiters, including multi-byte sequences. Documented `str`/`&str`/`String`, demonstrated multiline raw strings, and made unterminated raw literals a lexer error. |
@@ -369,25 +370,6 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 ## Examples
 
-| Example | Description | Details |
-|---------|-------------|---------|
-| `01-hello` | Minimal "Hello, world!" | [examples/01-hello/AGENTS.md](examples/01-hello/AGENTS.md) |
-| `02-structs` | Structs, methods, impl blocks | [examples/02-structs/AGENTS.md](examples/02-structs/AGENTS.md) |
-| `03-enums` | Enums with payloads, pattern matching, `Option` | [examples/03-enums/AGENTS.md](examples/03-enums/AGENTS.md) |
-| `04-closures` | First-class functions and closures | [examples/04-closures/AGENTS.md](examples/04-closures/AGENTS.md) |
-| `05-generics` | Generic functions | [examples/05-generics/AGENTS.md](examples/05-generics/AGENTS.md) |
-| `06-crash` | Crash handler demonstration | [examples/06-crash/AGENTS.md](examples/06-crash/AGENTS.md) |
-| `07-minimal-hw` | Smallest possible binary via intrinsic | [examples/07-minimal-hw/AGENTS.md](examples/07-minimal-hw/AGENTS.md) |
-| `08-array` | `Array[T]` usage | [examples/08-array/AGENTS.md](examples/08-array/AGENTS.md) |
-| `09-mangling` | Module namespacing demo | [examples/09-mangling/AGENTS.md](examples/09-mangling/AGENTS.md) |
-| `10-bitwise` | Bitwise operators | [examples/10-bitwise/AGENTS.md](examples/10-bitwise/AGENTS.md) |
-| `11-elseif` | `else if` chains | [examples/11-elseif/AGENTS.md](examples/11-elseif/AGENTS.md) |
-| `12-loop-control` | `break` and `continue` | [examples/12-loop-control/AGENTS.md](examples/12-loop-control/AGENTS.md) |
-| `13-args` | `fn main(args: Array[str])` | [examples/13-args/AGENTS.md](examples/13-args/AGENTS.md) |
-| `14-io-read` | Example showing I/O reads. | [examples/14-io-read/AGENTS.md](examples/14-io-read/AGENTS.md) |
-| `15-logical` | Logical operators: `!`, `&&`, `\|\|` | [examples/15-logical/AGENTS.md](examples/15-logical/AGENTS.md) |
-| `16-pub-types` | `pub` visibility enforcement on types — S04 on private type import | [examples/16-pub-types/AGENTS.md](examples/16-pub-types/AGENTS.md) |
-| `17-constfold` | Cross-basic-block constant propagation | [examples/17-constfold/src/main.qz](examples/17-constfold/src/main.qz) |
-| `18-formatting` | `{:X}` formatting, raw strings, ANSI escapes | [examples/18-formatting/src/main.qz](examples/18-formatting/src/main.qz) |
-| `19-cvariadics` | C-style variadic `@api` via bare `...` — calls libc `printf` with extra args | [examples/19-cvariadics/AGENTS.md](examples/19-cvariadics/AGENTS.md) |
-| `20-ffi-abi` | Cross-platform scalar-float and by-value aggregate C→Quazi→C round trip | [examples/20-ffi-abi/AGENTS.md](examples/20-ffi-abi/AGENTS.md) |
+The authoritative 26-project user curriculum is
+[examples/README.md](examples/README.md). Historical work-log references above
+record old names at the time of each change; they are not current paths.

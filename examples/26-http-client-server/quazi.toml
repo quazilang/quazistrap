@@ -1,0 +1,10 @@
+[package]
+name = "http-client-server"
+version = "0.1.0"
+
+[[bin]]
+name = "http-client-server"
+path = "src/main.qz"
+
+[target.x86_64-linux.link]
+libc = true

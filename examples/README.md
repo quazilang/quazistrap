@@ -1,32 +1,49 @@
-# Quazilang Examples
+# Quazi Examples
 
-Each folder is a standalone project. Run any with:
+Examples are ordered as a learning path. Each directory is a runnable project:
 
-```
-cd examples/<name>
+```bash
+cd examples/01-hello-world
 qz run
 ```
 
-| Example | What it shows |
-|---------|---------------|
-| `01-hello` | I/O, string formatting with `{}`, range loops |
-| `02-structs` | Structs, impl methods, multiple types |
-| `03-enums` | Enums, pattern matching, `Option[T]` |
-| `04-closures` | Closures, higher-order functions, fn pointers, captures |
-| `05-generics` | Generic functions, monomorphization over `i32`/`f64`/`bool` |
-| `06-crash` | Crash handler demonstration (segfault) |
-| `07-minimal-hw` | Minimal program with raw `@intrinsic` syscalls, no stdlib |
-| `08-array` | `Array[T]`: create, push, index, set, get, len, iteration, cleanup |
-| `09-mangling` | Module namespacing demo |
-| `10-bitwise` | Bitwise operators |
-| `11-elseif` | `else if` chains |
-| `12-loop-control` | `break` and `continue` |
-| `13-args` | Command-line arguments via `Array[str]` |
-| `14-io-read` | Example showing I/O reads. |
-| `15-logical` | Logical operators: `!`, `&&`, `\|\|` |
-| `16-pub-types` | `pub` visibility on types; S04 on private import |
-| `17-constfold` | Constant folding demonstration |
-| `18-formatting` | Format specifications, raw strings, ANSI escapes |
-| `19-cvariadics` | C-style variadic `@api` via bare `...` — calls libc `printf` |
-| `20-ffi-abi` | Cross-platform C ABI Phase 2 round trip and self-test |
-| `21-quazifetch` | Windows/Linux system information, `std.fs`, and automatic cleanup |
+| # | Example | What it teaches |
+|---|---------|-----------------|
+| 01 | `hello-world` | Smallest normal Quazi application |
+| 02 | `struct-methods` | Data modeling and inherent methods |
+| 03 | `enum-pattern-matching` | Payload enums, exhaustive match, guards |
+| 04 | `closures` | Function values and captured expressions |
+| 05 | `generics` | Reusable generic functions |
+| 06 | `panic-and-backtrace` | Panic flow and diagnostic backtraces |
+| 07 | `no-standard-library` | Direct intrinsic without prelude/runtime convenience |
+| 08 | `dynamic-arrays` | Owned `Array[T]`, mutation, iteration |
+| 09 | `modules-and-imports` | Multiple source files and selected imports |
+| 10 | `bitwise-operations` | Masks, shifts, bitwise logic |
+| 11 | `conditional-branches` | `if`, `else if`, `else` |
+| 12 | `loop-control` | Range loops, `break`, `continue` |
+| 13 | `command-line-arguments` | `main(args: Array[str])` |
+| 14 | `console-input` | Fallible line/key/delimiter input |
+| 15 | `boolean-logic` | Short-circuit `&&`, `||`, `!` |
+| 16 | `module-visibility` | Public module API and private implementation |
+| 17 | `constant-expressions` | Compile-time values in application calculations |
+| 18 | `string-formatting` | Placeholders, specifications, raw/escaped strings |
+| 19 | `c-interop` | Calling C and exporting Quazi functions |
+| 20 | `c-variadic-functions` | Calling C varargs safely through `CString` |
+| 21 | `c-abi-aggregates` | Aggregates, callbacks, exports, foreign globals |
+| 22 | `system-information` | Portable OS, CPU, memory, filesystem data |
+| 23 | `standard-library-tour` | Unicode strings, parsing, `Result`, math |
+| 24 | `local-library` | Publishable source/QZI library artifact |
+| 25 | `local-dependency` | Relative dependency plus incremental QZC reuse |
+| 26 | `http-client-server` | TCP-backed HTTP client and local server |
+
+Examples 19–21 need a C toolchain. Example 26 runs as two processes:
+
+```bash
+cd examples/26-http-client-server
+qz build
+./http-client-server server
+# In another terminal:
+./http-client-server
+```
+
+On Windows, use `http-client-server.exe` for both commands.

@@ -1,0 +1,12 @@
+pub struct Product {
+    name: str,
+    price: i32,
+}
+
+pub fn discounted_price(product: Product, percent: i32) i32 {
+    ret product.price - product.price * percent / 100;
+}
+
+fn internal_inventory_code(product: Product) i32 {
+    ret product.price * 17;
+}

@@ -1,0 +1,20 @@
+import std.io;
+
+fn main() i32 {
+    var prices: Array[i32] = Array.new();
+    prices.push(24);
+    prices.push(16);
+    prices.push(8);
+
+    prices.set(1, 14);
+
+    var total: i32 = 0;
+    for index : 0..prices.len() {
+        const price: i32 = prices[index];
+        io.println("item {}: ${}", index + 1, price);
+        total += price;
+    }
+
+    io.println("{} cart items, ${} total", prices.len(), total);
+    ret 0;
+}

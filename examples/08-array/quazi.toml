@@ -1,7 +1,0 @@
-[package]
-name = "array"
-version = "0.1.0"
-
-[build]
-entry = "src/main.qz"
-src = "src"

@@ -1,0 +1,19 @@
+import std.ffi.c_int;
+import std.io;
+
+@api("c_roundtrip")
+unsafe fn c_roundtrip(left: c_int, right: c_int) c_int;
+
+@export("quazi_multiply")
+pub fn multiply(left: c_int, right: c_int) c_int {
+    ret left * right;
+}
+
+fn main() i32 {
+    var result: c_int = 0;
+    unsafe {
+        result = c_roundtrip(10, 11);
+    }
+    io.println("C called exported Quazi multiply: 10 + 11 + (10 * 11) = {}", result);
+    ret 0;
+}

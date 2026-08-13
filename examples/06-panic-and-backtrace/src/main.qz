@@ -1,0 +1,17 @@
+import std.io;
+
+fn load_configuration(path: str) void {
+    panic("configuration file is required: {}", path);
+}
+
+fn main(args: Array[str]) i32 {
+    if (args.len() > 1) {
+        const command: str = args[1];
+        if (command == "panic") {
+            load_configuration("settings.toml");
+        }
+    }
+    io.println("Build, then pass `panic` to see a formatted panic and backtrace:");
+    io.println("  .\\panic-and-backtrace.exe panic");
+    ret 0;
+}

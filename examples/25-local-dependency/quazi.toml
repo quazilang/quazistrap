@@ -1,0 +1,10 @@
+[package]
+name = "incremental_app"
+version = "0.1.0"
+
+[[bin]]
+name = "incremental_app"
+path = "src/main.qz"
+
+[dependencies]
+incremental_math = { path = "../24-local-library", version = "0.1.0" }

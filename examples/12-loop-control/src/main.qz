@@ -1,50 +1,19 @@
 import std.io;
 
 fn main() i32 {
-    io.println("Break at 5:");
-    var i: u32 = 0;
-    for i < 10 {
-        if i == 5 {
+    io.println("Processing queued jobs");
+    var job: u32 = 0;
+    for job < 10 {
+        job += 1;
+        if job == 8 {
+            io.println("daily processing limit reached");
             break;
         }
-        if i == 0 { io.print("0 "); }
-        if i == 1 { io.print("1 "); }
-        if i == 2 { io.print("2 "); }
-        if i == 3 { io.print("3 "); }
-        if i == 4 { io.print("4 "); }
-        i += 1;
-    }
-    io.println("");
-
-    io.println("Continue (skip evens):");
-    var j: u32 = 0;
-    for j < 10 {
-        j += 1;
-        if j % 2 == 0 {
+        if job % 3 == 0 {
+            io.println("job {} postponed", job);
             continue;
         }
-        if j == 1 { io.print("1 "); }
-        if j == 3 { io.print("3 "); }
-        if j == 5 { io.print("5 "); }
-        if j == 7 { io.print("7 "); }
-        if j == 9 { io.print("9 "); }
-    }
-    io.println("");
-
-    io.println("Nested break (inner loop):");
-    var a: u32 = 0;
-    for a < 3 {
-        var b: u32 = 0;
-        for b < 10 {
-            if b == 2 {
-                break;
-            }
-            if b == 0 { io.print("0 "); }
-            if b == 1 { io.print("1 "); }
-            b += 1;
-        }
-        io.println("");
-        a += 1;
+        io.println("job {} completed", job);
     }
 
     ret 0;

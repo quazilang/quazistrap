@@ -1,0 +1,16 @@
+pub struct Profile {
+    name: str,
+    reputation: i32,
+}
+
+struct ProfileRecord {
+    internal_id: i64,
+}
+
+pub fn featured_profile() Profile {
+    const record = ProfileRecord { internal_id: 1001 };
+    ret Profile {
+        name: "Ada",
+        reputation: record.internal_id as i32 + 23,
+    };
+}

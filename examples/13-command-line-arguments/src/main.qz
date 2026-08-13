@@ -1,0 +1,10 @@
+import std.io;
+
+fn main(args: Array[str]) i32 {
+    io.println("Received {} command-line arguments:", args.len());
+    for i : 0..args.len() {
+        const argument: str = args[i];
+        io.println("  [{}] {}", i, argument);
+    }
+    ret 0;
+}

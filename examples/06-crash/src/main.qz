@@ -1,9 +1,0 @@
-import std.io.println;
-
-fn main() {
-    println("triggering crash...");
-    unsafe {
-        var p: *int = 0;
-        *p = 42;
-    }
-}

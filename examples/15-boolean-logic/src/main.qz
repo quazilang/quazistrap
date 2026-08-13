@@ -1,0 +1,16 @@
+import std.io;
+
+fn main() i32 {
+    const signed_in: bool = true;
+    const email_verified: bool = true;
+    const suspended: bool = false;
+    const is_admin: bool = false;
+
+    const may_publish: bool = signed_in && email_verified && !suspended;
+    const may_open_dashboard: bool = may_publish || is_admin;
+
+    io.println("may publish: {}", may_publish);
+    io.println("may open dashboard: {}", may_open_dashboard);
+
+    ret 0;
+}

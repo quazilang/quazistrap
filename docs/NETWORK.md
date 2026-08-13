@@ -8,5 +8,5 @@ server building blocks. Linux uses sockets; Windows uses Winsock.
 - One-request local server accept/read/respond flow.
 - No HTTPS claim: TLS requires a separate implementation or dependency.
 
-See `examples/25-std-net`. Close network resources on success and error paths;
+See `examples/26-http-client-server`. Close network resources on success and error paths;
 keep receive limits explicit.

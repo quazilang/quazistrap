@@ -272,32 +272,39 @@ See [project and manifest documentation](docs/PROJECTS.md) and
 
 | Example | Description |
 |---------|-------------|
-| [`01-hello`](examples/01-hello/) | Minimal "Hello, world!" |
-| [`02-structs`](examples/02-structs/) | Structs, methods, impl blocks |
-| [`03-enums`](examples/03-enums/) | Enums with payloads, pattern matching |
+| [`01-hello-world`](examples/01-hello-world/) | Minimal "Hello, world!" |
+| [`02-struct-methods`](examples/02-struct-methods/) | Structs and inherent methods |
+| [`03-enum-pattern-matching`](examples/03-enum-pattern-matching/) | Payload enums and matching |
 | [`04-closures`](examples/04-closures/) | First-class functions and closures |
 | [`05-generics`](examples/05-generics/) | Generic functions |
-| [`06-crash`](examples/06-crash/) | Crash handler and stack traces |
-| [`07-minimal-hw`](examples/07-minimal-hw/) | Smallest binary via raw intrinsic |
-| [`08-array`](examples/08-array/) | `Array[T]` usage |
-| [`09-mangling`](examples/09-mangling/) | Module namespacing demo |
-| [`10-bitwise`](examples/10-bitwise/) | Bitwise operators |
-| [`11-elseif`](examples/11-elseif/) | `else if` chains |
+| [`06-panic-and-backtrace`](examples/06-panic-and-backtrace/) | Panic diagnostics and backtraces |
+| [`07-no-standard-library`](examples/07-no-standard-library/) | Direct intrinsic without std convenience |
+| [`08-dynamic-arrays`](examples/08-dynamic-arrays/) | Owned `Array[T]` usage |
+| [`09-modules-and-imports`](examples/09-modules-and-imports/) | Multi-file modules and selected imports |
+| [`10-bitwise-operations`](examples/10-bitwise-operations/) | Masks, shifts, bitwise operators |
+| [`11-conditional-branches`](examples/11-conditional-branches/) | `if`, `else if`, `else` |
 | [`12-loop-control`](examples/12-loop-control/) | `break` and `continue` |
-| [`13-args`](examples/13-args/) | Command-line arguments via `Array[str]` |
-| [`14-io-read`](examples/14-io-read/) | Example showing I/O reads. |
-| [`15-logical`](examples/15-logical/) | Logical operators: `!`, `&&`, `\|\|` |
-| [`16-pub-types`](examples/16-pub-types/) | Example showing public types |
-| [`17-constfold`](examples/17-constfold/) | Cross-basic-block constant propagation |
-| [`18-formatting`](examples/18-formatting/) | Formatting, raw strings, ANSI, and escape sequences |
-| [`19-cvariadics`](examples/19-cvariadics/) | C-style variadic `@api` via bare `...` — calls libc `printf` |
-| [`20-ffi-abi`](examples/20-ffi-abi/) | Portable phase-two C ABI interoperation |
-| [`21-quazifetch`](examples/21-quazifetch/) | Shell-free Windows/Linux system information with automatic cleanup |
-| [`22-stdlib-dx`](examples/22-stdlib-dx/) | Executable UTF-8 string, checked parsing, numeric-method, and `std.math` checks |
+| [`13-command-line-arguments`](examples/13-command-line-arguments/) | Arguments via `Array[str]` |
+| [`14-console-input`](examples/14-console-input/) | Fallible console input |
+| [`15-boolean-logic`](examples/15-boolean-logic/) | Short-circuit boolean operators |
+| [`16-module-visibility`](examples/16-module-visibility/) | Public API and private implementation |
+| [`17-constant-expressions`](examples/17-constant-expressions/) | Application calculations with constants |
+| [`18-string-formatting`](examples/18-string-formatting/) | Formatting, raw strings, ANSI, escapes |
+| [`19-c-interop`](examples/19-c-interop/) | Calling C and exporting Quazi functions |
+| [`20-c-variadic-functions`](examples/20-c-variadic-functions/) | C-style variadic `@api` with `printf` |
+| [`21-c-abi-aggregates`](examples/21-c-abi-aggregates/) | Aggregates, callbacks, globals, exports |
+| [`22-system-information`](examples/22-system-information/) | Portable OS/CPU/memory information |
+| [`23-standard-library-tour`](examples/23-standard-library-tour/) | Unicode strings, parsing, results, math |
+| [`24-local-library`](examples/24-local-library/) | Source/QZI library artifact |
+| [`25-local-dependency`](examples/25-local-dependency/) | Relative dependency and QZC cache |
+| [`26-http-client-server`](examples/26-http-client-server/) | HTTP client and local server |
 
 String indexing/slicing, checked parsing, numeric methods, math accuracy goals,
 automatic cleanup, and Windows UTF-8 console behavior are documented in
 [Primitive APIs and portable text output](docs/PRIMITIVE_APIS.md).
+
+Complete reference: [docs/README.md](docs/README.md). Full curriculum:
+[examples/README.md](examples/README.md).
 
 ---
 

@@ -1,0 +1,10 @@
+import std.io;
+import profile.Profile;
+import profile.featured_profile;
+
+fn main() i32 {
+    const profile: Profile = featured_profile();
+    io.println("Featured developer: {} ({} points)", profile.name, profile.reputation);
+    // `ProfileRecord` stays private to profile.qz and cannot be imported here.
+    ret 0;
+}

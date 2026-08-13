@@ -1,0 +1,17 @@
+import std.io;
+
+fn main() i32 {
+    const read: u32 = 1 << 0;
+    const write: u32 = 1 << 1;
+    const execute: u32 = 1 << 2;
+    var permissions: u32 = read | write;
+
+    io.println("permission mask: {}", permissions);
+    io.println("can read: {}", (permissions & read) != 0);
+    io.println("can execute: {}", (permissions & execute) != 0);
+
+    permissions = permissions ^ write;
+    io.println("after toggling write: {}", permissions);
+
+    ret 0;
+}

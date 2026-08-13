@@ -1,7 +1,0 @@
-[package]
-name = "io-read"
-version = "0.1.0"
-
-[build]
-entry = "src/main.qz"
-src = "src"

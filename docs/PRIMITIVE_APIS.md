@@ -100,4 +100,4 @@ console from a redirected handle with `GetConsoleMode`:
 
 This prevents box-drawing text such as `╭────╮` from becoming `Γò¡ΓöÇ...` while
 preserving UTF-8 when output is redirected. See
-[`examples/22-stdlib-dx`](../examples/22-stdlib-dx/) for executable checks.
+[`examples/23-standard-library-tour`](../examples/23-standard-library-tour/) for a runnable tour.

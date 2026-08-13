@@ -1,0 +1,15 @@
+import std.io;
+
+fn main() i32 {
+    const unit_price: i32 = 24;
+    const quantity: i32 = 5;
+    const subtotal: i32 = unit_price * quantity;
+    const shipping: i32 = 0;
+    const total: i32 = subtotal + shipping;
+
+    io.println("Order summary");
+    io.println("  {} items at ${}", quantity, unit_price);
+    io.println("  shipping: ${}", shipping);
+    io.println("  total: ${}", total);
+    ret 0;
+}

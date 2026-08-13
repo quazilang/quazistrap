@@ -1,0 +1,12 @@
+import std.io;
+import catalog.Product;
+import catalog.discounted_price;
+
+fn main() i32 {
+    const keyboard = Product {
+        name: "QuaziBoard",
+        price: 120,
+    };
+    io.println("{} costs ${} after discount", keyboard.name, discounted_price(keyboard, 15));
+    ret 0;
+}

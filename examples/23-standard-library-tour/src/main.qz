@@ -1,0 +1,24 @@
+import std.io;
+import std.math;
+
+fn main() i32 {
+    const raw_title: str = "  quazi developer report  ";
+    const title: String = raw_title.trim().capitalize();
+    const language: str = "Quazi λ🙂";
+    const parsed_port: Result[u16, ParseError] = "8080".parse[u16]();
+
+    io.println("{}", title.as_str());
+    io.println("text: {}", language);
+    io.println("runes: {}, UTF-8 bytes: {}", language.len(), language.bytes_len());
+    io.println("reverse: {}", language[::-1]);
+
+    match parsed_port {
+        Ok(port) => io.println("parsed service port: {}", port),
+        Err(_) => io.errln("service port must be an integer from 0 to 65535"),
+    };
+
+    const diagonal: f64 = math.hypot(3.0, 4.0);
+    io.println("3-4-5 triangle diagonal: {}", diagonal);
+    io.println("10 choose 3: {}", math.combinations(10, 3));
+    ret 0;
+}
