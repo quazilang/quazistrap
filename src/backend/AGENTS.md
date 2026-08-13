@@ -60,14 +60,14 @@ compiler-generated crash handler.
 The experimental linker rejects unsupported allocated sections, relocations,
 native flags, duplicate strong symbols, and unresolved external symbols with
 actionable errors. Non-loaded metadata/debug sections are omitted. Its current
-target is x86-64 Linux; PE/COFF, Mach-O, archives, shared objects, TLS, COMDAT,
+targets are x86-64 Linux and Windows; Mach-O, archives, shared objects, TLS, COMDAT,
 and linker scripts remain follow-up work. See `docs/LINKER.md` for the complete
 input, output, runtime, selection, and limitation contracts.
 
 | OS | Format | ABI | Status |
 |----|--------|-----|--------|
 | Linux x86-64 | ELF64 | SysV | Full |
-| Windows x86-64 | PE/COFF | Win64 | Full (needs `lld-link` + `LIB`) |
+| Windows x86-64 | PE/COFF | Win64 | Built-in PE32+ for supported COFF; external linker for native libraries |
 | macOS x86-64 | ~~Mach-O~~ ELF | SysV | Broken — `select_backend()` maps macOS to `ElfBackend`, `emit_start: false`, no Mach-O relocations |
 
 Windows argument-taking entry points parse the Unicode command line with

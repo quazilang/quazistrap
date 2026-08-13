@@ -32,6 +32,34 @@ pub struct TargetSpec {
 }
 
 impl TargetSpec {
+    pub fn x86_64_linux() -> Self {
+        Self {
+            arch: Arch::X86_64,
+            os: Os::Linux,
+            abi: Abi::SysV,
+            emit_start: true,
+            no_crash: false,
+        }
+    }
+
+    pub fn x86_64_windows() -> Self {
+        Self {
+            arch: Arch::X86_64,
+            os: Os::Windows,
+            abi: Abi::Win64,
+            emit_start: true,
+            no_crash: false,
+        }
+    }
+
+    pub fn triple(&self) -> &'static str {
+        match self.os {
+            Os::Linux => "x86_64-linux",
+            Os::Windows => "x86_64-windows",
+            Os::MacOs => "x86_64-macos",
+        }
+    }
+
     pub fn host() -> Self {
         #[cfg(target_os = "linux")]
         return Self {

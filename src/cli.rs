@@ -13,12 +13,14 @@ pub enum EmitType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum HeaderTarget {
+pub enum TargetTriple {
     #[value(name = "x86_64-linux")]
     X86_64Linux,
     #[value(name = "x86_64-windows")]
     X86_64Windows,
 }
+
+pub type HeaderTarget = TargetTriple;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DependencyType {
@@ -78,6 +80,15 @@ pub enum Command {
         /// ignore and do not update the project incremental cache
         #[arg(long)]
         no_incremental: bool,
+        /// build named binary artifact
+        #[arg(long, conflicts_with = "lib")]
+        bin: Option<String>,
+        /// build library artifact
+        #[arg(long, conflicts_with = "bin")]
+        lib: bool,
+        /// native compilation target
+        #[arg(long, value_enum)]
+        target: Option<TargetTriple>,
     },
     /// Build and run source, QZI, or the current project
     Run {
@@ -98,9 +109,22 @@ pub enum Command {
         /// ignore and do not update the project incremental cache
         #[arg(long)]
         no_incremental: bool,
+        #[arg(long, conflicts_with = "lib")]
+        bin: Option<String>,
+        #[arg(long, conflicts_with = "bin")]
+        lib: bool,
+        #[arg(long, value_enum)]
+        target: Option<TargetTriple>,
     },
     /// Type-check the current project without code generation
-    Check,
+    Check {
+        #[arg(long, conflicts_with = "lib")]
+        bin: Option<String>,
+        #[arg(long, conflicts_with = "bin")]
+        lib: bool,
+        #[arg(long, value_enum)]
+        target: Option<TargetTriple>,
+    },
     /// Download, verify, and lock project dependencies
     Fetch,
     /// Show resolved dependencies and local cache paths
@@ -136,7 +160,7 @@ pub enum Command {
         output: PathBuf,
         /// C data model used for cfg and platform aliases
         #[arg(long, value_enum, default_value = "x86_64-linux")]
-        target: HeaderTarget,
+        target: TargetTriple,
     },
     /// Create a new project
     New {
@@ -239,7 +263,7 @@ mod tests {
             } => {
                 assert_eq!(files, [PathBuf::from("src/lib.qz")]);
                 assert_eq!(output, PathBuf::from("include/api.h"));
-                assert_eq!(target, super::HeaderTarget::X86_64Windows);
+                assert_eq!(target, super::TargetTriple::X86_64Windows);
             }
             command => panic!("expected header command, got {command:?}"),
         }

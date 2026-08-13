@@ -129,6 +129,7 @@ fn run_pipeline(
                 no_crash,
                 Some(&sema_report),
                 sema_report.main_takes_args,
+                &TargetSpec::host(),
             );
             write_or_package_object(
                 &obj_bytes,
@@ -149,6 +150,7 @@ fn run_pipeline(
                 no_crash,
                 Some(&sema_report),
                 sema_report.main_takes_args,
+                &TargetSpec::host(),
             );
             let flags = link_flags.unwrap_or(&[]);
             link_object(
@@ -297,8 +299,9 @@ fn compile_to_object(
     no_crash: bool,
     report: Option<&crate::semantic::SemanticReport>,
     main_takes_args: bool,
+    target: &TargetSpec,
 ) -> Vec<u8> {
-    let mut target = TargetSpec::host();
+    let mut target = target.clone();
     if !emit_start {
         target = target.without_start();
     }
@@ -326,6 +329,7 @@ fn emit_chunks(
     no_crash: bool,
     main_takes_args: bool,
     announce: bool,
+    target: &TargetSpec,
 ) {
     if debug {
         for chunk in chunks {
@@ -359,7 +363,8 @@ fn emit_chunks(
         }
 
         EmitType::Object => {
-            let obj_bytes = compile_to_object(chunks, false, no_crash, None, main_takes_args);
+            let obj_bytes =
+                compile_to_object(chunks, false, no_crash, None, main_takes_args, target);
             write_or_package_object(
                 &obj_bytes,
                 output_file_name,
@@ -374,12 +379,13 @@ fn emit_chunks(
         }
 
         EmitType::Binary => {
-            let obj_bytes = compile_to_object(chunks, true, no_crash, None, main_takes_args);
+            let obj_bytes =
+                compile_to_object(chunks, true, no_crash, None, main_takes_args, target);
             let flags = link_flags.unwrap_or(&[]);
             link_object(
                 &obj_bytes,
                 Path::new(output_file_name),
-                TargetSpec::host(),
+                target.clone(),
                 flags,
                 explicit_linker,
             )
@@ -427,6 +433,20 @@ fn project_output_name(name: &str, emit: EmitType) -> String {
                 name.to_string()
             }
         }
+    }
+}
+
+fn target_output_name(name: &str, emit: EmitType, target: &TargetSpec) -> String {
+    match emit {
+        EmitType::Bytecode => format!("{name}.qzi"),
+        EmitType::Object => match target.os {
+            backend::target::Os::Windows => format!("{name}.obj"),
+            _ => format!("{name}.o"),
+        },
+        EmitType::Binary => match target.os {
+            backend::target::Os::Windows => format!("{name}.exe"),
+            _ => name.into(),
+        },
     }
 }
 
@@ -547,6 +567,10 @@ fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
             .iter()
             .map(|name| format!("-l{name}")),
     );
+    flags.extend(ctx.config.link.flags.iter().cloned());
+    if ctx.config.link.libc {
+        flags.push("-lc".into());
+    }
     Ok(flags)
 }
 
@@ -594,7 +618,23 @@ fn write_file(path: &Path, contents: &str) {
     });
 }
 
-fn scaffold_project(root: &PathBuf, pkg_name: &str, lib: bool) {
+fn scaffold_library_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len() + 1);
+    for (index, character) in name.chars().enumerate() {
+        let valid = if index == 0 {
+            character.is_ascii_alphabetic() || character == '_'
+        } else {
+            character.is_ascii_alphanumeric() || character == '_'
+        };
+        result.push(if valid { character } else { '_' });
+    }
+    if result.is_empty() {
+        result.push('_');
+    }
+    result
+}
+
+fn scaffold_project(root: &Path, pkg_name: &str, lib: bool) {
     let src_dir = root.join("src");
     std::fs::create_dir_all(&src_dir).unwrap_or_else(|e| {
         eprintln!(
@@ -606,9 +646,10 @@ fn scaffold_project(root: &PathBuf, pkg_name: &str, lib: bool) {
     });
 
     if lib {
+        let library_name = scaffold_library_name(pkg_name);
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\ntype = \"lib\"\n\n[build]\nentry = \"src/lib.qz\"\nsrc = \"src\"\n",
-            pkg_name
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"{}\"\npath = \"src/lib.qz\"\n",
+            library_name, library_name
         );
         write_file(&root.join("quazi.toml"), &toml);
 
@@ -619,8 +660,8 @@ fn scaffold_project(root: &PathBuf, pkg_name: &str, lib: bool) {
         write_file(&src_dir.join("lib.qz"), &lib_src);
     } else {
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[build]\nentry = \"src/main.qz\"\nsrc = \"src\"\n",
-            pkg_name
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.qz\"\n",
+            pkg_name, pkg_name
         );
         write_file(&root.join("quazi.toml"), &toml);
 
@@ -776,6 +817,7 @@ fn build_with_progress(
     qzi_dependencies: &[PathBuf],
     qzc_path: Option<&Path>,
     extra_cache_inputs: &[PathBuf],
+    target: &TargetSpec,
 ) {
     use progress::{
         BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count,
@@ -822,6 +864,7 @@ fn build_with_progress(
                         hit.no_crash,
                         module.metadata.main_takes_args,
                         false,
+                        target,
                     );
                     if do_strip {
                         strip_binary(Path::new(out));
@@ -878,6 +921,12 @@ fn build_with_progress(
         eprintln!("{}", parse_err);
         std::process::exit(1);
     }
+    let (target_os, target_abi) = match target.os {
+        backend::target::Os::Windows => ("windows", "win64"),
+        backend::target::Os::Linux => ("linux", "sysv"),
+        backend::target::Os::MacOs => ("macos", "sysv"),
+    };
+    let target_program = semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
     let user_items = result
         .program
         .items
@@ -904,7 +953,7 @@ fn build_with_progress(
         .collect();
     let sema = analyze_program_with_source_files(
         &result.merged_source,
-        &result.program,
+        &target_program,
         result.library_fn_names,
         result.library_char_ranges.clone(),
         result.source_files.clone(),
@@ -922,7 +971,7 @@ fn build_with_progress(
             cg.retain_public_library_api(result.library_file_paths.iter().cloned().collect());
         }
         let chunks = cg
-            .compile_program(&result.program, &result.source_files)
+            .compile_program(&target_program, &result.source_files)
             .unwrap_or_else(|error| {
                 prog.fail("error");
                 eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
@@ -1011,7 +1060,7 @@ fn build_with_progress(
                 result.library_file_paths.iter().cloned().collect();
             bytecode::build_qzi_interface(
                 &metadata.name,
-                &result.program,
+                &target_program,
                 &result.source_files,
                 &result.namespaced_paths,
                 &excluded_paths,
@@ -1083,6 +1132,7 @@ fn build_with_progress(
                 no_crash,
                 Some(&sema),
                 sema.main_takes_args,
+                target,
             );
             write_or_package_object(&obj_bytes, out, link_flags.unwrap_or(&[]), explicit_linker);
             prog.done(&format!("{:.1} KB", obj_bytes.len() as f64 / 1024.0));
@@ -1099,6 +1149,7 @@ fn build_with_progress(
                 no_crash,
                 Some(&sema),
                 sema.main_takes_args,
+                target,
             );
             prog.done(&format!(
                 "{:.1} KB  object",
@@ -1111,7 +1162,7 @@ fn build_with_progress(
             backend::linker::link_object(
                 &obj_bytes,
                 Path::new(out),
-                TargetSpec::host(),
+                target.clone(),
                 flags,
                 explicit_linker,
             )
@@ -1160,6 +1211,9 @@ fn main() {
             library_paths,
             libraries,
             no_incremental,
+            bin,
+            lib,
+            target,
         } => CliCmd::Build {
             files,
             output: None,
@@ -1174,6 +1228,9 @@ fn main() {
             static_lib: false,
             shared_lib: false,
             no_incremental,
+            bin,
+            lib,
+            target,
         },
         command => command,
     };
@@ -1193,7 +1250,23 @@ fn main() {
             static_lib,
             shared_lib,
             no_incremental,
+            bin,
+            lib,
+            target,
         } => {
+            let target = match target {
+                Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
+                Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
+                None => TargetSpec::host(),
+            };
+            if run && target.triple() != TargetSpec::host().triple() {
+                eprintln!(
+                    "\x1b[31;1merror:\x1b[0m cannot run target '{}' on host '{}'; use `qz build`",
+                    target.triple(),
+                    TargetSpec::host().triple()
+                );
+                std::process::exit(1);
+            }
             let emit = if emit_bytecode {
                 EmitType::Bytecode
             } else if emit_object || static_lib || shared_lib {
@@ -1202,11 +1275,25 @@ fn main() {
                 EmitType::Binary
             };
 
-            let explicit_linker = linker.as_deref();
+            let cli_linker = linker.as_deref();
+            let explicit_linker = cli_linker;
             let do_strip = strip && matches!(emit, EmitType::Binary);
 
             if files.is_empty() {
-                let ctx = load_project_context();
+                let mut ctx = load_project_context();
+                ctx.select_artifact(bin.as_deref(), lib)
+                    .unwrap_or_else(|e| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                        std::process::exit(1);
+                    });
+                let manifest_link = ctx.link_for_target(target.triple());
+                let manifest_linker = manifest_link
+                    .linker
+                    .as_ref()
+                    .filter(|linker| linker.as_str() != "auto")
+                    .map(PathBuf::from);
+                let explicit_linker = cli_linker.or(manifest_linker.as_deref());
+                ctx.config.link = manifest_link;
                 ctx.ensure_lockfile().unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                     std::process::exit(1);
@@ -1236,7 +1323,7 @@ fn main() {
                     } else if shared_lib {
                         format!("lib{}.so", ctx.config.name)
                     } else {
-                        project_output_name(&ctx.config.name, effective_emit.clone())
+                        target_output_name(&ctx.config.name, effective_emit.clone(), &target)
                     }
                 });
                 // Portable bytecode contains no native objects. Requiring a C
@@ -1256,7 +1343,8 @@ fn main() {
                         .map(|path| format!("-L{}", path.display())),
                 );
                 link_flags.extend(libraries.iter().map(|name| format!("-l{name}")));
-                let qzc_path = (!no_incremental).then(|| ctx.incremental_cache_path());
+                let qzc_path =
+                    (!no_incremental).then(|| ctx.incremental_cache_path(target.triple()));
                 let cache_inputs = ctx.incremental_inputs();
                 build_with_progress(
                     &[entry],
@@ -1279,6 +1367,7 @@ fn main() {
                     &ctx.config.qzi_dependencies,
                     qzc_path.as_deref(),
                     &cache_inputs,
+                    &target,
                 );
                 let _ = (emit, do_strip);
 
@@ -1300,10 +1389,9 @@ fn main() {
                 // .qzi input — deserialize and compile to native directly;
                 // ELF objects may be supplied alongside it for final linking.
                 for input in &files {
-                    if !input
-                        .extension()
-                        .is_some_and(|extension| matches!(extension.to_str(), Some("qzi" | "o")))
-                    {
+                    if !input.extension().is_some_and(|extension| {
+                        matches!(extension.to_str(), Some("qzi" | "o" | "obj"))
+                    }) {
                         eprintln!(
                             "\x1b[31;1merror:\x1b[0m .qzi builds accept only .qzi and .o inputs: {}",
                             input.display()
@@ -1353,22 +1441,16 @@ fn main() {
                         .unwrap_or_default()
                         .to_string_lossy()
                         .into_owned();
-                    match emit {
-                        EmitType::Bytecode => format!("{}.qzi", stem),
-                        EmitType::Object => format!("{}.o", stem),
-                        EmitType::Binary => {
-                            if cfg!(target_os = "windows") {
-                                format!("{}.exe", stem)
-                            } else {
-                                stem
-                            }
-                        }
-                    }
+                    target_output_name(&stem, emit.clone(), &target)
                 });
 
                 let mut qzi_link_flags: Vec<String> = files
                     .iter()
-                    .filter(|path| path.extension().is_some_and(|extension| extension == "o"))
+                    .filter(|path| {
+                        path.extension().is_some_and(|extension| {
+                            matches!(extension.to_str(), Some("o" | "obj"))
+                        })
+                    })
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
                 if matches!(emit, EmitType::Binary) {
@@ -1393,7 +1475,7 @@ fn main() {
                 qzi_link_flags.retain(|flag| {
                     !Path::new(flag)
                         .extension()
-                        .is_some_and(|extension| extension == "o")
+                        .is_some_and(|extension| matches!(extension.to_str(), Some("o" | "obj")))
                         || seen_objects.insert(
                             std::fs::canonicalize(flag).unwrap_or_else(|_| PathBuf::from(flag)),
                         )
@@ -1408,6 +1490,7 @@ fn main() {
                     false,
                     main_takes_args,
                     true,
+                    &target,
                 );
 
                 if do_strip {
@@ -1466,7 +1549,11 @@ fn main() {
                     );
                     let primary_index = objects
                         .iter()
-                        .position(|path| Path::new(path).extension().is_some_and(|ext| ext == "o"))
+                        .position(|path| {
+                            Path::new(path).extension().is_some_and(|extension| {
+                                matches!(extension.to_str(), Some("o" | "obj"))
+                            })
+                        })
                         .unwrap_or_else(|| {
                             eprintln!(
                                 "\x1b[31;1merror:\x1b[0m object-only builds require at least one .o input"
@@ -1489,16 +1576,12 @@ fn main() {
                             .file_stem()
                             .unwrap_or_default()
                             .to_string_lossy();
-                        if cfg!(target_os = "windows") {
-                            format!("{stem}.exe")
-                        } else {
-                            stem.into_owned()
-                        }
+                        target_output_name(&stem, EmitType::Binary, &target)
                     });
                     link_object(
                         &primary_bytes,
                         Path::new(&out),
-                        TargetSpec::host(),
+                        target.clone(),
                         &objects,
                         explicit_linker,
                     )
@@ -1583,6 +1666,7 @@ fn main() {
                     &[],
                     None,
                     &[],
+                    &target,
                 );
                 for object in &compiled_c_objects {
                     remove_temp(object);
@@ -1670,8 +1754,13 @@ fn main() {
             );
         }
 
-        CliCmd::Check => {
-            let ctx = load_project_context();
+        CliCmd::Check { bin, lib, target } => {
+            let mut ctx = load_project_context();
+            ctx.select_artifact(bin.as_deref(), lib)
+                .unwrap_or_else(|error| {
+                    eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                    std::process::exit(1);
+                });
             let entry = ctx.config.entry.clone();
             let result = loader::load_programs_with_resolver(&[entry], Some(&ctx.resolver))
                 .unwrap_or_else(|e| {
@@ -1687,9 +1776,21 @@ fn main() {
                 .iter()
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
+            let target = match target {
+                Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
+                Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
+                None => TargetSpec::host(),
+            };
+            let (target_os, target_abi) = match target.os {
+                backend::target::Os::Windows => ("windows", "win64"),
+                backend::target::Os::Linux => ("linux", "sysv"),
+                backend::target::Os::MacOs => ("macos", "sysv"),
+            };
+            let target_program =
+                semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
             run_check(
                 &result.merged_source,
-                &result.program,
+                &target_program,
                 result.library_fn_names,
                 result.library_char_ranges,
                 result.source_files,

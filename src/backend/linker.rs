@@ -26,19 +26,18 @@ pub fn link_object(
     let requests_builtin = requested_linker
         .as_deref()
         .is_some_and(|path| path == Path::new("builtin"));
-    let objects_only = extra_flags.iter().all(|flag| is_elf_object_path(flag));
-    let use_builtin =
-        requests_builtin || (target.os == Os::Linux && requested_linker.is_none() && objects_only);
+    let objects_only = extra_flags
+        .iter()
+        .all(|flag| is_object_path(flag, target.os));
+    let use_builtin = requests_builtin
+        || (matches!(target.os, Os::Linux | Os::Windows)
+            && requested_linker.is_none()
+            && objects_only);
 
     if use_builtin {
-        if target.os != Os::Linux {
-            return Err(
-                "the experimental built-in linker currently supports x86-64 Linux only".to_string(),
-            );
-        }
         if !objects_only {
             return Err(format!(
-                "the built-in linker accepts ELF `.o` inputs but not these native flags: {}\n\
+                "the built-in linker accepts target-compatible `.o`/`.obj` inputs but not these native flags: {}\n\
                  hint: select an external linker explicitly for archives/shared libraries",
                 extra_flags.join(" ")
             ));
@@ -53,7 +52,11 @@ pub fn link_object(
         let mut objects = Vec::with_capacity(native_objects.len() + 1);
         objects.push(object_bytes);
         objects.extend(native_objects.iter().map(Vec::as_slice));
-        return super::builtin_linker::link_elf_objects(&objects, output);
+        return match target.os {
+            Os::Linux => super::builtin_linker::link_elf_objects(&objects, output),
+            Os::Windows => super::builtin_pe_linker::link_coff_objects(&objects, output),
+            _ => Err("the built-in linker does not support this target".into()),
+        };
     }
 
     let stem = output
@@ -82,10 +85,15 @@ pub fn link_object(
     result
 }
 
-fn is_elf_object_path(flag: &str) -> bool {
+fn is_object_path(flag: &str, os: super::target::Os) -> bool {
     Path::new(flag)
         .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("o"))
+        .is_some_and(|extension| match os {
+            super::target::Os::Windows => {
+                extension.eq_ignore_ascii_case("obj") || extension.eq_ignore_ascii_case("o")
+            }
+            _ => extension.eq_ignore_ascii_case("o"),
+        })
 }
 
 pub struct LinkerInvocation {

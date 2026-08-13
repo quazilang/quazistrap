@@ -12,10 +12,17 @@ use crate::package::{
     DependencyKind, LockedSource, materialize_path, materialize_qzi_interface, materialize_url,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProjectKind {
     Bin,
     Lib,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectArtifact {
+    pub name: String,
+    pub kind: ProjectKind,
+    pub entry: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +38,8 @@ pub struct ProjectConfig {
     pub qzi_dependencies: Vec<PathBuf>,
     pub cc: CcConfig,
     pub link: LinkConfig,
+    pub artifacts: Vec<ProjectArtifact>,
+    pub target_links: BTreeMap<String, LinkConfigOverride>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -43,9 +52,22 @@ pub struct CcConfig {
 
 #[derive(Debug, Clone, Default)]
 pub struct LinkConfig {
+    pub linker: Option<String>,
+    pub libc: bool,
     pub objects: Vec<PathBuf>,
     pub libraries: Vec<String>,
     pub library_paths: Vec<PathBuf>,
+    pub flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LinkConfigOverride {
+    pub linker: Option<String>,
+    pub libc: Option<bool>,
+    pub objects: Vec<PathBuf>,
+    pub libraries: Vec<String>,
+    pub library_paths: Vec<PathBuf>,
+    pub flags: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +206,21 @@ struct RawConfig {
     dependencies: Option<BTreeMap<String, RawDependency>>,
     cc: Option<RawCc>,
     link: Option<RawLink>,
+    lib: Option<RawArtifact>,
+    #[serde(rename = "bin")]
+    bins: Option<Vec<RawArtifact>>,
+    target: Option<BTreeMap<String, RawTarget>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawArtifact {
+    name: Option<String>,
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawTarget {
+    link: Option<RawLink>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -198,9 +235,12 @@ struct RawCc {
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 struct RawLink {
+    linker: Option<String>,
+    libc: Option<bool>,
     objects: Option<Vec<String>>,
     libraries: Option<Vec<String>>,
     library_paths: Option<Vec<String>>,
+    flags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,6 +284,8 @@ struct ProjectMeta {
     dependencies: Vec<DependencySpec>,
     cc: CcConfig,
     link: LinkConfig,
+    artifacts: Vec<ProjectArtifact>,
+    target_links: BTreeMap<String, LinkConfigOverride>,
 }
 
 #[derive(Debug, Clone)]
@@ -301,17 +343,72 @@ impl ProjectContext {
         }
     }
 
-    pub fn incremental_cache_path(&self) -> PathBuf {
+    pub fn select_artifact(&mut self, bin: Option<&str>, lib: bool) -> Result<(), String> {
+        let candidates: Vec<&ProjectArtifact> = self
+            .config
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                if lib {
+                    artifact.kind == ProjectKind::Lib
+                } else if let Some(name) = bin {
+                    artifact.kind == ProjectKind::Bin && artifact.name == name
+                } else {
+                    true
+                }
+            })
+            .collect();
+        let selected =
+            if bin.is_some() || lib {
+                candidates.first().copied().ok_or_else(|| {
+                    if lib {
+                        "project has no [lib] artifact".to_string()
+                    } else {
+                        format!("project has no binary named '{}'", bin.unwrap())
+                    }
+                })?
+            } else if candidates.len() == 1 {
+                candidates[0]
+            } else if let Some(default) = candidates.iter().copied().find(|artifact| {
+                artifact.kind == ProjectKind::Bin && artifact.name == self.config.name
+            }) {
+                default
+            } else {
+                return Err(
+                    "project has multiple artifacts; select one with --bin <name> or --lib".into(),
+                );
+            };
+        self.config.name = selected.name.clone();
+        self.config.kind = selected.kind.clone();
+        self.config.entry = selected.entry.clone();
+        Ok(())
+    }
+
+    pub fn link_for_target(&self, triple: &str) -> LinkConfig {
+        let mut link = self.config.link.clone();
+        if let Some(override_) = self.config.target_links.get(triple) {
+            if override_.linker.is_some() {
+                link.linker = override_.linker.clone();
+            }
+            if let Some(libc) = override_.libc {
+                link.libc = libc;
+            }
+            link.objects.extend(override_.objects.iter().cloned());
+            link.libraries.extend(override_.libraries.iter().cloned());
+            link.library_paths
+                .extend(override_.library_paths.iter().cloned());
+            link.flags.extend(override_.flags.iter().cloned());
+        }
+        link
+    }
+
+    pub fn incremental_cache_path(&self, triple: &str) -> PathBuf {
         self.config
             .root
             .join("target")
             .join("quazi")
-            .join(format!(
-                "{}-{}",
-                std::env::consts::ARCH,
-                std::env::consts::OS
-            ))
-            .join("default")
+            .join(triple)
+            .join(&self.config.name)
             .join("incremental.qzc")
     }
 
@@ -348,6 +445,8 @@ impl ProjectContext {
             qzi_dependencies: Vec::new(),
             cc: meta.cc.clone(),
             link: meta.link.clone(),
+            artifacts: meta.artifacts.clone(),
+            target_links: meta.target_links.clone(),
         };
 
         let mut resolver = ModuleResolver::default();
@@ -432,7 +531,7 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         .package
         .ok_or_else(|| "quazi.toml missing [package] section".to_string())?;
 
-    let kind = match package.kind.as_deref() {
+    let legacy_kind = match package.kind.as_deref() {
         Some("lib") => ProjectKind::Lib,
         Some("bin") | None => ProjectKind::Bin,
         Some(other) => {
@@ -466,8 +565,9 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         defines: raw_cc.defines.unwrap_or_default(),
         flags: raw_cc.flags.unwrap_or_default(),
     };
-    let raw_link = raw.link.unwrap_or_default();
-    let link = LinkConfig {
+    let make_link = |raw_link: RawLink| LinkConfigOverride {
+        linker: raw_link.linker,
+        libc: raw_link.libc,
         objects: raw_link
             .objects
             .unwrap_or_default()
@@ -481,14 +581,90 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
             .into_iter()
             .map(|path| root.join(path))
             .collect(),
+        flags: raw_link.flags.unwrap_or_default(),
     };
 
+    let base = make_link(raw.link.unwrap_or_default());
+    let link = LinkConfig {
+        linker: base.linker,
+        libc: base.libc.unwrap_or(false),
+        objects: base.objects,
+        libraries: base.libraries,
+        library_paths: base.library_paths,
+        flags: base.flags,
+    };
+    let target_links = raw
+        .target
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(triple, target)| target.link.map(|link| (triple, make_link(link))))
+        .collect();
+
+    let has_legacy_entry = build.entry.is_some();
     let src_dir = root.join(build.src.unwrap_or_else(|| "src".to_string()));
-    let default_entry = match kind {
+    let default_entry = match legacy_kind {
         ProjectKind::Lib => "src/lib.qz",
         ProjectKind::Bin => "src/main.qz",
     };
     let entry = root.join(build.entry.unwrap_or_else(|| default_entry.to_string()));
+
+    let mut artifacts = Vec::new();
+    if let Some(lib) = raw.lib {
+        artifacts.push(ProjectArtifact {
+            name: lib.name.unwrap_or_else(|| package.name.clone()),
+            kind: ProjectKind::Lib,
+            entry: root.join(lib.path.unwrap_or_else(|| "src/lib.qz".into())),
+        });
+    }
+    for bin in raw.bins.unwrap_or_default() {
+        artifacts.push(ProjectArtifact {
+            name: bin.name.unwrap_or_else(|| package.name.clone()),
+            kind: ProjectKind::Bin,
+            entry: root.join(bin.path.unwrap_or_else(|| "src/main.qz".into())),
+        });
+    }
+    if artifacts.is_empty() {
+        artifacts.push(ProjectArtifact {
+            name: package.name.clone(),
+            kind: legacy_kind.clone(),
+            entry: entry.clone(),
+        });
+    } else if package.kind.is_some() || has_legacy_entry {
+        return Err(
+            "quazi.toml cannot mix [lib]/[[bin]] with legacy package.type/build.entry".into(),
+        );
+    }
+    let mut names = HashSet::new();
+    for artifact in &artifacts {
+        if artifact.kind == ProjectKind::Lib && !is_quazi_identifier(&artifact.name) {
+            return Err(format!(
+                "library name '{}' must be a Quazi identifier because it is used by imports",
+                artifact.name
+            ));
+        }
+        if artifact.kind == ProjectKind::Lib && artifact.name != package.name {
+            return Err(format!(
+                "library name '{}' must match package name '{}'",
+                artifact.name, package.name
+            ));
+        }
+        if !names.insert((artifact.kind.clone(), artifact.name.clone())) {
+            return Err(format!("duplicate artifact name '{}'", artifact.name));
+        }
+        if !artifact.entry.exists() {
+            return Err(format!(
+                "entry file not found: {}",
+                artifact.entry.display()
+            ));
+        }
+    }
+    let selected = artifacts
+        .iter()
+        .find(|artifact| artifact.kind == ProjectKind::Bin && artifact.name == package.name)
+        .or_else(|| artifacts.first())
+        .expect("artifacts cannot be empty");
+    let kind = selected.kind.clone();
+    let entry = selected.entry.clone();
 
     if !entry.exists() {
         return Err(format!("entry file not found: {}", entry.to_string_lossy()));
@@ -552,6 +728,8 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         dependencies,
         cc,
         link,
+        artifacts,
+        target_links,
     })
 }
 
@@ -584,7 +762,16 @@ fn collect_modules(
         .canonicalize()
         .map_err(|e| format!("cannot resolve '{}': {}", root.to_string_lossy(), e))?;
 
-    let meta = load_project_meta(&canonical)?;
+    let mut meta = load_project_meta(&canonical)?;
+    if expected.is_some()
+        && let Some(library) = meta
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == ProjectKind::Lib)
+    {
+        meta.entry = library.entry.clone();
+        meta.kind = ProjectKind::Lib;
+    }
 
     if let Some((expect_name, expect_version)) = expected {
         if meta.name != expect_name {
@@ -886,6 +1073,49 @@ mod tests {
         dir.push(format!("{}_{}_{}", prefix, std::process::id(), nanos));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[test]
+    fn selects_named_artifacts_and_separates_cache_paths() {
+        let root = temp_dir("qz_artifacts");
+        fs::create_dir_all(root.join("src")).expect("create src");
+        fs::write(root.join("src/lib.qz"), "pub fn value() i32 { ret 1; }").unwrap();
+        fs::write(root.join("src/main.qz"), "fn main() i32 { ret 0; }").unwrap();
+        fs::write(root.join("src/tool.qz"), "fn main() i32 { ret 0; }").unwrap();
+        fs::write(
+            root.join("quazi.toml"),
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[lib]
+name = "app"
+path = "src/lib.qz"
+
+[[bin]]
+name = "app"
+path = "src/main.qz"
+
+[[bin]]
+name = "tool"
+path = "src/tool.qz"
+"#,
+        )
+        .unwrap();
+        let mut context = ProjectContext::load(&root).expect("load project");
+        context
+            .select_artifact(Some("tool"), false)
+            .expect("select tool");
+        assert_eq!(context.config.name, "tool");
+        assert!(context.config.entry.ends_with(Path::new("src/tool.qz")));
+        assert!(
+            context
+                .incremental_cache_path("x86_64-windows")
+                .ends_with(Path::new("x86_64-windows/tool/incremental.qzc"))
+        );
+        context.select_artifact(None, true).expect("select library");
+        assert_eq!(context.config.kind, ProjectKind::Lib);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

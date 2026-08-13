@@ -26,10 +26,9 @@ Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend
 ## Install & Build
 
 Building the compiler requires **Rust 2024 edition** (latest stable recommended).
-Plain x86-64 Linux Quazi builds need no system linker or C toolchain. Windows
-executables currently require `lld-link`/`link.exe` and Windows SDK libraries;
-native C sources, archives, shared libraries, and explicit `-l` dependencies
-also use their corresponding external tools.
+Plain x86-64 Linux and Windows Quazi builds need no system linker or C
+toolchain. Native C sources, archives, shared libraries, and explicit `-l`
+dependencies may use corresponding external tools.
 
 ```bash
 git clone https://github.com/quazilang/quazistrap
@@ -148,6 +147,7 @@ An unterminated raw string is a compile error.
 
 ```
 qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
+         [--bin name|--lib] [--target x86_64-linux|x86_64-windows]
          [--linker builtin|path] [-L dir] [-l name]
 qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
@@ -161,7 +161,7 @@ qz init [--lib]           # init in current directory
 qz lsp                    # start language server
 ```
 
-Project builds use `target/quazi/<target>/default/incremental.qzc` for exact
+Project builds use `target/quazi/<target>/<artifact>/incremental.qzc` for exact
 warm-build reuse. Pass `--no-incremental` to bypass it. See
 [Libraries, QZI, and incremental builds](docs/LIBRARIES.md) for dependency TOML,
 QZI v6 library rules, lockfile behavior, and cache guarantees.
@@ -191,9 +191,9 @@ Quazi project.
 
 ## Built-in Linker and Runtime
 
-On x86-64 Linux, ordinary `qz build` and `qz run` commands use Quazi's built-in
-static ELF linker automatically. It accepts Quazi source or QZI plus any number
-of ELF `.o` inputs, and it also accepts an object-only input list:
+On x86-64 Linux and Windows, ordinary builds use Quazi's in-process linker.
+Linux emits static ELF; Windows emits PE32+ with direct Win32/Winsock imports.
+Compiler objects and supported native objects may be combined:
 
 ```bash
 qz build src/main.qz native/helper.o -o app
@@ -203,7 +203,7 @@ qz run program.o helper.o
 
 No library is implicit. In particular, libc and libm are not linked merely
 because they exist on the host. Passing `-l`, an archive/shared-library input,
-an explicit external linker path, or a non-Linux target selects the external
+or an explicit external linker path selects the external
 linking path. `--linker builtin` rejects unsupported native flags instead of
 silently falling back. To use libc intentionally:
 
@@ -217,11 +217,9 @@ The compiler embeds only the pure-assembly Linux runtime routines referenced
 by the program. This currently covers allocation, memory/string primitives,
 and numeric formatting; allocation calls `mmap`/`munmap` directly.
 
-The linker is experimental and currently limited to static x86-64 ELF
-executables and relocatable `.o` inputs. PE/COFF, Mach-O, archives, shared
-objects, TLS, linker scripts, and general-purpose ELF compatibility are not yet
-implemented. See [docs/LINKER.md](docs/LINKER.md) for selection rules, supported
-ELF features, startup behavior, runtime details, diagnostics, and limitations.
+The linkers target x86-64 ELF and PE/COFF. Mach-O, archives, shared objects,
+TLS, linker scripts, and general-purpose native compatibility remain external
+linker territory. See [docs/LINKER.md](docs/LINKER.md).
 
 ---
 
@@ -232,15 +230,18 @@ ELF features, startup behavior, runtime details, diagnostics, and limitations.
 name = "hello"
 version = "0.1.0"
 
-[build]
-entry = "src/main.qz"   # optional, defaults to src/main.qz
-src = "src"               # optional, defaults to src
+[[bin]]
+name = "hello"
+path = "src/main.qz"
 
 [dependencies]
 utils = { path = "../utils", version = "0.1.0" }
 ```
 
 If a `quazi.lock` file exists, it pins dependency versions. It is created automatically on first build when dependencies are present.
+
+See [project and manifest documentation](docs/PROJECTS.md) and
+[`std.net` documentation](docs/NETWORK.md).
 
 ---
 
@@ -256,7 +257,7 @@ If a `quazi.lock` file exists, it pins dependency versions. It is created automa
 | `std.collections.map` | Hash map with open-addressing |
 | `std.collections.set` | Hash set |
 | `std.fs` | Cross-platform owned files, whole-file reads, paths, and metadata |
-| `std.net` | `TcpListener`, `TcpStream`, `UdpSocket` |
+| `std.net` | TCP, HTTP/1.1 requests, and local server support |
 | `std.os` | Cross-platform environment, hostname, memory, process, and OS queries |
 | `std.thread` | spawn/join |
 | `std.option` | `Option[T]` + `?` operator |

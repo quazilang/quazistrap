@@ -2,9 +2,9 @@
 name = "incremental_app"
 version = "0.1.0"
 
-[build]
-entry = "src/main.qz"
-src = "src"
+[[bin]]
+name = "incremental_app"
+path = "src/main.qz"
 
 [dependencies]
 incremental_math = { path = "../23-incremental-lib", version = "0.1.0" }

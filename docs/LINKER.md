@@ -1,4 +1,10 @@
-# Built-in Linux Linker and Runtime
+# Built-in Linux and Windows Linkers
+
+Windows builds also default to an in-process PE32+ linker. It consumes
+compiler-produced x86-64 COFF, applies relocations, and creates Win32/Winsock
+import tables without Windows SDK `.lib` files. Unknown imports, native
+libraries, archives, or unsupported COFF features require an explicit external
+linker. No external linker is silently presented as built-in.
 
 Quazi's experimental linker produces a static x86-64 Linux ELF executable
 without invoking `ld`, `lld`, `mold`, GCC, Clang, libc, or CRT startup code.
@@ -9,7 +15,7 @@ link command.
 
 The built-in linker is selected when all of the following are true:
 
-- the target is x86-64 Linux;
+- the target is x86-64 Linux or Windows;
 - neither `--linker <external-path>` nor an external `QUAZI_LINKER` is set;
 - every additional native input is an ELF `.o` file; and
 - no library, archive, shared object, library path, or other native linker flag

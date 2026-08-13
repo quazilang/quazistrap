@@ -2,9 +2,9 @@
 name = "std_net_example"
 version = "0.1.0"
 
-[build]
-entry = "src/main.qz"
-src = "src"
+[[bin]]
+name = "std_net_example"
+path = "src/main.qz"
 
-[link]
-libraries = ["c"]
+[target.x86_64-linux.link]
+libc = true

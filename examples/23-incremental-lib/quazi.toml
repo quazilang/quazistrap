@@ -1,8 +1,6 @@
 [package]
 name = "incremental_math"
 version = "0.1.0"
-type = "lib"
-
-[build]
-entry = "src/mod.qz"
-src = "src"
+[lib]
+name = "incremental_math"
+path = "src/mod.qz"
