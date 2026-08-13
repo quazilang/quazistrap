@@ -1006,19 +1006,24 @@ fn build_with_progress(
     let no_crash = source_contains_no_crash(&result.merged_source);
     let project_qzi = qzi_metadata.clone().map(|mut metadata| {
         metadata.main_takes_args = sema.main_takes_args;
-        let excluded_paths: HashSet<PathBuf> = result.library_file_paths.iter().cloned().collect();
-        let interface = bytecode::build_qzi_interface(
-            &metadata.name,
-            &result.program,
-            &result.source_files,
-            &result.namespaced_paths,
-            &excluded_paths,
-        )
-        .unwrap_or_else(|error| {
-            prog.fail("error");
-            eprintln!("\x1b[31;1merror:\x1b[0m cannot build QZI interface: {error}");
-            std::process::exit(1);
-        });
+        let interface = if metadata.kind == bytecode::QziModuleKind::Library {
+            let excluded_paths: HashSet<PathBuf> =
+                result.library_file_paths.iter().cloned().collect();
+            bytecode::build_qzi_interface(
+                &metadata.name,
+                &result.program,
+                &result.source_files,
+                &result.namespaced_paths,
+                &excluded_paths,
+            )
+            .unwrap_or_else(|error| {
+                prog.fail("error");
+                eprintln!("\x1b[31;1merror:\x1b[0m cannot build QZI interface: {error}");
+                std::process::exit(1);
+            })
+        } else {
+            String::new()
+        };
         let mut module = bytecode::QziModule {
             metadata,
             interface,

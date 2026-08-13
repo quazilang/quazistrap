@@ -827,11 +827,6 @@ fn validate_lockfile(lock: &Lockfile, dependencies: &[ResolvedDependency]) -> Re
             ));
         }
         if pkg.kind != dependency.kind
-            || pkg.path
-                != dependency
-                    .url
-                    .is_none()
-                    .then(|| dependency.root.to_string_lossy().into_owned())
             || pkg.url != dependency.url
             || pkg.revision != dependency.revision
             || pkg.checksum != dependency.checksum
@@ -853,10 +848,9 @@ fn write_lockfile(path: &Path, dependencies: &[ResolvedDependency]) -> Result<()
             name: dependency.name.clone(),
             version: dependency.version.clone(),
             kind: dependency.kind,
-            path: dependency
-                .url
-                .is_none()
-                .then(|| dependency.root.to_string_lossy().into_owned()),
+            // Local paths come from quazi.toml and may resolve differently on
+            // another machine. Lock versions/checksums, never absolute paths.
+            path: None,
             url: dependency.url.clone(),
             revision: dependency.revision.clone(),
             checksum: dependency.checksum.clone(),
@@ -892,6 +886,54 @@ mod tests {
         dir.push(format!("{}_{}_{}", prefix, std::process::id(), nanos));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[test]
+    fn add_and_remove_local_dependency_updates_manifest_and_lock() {
+        let root = temp_dir("qz_dependency_edit");
+        let app = root.join("app");
+        let dependency = root.join("math");
+        fs::create_dir_all(app.join("src")).expect("create app src");
+        fs::create_dir_all(dependency.join("src")).expect("create dependency src");
+        fs::write(
+            app.join("quazi.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write app manifest");
+        fs::write(app.join("src/main.qz"), "fn main() void { ret; }").expect("write app source");
+        fs::write(
+            dependency.join("quazi.toml"),
+            "[package]\nname = \"math\"\nversion = \"0.1.0\"\ntype = \"lib\"\n",
+        )
+        .expect("write dependency manifest");
+        fs::write(
+            dependency.join("src/lib.qz"),
+            "pub fn answer() i32 { ret 42; }",
+        )
+        .expect("write dependency source");
+
+        add_dependency(
+            &app,
+            DependencyEdit {
+                name: "math".into(),
+                path: Some(PathBuf::from("../math")),
+                url: None,
+                kind: None,
+                version: Some("0.1.0".into()),
+                revision: None,
+                checksum: None,
+            },
+        )
+        .expect("add local dependency");
+        let manifest = fs::read_to_string(app.join("quazi.toml")).expect("read manifest");
+        assert!(manifest.contains("[dependencies.math]"));
+        assert!(app.join("quazi.lock").is_file());
+
+        remove_dependency(&app, "math").expect("remove local dependency");
+        let manifest = fs::read_to_string(app.join("quazi.toml")).expect("read manifest");
+        assert!(!manifest.contains("[dependencies.math]"));
+        assert!(!app.join("quazi.lock").exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

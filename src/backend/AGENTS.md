@@ -73,7 +73,9 @@ input, output, runtime, selection, and limitation contracts.
 Windows argument-taking entry points parse the Unicode command line with
 `GetCommandLineW`/`CommandLineToArgvW`, convert each argument to UTF-8, and keep
 the Quazi `Array[str]` outside the Win64 caller shadow space. This requires
-`shell32.lib` in addition to Kernel32; CRT libraries remain opt-in.
+`shell32.lib` in addition to Kernel32. Windows links the system `ws2_32.lib`
+so `std.net` works without project-specific linker configuration; CRT libraries
+remain opt-in.
 
 ## Native FFI and libraries
 

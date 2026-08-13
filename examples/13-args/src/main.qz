@@ -1,7 +1,8 @@
 fn main(args: Array[str]) i32 {
     var total: i32 = 0;
     for i : 0..args.len() {
-        total = total + args[i].len() as i32;
+        const argument: str = args[i];
+        total = total + argument.len() as i32;
     }
     ret total;
 }

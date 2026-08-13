@@ -36,6 +36,16 @@ pub fn build_qzi_interface(
     }
     let mut modules: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
     for item in &program.items {
+        let source_path = source_files
+            .iter()
+            .find(|source| source.contains(item.span))
+            .map(|source| PathBuf::from(&source.path));
+        if source_path
+            .as_ref()
+            .is_some_and(|path| excluded_paths.contains(path))
+        {
+            continue;
+        }
         let unsupported_generic = match &item.node {
             ItemKind::Fn {
                 name,
@@ -77,16 +87,6 @@ pub fn build_qzi_interface(
         let Some((declaration, exports)) = render_public_item(item) else {
             continue;
         };
-        let source_path = source_files
-            .iter()
-            .find(|source| source.contains(item.span))
-            .map(|source| PathBuf::from(&source.path));
-        if source_path
-            .as_ref()
-            .is_some_and(|path| excluded_paths.contains(path))
-        {
-            continue;
-        }
         let module = source_path
             .as_deref()
             .map(|path| {
@@ -500,5 +500,25 @@ pub type Coordinate = i32;
         let error = build_qzi_interface("generic", &program, &[], &HashSet::new(), &HashSet::new())
             .expect_err("generic QZI API should be rejected");
         assert!(error.contains("publish this library as source"));
+    }
+
+    #[test]
+    fn excluded_dependency_generics_do_not_enter_library_interface() {
+        let source = "pub trait Eq[T] { fn equals(left: T, right: T) bool; }";
+        let program = Parser::new(Lexer::new(source).tokenize())
+            .parse()
+            .expect("parse dependency generic");
+        let path = PathBuf::from("std/traits.qz");
+        let files = vec![SourceFile {
+            path: path.to_string_lossy().into_owned(),
+            start: 0,
+            end: source.chars().count(),
+            line_start: 1,
+        }];
+        let excluded = HashSet::from([path]);
+        let encoded = build_qzi_interface("library", &program, &files, &HashSet::new(), &excluded)
+            .expect("excluded dependency API should be ignored");
+        let bundle = parse_qzi_interface(&encoded).expect("parse empty interface");
+        assert!(bundle.modules.is_empty());
     }
 }

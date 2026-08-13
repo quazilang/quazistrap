@@ -11,14 +11,17 @@ fn run_server() i32 {
         net.HttpResponse.text(200, "hello from Quazi\n"),
         65536
     );
-    if (request.is_ok()) { io.println("request:\n{}", request.unwrap()); }
+    if (request.is_err()) { io.errln("server failed: {}", request.unwrap_err()); ret 1; }
+    const request_text: String = request.unwrap();
+    io.println("request:\n{}", request_text.as_str());
     ret 0;
 }
 
 fn run_client() i32 {
     const response: Result[String, i32] = net.http_get("127.0.0.1", 8080, "/");
     if (response.is_err()) { io.errln("request failed: {}", response.unwrap_err()); ret 1; }
-    io.println("{}", response.unwrap());
+    const response_text: String = response.unwrap();
+    io.println("{}", response_text.as_str());
     ret 0;
 }
 

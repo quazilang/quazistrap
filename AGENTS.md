@@ -330,6 +330,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-13 | Corrected QZI v6 emission so executable projects store no source-library interface and library interfaces exclude dependency generics before validation. Added Winsock-backed `std.net`, automatic `ws2_32` linkage, Windows socket error preservation, package-command regression coverage, and a full Windows check/build/run example matrix. |
 | 2026-08-13 | Added transactional `qz add`/`qz remove` manifest and lockfile updates, relative path dependency examples, and an HTTP client/local-server example. Expanded `std.net` with complete sends, bounded receives, HTTP requests, response encoding, and one-request serving. |
 | 2026-08-11 | Fixed Windows interactive input so CRLF/CR Enter becomes `\n` instead of returning the cursor to column zero; changed `std.io.read` from numeric bytes to non-empty UTF-8 string delimiters, including multi-byte sequences. Documented `str`/`&str`/`String`, demonstrated multiline raw strings, and made unterminated raw literals a lexer error. |
 | 2026-08-11 | Made custom-delimiter and single-key terminal reads immediate on Windows/Linux while preserving redirected and line-buffered input. Hardened Win64 `ReadFile`/`WriteFile` lowering so result counts live outside shadow space and API failures return `-1`; stopped RAII from destroying uninitialized owned locals before their first assignment. |

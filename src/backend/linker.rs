@@ -231,7 +231,12 @@ impl LinkerInvocation {
                     if let Some(path) = flag.strip_prefix("-L") {
                         args.push(format!("/libpath:{path}").into());
                     } else if let Some(library) = flag.strip_prefix("-l") {
-                        args.push(format!("{library}.lib").into());
+                        if library == "c" {
+                            args.push("ucrt.lib".into());
+                            args.push("legacy_stdio_definitions.lib".into());
+                        } else {
+                            args.push(format!("{library}.lib").into());
+                        }
                     } else {
                         args.push(flag.into());
                     }
@@ -243,6 +248,7 @@ impl LinkerInvocation {
                 args.push("/MERGE:.rdata=.text".into()); // fold rodata into text — saves 512B PE alignment
                 args.push("kernel32.lib".into()); // ExitProcess
                 args.push("shell32.lib".into()); // CommandLineToArgvW
+                args.push("ws2_32.lib".into()); // Winsock used by std.net
             }
         }
 
@@ -357,6 +363,7 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         assert!(args.contains(&"shell32.lib".to_string()));
+        assert!(args.contains(&"ws2_32.lib".to_string()));
         assert!(args.contains(&"/libpath:C:/native".to_string()));
         assert!(args.contains(&"ucrt.lib".to_string()));
         assert!(!args.contains(&"libcmt.lib".to_string()));

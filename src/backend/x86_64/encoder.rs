@@ -2612,6 +2612,13 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.lea(rdx, qword_ptr(rsp + 32i32))); // &sockaddr_in
                             emit!(asm.mov(r8d, 16i32)); // addrlen
                             call_ext!("bind".into(), RelocKind::Plt32);
+                            let mut bind_result_ready = asm.create_label();
+                            emit!(asm.cmp(eax, -1i32));
+                            emit!(asm.jne(bind_result_ready));
+                            call_ext!("WSAGetLastError".into(), RelocKind::Plt32);
+                            emit!(asm.neg(eax));
+                            emit!(asm.movsxd(rax, eax));
+                            emit!(asm.set_label(&mut bind_result_ready));
                         } else {
                             emit!(asm.mov(rdi, slot(dst))); // sockfd
                             emit!(asm.lea(rsi, qword_ptr(rsp))); // &sockaddr_in
@@ -2680,6 +2687,13 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.lea(rdx, qword_ptr(rsp + 32i32)));
                             emit!(asm.mov(r8d, 16i32));
                             call_ext!("connect".into(), RelocKind::Plt32);
+                            let mut connect_result_ready = asm.create_label();
+                            emit!(asm.cmp(eax, -1i32));
+                            emit!(asm.jne(connect_result_ready));
+                            call_ext!("WSAGetLastError".into(), RelocKind::Plt32);
+                            emit!(asm.neg(eax));
+                            emit!(asm.movsxd(rax, eax));
+                            emit!(asm.set_label(&mut connect_result_ready));
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
                             emit!(asm.lea(rsi, qword_ptr(rsp)));

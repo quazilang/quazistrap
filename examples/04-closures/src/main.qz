@@ -8,11 +8,10 @@ fn main() i32 {
     println("double(7)       = {}", double(7));
     println("square(7)       = {}", square(7));
 
-    var ops: [fn(i32) i32; 3] = [double, square, negate];
     var val: i32 = 5;
-    for op : ops {
-        println("op({}) = {}", val, op(val));
-    }
+    println("double({}) = {}", val, double(val));
+    println("square({}) = {}", val, square(val));
+    println("negate({}) = {}", val, negate(val));
 
     ret 0;
 }
