@@ -1,0 +1,12 @@
+[package]
+name = "mutex"
+version = "0.1.0"
+out_dir = "build"
+
+[[bin]]
+name = "mutex"
+path = "src/main.qz"
+
+# Linux: pthread_mutex_t requires linking with libpthread.
+[target.x86_64-linux.link]
+libraries = ["pthread", "c"]

@@ -1,0 +1,82 @@
+// Example 33 — Time: Duration, Instant, SystemTime, DateTime
+//
+// Demonstrates:
+//   • time.Duration  — creating and converting time spans
+//   • time.Instant   — measuring elapsed time with a monotonic clock
+//   • time.SystemTime — wall-clock Unix timestamps
+//   • time.DateTime  — Gregorian date/time decomposition and formatting
+//   • time.sleep()   — thread suspension
+//
+// Run:
+//   qz run
+
+import std.io.{println};
+import std.time.{Duration, Instant, SystemTime, DateTime, sleep_ms, utc_now};
+
+// Simulate some work to measure.
+fn do_work() void {
+    var sum: u64 = 0;
+    var i: u64 = 0;
+    for (i < 1000000) { sum = sum + i; i++; }
+}
+
+fn main() i32 {
+    // ── Duration ─────────────────────────────────────────────────────────────
+    println("── Duration ──");
+    const d1: Duration = Duration.from_millis(1500);
+    const d2: Duration = Duration.from_secs(2);
+    const sum: Duration = d1.add(d2);
+    println("  1500ms + 2s = {} ms", sum.as_millis().to_string());
+    println("  1500ms + 2s = {} ns", sum.as_nanos().to_string());
+
+    const d3: Duration = Duration.from_nanos(1234567890);
+    println("  1234567890 ns subsec: {} ns", d3.subsec_nanos().to_string());
+
+    // ── Instant (monotonic) ───────────────────────────────────────────────────
+    println("── Instant (monotonic clock) ──");
+    const start: Instant = Instant.now();
+    do_work();
+    const elapsed: Duration = start.elapsed();
+    println("  do_work() took {} ms", elapsed.as_millis().to_string());
+
+    // ── SystemTime (wall clock) ───────────────────────────────────────────────
+    println("── SystemTime (UTC wall clock) ──");
+    const now: SystemTime = SystemTime.now();
+    println("  unix timestamp:        {} s", now.unix_timestamp().to_string());
+    println("  unix timestamp millis: {} ms", now.unix_timestamp_millis().to_string());
+
+    // ── DateTime ──────────────────────────────────────────────────────────────
+    println("── DateTime UTC ──");
+    const utc: DateTime = utc_now();
+    println("  year:    {}", utc.year().to_string());
+    println("  month:   {}", utc.month().to_string());
+    println("  day:     {}", utc.day().to_string());
+    println("  weekday: {} (0=Mon, 6=Sun)", utc.weekday().to_string());
+    println("  doy:     {}", utc.day_of_year().to_string());
+
+    println("── DateTime formatting ──");
+    const formatted: String = utc.format("%A, %d %B %Y %H:%M:%S %Z");
+    println("  %A, %d %B %Y %H:%M:%S %Z:");
+    println("  → {}", formatted.as_str());
+
+    const iso: String = utc.format("%Y-%m-%dT%H:%M:%S%Z");
+    println("  ISO 8601: {}", iso.as_str());
+
+    // ── Round-trip timestamp ──────────────────────────────────────────────────
+    println("── Timestamp round-trip ──");
+    const ts: i64 = utc.timestamp();
+    const utc2: DateTime = DateTime.from_timestamp(ts, 0);
+    const same: bool = utc.year() == utc2.year()
+        && utc.month() == utc2.month()
+        && utc.day() == utc2.day();
+    println("  round-trip matches: {}", same.to_string());
+
+    // ── Sleep ─────────────────────────────────────────────────────────────────
+    println("── sleep_ms(50) ──");
+    const t0: Instant = Instant.now();
+    sleep_ms(50);
+    const slept: Duration = t0.elapsed();
+    println("  actually slept: {} ms", slept.as_millis().to_string());
+
+    ret 0;
+}

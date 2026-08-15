@@ -1,0 +1,103 @@
+// Example 34 — Process: spawn child processes and capture output
+//
+// Demonstrates:
+//   • process.Command — builder for child processes
+//   • .arg()          — passing arguments
+//   • .env()          — setting environment variables
+//   • .cwd()          — setting working directory
+//   • .run()          — blocking execution with output capture
+//   • .status()       — run without capturing output
+//   • .spawn()        — non-blocking launch → Child
+//   • Child.wait()    — wait for a spawned process
+//   • Child.kill()    — terminate a running process
+//
+// Run:
+//   qz run
+
+import std.io.{println};
+import std.process.{Command, ProcessError, ProcessOutput, Child};
+import std.time.{Instant};
+
+fn main() i32 {
+    // ── Simple captured run ───────────────────────────────────────────────────
+    println("── git --version ──");
+    const git = Command.new("git").arg("--version").run();
+    if (git.is_err()) {
+        const err: ProcessError = git.unwrap_err();
+        println("  error: {}", err.message());
+    } else {
+        const out: ProcessOutput = git.unwrap();
+        println("  exit code: {}", out.exit_code().to_string());
+        println("  stdout:    {}", out.stdout().trim().as_str());
+        out.free();
+    }
+
+    // ── echo with multiple args ───────────────────────────────────────────────
+    println("── echo hello world ──");
+    const echo = Command.new("echo").arg("hello").arg("world").run();
+    if (echo.is_ok()) {
+        const out: ProcessOutput = echo.unwrap();
+        println("  stdout: {}", out.stdout().trim().as_str());
+        out.free();
+    }
+
+    // ── Custom env ───────────────────────────────────────────────────────────
+    println("── env GREETING=Quazi sh -c 'echo $GREETING' ──");
+    const sh = Command.new("sh")
+        .arg("-c")
+        .arg("echo $GREETING")
+        .env("GREETING", "Quazi")
+        .run();
+    if (sh.is_ok()) {
+        const out: ProcessOutput = sh.unwrap();
+        println("  stdout: {}", out.stdout().trim().as_str());
+        out.free();
+    }
+
+    // ── status() — run without capturing ─────────────────────────────────────
+    println("── true (exit 0) ──");
+    const status = Command.new("true").status();
+    if (status.is_ok()) {
+        println("  exit code: {}", status.unwrap().to_string());
+    }
+
+    println("── false (exit 1) ──");
+    const status2 = Command.new("false").status();
+    if (status2.is_ok()) {
+        println("  exit code: {}", status2.unwrap().to_string());
+    }
+
+    // ── spawn() + wait() ─────────────────────────────────────────────────────
+    println("── spawn sleep 0.05 and wait ──");
+    const child_result = Command.new("sleep").arg("0.05").spawn();
+    if (child_result.is_ok()) {
+        const child: Child = child_result.unwrap();
+        println("  child pid: {}", child.pid().to_string());
+        const t0 = Instant.now();
+        const code = child.wait();
+        const elapsed = t0.elapsed();
+        if (code.is_ok()) {
+            println("  exit code: {}", code.unwrap().to_string());
+            println("  wait took: {} ms", elapsed.as_millis().to_string());
+        }
+    } else {
+        const err: ProcessError = child_result.unwrap_err();
+        println("  spawn error: {}", err.message());
+    }
+
+    // ── capture stderr ────────────────────────────────────────────────────────
+    println("── ls /nonexistent (stderr) ──");
+    const ls = Command.new("ls").arg("/nonexistent").run();
+    if (ls.is_ok()) {
+        const out: ProcessOutput = ls.unwrap();
+        println("  exit code: {}", out.exit_code().to_string());
+        const err_text = out.stderr().trim();
+        if (!err_text.is_empty()) {
+            println("  stderr: {}", err_text.as_str());
+        }
+        out.free();
+    }
+
+    println("Done.");
+    ret 0;
+}

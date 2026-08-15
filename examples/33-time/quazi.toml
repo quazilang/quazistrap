@@ -1,0 +1,8 @@
+[package]
+name = "time"
+version = "0.1.0"
+out_dir = "build"
+
+[[bin]]
+name = "time"
+path = "src/main.qz"

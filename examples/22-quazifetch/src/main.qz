@@ -353,7 +353,7 @@ fn main(args: Array[str]) void {
         io.println("  ╰────────────────────╯\e[0m");
     }
     io.println("");
-    row("1;33", "host  ", hostname.as_str());
+    row("1;33", "hostname  ", hostname.as_str());
     row("1;32", "os    ", system.as_str());
     row("1;35", "pkgs  ", packages.as_str());
     row("1;34", "shell ", shell.as_str());

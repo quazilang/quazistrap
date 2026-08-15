@@ -1,0 +1,8 @@
+[package]
+name = "custom-panic-handler"
+version = "0.1.0"
+out_dir = "build"
+
+[[bin]]
+name = "custom-panic-handler"
+path = "src/main.qz"

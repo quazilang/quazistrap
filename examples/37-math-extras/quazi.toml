@@ -1,0 +1,8 @@
+[package]
+name = "math-extras"
+version = "0.1.0"
+out_dir = "build"
+
+[[bin]]
+name = "math-extras"
+path = "src/main.qz"

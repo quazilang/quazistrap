@@ -1,0 +1,87 @@
+// Example 37 — Math Extras: constants, fp classification, integer helpers
+//
+// Demonstrates:
+//   • math.pi(), math.tau(), math.e(), math.phi(), math.sqrt2(), math.ln2()
+//   • math.is_nan(), math.is_finite(), math.is_infinite(), math.is_normal()
+//   • math.abs_i64(), math.clamp_i64(), math.clamp_f64()
+//   • math.min_i64(), math.max_i64(), math.min_f64(), math.max_f64()
+//   • math.next_power_of_two(), math.count_ones(), math.ilog2(), math.isqrt()
+//
+// Run:
+//   qz run
+
+import std.io.{println};
+import std.math;
+
+fn demo_constants() void {
+    println("── Mathematical constants ──");
+    println("  π   = {}", math.pi().to_string());
+    println("  τ   = {}", math.tau().to_string());
+    println("  e   = {}", math.e().to_string());
+    println("  φ   = {}", math.phi().to_string());
+    println("  √2  = {}", math.sqrt2().to_string());
+    println("  ln2 = {}", math.ln2().to_string());
+
+    // sin²(π/4) + cos²(π/4) = 1
+    const theta: f64 = math.pi() / 4.0;
+    const s: f64 = math.sin(theta);
+    const c: f64 = math.cos(theta);
+    const identity: f64 = s * s + c * c;
+    println("  sin²(π/4)+cos²(π/4) = {} (≈1.0)", identity.to_string());
+
+    // Circumference of a unit circle.
+    const circum: f64 = math.tau() * 1.0;
+    println("  2π  = {} (≈ τ = {})", circum.to_string(), math.tau().to_string());
+}
+
+fn demo_fp_classification() void {
+    println("── Floating-point classification ──");
+    const zero: f64 = 0.0;
+    const inf: f64 = 1.0 / zero;     // +Infinity
+    const nan: f64 = zero / zero;    // NaN
+    const normal: f64 = 3.14;
+    println("  is_nan(NaN):       {}", math.is_nan(nan).to_string());
+    println("  is_nan(3.14):      {}", math.is_nan(normal).to_string());
+    println("  is_infinite(1/0):  {}", math.is_infinite(inf).to_string());
+    println("  is_infinite(3.14): {}", math.is_infinite(normal).to_string());
+    println("  is_finite(3.14):   {}", math.is_finite(normal).to_string());
+    println("  is_finite(NaN):    {}", math.is_finite(nan).to_string());
+    println("  is_finite(1/0):    {}", math.is_finite(inf).to_string());
+    println("  is_normal(3.14):   {}", math.is_normal(normal).to_string());
+    println("  is_normal(0.0):    {}", math.is_normal(zero).to_string());
+    // Method syntax.
+    println("  (3.14).is_nan():   {}", normal.is_nan().to_string());
+    println("  (3.14).is_finite():{}", normal.is_finite().to_string());
+}
+
+fn demo_int_helpers() void {
+    println("── Integer helpers ──");
+    println("  abs_i64(-42):         {}", math.abs_i64(-42).to_string());
+    println("  clamp_i64(150,0,100): {}", math.clamp_i64(150, 0, 100).to_string());
+    println("  min_i64(7, 3):        {}", math.min_i64(7, 3).to_string());
+    println("  max_i64(7, 3):        {}", math.max_i64(7, 3).to_string());
+    println("  min_f64(2.5,1.1):     {}", math.min_f64(2.5, 1.1).to_string());
+    println("  max_f64(2.5,1.1):     {}", math.max_f64(2.5, 1.1).to_string());
+}
+
+fn demo_bit_utils() void {
+    println("── Bit utilities ──");
+    println("  next_power_of_two(9):   {}", math.next_power_of_two(9).to_string());
+    println("  next_power_of_two(16):  {}", math.next_power_of_two(16).to_string());
+    println("  next_power_of_two(17):  {}", math.next_power_of_two(17).to_string());
+    println("  count_ones(255):        {} (all 8 set)", math.count_ones(255).to_string());
+    println("  count_ones(0):          {}", math.count_ones(0).to_string());
+    println("  count_ones(170):        {} (0b10101010)", math.count_ones(170).to_string()); // 4
+    println("  ilog2(1024):            {}", math.ilog2(1024).to_string());    // 10
+    println("  ilog2(1000):            {}", math.ilog2(1000).to_string());    // 9
+    println("  isqrt(100):             {}", math.isqrt(100).to_string());     // 10
+    println("  isqrt(101):             {}", math.isqrt(101).to_string());     // 10
+}
+
+fn main() i32 {
+    demo_constants();
+    demo_fp_classification();
+    demo_int_helpers();
+    demo_bit_utils();
+    ret 0;
+}

@@ -1,0 +1,87 @@
+// Example 32 — File Streams: BufReader and BufWriter
+//
+// Demonstrates:
+//   • fs.BufWriter — buffered line-by-line writing
+//   • fs.BufReader — buffered line-by-line reading
+//   • fs.stat()    — querying file metadata
+//
+// Run:
+//   qz run
+
+import std.io.{println, print};
+import std.fs.{BufWriter, BufReader, stat, FsError};
+
+
+fn write_sample_file(path: str) void {
+    const result = BufWriter.create(path);
+    if (result.is_err()) {
+        const err: FsError = result.unwrap_err();
+        println("error creating file: {}", err.message());
+        ret;
+    }
+    const w: BufWriter = result.unwrap();
+
+    w.write_line("Quazi file streams");
+    w.write_line("are buffered for");
+    w.write_line("efficiency.");
+    w.write_line("Line four.");
+    w.write_line("Line five.");
+    println("flushing");
+    w.flush();
+    println("closing");
+    w.close();
+    println("write_sample_file done");
+}
+
+fn read_and_print(path: str) void {
+    const result = BufReader.open(path);
+    if (result.is_err()) {
+        const err: FsError = result.unwrap_err();
+        println("error opening file: {}", err.message());
+        ret;
+    }
+    const r: BufReader = result.unwrap();
+    var line_no: i64 = 1;
+    for (true) {
+        const maybe = r.read_line();
+        if (maybe.is_err()) { break; }
+    const opt: Option[String] = maybe.unwrap();
+    if (opt.is_none()) { break; }
+    var line: String = opt.unwrap();
+    // Trim trailing newline for display.
+    var display: str = line.trim();
+    println("  {:>2}: {}", line_no.to_string(), display);
+    line_no++;
+}
+r.free();
+}
+
+fn main() i32 {
+const path: str = "/tmp/quazi_streams_demo.txt";
+
+println("── BufWriter: writing 5 lines to {} ──", path);
+write_sample_file(path);
+
+// Show metadata.
+const meta_result = stat(path);
+if (meta_result.is_ok()) {
+    const meta: FileMetadata = meta_result.unwrap();
+    println("── FileMetadata ──");
+    println("  is_file: {}", meta.is_file().to_string());
+    println("  is_dir:  {}", meta.is_dir().to_string());
+    println("  size:    {} bytes", meta.size().to_string());
+    println("  mtime:   {} (unix s)", meta.modified_secs().to_string());
+}
+
+println("── BufReader: reading lines ──");
+read_and_print(path);
+
+println("── BufReader: read_to_string ──");
+const r2: BufReader = BufReader.open(path).unwrap();
+const content: String = r2.read_to_string().unwrap();
+println("total bytes read: {}", content.bytes_len().to_string());
+r2.free();
+
+    println("Done.");
+    ret 0;
+}

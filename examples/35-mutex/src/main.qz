@@ -1,0 +1,82 @@
+// 35-mutex: mutual exclusion and thread safety demo.
+//
+// Shows how to use Mutex to coordinate shared state across multiple threads.
+// Demonstrates lock, unlock, and try_lock (non-blocking acquire).
+//
+// Because Quazi closures cannot capture mutable state across threads directly,
+// we pass shared data through a raw pointer stored in the closure's environment.
+
+import std.io.println;
+import std.thread.{Thread, Mutex};
+import std.core;
+
+@api("pthread_mutex_lock")
+unsafe fn __mutex_lock(m: *u8) i32;
+
+@api("pthread_mutex_unlock")
+unsafe fn __mutex_unlock(m: *u8) i32;
+
+// Thread worker: locks the mutex, increments the shared counter, unlocks.
+// `m`           – raw pointer to the initialised pthread_mutex_t / CRITICAL_SECTION
+// `counter_ptr` – raw pointer to the u64 counter
+unsafe fn worker(m: *u8, counter_ptr: *u64) i32 {
+    var i: u64 = 0;
+    for (i < 1000000) {
+        unsafe { __mutex_lock(m); }
+        unsafe { *counter_ptr = *counter_ptr + 1; }
+        unsafe { __mutex_unlock(m); }
+        i = i + 1;
+    }
+    ret 0;
+}
+
+fn main() i32 {
+    // ── Mutex: two threads each increment a shared counter 1 000 000 times ──
+    println("── Mutex: two threads, 1_000_000 increments each ──");
+    unsafe {
+        // Allocate a shared block: [padding (8 bytes)][counter: u64 (8 bytes)]
+        // The mutex handle lives inside the Mutex struct on the heap.
+        var shared: *u8 = core.malloc(16);
+        var m_res = Mutex.new();
+        var m: Mutex = m_res.unwrap();
+
+        var counter_ptr: *u64 = (shared + 8) as *u64;
+        *counter_ptr = 0;
+
+        // Capture the raw mutex pointer and the counter pointer in the closure.
+        var m_inner: *u8 = m.as_ptr();
+        var f = || worker(m_inner, counter_ptr);
+
+        var t1 = Thread.spawn(f);
+        var t2 = Thread.spawn(f);
+        t1.join();
+        t2.join();
+
+        println("Counter after 2_000_000 lock/unlock cycles: {}", (*counter_ptr).to_string());
+
+        m.free();
+        core.free(shared);
+    }
+
+    // ── try_lock: non-blocking mutex acquire ──
+    println("── try_lock demo ──");
+    unsafe {
+        var m_res2 = Mutex.new();
+        var m2: Mutex = m_res2.unwrap();
+
+        m2.lock();
+        var locked = m2.try_lock();
+        println("try_lock while held: {}", locked.to_string()); // false
+        m2.unlock();
+
+        locked = m2.try_lock();
+        println("try_lock when free:  {}", locked.to_string()); // true
+        if (locked) {
+            m2.unlock();
+        }
+
+        m2.free();
+    }
+
+    ret 0;
+}

@@ -1,0 +1,1302 @@
+
+build/mutex:     формат файла elf64-x86-64
+
+
+Дизасемблювання розділу .plt:
+
+00000000004003a0 <pthread_mutex_destroy@plt-0x10>:
+  4003a0:	ff 35 4a 2c 00 00    	push   0x2c4a(%rip)        # 402ff0 <_GLOBAL_OFFSET_TABLE_+0x8>
+  4003a6:	ff 25 4c 2c 00 00    	jmp    *0x2c4c(%rip)        # 402ff8 <_GLOBAL_OFFSET_TABLE_+0x10>
+  4003ac:	0f 1f 40 00          	nopl   0x0(%rax)
+
+00000000004003b0 <pthread_mutex_destroy@plt>:
+  4003b0:	ff 25 4a 2c 00 00    	jmp    *0x2c4a(%rip)        # 403000 <pthread_mutex_destroy@GLIBC_2.2.5>
+  4003b6:	68 00 00 00 00       	push   $0x0
+  4003bb:	e9 e0 ff ff ff       	jmp    4003a0 <pthread_mutex_destroy@plt-0x10>
+
+00000000004003c0 <pthread_create@plt>:
+  4003c0:	ff 25 42 2c 00 00    	jmp    *0x2c42(%rip)        # 403008 <pthread_create@GLIBC_2.34>
+  4003c6:	68 01 00 00 00       	push   $0x1
+  4003cb:	e9 d0 ff ff ff       	jmp    4003a0 <pthread_mutex_destroy@plt-0x10>
+
+00000000004003d0 <pthread_join@plt>:
+  4003d0:	ff 25 3a 2c 00 00    	jmp    *0x2c3a(%rip)        # 403010 <pthread_join@GLIBC_2.34>
+  4003d6:	68 02 00 00 00       	push   $0x2
+  4003db:	e9 c0 ff ff ff       	jmp    4003a0 <pthread_mutex_destroy@plt-0x10>
+
+Дизасемблювання розділу .text:
+
+00000000004003e0 <__quazi_intr_array___array_free>:
+  4003e0:	55                   	push   %rbp
+  4003e1:	48 89 e5             	mov    %rsp,%rbp
+  4003e4:	48 83 ec 10          	sub    $0x10,%rsp
+  4003e8:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  4003ec:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  4003f0:	e8 d2 10 00 00       	call   4014c7 <free>
+  4003f5:	48 31 c0             	xor    %rax,%rax
+  4003f8:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  4003fc:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400400:	48 89 ec             	mov    %rbp,%rsp
+  400403:	5d                   	pop    %rbp
+  400404:	c3                   	ret
+
+0000000000400405 <__quazi_intr_string___string_strlen>:
+  400405:	55                   	push   %rbp
+  400406:	48 89 e5             	mov    %rsp,%rbp
+  400409:	48 83 ec 10          	sub    $0x10,%rsp
+  40040d:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400411:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400415:	48 31 c9             	xor    %rcx,%rcx
+  400418:	48 0f b6 10          	movzbq (%rax),%rdx
+  40041c:	48 85 d2             	test   %rdx,%rdx
+  40041f:	74 08                	je     400429 <__quazi_intr_string___string_strlen+0x24>
+  400421:	48 ff c0             	inc    %rax
+  400424:	48 ff c1             	inc    %rcx
+  400427:	eb ef                	jmp    400418 <__quazi_intr_string___string_strlen+0x13>
+  400429:	48 89 4d f8          	mov    %rcx,-0x8(%rbp)
+  40042d:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400431:	48 89 ec             	mov    %rbp,%rsp
+  400434:	5d                   	pop    %rbp
+  400435:	c3                   	ret
+
+0000000000400436 <__quazi_intr_string___string_str_concat>:
+  400436:	55                   	push   %rbp
+  400437:	48 89 e5             	mov    %rsp,%rbp
+  40043a:	48 83 ec 10          	sub    $0x10,%rsp
+  40043e:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400442:	48 89 75 f0          	mov    %rsi,-0x10(%rbp)
+  400446:	53                   	push   %rbx
+  400447:	41 54                	push   %r12
+  400449:	41 55                	push   %r13
+  40044b:	48 83 ec 08          	sub    $0x8,%rsp
+  40044f:	4c 8b 65 f8          	mov    -0x8(%rbp),%r12
+  400453:	4c 8b 6d f0          	mov    -0x10(%rbp),%r13
+  400457:	4c 89 e0             	mov    %r12,%rax
+  40045a:	48 31 db             	xor    %rbx,%rbx
+  40045d:	48 0f b6 08          	movzbq (%rax),%rcx
+  400461:	48 85 c9             	test   %rcx,%rcx
+  400464:	74 08                	je     40046e <__quazi_intr_string___string_str_concat+0x38>
+  400466:	48 ff c0             	inc    %rax
+  400469:	48 ff c3             	inc    %rbx
+  40046c:	eb ef                	jmp    40045d <__quazi_intr_string___string_str_concat+0x27>
+  40046e:	4c 89 e8             	mov    %r13,%rax
+  400471:	48 31 c9             	xor    %rcx,%rcx
+  400474:	48 0f b6 10          	movzbq (%rax),%rdx
+  400478:	48 85 d2             	test   %rdx,%rdx
+  40047b:	74 08                	je     400485 <__quazi_intr_string___string_str_concat+0x4f>
+  40047d:	48 ff c0             	inc    %rax
+  400480:	48 ff c1             	inc    %rcx
+  400483:	eb ef                	jmp    400474 <__quazi_intr_string___string_str_concat+0x3e>
+  400485:	48 89 c8             	mov    %rcx,%rax
+  400488:	48 01 d8             	add    %rbx,%rax
+  40048b:	48 ff c0             	inc    %rax
+  40048e:	48 89 c7             	mov    %rax,%rdi
+  400491:	e8 d1 0f 00 00       	call   401467 <malloc>
+  400496:	48 89 c3             	mov    %rax,%rbx
+  400499:	31 c9                	xor    %ecx,%ecx
+  40049b:	41 0f b6 14 0c       	movzbl (%r12,%rcx,1),%edx
+  4004a0:	85 d2                	test   %edx,%edx
+  4004a2:	74 08                	je     4004ac <__quazi_intr_string___string_str_concat+0x76>
+  4004a4:	88 14 0b             	mov    %dl,(%rbx,%rcx,1)
+  4004a7:	48 ff c1             	inc    %rcx
+  4004aa:	eb ef                	jmp    40049b <__quazi_intr_string___string_str_concat+0x65>
+  4004ac:	41 0f b6 55 00       	movzbl 0x0(%r13),%edx
+  4004b1:	88 14 0b             	mov    %dl,(%rbx,%rcx,1)
+  4004b4:	49 ff c5             	inc    %r13
+  4004b7:	48 ff c1             	inc    %rcx
+  4004ba:	85 d2                	test   %edx,%edx
+  4004bc:	75 ee                	jne    4004ac <__quazi_intr_string___string_str_concat+0x76>
+  4004be:	48 89 5d f8          	mov    %rbx,-0x8(%rbp)
+  4004c2:	48 83 c4 08          	add    $0x8,%rsp
+  4004c6:	41 5d                	pop    %r13
+  4004c8:	41 5c                	pop    %r12
+  4004ca:	5b                   	pop    %rbx
+  4004cb:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  4004cf:	48 89 ec             	mov    %rbp,%rsp
+  4004d2:	5d                   	pop    %rbp
+  4004d3:	c3                   	ret
+
+00000000004004d4 <__quazi_intr_string___string_free>:
+  4004d4:	55                   	push   %rbp
+  4004d5:	48 89 e5             	mov    %rsp,%rbp
+  4004d8:	48 83 ec 10          	sub    $0x10,%rsp
+  4004dc:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  4004e0:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  4004e4:	e8 de 0f 00 00       	call   4014c7 <free>
+  4004e9:	48 31 c0             	xor    %rax,%rax
+  4004ec:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  4004f0:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  4004f4:	48 89 ec             	mov    %rbp,%rsp
+  4004f7:	5d                   	pop    %rbp
+  4004f8:	c3                   	ret
+
+00000000004004f9 <__quazi_intr_box___box_free>:
+  4004f9:	55                   	push   %rbp
+  4004fa:	48 89 e5             	mov    %rsp,%rbp
+  4004fd:	48 83 ec 10          	sub    $0x10,%rsp
+  400501:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400505:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  400509:	e8 b9 0f 00 00       	call   4014c7 <free>
+  40050e:	48 31 c0             	xor    %rax,%rax
+  400511:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400515:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400519:	48 89 ec             	mov    %rbp,%rsp
+  40051c:	5d                   	pop    %rbp
+  40051d:	c3                   	ret
+
+000000000040051e <__quazi_intr_fmt___fmt_strlen>:
+  40051e:	55                   	push   %rbp
+  40051f:	48 89 e5             	mov    %rsp,%rbp
+  400522:	48 83 ec 10          	sub    $0x10,%rsp
+  400526:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  40052a:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  40052e:	48 31 c9             	xor    %rcx,%rcx
+  400531:	48 0f b6 10          	movzbq (%rax),%rdx
+  400535:	48 85 d2             	test   %rdx,%rdx
+  400538:	74 08                	je     400542 <__quazi_intr_fmt___fmt_strlen+0x24>
+  40053a:	48 ff c0             	inc    %rax
+  40053d:	48 ff c1             	inc    %rcx
+  400540:	eb ef                	jmp    400531 <__quazi_intr_fmt___fmt_strlen+0x13>
+  400542:	48 89 4d f8          	mov    %rcx,-0x8(%rbp)
+  400546:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  40054a:	48 89 ec             	mov    %rbp,%rsp
+  40054d:	5d                   	pop    %rbp
+  40054e:	c3                   	ret
+
+000000000040054f <__quazi_intr_fmt___fmt_str_byte_at>:
+  40054f:	55                   	push   %rbp
+  400550:	48 89 e5             	mov    %rsp,%rbp
+  400553:	48 83 ec 10          	sub    $0x10,%rsp
+  400557:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  40055b:	48 89 75 f0          	mov    %rsi,-0x10(%rbp)
+  40055f:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400563:	48 8b 4d f0          	mov    -0x10(%rbp),%rcx
+  400567:	48 0f b6 04 08       	movzbq (%rax,%rcx,1),%rax
+  40056c:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400570:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400574:	48 89 ec             	mov    %rbp,%rsp
+  400577:	5d                   	pop    %rbp
+  400578:	c3                   	ret
+
+0000000000400579 <__quazi_intr_fmt___fmt_str_from_byte>:
+  400579:	55                   	push   %rbp
+  40057a:	48 89 e5             	mov    %rsp,%rbp
+  40057d:	48 83 ec 10          	sub    $0x10,%rsp
+  400581:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400585:	53                   	push   %rbx
+  400586:	50                   	push   %rax
+  400587:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  40058e:	00 00 00 
+  400591:	e8 d1 0e 00 00       	call   401467 <malloc>
+  400596:	48 8b 5d f8          	mov    -0x8(%rbp),%rbx
+  40059a:	88 18                	mov    %bl,(%rax)
+  40059c:	c6 40 01 00          	movb   $0x0,0x1(%rax)
+  4005a0:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  4005a4:	58                   	pop    %rax
+  4005a5:	5b                   	pop    %rbx
+  4005a6:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  4005aa:	48 89 ec             	mov    %rbp,%rsp
+  4005ad:	5d                   	pop    %rbp
+  4005ae:	c3                   	ret
+
+00000000004005af <fmt_format>:
+  4005af:	55                   	push   %rbp
+  4005b0:	48 89 e5             	mov    %rsp,%rbp
+  4005b3:	48 83 ec 60          	sub    $0x60,%rsp
+  4005b7:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  4005bb:	48 89 75 f0          	mov    %rsi,-0x10(%rbp)
+  4005bf:	48 89 55 e8          	mov    %rdx,-0x18(%rbp)
+  4005c3:	48 8b 45 e8          	mov    -0x18(%rbp),%rax
+  4005c7:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  4005cb:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  4005d2:	00 00 00 
+  4005d5:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  4005d9:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  4005dd:	48 3b 45 d8          	cmp    -0x28(%rbp),%rax
+  4005e1:	75 0b                	jne    4005ee <fmt_format+0x3f>
+  4005e3:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  4005e7:	48 89 ec             	mov    %rbp,%rsp
+  4005ea:	5d                   	pop    %rbp
+  4005eb:	c3                   	ret
+  4005ec:	eb 00                	jmp    4005ee <fmt_format+0x3f>
+  4005ee:	e8 94 06 00 00       	call   400c87 <String_new>
+  4005f3:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  4005f7:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  4005fb:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  4005ff:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  400603:	e8 16 ff ff ff       	call   40051e <__quazi_intr_fmt___fmt_strlen>
+  400608:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  40060c:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  400610:	48 89 45 d0          	mov    %rax,-0x30(%rbp)
+  400614:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  40061b:	00 00 00 
+  40061e:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400622:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400629:	00 00 00 
+  40062c:	48 89 45 c8          	mov    %rax,-0x38(%rbp)
+  400630:	48 8b 45 e8          	mov    -0x18(%rbp),%rax
+  400634:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  400638:	48 8b 45 c0          	mov    -0x40(%rbp),%rax
+  40063c:	48 89 45 b8          	mov    %rax,-0x48(%rbp)
+  400640:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  400644:	48 3b 45 d0          	cmp    -0x30(%rbp),%rax
+  400648:	0f 8d de 01 00 00    	jge    40082c <fmt_format+0x27d>
+  40064e:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  400652:	48 8b 75 e0          	mov    -0x20(%rbp),%rsi
+  400656:	e8 f4 fe ff ff       	call   40054f <__quazi_intr_fmt___fmt_str_byte_at>
+  40065b:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  40065f:	48 8b 45 c0          	mov    -0x40(%rbp),%rax
+  400663:	48 89 45 b0          	mov    %rax,-0x50(%rbp)
+  400667:	48 b8 7b 00 00 00 00 	movabs $0x7b,%rax
+  40066e:	00 00 00 
+  400671:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  400675:	48 8b 45 b0          	mov    -0x50(%rbp),%rax
+  400679:	48 3b 45 c0          	cmp    -0x40(%rbp),%rax
+  40067d:	0f 85 6d 01 00 00    	jne    4007f0 <fmt_format+0x241>
+  400683:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  40068a:	00 00 00 
+  40068d:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  400691:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  400695:	48 03 45 c0          	add    -0x40(%rbp),%rax
+  400699:	48 89 45 a8          	mov    %rax,-0x58(%rbp)
+  40069d:	48 8b 45 a8          	mov    -0x58(%rbp),%rax
+  4006a1:	48 3b 45 d0          	cmp    -0x30(%rbp),%rax
+  4006a5:	0f 8d 0c 01 00 00    	jge    4007b7 <fmt_format+0x208>
+  4006ab:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  4006b2:	00 00 00 
+  4006b5:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  4006b9:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  4006bd:	48 03 45 c0          	add    -0x40(%rbp),%rax
+  4006c1:	48 89 45 a8          	mov    %rax,-0x58(%rbp)
+  4006c5:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  4006c9:	48 8b 75 a8          	mov    -0x58(%rbp),%rsi
+  4006cd:	e8 7d fe ff ff       	call   40054f <__quazi_intr_fmt___fmt_str_byte_at>
+  4006d2:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  4006d6:	48 8b 45 c0          	mov    -0x40(%rbp),%rax
+  4006da:	48 89 45 a8          	mov    %rax,-0x58(%rbp)
+  4006de:	48 b8 7d 00 00 00 00 	movabs $0x7d,%rax
+  4006e5:	00 00 00 
+  4006e8:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  4006ec:	48 8b 45 a8          	mov    -0x58(%rbp),%rax
+  4006f0:	48 3b 45 c0          	cmp    -0x40(%rbp),%rax
+  4006f4:	0f 85 84 00 00 00    	jne    40077e <fmt_format+0x1cf>
+  4006fa:	48 8b 45 c8          	mov    -0x38(%rbp),%rax
+  4006fe:	48 3b 45 b8          	cmp    -0x48(%rbp),%rax
+  400702:	7d 5e                	jge    400762 <fmt_format+0x1b3>
+  400704:	48 b8 08 00 00 00 00 	movabs $0x8,%rax
+  40070b:	00 00 00 
+  40070e:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  400712:	48 8b 45 c8          	mov    -0x38(%rbp),%rax
+  400716:	48 0f af 45 c0       	imul   -0x40(%rbp),%rax
+  40071b:	48 89 45 a8          	mov    %rax,-0x58(%rbp)
+  40071f:	48 8b 45 f0          	mov    -0x10(%rbp),%rax
+  400723:	48 2b 45 a8          	sub    -0x58(%rbp),%rax
+  400727:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  40072b:	48 8b 45 c0          	mov    -0x40(%rbp),%rax
+  40072f:	48 8b 08             	mov    (%rax),%rcx
+  400732:	48 89 4d a8          	mov    %rcx,-0x58(%rbp)
+  400736:	48 8b 7d d8          	mov    -0x28(%rbp),%rdi
+  40073a:	48 8b 75 a8          	mov    -0x58(%rbp),%rsi
+  40073e:	e8 bc 05 00 00       	call   400cff <String_push_str>
+  400743:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  400747:	48 8b 7d d8          	mov    -0x28(%rbp),%rdi
+  40074b:	e8 7b 06 00 00       	call   400dcb <String_free>
+  400750:	48 89 45 a8          	mov    %rax,-0x58(%rbp)
+  400754:	48 8b 45 c0          	mov    -0x40(%rbp),%rax
+  400758:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  40075c:	48 ff 45 c8          	incq   -0x38(%rbp)
+  400760:	eb 00                	jmp    400762 <fmt_format+0x1b3>
+  400762:	48 b8 02 00 00 00 00 	movabs $0x2,%rax
+  400769:	00 00 00 
+  40076c:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  400770:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  400774:	48 03 45 c0          	add    -0x40(%rbp),%rax
+  400778:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  40077c:	eb 37                	jmp    4007b5 <fmt_format+0x206>
+  40077e:	48 8b 7d b0          	mov    -0x50(%rbp),%rdi
+  400782:	e8 f2 fd ff ff       	call   400579 <__quazi_intr_fmt___fmt_str_from_byte>
+  400787:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  40078b:	48 8b 7d d8          	mov    -0x28(%rbp),%rdi
+  40078f:	48 8b 75 c0          	mov    -0x40(%rbp),%rsi
+  400793:	e8 67 05 00 00       	call   400cff <String_push_str>
+  400798:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  40079c:	48 8b 7d d8          	mov    -0x28(%rbp),%rdi
+  4007a0:	e8 26 06 00 00       	call   400dcb <String_free>
+  4007a5:	48 89 45 a8          	mov    %rax,-0x58(%rbp)
+  4007a9:	48 8b 45 c0          	mov    -0x40(%rbp),%rax
+  4007ad:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  4007b1:	48 ff 45 e0          	incq   -0x20(%rbp)
+  4007b5:	eb 37                	jmp    4007ee <fmt_format+0x23f>
+  4007b7:	48 8b 7d b0          	mov    -0x50(%rbp),%rdi
+  4007bb:	e8 b9 fd ff ff       	call   400579 <__quazi_intr_fmt___fmt_str_from_byte>
+  4007c0:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  4007c4:	48 8b 7d d8          	mov    -0x28(%rbp),%rdi
+  4007c8:	48 8b 75 c0          	mov    -0x40(%rbp),%rsi
+  4007cc:	e8 2e 05 00 00       	call   400cff <String_push_str>
+  4007d1:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  4007d5:	48 8b 7d d8          	mov    -0x28(%rbp),%rdi
+  4007d9:	e8 ed 05 00 00       	call   400dcb <String_free>
+  4007de:	48 89 45 a8          	mov    %rax,-0x58(%rbp)
+  4007e2:	48 8b 45 c0          	mov    -0x40(%rbp),%rax
+  4007e6:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  4007ea:	48 ff 45 e0          	incq   -0x20(%rbp)
+  4007ee:	eb 37                	jmp    400827 <fmt_format+0x278>
+  4007f0:	48 8b 7d b0          	mov    -0x50(%rbp),%rdi
+  4007f4:	e8 80 fd ff ff       	call   400579 <__quazi_intr_fmt___fmt_str_from_byte>
+  4007f9:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  4007fd:	48 8b 7d d8          	mov    -0x28(%rbp),%rdi
+  400801:	48 8b 75 c0          	mov    -0x40(%rbp),%rsi
+  400805:	e8 f5 04 00 00       	call   400cff <String_push_str>
+  40080a:	48 89 45 c0          	mov    %rax,-0x40(%rbp)
+  40080e:	48 8b 7d d8          	mov    -0x28(%rbp),%rdi
+  400812:	e8 b4 05 00 00       	call   400dcb <String_free>
+  400817:	48 89 45 b0          	mov    %rax,-0x50(%rbp)
+  40081b:	48 8b 45 c0          	mov    -0x40(%rbp),%rax
+  40081f:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  400823:	48 ff 45 e0          	incq   -0x20(%rbp)
+  400827:	e9 14 fe ff ff       	jmp    400640 <fmt_format+0x91>
+  40082c:	48 8b 45 d8          	mov    -0x28(%rbp),%rax
+  400830:	48 8b 08             	mov    (%rax),%rcx
+  400833:	48 89 4d e0          	mov    %rcx,-0x20(%rbp)
+  400837:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  40083b:	48 89 45 d0          	mov    %rax,-0x30(%rbp)
+  40083f:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400846:	00 00 00 
+  400849:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  40084d:	48 8b 45 d8          	mov    -0x28(%rbp),%rax
+  400851:	48 8b 4d e0          	mov    -0x20(%rbp),%rcx
+  400855:	48 89 48 10          	mov    %rcx,0x10(%rax)
+  400859:	48 8b 45 d0          	mov    -0x30(%rbp),%rax
+  40085d:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400861:	48 8b 7d d8          	mov    -0x28(%rbp),%rdi
+  400865:	e8 61 05 00 00       	call   400dcb <String_free>
+  40086a:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  40086e:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  400872:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400876:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  40087a:	48 89 ec             	mov    %rbp,%rsp
+  40087d:	5d                   	pop    %rbp
+  40087e:	c3                   	ret
+
+000000000040087f <__quazi_intr_core_write>:
+  40087f:	55                   	push   %rbp
+  400880:	48 89 e5             	mov    %rsp,%rbp
+  400883:	48 83 ec 20          	sub    $0x20,%rsp
+  400887:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  40088b:	48 89 75 f0          	mov    %rsi,-0x10(%rbp)
+  40088f:	48 89 55 e8          	mov    %rdx,-0x18(%rbp)
+  400893:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  400897:	48 8b 75 f0          	mov    -0x10(%rbp),%rsi
+  40089b:	48 8b 55 e8          	mov    -0x18(%rbp),%rdx
+  40089f:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  4008a6:	00 00 00 
+  4008a9:	0f 05                	syscall
+  4008ab:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  4008af:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  4008b3:	48 89 ec             	mov    %rbp,%rsp
+  4008b6:	5d                   	pop    %rbp
+  4008b7:	c3                   	ret
+
+00000000004008b8 <__quazi_intr_core_thread_spawn>:
+  4008b8:	55                   	push   %rbp
+  4008b9:	48 89 e5             	mov    %rsp,%rbp
+  4008bc:	48 83 ec 10          	sub    $0x10,%rsp
+  4008c0:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  4008c4:	53                   	push   %rbx
+  4008c5:	50                   	push   %rax
+  4008c6:	48 bf 08 00 00 00 00 	movabs $0x8,%rdi
+  4008cd:	00 00 00 
+  4008d0:	e8 92 0b 00 00       	call   401467 <malloc>
+  4008d5:	48 89 c3             	mov    %rax,%rbx
+  4008d8:	48 89 df             	mov    %rbx,%rdi
+  4008db:	48 31 f6             	xor    %rsi,%rsi
+  4008de:	48 8b 55 f8          	mov    -0x8(%rbp),%rdx
+  4008e2:	48 31 c9             	xor    %rcx,%rcx
+  4008e5:	e8 d6 fa ff ff       	call   4003c0 <pthread_create@plt>
+  4008ea:	48 89 d8             	mov    %rbx,%rax
+  4008ed:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  4008f1:	58                   	pop    %rax
+  4008f2:	5b                   	pop    %rbx
+  4008f3:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  4008f7:	48 89 ec             	mov    %rbp,%rsp
+  4008fa:	5d                   	pop    %rbp
+  4008fb:	c3                   	ret
+
+00000000004008fc <__quazi_intr_core_thread_join>:
+  4008fc:	55                   	push   %rbp
+  4008fd:	48 89 e5             	mov    %rsp,%rbp
+  400900:	48 83 ec 10          	sub    $0x10,%rsp
+  400904:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400908:	53                   	push   %rbx
+  400909:	50                   	push   %rax
+  40090a:	48 8b 5d f8          	mov    -0x8(%rbp),%rbx
+  40090e:	48 8b 3b             	mov    (%rbx),%rdi
+  400911:	48 31 f6             	xor    %rsi,%rsi
+  400914:	e8 b7 fa ff ff       	call   4003d0 <pthread_join@plt>
+  400919:	48 89 df             	mov    %rbx,%rdi
+  40091c:	e8 a6 0b 00 00       	call   4014c7 <free>
+  400921:	48 31 c0             	xor    %rax,%rax
+  400924:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400928:	58                   	pop    %rax
+  400929:	5b                   	pop    %rbx
+  40092a:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  40092e:	48 89 ec             	mov    %rbp,%rsp
+  400931:	5d                   	pop    %rbp
+  400932:	c3                   	ret
+
+0000000000400933 <__quazi_intr_core_free>:
+  400933:	55                   	push   %rbp
+  400934:	48 89 e5             	mov    %rsp,%rbp
+  400937:	48 83 ec 10          	sub    $0x10,%rsp
+  40093b:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  40093f:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  400943:	e8 7f 0b 00 00       	call   4014c7 <free>
+  400948:	48 31 c0             	xor    %rax,%rax
+  40094b:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  40094f:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400953:	48 89 ec             	mov    %rbp,%rsp
+  400956:	5d                   	pop    %rbp
+  400957:	c3                   	ret
+
+0000000000400958 <__quazi_intr_core_strlen>:
+  400958:	55                   	push   %rbp
+  400959:	48 89 e5             	mov    %rsp,%rbp
+  40095c:	48 83 ec 10          	sub    $0x10,%rsp
+  400960:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400964:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400968:	48 31 c9             	xor    %rcx,%rcx
+  40096b:	48 0f b6 10          	movzbq (%rax),%rdx
+  40096f:	48 85 d2             	test   %rdx,%rdx
+  400972:	74 08                	je     40097c <__quazi_intr_core_strlen+0x24>
+  400974:	48 ff c0             	inc    %rax
+  400977:	48 ff c1             	inc    %rcx
+  40097a:	eb ef                	jmp    40096b <__quazi_intr_core_strlen+0x13>
+  40097c:	48 89 4d f8          	mov    %rcx,-0x8(%rbp)
+  400980:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400984:	48 89 ec             	mov    %rbp,%rsp
+  400987:	5d                   	pop    %rbp
+  400988:	c3                   	ret
+
+0000000000400989 <io_write_text>:
+  400989:	55                   	push   %rbp
+  40098a:	48 89 e5             	mov    %rsp,%rbp
+  40098d:	48 83 ec 20          	sub    $0x20,%rsp
+  400991:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400995:	48 89 75 f0          	mov    %rsi,-0x10(%rbp)
+  400999:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  4009a0:	00 00 00 
+  4009a3:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  4009a7:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  4009ab:	e8 a8 ff ff ff       	call   400958 <__quazi_intr_core_strlen>
+  4009b0:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  4009b4:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  4009b8:	48 8b 75 f0          	mov    -0x10(%rbp),%rsi
+  4009bc:	48 8b 55 e0          	mov    -0x20(%rbp),%rdx
+  4009c0:	e8 ba fe ff ff       	call   40087f <__quazi_intr_core_write>
+  4009c5:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  4009c9:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  4009cd:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  4009d1:	48 8b 45 e8          	mov    -0x18(%rbp),%rax
+  4009d5:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  4009d9:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  4009dd:	48 89 ec             	mov    %rbp,%rsp
+  4009e0:	5d                   	pop    %rbp
+  4009e1:	c3                   	ret
+
+00000000004009e2 <io_println>:
+  4009e2:	55                   	push   %rbp
+  4009e3:	48 89 e5             	mov    %rsp,%rbp
+  4009e6:	48 83 ec 30          	sub    $0x30,%rsp
+  4009ea:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  4009ee:	48 89 75 f0          	mov    %rsi,-0x10(%rbp)
+  4009f2:	48 89 55 e8          	mov    %rdx,-0x18(%rbp)
+  4009f6:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  4009fd:	00 00 00 
+  400a00:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400a04:	48 8b 7d e0          	mov    -0x20(%rbp),%rdi
+  400a08:	48 8b 75 f8          	mov    -0x8(%rbp),%rsi
+  400a0c:	e8 78 ff ff ff       	call   400989 <io_write_text>
+  400a11:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400a15:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  400a1c:	00 00 00 
+  400a1f:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400a23:	48 8d 05 dd 0b 00 00 	lea    0xbdd(%rip),%rax        # 401607 <__quazi_str_io_println_0>
+  400a2a:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  400a2e:	48 8b 7d e0          	mov    -0x20(%rbp),%rdi
+  400a32:	48 8b 75 d8          	mov    -0x28(%rbp),%rsi
+  400a36:	e8 4e ff ff ff       	call   400989 <io_write_text>
+  400a3b:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400a3f:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400a46:	00 00 00 
+  400a49:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400a4d:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400a51:	48 89 ec             	mov    %rbp,%rsp
+  400a54:	5d                   	pop    %rbp
+  400a55:	c3                   	ret
+
+0000000000400a56 <__quazi_intr_thread___mutex_destroy>:
+  400a56:	55                   	push   %rbp
+  400a57:	48 89 e5             	mov    %rsp,%rbp
+  400a5a:	48 83 ec 10          	sub    $0x10,%rsp
+  400a5e:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400a62:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  400a66:	e8 45 f9 ff ff       	call   4003b0 <pthread_mutex_destroy@plt>
+  400a6b:	48 63 c0             	movslq %eax,%rax
+  400a6e:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400a72:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400a76:	48 89 ec             	mov    %rbp,%rsp
+  400a79:	5d                   	pop    %rbp
+  400a7a:	c3                   	ret
+
+0000000000400a7b <thread_work>:
+  400a7b:	55                   	push   %rbp
+  400a7c:	48 89 e5             	mov    %rsp,%rbp
+  400a7f:	48 83 ec 20          	sub    $0x20,%rsp
+  400a83:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400a87:	48 8d 05 7b 0b 00 00 	lea    0xb7b(%rip),%rax        # 401609 <__quazi_str_thread_work_0>
+  400a8e:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400a92:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400a99:	00 00 00 
+  400a9c:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400aa0:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400aa7:	00 00 00 
+  400aaa:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400aae:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400ab2:	48 8b 75 e8          	mov    -0x18(%rbp),%rsi
+  400ab6:	48 8b 55 e0          	mov    -0x20(%rbp),%rdx
+  400aba:	e8 23 ff ff ff       	call   4009e2 <io_println>
+  400abf:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400ac3:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400aca:	00 00 00 
+  400acd:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400ad1:	48 b8 a0 86 01 00 00 	movabs $0x186a0,%rax
+  400ad8:	00 00 00 
+  400adb:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400adf:	48 8b 45 f0          	mov    -0x10(%rbp),%rax
+  400ae3:	48 3b 45 e8          	cmp    -0x18(%rbp),%rax
+  400ae7:	7d 24                	jge    400b0d <thread_work+0x92>
+  400ae9:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  400af0:	00 00 00 
+  400af3:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400af7:	48 8b 45 f0          	mov    -0x10(%rbp),%rax
+  400afb:	48 03 45 e8          	add    -0x18(%rbp),%rax
+  400aff:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400b03:	48 8b 45 e0          	mov    -0x20(%rbp),%rax
+  400b07:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400b0b:	eb c4                	jmp    400ad1 <thread_work+0x56>
+  400b0d:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400b14:	00 00 00 
+  400b17:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400b1b:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400b1f:	48 89 ec             	mov    %rbp,%rsp
+  400b22:	5d                   	pop    %rbp
+  400b23:	c3                   	ret
+
+0000000000400b24 <main>:
+  400b24:	55                   	push   %rbp
+  400b25:	48 89 e5             	mov    %rsp,%rbp
+  400b28:	48 83 ec 30          	sub    $0x30,%rsp
+  400b2c:	48 8d 05 ea 0a 00 00 	lea    0xaea(%rip),%rax        # 40161d <__quazi_str_main_0>
+  400b33:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400b37:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400b3e:	00 00 00 
+  400b41:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400b45:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400b4c:	00 00 00 
+  400b4f:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400b53:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  400b57:	48 8b 75 f0          	mov    -0x10(%rbp),%rsi
+  400b5b:	48 8b 55 e8          	mov    -0x18(%rbp),%rdx
+  400b5f:	e8 7e fe ff ff       	call   4009e2 <io_println>
+  400b64:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400b68:	48 bf 01 00 00 00 00 	movabs $0x1,%rdi
+  400b6f:	00 00 00 
+  400b72:	48 be 10 00 00 00 00 	movabs $0x10,%rsi
+  400b79:	00 00 00 
+  400b7c:	e8 5c 09 00 00       	call   4014dd <calloc>
+  400b81:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400b85:	48 8d 05 18 04 00 00 	lea    0x418(%rip),%rax        # 400fa4 <__quazi_fwd_thread_work>
+  400b8c:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400b90:	48 8b 45 f0          	mov    -0x10(%rbp),%rax
+  400b94:	48 8b 4d e8          	mov    -0x18(%rbp),%rcx
+  400b98:	48 89 08             	mov    %rcx,(%rax)
+  400b9b:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400b9f:	e8 c3 02 00 00       	call   400e67 <Thread_spawn>
+  400ba4:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400ba8:	48 8b 45 f0          	mov    -0x10(%rbp),%rax
+  400bac:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400bb0:	48 8d 05 86 0a 00 00 	lea    0xa86(%rip),%rax        # 40163d <__quazi_str_main_2>
+  400bb7:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400bbb:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400bc2:	00 00 00 
+  400bc5:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400bc9:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400bd0:	00 00 00 
+  400bd3:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  400bd7:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400bdb:	48 8b 75 e0          	mov    -0x20(%rbp),%rsi
+  400bdf:	48 8b 55 d8          	mov    -0x28(%rbp),%rdx
+  400be3:	e8 fa fd ff ff       	call   4009e2 <io_println>
+  400be8:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400bec:	48 8b 7d e8          	mov    -0x18(%rbp),%rdi
+  400bf0:	e8 cc 02 00 00       	call   400ec1 <Thread_join>
+  400bf5:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400bf9:	48 8d 05 4d 0a 00 00 	lea    0xa4d(%rip),%rax        # 40164d <__quazi_str_main_3>
+  400c00:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400c04:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400c0b:	00 00 00 
+  400c0e:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400c12:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400c19:	00 00 00 
+  400c1c:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400c20:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400c24:	48 8b 75 e8          	mov    -0x18(%rbp),%rsi
+  400c28:	48 8b 55 e0          	mov    -0x20(%rbp),%rdx
+  400c2c:	e8 b1 fd ff ff       	call   4009e2 <io_println>
+  400c31:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400c35:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400c3c:	00 00 00 
+  400c3f:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400c43:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400c47:	48 89 ec             	mov    %rbp,%rsp
+  400c4a:	5d                   	pop    %rbp
+  400c4b:	c3                   	ret
+
+0000000000400c4c <Array_free>:
+  400c4c:	55                   	push   %rbp
+  400c4d:	48 89 e5             	mov    %rsp,%rbp
+  400c50:	48 83 ec 10          	sub    $0x10,%rsp
+  400c54:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400c58:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400c5c:	48 8b 08             	mov    (%rax),%rcx
+  400c5f:	48 89 4d f0          	mov    %rcx,-0x10(%rbp)
+  400c63:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400c67:	e8 74 f7 ff ff       	call   4003e0 <__quazi_intr_array___array_free>
+  400c6c:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400c70:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400c77:	00 00 00 
+  400c7a:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400c7e:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400c82:	48 89 ec             	mov    %rbp,%rsp
+  400c85:	5d                   	pop    %rbp
+  400c86:	c3                   	ret
+
+0000000000400c87 <String_new>:
+  400c87:	55                   	push   %rbp
+  400c88:	48 89 e5             	mov    %rsp,%rbp
+  400c8b:	48 83 ec 10          	sub    $0x10,%rsp
+  400c8f:	48 bf 01 00 00 00 00 	movabs $0x1,%rdi
+  400c96:	00 00 00 
+  400c99:	48 be 18 00 00 00 00 	movabs $0x18,%rsi
+  400ca0:	00 00 00 
+  400ca3:	e8 35 08 00 00       	call   4014dd <calloc>
+  400ca8:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400cac:	48 8d 05 a9 09 00 00 	lea    0x9a9(%rip),%rax        # 40165c <__quazi_str_String_new_0>
+  400cb3:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400cb7:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400cbb:	48 8b 4d f0          	mov    -0x10(%rbp),%rcx
+  400cbf:	48 89 08             	mov    %rcx,(%rax)
+  400cc2:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400cc9:	00 00 00 
+  400ccc:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400cd0:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400cd4:	48 8b 4d f0          	mov    -0x10(%rbp),%rcx
+  400cd8:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  400cdc:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400ce3:	00 00 00 
+  400ce6:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400cea:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400cee:	48 8b 4d f0          	mov    -0x10(%rbp),%rcx
+  400cf2:	48 89 48 10          	mov    %rcx,0x10(%rax)
+  400cf6:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400cfa:	48 89 ec             	mov    %rbp,%rsp
+  400cfd:	5d                   	pop    %rbp
+  400cfe:	c3                   	ret
+
+0000000000400cff <String_push_str>:
+  400cff:	55                   	push   %rbp
+  400d00:	48 89 e5             	mov    %rsp,%rbp
+  400d03:	48 83 ec 30          	sub    $0x30,%rsp
+  400d07:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400d0b:	48 89 75 f0          	mov    %rsi,-0x10(%rbp)
+  400d0f:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400d13:	48 8b 08             	mov    (%rax),%rcx
+  400d16:	48 89 4d e8          	mov    %rcx,-0x18(%rbp)
+  400d1a:	48 8b 7d e8          	mov    -0x18(%rbp),%rdi
+  400d1e:	48 8b 75 f0          	mov    -0x10(%rbp),%rsi
+  400d22:	e8 0f f7 ff ff       	call   400436 <__quazi_intr_string___string_str_concat>
+  400d27:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400d2b:	48 8b 45 e8          	mov    -0x18(%rbp),%rax
+  400d2f:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400d33:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400d37:	48 8b 48 08          	mov    0x8(%rax),%rcx
+  400d3b:	48 89 4d e8          	mov    %rcx,-0x18(%rbp)
+  400d3f:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400d43:	e8 bd f6 ff ff       	call   400405 <__quazi_intr_string___string_strlen>
+  400d48:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  400d4c:	48 8b 45 e8          	mov    -0x18(%rbp),%rax
+  400d50:	48 03 45 d8          	add    -0x28(%rbp),%rax
+  400d54:	48 89 45 d0          	mov    %rax,-0x30(%rbp)
+  400d58:	48 8b 45 d0          	mov    -0x30(%rbp),%rax
+  400d5c:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400d60:	48 bf 01 00 00 00 00 	movabs $0x1,%rdi
+  400d67:	00 00 00 
+  400d6a:	48 be 18 00 00 00 00 	movabs $0x18,%rsi
+  400d71:	00 00 00 
+  400d74:	e8 64 07 00 00       	call   4014dd <calloc>
+  400d79:	48 89 45 d8          	mov    %rax,-0x28(%rbp)
+  400d7d:	48 8b 45 d8          	mov    -0x28(%rbp),%rax
+  400d81:	48 8b 4d e0          	mov    -0x20(%rbp),%rcx
+  400d85:	48 89 08             	mov    %rcx,(%rax)
+  400d88:	48 8b 45 d8          	mov    -0x28(%rbp),%rax
+  400d8c:	48 8b 4d e8          	mov    -0x18(%rbp),%rcx
+  400d90:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  400d94:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  400d9b:	00 00 00 
+  400d9e:	48 89 45 e0          	mov    %rax,-0x20(%rbp)
+  400da2:	48 8b 45 e8          	mov    -0x18(%rbp),%rax
+  400da6:	48 03 45 e0          	add    -0x20(%rbp),%rax
+  400daa:	48 89 45 d0          	mov    %rax,-0x30(%rbp)
+  400dae:	48 8b 45 d8          	mov    -0x28(%rbp),%rax
+  400db2:	48 8b 4d d0          	mov    -0x30(%rbp),%rcx
+  400db6:	48 89 48 10          	mov    %rcx,0x10(%rax)
+  400dba:	48 8b 45 d8          	mov    -0x28(%rbp),%rax
+  400dbe:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400dc2:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400dc6:	48 89 ec             	mov    %rbp,%rsp
+  400dc9:	5d                   	pop    %rbp
+  400dca:	c3                   	ret
+
+0000000000400dcb <String_free>:
+  400dcb:	55                   	push   %rbp
+  400dcc:	48 89 e5             	mov    %rsp,%rbp
+  400dcf:	48 83 ec 20          	sub    $0x20,%rsp
+  400dd3:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400dd7:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400ddb:	48 8b 48 10          	mov    0x10(%rax),%rcx
+  400ddf:	48 89 4d f0          	mov    %rcx,-0x10(%rbp)
+  400de3:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400dea:	00 00 00 
+  400ded:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400df1:	48 8b 45 f0          	mov    -0x10(%rbp),%rax
+  400df5:	48 3b 45 e8          	cmp    -0x18(%rbp),%rax
+  400df9:	7e 1a                	jle    400e15 <String_free+0x4a>
+  400dfb:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400dff:	48 8b 08             	mov    (%rax),%rcx
+  400e02:	48 89 4d f0          	mov    %rcx,-0x10(%rbp)
+  400e06:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400e0a:	e8 c5 f6 ff ff       	call   4004d4 <__quazi_intr_string___string_free>
+  400e0f:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400e13:	eb 00                	jmp    400e15 <String_free+0x4a>
+  400e15:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400e1c:	00 00 00 
+  400e1f:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400e23:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400e27:	48 89 ec             	mov    %rbp,%rsp
+  400e2a:	5d                   	pop    %rbp
+  400e2b:	c3                   	ret
+
+0000000000400e2c <Box_free>:
+  400e2c:	55                   	push   %rbp
+  400e2d:	48 89 e5             	mov    %rsp,%rbp
+  400e30:	48 83 ec 10          	sub    $0x10,%rsp
+  400e34:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400e38:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400e3c:	48 8b 08             	mov    (%rax),%rcx
+  400e3f:	48 89 4d f0          	mov    %rcx,-0x10(%rbp)
+  400e43:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400e47:	e8 ad f6 ff ff       	call   4004f9 <__quazi_intr_box___box_free>
+  400e4c:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400e50:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400e57:	00 00 00 
+  400e5a:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400e5e:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400e62:	48 89 ec             	mov    %rbp,%rsp
+  400e65:	5d                   	pop    %rbp
+  400e66:	c3                   	ret
+
+0000000000400e67 <Thread_spawn>:
+  400e67:	55                   	push   %rbp
+  400e68:	48 89 e5             	mov    %rsp,%rbp
+  400e6b:	48 83 ec 20          	sub    $0x20,%rsp
+  400e6f:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400e73:	48 8b 7d f8          	mov    -0x8(%rbp),%rdi
+  400e77:	e8 3c fa ff ff       	call   4008b8 <__quazi_intr_core_thread_spawn>
+  400e7c:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400e80:	48 8b 45 f0          	mov    -0x10(%rbp),%rax
+  400e84:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400e88:	48 bf 01 00 00 00 00 	movabs $0x1,%rdi
+  400e8f:	00 00 00 
+  400e92:	48 be 08 00 00 00 00 	movabs $0x8,%rsi
+  400e99:	00 00 00 
+  400e9c:	e8 3c 06 00 00       	call   4014dd <calloc>
+  400ea1:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400ea5:	48 8b 45 f0          	mov    -0x10(%rbp),%rax
+  400ea9:	48 8b 4d e8          	mov    -0x18(%rbp),%rcx
+  400ead:	48 89 08             	mov    %rcx,(%rax)
+  400eb0:	48 8b 45 f0          	mov    -0x10(%rbp),%rax
+  400eb4:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400eb8:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400ebc:	48 89 ec             	mov    %rbp,%rsp
+  400ebf:	5d                   	pop    %rbp
+  400ec0:	c3                   	ret
+
+0000000000400ec1 <Thread_join>:
+  400ec1:	55                   	push   %rbp
+  400ec2:	48 89 e5             	mov    %rsp,%rbp
+  400ec5:	48 83 ec 10          	sub    $0x10,%rsp
+  400ec9:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400ecd:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400ed1:	48 8b 08             	mov    (%rax),%rcx
+  400ed4:	48 89 4d f0          	mov    %rcx,-0x10(%rbp)
+  400ed8:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400edc:	e8 1b fa ff ff       	call   4008fc <__quazi_intr_core_thread_join>
+  400ee1:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400ee5:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400eec:	00 00 00 
+  400eef:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400ef3:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400ef7:	48 89 ec             	mov    %rbp,%rsp
+  400efa:	5d                   	pop    %rbp
+  400efb:	c3                   	ret
+
+0000000000400efc <Mutex_free>:
+  400efc:	55                   	push   %rbp
+  400efd:	48 89 e5             	mov    %rsp,%rbp
+  400f00:	48 83 ec 20          	sub    $0x20,%rsp
+  400f04:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400f08:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400f0c:	48 8b 08             	mov    (%rax),%rcx
+  400f0f:	48 89 4d f0          	mov    %rcx,-0x10(%rbp)
+  400f13:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400f1a:	00 00 00 
+  400f1d:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  400f21:	48 8b 45 f0          	mov    -0x10(%rbp),%rax
+  400f25:	48 3b 45 e8          	cmp    -0x18(%rbp),%rax
+  400f29:	75 19                	jne    400f44 <Mutex_free+0x48>
+  400f2b:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400f32:	00 00 00 
+  400f35:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400f39:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400f3d:	48 89 ec             	mov    %rbp,%rsp
+  400f40:	5d                   	pop    %rbp
+  400f41:	c3                   	ret
+  400f42:	eb 00                	jmp    400f44 <Mutex_free+0x48>
+  400f44:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400f48:	48 8b 08             	mov    (%rax),%rcx
+  400f4b:	48 89 4d f0          	mov    %rcx,-0x10(%rbp)
+  400f4f:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400f53:	e8 fe fa ff ff       	call   400a56 <__quazi_intr_thread___mutex_destroy>
+  400f58:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400f5c:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400f60:	48 8b 08             	mov    (%rax),%rcx
+  400f63:	48 89 4d f0          	mov    %rcx,-0x10(%rbp)
+  400f67:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400f6b:	e8 c3 f9 ff ff       	call   400933 <__quazi_intr_core_free>
+  400f70:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400f74:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400f7b:	00 00 00 
+  400f7e:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
+  400f82:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400f86:	48 8b 4d f0          	mov    -0x10(%rbp),%rcx
+  400f8a:	48 89 08             	mov    %rcx,(%rax)
+  400f8d:	48 b8 00 00 00 00 00 	movabs $0x0,%rax
+  400f94:	00 00 00 
+  400f97:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400f9b:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400f9f:	48 89 ec             	mov    %rbp,%rsp
+  400fa2:	5d                   	pop    %rbp
+  400fa3:	c3                   	ret
+
+0000000000400fa4 <__quazi_fwd_thread_work>:
+  400fa4:	55                   	push   %rbp
+  400fa5:	48 89 e5             	mov    %rsp,%rbp
+  400fa8:	48 83 ec 10          	sub    $0x10,%rsp
+  400fac:	48 89 7d f8          	mov    %rdi,-0x8(%rbp)
+  400fb0:	48 89 75 f0          	mov    %rsi,-0x10(%rbp)
+  400fb4:	48 8b 7d f0          	mov    -0x10(%rbp),%rdi
+  400fb8:	e8 be fa ff ff       	call   400a7b <thread_work>
+  400fbd:	48 89 45 f8          	mov    %rax,-0x8(%rbp)
+  400fc1:	48 8b 45 f8          	mov    -0x8(%rbp),%rax
+  400fc5:	48 89 ec             	mov    %rbp,%rsp
+  400fc8:	5d                   	pop    %rbp
+  400fc9:	c3                   	ret
+
+0000000000400fca <__quazi_sigreturn>:
+  400fca:	48 b8 0f 00 00 00 00 	movabs $0xf,%rax
+  400fd1:	00 00 00 
+  400fd4:	0f 05                	syscall
+
+0000000000400fd6 <__quazi_crash_handler>:
+  400fd6:	53                   	push   %rbx
+  400fd7:	41 54                	push   %r12
+  400fd9:	41 55                	push   %r13
+  400fdb:	41 56                	push   %r14
+  400fdd:	41 57                	push   %r15
+  400fdf:	49 89 fc             	mov    %rdi,%r12
+  400fe2:	49 89 f5             	mov    %rsi,%r13
+  400fe5:	49 89 d6             	mov    %rdx,%r14
+  400fe8:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  400fef:	00 00 00 
+  400ff2:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  400ff9:	00 00 00 
+  400ffc:	48 8d 35 52 05 00 00 	lea    0x552(%rip),%rsi        # 401555 <__quazi_crash_header>
+  401003:	48 ba 0e 00 00 00 00 	movabs $0xe,%rdx
+  40100a:	00 00 00 
+  40100d:	0f 05                	syscall
+  40100f:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  401016:	00 00 00 
+  401019:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  401020:	00 00 00 
+  401023:	48 8d 35 a5 05 00 00 	lea    0x5a5(%rip),%rsi        # 4015cf <__quazi_fatal_sig>
+  40102a:	48 ba 10 00 00 00 00 	movabs $0x10,%rdx
+  401031:	00 00 00 
+  401034:	0f 05                	syscall
+  401036:	4c 89 e3             	mov    %r12,%rbx
+  401039:	b9 08 00 00 00       	mov    $0x8,%ecx
+  40103e:	4c 8d 05 d3 1f 00 00 	lea    0x1fd3(%rip),%r8        # 403018 <__quazi_hex_buf>
+  401045:	49 83 c0 07          	add    $0x7,%r8
+  401049:	48 89 d8             	mov    %rbx,%rax
+  40104c:	48 25 0f 00 00 00    	and    $0xf,%rax
+  401052:	3c 0a                	cmp    $0xa,%al
+  401054:	72 02                	jb     401058 <__quazi_crash_handler+0x82>
+  401056:	04 07                	add    $0x7,%al
+  401058:	04 30                	add    $0x30,%al
+  40105a:	41 88 00             	mov    %al,(%r8)
+  40105d:	49 ff c8             	dec    %r8
+  401060:	48 c1 eb 04          	shr    $0x4,%rbx
+  401064:	ff c9                	dec    %ecx
+  401066:	75 e1                	jne    401049 <__quazi_crash_handler+0x73>
+  401068:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  40106f:	00 00 00 
+  401072:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  401079:	00 00 00 
+  40107c:	48 8d 35 95 1f 00 00 	lea    0x1f95(%rip),%rsi        # 403018 <__quazi_hex_buf>
+  401083:	48 ba 08 00 00 00 00 	movabs $0x8,%rdx
+  40108a:	00 00 00 
+  40108d:	0f 05                	syscall
+  40108f:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  401096:	00 00 00 
+  401099:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  4010a0:	00 00 00 
+  4010a3:	48 8d 35 5c 05 00 00 	lea    0x55c(%rip),%rsi        # 401606 <__quazi_nl>
+  4010aa:	48 ba 01 00 00 00 00 	movabs $0x1,%rdx
+  4010b1:	00 00 00 
+  4010b4:	0f 05                	syscall
+  4010b6:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  4010bd:	00 00 00 
+  4010c0:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  4010c7:	00 00 00 
+  4010ca:	48 8d 35 a5 04 00 00 	lea    0x4a5(%rip),%rsi        # 401576 <__quazi_fault>
+  4010d1:	48 ba 09 00 00 00 00 	movabs $0x9,%rdx
+  4010d8:	00 00 00 
+  4010db:	0f 05                	syscall
+  4010dd:	49 8b 5d 10          	mov    0x10(%r13),%rbx
+  4010e1:	b9 10 00 00 00       	mov    $0x10,%ecx
+  4010e6:	4c 8d 05 2b 1f 00 00 	lea    0x1f2b(%rip),%r8        # 403018 <__quazi_hex_buf>
+  4010ed:	49 83 c0 0f          	add    $0xf,%r8
+  4010f1:	48 89 d8             	mov    %rbx,%rax
+  4010f4:	48 25 0f 00 00 00    	and    $0xf,%rax
+  4010fa:	3c 0a                	cmp    $0xa,%al
+  4010fc:	72 02                	jb     401100 <__quazi_crash_handler+0x12a>
+  4010fe:	04 07                	add    $0x7,%al
+  401100:	04 30                	add    $0x30,%al
+  401102:	41 88 00             	mov    %al,(%r8)
+  401105:	49 ff c8             	dec    %r8
+  401108:	48 c1 eb 04          	shr    $0x4,%rbx
+  40110c:	ff c9                	dec    %ecx
+  40110e:	75 e1                	jne    4010f1 <__quazi_crash_handler+0x11b>
+  401110:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  401117:	00 00 00 
+  40111a:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  401121:	00 00 00 
+  401124:	48 8d 35 ed 1e 00 00 	lea    0x1eed(%rip),%rsi        # 403018 <__quazi_hex_buf>
+  40112b:	48 ba 10 00 00 00 00 	movabs $0x10,%rdx
+  401132:	00 00 00 
+  401135:	0f 05                	syscall
+  401137:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  40113e:	00 00 00 
+  401141:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  401148:	00 00 00 
+  40114b:	48 8d 35 b4 04 00 00 	lea    0x4b4(%rip),%rsi        # 401606 <__quazi_nl>
+  401152:	48 ba 01 00 00 00 00 	movabs $0x1,%rdx
+  401159:	00 00 00 
+  40115c:	0f 05                	syscall
+  40115e:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  401165:	00 00 00 
+  401168:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  40116f:	00 00 00 
+  401172:	48 8d 35 06 04 00 00 	lea    0x406(%rip),%rsi        # 40157f <__quazi_rip>
+  401179:	48 ba 07 00 00 00 00 	movabs $0x7,%rdx
+  401180:	00 00 00 
+  401183:	0f 05                	syscall
+  401185:	49 8b 9e a8 00 00 00 	mov    0xa8(%r14),%rbx
+  40118c:	b9 10 00 00 00       	mov    $0x10,%ecx
+  401191:	4c 8d 05 80 1e 00 00 	lea    0x1e80(%rip),%r8        # 403018 <__quazi_hex_buf>
+  401198:	49 83 c0 0f          	add    $0xf,%r8
+  40119c:	48 89 d8             	mov    %rbx,%rax
+  40119f:	48 25 0f 00 00 00    	and    $0xf,%rax
+  4011a5:	3c 0a                	cmp    $0xa,%al
+  4011a7:	72 02                	jb     4011ab <__quazi_crash_handler+0x1d5>
+  4011a9:	04 07                	add    $0x7,%al
+  4011ab:	04 30                	add    $0x30,%al
+  4011ad:	41 88 00             	mov    %al,(%r8)
+  4011b0:	49 ff c8             	dec    %r8
+  4011b3:	48 c1 eb 04          	shr    $0x4,%rbx
+  4011b7:	ff c9                	dec    %ecx
+  4011b9:	75 e1                	jne    40119c <__quazi_crash_handler+0x1c6>
+  4011bb:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  4011c2:	00 00 00 
+  4011c5:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  4011cc:	00 00 00 
+  4011cf:	48 8d 35 42 1e 00 00 	lea    0x1e42(%rip),%rsi        # 403018 <__quazi_hex_buf>
+  4011d6:	48 ba 10 00 00 00 00 	movabs $0x10,%rdx
+  4011dd:	00 00 00 
+  4011e0:	0f 05                	syscall
+  4011e2:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  4011e9:	00 00 00 
+  4011ec:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  4011f3:	00 00 00 
+  4011f6:	48 8d 35 09 04 00 00 	lea    0x409(%rip),%rsi        # 401606 <__quazi_nl>
+  4011fd:	48 ba 01 00 00 00 00 	movabs $0x1,%rdx
+  401204:	00 00 00 
+  401207:	0f 05                	syscall
+  401209:	48 8d 05 18 1e 00 00 	lea    0x1e18(%rip),%rax        # 403028 <__quazi_trace_enabled>
+  401210:	80 38 00             	cmpb   $0x0,(%rax)
+  401213:	74 05                	je     40121a <__quazi_crash_handler+0x244>
+  401215:	e8 53 00 00 00       	call   40126d <__quazi_print_backtrace>
+  40121a:	48 8d 05 07 1e 00 00 	lea    0x1e07(%rip),%rax        # 403028 <__quazi_trace_enabled>
+  401221:	80 38 00             	cmpb   $0x0,(%rax)
+  401224:	75 27                	jne    40124d <__quazi_crash_handler+0x277>
+  401226:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  40122d:	00 00 00 
+  401230:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  401237:	00 00 00 
+  40123a:	48 8d 35 45 03 00 00 	lea    0x345(%rip),%rsi        # 401586 <__quazi_trace_hint>
+  401241:	48 ba 29 00 00 00 00 	movabs $0x29,%rdx
+  401248:	00 00 00 
+  40124b:	0f 05                	syscall
+  40124d:	48 bf 65 00 00 00 00 	movabs $0x65,%rdi
+  401254:	00 00 00 
+  401257:	48 b8 e7 00 00 00 00 	movabs $0xe7,%rax
+  40125e:	00 00 00 
+  401261:	0f 05                	syscall
+  401263:	41 5f                	pop    %r15
+  401265:	41 5e                	pop    %r14
+  401267:	41 5d                	pop    %r13
+  401269:	41 5c                	pop    %r12
+  40126b:	5b                   	pop    %rbx
+  40126c:	c3                   	ret
+
+000000000040126d <__quazi_print_backtrace>:
+  40126d:	53                   	push   %rbx
+  40126e:	41 54                	push   %r12
+  401270:	41 55                	push   %r13
+  401272:	41 56                	push   %r14
+  401274:	41 57                	push   %r15
+  401276:	48 8d 05 ab 1d 00 00 	lea    0x1dab(%rip),%rax        # 403028 <__quazi_trace_enabled>
+  40127d:	80 38 00             	cmpb   $0x0,(%rax)
+  401280:	0f 84 fb 00 00 00    	je     401381 <__quazi_print_backtrace+0x114>
+  401286:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  40128d:	00 00 00 
+  401290:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  401297:	00 00 00 
+  40129a:	48 8d 35 4d 03 00 00 	lea    0x34d(%rip),%rsi        # 4015ee <__quazi_bt_prefix>
+  4012a1:	48 ba 11 00 00 00 00 	movabs $0x11,%rdx
+  4012a8:	00 00 00 
+  4012ab:	0f 05                	syscall
+  4012ad:	49 89 ec             	mov    %rbp,%r12
+  4012b0:	49 bd 10 00 00 00 00 	movabs $0x10,%r13
+  4012b7:	00 00 00 
+  4012ba:	4d 85 e4             	test   %r12,%r12
+  4012bd:	0f 84 be 00 00 00    	je     401381 <__quazi_print_backtrace+0x114>
+  4012c3:	4d 85 ed             	test   %r13,%r13
+  4012c6:	0f 84 b5 00 00 00    	je     401381 <__quazi_print_backtrace+0x114>
+  4012cc:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  4012d3:	00 00 00 
+  4012d6:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  4012dd:	00 00 00 
+  4012e0:	48 8d 35 18 03 00 00 	lea    0x318(%rip),%rsi        # 4015ff <__quazi_at_0x>
+  4012e7:	48 ba 07 00 00 00 00 	movabs $0x7,%rdx
+  4012ee:	00 00 00 
+  4012f1:	0f 05                	syscall
+  4012f3:	49 8b 5c 24 08       	mov    0x8(%r12),%rbx
+  4012f8:	b9 10 00 00 00       	mov    $0x10,%ecx
+  4012fd:	4c 8d 05 14 1d 00 00 	lea    0x1d14(%rip),%r8        # 403018 <__quazi_hex_buf>
+  401304:	49 83 c0 0f          	add    $0xf,%r8
+  401308:	48 89 d8             	mov    %rbx,%rax
+  40130b:	48 25 0f 00 00 00    	and    $0xf,%rax
+  401311:	3c 0a                	cmp    $0xa,%al
+  401313:	72 02                	jb     401317 <__quazi_print_backtrace+0xaa>
+  401315:	04 07                	add    $0x7,%al
+  401317:	04 30                	add    $0x30,%al
+  401319:	41 88 00             	mov    %al,(%r8)
+  40131c:	49 ff c8             	dec    %r8
+  40131f:	48 c1 eb 04          	shr    $0x4,%rbx
+  401323:	ff c9                	dec    %ecx
+  401325:	75 e1                	jne    401308 <__quazi_print_backtrace+0x9b>
+  401327:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  40132e:	00 00 00 
+  401331:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  401338:	00 00 00 
+  40133b:	48 8d 35 d6 1c 00 00 	lea    0x1cd6(%rip),%rsi        # 403018 <__quazi_hex_buf>
+  401342:	48 ba 10 00 00 00 00 	movabs $0x10,%rdx
+  401349:	00 00 00 
+  40134c:	0f 05                	syscall
+  40134e:	48 b8 01 00 00 00 00 	movabs $0x1,%rax
+  401355:	00 00 00 
+  401358:	48 bf 02 00 00 00 00 	movabs $0x2,%rdi
+  40135f:	00 00 00 
+  401362:	48 8d 35 9d 02 00 00 	lea    0x29d(%rip),%rsi        # 401606 <__quazi_nl>
+  401369:	48 ba 01 00 00 00 00 	movabs $0x1,%rdx
+  401370:	00 00 00 
+  401373:	0f 05                	syscall
+  401375:	4d 8b 24 24          	mov    (%r12),%r12
+  401379:	49 ff cd             	dec    %r13
+  40137c:	e9 39 ff ff ff       	jmp    4012ba <__quazi_print_backtrace+0x4d>
+  401381:	41 5f                	pop    %r15
+  401383:	41 5e                	pop    %r14
+  401385:	41 5d                	pop    %r13
+  401387:	41 5c                	pop    %r12
+  401389:	5b                   	pop    %rbx
+  40138a:	c3                   	ret
+
+000000000040138b <_start>:
+  40138b:	31 ed                	xor    %ebp,%ebp
+  40138d:	48 89 e3             	mov    %rsp,%rbx
+  401390:	48 83 ec 40          	sub    $0x40,%rsp
+  401394:	31 c0                	xor    %eax,%eax
+  401396:	48 89 44 24 18       	mov    %rax,0x18(%rsp)
+  40139b:	48 8d 05 34 fc ff ff 	lea    -0x3cc(%rip),%rax        # 400fd6 <__quazi_crash_handler>
+  4013a2:	48 89 04 24          	mov    %rax,(%rsp)
+  4013a6:	c7 44 24 08 04 00 00 	movl   $0x4000004,0x8(%rsp)
+  4013ad:	04 
+  4013ae:	48 8d 05 15 fc ff ff 	lea    -0x3eb(%rip),%rax        # 400fca <__quazi_sigreturn>
+  4013b5:	48 89 44 24 10       	mov    %rax,0x10(%rsp)
+  4013ba:	48 89 e6             	mov    %rsp,%rsi
+  4013bd:	48 31 d2             	xor    %rdx,%rdx
+  4013c0:	49 ba 08 00 00 00 00 	movabs $0x8,%r10
+  4013c7:	00 00 00 
+  4013ca:	48 b8 0d 00 00 00 00 	movabs $0xd,%rax
+  4013d1:	00 00 00 
+  4013d4:	48 bf 0b 00 00 00 00 	movabs $0xb,%rdi
+  4013db:	00 00 00 
+  4013de:	0f 05                	syscall
+  4013e0:	48 bf 06 00 00 00 00 	movabs $0x6,%rdi
+  4013e7:	00 00 00 
+  4013ea:	0f 05                	syscall
+  4013ec:	48 bf 08 00 00 00 00 	movabs $0x8,%rdi
+  4013f3:	00 00 00 
+  4013f6:	0f 05                	syscall
+  4013f8:	48 bf 07 00 00 00 00 	movabs $0x7,%rdi
+  4013ff:	00 00 00 
+  401402:	0f 05                	syscall
+  401404:	48 8b 0b             	mov    (%rbx),%rcx
+  401407:	48 8d 74 cb 10       	lea    0x10(%rbx,%rcx,8),%rsi
+  40140c:	48 8d 05 1d 1c 00 00 	lea    0x1c1d(%rip),%rax        # 403030 <__quazi_envp>
+  401413:	48 89 30             	mov    %rsi,(%rax)
+  401416:	48 8b 06             	mov    (%rsi),%rax
+  401419:	48 85 c0             	test   %rax,%rax
+  40141c:	74 31                	je     40144f <_start+0xc4>
+  40141e:	48 ba 51 55 41 5a 49 	movabs $0x52545f495a415551,%rdx
+  401425:	5f 54 52 
+  401428:	48 39 10             	cmp    %rdx,(%rax)
+  40142b:	75 1c                	jne    401449 <_start+0xbe>
+  40142d:	81 78 08 41 43 45 3d 	cmpl   $0x3d454341,0x8(%rax)
+  401434:	75 13                	jne    401449 <_start+0xbe>
+  401436:	66 83 78 0c 31       	cmpw   $0x31,0xc(%rax)
+  40143b:	75 0c                	jne    401449 <_start+0xbe>
+  40143d:	48 8d 05 e4 1b 00 00 	lea    0x1be4(%rip),%rax        # 403028 <__quazi_trace_enabled>
+  401444:	c6 00 01             	movb   $0x1,(%rax)
+  401447:	eb 06                	jmp    40144f <_start+0xc4>
+  401449:	48 83 c6 08          	add    $0x8,%rsi
+  40144d:	eb c7                	jmp    401416 <_start+0x8b>
+  40144f:	48 83 c4 40          	add    $0x40,%rsp
+  401453:	e8 cc f6 ff ff       	call   400b24 <main>
+  401458:	48 89 c7             	mov    %rax,%rdi
+  40145b:	48 b8 3c 00 00 00 00 	movabs $0x3c,%rax
+  401462:	00 00 00 
+  401465:	0f 05                	syscall
+
+0000000000401467 <malloc>:
+  401467:	48 85 ff             	test   %rdi,%rdi
+  40146a:	75 0a                	jne    401476 <malloc+0xf>
+  40146c:	48 bf 01 00 00 00 00 	movabs $0x1,%rdi
+  401473:	00 00 00 
+  401476:	57                   	push   %rdi
+  401477:	48 83 c7 10          	add    $0x10,%rdi
+  40147b:	70 46                	jo     4014c3 <malloc+0x5c>
+  40147d:	57                   	push   %rdi
+  40147e:	48 89 fe             	mov    %rdi,%rsi
+  401481:	31 ff                	xor    %edi,%edi
+  401483:	48 ba 03 00 00 00 00 	movabs $0x3,%rdx
+  40148a:	00 00 00 
+  40148d:	49 ba 22 00 00 00 00 	movabs $0x22,%r10
+  401494:	00 00 00 
+  401497:	49 b8 ff ff ff ff ff 	movabs $0xffffffffffffffff,%r8
+  40149e:	ff ff ff 
+  4014a1:	45 31 c9             	xor    %r9d,%r9d
+  4014a4:	b8 09 00 00 00       	mov    $0x9,%eax
+  4014a9:	0f 05                	syscall
+  4014ab:	5a                   	pop    %rdx
+  4014ac:	59                   	pop    %rcx
+  4014ad:	48 3d 01 f0 ff ff    	cmp    $0xfffffffffffff001,%rax
+  4014b3:	73 0f                	jae    4014c4 <malloc+0x5d>
+  4014b5:	48 89 10             	mov    %rdx,(%rax)
+  4014b8:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  4014bc:	48 05 10 00 00 00    	add    $0x10,%rax
+  4014c2:	c3                   	ret
+  4014c3:	58                   	pop    %rax
+  4014c4:	31 c0                	xor    %eax,%eax
+  4014c6:	c3                   	ret
+
+00000000004014c7 <free>:
+  4014c7:	48 85 ff             	test   %rdi,%rdi
+  4014ca:	74 0e                	je     4014da <free+0x13>
+  4014cc:	48 83 ef 10          	sub    $0x10,%rdi
+  4014d0:	48 8b 37             	mov    (%rdi),%rsi
+  4014d3:	b8 0b 00 00 00       	mov    $0xb,%eax
+  4014d8:	0f 05                	syscall
+  4014da:	31 c0                	xor    %eax,%eax
+  4014dc:	c3                   	ret
+
+00000000004014dd <calloc>:
+  4014dd:	48 89 f8             	mov    %rdi,%rax
+  4014e0:	48 f7 e6             	mul    %rsi
+  4014e3:	48 85 d2             	test   %rdx,%rdx
+  4014e6:	75 6a                	jne    401552 <calloc+0x75>
+  4014e8:	48 85 c0             	test   %rax,%rax
+  4014eb:	75 05                	jne    4014f2 <calloc+0x15>
+  4014ed:	b8 01 00 00 00       	mov    $0x1,%eax
+  4014f2:	50                   	push   %rax
+  4014f3:	48 05 10 00 00 00    	add    $0x10,%rax
+  4014f9:	70 56                	jo     401551 <calloc+0x74>
+  4014fb:	50                   	push   %rax
+  4014fc:	48 89 c7             	mov    %rax,%rdi
+  4014ff:	48 89 fe             	mov    %rdi,%rsi
+  401502:	31 ff                	xor    %edi,%edi
+  401504:	48 ba 03 00 00 00 00 	movabs $0x3,%rdx
+  40150b:	00 00 00 
+  40150e:	49 ba 22 00 00 00 00 	movabs $0x22,%r10
+  401515:	00 00 00 
+  401518:	49 b8 ff ff ff ff ff 	movabs $0xffffffffffffffff,%r8
+  40151f:	ff ff ff 
+  401522:	45 31 c9             	xor    %r9d,%r9d
+  401525:	b8 09 00 00 00       	mov    $0x9,%eax
+  40152a:	0f 05                	syscall
+  40152c:	5a                   	pop    %rdx
+  40152d:	59                   	pop    %rcx
+  40152e:	48 3d 01 f0 ff ff    	cmp    $0xfffffffffffff001,%rax
+  401534:	73 1c                	jae    401552 <calloc+0x75>
+  401536:	48 89 10             	mov    %rdx,(%rax)
+  401539:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  40153d:	48 05 10 00 00 00    	add    $0x10,%rax
+  401543:	49 89 c0             	mov    %rax,%r8
+  401546:	48 89 c7             	mov    %rax,%rdi
+  401549:	31 c0                	xor    %eax,%eax
+  40154b:	f3 aa                	rep stos %al,(%rdi)
+  40154d:	4c 89 c0             	mov    %r8,%rax
+  401550:	c3                   	ret
+  401551:	58                   	pop    %rax
+  401552:	31 c0                	xor    %eax,%eax
+  401554:	c3                   	ret

@@ -40,6 +40,12 @@ qz run
 | 29 | `guess-the-number` | Small game using secure standard-library randomness |
 | 30 | `dynamic-libraries` | Runtime DLL/SO loading and typed C function pointers |
 | 31 | `udp-echo` | UDP bind, datagrams, peer addresses, and echo |
+| 32 | `file-streams` | Buffered `BufReader`, `BufWriter`, and `stat()` metadata |
+| 33 | `time` | `Duration`, `Instant`, `SystemTime`, `DateTime` formatting |
+| 34 | `process` | Spawn child processes with `Command`, capture output, `spawn()`+`wait()` |
+| 35 | `mutex` | `Mutex` for mutual exclusion between threads |
+| 36 | `custom-panic-handler` | Replace the default panic handler with `@panic_handler` |
+| 37 | `math-extras` | Constants (π, τ, e), `is_nan`/`is_finite`, integer bit utilities |
 
 Examples 19–21 need a C toolchain. Example 26 runs as two processes:
 

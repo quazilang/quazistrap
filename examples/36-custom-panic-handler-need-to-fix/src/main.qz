@@ -1,0 +1,97 @@
+// Example 36 — Custom Panic Handler
+//
+// Quazi lets you replace the default panic handler with your own function.
+// This is useful for logging panics to a file, sending crash reports, or
+// integrating with an application's error-handling framework.
+//
+// ── How it works ─────────────────────────────────────────────────────────────
+//
+// Annotate a function with @panic_handler. The compiler validates the
+// signature and routes all panic() calls (including the compiler's own
+// bounds-check and unwrap panics) to your function instead of the default
+// handler.
+//
+// Supported signatures:
+//
+//   @panic_handler
+//   fn my_handler(info: PanicInfo) void { … }
+//
+//   @panic_handler
+//   fn my_handler(message: str) void { … }
+//
+// The function must return void or ! (diverge). You are responsible for
+// terminating the process; if your handler returns, the program exits with
+// code 101.
+//
+// PanicInfo fields:
+//   info.message — panic message string
+//   info.file    — source file where panic() was called
+//   info.line    — line number of the panic() call
+//
+// ── Rules ────────────────────────────────────────────────────────────────────
+//
+//   • At most ONE @panic_handler per program. Two handlers are a compile error.
+//   • The handler must NOT itself call panic(); that would recurse infinitely.
+//   • The default handler prints message + file + line + backtrace, then exits.
+//
+// Run:
+//   qz run
+
+import std.io.{eprintln, print};
+import std.panic.{PanicInfo};
+import std.os.{exit};
+
+// ── Custom handler using PanicInfo ────────────────────────────────────────────
+
+@panic_handler
+fn my_panic(info: PanicInfo) void {
+    eprintln("╔══════════════════════════════════════");
+    eprintln("║  PANIC  (custom handler)");
+    eprintln("║  message : {}", info.message);
+    eprintln("║  location: {}:{}", info.file, info.line.to_string());
+    eprintln("╚══════════════════════════════════════");
+    exit(101);
+}
+
+// ── Example: a function that may panic ───────────────────────────────────────
+
+fn divide(a: i64, b: i64) i64 {
+    if (b == 0) {
+        panic("division by zero");
+    }
+    ret a / b;
+}
+
+fn main() i32 {
+    // Demonstrate normal operation first.
+    const result: i64 = divide(42, 6);
+    print("42 / 6 = {}\n", result.to_string());
+
+    // Trigger the custom panic handler.
+    // Uncomment the line below to see the custom handler fire:
+    //
+    //   const _bad: i64 = divide(10, 0);
+    //
+    // Expected output:
+    //   ╔══════════════════════════════════════
+    //   ║  PANIC  (custom handler)
+    //   ║  message : division by zero
+    //   ║  location: src/main.qz:67
+    //   ╚══════════════════════════════════════
+    //
+    // (The process exits with code 101.)
+
+    print("No panic — all good.\n");
+
+    // ── str-only variant (commented) ─────────────────────────────────────────
+    //
+    // @panic_handler
+    // fn simple_handler(msg: str) void {
+    //     eprintln("PANIC: {}", msg);
+    //     exit(101);
+    // }
+    //
+    // Both forms are accepted. Choose whichever fits your logging needs.
+
+    ret 0;
+}
