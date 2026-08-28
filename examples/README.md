@@ -73,6 +73,6 @@ qz run
 Example 32 runs with `qz test`; pass a substring such as
 `qz test addition` to select matching tests.
 
-Example 34 consumes example 33 as a local source dependency. Run it with
-`qz run` to exercise global properties, sections, duplicates, empty values,
-reparsing, and source round-tripping.
+Example 34 consumes example 33 as a local source dependency. Run `qz run` to
+read `input.ini` and write `output.ini`. The built executable accepts optional
+input and output paths: `build/ini_parser_example custom.ini result.ini`.

@@ -1,55 +1,23 @@
+import std.fs.File;
+import std.fs.read_to_string;
 import std.io;
 import parse_ini.IniDocument;
 
-fn expect_eq(actual: String, expected: str, label: str) void {
-    if actual.as_str() != expected {
-        panic("{}: expected '{}', got '{}'", label, expected, actual.as_str());
-    }
-}
+fn main(args: Array[str]) i32 {
+    var input_path: str = "input.ini";
+    var output_path: str = "output.ini";
+    if args.len() > 1 { input_path = args[1]; }
+    if args.len() > 2 { output_path = args[2]; }
 
-pub fn main() {
-    const test_ini = `
-    # Global configuration
-    app_version = 1.0.0
-
-    [database]
-    host = localhost
-    port = 5432
-
-    [server]
-    host = 0.0.0.0
-    enabled = true
-    token = left=right
-    empty =
-    host = 127.0.0.1
-    `;
-
+    const input: String = read_to_string(input_path).unwrap();
     var config = IniDocument.new();
-    config.parse_string(test_ini);
+    config.parse_string(input.as_str());
 
-    expect_eq(config.get("", "app_version"), "1.0.0", "global property");
-    expect_eq(config.get("database", "host"), "localhost", "database host");
-    expect_eq(config.get("database", "port"), "5432", "database port");
-    expect_eq(config.get("server", "host"), "127.0.0.1", "last duplicate wins");
-    expect_eq(config.get("server", "enabled"), "true", "server enabled");
-    expect_eq(config.get("server", "token"), "left=right", "equals in value");
-    expect_eq(config.get("server", "empty"), "", "empty value");
-    expect_eq(config.get("missing", "key"), "", "missing property");
-    if !config.contains("server", "empty") { panic("empty property was not found"); }
-    if config.contains("missing", "key") { panic("unexpected missing property"); }
+    const serialized: String = config.stringify();
+    const output: File = File.create(output_path).unwrap();
+    const written: usize = output.write_str(serialized.as_str()).unwrap();
+    if written != serialized.bytes_len() { panic("output file was only partially written"); }
 
-    if !config.has_section("database") { panic("database section is missing"); }
-    if config.has_section("missing") { panic("unexpected missing section"); }
-
-    const serialized = config.stringify();
-    if !serialized.contains("app_version = 1.0.0") {
-        panic("stringify lost global configuration");
-    }
-
-    config.parse_string("mode = replacement\n[active]\nvalue = yes\n");
-    expect_eq(config.get("", "mode"), "replacement", "reparsed global property");
-    expect_eq(config.get("active", "value"), "yes", "reparsed section property");
-    expect_eq(config.get("database", "host"), "", "old source was replaced");
-
-    io.println("INI parser checks passed");
+    io.println("Parsed '{}' and wrote '{}'", input_path, output_path);
+    ret 0;
 }
