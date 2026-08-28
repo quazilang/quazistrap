@@ -325,6 +325,8 @@ See [project and manifest documentation](docs/PROJECTS.md) and
 | [`26-http-client-server`](examples/26-http-client-server/) | HTTP client and local server |
 | [`27-text-and-math`](examples/27-text-and-math/) | Unicode text, checked parsing, practical math |
 | [`28-git-library-dependency`](examples/28-git-library-dependency/) | Git dependency and repeated recursive factorial calls |
+| [`33-ini-library`](examples/33-ini-library/) | Source-backed INI parsing library |
+| [`34-ini-parser`](examples/34-ini-parser/) | Local INI dependency with executable checks |
 
 String indexing/slicing, checked parsing, numeric methods, math accuracy goals,
 automatic cleanup, and Windows UTF-8 console behavior are documented in

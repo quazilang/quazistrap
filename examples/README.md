@@ -41,6 +41,8 @@ qz run
 | 30 | `dynamic-libraries` | Runtime DLL/SO loading and typed C function pointers |
 | 31 | `udp-echo` | UDP bind, datagrams, peer addresses, and echo |
 | 32 | `testing` | `@test`, automatic discovery, filtering, and isolated runners |
+| 33 | `ini-library` | Source-backed INI library with owned text and lookup APIs |
+| 34 | `ini-parser` | Local INI dependency, executable checks, and QZI-compatible API |
 
 Examples 19–21 need a C toolchain. Example 26 runs as two processes:
 
@@ -70,3 +72,7 @@ qz run
 
 Example 32 runs with `qz test`; pass a substring such as
 `qz test addition` to select matching tests.
+
+Example 34 consumes example 33 as a local source dependency. Run it with
+`qz run` to exercise global properties, sections, duplicates, empty values,
+reparsing, and source round-tripping.

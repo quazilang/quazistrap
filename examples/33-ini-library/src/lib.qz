@@ -1,0 +1,143 @@
+pub struct IniDocument {
+    content: String,
+}
+
+pub trait ReadableConfig {
+    fn parse_string(content: str) void;
+}
+
+pub trait WriteableConfig {
+    fn stringify() String;
+}
+
+impl IniDocument {
+    pub fn new() IniDocument {
+        ret IniDocument { content: String.new() };
+    }
+
+    pub fn get(self: IniDocument, section: str, key: str) String {
+        var current_section = String.new();
+        var result = String.new();
+        var line_start: usize = 0;
+        var index: usize = 0;
+        const content = self.content.as_str();
+        const content_len: usize = content.len();
+
+        for index <= content_len {
+            const at_end: bool = index == content_len;
+            if at_end || content[index as isize] == 10 {
+                const line = content[line_start as isize:index as isize];
+                const trimmed = line.trim();
+
+                if !trimmed.is_empty()
+                    && !trimmed.starts_with(";")
+                    && !trimmed.starts_with("#") {
+                    if trimmed.starts_with("[") && trimmed.ends_with("]") {
+                        current_section = trimmed[1:-1].trim();
+                    } else if current_section.as_str() == section {
+                        var separator: isize = -1;
+                        var position: usize = 0;
+                        for position < trimmed.len() {
+                            if trimmed[position as isize] == 61 {
+                                separator = position as isize;
+                                break;
+                            }
+                            position++;
+                        }
+
+                        if separator >= 0 {
+                            const candidate = trimmed[0:separator].trim();
+                            if candidate.as_str() == key {
+                                result = trimmed[separator + 1:].trim();
+                            }
+                        }
+                    }
+                }
+
+                line_start = index + 1;
+            }
+            index++;
+        }
+
+        ret result;
+    }
+
+    pub fn contains(self: IniDocument, section: str, key: str) bool {
+        var current_section = String.new();
+        var line_start: usize = 0;
+        var index: usize = 0;
+        const content = self.content.as_str();
+        const content_len: usize = content.len();
+
+        for index <= content_len {
+            const at_end: bool = index == content_len;
+            if at_end || content[index as isize] == 10 {
+                const line = content[line_start as isize:index as isize];
+                const trimmed = line.trim();
+
+                if !trimmed.is_empty()
+                    && !trimmed.starts_with(";")
+                    && !trimmed.starts_with("#") {
+                    if trimmed.starts_with("[") && trimmed.ends_with("]") {
+                        current_section = trimmed[1:-1].trim();
+                    } else if current_section.as_str() == section {
+                        var separator: isize = -1;
+                        var position: usize = 0;
+                        for position < trimmed.len() {
+                            if trimmed[position as isize] == 61 {
+                                separator = position as isize;
+                                break;
+                            }
+                            position++;
+                        }
+
+                        if separator >= 0 {
+                            const candidate = trimmed[0:separator].trim();
+                            if candidate.as_str() == key { ret true; }
+                        }
+                    }
+                }
+
+                line_start = index + 1;
+            }
+            index++;
+        }
+
+        ret false;
+    }
+
+    pub fn has_section(self: IniDocument, section: str) bool {
+        var line_start: usize = 0;
+        var index: usize = 0;
+        const content = self.content.as_str();
+        const content_len: usize = content.len();
+
+        for index <= content_len {
+            const at_end: bool = index == content_len;
+            if at_end || content[index as isize] == 10 {
+                const line = content[line_start as isize:index as isize];
+                const trimmed = line.trim();
+                if trimmed.starts_with("[") && trimmed.ends_with("]") {
+                    const name = trimmed[1:-1].trim();
+                    if name.as_str() == section { ret true; }
+                }
+                line_start = index + 1;
+            }
+            index++;
+        }
+
+        ret false;
+    }
+}
+
+impl ReadableConfig for IniDocument {
+    pub fn parse_string(self: IniDocument, content: str) void {
+        self.content = String.from(content);
+    }
+}
+
+impl WriteableConfig for IniDocument {
+    pub fn stringify(self: IniDocument) String {
+        ret String.from(self.content.as_str());
+    }
+}
