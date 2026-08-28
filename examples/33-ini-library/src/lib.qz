@@ -128,10 +128,16 @@ impl IniDocument {
 
         ret false;
     }
+
+    pub fn free(self: IniDocument) void {
+        self.content.free();
+        self.content = String.new();
+    }
 }
 
 impl ReadableConfig for IniDocument {
     pub fn parse_string(self: IniDocument, content: str) void {
+        self.content.free();
         self.content = String.from(content);
     }
 }
@@ -140,4 +146,51 @@ impl WriteableConfig for IniDocument {
     pub fn stringify(self: IniDocument) String {
         ret String.from(self.content.as_str());
     }
+}
+
+@test
+fn parses_sections_values_and_comments() void {
+    var config = IniDocument.new();
+    config.parse_string(`# global comment
+app_version = 1.0.0
+
+[database]
+host = localhost
+port = 5432
+
+[server]
+token = left=right
+empty =
+`);
+
+    const host = config.get("database", "host");
+    if host.as_str() != "localhost" { panic("database.host was parsed incorrectly"); }
+
+    const token = config.get("server", "token");
+    if token.as_str() != "left=right" { panic("values must preserve embedded equals signs"); }
+
+    if !config.has_section("database") { panic("database section was not found"); }
+    if !config.contains("server", "empty") { panic("empty values must remain present"); }
+    if config.contains("server", "missing") { panic("missing key was reported as present"); }
+    config.free();
+}
+
+@test
+fn reparsing_replaces_the_document() void {
+    var config = IniDocument.new();
+    config.parse_string("[old]\nvalue = stale\n");
+    config.parse_string("[new]\nvalue = fresh\n");
+
+    if config.has_section("old") { panic("reparse retained the previous document"); }
+    const value = config.get("new", "value");
+    if value.as_str() != "fresh" { panic("reparse did not install the new document"); }
+
+    const serialized = config.stringify();
+    if serialized.as_str() != "[new]\nvalue = fresh\n" {
+        panic("stringify did not preserve the reparsed source");
+    }
+    config.free();
+    config.free();
+    const after_free = config.stringify();
+    if !after_free.is_empty() { panic("free must leave an empty reusable document"); }
 }
