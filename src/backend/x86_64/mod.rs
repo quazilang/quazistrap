@@ -420,7 +420,8 @@ mod tests {
         let target = TargetSpec::x86_64_linux().without_start();
         let error = ElfBackend
             .compile(&[first, second], &target, None, false)
-            .expect_err("duplicate bare names must fail");
+            .err()
+            .expect("duplicate bare names must fail");
         assert!(error.0.contains("native symbol collision `same`"));
     }
 

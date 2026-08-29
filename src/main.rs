@@ -16,6 +16,7 @@ mod package;
 pub mod parser;
 mod progress;
 mod project;
+mod runtime_layout;
 pub mod semantic;
 mod test_runner;
 
@@ -322,6 +323,28 @@ fn compile_to_object(
     main_takes_args: bool,
     target: &TargetSpec,
 ) -> Vec<u8> {
+    try_compile_to_object(
+        chunks,
+        emit_start,
+        no_crash,
+        report,
+        main_takes_args,
+        target,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("\x1b[31;1merror:\x1b[0m codegen failed: {}", e);
+        std::process::exit(1);
+    })
+}
+
+fn try_compile_to_object(
+    chunks: &[crate::bytecode::Chunk],
+    emit_start: bool,
+    no_crash: bool,
+    report: Option<&crate::semantic::SemanticReport>,
+    main_takes_args: bool,
+    target: &TargetSpec,
+) -> Result<Vec<u8>, String> {
     let mut target = target.clone();
     if !emit_start {
         target = target.without_start();
@@ -332,11 +355,8 @@ fn compile_to_object(
     let backend = select_backend(&target);
     backend
         .compile(chunks, &target, report, main_takes_args)
-        .unwrap_or_else(|e| {
-            eprintln!("\x1b[31;1merror:\x1b[0m codegen failed: {}", e);
-            std::process::exit(1);
-        })
-        .bytes
+        .map(|output| output.bytes)
+        .map_err(|error| format!("codegen failed: {error}"))
 }
 
 /// Emit chunks to bytecode, object, or binary (same as run_pipeline but skips analysis/codegen).

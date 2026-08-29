@@ -124,6 +124,8 @@ pub struct Analyzer {
     pub(super) trait_impls: HashMap<String, std::collections::HashSet<String>>,
     /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
     pub(super) trait_method_slots: HashMap<String, Vec<String>>,
+    /// Declared signatures used to type-check dynamic trait dispatch.
+    pub(super) trait_method_signatures: HashMap<String, HashMap<String, TraitMethodSignature>>,
     /// When type-checking an impl method, this holds the mangled name (e.g. "Counter.get")
     /// so that dependency edges use the mangled name rather than the bare method name.
     pub(super) current_fn_name_override: Option<String>,
@@ -132,6 +134,10 @@ pub struct Analyzer {
     pub(super) current_module_path: Option<String>,
     /// Monomorphization requests recorded during type checking.
     pub(super) monomorphizations: Vec<MonomorphizationInfo>,
+    /// Expected expression types supplied by surrounding annotations/returns.
+    /// The innermost entry provides generic constructor context such as
+    /// `var values: Array[i32] = Array.new()`.
+    pub(super) contextual_expected_types: Vec<TypeKind>,
     /// Type aliases: alias name → (generic_params, aliased TypeKind).
     pub(super) type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
     /// Ordered parameter names per function: fn name (or mangled) → param names (excl. self).
@@ -575,9 +581,11 @@ impl Analyzer {
             derived_traits: HashMap::new(),
             trait_impls: HashMap::new(),
             trait_method_slots: HashMap::new(),
+            trait_method_signatures: HashMap::new(),
             current_fn_name_override: None,
             current_module_path: None,
             monomorphizations: Vec::new(),
+            contextual_expected_types: Vec::new(),
             type_aliases: std::collections::HashMap::new(),
             fn_param_names: HashMap::new(),
             exported_symbols: HashMap::new(),
@@ -685,6 +693,25 @@ impl Analyzer {
 
         // Pass 7: borrow / move checker.
         self.run_borrow_check_pass(program);
+
+        // A successful analysis must leave no representation-less inference
+        // sentinels for code generation. Error recovery may still use them
+        // when another diagnostic has already made the program non-buildable.
+        if self.errors.is_empty()
+            && let Some(annotation) = self.annotated_exprs.iter().find(|annotation| {
+                annotation
+                    .ty
+                    .as_ref()
+                    .is_some_and(typecheck::type_contains_error)
+            })
+        {
+            self.errors.push(SemanticError {
+                code: "S14",
+                message: "cannot infer a complete runtime type; add an explicit type annotation"
+                    .to_string(),
+                span: annotation.span,
+            });
+        }
 
         let symbol_table = self.build_symbol_table();
         let used_imports_vec: Vec<String> = self.used_import_paths.iter().cloned().collect();
@@ -830,6 +857,7 @@ impl Analyzer {
                 .collect(),
             trait_impls: self.trait_impls.clone(),
             trait_method_slots: self.trait_method_slots.clone(),
+            trait_method_signatures: self.trait_method_signatures.clone(),
             enum_defs: self
                 .enums
                 .iter()
@@ -895,7 +923,9 @@ impl Analyzer {
         self.derived_traits.clear();
         self.trait_impls.clear();
         self.trait_method_slots.clear();
+        self.trait_method_signatures.clear();
         self.monomorphizations.clear();
+        self.contextual_expected_types.clear();
         self.type_aliases.clear();
         self.fn_param_names.clear();
         self.exported_symbols.clear();
@@ -932,6 +962,8 @@ impl Analyzer {
                 order: vec!["None".to_string(), "Some".to_string()], // None=0, Some=1
             },
         );
+        self.struct_generic_params
+            .insert("Option".to_string(), vec!["T".to_string()]);
 
         let mut result_variants = HashMap::new();
         result_variants.insert("Ok".to_string(), 1usize); // arity 1
@@ -944,6 +976,8 @@ impl Analyzer {
                 order: vec!["Err".to_string(), "Ok".to_string()], // Err=0, Ok=1
             },
         );
+        self.struct_generic_params
+            .insert("Result".to_string(), vec!["T".to_string(), "E".to_string()]);
 
         for type_name in &["Option", "Result"] {
             self.declare(
@@ -973,8 +1007,8 @@ impl Analyzer {
                 Symbol {
                     kind: SymbolKind::Function,
                     span,
-                    ty: Some(TypeKind::Any),
-                    params: vec![TypeKind::Any],
+                    ty: Some(TypeKind::Error),
+                    params: vec![TypeKind::Error],
                     used: true,
                     initialized: true,
                     is_import: false,
@@ -994,7 +1028,7 @@ impl Analyzer {
             Symbol {
                 kind: SymbolKind::Function,
                 span,
-                ty: Some(TypeKind::Any),
+                ty: Some(TypeKind::Error),
                 params: vec![],
                 used: true,
                 initialized: true,
@@ -1367,7 +1401,10 @@ impl Default for Analyzer {
 #[cfg(test)]
 mod tests {
     use crate::lexer::Lexer;
-    use crate::parser::{Parser, ast::ItemKind};
+    use crate::parser::{
+        Parser,
+        ast::{ItemKind, Span, Spanned, TypeKind},
+    };
 
     use super::{Analyzer, ConstValue, DependencyKind, SemanticReport, strip_cfg_for};
 
@@ -1381,6 +1418,38 @@ mod tests {
     fn analyze(src: &str) -> SemanticReport {
         let program = parse_program(src);
         let mut analyzer = Analyzer::new();
+        analyzer.analyze_program(&program)
+    }
+
+    fn analyze_module_pair(module_src: &str, main_src: &str) -> SemanticReport {
+        let merged = format!("{module_src}\n{main_src}");
+        let module_len = module_src.chars().count();
+        let source_files = vec![
+            super::SourceFile {
+                path: "helpers.qz".to_string(),
+                module_name: Some("helpers".to_string()),
+                start: 0,
+                end: module_len,
+                line_start: 1,
+            },
+            super::SourceFile {
+                path: "main.qz".to_string(),
+                module_name: None,
+                start: module_len + 1,
+                end: merged.chars().count(),
+                line_start: module_src.lines().count() + 1,
+            },
+        ];
+        let mut lexer = Lexer::new(&merged);
+        let mut parser =
+            Parser::new_with_source_files(lexer.tokenize(), &merged, source_files.clone());
+        let program = parser.parse().expect("module pair must parse");
+        let mut analyzer = Analyzer::new();
+        analyzer.set_source_files(source_files);
+        analyzer.set_namespaced_paths(std::collections::HashSet::from(["helpers.qz".to_string()]));
+        analyzer.set_library_fns(std::collections::HashSet::from([
+            "helpers.apply".to_string()
+        ]));
         analyzer.analyze_program(&program)
     }
 
@@ -2021,18 +2090,104 @@ fn empty() Option[i32] {
     }
 
     #[test]
-    fn builtin_none_bare_ident_resolves() {
+    fn sum_constructors_inherit_the_surrounding_generic_type() {
         let report = analyze(
             r#"
-fn get_none() Option[i32] {
-    const n = None;
-    ret n;
+fn first() Option[usize] {
+    ret Some(0);
+}
+
+fn success() Result[usize, str] {
+    ret Ok(1);
+}
+
+fn failure() Result[usize, str] {
+    ret Err("failed");
 }
 "#,
         );
         assert!(
             report.errors.is_empty(),
             "unexpected errors: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn sum_constructor_payload_closures_are_rejected_until_recursive_cleanup() {
+        let report = analyze(
+            r#"
+fn callback() Option[fn(i32) i32] {
+    ret Some(|value| value + 1);
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S10" && error.message.contains("recursive closure cleanup")
+        }));
+    }
+
+    #[test]
+    fn partial_result_constructor_requires_context() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var result = Ok(1);
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("complete runtime type")
+        }));
+    }
+
+    #[test]
+    fn builtin_none_bare_ident_inherits_context() {
+        let report = analyze(
+            r#"
+fn get_none() Option[i32] {
+    ret None;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn inferred_none_is_rejected_before_it_can_change_payload_type() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var value = None;
+    value = Some(1);
+    var text: Option[str] = value;
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("complete runtime type")
+        }));
+    }
+
+    #[test]
+    fn local_named_none_is_not_typed_as_option() {
+        let report = analyze(
+            r#"
+fn callback() i32 { ret 7; }
+
+fn main() void {
+    var None: fn() i32 = callback;
+    var selected: fn() i32 = None;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "user-defined None should remain a function value: {:?}",
             report.errors
         );
     }
@@ -2289,6 +2444,231 @@ fn main() void {
             report.errors.is_empty(),
             "unexpected errors: {:?}",
             report.errors
+        );
+    }
+
+    #[test]
+    fn raw_pointer_does_not_implicitly_become_safe_reference() {
+        let span = Span::new(0, 0, 0, 0);
+        let scalar = Spanned::new(TypeKind::Int32, span);
+        let analyzer = Analyzer::new();
+        assert!(!analyzer.types_compatible(
+            &TypeKind::Ref {
+                inner: Box::new(scalar.clone()),
+            },
+            &TypeKind::RawPtr {
+                inner: Box::new(scalar),
+            },
+        ));
+        let report = analyze(
+            r#"
+fn main() void {
+    var raw: *i32 = 0;
+    var safe: &i32 = raw;
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| error.code == "S01"),
+            "raw pointer assignment unexpectedly succeeded: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn shared_reference_cannot_be_used_as_assignment_target() {
+        let report = analyze(
+            r#"
+struct Pair { left: i32, right: i32, }
+fn main() void {
+    var value: i32 = 1;
+    var shared = &value;
+    *shared = 2;
+
+    var point = Pair { left: 1, right: 2 };
+    var shared_point = &point;
+    (*shared_point).left += 1;
+}
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| { error.code == "S07" && error.message.contains("shared reference") })
+        );
+    }
+
+    #[test]
+    fn references_are_directional_and_pointee_invariant() {
+        for source in [
+            "fn main() void { var from_value: &i32 = 42; }",
+            "fn main() void { var value: i32 = 1; var wrong_width: &u64 = &value; }",
+            "fn take(value: &i32) void {} fn main() void { take(42); }",
+            "fn main() void { var value: i32 = 1; var reference: &i32 = &value; var changed: &u64 = reference as &u64; }",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| matches!(error.code, "S01" | "S06" | "S08")),
+                "invalid reference conversion was accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+
+        let valid = analyze(
+            r#"
+fn inspect(value: &i32) i32 { ret value; }
+unsafe fn inspect_raw(value: *i32) i32 { ret *value; }
+fn main() void {
+    var value: i32 = 7;
+    var reference: &i32 = &value;
+    var copy: i32 = reference;
+    var nested: i32 = inspect(&value);
+    var raw_copy: i32 = 0;
+    unsafe { raw_copy = inspect_raw(&value); }
+}
+"#,
+        );
+        assert!(
+            valid.errors.is_empty(),
+            "valid lexical references failed: {:?}",
+            valid.errors
+        );
+    }
+
+    #[test]
+    fn address_of_rejects_non_place_expressions() {
+        for expression in ["&42", "&(value + 1)", "&point.value", "&values[0]"] {
+            let source = format!(
+                "struct Point {{ value: i32, }} fn main() void {{ var value: i32 = 1; var point = Point {{ value: 1 }}; var values = [1, 2]; var invalid = {expression}; }}"
+            );
+            let report = analyze(&source);
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.code == "S14" && error.message.contains("address-of currently requires")
+                }),
+                "non-place `{expression}` was accepted: {:?}",
+                report.errors
+            );
+        }
+
+        let grouped = analyze("fn main() void { var value: i32 = 1; var reference = &(value); }");
+        assert!(
+            grouped.errors.is_empty(),
+            "grouped local should remain addressable: {:?}",
+            grouped.errors
+        );
+    }
+
+    #[test]
+    fn references_cannot_escape_or_be_rebound() {
+        for source in [
+            "fn leak() &i32 { var value: i32 = 1; ret &value; }",
+            "struct Holder { value: &i32, } fn main() void {}",
+            "enum Holder { Value(&i32), } fn main() void {}",
+            "fn main() void { var value: i32 = 1; var items = [&value]; }",
+            "fn main() void { var items: Array[&i32]; }",
+            "fn main() void { var first: i32 = 1; var second: i32 = 2; var reference: &i32 = &first; reference = &second; }",
+            "fn main() void { var value: i32 = 1; var reference: &i32 = &value; var closure: fn() i32 = || reference; }",
+            "fn main() void { var value: i32 = 1; var reference: &i32 = &value; value = 2; }",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| { matches!(error.code, "S07" | "S10") }),
+                "escaping or invalidated reference was accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn shared_references_cannot_dispatch_methods() {
+        for source in [
+            r#"struct Counter { value: i32, } impl Counter { fn bump(self: Counter) Counter { ret Counter { value: self.value + 1 }; } } fn main() void { var owner = Counter { value: 1 }; var reference = &owner; reference.bump(); }"#,
+            r#"struct Counter { value: i32, } impl Counter { fn bump(self: Counter) Counter { ret Counter { value: self.value + 1 }; } } fn main() void { var owner = Counter { value: 1 }; var reference = &owner; (*reference).bump(); }"#,
+            r#"struct Counter { value: i32, } impl Counter { fn bump(self: Counter) Counter { ret Counter { value: self.value + 1 }; } } fn use(reference: &Counter) void { reference.bump(); } fn main() void {}"#,
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.code == "S07" && error.message.contains("shared references")
+                }),
+                "method dispatch through a shared reference was accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn aggregate_references_cannot_be_materialized_as_mutable_aliases() {
+        for operation in ["alias.bump();", "alias.value = 2;"] {
+            let source = format!(
+                "struct Counter {{ value: i32, }} impl Counter {{ fn bump(self: Counter) Counter {{ ret Counter {{ value: self.value + 1 }}; }} }} fn mutate(reference: &Counter) void {{ var alias: Counter = *reference; {operation} }} fn main() void {{}}"
+            );
+            let report = analyze(&source);
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.code == "S10" && error.message.contains("cannot materialize `Counter`")
+                }),
+                "aggregate reference became a mutable alias via `{operation}`: {:?}",
+                report.errors
+            );
+        }
+
+        let fixed_array = analyze(
+            "fn main() void { var values = [1, 2]; var reference = &values; var alias: [i32; 2] = *reference; }",
+        );
+        assert!(
+            fixed_array.errors.iter().any(|error| {
+                error.code == "S10" && error.message.contains("cannot materialize")
+            }),
+            "fixed-array reference used a scalar load: {:?}",
+            fixed_array.errors
+        );
+    }
+
+    #[test]
+    fn inferred_owner_cannot_move_while_borrowed() {
+        let report = analyze(
+            "struct Owned { value: i32, } fn consume(value: Owned) void {} fn main() void { var owner = Owned { value: 1 }; var reference = &owner; consume(owner); var copy: i32 = reference; }",
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.code == "S10" && error.message.contains("cannot move `owner`")
+            }),
+            "inferred owned local moved while borrowed: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn generic_and_compound_expressions_cannot_manufacture_references() {
+        let generic = analyze(
+            "fn fabricate[T](value: i32) T { ret value; } fn main() void { var bad: &i32 = fabricate[&i32](1); }",
+        );
+        assert!(
+            generic.errors.iter().any(|error| {
+                error.code == "S10" && error.message.contains("generic type arguments")
+            }),
+            "generic reference fabrication was accepted: {:?}",
+            generic.errors
+        );
+
+        let branch_escape = analyze(
+            r#"enum Maybe { Left(i32), Right(i32), } fn main() void { var item = Left(1); var escaped = match item { Left(value) => &value, Right(value) => &value, }; }"#,
+        );
+        assert!(
+            branch_escape.errors.iter().any(|error| {
+                error.code == "S10" && error.message.contains("match expressions")
+            }),
+            "match-arm reference escaped its binding: {:?}",
+            branch_escape.errors
         );
     }
 
@@ -2558,6 +2938,24 @@ fn main() void {
     }
 
     #[test]
+    fn function_owner_moves_are_affine_through_calls_assignments_and_casts() {
+        for source in [
+            "fn one() i32 { ret 1; } fn main() void { var first: fn() i32 = one; var second: fn() i32 = first; first(); }",
+            "fn consume(callback: fn() i32) void {} fn one() i32 { ret 1; } fn main() void { var callback: fn() i32 = one; consume(callback); callback(); }",
+            "fn consume(callback: fn() i32) void {} fn one() i32 { ret 1; } fn main() void { var callback: fn() i32 = one; consume(callback as fn() i32); callback(); }",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.code == "S10" && error.message.contains("use of moved value")
+                }),
+                "function owner remained usable after a move: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
     fn copy_type_not_moved() {
         let report = analyze(
             r#"
@@ -2636,7 +3034,7 @@ fn main() void {
     fn foreach_over_explicit_named_array_moves_iterable() {
         let report = analyze(
             r#"
-struct Array[T] { ptr: i32, }
+struct Array[T] { value: T, }
 
 fn consume(a: Array[i32]) void { ret; }
 
@@ -2661,7 +3059,7 @@ fn main() void {
     fn generic_receiver_method_checks_substituted_arg_type() {
         let report = analyze(
             r#"
-struct Array[T] { ptr: i32, }
+struct Array[T] { value: T, }
 
 impl Array[T] {
     fn push(self: Array[T], val: T) void { ret; }
@@ -2681,6 +3079,340 @@ fn main() void {
             "Array[i32].push(str) should be rejected, got: {:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn generic_associated_constructor_uses_binding_context() {
+        let report = analyze(
+            r#"
+struct Bucket[T] { marker: usize, }
+
+impl Bucket[T] {
+    fn new() Bucket[T] { ret Bucket { marker: 0 }; }
+}
+
+fn main() void {
+    var values: Bucket[i32] = Bucket.new();
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "contextual generic constructor should infer Bucket[i32]: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .monomorphizations
+                .iter()
+                .any(|mono| mono.mangled_name == "Bucket.new<i32>"),
+            "missing contextual constructor specialization: {:?}",
+            report.monomorphizations
+        );
+    }
+
+    #[test]
+    fn multi_slot_generic_specializations_fail_before_codegen() {
+        let direct = analyze(
+            r#"
+fn identity[T](value: T) T { ret value; }
+
+fn main() void {
+    var pair = [1, 2];
+    var copied = identity[[i32; 2]](pair);
+}
+"#,
+        );
+        assert!(
+            direct.errors.iter().any(|error| {
+                error.code == "S14"
+                    && error.message.contains("identity")
+                    && error.message.contains("one-slot internal generic ABI")
+            }),
+            "multi-slot generic function specialization reached codegen: {:?}",
+            direct.errors
+        );
+
+        let method = analyze(
+            r#"
+struct Holder[T] { marker: usize, }
+
+impl Holder[T] {
+    fn consume(self: Holder[T], value: T) void { ret; }
+}
+
+fn main() void {
+    var holder: Holder[[i32; 2]] = Holder { marker: 0 };
+    holder.consume([1, 2]);
+}
+"#,
+        );
+        assert!(
+            method.errors.iter().any(|error| {
+                error.code == "S14"
+                    && error.message.contains("Holder.consume")
+                    && error.message.contains("one-slot internal generic ABI")
+            }),
+            "multi-slot generic method specialization reached codegen: {:?}",
+            method.errors
+        );
+
+        let variadic = analyze(
+            r#"
+fn collect[T](...items: T) void { ret; }
+
+fn main() void {
+    collect[[i32; 2]]([1, 2]);
+    collect[[i32]]();
+}
+"#,
+        );
+        assert!(
+            variadic
+                .errors
+                .iter()
+                .filter(|error| {
+                    error.code == "S14"
+                        && error.message.contains("collect")
+                        && error.message.contains("one-slot internal generic ABI")
+                })
+                .count()
+                >= 2,
+            "multi-slot variadic elements reached codegen: {:?}",
+            variadic.errors
+        );
+    }
+
+    #[test]
+    fn unrelated_named_types_are_not_compatible() {
+        let report = analyze(
+            r#"
+struct Left { value: i32, }
+struct Right { value: i32, }
+
+fn consume(value: Left) void { ret; }
+
+fn main() void {
+    var value = Right { value: 1 };
+    consume(value);
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S08" && error.message.contains("expected Left, got Right")
+        }));
+    }
+
+    #[test]
+    fn runtime_any_is_rejected_in_value_bearing_positions() {
+        let report = analyze(
+            r#"
+struct Holder { value: any, }
+type Callback = fn(any) i32;
+
+fn erase(value: i32) any { ret value; }
+fn consume(value: any) void { ret; }
+
+fn main() void {
+    var erased: any = 42;
+    var nested: Option[any] = None;
+    var pointer: *u8 = erased;
+    consume(pointer);
+}
+"#,
+        );
+        let unsupported: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|error| error.code == "S14" && error.message.contains("any"))
+            .collect();
+        assert!(
+            unsupported.len() >= 6,
+            "every value-bearing `any` use must be rejected: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn any_no_longer_implicitly_reinterprets_concrete_values() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var erased: any = 42;
+    var text: str = erased;
+    var pointer: *u8 = erased;
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S01" && error.message.contains("declared any, got i32")
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S01" && error.message.contains("declared str, got any")
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S01" && error.message.contains("declared *u8, got any")
+        }));
+    }
+
+    #[test]
+    fn format_variadic_any_remains_an_erased_call_site_convention() {
+        let report = analyze(
+            r#"
+@format
+fn render(template: str, ...args: any) void { ret; }
+
+fn main() void {
+    render("{} {}", 42, "answer");
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "@format variadics must remain usable without a runtime any value: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn generic_instances_are_invariant() {
+        let integer_width = analyze(
+            r#"
+struct Box[T] { value: T, }
+fn consume(value: Box[u64]) void { ret; }
+fn main() void { consume(Box { value: 1 }); }
+"#,
+        );
+        assert!(integer_width.errors.iter().any(|error| {
+            error.code == "S08" && error.message.contains("expected Box[u64], got Box[i32]")
+        }));
+
+        let owned_vs_view = analyze(
+            r#"
+struct String { data: str, }
+struct Array[T] { value: T, }
+fn consume(value: Array[str]) void { ret; }
+fn main() void {
+    var text = String { data: "owned" };
+    consume(Array { value: text });
+}
+"#,
+        );
+        assert!(owned_vs_view.errors.iter().any(|error| {
+            error.code == "S08"
+                && error
+                    .message
+                    .contains("expected Array[str], got Array[String]")
+        }));
+    }
+
+    #[test]
+    fn borrowed_str_does_not_implicitly_become_owned_string() {
+        let report = analyze(
+            r#"
+struct String { data: str, len: usize, cap: usize, }
+
+fn consume(value: String) void { ret; }
+
+fn main() void {
+    consume("borrowed");
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S08" && error.message.contains("expected String, got &str")
+        }));
+    }
+
+    #[test]
+    fn generic_index_operator_returns_the_concrete_element_type() {
+        let report = analyze(
+            r#"
+trait Index[I, O] {
+    fn index(i: I) O;
+}
+
+struct Rune { value: i32, }
+struct Array[T] { value: T, }
+struct String { data: str, }
+
+impl Index[isize, Rune] for str {
+    fn index(self: str, i: isize) Rune { ret Rune { value: 1 }; }
+}
+
+impl Index[usize, T] for Array[T] {
+    fn index(self: Array[T], i: usize) T { ret self.value; }
+}
+
+impl String {
+    fn trim(self: String) String { ret self; }
+}
+
+fn consume(lines: Array[String]) void {
+    const line = lines[0];
+    line.trim();
+}
+
+impl Index[isize, Rune] for String {
+    fn index(self: String, i: isize) Rune { ret self.data[i]; }
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "generic index result should resolve to String: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn generic_index_operator_rejects_multi_slot_results() {
+        let report = analyze(
+            r#"
+trait Index[I, O] {
+    fn index(i: I) O;
+}
+
+struct Array[T] { value: T, }
+
+impl Index[usize, T] for Array[T] {
+    fn index(self: Array[T], i: usize) T { ret self.value; }
+}
+
+fn main() void {
+    var lines: Array[[i32; 2]];
+    var line = lines[0];
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.code == "S14"
+                    && error.message.contains("Array.index")
+                    && error.message.contains("cannot return `[i32; 2]`")
+            }),
+            "multi-slot generic index result reached codegen: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn missing_associated_function_is_a_semantic_error() {
+        let report = analyze(
+            r#"
+struct Document { value: i32, }
+
+fn main() void {
+    var document = Document.new();
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S04"
+                && error
+                    .message
+                    .contains("associated function `Document.new` does not exist")
+        }));
     }
 
     #[test]
@@ -2840,7 +3572,7 @@ fn main() void {
     fn trait_impl_method_call_resolves_type() {
         let report = analyze(
             r#"
-trait Display { fn label(self: str) str; }
+trait Display { fn label(self: Self) str; }
 
 struct Tag { name: str, }
 
@@ -2969,7 +3701,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    var f = |x, y| x + y;
+    var f: fn(i32, i32) i32 = |x, y| x + y;
 }
 "#,
         );
@@ -2985,7 +3717,7 @@ fn main() void {
         let report = analyze(
             r#"
 fn main() void {
-    var f = |x| x + 1;
+    var f: fn(i32) i32 = |x| x + 1;
     var g: fn(i32) i32 = f;
 }
 "#,
@@ -2994,6 +3726,182 @@ fn main() void {
             report.errors.is_empty(),
             "closure should have fn(i32) i32 type: {:?}",
             report.errors
+        );
+    }
+
+    #[test]
+    fn callable_signatures_are_runtime_shape_invariant() {
+        for source in [
+            "fn one() i32 { ret 1; } fn main() void { var bad: fn() f64 = one; }",
+            "fn main() void { var bad: fn() f64 = || 1; }",
+            "fn identity(value: i32) i32 { ret value; } fn main() void { var bad: fn(f64) f64 = identity; }",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| error.code == "S01"),
+                "representation-changing callable assignment was accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+
+        let cast = analyze(
+            "fn one() i32 { ret 1; } fn main() void { var bad: fn() f64 = one as fn() f64; }",
+        );
+        assert!(
+            cast.errors.iter().any(|error| error.code == "S06"),
+            "a cast bypassed callable signature invariance: {:?}",
+            cast.errors
+        );
+    }
+
+    #[test]
+    fn closures_reject_untracked_ownership_and_mutable_captures() {
+        for source in [
+            r#"struct Owned { value: i32, } fn main() void { var owned = Owned { value: 1 }; var bad: fn() i32 = || owned.value; }"#,
+            r#"fn main() void { var text: str = "borrowed"; var bad: fn() str = || text; }"#,
+            r#"fn main() void { var value: i32 = 1; var bad: fn() i32 = || ++value; }"#,
+            r#"fn main() void { var bad: fn(str) i32 = |text| 1; }"#,
+            r#"struct Owned { value: i32, } fn main() void { var bad = || Owned { value: 1 }; }"#,
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| {
+                    matches!(error.code, "S07" | "S10")
+                        && (error.message.contains("closure") || error.message.contains("capture"))
+                }),
+                "unsupported closure ownership was accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn function_values_cannot_be_nested_or_self_assigned() {
+        for source in [
+            "struct Holder { callback: fn() i32, } fn main() void {}",
+            "enum Holder { Callback(fn() i32), } fn main() void {}",
+            "fn main() void { var callbacks: Array[fn() i32]; }",
+            "fn one() i32 { ret 1; } fn main() void { var callback: fn() i32 = one; callback = callback; }",
+            "fn one() i32 { ret 1; } fn main() void { var callback: fn() i32 = one; callback = (callback); }",
+            "fn one() i32 { ret 1; } fn main() void { var callback: fn() i32 = one; (callback) = callback; }",
+            "fn identity[T](value: T) T { ret value; } fn one() i32 { ret 1; } fn main() void { var callback: fn() i32 = identity[fn() i32](one); }",
+            "trait Invalid { fn callbacks() Array[fn() i32]; } fn main() void {}",
+            "type InvalidAlias = Array[fn() i32]; fn main() void {}",
+            "fn one() i32 { ret 1; } fn main() void { var first: fn() i32 = one; var second: fn() i32 = (first = || 2); }",
+            "fn consume(callback: fn() i32) void {} fn conditional(condition: bool) void { var callback: fn() i32 = || 1; if (condition) { consume(callback); } } fn main() void {}",
+            "fn consume_bool(callback: fn() i32) bool { ret callback() > 0; } fn conditional(first: bool) void { var callback: fn() i32 = || 1; if (first) {} else if (consume_bool(callback)) {} } fn main() void {}",
+            "fn one() i32 { ret 1; } fn main() void { var callback: fn() i32 = one; [callback]; }",
+            "fn one() i32 { ret 1; } fn main() void { var callback: fn() i32 = one; Option.Some(callback); }",
+            "struct Box[T] { value: T, } fn one() i32 { ret 1; } fn main() void { var callback: fn() i32 = one; Box { value: callback }; }",
+            "struct Box[T] { value: T, } impl Box[T] { fn new(value: T) Box[T] { ret Box { value: value }; } } fn one() i32 { ret 1; } fn main() void { var callback: fn() i32 = one; Box.new(callback); }",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| error.code == "S10"),
+                "unsound function-value ownership was accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn closure_parameter_shadowing_does_not_move_outer_owner() {
+        let report = analyze(
+            r#"struct Owned { value: i32, } fn consume(value: Owned) void {} fn main() void { var value = Owned { value: 1 }; var identity: fn(i32) i32 = |value| value; consume(value); }"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "closure parameter shadowing affected the outer owner: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn closure_parameters_require_contextual_types() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var f = |value| value;
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.code == "S14" && error.message.contains("cannot be inferred")
+            })
+        );
+    }
+
+    #[test]
+    fn closure_arguments_use_the_parameter_function_type() {
+        let report = analyze(
+            r#"
+fn apply(callback: fn(i32) i32, value: i32) i32 { ret callback(value); }
+fn main() void {
+    var answer: i32 = apply(|value| value + 1, 41);
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "closure arguments should inherit the parameter signature: {:?}",
+            report.errors
+        );
+
+        let wrong_return = analyze(
+            r#"
+fn apply(callback: fn(i32) str) str { ret callback(1); }
+fn main() void { apply(|value| value + 1); }
+"#,
+        );
+        assert!(wrong_return.errors.iter().any(|error| {
+            error.code == "S01" && error.message.contains("closure return type mismatch")
+        }));
+    }
+
+    #[test]
+    fn closure_arguments_use_context_for_all_callable_routes() {
+        for source in [
+            r#"
+fn apply(callback: fn(i32) i32) i32 { ret callback(1); }
+fn main() void {
+    var callable: fn(fn(i32) i32) i32 = apply;
+    var answer: i32 = callable(|value| value + 1);
+}
+"#,
+            r#"
+struct Runner {}
+impl Runner {
+    fn static_apply(callback: fn(i32) i32) i32 { ret callback(1); }
+    fn apply(self: Runner, callback: fn(i32) i32) i32 { ret callback(1); }
+}
+fn main() void {
+    var runner = Runner {};
+    var first: i32 = Runner.static_apply(|value| value + 1);
+    var second: i32 = runner.apply(|value| value + 1);
+}
+"#,
+            r#"
+trait Apply { fn apply(self: Self, callback: fn(i32) i32) i32; }
+fn invoke(value: dyn Apply) i32 { ret value.apply(|item| item + 1); }
+"#,
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.is_empty(),
+                "callable route should provide closure parameter types for {source}: {:?}",
+                report.errors
+            );
+        }
+
+        let module_report = analyze_module_pair(
+            "pub fn apply(callback: fn(i32) i32) i32 { ret callback(1); }",
+            "import helpers; fn main() void { var answer: i32 = helpers.apply(|value| value + 1); }",
+        );
+        assert!(
+            module_report.errors.is_empty(),
+            "module-qualified calls should provide closure parameter types: {:?}",
+            module_report.errors
         );
     }
 
@@ -3053,6 +3961,152 @@ fn main() void { }
             .expect("Drawable slots must exist");
         assert_eq!(slots[0], "draw", "draw should be slot 0");
         assert_eq!(slots[1], "area", "area should be slot 1");
+    }
+
+    #[test]
+    fn dynamic_trait_calls_preserve_concrete_signatures() {
+        let report = analyze(
+            r#"
+trait Metric {
+    fn value() i32;
+    fn add(delta: i32) i32;
+}
+
+fn read(metric: dyn Metric) i32 {
+    var current: i32 = metric.value();
+    ret metric.add(current);
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "dynamic calls should retain declared parameter and return types: {:?}",
+            report.errors
+        );
+
+        let wrong_arg = analyze(
+            r#"
+trait Parser { fn parse(text: str) i32; }
+fn read(parser: dyn Parser) i32 { ret parser.parse(42); }
+"#,
+        );
+        assert!(wrong_arg.errors.iter().any(|error| {
+            error.code == "S08" && error.message.contains("expected str, got i32")
+        }));
+    }
+
+    #[test]
+    fn dynamic_trait_calls_reject_self_typed_results() {
+        let report = analyze(
+            r#"
+trait Clone { fn clone() Self; }
+fn duplicate(value: dyn Clone) void { value.clone(); }
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| { error.code == "S14" && error.message.contains("not object-safe") })
+        );
+    }
+
+    #[test]
+    fn dynamic_trait_calls_reject_generic_and_self_parameter_signatures() {
+        let generic_trait = analyze(
+            r#"
+trait Factory[T] { fn make() T; }
+fn create(value: dyn Factory) void { value.make(); }
+"#,
+        );
+        assert!(generic_trait.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("unresolved generic parameters")
+        }));
+
+        let generic_method = analyze(
+            r#"
+trait Factory { fn make[T]() T; }
+fn create(value: dyn Factory) void { value.make(); }
+"#,
+        );
+        assert!(
+            generic_method.errors.iter().any(|error| {
+                error.code == "S14" && error.message.contains("method is generic")
+            })
+        );
+
+        let self_parameter = analyze(
+            r#"
+trait Compare { fn compare(other: Self) bool; }
+fn compare(value: dyn Compare) void { value.compare(value); }
+"#,
+        );
+        assert!(self_parameter.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("parameter contains `Self`")
+        }));
+    }
+
+    #[test]
+    fn trait_implementations_must_match_declared_runtime_signatures() {
+        let report = analyze(
+            r#"
+trait Measure { fn value(scale: i32) i64; }
+struct Broken { value: i32, }
+impl Measure for Broken {
+    fn value(self: Broken, scale: str) i32 { ret 0; }
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("parameter 2 must be `i32`")
+        }));
+        assert!(
+            report.errors.iter().any(|error| {
+                error.code == "S14" && error.message.contains("must return `i64`")
+            })
+        );
+
+        let missing = analyze(
+            r#"
+trait Measure { fn value() i64; }
+struct Broken { value: i32, }
+impl Measure for Broken {}
+"#,
+        );
+        assert!(missing.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("missing method `value`")
+        }));
+
+        let erased_format_tail = analyze(
+            r#"
+trait Write { fn writef(self: Self, text: str) void; }
+struct Output {}
+impl Write for Output {
+    @format
+    fn writef(self: Output, text: str, ...args: any) void {}
+}
+"#,
+        );
+        assert!(
+            erased_format_tail.errors.is_empty(),
+            "a compiler-erased @format tail is not part of trait runtime conformance: {:?}",
+            erased_format_tail.errors
+        );
+
+        let unsafe_implementation = analyze(
+            r#"
+trait Action { fn run(self: Self) void; }
+struct Worker {}
+impl Action for Worker { unsafe fn run(self: Worker) void {} }
+fn invoke(action: dyn Action) void { action.run(); }
+"#,
+        );
+        assert!(unsafe_implementation.errors.iter().any(|error| {
+            error.code == "S14"
+                && error
+                    .message
+                    .contains("safe in the trait declaration and cannot be implemented as unsafe")
+        }));
     }
 
     #[test]
@@ -3299,6 +4353,36 @@ fn main() void { }
             report.errors.iter().any(|e| e.code == "S06"),
             "S06 expected for @syscall + @api: {:?}",
             report.errors
+        );
+    }
+
+    #[test]
+    fn syscall_rejects_unencodable_signatures() {
+        let too_many = analyze(
+            r#"
+@syscall(1) unsafe fn seven(a: usize, b: usize, c: usize, d: usize,
+    e: usize, f: usize, g: usize) isize;
+"#,
+        );
+        assert!(
+            too_many
+                .errors
+                .iter()
+                .any(|error| { error.code == "S14" && error.message.contains("at most 6") })
+        );
+
+        let bad_type = analyze(
+            r#"
+@syscall(1) unsafe fn floating(value: f64) f64;
+"#,
+        );
+        assert!(
+            bad_type
+                .errors
+                .iter()
+                .filter(|error| { error.code == "S14" && error.message.contains("unsupported") })
+                .count()
+                >= 2
         );
     }
 
@@ -4279,6 +5363,119 @@ fn main() void {
     }
 
     #[test]
+    fn builtin_indexing_rejects_wrong_arity_and_constant_out_of_bounds() {
+        let multiple = analyze(
+            r#"
+fn main() void {
+    var values = [1, 2, 3];
+    var value = values[0, 1];
+}
+"#,
+        );
+        assert!(
+            multiple.errors.iter().any(|error| {
+                error.code == "S06" && error.message.contains("exactly one index")
+            })
+        );
+
+        for source in [
+            r#"fn main() void { var values = [1, 2, 3]; var value = values[-1]; }"#,
+            r#"fn main() void { var values = [1, 2, 3]; var value = values[3]; }"#,
+            r#"fn main() void { var value = b"abc"[3]; }"#,
+            r#"fn main() void { var values = [1, 2, 3]; values[3] = 4; }"#,
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.code == "S06" && error.message.contains("out of bounds")
+                }),
+                "constant out-of-bounds index should be rejected: {:?}",
+                report.errors
+            );
+        }
+        let multiple_write =
+            analyze("fn main() void { var values = [1, 2, 3]; values[0, 1] = 4; }");
+        assert!(
+            multiple_write.errors.iter().any(|error| {
+                error.code == "S06" && error.message.contains("exactly one index")
+            })
+        );
+
+        let wrong_value =
+            analyze("fn main() void { var values = [1, 2, 3]; values[0] = \"wrong\"; }");
+        assert!(
+            wrong_value.errors.iter().any(|error| {
+                error.code == "S01" && error.message.contains("indexed assignment")
+            })
+        );
+    }
+
+    #[test]
+    fn generic_array_assignment_records_the_setter_monomorphization() {
+        let report = analyze(
+            r#"
+trait Index[I, O] { fn index(i: I) O; }
+struct Array[T] { value: T, }
+impl Index[usize, T] for Array[T] {
+    fn index(self: Array[T], i: usize) T { ret self.value; }
+}
+impl Array[T] {
+    fn set(self: Array[T], i: usize, value: T) void { ret; }
+}
+fn main() void {
+    var values: Array[i32] = Array { value: 1 };
+    values[0] = 2;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "array setter: {:?}",
+            report.errors
+        );
+        assert!(report.monomorphizations.iter().any(|mono| {
+            mono.fn_name == "Array.set" && mono.mangled_name.contains("Array.set")
+        }));
+    }
+
+    #[test]
+    fn builtin_indexing_accepts_boundary_constants() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var values = [1, 2, 3];
+    var first = values[0];
+    var last = values[2];
+    var byte = b"abc"[2];
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "valid indices: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn fixed_arrays_cannot_cross_the_function_abi_by_value() {
+        let parameter = analyze("fn read(values: [i64; 3]) i64 { ret values[0]; }");
+        assert!(parameter.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("cannot be passed by value")
+        }));
+
+        let returned = analyze("fn make() [i64; 3] { ret [1, 2, 3]; }");
+        assert!(returned.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("cannot be returned by value")
+        }));
+
+        let empty = analyze("fn make() [i64; 0] { ret []; }");
+        assert!(empty.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("cannot be returned by value")
+        }));
+    }
+
+    #[test]
     fn test_attribute_requires_a_zero_argument_void_function() {
         let valid = analyze("@test fn works() void { ret; }");
         assert!(valid.errors.is_empty(), "valid test: {:?}", valid.errors);
@@ -4286,8 +5483,18 @@ fn main() void {
 
         let invalid = analyze("@test fn wrong(value: i32) i32 { ret value; }");
         assert!(invalid.errors.iter().any(|error| {
-            error.message.contains("must have signature `fn wrong() void`")
+            error
+                .message
+                .contains("must have signature `fn wrong() void`")
         }));
+
+        let reserved = analyze("@test fn main() void { ret; }");
+        assert!(
+            reserved
+                .errors
+                .iter()
+                .any(|error| error.message.contains("reserved for the test harness"))
+        );
     }
 
     #[test]
@@ -4299,7 +5506,12 @@ fn main() void {
             ("no_mangling", "package.mangling"),
         ] {
             let report = analyze(&format!("@{attribute} fn main() void {{ ret; }}"));
-            assert!(report.errors.iter().any(|error| error.message.contains(field)));
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(field))
+            );
         }
     }
 }

@@ -10,14 +10,24 @@ Five sequential passes:
 
 ## `types_compatible` Rules
 
-- `Any` ↔ everything.
-- `Named` ↔ everything (generic monomorphization).
+- Internal `Error` is the recovery wildcard and must not survive successful
+  analysis. Source `any` is only compatible with itself and is rejected in
+  value-bearing positions; final `@format ...args: any` is compiler-erased.
+- Named types must have the same name and invariant generic arguments.
 - Integer → float (implicit widening for literals).
 - `*T` ↔ `*U` (all raw pointers mutually compatible — C void* semantics).
 - Integer ↔ `*T` (null pointer constant support: `0` is valid `*T`).
 - `Str` ↔ `Ref { inner: Str }` always compatible.
+- Shared-reference compatibility is directional and invariant. An actual `&T`
+  may auto-read into an expected representation-identical `T`; a value never
+  becomes `&T`, and `&T` only matches the same resolved pointee shape.
 - `Named { name }` ↔ `Dyn { trait_name }` — compatible if `trait_impls[name]` contains `trait_name`.
 - `Dyn { a }` ↔ `Dyn { b }` — compatible if `a == b`.
+
+`Some`, `None`, `Ok`, and `Err` inherit a surrounding `Option`/`Result` type.
+An unconstrained partial `Result` constructor is rejected instead of reaching
+code generation with an unknown payload. Pattern bindings recover builtin
+generic payload types from the scrutinee.
 
 ## Warning Suppression
 
@@ -38,7 +48,20 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 - `for x : iterable` **moves** the iterable (like Rust's `for x in collection`); borrow with `for x : &collection`.
 - The iterable is consumed before the loop body so it does not trigger move-in-loop.
 - Method receivers are borrowed (non-consuming).
-- No explicit reference lifetimes yet.
+- Shared references use a conservative function-local lifetime checkpoint:
+  address-of accepts only locals/parameters; reference bindings cannot be
+  rebound or escape through returns, owned aggregates, or closures; and an
+  address-taken owner cannot be mutated, moved, or used as a method receiver.
+  `str`/`&str` remains the representation-identical string-view exception.
+- Quazi `fn` values are affine owners. Passing, returning, and assignment move
+  them; calls borrow them; self-assignment is rejected. Until recursive cleanup
+  and capture ownership are implemented, do not permit `fn` inside aggregates
+  or generic arguments, and restrict closure captures, parameters, and results
+  to immutable plain-copy scalar shapes. `fn`/`cfn` signature compatibility is
+  exact at runtime boundaries rather than numeric-coercion compatible.
+  Reject moves of outer `fn` owners from conditional paths until drop state is
+  path-sensitive, consuming assignment expressions, and function-valued match
+  results. Same-signature casts remain transparent ownership wrappers.
 
 ## Generic Receiver Methods
 

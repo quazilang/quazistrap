@@ -70,6 +70,7 @@ pub enum Opcode {
     MemFence = 0x52,
     Spawn = 0x53,
     CallCReg = 0x54, // C ABI indirect call: dst, fn register, u16 signature constant
+    Trap = 0x55,     // deterministic unrecoverable safety trap (no operands)
     CallExt = 0x5D,  // call external symbol (FFI/API)
     Syscall = 0x5E, // syscall — RI16: ops[0]=dst, ops[1..2]=const_pool_idx (name or raw num); flags=arg_count
 
@@ -152,6 +153,7 @@ impl Opcode {
             0x52 => Some(Self::MemFence),
             0x53 => Some(Self::Spawn),
             0x54 => Some(Self::CallCReg),
+            0x55 => Some(Self::Trap),
             0x5D => Some(Self::CallExt),
             0x5E => Some(Self::Syscall),
             0x60 => Some(Self::StrLen),

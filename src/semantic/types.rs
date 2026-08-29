@@ -346,6 +346,16 @@ pub struct ForeignGlobalInfo {
     pub ty: TypeKind,
 }
 
+/// Source-level signature for one trait method. Dynamic dispatch uses this to
+/// retain concrete result types instead of fabricating an untagged `any` value.
+#[derive(Debug, Clone)]
+pub struct TraitMethodSignature {
+    pub has_explicit_receiver: bool,
+    pub generic_params: Vec<String>,
+    pub params: Vec<TypeKind>,
+    pub return_ty: TypeKind,
+}
+
 #[derive(Debug, Clone)]
 pub struct SemanticReport {
     pub errors: Vec<SemanticError>,
@@ -380,6 +390,8 @@ pub struct SemanticReport {
     pub trait_impls: HashMap<String, std::collections::HashSet<String>>,
     /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
     pub trait_method_slots: HashMap<String, Vec<String>>,
+    /// Declared method signatures per trait and method name.
+    pub trait_method_signatures: HashMap<String, HashMap<String, TraitMethodSignature>>,
     /// Enum variant tags: enum name → variant name → discriminant index.
     pub enum_defs: HashMap<String, HashMap<String, usize>>,
     /// Generic param names per struct: struct name → ordered generic param names.

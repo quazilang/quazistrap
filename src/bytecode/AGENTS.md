@@ -7,7 +7,8 @@ Emitting QZI is target-neutral and does not compile the current project's `[cc]`
 sources or require a host linker. Native inputs are used only for object/binary
 outputs.
 
-Operand layouts: **RRR** (dst/src1/src2), **RI16** (dst/imm16 LE), **MEM** (val/base/offset16 LE signed).
+Operand layouts: **RRR** (dst/src1/src2), **RI16** (dst/unsigned imm16 LE), **MEM** (val/base/offset16 LE signed).
+Negative and larger integer values use `MovConst` with an `Int(i64)` constant.
 
 `FieldLoad` and `FieldStore` encode their unsigned 16-bit byte offset across
 operand bytes 2 and 3. Register, constant, function, size, tag, and offset
@@ -19,6 +20,9 @@ For `Load`/`Store`, flags bits 1–2 encode `MemWidth` (`00=qword`,
 `Load`. Bit 0 remains `FLOAT_FLAG`. A zero flags byte therefore preserves the
 legacy qword access. Explicit raw-pointer dereferences use the pointee width;
 VM slot, aggregate, field, array, slice, and reference accesses remain qword.
+For integer `Div`, `Mod`, and relational jumps, bit 2 is `UNSIGNED_FLAG`.
+Zero retains signed behavior for historical bytecode. Signed `>>` lowers to
+`Sar`; unsigned `>>` lowers to `Shr`.
 
 ### Opcode Groups
 
@@ -29,7 +33,7 @@ VM slot, aggregate, field, array, slice, and reference accesses remain qword.
 | `0x20–0x2F` | Memory: `Load`, `Store`, `Lea`, `Move`, `Drop`, `Dup` |
 | `0x30–0x3F` | Control: `Cmp`, `Jmp`, `Je`–`Jnz`, `CallIdx`, `CallReg`, `Ret` |
 | `0x40–0x4F` | Structs: `New`, `NewObj`, `FieldLoad`, `FieldStore`, `VtblLoad` |
-| `0x50–0x5F` | Foreign: `AtomicAdd`, `AtomicCas`, `MemFence`, `Spawn`, `CallCReg=0x54`, `CallExt=0x5D`, `Syscall=0x5E` |
+| `0x50–0x5F` | Runtime/foreign: `AtomicAdd`, `AtomicCas`, `MemFence`, `Spawn`, `CallCReg=0x54`, `Trap=0x55`, `CallExt=0x5D`, `Syscall=0x5E` |
 | `0x60–0x6F` | Strings: `StrLen=0x60`, `StrConcat=0x61`, `StrToInt=0x62`, `StrToFloat=0x63`, `PrimToStr=0x64`, `StrAsStr=0x65` |
 
 Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_alloc_size(n)=((n+1)*8).max(16)`.
@@ -39,7 +43,8 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x06` (readers retain v1-v5 compatibility)
+- Version: `0x07` (readers retain compatible v2-v6 bytecode; v1 omitted
+  required frame metadata and parameterized v6 trait interfaces need rebuilding)
 - section directory: metadata, public interface, symbolic call relocations, bytecode
 - metadata identifies package name/version, executable/library kind, and entry signature
 - bytecode embeds a validated v5 chunk stream: names, parameters, registers,
@@ -90,8 +95,17 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
   data address followed by a width-aware `Load` or `Store`. QZI carries the ABI
   type so native backends do not infer C widths from host state.
 - Byte constants are emitted into read-only data as `[u64 length][payload]`.
-  `.len()` loads the prefix, indexing reads an unsigned byte, and `.as_ptr()`
-  skips the prefix so C receives the first payload byte.
+  `.len()` loads the prefix, checked indexing reads an unsigned byte, and
+  `.as_ptr()` skips the prefix so C receives the first payload byte.
+- Safe fixed-array, slice, and bytes indexing emits an unsigned `index < length`
+  guard. This rejects negative signed indices too. Failure calls the language
+  panic path when present and then executes `Trap`; `std = false` executes the
+  deterministic trap directly. Unsafe C flexible-array indexing stays unchecked.
+- `Lea.flags > 0` records the exact length of a virtual-register block that must
+  remain contiguous and address-stable. Current codegen always emits explicit
+  metadata, including `1` for scalar `&local`. QZI serialization/reading rejects
+  zero because older artifacts could recycle an address-taken slot; legacy
+  dependencies with implicit `Lea` metadata must be rebuilt from source.
 - `FieldLoad`/`FieldStore` reuse memory-width flags for `@repr(C)` byte, word,
   dword, and qword fields, including sign extension on signed loads. `FLOAT_FLAG`
   on a dword field marks C `f32` conversion to/from internal f64 slots.
@@ -100,14 +114,25 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
   the element's C width; packed fields remain valid unaligned x86-64 accesses.
 - Const-fold: `ConstValue` in `const_map` → `MovI`/`MovConst` directly.
 - `&&`/`||`: short-circuit via `Jz`/`Jnz`.
-- Variadics: call-site packs coerced args into consecutive slots, emits `Lea` (ptr) + `MovI` (len), passes as two registers to callee.
+- Variadics: call-site packs coerced args into consecutive slots, emits `Lea`
+  with the exact block length plus `MovI` (len), and passes both registers.
 - Enum constructors: `New` + discriminant `FieldStore` at `ENUM_DISCRIM_OFFSET`, payloads at `ENUM_PAYLOAD_OFFSET+i*8`.
 - `?` operator: reads discriminant, uses `.expect()` for tag lookup (no silent fallback).
 - Struct: `New(size)` + `FieldStore` per field in declaration order. Field access → `FieldLoad(dst, ptr, offset)`.
 - Fn-name as value: `MovConst(FnAddr(name))`. A Quazi variable callee uses
   `CallArg*+CallReg`; a `@repr(C)` callback variable uses
   `CallArg*+CallCReg` and target-specific C ABI lowering.
-- Closure: `__quazi_closure_N` chunk; captures detected via `capture_ident_names`; env struct heap-allocated; fn ptr at `ENUM_DISCRIM_OFFSET`, captures at `ENUM_PAYLOAD_OFFSET+i*8`; hidden env ptr in r0 on call.
+- Closure: `__quazi_closure_N` chunk; captures detected lexically via
+  `capture_ident_names`; env struct heap-allocated; fn ptr at
+  `ENUM_DISCRIM_OFFSET`, captures at `ENUM_PAYLOAD_OFFSET+i*8`; hidden env ptr
+  is r0 and user parameters follow it. Reserve that entire ABI prefix before
+  allocating capture temporaries. `fn` owns the environment: moves deactivate
+  the source cleanup, replacement/scope/discard cleanup emits free intrinsic 4,
+  and calls borrow the callee. Nested closure IDs are globally unique within a
+  compilation and named-function forwarders are emitted once.
+  Parent chunks with closure or forwarder `FnAddr` constants must not be reused
+  independently by partial QZC restoration. QZI v7 is the affine ownership
+  boundary; reject older public callable contracts and legacy synthetic chunks.
 
 ### Monomorphization
 
@@ -176,8 +201,8 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 
 Two passes run on each chunk after inline expansion:
 
-1. **`elim_dead_regs`**: iterative dead-def removal → Nop → `strip_nops_fix_jumps` → `compact_regs` (params pinned to identity; rest sequential).
-2. **`linear_scan_alloc`**: builds live intervals, finds **pinned** regs (params; Intrinsic/Syscall consecutive arg groups when `flags>1`; Lea(offset=0) adjacent MovI base groups), then linear scans non-pinned with slot reuse. Back-edge extension: for each backward jump at `j` targeting `t`, any reg with `start < t && end >= t` gets `end = j` — prevents slot recycling across loop iterations.
+1. **`elim_dead_regs`**: iterative dead-def removal → Nop → `strip_nops_fix_jumps` → `compact_regs` (params and explicit contiguous blocks pinned to identity; other slots compacted).
+2. **`linear_scan_alloc`**: builds live intervals, finds **pinned** regs (params; Intrinsic/Syscall consecutive arg groups when `flags>1`; explicit `Lea.flags` blocks; legacy Lea/adjacent-MovI groups), then linear scans non-pinned with slot reuse. Back-edge extension: for each backward jump at `j` targeting `t`, any reg with `start < t && end >= t` gets `end = j` — prevents slot recycling across loop iterations.
 
 Key: `Ret` has `ops[0]` = return-value register (remapped by `remap_instr_regs`; encoder uses `slot(ops[0])` not hardcoded `slot(0)`).
 

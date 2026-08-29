@@ -270,6 +270,10 @@ pub enum TypeKind {
     /// Immutable length-carrying byte string produced by `b"..."`/`br"..."`.
     Bytes,
     Void,
+    /// Internal semantic error sentinel. The parser never produces this type.
+    /// It suppresses follow-on diagnostics after an earlier error and must not
+    /// survive into executable code or a public interface.
+    Error,
     Any,
     Named {
         name: String,
@@ -334,6 +338,7 @@ impl std::fmt::Display for TypeKind {
             TypeKind::Str => write!(f, "str"),
             TypeKind::Bytes => write!(f, "bytes"),
             TypeKind::Void => write!(f, "void"),
+            TypeKind::Error => write!(f, "<error>"),
             TypeKind::Any => write!(f, "any"),
             TypeKind::Named { name, type_args } => {
                 if type_args.is_empty() {
@@ -505,6 +510,9 @@ pub enum ImportItems {
 pub struct TraitMethod {
     pub name: String,
     pub generic_params: Vec<String>,
+    /// Parameter names are preserved so `self` remains distinguishable from
+    /// ordinary arguments in QZI interfaces and dynamic-call checking.
+    pub param_names: Vec<String>,
     pub params: Vec<Type>,
     pub return_ty: Type,
     pub span: Span,

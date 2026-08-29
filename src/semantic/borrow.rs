@@ -19,6 +19,10 @@ struct OwnedVar {
     moved_at: Option<Span>,
     /// Loop depth at declaration site (used to detect move-in-loop).
     loop_depth_at_decl: usize,
+    control_depth_at_decl: usize,
+    /// First address-of operation that keeps this stack slot borrowed for the
+    /// remainder of the conservative function-local analysis.
+    borrowed_at: Option<Span>,
 }
 
 // ── Scoped move environment ───────────────────────────────────────────────────
@@ -27,6 +31,7 @@ struct OwnedVar {
 struct MoveEnv {
     scopes: Vec<HashMap<String, OwnedVar>>,
     loop_depth: usize,
+    control_depth: usize,
     /// Variables currently being re-assigned (`x = f(x)`). Move-in-loop is
     /// suppressed for these because the assignment immediately re-owns the value.
     reassign_targets: std::collections::HashSet<String>,
@@ -37,6 +42,7 @@ impl MoveEnv {
         Self {
             scopes: vec![HashMap::new()],
             loop_depth: 0,
+            control_depth: 0,
             reassign_targets: std::collections::HashSet::new(),
         }
     }
@@ -51,6 +57,7 @@ impl MoveEnv {
 
     fn declare(&mut self, name: String, ty: Option<TypeKind>) {
         let depth = self.loop_depth;
+        let control_depth = self.control_depth;
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
                 name,
@@ -58,6 +65,8 @@ impl MoveEnv {
                     ty,
                     moved_at: None,
                     loop_depth_at_decl: depth,
+                    control_depth_at_decl: control_depth,
+                    borrowed_at: None,
                 },
             );
         }
@@ -81,6 +90,15 @@ impl MoveEnv {
         }
     }
 
+    fn mark_borrowed(&mut self, name: &str, at: Span) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(variable) = scope.get_mut(name) {
+                variable.borrowed_at.get_or_insert(at);
+                return;
+            }
+        }
+    }
+
     /// Clear the moved state — called when a variable is re-assigned a new value.
     fn reinit(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
@@ -99,8 +117,19 @@ impl MoveEnv {
                 if let Some(at) = var.moved_at {
                     self.mark_moved(name, at);
                 }
+                if let Some(at) = var.borrowed_at {
+                    self.mark_borrowed(name, at);
+                }
             }
         }
+    }
+}
+
+fn assignment_target_ident(expr: &Expr) -> Option<&str> {
+    match &expr.node {
+        ExprKind::Ident(name) => Some(name),
+        ExprKind::Group(inner) => assignment_target_ident(inner),
+        _ => None,
     }
 }
 
@@ -165,7 +194,11 @@ impl Analyzer {
             StmtKind::Var {
                 name, ty, value, ..
             } => {
-                let var_ty = ty.as_ref().map(|t| t.node.clone());
+                let var_ty = ty.as_ref().map(|t| t.node.clone()).or_else(|| {
+                    value
+                        .as_ref()
+                        .and_then(|value| self.bc_annotated_type(value))
+                });
                 if let Some(v) = value {
                     self.bc_expr(v, env, true);
                 }
@@ -174,7 +207,10 @@ impl Analyzer {
             StmtKind::Const {
                 name, ty, value, ..
             } => {
-                let var_ty = ty.as_ref().map(|t| t.node.clone());
+                let var_ty = ty
+                    .as_ref()
+                    .map(|t| t.node.clone())
+                    .or_else(|| self.bc_annotated_type(value));
                 self.bc_expr(value, env, true);
                 env.declare(name.clone(), var_ty);
             }
@@ -198,16 +234,19 @@ impl Analyzer {
             } => {
                 self.bc_expr(condition, env, false);
                 let mut then_env = env.clone();
+                then_env.control_depth += 1;
                 self.bc_block(then_block, &mut then_env);
                 let mut all_envs = vec![then_env];
                 for (else_if_cond, else_if_block) in else_if {
-                    self.bc_expr(else_if_cond, env, false);
                     let mut ei_env = env.clone();
+                    ei_env.control_depth += 1;
+                    self.bc_expr(else_if_cond, &mut ei_env, false);
                     self.bc_block(else_if_block, &mut ei_env);
                     all_envs.push(ei_env);
                 }
                 if let Some(eb) = else_block {
                     let mut else_env = env.clone();
+                    else_env.control_depth += 1;
                     self.bc_block(eb, &mut else_env);
                     all_envs.push(else_env);
                 }
@@ -235,6 +274,7 @@ impl Analyzer {
                 }
                 env.loop_depth += 1;
                 let mut loop_env = env.clone();
+                loop_env.control_depth += 1;
                 match kind {
                     ForLoop::Each { vars, .. } => {
                         loop_env.enter_scope();
@@ -348,6 +388,31 @@ impl Analyzer {
                 }
 
                 if consumed {
+                    if matches!(
+                        var.ty.as_ref().map(|ty| self.resolve_type_aliases(ty)),
+                        Some(TypeKind::Fn { .. })
+                    ) && env.control_depth > var.control_depth_at_decl
+                    {
+                        self.push_error(
+                            expr.span,
+                            "S10",
+                            format!(
+                                "cannot move function owner `{name}` on only one control-flow path before path-sensitive cleanup is implemented"
+                            ),
+                        );
+                        return;
+                    }
+                    if let Some(borrowed_at) = var.borrowed_at {
+                        self.push_error(
+                            expr.span,
+                            "S10",
+                            format!(
+                                "cannot move `{name}` while it is shared-borrowed (borrowed at {})",
+                                self.span_label(borrowed_at)
+                            ),
+                        );
+                        return;
+                    }
                     // Moving inside a loop when the var was declared at a lower loop depth.
                     // Suppressed when the variable is the target of the enclosing assignment
                     // (x = f(x) pattern) — the reassignment immediately re-owns the value.
@@ -370,14 +435,30 @@ impl Analyzer {
             }
 
             ExprKind::Assign { target, value } => {
+                if consumed
+                    && let Some(name) = assignment_target_ident(target)
+                    && env.lookup(name).is_some_and(|variable| {
+                        variable.ty.as_ref().is_some_and(|ty| {
+                            matches!(self.resolve_type_aliases(ty), TypeKind::Fn { .. })
+                        })
+                    })
+                {
+                    self.push_error(
+                        expr.span,
+                        "S10",
+                        "a function-valued assignment cannot itself transfer ownership; assign first, then move the binding"
+                            .to_string(),
+                    );
+                }
+                self.bc_reject_borrowed_write(target, env);
                 // Mark target as being re-assigned so move-in-loop is suppressed
                 // for `x = f(x)` patterns (value is immediately re-owned).
-                if let ExprKind::Ident(name) = &target.node {
-                    env.reassign_targets.insert(name.clone());
+                if let Some(name) = assignment_target_ident(target) {
+                    env.reassign_targets.insert(name.to_string());
                 }
                 self.bc_expr(value, env, true);
-                if let ExprKind::Ident(name) = &target.node {
-                    env.reassign_targets.remove(name.as_str());
+                if let Some(name) = assignment_target_ident(target) {
+                    env.reassign_targets.remove(name);
                     env.reinit(name);
                 } else {
                     self.bc_expr(target, env, false);
@@ -386,12 +467,14 @@ impl Analyzer {
 
             ExprKind::CompoundAssign { target, value, .. } => {
                 // Read-modify-write: no ownership transfer.
+                self.bc_reject_borrowed_write(target, env);
                 self.bc_expr(target, env, false);
                 self.bc_expr(value, env, false);
             }
 
             ExprKind::IncDec { expr: inner, .. } => {
                 // In-place mutation: not a move.
+                self.bc_reject_borrowed_write(inner, env);
                 self.bc_expr(inner, env, false);
             }
 
@@ -416,6 +499,10 @@ impl Analyzer {
                 named_args,
                 ..
             } => {
+                // Quazi does not yet distinguish shared and mutable method
+                // receivers. Conservatively treat every method call as capable
+                // of mutation while an outstanding shared borrow exists.
+                self.bc_reject_borrowed_write(object, env);
                 self.bc_expr(object, env, false);
                 for arg in args {
                     self.bc_expr(arg, env, true);
@@ -425,10 +512,31 @@ impl Analyzer {
                 }
             }
 
-            ExprKind::Binary { left, right, .. } => {
+            ExprKind::Binary { left, op, right } => {
                 // Arithmetic / comparison: reads both operands, no move.
                 self.bc_expr(left, env, false);
-                self.bc_expr(right, env, false);
+                if matches!(op, BinOpKind::AndAnd | BinOpKind::OrOr) {
+                    let mut right_env = env.clone();
+                    right_env.control_depth += 1;
+                    self.bc_expr(right, &mut right_env, false);
+                    env.apply_branch_moves(&right_env);
+                } else {
+                    self.bc_expr(right, env, false);
+                }
+            }
+
+            ExprKind::Unary {
+                expr: inner,
+                op: UnaryOpKind::Ref,
+            } => {
+                let mut place = inner;
+                while let ExprKind::Group(grouped) = &place.node {
+                    place = grouped;
+                }
+                if let ExprKind::Ident(name) = &place.node {
+                    env.mark_borrowed(name, expr.span);
+                }
+                self.bc_expr(inner, env, false);
             }
 
             ExprKind::Unary { expr: inner, .. } => {
@@ -471,8 +579,9 @@ impl Analyzer {
                 let base_env = env.clone();
                 for arm in arms {
                     let mut arm_env = base_env.clone();
+                    arm_env.control_depth += 1;
                     for b in crate::parser::ast::pattern_all_bindings(&arm.pattern) {
-                        arm_env.declare(b, Some(TypeKind::Any));
+                        arm_env.declare(b, Some(TypeKind::Error));
                     }
                     // Guard expression is checked in the arm's scope (bindings available).
                     if let Some(guard) = &arm.guard {
@@ -496,9 +605,59 @@ impl Analyzer {
                 self.bc_expr(inner, env, consumed);
             }
 
-            ExprKind::Closure { body, .. } => {
-                self.bc_expr(body, env, consumed);
+            ExprKind::Closure { params, body } => {
+                let parameter_types = match self.bc_annotated_type(expr) {
+                    Some(TypeKind::Fn { params, .. }) => params,
+                    _ => Vec::new(),
+                };
+                let mut closure_env = env.clone();
+                closure_env.enter_scope();
+                for (index, name) in params.iter().enumerate() {
+                    closure_env.declare(
+                        name.clone(),
+                        parameter_types.get(index).map(|ty| ty.node.clone()),
+                    );
+                }
+                self.bc_expr(body, &mut closure_env, true);
+                closure_env.exit_scope();
             }
         }
+    }
+
+    fn bc_annotated_type(&self, expr: &Expr) -> Option<TypeKind> {
+        self.annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
+            })
+            .and_then(|annotation| annotation.ty.clone())
+    }
+
+    fn bc_reject_borrowed_write(&mut self, target: &Expr, env: &MoveEnv) {
+        let Some(name) = assignment_root_ident(target) else {
+            return;
+        };
+        if let Some(borrowed_at) = env.lookup(name).and_then(|variable| variable.borrowed_at) {
+            self.push_error(
+                target.span,
+                "S10",
+                format!(
+                    "cannot mutate `{name}` while it is shared-borrowed (borrowed at {})",
+                    self.span_label(borrowed_at)
+                ),
+            );
+        }
+    }
+}
+
+fn assignment_root_ident(expr: &Expr) -> Option<&str> {
+    match &expr.node {
+        ExprKind::Ident(name) => Some(name),
+        ExprKind::Group(inner) => assignment_root_ident(inner),
+        ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
+            assignment_root_ident(object)
+        }
+        _ => None,
     }
 }

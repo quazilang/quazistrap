@@ -17,11 +17,11 @@ fn __array_realloc(ptr: *u8, size: usize) *u8;
 
 // Internal: write val into base[idx * 8]. @intrinsic bypasses S12.
 @intrinsic("quazi.array.store")
-fn __ptr_store(base: *u8, idx: usize, val: usize) void;
+fn __ptr_store[T](base: *u8, idx: usize, val: T) void;
 
 // Internal: read base[idx * 8].
 @intrinsic("quazi.array.load")
-fn __ptr_load(base: *u8, idx: usize) usize;
+fn __ptr_load[T](base: *u8, idx: usize) T;
 
 pub struct Array[T] {
     ptr: *u8,

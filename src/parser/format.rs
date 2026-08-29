@@ -90,17 +90,14 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
                     // Compute real file span for this name_part so that type_map
                     // lookups from semantic analysis use the same key.
                     let name_start_in_s = i + 1;
-                    let leading_spaces = field
-                        .split_once(':')
-                        .map(|(n, _)| n)
-                        .unwrap_or(field)
-                        .len()
-                        - field
-                            .split_once(':')
-                            .map(|(n, _)| n)
-                            .unwrap_or(field)
-                            .trim_start()
-                            .len();
+                    let leading_spaces =
+                        field.split_once(':').map(|(n, _)| n).unwrap_or(field).len()
+                            - field
+                                .split_once(':')
+                                .map(|(n, _)| n)
+                                .unwrap_or(field)
+                                .trim_start()
+                                .len();
                     let real_start = file_base + name_start_in_s + leading_spaces;
                     let real_end = real_start + name_part.len();
                     let expr_span = Span::new(
@@ -110,9 +107,7 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
                         real_end,
                     );
 
-                    if let Some(parsed_expr) =
-                        parse_inline_format_expr(name_part, expr_span)
-                    {
+                    if let Some(parsed_expr) = parse_inline_format_expr(name_part, expr_span) {
                         out_args.push(parsed_expr);
                         out_specs.push(spec_part.to_string());
                         clean_template_bytes.extend_from_slice(b"{}");

@@ -44,7 +44,7 @@ escapes, and escaped newlines. Backtick strings preserve contents exactly.
 - Signed integers: `i8`, `i16`, `i32`, `i64`, `isize`.
 - Unsigned integers: `u8`, `u16`, `u32`, `u64`, `usize`.
 - Floating point: `f16`, `f32`, `f64`.
-- Other primitives: `bool`, `str`, `bytes`, `void`, `any`, `!`.
+- Other primitives: `bool`, `str`, `bytes`, `void`, `!`.
 - Containers/references: `[T; N]`, `[T]`, `&T`, `*T`.
 - Named/generic types: `Name`, `Name[T, U]`.
 - Functions: `fn(T, U) V`; trait objects: `dyn Trait`.
@@ -59,6 +59,15 @@ const ratio: f64 = 3 as f64 / 2.0;
 `str` is immutable UTF-8. Indexes count Unicode scalars, negative indexes count
 from the end, and slices follow Python spelling: `text[start:end:step]`.
 `String` is the owned growable string from the prelude.
+
+`any` is reserved syntax, not a runtime value type. Quazi currently has no
+tagged dynamic-value representation, so `any` is rejected in variables,
+fields, parameters, returns, casts, and generic arguments. The sole supported
+use is the final `...args: any` pseudo-parameter of an `@format` function; the
+compiler converts each argument at the call site and the function body cannot
+access that pseudo-parameter. Use a generic parameter for static polymorphism,
+`dyn Trait` for trait-object dispatch, or an exact `@repr(C)` callback at a
+foreign boundary.
 
 ## Operators
 
@@ -90,6 +99,33 @@ greet(punctuation="!", name="Quazi");
 
 var double: fn(i32) i32 = |value| value * 2;
 ```
+
+Closure parameters are inferred from an expected `fn(...) Return` type. That
+context may come from a typed binding, assignment, return, or an argument to a
+function value, module function, inherent method, or dynamic trait method. A
+standalone closure binding therefore needs an explicit function type, as in
+`double` above.
+
+Quazi `fn` values are affine owners of their closure environment. Assigning,
+passing, or returning one transfers ownership; using the previous binding after
+the move is an error. Replacing a binding destroys its previous environment,
+and the last owner is destroyed at scope exit. Calling a function value only
+borrows it, so it may be called repeatedly.
+
+The current safe closure checkpoint permits immutable captures and closure
+parameters/results only when their runtime value is a plain scalar (`bool`, a
+number, raw pointer, or C function pointer). Owned values, strings, references,
+mutable captures, and `fn` values nested inside arrays or named aggregates are
+rejected until recursive environment and aggregate destruction is available.
+Callable parameter and return types must match exactly; numeric conversions do
+not adapt a function signature. See [Migrating function values and
+closures](migrations/closures.md).
+
+Until cleanup state becomes path-sensitive, an outer `fn` owner cannot be moved
+from only one branch, loop iteration, short-circuit operand, or match arm. Move
+it before control flow or create and consume the owner entirely inside that
+path. A function-valued assignment is not itself transferable: assign first,
+then move the binding. Match expressions cannot currently produce `fn` values.
 
 Positional arguments precede named arguments. Quazi variadics declare a typed
 final parameter as `...values: T`; bare `...` is reserved for C variadic
@@ -196,6 +232,27 @@ Safe references use `&T`; raw pointers use `*T`. Raw dereference and calls to
 unsafe fn read_raw(pointer: *u8) u8 { ret *pointer; }
 unsafe { const byte = read_raw(pointer); }
 ```
+
+Shared references currently use a conservative lexical model:
+
+- `&value` accepts only a local variable or parameter (parentheses are fine).
+- A value never converts into a reference, and reference pointee types are
+  invariant: `&i32` is not `&u64`.
+- A shared-reference binding cannot be rebound, returned, stored in an owned
+  aggregate, or captured by a closure. The referenced owner cannot be mutated,
+  moved, or passed to a method while that borrow remains in the function.
+- Fields, indexes, dereferences, calls, and temporary expressions are not yet
+  valid address-of operands. These need real place-address lowering.
+- Dereferencing a shared reference materializes only scalar/value-like
+  pointees. Aggregate pointees require immutable receiver/view semantics; a
+  shallow aggregate load would otherwise create a mutable alias.
+- `str`/`&str` retain their existing representation-identical string-view rule.
+
+These restrictions keep references sound before lifetime parameters and
+mutable-reference syntax exist. A direct `&local` may be stored or passed as an
+exact raw pointer, but dereferencing that pointer or calling an unsafe function
+still requires an unsafe context. Raw pointers never convert back into safe
+references.
 
 Owned values such as `String`, `Array[T]`, `Box[T]`, and OS handles are cleaned
 at lexical scope exit, including early returns. Returning or moving an owned

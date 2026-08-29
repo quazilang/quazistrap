@@ -31,7 +31,7 @@ pub struct QziCallRelocation {
 #[derive(Debug, Clone)]
 pub struct QziModule {
     pub metadata: QziMetadata,
-    /// Quazi declarations exposed to source consumers. QZI v6 keeps this as
+    /// Quazi declarations exposed to source consumers. Sectioned QZI keeps this as
     /// UTF-8 so newer compilers can reject unsupported syntax explicitly.
     pub interface: String,
     pub call_relocations: Vec<QziCallRelocation>,
@@ -315,7 +315,13 @@ fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
         return Err("truncated QZI header".to_string());
     }
     let version = buf[pos];
-    if !matches!(version, 1..=5) {
+    if version == 1 {
+        return Err(
+            "QZI version 1 cannot be loaded safely because its writer omitted parameter and register-frame metadata; rebuild the artifact from source"
+                .to_string(),
+        );
+    }
+    if !matches!(version, 2..=5) {
         return Err(format!("unsupported QZI version {}", version));
     }
     pos += 1;
@@ -348,37 +354,30 @@ fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
             .map_err(|_| "invalid UTF-8 in chunk name".to_string())?;
         pos += name_len;
 
-        let (
-            param_count,
-            reg_count,
-            intrinsic,
-            variadic,
-            c_variadic,
-            has_export,
-            native_unmangled,
-        ) = if version >= 2 {
-            if buf.len() < pos + 4 {
-                return Err("truncated chunk params/regs/flags".to_string());
-            }
-            let pc = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
-            if pc > u8::MAX as usize {
-                return Err(format!("QZI chunk parameter count {pc} exceeds 255"));
-            }
-            let rc = buf[pos + 2];
-            let flags = buf[pos + 3];
-            pos += 4;
-            (
-                pc,
-                rc,
-                (flags & 1) != 0,
-                (flags & 2) != 0,
-                (flags & 4) != 0,
-                (flags & 8) != 0,
-                (flags & 16) != 0,
-            )
-        } else {
-            (0, 0, false, false, false, false, false)
-        };
+        let (param_count, reg_count, intrinsic, variadic, c_variadic, has_export, native_unmangled) =
+            if version >= 2 {
+                if buf.len() < pos + 4 {
+                    return Err("truncated chunk params/regs/flags".to_string());
+                }
+                let pc = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+                if pc > u8::MAX as usize {
+                    return Err(format!("QZI chunk parameter count {pc} exceeds 255"));
+                }
+                let rc = buf[pos + 2];
+                let flags = buf[pos + 3];
+                pos += 4;
+                (
+                    pc,
+                    rc,
+                    (flags & 1) != 0,
+                    (flags & 2) != 0,
+                    (flags & 4) != 0,
+                    (flags & 8) != 0,
+                    (flags & 16) != 0,
+                )
+            } else {
+                (0, 0, false, false, false, false, false)
+            };
 
         let export = if version >= 3 && has_export {
             Some(ForeignSymbol::decode(buf, &mut pos)?)
@@ -581,13 +580,24 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
                     chunk.name, instruction_index, message
                 ))
             };
+            if opcode == Opcode::Lea
+                && instruction.flags != 0
+                && instruction.ops[1]
+                    .checked_add(instruction.flags - 1)
+                    .is_none()
+            {
+                return fail("contiguous register block wraps past r255");
+            }
             for register in crate::bytecode::regalloc::instruction_registers(instruction) {
                 // A zero-register void function still carries `Ret r0` by the
                 // historical QZI convention. The backend reserves that return slot.
                 let legacy_void_return =
                     chunk.reg_count == 0 && opcode == Opcode::Ret && register == 0;
                 if !legacy_void_return && register as usize >= chunk.reg_count as usize {
-                    return fail("register operand is outside the declared frame");
+                    return fail(&format!(
+                        "register r{register} is outside the declared frame ({} slots)",
+                        chunk.reg_count
+                    ));
                 }
             }
             if matches!(
@@ -612,10 +622,36 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
             {
                 return fail("constant-pool index is out of bounds");
             }
+            if opcode == Opcode::CallExt {
+                let constant = &chunk.constants[instruction.ri16().1 as usize];
+                if !matches!(
+                    constant,
+                    ConstPoolEntry::Str(_) | ConstPoolEntry::ForeignSymbol(_)
+                ) {
+                    return fail("external call metadata has the wrong constant-pool kind");
+                }
+            }
+            if opcode == Opcode::Syscall {
+                let constant = &chunk.constants[instruction.ri16().1 as usize];
+                let valid = match constant {
+                    ConstPoolEntry::Str(_) => true,
+                    ConstPoolEntry::Int(value) => *value >= 0,
+                    _ => false,
+                };
+                if !valid {
+                    return fail("syscall metadata must be a name or non-negative number");
+                }
+            }
             if opcode == Opcode::CallCReg
                 && instruction.call_c_reg_parts().2 as usize >= chunk.constants.len()
             {
                 return fail("C callback signature index is out of bounds");
+            }
+            if opcode == Opcode::CallCReg {
+                let constant = &chunk.constants[instruction.call_c_reg_parts().2 as usize];
+                if !matches!(constant, ConstPoolEntry::ForeignSymbol(_)) {
+                    return fail("C callback signature metadata has the wrong constant-pool kind");
+                }
             }
             if opcode == Opcode::CallIdx && instruction.ri16().1 as usize >= chunks.len() {
                 return fail("function-table index is out of bounds");
@@ -640,8 +676,19 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 6;
+pub const QZI_VERSION: u8 = 7;
 const QZI_LEGACY_VERSION: u8 = 5;
+const QZI_FIRST_SECTIONED_VERSION: u8 = 6;
+
+fn chunks_use_preownership_function_values(chunks: &[Chunk]) -> bool {
+    chunks.iter().any(|chunk| {
+        chunk.name.starts_with("__quazi_closure_")
+            || chunk.name.starts_with("__quazi_fwd_")
+            || chunk.constants.iter().any(
+                |constant| matches!(constant, ConstPoolEntry::FnAddr(name) if name.starts_with("__quazi_closure_") || name.starts_with("__quazi_fwd_")),
+            )
+    })
+}
 
 fn serialize_qzi_legacy(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
     validate_qzi_chunks(chunks)?;
@@ -879,6 +926,17 @@ fn read_short_string(bytes: &[u8], pos: &mut usize, what: &str) -> Result<String
 
 pub fn serialize_qzi_module(module: &QziModule) -> Result<Vec<u8>, String> {
     validate_qzi_chunks(&module.chunks)?;
+    if module
+        .chunks
+        .iter()
+        .flat_map(|chunk| &chunk.code)
+        .any(|instruction| instruction.opcode() == Some(Opcode::Lea) && instruction.flags == 0)
+    {
+        return Err(
+            "QZI v7 requires explicit register-block metadata on every `Lea`; rebuild codegen output before serialization"
+                .to_string(),
+        );
+    }
     if module.interface.len() > u32::MAX as usize {
         return Err("QZI interface is too large".to_string());
     }
@@ -946,6 +1004,12 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
     let version = bytes[4];
     if version <= QZI_LEGACY_VERSION {
         let chunks = deserialize_qzi_legacy(bytes)?;
+        reject_implicit_lea_metadata(version, &chunks)?;
+        if chunks_use_preownership_function_values(&chunks) {
+            return Err(format!(
+                "QZI v{version} contains function values compiled before affine closure ownership; rebuild this dependency with QZI v7 or publish it as source"
+            ));
+        }
         let relocations = infer_call_relocations(&chunks)?;
         return Ok(QziModule {
             metadata: QziMetadata {
@@ -963,7 +1027,7 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
             chunks,
         });
     }
-    if version != QZI_VERSION {
+    if !(QZI_FIRST_SECTIONED_VERSION..=QZI_VERSION).contains(&version) {
         return Err(format!("unsupported QZI version {version}"));
     }
     let mut pos = 5usize;
@@ -1022,6 +1086,33 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
             .to_vec(),
     )
     .map_err(|_| "invalid UTF-8 in QZI interface".to_string())?;
+    if version == 6
+        && !interface.is_empty()
+        && crate::bytecode::interface::qzi_v6_interface_has_ambiguous_trait_receivers(&interface)?
+    {
+        return Err(
+            "QZI v6 trait interfaces do not preserve explicit receiver names safely; rebuild this dependency with QZI v7 or publish it as source"
+                .to_string(),
+        );
+    }
+    if version == 6
+        && !interface.is_empty()
+        && crate::bytecode::interface::qzi_v6_interface_has_owned_function_values(&interface)?
+    {
+        return Err(
+            "QZI v6 public interface uses function values compiled before affine closure ownership; rebuild this dependency with QZI v7 or publish it as source"
+                .to_string(),
+        );
+    }
+    if version == 6
+        && !interface.is_empty()
+        && crate::bytecode::interface::qzi_v6_interface_has_runtime_any(&interface)?
+    {
+        return Err(
+            "QZI v6 public interface contains runtime `any`, which has no portable representation; rebuild this dependency with QZI v7 after migrating the API or publish it as source"
+                .to_string(),
+        );
+    }
     let call_relocations = decode_call_relocations(
         sections
             .remove(&QZI_SECTION_CALL_RELOCATIONS)
@@ -1032,6 +1123,47 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
             .remove(&QZI_SECTION_BYTECODE)
             .ok_or_else(|| "QZI bytecode section is missing".to_string())?,
     )?;
+    reject_implicit_lea_metadata(version, &chunks)?;
+    if version < 7 && chunks_use_preownership_function_values(&chunks) {
+        return Err(
+            "QZI v6 contains function values compiled before affine closure ownership; rebuild this dependency with QZI v7 or publish it as source"
+                .to_string(),
+        );
+    }
+    if version < 7
+        && chunks
+            .iter()
+            .flat_map(|chunk| &chunk.code)
+            .any(|instruction| {
+                instruction.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0
+                    && matches!(
+                        instruction.opcode(),
+                        Some(
+                            Opcode::Div
+                                | Opcode::Mod
+                                | Opcode::Jg
+                                | Opcode::Jge
+                                | Opcode::Jl
+                                | Opcode::Jle
+                        )
+                    )
+            })
+    {
+        return Err("QZI v6 cannot contain v7 unsigned-integer instruction flags".to_string());
+    }
+    if version < 7
+        && chunks
+            .iter()
+            .flat_map(|chunk| &chunk.code)
+            .any(|instruction| {
+                instruction.opcode() == Some(Opcode::Trap)
+                    || (instruction.opcode() == Some(Opcode::Lea) && instruction.flags != 0)
+            })
+    {
+        return Err(
+            "QZI v6 cannot contain v7 safety opcodes or register-block metadata".to_string(),
+        );
+    }
     for relocation in &call_relocations {
         let chunk = chunks
             .get(relocation.chunk_index as usize)
@@ -1050,6 +1182,19 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
         call_relocations,
         chunks,
     })
+}
+
+fn reject_implicit_lea_metadata(version: u8, chunks: &[Chunk]) -> Result<(), String> {
+    if chunks
+        .iter()
+        .flat_map(|chunk| &chunk.code)
+        .any(|instruction| instruction.opcode() == Some(Opcode::Lea) && instruction.flags == 0)
+    {
+        return Err(format!(
+            "QZI v{version} contains `Lea` without address-taken register metadata; rebuild this dependency from source with the current compiler"
+        ));
+    }
+    Ok(())
 }
 
 pub fn deserialize_qzi(bytes: &[u8]) -> Result<Vec<Chunk>, String> {
@@ -1314,7 +1459,7 @@ mod tests {
     }
 
     #[test]
-    fn qzi_v6_preserves_v5_chunk_metadata_bytes_and_globals() {
+    fn current_qzi_preserves_v5_chunk_metadata_bytes_and_globals() {
         let signature = AbiSignature {
             params: vec![AbiType::Float64],
             return_type: AbiType::Float64,
@@ -1346,8 +1491,8 @@ mod tests {
             }));
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
 
-        let encoded = serialize_qzi(&[chunk]).expect("QZI v6 should encode");
-        let decoded = deserialize_qzi(&encoded).expect("QZI v6 should decode");
+        let encoded = serialize_qzi(&[chunk]).expect("current QZI should encode");
+        let decoded = deserialize_qzi(&encoded).expect("current QZI should decode");
         assert_eq!(decoded[0].export.as_ref().unwrap().symbol, "quazi_sin");
         assert!(matches!(
             decoded[0].constants.as_slice(),
@@ -1357,7 +1502,7 @@ mod tests {
     }
 
     #[test]
-    fn qzi_v6_roundtrips_module_metadata_and_interface() {
+    fn qzi_v7_roundtrips_module_metadata_and_interface() {
         let mut chunk = Chunk::new("math.add");
         chunk.reg_count = 1;
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
@@ -1373,11 +1518,183 @@ mod tests {
             chunks: vec![chunk],
         };
 
-        let encoded = serialize_qzi_module(&module).expect("serialize QZI v6 module");
-        let decoded = deserialize_qzi_module(&encoded).expect("deserialize QZI v6 module");
+        let encoded = serialize_qzi_module(&module).expect("serialize QZI v7 module");
+        assert_eq!(encoded[4], 7);
+        let decoded = deserialize_qzi_module(&encoded).expect("deserialize QZI v7 module");
         assert_eq!(decoded.metadata, module.metadata);
         assert_eq!(decoded.interface, module.interface);
         assert_eq!(decoded.chunks[0].name, "math.add");
+    }
+
+    #[test]
+    fn qzi_v7_reader_accepts_v6_sectioned_modules() {
+        let mut chunk = Chunk::new("main");
+        chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let mut encoded = serialize_qzi(&[chunk]).expect("serialize current QZI");
+        encoded[4] = 6;
+
+        let decoded = deserialize_qzi(&encoded).expect("read QZI v6 module");
+        assert_eq!(decoded[0].name, "main");
+    }
+
+    #[test]
+    fn qzi_v6_function_values_require_an_ownership_rebuild() {
+        let mut chunk = Chunk::new("__quazi_fwd_one");
+        chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let mut encoded = serialize_qzi(&[chunk]).expect("serialize current QZI");
+        encoded[4] = 6;
+
+        let error = deserialize_qzi(&encoded)
+            .expect_err("pre-ownership function values must require a source rebuild");
+        assert!(error.contains("before affine closure ownership"));
+        assert!(error.contains("rebuild this dependency with QZI v7"));
+    }
+
+    #[test]
+    fn qzi_v6_public_function_value_contracts_require_rebuild() {
+        let mut chunk = Chunk::new("legacy.consume");
+        chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let interface = toml::to_string(&crate::bytecode::interface::QziInterfaceBundle {
+            modules: vec![crate::bytecode::interface::QziInterfaceModule {
+                name: "legacy".to_string(),
+                exports: vec!["consume".to_string()],
+                source: "pub fn consume(callback: fn() i32) void;\n".to_string(),
+            }],
+        })
+        .expect("serialize legacy interface");
+        let module = QziModule {
+            metadata: QziMetadata {
+                name: "legacy".to_string(),
+                version: Some("1.0.0".to_string()),
+                kind: QziModuleKind::Library,
+                main_takes_args: false,
+            },
+            interface,
+            call_relocations: Vec::new(),
+            chunks: vec![chunk],
+        };
+        let mut encoded = serialize_qzi_module(&module).expect("serialize sectioned module");
+        encoded[4] = 6;
+
+        let error = deserialize_qzi_module(&encoded)
+            .expect_err("pre-ownership callable API must require a source rebuild");
+        assert!(error.contains("public interface uses function values"));
+        assert!(error.contains("rebuild this dependency with QZI v7"));
+    }
+
+    #[test]
+    fn qzi_v1_requires_source_rebuild_instead_of_guessing_frame_metadata() {
+        let bytes = [0, b'Q', b'Z', b'I', 1, 0, 0, 0, 0];
+        let error = deserialize_qzi_module(&bytes)
+            .expect_err("v1 omitted frame metadata and must fail explicitly");
+        assert!(error.contains("omitted parameter and register-frame metadata"));
+        assert!(error.contains("rebuild the artifact from source"));
+    }
+
+    #[test]
+    fn qzi_v6_trait_interfaces_with_parameters_require_rebuild() {
+        let mut chunk = Chunk::new("main");
+        chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let interface = toml::to_string(&crate::bytecode::interface::QziInterfaceBundle {
+            modules: vec![crate::bytecode::interface::QziInterfaceModule {
+                name: "legacy".to_string(),
+                exports: vec!["Write".to_string()],
+                // QZI v6 rendered every trait parameter as argN, losing the
+                // distinction between an explicit `self` receiver and an
+                // ordinary first argument.
+                source: "pub trait Write { fn write(arg0: Self, arg1: str) void; }\n".to_string(),
+            }],
+        })
+        .expect("serialize legacy interface");
+        let module = QziModule {
+            metadata: QziMetadata {
+                name: "legacy".to_string(),
+                version: Some("1.0.0".to_string()),
+                kind: QziModuleKind::Library,
+                main_takes_args: false,
+            },
+            interface,
+            call_relocations: Vec::new(),
+            chunks: vec![chunk],
+        };
+        let mut encoded = serialize_qzi_module(&module).expect("serialize sectioned module");
+        encoded[4] = 6;
+
+        let error = deserialize_qzi_module(&encoded)
+            .expect_err("ambiguous v6 trait receiver metadata must not be guessed");
+        assert!(error.contains("do not preserve explicit receiver names safely"));
+        assert!(error.contains("rebuild this dependency with QZI v7"));
+    }
+
+    #[test]
+    fn qzi_v6_public_runtime_any_interfaces_require_rebuild() {
+        let mut chunk = Chunk::new("legacy.erase");
+        chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let interface = toml::to_string(&crate::bytecode::interface::QziInterfaceBundle {
+            modules: vec![crate::bytecode::interface::QziInterfaceModule {
+                name: "legacy".to_string(),
+                exports: vec!["erase".to_string()],
+                source: "pub fn erase(value: any) any;\n".to_string(),
+            }],
+        })
+        .expect("serialize legacy interface");
+        let module = QziModule {
+            metadata: QziMetadata {
+                name: "legacy".to_string(),
+                version: Some("1.0.0".to_string()),
+                kind: QziModuleKind::Library,
+                main_takes_args: false,
+            },
+            interface,
+            call_relocations: Vec::new(),
+            chunks: vec![chunk],
+        };
+        let mut encoded = serialize_qzi_module(&module).expect("serialize sectioned module");
+        encoded[4] = 6;
+
+        let error = deserialize_qzi_module(&encoded)
+            .expect_err("v6 runtime-any interfaces must not enter semantic analysis");
+        assert!(error.contains("runtime `any`, which has no portable representation"));
+        assert!(error.contains("rebuild this dependency with QZI v7"));
+    }
+
+    #[test]
+    fn qzi_v7_roundtrips_unsigned_flags_and_v6_rejects_them() {
+        let mut chunk = Chunk::with_params("divide", 2);
+        chunk.reg_count = 3;
+        let mut division = crate::bytecode::instruction::rrr(Opcode::Div, 2, 0, 1);
+        division.flags |= crate::bytecode::instruction::UNSIGNED_FLAG;
+        chunk.emit(division);
+        chunk.emit_rrr(Opcode::Ret, 2, 0, 0);
+        let encoded = serialize_qzi(&[chunk]).expect("serialize QZI v7 unsigned division");
+
+        let decoded = deserialize_qzi(&encoded).expect("read QZI v7 unsigned division");
+        assert_ne!(
+            decoded[0].code[0].flags & crate::bytecode::instruction::UNSIGNED_FLAG,
+            0
+        );
+
+        let mut downgraded = encoded;
+        downgraded[4] = 6;
+        let error = deserialize_qzi(&downgraded).expect_err("v6 must reject v7 flags");
+        assert!(error.contains("v7 unsigned-integer instruction flags"));
+    }
+
+    #[test]
+    fn qzi_v6_rejects_v7_checked_indexing_instructions() {
+        for instruction in [
+            crate::bytecode::instruction::rrr(Opcode::Trap, 0, 0, 0),
+            crate::bytecode::instruction::mem_lea_block(0, 1, 0, 1),
+        ] {
+            let mut chunk = Chunk::new("checked");
+            chunk.reg_count = 2;
+            chunk.emit(instruction);
+            chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+            let mut encoded = serialize_qzi(&[chunk]).expect("serialize current QZI");
+            encoded[4] = 6;
+            let error = deserialize_qzi(&encoded).expect_err("v6 must reject v7 safety data");
+            assert!(error.contains("v7 safety"));
+        }
     }
 
     #[test]
@@ -1474,6 +1791,57 @@ mod tests {
     }
 
     #[test]
+    fn qzi_rejects_wrapping_contiguous_register_blocks() {
+        let mut chunk = Chunk::new("bad_block");
+        chunk.reg_count = u8::MAX;
+        chunk.emit(crate::bytecode::instruction::mem_lea_block(250, 0, 0, 10));
+        let error = serialize_qzi(&[chunk]).expect_err("wrapping block must be rejected");
+        assert!(error.contains("wraps past r255"));
+    }
+
+    #[test]
+    fn qzi_rejects_missing_address_taken_register_metadata() {
+        let mut chunk = Chunk::new("borrow");
+        chunk.reg_count = 2;
+        chunk.emit(ri16(Opcode::MovI, 0, 7));
+        chunk.emit(crate::bytecode::instruction::mem_lea_block(0, 1, 0, 1));
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+        let mut encoded = serialize_qzi(&[chunk]).expect("explicit Lea metadata is valid");
+        let encoded_lea = [Opcode::Lea as u8, 1, 0, 0, 0, 1];
+        let offset = encoded
+            .windows(encoded_lea.len())
+            .position(|window| window == encoded_lea)
+            .expect("serialized Lea instruction");
+        encoded[offset + 5] = 0;
+
+        let error = deserialize_qzi_module(&encoded)
+            .expect_err("implicit address-taken metadata must require a source rebuild");
+        assert!(error.contains("without address-taken register metadata"));
+        assert!(error.contains("rebuild this dependency from source"));
+    }
+
+    #[test]
+    fn legacy_qzi_rejects_missing_address_taken_register_metadata() {
+        let mut chunk = Chunk::new("borrow");
+        chunk.reg_count = 2;
+        chunk.emit(ri16(Opcode::MovI, 0, 7));
+        chunk.emit(crate::bytecode::instruction::mem_lea_block(0, 1, 0, 1));
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+        let mut encoded = serialize_qzi_legacy(&[chunk]).expect("valid legacy QZI");
+        let encoded_lea = [Opcode::Lea as u8, 1, 0, 0, 0, 1];
+        let offset = encoded
+            .windows(encoded_lea.len())
+            .position(|window| window == encoded_lea)
+            .expect("serialized Lea instruction");
+        encoded[offset + 5] = 0;
+
+        let error = deserialize_qzi_module(&encoded)
+            .expect_err("legacy implicit address metadata must require a source rebuild");
+        assert!(error.contains("QZI v5"));
+        assert!(error.contains("without address-taken register metadata"));
+    }
+
+    #[test]
     fn qzi_rejects_impossible_chunk_counts_before_allocating() {
         let mut encoded = Vec::from(QZI_MAGIC.as_slice());
         encoded.push(QZI_VERSION);
@@ -1487,5 +1855,24 @@ mod tests {
         chunk.constant_pool_overflowed = true;
         let error = serialize_qzi(&[chunk]).expect_err("overflow must not be serialized");
         assert!(error.contains("constant-pool limit"));
+    }
+
+    #[test]
+    fn qzi_rejects_opcode_metadata_with_the_wrong_constant_kind() {
+        let mut external = Chunk::new("bad_external");
+        external.reg_count = 1;
+        external.constants.push(ConstPoolEntry::Int(7));
+        external.emit_ri16(Opcode::CallExt, 0, 0);
+        external.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let error = serialize_qzi(&[external]).expect_err("CallExt metadata must be validated");
+        assert!(error.contains("wrong constant-pool kind"));
+
+        let mut syscall = Chunk::new("bad_syscall");
+        syscall.reg_count = 1;
+        syscall.constants.push(ConstPoolEntry::Int(-1));
+        syscall.emit_ri16(Opcode::Syscall, 0, 0);
+        syscall.emit_rrr(Opcode::Ret, 0, 0, 0);
+        let error = serialize_qzi(&[syscall]).expect_err("syscall metadata must be validated");
+        assert!(error.contains("non-negative number"));
     }
 }

@@ -96,17 +96,18 @@ fn compute_use_set(code: &[Instruction]) -> HashSet<u8> {
             continue;
         }
         let base = code[i].ops[1];
-        let n_after = if code[i + 1].opcode == Opcode::MovI as u8 {
+        let n_explicit = code[i].flags as u16;
+        let n_after = if n_explicit == 0 && code[i + 1].opcode == Opcode::MovI as u8 {
             u16::from_le_bytes([code[i + 1].ops[1], code[i + 1].ops[2]])
         } else {
             0
         };
-        let n_before = if i > 0 && code[i - 1].opcode == Opcode::MovI as u8 {
+        let n_before = if n_explicit == 0 && i > 0 && code[i - 1].opcode == Opcode::MovI as u8 {
             u16::from_le_bytes([code[i - 1].ops[1], code[i - 1].ops[2]])
         } else {
             0
         };
-        let n = n_after.max(n_before);
+        let n = n_explicit.max(n_after).max(n_before);
         for j in 0..n {
             set.insert(base.wrapping_add(j as u8));
         }
@@ -133,33 +134,42 @@ fn find_dead_defs(code: &[Instruction], use_set: &HashSet<u8>) -> Vec<usize> {
 fn compact_regs(chunk: &mut Chunk) {
     let mut all_regs: BTreeSet<u8> = BTreeSet::new();
     for instr in &chunk.code {
-        if let Some(d) = instr_def(instr) {
-            all_regs.insert(d);
-        }
-        for r in instr_uses(instr) {
+        for r in instruction_registers(instr) {
             all_regs.insert(r);
         }
     }
 
-    // Param regs 0..param_count are pinned by calling convention.
-    let param_count = chunk.param_count as u8;
+    // Preserve calling-convention slots and every explicitly contiguous block.
+    // Remapping these before linear scan would irreversibly destroy adjacency.
+    let pinned = compute_pinned(chunk);
     let mut remap: HashMap<u8, u8> = HashMap::new();
-    for p in 0..param_count {
-        remap.insert(p, p);
+    for &register in &pinned {
+        remap.insert(register, register);
     }
-    let mut next = param_count;
+    let mut next = 0u16;
     for r in all_regs {
         if remap.contains_key(&r) {
             continue;
         }
-        remap.insert(r, next);
+        while next <= u8::MAX as u16 && pinned.contains(&(next as u8)) {
+            next += 1;
+        }
+        assert!(
+            next <= u8::MAX as u16,
+            "register compaction exhausted the bytecode register space"
+        );
+        remap.insert(r, next as u8);
         next += 1;
     }
 
     for instr in &mut chunk.code {
         super::codegen::remap_instr_regs(instr, |r| *remap.get(&r).unwrap_or(&r));
     }
-    chunk.reg_count = next;
+    chunk.reg_count = remap
+        .values()
+        .copied()
+        .max()
+        .map_or(0, |register| register.saturating_add(1));
 }
 
 pub fn linear_scan_alloc(chunk: &mut Chunk) {
@@ -273,18 +283,22 @@ fn compute_pinned(chunk: &Chunk) -> HashSet<u8> {
             continue;
         }
         let base = instr.ops[1];
-        let n_after = if i + 1 < chunk.code.len() && chunk.code[i + 1].opcode == Opcode::MovI as u8
+        let n_explicit = instr.flags as u16;
+        let n_after = if n_explicit == 0
+            && i + 1 < chunk.code.len()
+            && chunk.code[i + 1].opcode == Opcode::MovI as u8
         {
             u16::from_le_bytes([chunk.code[i + 1].ops[1], chunk.code[i + 1].ops[2]])
         } else {
             0
         };
-        let n_before = if i > 0 && chunk.code[i - 1].opcode == Opcode::MovI as u8 {
+        let n_before = if n_explicit == 0 && i > 0 && chunk.code[i - 1].opcode == Opcode::MovI as u8
+        {
             u16::from_le_bytes([chunk.code[i - 1].ops[1], chunk.code[i - 1].ops[2]])
         } else {
             0
         };
-        let n = n_after.max(n_before);
+        let n = n_explicit.max(n_after).max(n_before);
         for j in 0..n {
             pinned.insert(base.wrapping_add(j as u8));
         }
@@ -318,6 +332,13 @@ fn compute_intervals(chunk: &Chunk) -> HashMap<u8, (usize, usize)> {
             }
             if i > e.1 {
                 e.1 = i;
+            }
+        }
+        if instr.opcode() == Some(Opcode::Lea) && instr.flags != 0 {
+            let base = instr.ops[1];
+            for register in (0..instr.flags).filter_map(|offset| base.checked_add(offset)) {
+                let interval = intervals.entry(register).or_insert((i, i));
+                interval.1 = interval.1.max(i);
             }
         }
     }
@@ -372,6 +393,7 @@ fn instr_def(instr: &Instruction) -> Option<u8> {
         Opcode::Nop
         | Opcode::Ret
         | Opcode::MemFence
+        | Opcode::Trap
         | Opcode::Jmp
         | Opcode::Je
         | Opcode::Jne
@@ -402,6 +424,7 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
 
         Opcode::Nop
         | Opcode::MemFence
+        | Opcode::Trap
         | Opcode::Jmp
         | Opcode::Je
         | Opcode::Jne
@@ -505,6 +528,10 @@ pub(crate) fn instruction_registers(instr: &Instruction) -> Vec<u8> {
     if let Some(register) = instr_def(instr) {
         registers.push(register);
     }
+    if instr.opcode() == Some(Opcode::Lea) && instr.flags != 0 {
+        let base = instr.ops[1];
+        registers.extend((0..instr.flags).filter_map(|offset| base.checked_add(offset)));
+    }
     registers.sort_unstable();
     registers.dedup();
     registers
@@ -558,4 +585,57 @@ fn is_side_effect_free(op: Opcode) -> bool {
             | Opcode::FloatMin
             | Opcode::FloatMax
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bytecode::instruction::{mem_lea_block, mem_load, ri16, rrr};
+
+    #[test]
+    fn scalar_address_taken_slot_is_never_reused() {
+        let mut chunk = Chunk::new("address_taken");
+        chunk.reg_count = 5;
+        chunk.emit(ri16(Opcode::MovI, 0, 7));
+        chunk.emit(mem_lea_block(0, 1, 0, 1));
+        chunk.emit(ri16(Opcode::MovI, 2, 11));
+        chunk.emit(rrr(Opcode::Add, 3, 2, 2));
+        chunk.emit(mem_load(1, 4, 0));
+        chunk.emit(rrr(Opcode::Ret, 4, 0, 0));
+
+        linear_scan_alloc(&mut chunk);
+
+        let address = chunk
+            .code
+            .iter()
+            .find(|instruction| instruction.opcode() == Some(Opcode::Lea))
+            .expect("Lea must remain");
+        let pointee_slot = address.ops[1];
+        let later_value_slot = chunk.code[2].ops[0];
+        assert_ne!(
+            later_value_slot, pointee_slot,
+            "a later value reused the address-taken stack slot"
+        );
+    }
+
+    #[test]
+    fn compaction_fills_holes_below_a_high_pinned_slot_without_aliasing() {
+        let mut chunk = Chunk::new("high_address_taken");
+        chunk.reg_count = 202;
+        for register in 0..=200 {
+            chunk.emit(ri16(Opcode::MovI, register, register as u16));
+        }
+        chunk.emit(mem_lea_block(200, 201, 0, 1));
+
+        compact_regs(&mut chunk);
+
+        let mapped: HashSet<u8> = chunk.code[..=200]
+            .iter()
+            .map(|instruction| instruction.ops[0])
+            .collect();
+        assert_eq!(mapped.len(), 201, "distinct registers must not alias");
+        assert_eq!(chunk.code[200].ops[0], 200, "pinned slot must stay fixed");
+        assert_eq!(chunk.code[201].ops[0], 201, "next free slot is preserved");
+        assert_eq!(chunk.reg_count, 202);
+    }
 }

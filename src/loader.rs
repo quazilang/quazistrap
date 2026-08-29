@@ -101,7 +101,11 @@ pub fn load_programs_configured(
     // Auto-inject prelude before user entries (as a library file).
     let prelude_path: Option<PathBuf> = include_std
         .then_some(())
-        .and(effective_resolver.as_ref().and_then(|r| r.modules.get("prelude")))
+        .and(
+            effective_resolver
+                .as_ref()
+                .and_then(|r| r.modules.get("prelude")),
+        )
         .and_then(|spec| {
             let mod_entry = spec.src_dir.join("mod.qz");
             if mod_entry.exists() {

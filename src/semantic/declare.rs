@@ -51,14 +51,15 @@ impl Analyzer {
                 }
                 // Exported functions are roots invoked by native consumers, so they are
                 // never dead merely because no Quazi call site references them.
-                if attr_names.iter().any(|a| matches!(a.as_str(), "export" | "test"))
+                if attr_names
+                    .iter()
+                    .any(|a| matches!(a.as_str(), "export" | "test"))
                     && !attr_names.contains(&"ignore".to_string())
                 {
                     attr_names.push("ignore".to_string());
                 }
-                // Str-variadic fns: codegen coerces variadic args to str at call sites.
-                // Detected by: ...args: str/ref, OR ...args: any with a preceding str param
-                // (the any+str convention is how format-style fns like println are written).
+                // `any` is only the erased call-site convention of an explicit
+                // `@format` function; it is never a runtime parameter type.
                 let has_str_variadic_param = params
                     .last()
                     .map(|p| {
@@ -73,13 +74,9 @@ impl Analyzer {
                             return true;
                         }
                         matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
-                            && params.iter().filter(|q| !q.variadic).any(|q| {
-                                matches!(
-                                    &q.ty.node,
-                                    crate::parser::ast::TypeKind::Str
-                                        | crate::parser::ast::TypeKind::Ref { .. }
-                                )
-                            })
+                            && attributes
+                                .iter()
+                                .any(|attribute| attribute.name == "format")
                     })
                     .unwrap_or(false);
                 if has_str_variadic_param {
@@ -297,6 +294,7 @@ impl Analyzer {
             }
             ItemKind::Trait {
                 name,
+                generic_params,
                 methods,
                 attributes,
                 public,
@@ -318,7 +316,7 @@ impl Analyzer {
                         attributes: extract_attribute_names(attributes),
                         public: *public,
                         unsafe_fn: false,
-                        generic_params: vec![],
+                        generic_params: generic_params.clone(),
                     },
                 );
                 // Record vtable slot order: method declaration order = slot index.
@@ -326,6 +324,29 @@ impl Analyzer {
                 if !slots.is_empty() {
                     self.trait_method_slots.insert(name.clone(), slots);
                 }
+                let signatures = methods
+                    .iter()
+                    .map(|method| {
+                        (
+                            method.name.clone(),
+                            TraitMethodSignature {
+                                has_explicit_receiver: method
+                                    .param_names
+                                    .first()
+                                    .is_some_and(|name| name == "self"),
+                                generic_params: method.generic_params.clone(),
+                                params: method
+                                    .params
+                                    .iter()
+                                    .map(|param| param.node.clone())
+                                    .collect(),
+                                return_ty: method.return_ty.node.clone(),
+                            },
+                        )
+                    })
+                    .collect();
+                self.trait_method_signatures
+                    .insert(name.clone(), signatures);
             }
             ItemKind::Enum {
                 name,
@@ -505,13 +526,9 @@ impl Analyzer {
                                     return true;
                                 }
                                 matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
-                                    && params.iter().filter(|q| !q.variadic).any(|q| {
-                                        matches!(
-                                            &q.ty.node,
-                                            crate::parser::ast::TypeKind::Str
-                                                | crate::parser::ast::TypeKind::Ref { .. }
-                                        )
-                                    })
+                                    && attributes
+                                        .iter()
+                                        .any(|attribute| attribute.name == "format")
                             })
                             .unwrap_or(false);
                         if has_str_variadic_param2 {

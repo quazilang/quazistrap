@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use super::instruction::{
-    FLOAT_FLAG, MemWidth, NEGATED_COMPARE_FLAG, call_c_reg, field_load, field_load_typed,
-    field_store, field_store_typed, mem_lea, mem_load, mem_load_w, mem_store, mem_store_w, ri16,
-    rrr, rrr_f,
+    FLOAT_FLAG, MemWidth, NEGATED_COMPARE_FLAG, UNSIGNED_FLAG, call_c_reg, field_load,
+    field_load_typed, field_store, field_store_typed, mem_lea_block, mem_load, mem_load_w,
+    mem_store, mem_store_w, ri16, rrr, rrr_f,
 };
 use super::{Chunk, ConstPoolEntry, Opcode, QziCallRelocation};
 use crate::abi::{
@@ -18,6 +18,20 @@ use crate::abi::{
 use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
 use crate::semantic::{ConstValue, SemanticReport};
+
+fn chunk_requires_owned_callable_companions(chunk: &Chunk) -> bool {
+    chunk.constants.iter().any(|constant| {
+        matches!(constant, ConstPoolEntry::FnAddr(name) if name.starts_with("__quazi_closure_") || name.starts_with("__quazi_fwd_"))
+    })
+}
+
+fn assignment_target_ident(expr: &Expr) -> Option<&str> {
+    match &expr.node {
+        ExprKind::Ident(name) => Some(name),
+        ExprKind::Group(inner) => assignment_target_ident(inner),
+        _ => None,
+    }
+}
 
 /// Find the source file path for a given span.
 fn source_file_for_span(span: Span, source_files: &[SourceFile]) -> String {
@@ -386,9 +400,7 @@ impl<'a> Codegen<'a> {
             let Some(source_path) = unit_sources.get(&chunk.name) else {
                 continue;
             };
-            if chunk.constants.iter().any(
-                |constant| matches!(constant, ConstPoolEntry::FnAddr(name) if name.starts_with("__quazi_closure_")),
-            ) {
+            if chunk_requires_owned_callable_companions(chunk) {
                 continue;
             }
             let Some(source_hash) = self.incremental_source_hashes.get(source_path).copied() else {
@@ -469,6 +481,19 @@ impl<'a> Codegen<'a> {
         program: &Program,
         source_files: &[SourceFile],
     ) -> Result<Vec<Chunk>, String> {
+        if let Some(annotation) = self.report.annotated_exprs.iter().find(|annotation| {
+            annotation
+                .ty
+                .as_ref()
+                .is_some_and(type_contains_unrepresentable_runtime_type)
+        }) {
+            return Err(format!(
+                "internal codegen invariant violated: expression at {}:{} still has representation-less type {}",
+                annotation.span.line,
+                annotation.span.col,
+                annotation.ty.as_ref().expect("checked above")
+            ));
+        }
         self.source_files = source_files.to_vec();
         self.external_call_relocations.clear();
         self.incremental_snapshot.clear();
@@ -554,13 +579,9 @@ impl<'a> Codegen<'a> {
                                 return true;
                             }
                             matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
-                                && params.iter().filter(|q| !q.variadic).any(|q| {
-                                    matches!(
-                                        &q.ty.node,
-                                        crate::parser::ast::TypeKind::Str
-                                            | crate::parser::ast::TypeKind::Ref { .. }
-                                    )
-                                })
+                                && attributes
+                                    .iter()
+                                    .any(|attribute| attribute.name == "format")
                         })
                         .unwrap_or(false);
                     let resolved_name = self.resolve_item_name(item.span, name, attributes);
@@ -583,7 +604,7 @@ impl<'a> Codegen<'a> {
                     for method in methods {
                         if let ItemKind::Fn {
                             name,
-                            attributes: _,
+                            attributes,
                             params,
                             ..
                         } = &method.node
@@ -602,13 +623,9 @@ impl<'a> Codegen<'a> {
                                         return true;
                                     }
                                     matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
-                                        && params.iter().filter(|q| !q.variadic).any(|q| {
-                                            matches!(
-                                                &q.ty.node,
-                                                crate::parser::ast::TypeKind::Str
-                                                    | crate::parser::ast::TypeKind::Ref { .. }
-                                            )
-                                        })
+                                        && attributes
+                                            .iter()
+                                            .any(|attribute| attribute.name == "format")
                                 })
                                 .unwrap_or(false);
                             if has_str_var {
@@ -643,10 +660,11 @@ impl<'a> Codegen<'a> {
 
         // Compute the set of functions reachable from main via the call graph.
         // Library mode (no main) compiles everything.
-        let has_main = self.test_mode || program
-            .items
-            .iter()
-            .any(|item| matches!(&item.node, ItemKind::Fn { name, .. } if name == "main"));
+        let has_main = self.test_mode
+            || program
+                .items
+                .iter()
+                .any(|item| matches!(&item.node, ItemKind::Fn { name, .. } if name == "main"));
 
         let destructor_roots = collect_destructor_roots(program);
         let reachable: Option<std::collections::HashSet<String>> = if has_main {
@@ -1982,8 +2000,14 @@ struct FnCompiler<'a> {
 struct DropLocal {
     name: String,
     reg: u8,
-    drop_fn: String,
+    action: DropAction,
     active: bool,
+}
+
+#[derive(Clone)]
+enum DropAction {
+    Call(String),
+    FreeClosureEnv,
 }
 
 struct LoopFrame {
@@ -2032,6 +2056,7 @@ enum LvalueAddr {
         base: u8,
         idx: u8,
         literal: Option<i64>,
+        block_length: u8,
     },
 }
 
@@ -2244,11 +2269,7 @@ impl<'a> FnCompiler<'a> {
                 return Some(local);
             }
         }
-        let annotated = self.type_of_span((expr.span.start, expr.span.end));
-        if !matches!(annotated, None | Some(TypeKind::Any)) {
-            return annotated;
-        }
-        annotated
+        self.type_of_span((expr.span.start, expr.span.end))
     }
 
     /// Resolve the physical access required by an explicit raw-pointer
@@ -2455,6 +2476,19 @@ impl<'a> FnCompiler<'a> {
         matches!(
             self.type_of_span(key),
             Some(TypeKind::Float16 | TypeKind::Float32 | TypeKind::Float64)
+        )
+    }
+
+    fn is_unsigned_span(&self, key: (usize, usize)) -> bool {
+        matches!(
+            self.type_of_span(key),
+            Some(
+                TypeKind::Uint8
+                    | TypeKind::Uint16
+                    | TypeKind::Uint32
+                    | TypeKind::Uint64
+                    | TypeKind::Usize
+            )
         )
     }
 
@@ -2941,7 +2975,7 @@ impl<'a> FnCompiler<'a> {
                 }
                 let idx = self.compile_expr(index);
                 let ptr = self.alloc_reg();
-                self.chunk.emit(mem_lea(base, ptr, 0));
+                self.chunk.emit(mem_lea_block(base, ptr, 0, 1));
                 let eight = self.alloc_reg();
                 self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                 let offset = self.alloc_reg();
@@ -3045,7 +3079,7 @@ impl<'a> FnCompiler<'a> {
                     }
                     let idx_reg = self.compile_expr(index);
                     let ptr = self.alloc_reg();
-                    self.chunk.emit(mem_lea(base, ptr, 0));
+                    self.chunk.emit(mem_lea_block(base, ptr, 0, 1));
                     let eight = self.alloc_reg();
                     self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                     let offset = self.alloc_reg();
@@ -3153,8 +3187,17 @@ impl<'a> FnCompiler<'a> {
                 } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
                     let ptr = self.compile_expr(object);
                     let idx = self.compile_expr(index);
+                    let length = self.slice_length_register(object, ptr);
+                    self.emit_bounds_guard(idx, length, index.span);
                     LvalueAddr::IndexSlice { ptr, idx }
                 } else {
+                    let array_length = match &obj_ty {
+                        Some(TypeKind::Array { len, .. }) => Some(*len),
+                        _ => None,
+                    };
+                    let block_length = array_length
+                        .map(|length| self.fixed_array_block_length(length))
+                        .unwrap_or(0);
                     let base = self.compile_expr(object);
                     if let ExprKind::Literal(Literal::Int(n)) = &index.node
                         && *n >= 0
@@ -3163,13 +3206,19 @@ impl<'a> FnCompiler<'a> {
                             base,
                             idx: 0,
                             literal: Some(*n),
+                            block_length,
                         }
                     } else {
                         let idx = self.compile_expr(index);
+                        if let Some(length) = array_length {
+                            let length_reg = self.emit_length_constant(length);
+                            self.emit_bounds_guard(idx, length_reg, index.span);
+                        }
                         LvalueAddr::IndexFixed {
                             base,
                             idx,
                             literal: None,
+                            block_length,
                         }
                     }
                 }
@@ -3223,12 +3272,17 @@ impl<'a> FnCompiler<'a> {
                 self.chunk.emit(mem_load(addr_reg, dst, 0));
                 dst
             }
-            LvalueAddr::IndexFixed { base, idx, literal } => {
+            LvalueAddr::IndexFixed {
+                base,
+                idx,
+                literal,
+                block_length,
+            } => {
                 if let Some(n) = literal {
                     return *base + *n as u8;
                 }
                 let ptr = self.alloc_reg();
-                self.chunk.emit(mem_lea(*base, ptr, 0));
+                self.chunk.emit(mem_lea_block(*base, ptr, 0, *block_length));
                 let eight = self.alloc_reg();
                 self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                 let offset = self.alloc_reg();
@@ -3286,13 +3340,18 @@ impl<'a> FnCompiler<'a> {
                 self.chunk.emit(rrr(Opcode::Sub, addr_reg, *ptr, offset));
                 self.chunk.emit(mem_store(addr_reg, src, 0));
             }
-            LvalueAddr::IndexFixed { base, idx, literal } => {
+            LvalueAddr::IndexFixed {
+                base,
+                idx,
+                literal,
+                block_length,
+            } => {
                 if let Some(n) = literal {
                     let elem_reg = *base + *n as u8;
                     self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
                 } else {
                     let ptr = self.alloc_reg();
-                    self.chunk.emit(mem_lea(*base, ptr, 0));
+                    self.chunk.emit(mem_lea_block(*base, ptr, 0, *block_length));
                     let eight = self.alloc_reg();
                     self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                     let offset = self.alloc_reg();
@@ -3473,8 +3532,12 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
-    fn drop_fn_for_type(&self, ty: &TypeKind) -> Option<String> {
-        let TypeKind::Named { name, type_args } = self.resolve_type(ty) else {
+    fn drop_action_for_type(&self, ty: &TypeKind) -> Option<DropAction> {
+        let resolved = self.resolve_type(ty);
+        if matches!(resolved, TypeKind::Fn { .. }) {
+            return Some(DropAction::FreeClosureEnv);
+        }
+        let TypeKind::Named { name, type_args } = resolved else {
             return None;
         };
         let base = format!("{}.free", name);
@@ -3482,35 +3545,37 @@ impl<'a> FnCompiler<'a> {
             let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
             let mangled = crate::semantic::typecheck::mangle_monomorphized(&base, &type_kinds);
             if self.fn_index.contains_key(&mangled) {
-                return Some(mangled);
+                return Some(DropAction::Call(mangled));
             }
         }
-        self.fn_index.contains_key(&base).then_some(base)
+        self.fn_index
+            .contains_key(&base)
+            .then_some(DropAction::Call(base))
     }
 
     fn register_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
-        let Some(drop_fn) = ty.as_ref().and_then(|t| self.drop_fn_for_type(t)) else {
+        let Some(action) = ty.as_ref().and_then(|t| self.drop_action_for_type(t)) else {
             return;
         };
         if let Some(scope) = self.drop_scopes.last_mut() {
             scope.push(DropLocal {
                 name: name.to_string(),
                 reg,
-                drop_fn,
+                action,
                 active: true,
             });
         }
     }
 
     fn register_uninitialized_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
-        let Some(drop_fn) = ty.as_ref().and_then(|t| self.drop_fn_for_type(t)) else {
+        let Some(action) = ty.as_ref().and_then(|t| self.drop_action_for_type(t)) else {
             return;
         };
         if let Some(scope) = self.drop_scopes.last_mut() {
             scope.push(DropLocal {
                 name: name.to_string(),
                 reg,
-                drop_fn,
+                action,
                 active: false,
             });
         }
@@ -3526,13 +3591,13 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn reactivate_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
-        let Some(drop_fn) = ty.as_ref().and_then(|t| self.drop_fn_for_type(t)) else {
+        let Some(action) = ty.as_ref().and_then(|t| self.drop_action_for_type(t)) else {
             return;
         };
         for scope in self.drop_scopes.iter_mut().rev() {
             if let Some(local) = scope.iter_mut().rev().find(|local| local.name == name) {
                 local.reg = reg;
-                local.drop_fn = drop_fn;
+                local.action = action;
                 local.active = true;
                 return;
             }
@@ -3540,28 +3605,70 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn drop_local_now(&mut self, name: &str) {
-        let mut to_drop: Option<(u8, String)> = None;
+        let mut to_drop: Option<(u8, DropAction)> = None;
         for scope in self.drop_scopes.iter_mut().rev() {
             if let Some(local) = scope.iter_mut().rev().find(|local| local.name == name) {
                 if local.active {
                     local.active = false;
-                    to_drop = Some((local.reg, local.drop_fn.clone()));
+                    to_drop = Some((local.reg, local.action.clone()));
                 }
                 break;
             }
         }
-        if let Some((reg, drop_fn)) = to_drop {
-            let dst = self.alloc_reg();
-            self.emit_call_by_name(&drop_fn, &[reg], dst);
+        if let Some((reg, action)) = to_drop {
+            self.emit_drop_action(reg, action);
+        }
+    }
+
+    fn emit_drop_action(&mut self, reg: u8, action: DropAction) {
+        match action {
+            DropAction::Call(drop_fn) => {
+                let dst = self.alloc_reg();
+                self.emit_call_by_name(&drop_fn, &[reg], dst);
+            }
+            DropAction::FreeClosureEnv => {
+                let mut instruction = ri16(Opcode::Intrinsic, reg, 4);
+                instruction.flags = 1;
+                self.chunk.emit(instruction);
+            }
+        }
+    }
+
+    fn expr_is_local_value(&self, expr: &Expr) -> bool {
+        match &expr.node {
+            ExprKind::Ident(name) => self.regs.contains_key(name),
+            ExprKind::Group(inner)
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::Try { expr: inner } => self.expr_is_local_value(inner),
+            ExprKind::Assign { target, .. } => {
+                assignment_target_ident(target).is_some_and(|name| self.regs.contains_key(name))
+            }
+            _ => false,
+        }
+    }
+
+    fn cleanup_discarded_fn_value(&mut self, expr: &Expr, reg: u8) {
+        if self
+            .type_of_span((expr.span.start, expr.span.end))
+            .is_some_and(|ty| matches!(self.resolve_type(&ty), TypeKind::Fn { .. }))
+            && !self.expr_is_local_value(expr)
+        {
+            self.emit_drop_action(reg, DropAction::FreeClosureEnv);
+        }
+    }
+
+    fn cleanup_temporary_fn_callee(&mut self, expr: &Expr, reg: u8) {
+        if !self.expr_is_local_value(expr) {
+            self.emit_drop_action(reg, DropAction::FreeClosureEnv);
         }
     }
 
     fn mark_consumed_expr(&mut self, expr: &Expr) {
         match &expr.node {
             ExprKind::Ident(name) => self.deactivate_drop_local(name),
-            ExprKind::Group(inner) | ExprKind::Try { expr: inner } => {
-                self.mark_consumed_expr(inner)
-            }
+            ExprKind::Group(inner)
+            | ExprKind::Try { expr: inner }
+            | ExprKind::Cast { expr: inner, .. } => self.mark_consumed_expr(inner),
             ExprKind::ArrayLit(elems) => {
                 for elem in elems {
                     self.mark_consumed_expr(elem);
@@ -3586,15 +3693,14 @@ impl<'a> FnCompiler<'a> {
             .filter_map(|local| {
                 if local.active {
                     local.active = false;
-                    Some((local.reg, local.drop_fn.clone()))
+                    Some((local.reg, local.action.clone()))
                 } else {
                     None
                 }
             })
             .collect::<Vec<_>>();
-        for (reg, drop_fn) in drops {
-            let dst = self.alloc_reg();
-            self.emit_call_by_name(&drop_fn, &[reg], dst);
+        for (reg, action) in drops {
+            self.emit_drop_action(reg, action);
         }
     }
 
@@ -3605,15 +3711,14 @@ impl<'a> FnCompiler<'a> {
                 .rev()
                 .filter_map(|local| {
                     if local.active {
-                        Some((local.reg, local.drop_fn.clone()))
+                        Some((local.reg, local.action.clone()))
                     } else {
                         None
                     }
                 })
                 .collect::<Vec<_>>();
-            for (reg, drop_fn) in drops {
-                let dst = self.alloc_reg();
-                self.emit_call_by_name(&drop_fn, &[reg], dst);
+            for (reg, action) in drops {
+                self.emit_drop_action(reg, action);
             }
         }
     }
@@ -3753,25 +3858,53 @@ impl<'a> FnCompiler<'a> {
                     } else {
                         src
                     };
-                    // A binding is a new storage location, even when its initializer
-                    // is another local. Reusing the initializer register made `var
-                    // estimate = value` alias `value`, so assigning estimate silently
-                    // changed the original (particularly destructive inside loops).
-                    let reg = self.bind(name.clone());
-                    if reg != coerced {
-                        self.chunk.emit(rrr(Opcode::Mov, reg, coerced, 0));
-                    }
                     let local_ty = ty
                         .as_ref()
                         .map(|t| self.resolve_type(&t.node))
                         .or_else(|| self.type_of_span((expr.span.start, expr.span.end)));
+                    // A binding is a new storage location when it copies an existing
+                    // value. Fixed-array literals already produce a fresh contiguous
+                    // block, so the binding can take that block directly; other fixed
+                    // array initializers require an element-wise block copy.
+                    let reg = if let Some(TypeKind::Array { len, .. }) = &local_ty {
+                        if matches!(expr.node, ExprKind::ArrayLit(_)) {
+                            self.regs.insert(name.clone(), coerced);
+                            coerced
+                        } else {
+                            let block_length = self.fixed_array_block_length(*len);
+                            let base = self.reserve_reg_block(block_length as usize);
+                            self.regs.insert(name.clone(), base);
+                            for offset in 0..block_length {
+                                self.chunk.emit(rrr(
+                                    Opcode::Mov,
+                                    base + offset,
+                                    coerced + offset,
+                                    0,
+                                ));
+                            }
+                            base
+                        }
+                    } else {
+                        let reg = self.bind(name.clone());
+                        if reg != coerced {
+                            self.chunk.emit(rrr(Opcode::Mov, reg, coerced, 0));
+                        }
+                        reg
+                    };
                     if let Some(local_ty) = local_ty.clone() {
                         self.local_types.insert(name.clone(), local_ty);
                     }
                     self.register_drop_local(name, reg, local_ty);
                 } else {
-                    let reg = self.bind(name.clone());
                     let local_ty = ty.as_ref().map(|t| self.resolve_type(&t.node));
+                    let reg = if let Some(TypeKind::Array { len, .. }) = &local_ty {
+                        let block_length = self.fixed_array_block_length(*len);
+                        let base = self.reserve_reg_block(block_length as usize);
+                        self.regs.insert(name.clone(), base);
+                        base
+                    } else {
+                        self.bind(name.clone())
+                    };
                     if let Some(local_ty) = local_ty.clone() {
                         self.local_types.insert(name.clone(), local_ty);
                     }
@@ -3782,11 +3915,28 @@ impl<'a> FnCompiler<'a> {
             StmtKind::Const { name, value, .. } => {
                 self.mark_consumed_expr(value);
                 let src = self.compile_expr(value);
-                let reg = self.bind(name.clone());
-                if reg != src {
-                    self.chunk.emit(rrr(Opcode::Mov, reg, src, 0));
-                }
                 let local_ty = self.type_of_span((value.span.start, value.span.end));
+                let reg = if let Some(TypeKind::Array { len, .. }) = &local_ty {
+                    if matches!(value.node, ExprKind::ArrayLit(_)) {
+                        self.regs.insert(name.clone(), src);
+                        src
+                    } else {
+                        let block_length = self.fixed_array_block_length(*len);
+                        let base = self.reserve_reg_block(block_length as usize);
+                        self.regs.insert(name.clone(), base);
+                        for offset in 0..block_length {
+                            self.chunk
+                                .emit(rrr(Opcode::Mov, base + offset, src + offset, 0));
+                        }
+                        base
+                    }
+                } else {
+                    let reg = self.bind(name.clone());
+                    if reg != src {
+                        self.chunk.emit(rrr(Opcode::Mov, reg, src, 0));
+                    }
+                    reg
+                };
                 if let Some(local_ty) = local_ty.clone() {
                     self.local_types.insert(name.clone(), local_ty);
                 }
@@ -3815,7 +3965,8 @@ impl<'a> FnCompiler<'a> {
                 true
             }
             StmtKind::ExprStmt(expr) => {
-                self.compile_expr(expr);
+                let result = self.compile_expr(expr);
+                self.cleanup_discarded_fn_value(expr, result);
                 false
             }
             StmtKind::CfgBlock { body, condition } => {
@@ -4022,7 +4173,10 @@ impl<'a> FnCompiler<'a> {
                                 };
                                 let base_addr = if static_array_len.is_some() {
                                     let r = self.alloc_reg();
-                                    self.chunk.emit(mem_lea(ptr, r, 0));
+                                    let block_length = self.fixed_array_block_length(u64::from(
+                                        static_array_len.unwrap(),
+                                    ));
+                                    self.chunk.emit(mem_lea_block(ptr, r, 0, block_length));
                                     r
                                 } else {
                                     ptr
@@ -4371,6 +4525,7 @@ impl<'a> FnCompiler<'a> {
                     (self.compile_expr(left), self.compile_expr(right))
                 };
                 let is_float = self.is_float_span((left.span.start, left.span.end));
+                let is_unsigned = self.is_unsigned_span((left.span.start, left.span.end));
                 let mut comparison = rrr(Opcode::Cmp, 0, r1, r2);
                 if is_float {
                     comparison.flags |= FLOAT_FLAG;
@@ -4387,6 +4542,8 @@ impl<'a> FnCompiler<'a> {
                     if jump_if_false {
                         jump.flags |= NEGATED_COMPARE_FLAG;
                     }
+                } else if is_unsigned && is_ordered_comparison(op) {
+                    jump.flags |= UNSIGNED_FLAG;
                 }
                 self.chunk.emit(jump)
             }
@@ -4419,65 +4576,111 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    fn emit_language_panic(&mut self, span: Span, message: &str) {
+        let panic_name = if self.fn_index.contains_key("panic.panic") {
+            Some("panic.panic")
+        } else if self.fn_index.contains_key("panic") {
+            Some("panic")
+        } else {
+            None
+        };
+        if let Some(panic_name) = panic_name {
+            let message_idx = self
+                .chunk
+                .add_constant(ConstPoolEntry::Str(message.to_string()));
+            let message_reg = self.alloc_reg();
+            self.chunk
+                .emit(ri16(Opcode::MovConst, message_reg, message_idx));
+
+            let file_idx = self
+                .chunk
+                .add_constant(ConstPoolEntry::Str(source_file_for_span(
+                    span,
+                    self.source_files,
+                )));
+            let file_reg = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovConst, file_reg, file_idx));
+
+            let line = self
+                .source_files
+                .iter()
+                .find(|source| source.contains(span))
+                .map(|source| source.line_col(span).0 as i64)
+                .unwrap_or(span.line as i64);
+            let line_idx = self.chunk.add_constant(ConstPoolEntry::Int(line));
+            let line_reg = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovConst, line_reg, line_idx));
+
+            let variadic_ptr = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, variadic_ptr, 0));
+            let variadic_len = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, variadic_len, 0));
+            let ignored_result = self.alloc_reg();
+            self.emit_call_by_name(
+                panic_name,
+                &[message_reg, file_reg, line_reg, variadic_ptr, variadic_len],
+                ignored_result,
+            );
+        }
+        // Panic is expected not to return. Trap as a deterministic fallback,
+        // and as the complete safety path for `std = false` packages.
+        self.chunk.emit(rrr(Opcode::Trap, 0, 0, 0));
+    }
+
     /// Emit the language-level panic used by integer `/` and `%` when the
     /// divisor is zero. Floating-point operations intentionally skip this
     /// guard and retain IEEE-754 NaN/infinity behavior.
     fn emit_integer_zero_guard(&mut self, divisor: u8, span: Span, message: &str) {
-        let panic_name = if self.fn_index.contains_key("panic.panic") {
-            "panic.panic"
-        } else if self.fn_index.contains_key("panic") {
-            "panic"
-        } else {
-            // A package built with `std = false` has no panic runtime. Preserve
-            // hardware divide traps for that explicit freestanding mode.
-            return;
-        };
         let nonzero = self.chunk.emit(ri16(Opcode::Jnz, divisor, 0));
-
-        let message_idx = self
-            .chunk
-            .add_constant(ConstPoolEntry::Str(message.to_string()));
-        let message_reg = self.alloc_reg();
-        self.chunk
-            .emit(ri16(Opcode::MovConst, message_reg, message_idx));
-
-        let file_idx = self
-            .chunk
-            .add_constant(ConstPoolEntry::Str(source_file_for_span(
-                span,
-                self.source_files,
-            )));
-        let file_reg = self.alloc_reg();
-        self.chunk.emit(ri16(Opcode::MovConst, file_reg, file_idx));
-
-        let line = self
-            .source_files
-            .iter()
-            .find(|source| source.contains(span))
-            .map(|source| source.line_col(span).0 as i64)
-            .unwrap_or(span.line as i64);
-        let line_idx = self.chunk.add_constant(ConstPoolEntry::Int(line));
-        let line_reg = self.alloc_reg();
-        self.chunk.emit(ri16(Opcode::MovConst, line_reg, line_idx));
-
-        let variadic_ptr = self.alloc_reg();
-        self.chunk.emit(ri16(Opcode::MovI, variadic_ptr, 0));
-        let variadic_len = self.alloc_reg();
-        self.chunk.emit(ri16(Opcode::MovI, variadic_len, 0));
-        let ignored_result = self.alloc_reg();
-        self.emit_call_by_name(
-            panic_name,
-            &[message_reg, file_reg, line_reg, variadic_ptr, variadic_len],
-            ignored_result,
-        );
+        self.emit_language_panic(span, message);
 
         self.chunk.patch_jump(nonzero, self.chunk.len() as u16);
+    }
+
+    /// Continue only when `index < length` using unsigned comparison. This
+    /// single comparison also rejects negative signed indices.
+    fn emit_bounds_guard(&mut self, index: u8, length: u8, span: Span) {
+        self.chunk.emit(rrr(Opcode::Cmp, 0, index, length));
+        let in_bounds = self.chunk.emit(ri16(Opcode::Jb, 0, 0));
+        self.emit_language_panic(span, "index out of bounds");
+        self.chunk.patch_jump(in_bounds, self.chunk.len() as u16);
+    }
+
+    fn emit_length_constant(&mut self, length: u64) -> u8 {
+        let length = self.qzi_u16_from_u64(length, "indexable length");
+        let register = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, register, length));
+        register
+    }
+
+    fn fixed_array_block_length(&mut self, length: u64) -> u8 {
+        u8::try_from(length).unwrap_or_else(|_| {
+            self.codegen_error.get_or_insert_with(|| {
+                format!(
+                    "fixed array in `{}` exceeds the 255-register QZI block limit",
+                    self.chunk.name
+                )
+            });
+            0
+        })
+    }
+
+    fn slice_length_register(&self, object: &Expr, pointer: u8) -> u8 {
+        if let ExprKind::Ident(name) = &object.node {
+            self.regs
+                .get(&format!("__len_{name}"))
+                .copied()
+                .unwrap_or(pointer + 1)
+        } else {
+            pointer + 1
+        }
     }
 
     fn emit_compound_arithmetic(
         &mut self,
         op: &CompoundAssignOp,
         is_float: bool,
+        is_unsigned: bool,
         dst: u8,
         left: u8,
         right: u8,
@@ -4501,11 +4704,14 @@ impl<'a> FnCompiler<'a> {
                 _ => {}
             }
         }
-        let instruction = if is_float {
+        let mut instruction = if is_float {
             rrr_f(opcode, dst, left, right)
         } else {
             rrr(opcode, dst, left, right)
         };
+        if is_unsigned && matches!(op, CompoundAssignOp::Div | CompoundAssignOp::Mod) {
+            instruction.flags |= UNSIGNED_FLAG;
+        }
         self.chunk.emit(instruction);
     }
 
@@ -4594,7 +4800,7 @@ impl<'a> FnCompiler<'a> {
     // ── Expression ───────────────────────────────────────────────────────────
 
     /// Uses PrimToStr with a type tag in ops[2]: 0=int, 1=float, 2=bool.
-    /// For str/any types returns reg unchanged.
+    /// For string views returns `reg` unchanged.
     fn coerce_to_display_str(&mut self, reg: u8, span: crate::parser::ast::Span) -> u8 {
         let key = (span.start, span.end);
         let type_tag: Option<u8> = match self.type_of_span(key) {
@@ -4626,9 +4832,16 @@ impl<'a> FnCompiler<'a> {
             }
             // RawPtr/Slice: pass as-is (caller formats explicitly)
             Some(TypeKind::RawPtr { .. } | TypeKind::Slice { .. }) => None,
-            // Any (unresolved generic T from unwrap/ok/etc.) defaults to int to avoid
-            // treating a raw integer register as a string pointer in the format engine.
-            Some(TypeKind::Any) | None | Some(_) => Some(0),
+            Some(TypeKind::Any | TypeKind::Error) => {
+                self.codegen_error.get_or_insert_with(|| {
+                    format!(
+                        "internal codegen invariant violated: format argument at {}:{} has no runtime representation",
+                        span.line, span.col
+                    )
+                });
+                return reg;
+            }
+            None | Some(_) => Some(0),
         };
         if let Some(tag) = type_tag {
             let dst = self.alloc_reg();
@@ -4772,7 +4985,13 @@ impl<'a> FnCompiler<'a> {
                         }
                         fwd_chunk.emit(ri16(Opcode::CallIdx, 0, fn_idx));
                         fwd_chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
-                        self.output_chunks.push(fwd_chunk);
+                        if !self
+                            .output_chunks
+                            .iter()
+                            .any(|chunk| chunk.name == fwd_name)
+                        {
+                            self.output_chunks.push(fwd_chunk);
+                        }
                         // Env struct: {fn_ptr: forwarder_addr}
                         let env_ptr = self.alloc_reg();
                         self.chunk.emit(ri16(Opcode::New, env_ptr, 16));
@@ -4805,7 +5024,14 @@ impl<'a> FnCompiler<'a> {
                 UnaryOpKind::Ref => {
                     let src = self.compile_expr(inner);
                     let dst = self.alloc_reg();
-                    self.chunk.emit(mem_lea(src, dst, 0));
+                    if let Some(TypeKind::Array { len, .. }) =
+                        self.type_of_span((inner.span.start, inner.span.end))
+                    {
+                        let block_length = self.fixed_array_block_length(len);
+                        self.chunk.emit(mem_lea_block(src, dst, 0, block_length));
+                    } else {
+                        self.chunk.emit(mem_lea_block(src, dst, 0, 1));
+                    }
                     dst
                 }
                 UnaryOpKind::Deref => {
@@ -4876,6 +5102,7 @@ impl<'a> FnCompiler<'a> {
             ExprKind::Binary { left, op, right } => {
                 let left_key = (left.span.start, left.span.end);
                 let is_float = self.is_float_span(left_key);
+                let is_unsigned = self.is_unsigned_span(left_key);
                 let is_str = self.is_str_span(left_key);
                 let right_is_str = self.is_str_span((right.span.start, right.span.end));
                 let string_comparison = is_comparison(op) && is_str && right_is_str;
@@ -4919,7 +5146,11 @@ impl<'a> FnCompiler<'a> {
                         if !is_float {
                             self.emit_integer_zero_guard(r2, expr.span, "integer division by zero");
                         }
-                        self.chunk.emit(arith(Opcode::Div, dst, r1, r2));
+                        let mut instruction = arith(Opcode::Div, dst, r1, r2);
+                        if is_unsigned {
+                            instruction.flags |= UNSIGNED_FLAG;
+                        }
+                        self.chunk.emit(instruction);
                     }
                     BinOpKind::Mod => {
                         if !is_float {
@@ -4929,7 +5160,11 @@ impl<'a> FnCompiler<'a> {
                                 "integer remainder by zero",
                             );
                         }
-                        self.chunk.emit(arith(Opcode::Mod, dst, r1, r2));
+                        let mut instruction = arith(Opcode::Mod, dst, r1, r2);
+                        if is_unsigned {
+                            instruction.flags |= UNSIGNED_FLAG;
+                        }
+                        self.chunk.emit(instruction);
                     }
                     // Comparisons: materialize bool result into dst.
                     _ if is_comparison(op) => {
@@ -4938,6 +5173,8 @@ impl<'a> FnCompiler<'a> {
                         let mut jump = ri16(direct_cmp(op), 0, 0);
                         if is_float {
                             jump.flags |= FLOAT_FLAG;
+                        } else if is_unsigned && is_ordered_comparison(op) {
+                            jump.flags |= UNSIGNED_FLAG;
                         }
                         let skip = self.chunk.emit(jump);
                         self.chunk.emit(ri16(Opcode::MovI, dst, 0));
@@ -4959,7 +5196,12 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.emit(rrr(Opcode::Shl, dst, r1, r2));
                     }
                     BinOpKind::Shr => {
-                        self.chunk.emit(rrr(Opcode::Shr, dst, r1, r2));
+                        let opcode = if is_unsigned {
+                            Opcode::Shr
+                        } else {
+                            Opcode::Sar
+                        };
+                        self.chunk.emit(rrr(opcode, dst, r1, r2));
                     }
                     BinOpKind::AndAnd | BinOpKind::OrOr => unreachable!(),
                     _ => {
@@ -4971,26 +5213,34 @@ impl<'a> FnCompiler<'a> {
 
             ExprKind::Assign { target, value } => {
                 self.mark_consumed_expr(value);
-                let src = self.compile_expr(value);
-                match &target.node {
-                    ExprKind::Ident(name) => {
-                        if let Some(addr) = self.foreign_global_lvalue(target.span) {
-                            self.store_lvalue(&addr, src);
-                            return src;
-                        }
-                        self.drop_local_now(name);
-                        let dst = self.reg_of(name);
-                        if dst != src {
-                            self.chunk.emit(rrr(Opcode::Mov, dst, src, 0));
-                        }
-                        let local_ty = self.type_of_span((value.span.start, value.span.end));
-                        self.reactivate_drop_local(name, dst, local_ty);
-                        dst
+                if let Some(name) = assignment_target_ident(target) {
+                    let src = self.compile_expr(value);
+                    if let Some(addr) = self.foreign_global_lvalue(target.span) {
+                        self.store_lvalue(&addr, src);
+                        return src;
                     }
+                    self.drop_local_now(name);
+                    let dst = self.reg_of(name);
+                    if let Some(TypeKind::Array { len, .. }) = self.local_types.get(name).cloned() {
+                        let block_length = self.fixed_array_block_length(len);
+                        for offset in 0..block_length {
+                            self.chunk
+                                .emit(rrr(Opcode::Mov, dst + offset, src + offset, 0));
+                        }
+                    } else if dst != src {
+                        self.chunk.emit(rrr(Opcode::Mov, dst, src, 0));
+                    }
+                    let local_ty = self.type_of_span((value.span.start, value.span.end));
+                    self.reactivate_drop_local(name, dst, local_ty);
+                    return dst;
+                }
+                match &target.node {
+                    ExprKind::Ident(_) | ExprKind::Group(_) => unreachable!(),
                     ExprKind::Unary {
                         op: UnaryOpKind::Deref,
                         expr: ptr_expr,
                     } => {
+                        let src = self.compile_expr(value);
                         let ptr = self.compile_expr(ptr_expr);
                         let (width, _) = self.raw_pointee_access(ptr_expr);
                         self.chunk.emit(mem_store_w(ptr, src, 0, width));
@@ -5000,6 +5250,7 @@ impl<'a> FnCompiler<'a> {
                         object,
                         name: field_name,
                     } => {
+                        let src = self.compile_expr(value);
                         let obj = self.compile_expr(object);
                         if let Some(layout) = self.bit_field_layout(object, field_name) {
                             self.emit_bit_field_store(obj, src, layout);
@@ -5025,10 +5276,9 @@ impl<'a> FnCompiler<'a> {
                         // be overwritten before the store happens.
                         let obj_reg = self.compile_expr(object);
                         let idx_reg = self.compile_expr(index);
-                        // Re-evaluate the value after object/index so it survives the store.
-                        let src = self.compile_expr(value);
 
                         if let Some(TypeKind::FlexibleArray { elem_ty }) = &obj_ty {
+                            let src = self.compile_expr(value);
                             let (width, _, elem_size, float32) =
                                 self.c_memory_access(&elem_ty.node);
                             let address = self.emit_indexed_c_address(obj_reg, idx_reg, elem_size);
@@ -5058,11 +5308,15 @@ impl<'a> FnCompiler<'a> {
                                     "Array.set".to_string()
                                 }
                             };
+                            let src = self.compile_expr(value);
                             let _dst = self.alloc_reg();
                             self.emit_call_by_name(&set_target, &[obj_reg, idx_reg, src], _dst);
                             src
                         } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
                             // Slice: store at stack address ptr - (idx * 8)
+                            let length = self.slice_length_register(object, obj_reg);
+                            self.emit_bounds_guard(idx_reg, length, index.span);
+                            let src = self.compile_expr(value);
                             let eight = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                             let offset = self.alloc_reg();
@@ -5076,12 +5330,28 @@ impl<'a> FnCompiler<'a> {
                             if let ExprKind::Literal(Literal::Int(n)) = &index.node
                                 && *n >= 0
                             {
+                                let src = self.compile_expr(value);
                                 let elem_reg = obj_reg + *n as u8;
                                 self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
                                 return src;
                             }
+                            let array_length = match &obj_ty {
+                                Some(TypeKind::Array { len, .. }) => Some(*len),
+                                _ => None,
+                            };
+                            if let Some(length) = array_length {
+                                let length_reg = self.emit_length_constant(length);
+                                self.emit_bounds_guard(idx_reg, length_reg, index.span);
+                            }
+                            let src = self.compile_expr(value);
                             let ptr = self.alloc_reg();
-                            self.chunk.emit(mem_lea(obj_reg, ptr, 0));
+                            if let Some(length) = array_length {
+                                let block_length = self.fixed_array_block_length(length);
+                                self.chunk
+                                    .emit(mem_lea_block(obj_reg, ptr, 0, block_length));
+                            } else {
+                                self.chunk.emit(mem_lea_block(obj_reg, ptr, 0, 1));
+                            }
                             let eight = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                             let offset = self.alloc_reg();
@@ -5091,7 +5361,7 @@ impl<'a> FnCompiler<'a> {
                             src
                         }
                     }
-                    _ => src,
+                    _ => self.compile_expr(value),
                 }
             }
             ExprKind::StructInit { name, fields } => {
@@ -5138,26 +5408,51 @@ impl<'a> FnCompiler<'a> {
 
             ExprKind::CompoundAssign { target, op, value } => {
                 let is_float = self.is_float_span((target.span.start, target.span.end));
+                let is_unsigned = self.is_unsigned_span((target.span.start, target.span.end));
                 if let ExprKind::Ident(name) = &target.node {
                     if self.foreign_global_for_span(target.span).is_some() {
                         let addr = self.compute_lvalue_addr(target);
                         let old = self.load_lvalue(&addr);
                         let src = self.compile_expr(value);
                         let new_val = self.alloc_reg();
-                        self.emit_compound_arithmetic(op, is_float, new_val, old, src, expr.span);
+                        self.emit_compound_arithmetic(
+                            op,
+                            is_float,
+                            is_unsigned,
+                            new_val,
+                            old,
+                            src,
+                            expr.span,
+                        );
                         self.store_lvalue(&addr, new_val);
                         return new_val;
                     }
                     let src = self.compile_expr(value);
                     let dst = self.reg_of(name);
-                    self.emit_compound_arithmetic(op, is_float, dst, dst, src, expr.span);
+                    self.emit_compound_arithmetic(
+                        op,
+                        is_float,
+                        is_unsigned,
+                        dst,
+                        dst,
+                        src,
+                        expr.span,
+                    );
                     dst
                 } else {
                     let addr = self.compute_lvalue_addr(target);
                     let old = self.load_lvalue(&addr);
                     let src = self.compile_expr(value);
                     let new_val = self.alloc_reg();
-                    self.emit_compound_arithmetic(op, is_float, new_val, old, src, expr.span);
+                    self.emit_compound_arithmetic(
+                        op,
+                        is_float,
+                        is_unsigned,
+                        new_val,
+                        old,
+                        src,
+                        expr.span,
+                    );
                     self.store_lvalue(&addr, new_val);
                     new_val
                 }
@@ -5294,7 +5589,10 @@ impl<'a> FnCompiler<'a> {
                                 }
                             }
                             let rp = self.alloc_reg();
-                            self.chunk.emit(mem_lea(first_slot, rp, 0));
+                            let block_length =
+                                self.qzi_u8(var_regs.len(), "variadic argument count");
+                            self.chunk
+                                .emit(mem_lea_block(first_slot, rp, 0, block_length));
                             let rl = self.alloc_reg();
                             self.chunk
                                 .emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
@@ -5346,7 +5644,10 @@ impl<'a> FnCompiler<'a> {
                                     }
                                 }
                                 let rp = self.alloc_reg();
-                                self.chunk.emit(mem_lea(first_slot, rp, 0));
+                                let block_length =
+                                    self.qzi_u8(coerced_var.len(), "format argument count");
+                                self.chunk
+                                    .emit(mem_lea_block(first_slot, rp, 0, block_length));
                                 let rl = self.alloc_reg();
                                 self.chunk
                                     .emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
@@ -5408,7 +5709,10 @@ impl<'a> FnCompiler<'a> {
                             }
                             // Lea first_slot → pointer to its stack slot on this frame.
                             let rp = self.alloc_reg();
-                            self.chunk.emit(mem_lea(first_slot, rp, 0));
+                            let block_length =
+                                self.qzi_u8(var_regs.len(), "variadic argument count");
+                            self.chunk
+                                .emit(mem_lea_block(first_slot, rp, 0, block_length));
                             let rl = self.alloc_reg();
                             self.chunk
                                 .emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
@@ -5464,6 +5768,7 @@ impl<'a> FnCompiler<'a> {
                             self.emit_c_indirect_call(dst, fn_reg, &arg_regs, signature);
                         } else {
                             self.emit_indirect_call(dst, fn_reg, &arg_regs);
+                            self.cleanup_temporary_fn_callee(callee, fn_reg);
                         }
                     } else {
                         let arg_regs: Vec<u8> = args
@@ -5493,6 +5798,7 @@ impl<'a> FnCompiler<'a> {
                         self.emit_c_indirect_call(dst, fn_reg, &arg_regs, signature);
                     } else {
                         self.emit_indirect_call(dst, fn_reg, &arg_regs);
+                        self.cleanup_temporary_fn_callee(callee, fn_reg);
                     }
                 }
                 dst
@@ -5567,7 +5873,10 @@ impl<'a> FnCompiler<'a> {
                                         }
                                     }
                                     let rp = self.alloc_reg();
-                                    self.chunk.emit(mem_lea(first_slot, rp, 0));
+                                    let block_length =
+                                        self.qzi_u8(coerced_args.len(), "format argument count");
+                                    self.chunk
+                                        .emit(mem_lea_block(first_slot, rp, 0, block_length));
                                     let rl = self.alloc_reg();
                                     self.chunk.emit(ri16(
                                         Opcode::MovI,
@@ -5767,7 +6076,10 @@ impl<'a> FnCompiler<'a> {
                                         }
                                     }
                                     let rp = self.alloc_reg();
-                                    self.chunk.emit(mem_lea(first_slot, rp, 0));
+                                    let block_length =
+                                        self.qzi_u8(coerced_args.len(), "format argument count");
+                                    self.chunk
+                                        .emit(mem_lea_block(first_slot, rp, 0, block_length));
                                     let rl = self.alloc_reg();
                                     self.chunk.emit(ri16(
                                         Opcode::MovI,
@@ -6035,7 +6347,13 @@ impl<'a> FnCompiler<'a> {
                         }
                         fwd_chunk.emit(ri16(Opcode::CallIdx, 0, fn_idx));
                         fwd_chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
-                        self.output_chunks.push(fwd_chunk);
+                        if !self
+                            .output_chunks
+                            .iter()
+                            .any(|chunk| chunk.name == fwd_name)
+                        {
+                            self.output_chunks.push(fwd_chunk);
+                        }
                         let env_ptr = self.alloc_reg();
                         self.chunk.emit(ri16(Opcode::New, env_ptr, 16));
                         let fn_addr_reg = self.alloc_reg();
@@ -6162,6 +6480,9 @@ impl<'a> FnCompiler<'a> {
                 if matches!(self.type_of_span(obj_key), Some(TypeKind::Bytes)) {
                     let bytes = self.compile_expr(object);
                     let idx = self.compile_expr(index);
+                    let length = self.alloc_reg();
+                    self.chunk.emit(mem_load(bytes, length, 0));
+                    self.emit_bounds_guard(idx, length, index.span);
                     let eight = self.alloc_reg();
                     self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                     let data = self.alloc_reg();
@@ -6184,6 +6505,8 @@ impl<'a> FnCompiler<'a> {
                 if matches!(self.type_of_span(obj_key), Some(TypeKind::Slice { .. })) {
                     let ptr = self.compile_expr(object);
                     let idx = self.compile_expr(index);
+                    let length = self.slice_length_register(object, ptr);
+                    self.emit_bounds_guard(idx, length, index.span);
                     let eight = self.alloc_reg();
                     self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                     let offset = self.alloc_reg();
@@ -6195,6 +6518,10 @@ impl<'a> FnCompiler<'a> {
                     return dst;
                 }
                 // Fallback: raw static-array register arithmetic (single index only).
+                let array_length = match self.type_of_span(obj_key) {
+                    Some(TypeKind::Array { len, .. }) => Some(len),
+                    _ => None,
+                };
                 let base = self.compile_expr(object);
                 if let ExprKind::Literal(Literal::Int(n)) = &index.node
                     && *n >= 0
@@ -6203,8 +6530,17 @@ impl<'a> FnCompiler<'a> {
                 }
                 // Dynamic index: Lea + scale + Sub + Load
                 let idx = self.compile_expr(index);
+                if let Some(length) = array_length {
+                    let length_reg = self.emit_length_constant(length);
+                    self.emit_bounds_guard(idx, length_reg, index.span);
+                }
                 let ptr = self.alloc_reg();
-                self.chunk.emit(mem_lea(base, ptr, 0));
+                if let Some(length) = array_length {
+                    let block_length = self.fixed_array_block_length(length);
+                    self.chunk.emit(mem_lea_block(base, ptr, 0, block_length));
+                } else {
+                    self.chunk.emit(mem_lea_block(base, ptr, 0, 1));
+                }
                 let eight = self.alloc_reg();
                 self.chunk.emit(ri16(Opcode::MovI, eight, 8));
                 let offset = self.alloc_reg();
@@ -6361,7 +6697,14 @@ impl<'a> FnCompiler<'a> {
 
             ExprKind::Closure { params, body } => {
                 let val = *self.next_closure_idx;
-                *self.next_closure_idx = val.wrapping_add(1);
+                if let Some(next) = val.checked_add(1) {
+                    *self.next_closure_idx = next;
+                } else {
+                    self.codegen_error.get_or_insert_with(|| {
+                        "too many closures: generated symbol space exceeds 65535 entries"
+                            .to_string()
+                    });
+                }
                 let anon_name = format!("__quazi_closure_{}", val);
 
                 let captures = self.capture_ident_names(body, params);
@@ -6369,7 +6712,6 @@ impl<'a> FnCompiler<'a> {
                 // Use a temporary output buffer for the sub-compiler
                 // so we avoid borrowing conflicts with self.output_chunks.
                 let mut temp_chunks = Vec::new();
-                let mut temp_idx = 0u16;
                 // All closures take hidden env_ptr as r0 for uniform dispatch.
                 let anon_param_count = params.len() + 1;
                 let mut anon = FnCompiler::new(
@@ -6397,30 +6739,27 @@ impl<'a> FnCompiler<'a> {
                     self.monomorphizations,
                     self.trait_method_slots,
                     &mut temp_chunks,
-                    &mut temp_idx,
+                    &mut *self.next_closure_idx,
                     self.type_subst.clone(),
                     self.fn_param_names,
                     self.source_files,
                     self.annotated_exprs,
                 );
-                if captures.is_empty() {
-                    // No-capture: r0 = env_ptr (ignored), user params at r1+.
-                    let _ = anon.alloc_reg(); // consume r0 = env_ptr slot
-                    for p in params {
-                        anon.bind(p.clone()); // r1, r2, ...
-                    }
-                } else {
-                    // With captures: r0 = env ptr, user params start at r1.
-                    // Load each captured variable from the env struct.
+                // Reserve the complete incoming ABI frame before allocating
+                // capture locals or expression temporaries. r0 is the hidden
+                // environment pointer and user parameters occupy r1+.
+                for _ in 0..anon_param_count {
+                    let _ = anon.alloc_reg();
+                }
+                for (index, parameter) in params.iter().enumerate() {
+                    anon.regs.insert(parameter.clone(), (index + 1) as u8);
+                }
+                if !captures.is_empty() {
                     for (i, cap_name) in captures.iter().enumerate() {
                         let cap_reg = anon.alloc_reg();
                         let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
                         anon.chunk.emit(field_load(cap_reg, 0, off));
                         anon.regs.insert(cap_name.clone(), cap_reg);
-                    }
-                    // Bind user params starting at r1.
-                    for (i, p) in params.iter().enumerate() {
-                        anon.regs.insert(p.clone(), (i + 1) as u8);
                     }
                 }
                 let body_reg = anon.compile_expr(body);
@@ -6436,7 +6775,15 @@ impl<'a> FnCompiler<'a> {
                 // Push the closure chunk and any nested closures into
                 // the parent's output queue.
                 self.output_chunks.push(anon.chunk);
-                self.output_chunks.extend(temp_chunks);
+                for chunk in temp_chunks {
+                    if !self
+                        .output_chunks
+                        .iter()
+                        .any(|existing| existing.name == chunk.name)
+                    {
+                        self.output_chunks.push(chunk);
+                    }
+                }
 
                 if captures.is_empty() {
                     // No-capture: wrap in env struct {fn_ptr} for uniform dispatch.
@@ -6555,6 +6902,7 @@ pub(crate) fn remap_instr_regs(
         // No-op / no regs
         Opcode::Nop
         | Opcode::MemFence
+        | Opcode::Trap
         | Opcode::Jmp
         | Opcode::Je
         | Opcode::Jne
@@ -6667,6 +7015,28 @@ enum PrimitiveMethod {
     BytesAsPtr,
     /// Checked `.parse[T]()` dispatched to a prelude parser.
     Parse,
+}
+
+fn type_contains_unrepresentable_runtime_type(ty: &TypeKind) -> bool {
+    match ty {
+        TypeKind::Any | TypeKind::Error => true,
+        TypeKind::Ref { inner } | TypeKind::RawPtr { inner } => {
+            type_contains_unrepresentable_runtime_type(&inner.node)
+        }
+        TypeKind::Array { elem_ty, .. }
+        | TypeKind::FlexibleArray { elem_ty }
+        | TypeKind::Slice { elem_ty } => type_contains_unrepresentable_runtime_type(&elem_ty.node),
+        TypeKind::Named { type_args, .. } => type_args
+            .iter()
+            .any(|arg| type_contains_unrepresentable_runtime_type(&arg.node)),
+        TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {
+            params
+                .iter()
+                .any(|param| type_contains_unrepresentable_runtime_type(&param.node))
+                || type_contains_unrepresentable_runtime_type(&return_ty.node)
+        }
+        _ => false,
+    }
 }
 
 /// Maps receiver types to their `PrimToStr` tag value.
@@ -6927,10 +7297,14 @@ fn collect_idents(expr: &Expr, names: &mut Vec<String>) {
         ExprKind::Match { scrutinee, arms } => {
             collect_idents(scrutinee, names);
             for arm in arms {
-                collect_idents(&arm.expr, names);
+                let mut arm_names = Vec::new();
+                collect_idents(&arm.expr, &mut arm_names);
                 if let Some(g) = &arm.guard {
-                    collect_idents(g, names);
+                    collect_idents(g, &mut arm_names);
                 }
+                let bindings = crate::parser::ast::pattern_all_bindings(&arm.pattern);
+                arm_names.retain(|name| !bindings.contains(name));
+                names.extend(arm_names);
             }
         }
         ExprKind::CompoundAssign { target, value, .. } => {
@@ -6950,7 +7324,12 @@ fn collect_idents(expr: &Expr, names: &mut Vec<String>) {
             }
         }
         ExprKind::Try { expr: inner } => collect_idents(inner, names),
-        ExprKind::Closure { body, .. } => collect_idents(body, names),
+        ExprKind::Closure { params, body } => {
+            let mut nested_names = Vec::new();
+            collect_idents(body, &mut nested_names);
+            nested_names.retain(|name| !params.contains(name));
+            names.extend(nested_names);
+        }
     }
 }
 
@@ -6963,6 +7342,13 @@ fn is_comparison(op: &BinOpKind) -> bool {
             | BinOpKind::GtEq
             | BinOpKind::EqEq
             | BinOpKind::NotEq
+    )
+}
+
+fn is_ordered_comparison(op: &BinOpKind) -> bool {
+    matches!(
+        op,
+        BinOpKind::Lt | BinOpKind::LtEq | BinOpKind::Gt | BinOpKind::GtEq
     )
 }
 
@@ -8019,7 +8405,7 @@ fn main() i32 {
 
     #[test]
     fn str_len_emits_rune_count_intrinsic() {
-        let chunks = compile(r#"fn f(s: str) any { ret s.len(); }"#);
+        let chunks = compile(r#"fn f(s: str) usize { ret s.len(); }"#);
         assert!(
             chunks[0]
                 .code
@@ -8373,6 +8759,199 @@ fn main() i32 {
     }
 
     #[test]
+    fn captured_closure_reserves_hidden_and_user_parameter_registers() {
+        let chunks = compile(
+            r#"fn main() void {
+                var a: i32 = 1;
+                var b: i32 = 2;
+                var add: fn(i32, i32) i32 = |x, y| a + b + x + y;
+                var result: i32 = add(3, 4);
+            }"#,
+        );
+        let closure = chunks
+            .iter()
+            .find(|chunk| chunk.name == "__quazi_closure_0")
+            .expect("captured closure chunk");
+        let loads = closure
+            .code
+            .iter()
+            .filter(|instruction| instruction.opcode() == Some(Opcode::FieldLoad))
+            .collect::<Vec<_>>();
+        assert_eq!(loads.len(), 2);
+        assert!(loads.iter().all(|instruction| instruction.ops[1] == 0));
+        assert!(loads.iter().all(|instruction| instruction.ops[0] >= 3));
+        assert_ne!(loads[0].ops[0], loads[1].ops[0]);
+    }
+
+    #[test]
+    fn nested_closure_symbols_are_unique() {
+        let chunks = compile(
+            r#"fn invoke(callback: fn() i32) i32 { ret callback(); }
+            fn main() void {
+                var outer: fn() i32 = || invoke(|| 41);
+                var result: i32 = outer();
+            }"#,
+        );
+        let names = chunks
+            .iter()
+            .filter(|chunk| chunk.name.starts_with("__quazi_closure_"))
+            .map(|chunk| chunk.name.clone())
+            .collect::<Vec<_>>();
+        let unique = names.iter().collect::<HashSet<_>>();
+        assert_eq!(names.len(), 2);
+        assert_eq!(unique.len(), names.len(), "closure symbols must be unique");
+    }
+
+    #[test]
+    fn repeated_named_function_values_share_one_forwarder() {
+        let chunks = compile(
+            r#"fn one() i32 { ret 1; }
+            fn main() void {
+                var first: fn() i32 = one;
+                var second: fn() i32 = one;
+                var result: i32 = first() + second();
+            }"#,
+        );
+        assert_eq!(
+            chunks
+                .iter()
+                .filter(|chunk| chunk.name == "__quazi_fwd_one")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn incremental_units_with_callable_companions_are_recompiled() {
+        for companion in ["__quazi_closure_0", "__quazi_fwd_one"] {
+            let mut chunk = Chunk::new("owner");
+            chunk
+                .constants
+                .push(ConstPoolEntry::FnAddr(companion.to_string()));
+            assert!(
+                chunk_requires_owned_callable_companions(&chunk),
+                "partial QZC restore must not separate an owner from {companion}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_and_outer_named_function_values_share_one_forwarder() {
+        let chunks = compile(
+            r#"fn one() i32 { ret 1; }
+            fn invoke(callback: fn() i32) i32 { ret callback(); }
+            fn main() void {
+                var outer: fn() i32 = one;
+                var nested: fn() i32 = || invoke(one);
+                var result: i32 = outer() + nested();
+            }"#,
+        );
+        assert_eq!(
+            chunks
+                .iter()
+                .filter(|chunk| chunk.name == "__quazi_fwd_one")
+                .count(),
+            1,
+            "nested compiler buffers must share the program-wide forwarder"
+        );
+    }
+
+    #[test]
+    fn owned_function_environments_are_freed_on_scope_and_parameter_exit() {
+        let chunks = compile(
+            r#"fn consume(callback: fn() i32) void { callback(); }
+            fn main() void {
+                var local: fn() i32 = || 1;
+                consume(local);
+                (|| 2)();
+            }"#,
+        );
+        let free_count = |chunk: &Chunk| {
+            chunk
+                .code
+                .iter()
+                .filter(|instruction| {
+                    instruction.opcode() == Some(Opcode::Intrinsic)
+                        && instruction.ri16().1 == 4
+                        && instruction.flags == 1
+                })
+                .count()
+        };
+        assert_eq!(
+            chunks.iter().map(free_count).sum::<usize>(),
+            2,
+            "the transferred parameter and immediately-called temporary are each freed once"
+        );
+    }
+
+    #[test]
+    fn owned_function_replacement_frees_old_and_final_environments() {
+        let chunks = compile(
+            r#"fn main() void {
+                var callback: fn() i32 = || 1;
+                callback = || 2;
+                (callback) = || 3;
+                callback();
+            }"#,
+        );
+        let free_count = chunks
+            .iter()
+            .flat_map(|chunk| chunk.code.iter())
+            .filter(|instruction| {
+                instruction.opcode() == Some(Opcode::Intrinsic)
+                    && instruction.ri16().1 == 4
+                    && instruction.flags == 1
+            })
+            .count();
+        assert_eq!(
+            free_count, 3,
+            "direct/grouped replacement and scope exit each free one environment"
+        );
+    }
+
+    #[test]
+    fn returned_function_environment_transfers_to_the_caller() {
+        let chunks = compile(
+            r#"fn make(value: i32) fn() i32 { ret || value; }
+            fn main() void {
+                var callback: fn() i32 = make(41);
+                callback();
+            }"#,
+        );
+        let free_count = chunks
+            .iter()
+            .flat_map(|chunk| chunk.code.iter())
+            .filter(|instruction| {
+                instruction.opcode() == Some(Opcode::Intrinsic)
+                    && instruction.ri16().1 == 4
+                    && instruction.flags == 1
+            })
+            .count();
+        assert_eq!(
+            free_count, 1,
+            "only the caller may free the returned environment"
+        );
+    }
+
+    #[test]
+    fn scalar_address_of_marks_one_address_taken_slot() {
+        let chunks = compile(
+            r#"fn main() i32 {
+                var value: i32 = 7;
+                var reference: &i32 = &value;
+                ret reference;
+            }"#,
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        let address = main
+            .code
+            .iter()
+            .find(|instruction| instruction.opcode == Opcode::Lea as u8)
+            .expect("address-of should emit Lea");
+        assert_eq!(address.flags, 1, "scalar address must pin exactly one slot");
+    }
+
+    #[test]
     fn byte_string_uses_exact_bytes_and_byte_loads() {
         let chunks = compile(
             r#"fn main() i32 {
@@ -8387,6 +8966,133 @@ fn main() i32 {
         assert!(main.code.iter().any(|instruction| {
             instruction.opcode == Opcode::Load as u8 && instruction.mem_width() == MemWidth::Byte
         }));
+    }
+
+    #[test]
+    fn dynamic_fixed_array_index_is_guarded_and_marks_the_full_register_block() {
+        let chunks = compile(
+            r#"
+fn get(index: i64) i64 {
+    var values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    ret values[index];
+}
+"#,
+        );
+        let get = chunks.iter().find(|chunk| chunk.name == "get").unwrap();
+        assert!(get.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Lea as u8 && instruction.flags == 10
+        }));
+        assert!(
+            get.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::Jb as u8)
+        );
+        assert!(
+            get.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::Trap as u8)
+        );
+    }
+
+    #[test]
+    fn dynamic_byte_index_loads_length_before_its_guard() {
+        let chunks = compile(
+            r#"
+fn get(index: i64) u8 {
+    var value = b"abc";
+    ret value[index];
+}
+"#,
+        );
+        let get = chunks.iter().find(|chunk| chunk.name == "get").unwrap();
+        let length_load = get
+            .code
+            .iter()
+            .position(|instruction| {
+                instruction.opcode == Opcode::Load as u8
+                    && instruction.mem_width() == MemWidth::Qword
+            })
+            .expect("bytes indexing must load the stored length");
+        let guard = get
+            .code
+            .iter()
+            .position(|instruction| instruction.opcode == Opcode::Jb as u8)
+            .expect("bytes indexing must branch only when in bounds");
+        assert!(length_load < guard);
+    }
+
+    #[test]
+    fn dynamic_fixed_array_writes_and_slice_reads_are_guarded() {
+        let chunks = compile(
+            r#"
+fn update(index: i64) i64 {
+    var values = [10, 20, 30, 40, 50, 60, 70, 80, 90];
+    values[index] = 5;
+    values[index] += 2;
+    ret values[index];
+}
+fn slice_get(index: i64, ...values: i64) i64 {
+    ret values[index];
+}
+"#,
+        );
+        let update = chunks.iter().find(|chunk| chunk.name == "update").unwrap();
+        assert!(
+            update
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::Jb as u8)
+                .count()
+                >= 3
+        );
+        assert!(update.code.iter().any(|instruction| {
+            instruction.opcode == Opcode::Lea as u8 && instruction.flags == 9
+        }));
+
+        let slice_get = chunks
+            .iter()
+            .find(|chunk| chunk.name == "slice_get")
+            .unwrap();
+        assert!(
+            slice_get
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::Jb as u8)
+        );
+    }
+
+    #[test]
+    fn indexed_assignment_evaluates_its_value_once() {
+        let chunks = compile(
+            r#"
+fn produce() i64 {
+    var first = 40;
+    var second = 2;
+    ret first + second;
+}
+fn update(index: i64) i64 {
+    var values = [0, 1, 2];
+    values[index] = produce();
+    ret values[index];
+}
+"#,
+        );
+        let produce_index = chunks
+            .iter()
+            .position(|chunk| chunk.name == "produce")
+            .unwrap() as u16;
+        let update = chunks.iter().find(|chunk| chunk.name == "update").unwrap();
+        assert_eq!(
+            update
+                .code
+                .iter()
+                .filter(|instruction| {
+                    instruction.opcode == Opcode::CallIdx as u8
+                        && instruction.ri16().1 == produce_index
+                })
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -8462,6 +9168,113 @@ fn main() i32 {
         assert!(negate.code.iter().any(|instruction| {
             instruction.opcode == Opcode::Neg as u8 && instruction.flags & FLOAT_FLAG != 0
         }));
+    }
+
+    #[test]
+    fn integer_lowering_preserves_signedness() {
+        let chunks = compile(
+            r#"
+            fn unsigned_div(a: u64, b: u64) u64 { ret a / b; }
+            fn signed_div(a: i64, b: i64) i64 { ret a / b; }
+            fn unsigned_mod(a: u64, b: u64) u64 { ret a % b; }
+            fn signed_mod(a: i64, b: i64) i64 { ret a % b; }
+            fn unsigned_compound(a: u64, b: u64) u64 {
+                var value: u64 = a;
+                value /= b;
+                ret value;
+            }
+            fn signed_compound(a: i64, b: i64) i64 {
+                var value: i64 = a;
+                value %= b;
+                ret value;
+            }
+            fn unsigned_less(a: u64, b: u64) bool { ret a < b; }
+            fn signed_less(a: i64, b: i64) bool { ret a < b; }
+            fn unsigned_branch(a: u64, b: u64) bool {
+                if (a >= b) { ret true; }
+                ret false;
+            }
+            fn unsigned_shift(a: u64, b: u64) u64 { ret a >> b; }
+            fn signed_shift(a: i64, b: i64) i64 { ret a >> b; }
+            "#,
+        );
+        let instruction = |function: &str, opcode: Opcode| {
+            chunks
+                .iter()
+                .find(|chunk| chunk.name == function)
+                .and_then(|chunk| {
+                    chunk
+                        .code
+                        .iter()
+                        .find(|instruction| instruction.opcode == opcode as u8)
+                })
+                .copied()
+                .unwrap_or_else(|| panic!("{function} must contain {opcode:?}"))
+        };
+
+        for (unsigned, signed, opcode) in [
+            ("unsigned_div", "signed_div", Opcode::Div),
+            ("unsigned_mod", "signed_mod", Opcode::Mod),
+            ("unsigned_less", "signed_less", Opcode::Jl),
+        ] {
+            assert_ne!(instruction(unsigned, opcode).flags & UNSIGNED_FLAG, 0);
+            assert_eq!(instruction(signed, opcode).flags & UNSIGNED_FLAG, 0);
+        }
+        assert_ne!(
+            instruction("unsigned_branch", Opcode::Jl).flags & UNSIGNED_FLAG,
+            0
+        );
+        assert_ne!(
+            instruction("unsigned_compound", Opcode::Div).flags & UNSIGNED_FLAG,
+            0
+        );
+        assert_eq!(
+            instruction("signed_compound", Opcode::Mod).flags & UNSIGNED_FLAG,
+            0
+        );
+        instruction("unsigned_shift", Opcode::Shr);
+        instruction("signed_shift", Opcode::Sar);
+    }
+
+    #[test]
+    fn unsigned_constant_folding_uses_u64_semantics() {
+        let chunks = compile(
+            r#"
+            fn quotient() u64 { ret (-1 as u64) / 2; }
+            fn high() u64 { ret -1 as u64; }
+            fn remainder() u64 { ret (-1 as u64) % 2; }
+            fn shift() u64 { ret (-1 as u64) >> 63; }
+            fn ordered() bool { ret (-1 as u64) > 1; }
+            "#,
+        );
+        let returned_constant = |function: &str| -> i64 {
+            let chunk = chunks.iter().find(|chunk| chunk.name == function).unwrap();
+            let ret = chunk.code.last().expect("function return");
+            assert_eq!(ret.opcode, Opcode::Ret as u8);
+            let return_reg = ret.ops[0];
+            let definition = chunk
+                .code
+                .iter()
+                .find(|instruction| {
+                    matches!(instruction.opcode(), Some(Opcode::MovI | Opcode::MovConst))
+                        && instruction.ri16().0 == return_reg
+                })
+                .expect("constant return value");
+            let (_, value) = definition.ri16();
+            if definition.opcode == Opcode::MovI as u8 {
+                value as i64
+            } else {
+                match chunk.constants.get(value as usize) {
+                    Some(ConstPoolEntry::Int(value)) => *value,
+                    other => panic!("expected integer constant, got {other:?}"),
+                }
+            }
+        };
+        assert_eq!(returned_constant("quotient"), i64::MAX);
+        assert_eq!(returned_constant("high"), -1);
+        assert_eq!(returned_constant("remainder"), 1);
+        assert_eq!(returned_constant("shift"), 1);
+        assert_eq!(returned_constant("ordered"), 1);
     }
 
     #[test]

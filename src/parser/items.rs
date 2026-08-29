@@ -219,10 +219,12 @@ impl Parser {
 
             self.expect(TokenKind::LParen)?;
             let mut params = Vec::new();
+            let mut param_names = Vec::new();
             if !self.at(TokenKind::RParen) {
                 loop {
-                    let _param_name = self.parse_ident()?;
+                    let param_name = self.parse_ident()?;
                     self.expect(TokenKind::Colon)?;
+                    param_names.push(param_name);
                     params.push(self.parse_type()?);
 
                     if self.at(TokenKind::Comma) {
@@ -246,6 +248,7 @@ impl Parser {
             methods.push(TraitMethod {
                 name: method_name,
                 generic_params: method_generic_params,
+                param_names,
                 params,
                 return_ty,
                 span,

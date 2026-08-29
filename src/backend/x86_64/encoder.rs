@@ -1593,6 +1593,10 @@ impl<'a> FnEncoder<'a> {
                 emit!(asm.nop());
             }
 
+            Some(Opcode::Trap) => {
+                emit!(asm.ud2());
+            }
+
             Some(Opcode::Mov) => {
                 let (dst, src, _) = instr.rrr();
                 emit!(asm.mov(rax, slot(src)));
@@ -1716,8 +1720,23 @@ impl<'a> FnEncoder<'a> {
                     emit!(asm.movq(slot(dst), xmm0));
                 } else {
                     emit!(asm.mov(rax, slot(s1)));
-                    emit!(asm.cqo());
-                    emit!(asm.idiv(slot(s2)));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.xor(edx, edx));
+                        emit!(asm.div(slot(s2)));
+                    } else {
+                        let mut normal_division = asm.create_label();
+                        let mut division_done = asm.create_label();
+                        emit!(asm.mov(rcx, i64::MIN));
+                        emit!(asm.cmp(rax, rcx));
+                        emit!(asm.jne(normal_division));
+                        emit!(asm.cmp(slot(s2), -1i32));
+                        emit!(asm.jne(normal_division));
+                        emit!(asm.jmp(division_done));
+                        emit!(asm.set_label(&mut normal_division));
+                        emit!(asm.cqo());
+                        emit!(asm.idiv(slot(s2)));
+                        emit!(asm.set_label(&mut division_done));
+                    }
                     emit!(asm.mov(slot(dst), rax));
                 }
             }
@@ -1725,8 +1744,24 @@ impl<'a> FnEncoder<'a> {
             Some(Opcode::Mod) => {
                 let (dst, s1, s2) = instr.rrr();
                 emit!(asm.mov(rax, slot(s1)));
-                emit!(asm.cqo());
-                emit!(asm.idiv(slot(s2)));
+                if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                    emit!(asm.xor(edx, edx));
+                    emit!(asm.div(slot(s2)));
+                } else {
+                    let mut normal_division = asm.create_label();
+                    let mut division_done = asm.create_label();
+                    emit!(asm.mov(rcx, i64::MIN));
+                    emit!(asm.cmp(rax, rcx));
+                    emit!(asm.jne(normal_division));
+                    emit!(asm.cmp(slot(s2), -1i32));
+                    emit!(asm.jne(normal_division));
+                    emit!(asm.xor(edx, edx));
+                    emit!(asm.jmp(division_done));
+                    emit!(asm.set_label(&mut normal_division));
+                    emit!(asm.cqo());
+                    emit!(asm.idiv(slot(s2)));
+                    emit!(asm.set_label(&mut division_done));
+                }
                 emit!(asm.mov(slot(dst), rdx));
             }
 
@@ -1862,7 +1897,11 @@ impl<'a> FnEncoder<'a> {
                     }
                     emit!(asm.ja(lbl));
                 } else {
-                    emit!(asm.jg(lbl));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.ja(lbl));
+                    } else {
+                        emit!(asm.jg(lbl));
+                    }
                 }
             }
             Some(Opcode::Jge) => {
@@ -1874,7 +1913,11 @@ impl<'a> FnEncoder<'a> {
                     }
                     emit!(asm.jae(lbl));
                 } else {
-                    emit!(asm.jge(lbl));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.jae(lbl));
+                    } else {
+                        emit!(asm.jge(lbl));
+                    }
                 }
             }
             Some(Opcode::Jl) => {
@@ -1891,7 +1934,11 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.set_label(&mut unordered));
                     }
                 } else {
-                    emit!(asm.jl(lbl));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.jb(lbl));
+                    } else {
+                        emit!(asm.jl(lbl));
+                    }
                 }
             }
             Some(Opcode::Jle) => {
@@ -1908,7 +1955,11 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.set_label(&mut unordered));
                     }
                 } else {
-                    emit!(asm.jle(lbl));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.jbe(lbl));
+                    } else {
+                        emit!(asm.jle(lbl));
+                    }
                 }
             }
             Some(Opcode::Ja) => {
@@ -2519,7 +2570,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     18 => {
-                        // quazi.thread.spawn(f: any) → usize (thread handle)
+                        // quazi.thread.spawn(f: ThreadCallback) → usize (thread handle)
                         // slot(dst) = function pointer (address)
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // align rsp to 16
@@ -2535,9 +2586,14 @@ impl<'a> FnEncoder<'a> {
                             call_ext!("CreateThread".into(), RelocKind::Plt32);
                             emit!(asm.add(rsp, 48i32));
                         } else {
+                            let mut allocation_failed = asm.create_label();
+                            let mut create_failed = asm.create_label();
+                            let mut finished = asm.create_label();
                             // malloc(8) for pthread_t storage
                             emit!(asm.mov(rdi, 8i64));
                             call_ext!("malloc".into(), RelocKind::Plt32);
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.je(allocation_failed));
                             emit!(asm.mov(rbx, rax)); // rbx = thread_storage_ptr
                             // pthread_create(storage, NULL, fn_ptr, NULL)
                             emit!(asm.mov(rdi, rbx));
@@ -2545,7 +2601,16 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdx, slot(dst)));
                             emit!(asm.xor(rcx, rcx));
                             call_ext!("pthread_create".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(create_failed));
                             emit!(asm.mov(rax, rbx));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut create_failed));
+                            emit!(asm.mov(rdi, rbx));
+                            call_ext!("free".into(), RelocKind::Plt32);
+                            emit!(asm.set_label(&mut allocation_failed));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.set_label(&mut finished));
                         }
                         emit!(asm.mov(slot(dst), rax));
                         emit!(asm.pop(rax));
@@ -2556,6 +2621,9 @@ impl<'a> FnEncoder<'a> {
                         // slot(dst) = thread handle
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // align
+                        let mut finished = asm.create_label();
+                        emit!(asm.cmp(slot(dst), 0i32));
+                        emit!(asm.je(finished));
                         if is_win64 {
                             emit!(asm.sub(rsp, 32i32));
                             emit!(asm.mov(rcx, slot(dst)));
@@ -2573,6 +2641,7 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdi, rbx));
                             call_ext!("free".into(), RelocKind::Plt32);
                         }
+                        emit!(asm.set_label(&mut finished));
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
                         emit!(asm.pop(rax));
@@ -3652,6 +3721,7 @@ mod tests {
     use crate::abi::{AbiField, ForeignGlobal};
     use crate::backend::target::{Arch, Os};
     use crate::bytecode::instruction::{call_c_reg, ri16, rrr};
+    use iced_x86::{Decoder, DecoderOptions, Mnemonic};
 
     fn pair_type() -> AbiType {
         AbiType::Aggregate {
@@ -3700,6 +3770,66 @@ mod tests {
         .expect("ABI adapter should encode")
     }
 
+    fn mnemonics(bytes: &[u8]) -> Vec<Mnemonic> {
+        let mut decoder = Decoder::new(64, bytes, DecoderOptions::NONE);
+        let mut result = Vec::new();
+        while decoder.can_decode() {
+            result.push(decoder.decode().mnemonic());
+        }
+        result
+    }
+
+    #[test]
+    fn unsigned_integer_flags_select_native_instructions() {
+        use crate::bytecode::instruction::UNSIGNED_FLAG;
+
+        for abi in [Abi::SysV, Abi::Win64] {
+            let mut unsigned_div = Chunk::with_params("unsigned_div", 2);
+            let mut division = rrr(Opcode::Div, 2, 0, 1);
+            division.flags |= UNSIGNED_FLAG;
+            unsigned_div.emit(division);
+            unsigned_div.emit(rrr(Opcode::Ret, 2, 0, 0));
+            let (bytes, _) = encode(&unsigned_div, abi);
+            let decoded = mnemonics(&bytes);
+            assert!(decoded.contains(&Mnemonic::Div));
+            assert!(!decoded.contains(&Mnemonic::Idiv));
+
+            let mut signed_div = Chunk::with_params("signed_div", 2);
+            signed_div.emit(rrr(Opcode::Div, 2, 0, 1));
+            signed_div.emit(rrr(Opcode::Ret, 2, 0, 0));
+            let (bytes, _) = encode(&signed_div, abi);
+            let decoded = mnemonics(&bytes);
+            assert!(decoded.contains(&Mnemonic::Idiv));
+
+            for (opcode, expected) in [
+                (Opcode::Jg, Mnemonic::Ja),
+                (Opcode::Jge, Mnemonic::Jae),
+                (Opcode::Jl, Mnemonic::Jb),
+                (Opcode::Jle, Mnemonic::Jbe),
+            ] {
+                let mut branch = Chunk::with_params("unsigned_branch", 2);
+                branch.emit(rrr(Opcode::Cmp, 0, 0, 1));
+                let mut jump = ri16(opcode, 0, 3);
+                jump.flags |= UNSIGNED_FLAG;
+                branch.emit(jump);
+                branch.emit(ri16(Opcode::MovI, 2, 0));
+                branch.emit(rrr(Opcode::Ret, 2, 0, 0));
+                let (bytes, _) = encode(&branch, abi);
+                assert!(mnemonics(&bytes).contains(&expected));
+            }
+        }
+    }
+
+    #[test]
+    fn safety_trap_encodes_as_ud2_for_supported_abis() {
+        for abi in [Abi::SysV, Abi::Win64] {
+            let mut chunk = Chunk::new("trap");
+            chunk.emit(rrr(Opcode::Trap, 0, 0, 0));
+            let (bytes, _) = encode(&chunk, abi);
+            assert!(mnemonics(&bytes).contains(&Mnemonic::Ud2));
+        }
+    }
+
     #[test]
     fn system_random_intrinsics_encode_for_sysv_and_win64() {
         for id in [35, 36] {
@@ -3721,6 +3851,82 @@ mod tests {
                     .any(|reloc| reloc.symbol == "BCryptGenRandom")
             );
         }
+    }
+
+    #[test]
+    fn thread_spawn_checks_linux_allocation_and_creation_failures() {
+        let mut chunk = Chunk::with_params("thread_spawn", 1);
+        let mut spawn = ri16(Opcode::Intrinsic, 0, 18);
+        spawn.flags = 1;
+        chunk.emit(spawn);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+        let linux_mnemonics = mnemonics(&linux_bytes);
+        assert!(linux_relocs.iter().any(|reloc| reloc.symbol == "malloc"));
+        assert!(
+            linux_relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "pthread_create")
+        );
+        assert!(linux_relocs.iter().any(|reloc| reloc.symbol == "free"));
+        assert!(linux_mnemonics.contains(&Mnemonic::Je));
+        assert!(linux_mnemonics.contains(&Mnemonic::Jne));
+
+        let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
+        assert!(!windows_bytes.is_empty());
+        assert!(
+            windows_relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "CreateThread")
+        );
+        assert!(!windows_relocs.iter().any(|reloc| reloc.symbol == "free"));
+    }
+
+    #[test]
+    fn thread_join_guards_zero_before_native_handle_use() {
+        use iced_x86::Register;
+
+        let mut chunk = Chunk::with_params("thread_join", 1);
+        let mut join = ri16(Opcode::Intrinsic, 0, 19);
+        join.flags = 1;
+        chunk.emit(join);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+        let mut decoder = Decoder::new(64, &linux_bytes, DecoderOptions::NONE);
+        let mut instructions = Vec::new();
+        while decoder.can_decode() {
+            instructions.push(decoder.decode());
+        }
+        let guard = instructions
+            .iter()
+            .position(|instruction| instruction.mnemonic() == Mnemonic::Je)
+            .expect("join must branch around native work for a zero handle");
+        let handle_deref = instructions
+            .iter()
+            .position(|instruction| instruction.memory_base() == Register::RBX)
+            .expect("Linux join must load pthread_t through its storage handle");
+        assert!(guard < handle_deref);
+        assert!(
+            linux_relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "pthread_join")
+        );
+        assert!(linux_relocs.iter().any(|reloc| reloc.symbol == "free"));
+
+        let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
+        assert!(mnemonics(&windows_bytes).contains(&Mnemonic::Je));
+        assert!(
+            windows_relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "WaitForSingleObject")
+        );
+        assert!(
+            windows_relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "CloseHandle")
+        );
     }
 
     #[test]

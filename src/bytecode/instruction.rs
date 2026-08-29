@@ -178,6 +178,7 @@ impl Instruction {
             | Opcode::AtomicAdd
             | Opcode::AtomicCas
             | Opcode::MemFence
+            | Opcode::Trap
             | Opcode::Spawn => "\x1b[31m", // red    – foreign/system
             Opcode::Nop => "\x1b[2m",
             _ => "\x1b[0m", // default colour for unclassified ops
@@ -186,7 +187,7 @@ impl Instruction {
         let cop = format!("{op_color}{:<12}\x1b[0m", plain);
 
         match op {
-            Opcode::Nop | Opcode::Ret | Opcode::MemFence => cop,
+            Opcode::Nop | Opcode::Ret | Opcode::MemFence | Opcode::Trap => cop,
 
             Opcode::Add
             | Opcode::Sub
@@ -450,6 +451,9 @@ pub const FLOAT_FLAG: u8 = 0x01;
 /// A relational jump is the logical inverse of its source comparison.
 /// This distinction preserves unordered (NaN) floating-point behavior.
 pub const NEGATED_COMPARE_FLAG: u8 = 0x02;
+/// Integer operands use unsigned division, remainder, or comparison semantics.
+/// A zero flags byte retains the signed behavior used by older QZI files.
+pub const UNSIGNED_FLAG: u8 = 0x04;
 
 const MEM_WIDTH_SHIFT: u8 = 1;
 const MEM_WIDTH_MASK: u8 = 0x06;
@@ -586,6 +590,15 @@ pub fn mem_store_w(base: u8, src: u8, offset: i16, width: MemWidth) -> Instructi
 pub fn mem_lea(base: u8, dst: u8, offset: i16) -> Instruction {
     let [ol, oh] = offset.to_le_bytes();
     Instruction::new(Opcode::Lea, [dst, base, ol, oh], 0)
+}
+
+/// Take the address of a virtual-register block that must remain contiguous.
+/// `length` is recorded in the opcode-scoped flags byte for register allocation
+/// and QZI frame validation; zero means no block metadata.
+pub fn mem_lea_block(base: u8, dst: u8, offset: i16, length: u8) -> Instruction {
+    let mut instruction = mem_lea(base, dst, offset);
+    instruction.flags = length;
+    instruction
 }
 
 pub fn jmp(target_idx: u16) -> Instruction {
