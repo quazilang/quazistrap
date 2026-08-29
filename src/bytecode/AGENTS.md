@@ -45,6 +45,13 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 - Magic: `\x00QZI`
 - Version: `0x07` (readers retain compatible v2-v6 bytecode; v1 omitted
   required frame metadata and parameterized v6 trait interfaces need rebuilding)
+
+Immutable golden fixtures from real historical writers (v2-v6) live in
+`src/bytecode/fixtures/qzi/` with provenance in their README; `golden_*` tests
+in `chunk.rs` lock the legacy reading paths against them. Era caveats: v2
+chunk headers have no flags byte (intrinsic/variadic/export marks default
+off), and v3 `@api` metadata is a plain string constant with `@export` names
+never persisted.
 - section directory: metadata, public interface, symbolic call relocations, bytecode
 - metadata identifies package name/version, executable/library kind, and entry signature
 - bytecode embeds a validated v5 chunk stream: names, parameters, registers,
@@ -172,7 +179,7 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 
 ### Non-Slice Iterator (`ForLoop::Each` on non-slice)
 
-- `Array[T]` is special-cased to compile as an index loop (`len()` + `get()`). The typechecker records `Array.len`/`Array.get` monomorphizations so the specialized chunks exist in `fn_index`; codegen falls back to the unmangled name if the mangled one is missing.
+- `Array[T]` is special-cased to compile as an index loop (`len()` + `get()`). The typechecker records `Array.len`/`Array.get` monomorphizations so the specialized chunks exist in `fn_index`; codegen falls back to the unmangled name if the mangled one is missing. Note: the type checker currently accepts only fixed arrays and slices as iterables and rejects named `Array[T]` with `S01`, so this path is dormant until named iterables are re-admitted deliberately.
 - `for i : &arr` strips the `Ref` and iterates the inner value directly.
 - Other `Named` types use `has_next()` / `next()` protocol with `Option[T]` unwrapping.
 - `Dyn` trait objects use vtable dispatch.

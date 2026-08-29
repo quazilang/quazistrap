@@ -85,8 +85,16 @@ Object (`-c`): backend only, no linker.
 internal Quazi bytecode ABI. Resolve aliases and substitute generics before
 querying it. Do not infer copyability from a one-slot layout: named aggregates,
 enums, `String`, `fn`, and `dyn` are indirect handles with separate ownership
-requirements. Concrete generic specializations must validate parameters,
-variadic elements, and results against this model before code generation.
+requirements (`MoveKind`). Concrete functions and generic specializations
+record their parameter, variadic-element, and result layouts into
+`SemanticReport::fn_value_layouts` (keyed by canonical resolved type
+arguments) during analysis, and until the multi-slot ABI lands, storage
+positions that still hold one slot per value — function signatures, enum
+payloads, struct fields outside `@repr(C)`, and fixed-array elements — reject
+multi-register shapes with `S14`. Qualified enum constructor calls
+(`Option.Some(x)`) are validated in analysis (variant, arity, payload
+representation) even though their result remains untyped until semantic
+constructor resolution exists.
 
 ### Loader (`src/loader.rs`)
 
@@ -100,7 +108,7 @@ variadic elements, and results against this model before code generation.
 
 - `quazi.toml`: `[package]` including `out_dir = "build"`, `[lib]`, `[[bin]]`, `[dependencies]`, `[cc]`, `[link]`, and target link overrides. Dependencies support local projects, singular `.qz`, compiled `.qzi`, and internet `git`/`archive`/`source`/`qzi` sources. `quazi.lock` records exact revisions/checksums and is validated on build.
 - `pub import` is the only public-import/re-export syntax. Quazi module and symbol paths use `.`, never `::`.
-- QZI v7 is a sectioned executable/library bytecode container with package metadata, a public source interface, named call relocations, signedness-correct integer instruction flags, affine function-value ownership, and legacy chunk payloads. Readers retain compatible QZI v2-v6 bytecode; v1 omitted frame metadata, parameterized v6 trait interfaces lack receiver metadata, and pre-v7 public function-value contracts or synthetic closure/forwarder chunks require a source rebuild. QZI libraries work without original source; generic template bodies remain source-only for now.
+- QZI v7 is a sectioned executable/library bytecode container with package metadata, a public source interface, named call relocations, signedness-correct integer instruction flags, affine function-value ownership, and legacy chunk payloads. Readers retain compatible QZI v2-v6 bytecode; v1 omitted frame metadata, parameterized v6 trait interfaces lack receiver metadata, and pre-v7 public function-value contracts or synthetic closure/forwarder chunks require a source rebuild. Immutable golden fixtures from real historical writers (`src/bytecode/fixtures/qzi/`) lock the v2-v6 reading paths, including the v2 chunk-header layout without a flags byte and v3 string-based `@api` metadata. QZI libraries work without original source; generic template bodies remain source-only for now.
 - QZC v5 (`build/quazi/<target>/<artifact>/incremental.qzc` by default) stores exact-hit linked QZI plus source-hashed pre-WPO function chunks. Partial misses restore unchanged chunks, compile changed files, then rerun full-program WPO. V5 invalidates artifacts created before concrete generic internal-ABI shapes were validated. Signature/type/import/config changes conservatively invalidate all chunks. Downloaded dependencies live in `<out_dir>/deps`.
 - `type = "lib"` → lib project; default entry `src/lib.qz`; default output `.qzi`.
 

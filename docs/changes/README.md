@@ -12,3 +12,5 @@ tests or examples establishing behavior.
 - [Unsigned integer lowering](2026-08-29-unsigned-integer-lowering.md)
 - [Affine closure environments](2026-08-29-closure-ownership.md)
 - [Generic value-shape validation](2026-08-29-generic-value-shapes.md)
+- [QZI historical golden fixtures and the v2 chunk-header fix](2026-08-30-qzi-golden-fixtures.md)
+- [Value-layout recording and the remaining one-slot gates](2026-08-30-value-layout-recording.md)

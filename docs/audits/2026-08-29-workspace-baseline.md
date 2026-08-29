@@ -205,6 +205,19 @@ before code generation, and QZC v5 invalidates cached bytecode that predates the
 check. This closes silent truncation but does not resolve owned handle access or
 recursive destruction; the P0 remains open pending D-001 and D-003.
 
+Checkpoint status (2026-08-30, phase 1 of the approved D-001 full route): every
+concrete function and generic specialization records its resolved
+parameter/variadic/result layout and plain-copy/owner kind into
+`SemanticReport::fn_value_layouts` (canonical keys, not mangled names). The
+remaining one-slot storage positions — enum payloads, struct fields outside
+`@repr(C)`, nested fixed-array literals, and constructor payloads on the bare,
+contextual, and qualified paths — now reject multi-register shapes with `S14`,
+closing the last silent-truncation holes without an ABI change. Qualified enum
+constructor calls (`Option.Nope(5)`) now fail in analysis instead of reaching
+an internal code-generation error. Phases 2-4 (multi-slot ABI with QZI v8/QZC
+v6, structural destruction, ownership-correct element APIs + std migration)
+remain open per `docs/internals/generic-storage-layout.md`.
+
 Verification: fixed-array and slice-like element tests, nested owned handles,
 growth/reallocation, replacement, removal, early return, and exact destructor
 counts under native and bytecode paths. A native probe confirmed that an
@@ -339,6 +352,15 @@ generic signatures, and non-register ABI types; focused and full compiler tests
 pass. `CallExt`, `CallCReg`, and syscall instructions now reject constant-pool
 metadata of the wrong kind before serialization or backend lowering.
 Deterministic allocation failure remains open.
+
+Checkpoint status (2026-08-30): immutable golden fixtures from real historical
+writers (v2-v6, with per-artifact provenance in `src/bytecode/fixtures/qzi/`)
+now lock the legacy reading paths. They exposed one confirmed reader bug —
+the v2 chunk header predates the flags byte, but the reader assumed the v3+
+layout and rejected every real v2 artifact — which is fixed and covered by the
+fixture tests. The fixtures also documented authentic v3 behavior (string
+`CallExt` metadata, no persisted `@export` symbols); see
+[the golden-fixture change record](../changes/2026-08-30-qzi-golden-fixtures.md).
 
 ### P1 — Documentation, site, LSP, and editors are incomplete
 

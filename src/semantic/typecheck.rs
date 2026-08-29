@@ -7,14 +7,60 @@ use crate::parser::ast::*;
 use super::*;
 
 impl Analyzer {
-    fn validate_specialized_internal_abi(
+    /// Record the resolved internal-ABI value layout of a generic
+    /// specialization (or, with empty `type_args`, a concrete function) so
+    /// code generation can stop assuming one slot per value, then enforce the
+    /// current gate: until the multi-slot internal ABI lands, non-single-slot
+    /// parameters and results remain S14 errors. Records are keyed by the
+    /// canonical resolved type arguments rather than the lossy mangled name.
+    fn record_fn_value_layout(
         &mut self,
         function: &str,
+        type_args: &[TypeKind],
         params: &[TypeKind],
         return_ty: Option<&TypeKind>,
-        _variadic: bool,
+        variadic: bool,
         span: Span,
     ) {
+        let key = if type_args.is_empty() {
+            function.to_string()
+        } else {
+            let args = type_args
+                .iter()
+                .map(|arg| {
+                    let resolved = self.resolve_type_aliases(arg);
+                    format!("{resolved}")
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{function}<{args}>")
+        };
+        let (fixed_params, variadic_element) = if variadic && !params.is_empty() {
+            (&params[..params.len() - 1], Some(&params[params.len() - 1]))
+        } else {
+            (params, None)
+        };
+        let record = crate::runtime_layout::FnValueLayout {
+            params: fixed_params
+                .iter()
+                .map(|param| {
+                    crate::runtime_layout::runtime_layout_info(&self.resolve_type_aliases(param))
+                })
+                .collect(),
+            variadic_element: variadic_element.map(|element| {
+                crate::runtime_layout::runtime_layout_info(&self.resolve_type_aliases(element))
+            }),
+            result: return_ty
+                .map(|ty| {
+                    crate::runtime_layout::runtime_layout_info(&self.resolve_type_aliases(ty))
+                })
+                .unwrap_or(crate::runtime_layout::LayoutInfo {
+                    layout: crate::runtime_layout::RuntimeValueLayout::Empty,
+                    move_kind: crate::runtime_layout::MoveKind::Plain,
+                }),
+        };
+        self.fn_value_layouts.insert(key, record);
+
         for param in params {
             let physical_ty = self.resolve_type_aliases(param);
             if !crate::runtime_layout::runtime_value_layout(&physical_ty).fits_single_slot() {
@@ -249,6 +295,41 @@ impl Analyzer {
                         base
                     }
                 };
+                // Record the resolved internal-ABI layout of ordinary concrete
+                // functions. Foreign functions follow the C ABI, and generic
+                // templates are recorded per specialization at call sites.
+                if !is_foreign && generic_params.is_empty() {
+                    let (fixed_params, variadic_element) = match params.last() {
+                        Some(last) if last.variadic => {
+                            let fixed = &params[..params.len() - 1];
+                            if erased_format_variadic {
+                                (fixed, None)
+                            } else {
+                                (fixed, Some(&last.ty.node))
+                            }
+                        }
+                        _ => (&params[..], None),
+                    };
+                    let record = crate::runtime_layout::FnValueLayout {
+                        params: fixed_params
+                            .iter()
+                            .map(|param| {
+                                crate::runtime_layout::runtime_layout_info(
+                                    &self.resolve_type_aliases(&param.ty.node),
+                                )
+                            })
+                            .collect(),
+                        variadic_element: variadic_element.map(|element| {
+                            crate::runtime_layout::runtime_layout_info(
+                                &self.resolve_type_aliases(element),
+                            )
+                        }),
+                        result: crate::runtime_layout::runtime_layout_info(
+                            &self.resolve_type_aliases(&return_ty.node),
+                        ),
+                    };
+                    self.fn_value_layouts.insert(fn_name.clone(), record);
+                }
                 let prev_module_path = self.current_module_path.clone();
                 self.current_module_path = self.module_path_for_span(item.span);
                 self.current_function.push(fn_name);
@@ -415,6 +496,23 @@ impl Analyzer {
                                 "field `{field_name}` in `{name}` cannot own a Quazi function value before closure environment destruction is recursive"
                             ),
                         );
+                    }
+                    // Plain Quazi aggregates store one slot per field; C
+                    // aggregates have a real layout solver and are exempt.
+                    if !self.repr_c_structs.contains(name) {
+                        let resolved = self.resolve_type_aliases(&field_ty.node);
+                        if !matches!(resolved, TypeKind::Error)
+                            && !crate::runtime_layout::runtime_value_layout(&resolved)
+                                .fits_single_slot()
+                        {
+                            self.push_error(
+                                field_ty.span,
+                                "S14",
+                                format!(
+                                    "field `{field_name}` in `{name}` cannot store `{resolved}` through the current one-slot aggregate representation"
+                                ),
+                            );
+                        }
                     }
                 }
                 if attributes.iter().any(|attr| attr.name == "opaque")
@@ -622,6 +720,21 @@ impl Analyzer {
                                 "S10",
                                 format!(
                                     "payload `{name}.{}` cannot own a Quazi function value before closure environment destruction is recursive",
+                                    variant.name
+                                ),
+                            );
+                        }
+                        // Enum storage reserves one slot per payload value.
+                        let resolved = self.resolve_type_aliases(&payload.node);
+                        if !matches!(resolved, TypeKind::Error)
+                            && !crate::runtime_layout::runtime_value_layout(&resolved)
+                                .fits_single_slot()
+                        {
+                            self.push_error(
+                                payload.span,
+                                "S14",
+                                format!(
+                                    "payload `{name}.{}` cannot store `{resolved}` through the current one-slot enum representation",
                                     variant.name
                                 ),
                             );
@@ -2041,6 +2154,21 @@ impl Analyzer {
             );
         }
 
+        if let Some(index) = payload_index {
+            let resolved = self.resolve_type_aliases(&expected_args[index].node);
+            if !matches!(resolved, TypeKind::Error)
+                && !crate::runtime_layout::runtime_value_layout(&resolved).fits_single_slot()
+            {
+                self.push_error(
+                    expr.span,
+                    "S14",
+                    format!(
+                        "{constructor} payload `{resolved}` cannot be stored through the current one-slot enum representation"
+                    ),
+                );
+            }
+        }
+
         if let (Some(index), Some(payload)) = (payload_index, args.first()) {
             let payload_eval =
                 self.type_check_expr_expected(payload, reachable, Some(&expected_args[index].node));
@@ -3277,8 +3405,9 @@ impl Analyzer {
                                                 .ty
                                                 .as_ref()
                                                 .map(|ty| substitute_type_kind(ty, &subst));
-                                            self.validate_specialized_internal_abi(
+                                            self.record_fn_value_layout(
                                                 &method_full,
+                                                &type_args,
                                                 &specialized_params,
                                                 specialized_return.as_ref(),
                                                 sym.variadic,
@@ -3332,6 +3461,82 @@ impl Analyzer {
                                 ),
                             );
                             return ExprEval::default();
+                        }
+                    }
+
+                    // Qualified enum constructor calls (`Option.Some(x)`,
+                    // `Shape.Circle(5.0)`) are lowered structurally by codegen
+                    // but have no semantic constructor resolution. Validate the
+                    // variant, its arity, and the one-slot payload
+                    // representation here; associated functions on the enum
+                    // type keep their normal resolution below.
+                    if let ExprKind::Ident(enum_name) = &object.node
+                        && self.enums.contains_key(enum_name.as_str())
+                        && matches!(
+                            self.resolve_symbol(enum_name).map(|symbol| symbol.kind),
+                            Some(SymbolKind::TypeName)
+                        )
+                    {
+                        let variant_arity = self
+                            .enums
+                            .get(enum_name.as_str())
+                            .and_then(|info| info.variants.get(method).copied());
+                        let has_associated_fn = self
+                            .resolve_symbol(&format!("{enum_name}.{method}"))
+                            .is_some();
+                        if variant_arity.is_some() || !has_associated_fn {
+                            match variant_arity {
+                                None => {
+                                    self.push_error(
+                                        expr.span,
+                                        "S04",
+                                        format!(
+                                            "enum `{enum_name}` has no variant or associated function `{method}`"
+                                        ),
+                                    );
+                                }
+                                Some(arity) => {
+                                    if arity != args.len() {
+                                        self.push_error(
+                                            expr.span,
+                                            "S08",
+                                            format!(
+                                                "{enum_name}.{method} expects exactly {arity} argument(s)"
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                            for arg in args {
+                                let arg_eval = self.type_check_expr(arg, reachable);
+                                if variant_arity.is_none() {
+                                    continue;
+                                }
+                                let Some(payload_ty) = &arg_eval.ty else {
+                                    continue;
+                                };
+                                let resolved = self.resolve_type_aliases(payload_ty);
+                                if !matches!(resolved, TypeKind::Error)
+                                    && !crate::runtime_layout::runtime_value_layout(&resolved)
+                                        .fits_single_slot()
+                                {
+                                    self.push_error(
+                                        arg.span,
+                                        "S14",
+                                        format!(
+                                            "{enum_name}.{method} payload `{resolved}` cannot be stored through the current one-slot enum representation"
+                                        ),
+                                    );
+                                }
+                            }
+                            // Keep the historical untyped result: codegen
+                            // resolves valid qualified constructors
+                            // structurally. Typing them in analysis is a
+                            // separate feature.
+                            let eval = ExprEval::default();
+                            self.annotate_expr(expr, &eval, reachable, None);
+                            self.reject_nested_owned_function_expression(expr, &eval);
+                            return eval;
                         }
                     }
 
@@ -3601,8 +3806,9 @@ impl Analyzer {
                                 if !type_args.is_empty() {
                                     let type_kinds: Vec<TypeKind> =
                                         type_args.iter().map(|t| t.node.clone()).collect();
-                                    self.validate_specialized_internal_abi(
+                                    self.record_fn_value_layout(
                                         &mangled,
+                                        &type_kinds,
                                         &substituted_params,
                                         ret_ty.as_ref(),
                                         is_variadic,
@@ -3997,6 +4203,27 @@ impl Analyzer {
                                 );
                                 let concrete_expected =
                                     substitute_type_kind(expected_ty, &substitution);
+                                // Generic struct instantiation can produce a
+                                // field shape the declaration check could not
+                                // see; concrete structs are gated at declaration.
+                                if !generic_params.is_empty() {
+                                    let resolved_expected =
+                                        self.resolve_type_aliases(&concrete_expected);
+                                    if !matches!(resolved_expected, TypeKind::Error)
+                                        && !crate::runtime_layout::runtime_value_layout(
+                                            &resolved_expected,
+                                        )
+                                        .fits_single_slot()
+                                    {
+                                        self.push_error(
+                                            fval.span,
+                                            "S14",
+                                            format!(
+                                                "field '{fname}' cannot store `{resolved_expected}` through the current one-slot aggregate representation"
+                                            ),
+                                        );
+                                    }
+                                }
                                 if !self.types_compatible(got_ty, &concrete_expected) {
                                     self.push_error(
                                         fval.span,
@@ -4335,6 +4562,24 @@ impl Analyzer {
                             .to_string(),
                     );
                 }
+                // Fixed arrays are contiguous register blocks whose elements
+                // must each fit one slot; nested multi-slot elements are
+                // rejected until element layout drives storage.
+                if let Some(elem) = &elem_ty {
+                    let resolved = self.resolve_type_aliases(elem);
+                    if !matches!(resolved, TypeKind::Error)
+                        && !crate::runtime_layout::runtime_value_layout(&resolved)
+                            .fits_single_slot()
+                    {
+                        self.push_error(
+                            expr.span,
+                            "S14",
+                            format!(
+                                "fixed arrays cannot store `{resolved}` elements through the current one-slot element representation"
+                            ),
+                        );
+                    }
+                }
                 let elem_spanned = elem_ty
                     .clone()
                     .map(|k| crate::parser::ast::Spanned::new(k, expr.span));
@@ -4425,17 +4670,18 @@ impl Analyzer {
                             .as_ref()
                             .map(|ty| substitute_type_kind(ty, &substitution));
                         if !substitution.is_empty() {
-                            self.validate_specialized_internal_abi(
+                            let type_args: Vec<TypeKind> = generic_params
+                                .iter()
+                                .filter_map(|param| substitution.get(param).cloned())
+                                .collect();
+                            self.record_fn_value_layout(
                                 &mangled,
+                                &type_args,
                                 &substituted_params,
                                 return_ty.as_ref(),
                                 sym.variadic,
                                 expr.span,
                             );
-                            let type_args: Vec<TypeKind> = generic_params
-                                .iter()
-                                .filter_map(|param| substitution.get(param).cloned())
-                                .collect();
                             if type_args.len() == generic_params.len() {
                                 let mono_name = mangle_monomorphized(&mangled, &type_args);
                                 if !self
@@ -4829,6 +5075,19 @@ impl Analyzer {
             }
             let payload = arg_evals[0].ty.clone().unwrap_or(TypeKind::Error);
             let span = args.first().map_or(callee_span, |arg| arg.span);
+            let resolved_payload = self.resolve_type_aliases(&payload);
+            if !matches!(resolved_payload, TypeKind::Error)
+                && !crate::runtime_layout::runtime_value_layout(&resolved_payload)
+                    .fits_single_slot()
+            {
+                self.push_error(
+                    span,
+                    "S14",
+                    format!(
+                        "{constructor} payload `{resolved_payload}` cannot be stored through the current one-slot enum representation"
+                    ),
+                );
+            }
             let type_args = match constructor {
                 "Some" => vec![Spanned::new(payload, span)],
                 "Ok" => vec![
@@ -5105,8 +5364,10 @@ impl Analyzer {
         };
 
         if !subst.is_empty() {
-            self.validate_specialized_internal_abi(
+            let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
+            self.record_fn_value_layout(
                 name,
+                &type_kinds,
                 &substituted_params,
                 return_ty.as_ref(),
                 is_variadic,
@@ -5931,13 +6192,48 @@ impl Analyzer {
                     if type_kinds.is_empty() {
                         self.add_dependency_edge(DependencyKind::Call, &from, "Array.set");
                     } else {
-                        self.validate_specialized_internal_abi(
-                            "Array.set",
-                            &type_kinds,
-                            None,
-                            false,
-                            target.span,
-                        );
+                        // Record the real `Array.set` signature with the
+                        // receiver's generics substituted, not only the
+                        // element type, so the layout record is complete.
+                        let set_signature = self.resolve_symbol("Array.set").map(|symbol| {
+                            (symbol.params.clone(), symbol.ty.clone(), symbol.variadic)
+                        });
+                        let array_generic_params = self
+                            .struct_generic_params
+                            .get("Array")
+                            .cloned()
+                            .unwrap_or_default();
+                        if let Some((params, return_ty, variadic)) = set_signature {
+                            let substitution: std::collections::HashMap<String, TypeKind> =
+                                array_generic_params
+                                    .iter()
+                                    .cloned()
+                                    .zip(type_kinds.iter().cloned())
+                                    .collect();
+                            let substituted_params: Vec<TypeKind> = params
+                                .iter()
+                                .map(|param| substitute_type_kind(param, &substitution))
+                                .collect();
+                            let substituted_return =
+                                return_ty.map(|ty| substitute_type_kind(&ty, &substitution));
+                            self.record_fn_value_layout(
+                                "Array.set",
+                                &type_kinds,
+                                &substituted_params,
+                                substituted_return.as_ref(),
+                                variadic,
+                                target.span,
+                            );
+                        } else {
+                            self.record_fn_value_layout(
+                                "Array.set",
+                                &type_kinds,
+                                &type_kinds,
+                                None,
+                                false,
+                                target.span,
+                            );
+                        }
                         let mangled = mangle_monomorphized("Array.set", &type_kinds);
                         if !self
                             .monomorphizations

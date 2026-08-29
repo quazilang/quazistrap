@@ -7,26 +7,53 @@ resolved before dependent implementation and documentation can be called stable.
 
 ## D-001: generic value layout
 
-Choose between compiler-sized inline generic storage, boxed generic elements, or
-an explicit temporary restriction to one-word plain-copy values. Word width
-alone is insufficient: ordinary Quazi aggregates are one-word heap handles, but
-shallowly loading one creates another apparent owner. Full support therefore
-needs per-monomorphization size/alignment/move/drop metadata and ownership-correct
-APIs (`get` must borrow or clone; `take` may transfer). That requires an ABI/QZI
-layout design. The restriction is safer short-term but source-breaking for
-owned-element uses in the standard library.
+Resolved 2026-08-29: **full runtime-layout implementation**. Generic storage
+gains per-monomorphization size/alignment/move/drop metadata, an ABI that no
+longer truncates multi-register values, ownership-correct element access
+(`get` borrows or clones; `take` transfers), and recursive drop glue. The
+change crosses the internal ABI, so QZI/QZC boundaries are bumped with it and
+legacy artifacts require a source rebuild. Depends on D-002 (receiver
+ownership) and D-003 (destruction model), both resolved below.
+
+Original question: compiler-sized inline generic storage, boxed generic
+elements, or an explicit temporary restriction to one-word plain-copy values.
+Word width alone is insufficient: ordinary Quazi aggregates are one-word heap
+handles, but shallowly loading one creates another apparent owner. Full support
+therefore needs per-monomorphization size/alignment/move/drop metadata and
+ownership-correct APIs (`get` must borrow or clone; `take` may transfer). That
+requires an ABI/QZI layout design. The restriction is safer short-term but
+source-breaking for owned-element uses in the standard library.
 
 ## D-002: receiver ownership
 
-Decide whether ordinary `self: T` methods borrow, consume, or depend on an
-explicit receiver marker. Mutation-returning owners such as `map = map.insert()`
-cannot be made sound until receiver and return ownership are unambiguous.
+Resolved 2026-08-29: **explicit receiver markers**. `self: &T` takes a shared
+borrow, `self: &mut T` takes an exclusive mutable borrow, and a plain
+`self: T` consumes the receiver by move. Ownership is therefore unambiguous at
+every call site, and mutating methods no longer need to return shallow owner
+copies (the unsound `map = map.insert()` idiom). Standard-library signatures
+migrate mechanically; this extends the conservative reference model rather
+than adding a new concept.
+
+Original question: decide whether ordinary `self: T` methods borrow, consume,
+or depend on an explicit receiver marker. Mutation-returning owners such as
+`map = map.insert()` cannot be made sound until receiver and return ownership
+are unambiguous.
 
 ## D-003: destruction and explicit close
 
-Define whether destruction is structural, trait-based, or both; its order; move
-suppression; behavior on assignment/return/panic/thread exit; and how explicit
-`close`/`free` prevents later automatic destruction.
+Resolved 2026-08-29: **structural destruction with a Drop hook**. The compiler
+recursively destroys owned fields in reverse declaration order; an explicit
+`Drop` hook (the existing `free(self)` convention formalized) runs first for
+the aggregate itself. Moves and reassignment keep exactly-once semantics: the
+replaced value is destroyed before the new one is installed, and moved-from
+values are suppressed. Calling `free()` explicitly acts as a move-out that
+suppresses later automatic destruction. Panic terminates the process without
+unwinding, so destructor guarantees apply to normal control flow only; this is
+documented behavior, not an implicit promise.
+
+Original question: define whether destruction is structural, trait-based, or
+both; its order; move suppression; behavior on assignment/return/panic/thread
+exit; and how explicit `close`/`free` prevents later automatic destruction.
 
 ## D-004: compatibility and stability
 

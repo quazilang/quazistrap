@@ -8,8 +8,7 @@ target/*
 *.pdb
 *.exe
 *.qzi
-*.s
-*.o
+*.qzc
 .idea/*
 .claude/*
 .cargo/*

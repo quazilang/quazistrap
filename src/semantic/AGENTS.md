@@ -27,7 +27,25 @@ Five sequential passes:
 `Some`, `None`, `Ok`, and `Err` inherit a surrounding `Option`/`Result` type.
 An unconstrained partial `Result` constructor is rejected instead of reaching
 code generation with an unknown payload. Pattern bindings recover builtin
-generic payload types from the scrutinee.
+generic payload types from the scrutinee. Qualified constructor calls
+(`Option.Some(x)`, `Enum.Variant(x)`) are validated for variant existence,
+arity, and one-slot payload representation, but their result stays untyped
+until semantic constructor resolution exists; codegen lowers them
+structurally.
+
+## Value-Shape Gates
+
+One slot per value is the current internal storage contract outside register
+blocks. While the multi-slot ABI is unimplemented, analysis rejects
+multi-register shapes with `S14` in every storage position: function
+parameters and results (concrete and specialized), enum payload declarations
+and constructor payloads (bare, contextual, and qualified paths), struct
+fields outside `@repr(C)` (which has a real layout solver), generic struct
+instantiations, and fixed-array literals with multi-slot elements. Ordinary
+functions and specializations record their resolved parameter, variadic
+element, result, and plain-copy/owner kinds into
+`SemanticReport::fn_value_layouts` for the phase-2 ABI work, keyed by
+canonical resolved type arguments (mangling is not injective).
 
 ## Warning Suppression
 

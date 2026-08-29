@@ -134,6 +134,9 @@ pub struct Analyzer {
     pub(super) current_module_path: Option<String>,
     /// Monomorphization requests recorded during type checking.
     pub(super) monomorphizations: Vec<MonomorphizationInfo>,
+    /// Recorded internal-ABI value layouts per function (see the matching
+    /// `SemanticReport` field).
+    pub(super) fn_value_layouts: HashMap<String, crate::runtime_layout::FnValueLayout>,
     /// Expected expression types supplied by surrounding annotations/returns.
     /// The innermost entry provides generic constructor context such as
     /// `var values: Array[i32] = Array.new()`.
@@ -585,6 +588,7 @@ impl Analyzer {
             current_fn_name_override: None,
             current_module_path: None,
             monomorphizations: Vec::new(),
+            fn_value_layouts: HashMap::new(),
             contextual_expected_types: Vec::new(),
             type_aliases: std::collections::HashMap::new(),
             fn_param_names: HashMap::new(),
@@ -873,6 +877,7 @@ impl Analyzer {
                 .collect(),
             struct_generic_params: self.struct_generic_params.clone(),
             monomorphizations: std::mem::take(&mut self.monomorphizations),
+            fn_value_layouts: std::mem::take(&mut self.fn_value_layouts),
             type_aliases: self.type_aliases.clone(),
             fn_param_names: self.fn_param_names.clone(),
             exported_symbols: self.exported_symbols.clone(),
@@ -925,6 +930,7 @@ impl Analyzer {
         self.trait_method_slots.clear();
         self.trait_method_signatures.clear();
         self.monomorphizations.clear();
+        self.fn_value_layouts.clear();
         self.contextual_expected_types.clear();
         self.type_aliases.clear();
         self.fn_param_names.clear();
@@ -1198,9 +1204,24 @@ impl Analyzer {
         current_scope.insert(name, symbol);
     }
 
+    /// Whether `name` refers to a declared type (struct, enum, trait, or
+    /// alias-introduced type name) rather than a generic parameter of the
+    /// function currently being checked.
+    pub(super) fn is_declared_type_name(&self, name: &str) -> bool {
+        if self
+            .current_generic_params
+            .iter()
+            .flatten()
+            .any(|param| param == name)
+        {
+            return false;
+        }
+        self.resolve_symbol(name)
+            .is_some_and(|symbol| matches!(symbol.kind, SymbolKind::TypeName))
+    }
+
     /// Recursively expand type aliases in a TypeKind.
-    pub(super) fn resolve_type_aliases(&self, ty: &TypeKind) -> TypeKind {
-        match ty {
+    pub(super) fn resolve_type_aliases(&self, ty: &TypeKind) -> TypeKind {        match ty {
             TypeKind::Named { name, type_args } => {
                 let alias_entry = self.type_aliases.get(name).or_else(|| {
                     // Dotted name like "ffi.c_int": also try the leaf segment "c_int".
@@ -1225,8 +1246,23 @@ impl Analyzer {
                     let substituted = substitute_type_kind(aliased, &map);
                     self.resolve_type_aliases(&substituted)
                 } else {
+                    // A module-qualified reference to a type declared under
+                    // its leaf name (`fs.FsError` for `pub enum FsError` in
+                    // module `fs`) canonicalizes to the declaration name,
+                    // mirroring the alias leaf fallback above.
+                    let canonical = if name.contains('.') {
+                        name.rsplit('.').next().and_then(|leaf| {
+                            if self.is_declared_type_name(leaf) {
+                                Some(leaf.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
                     TypeKind::Named {
-                        name: name.clone(),
+                        name: canonical.unwrap_or_else(|| name.clone()),
                         type_args: type_args
                             .iter()
                             .map(|t| Spanned::new(self.resolve_type_aliases(&t.node), t.span))
@@ -3184,6 +3220,335 @@ fn main() void {
     }
 
     #[test]
+    fn multi_slot_enum_payloads_are_rejected() {
+        let report = analyze(
+            r#"
+enum Wrap { Val([i32; 3]), }
+
+fn main() void { ret; }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.code == "S14"
+                    && error.message.contains("Wrap.Val")
+                    && error.message.contains("one-slot enum representation")
+            }),
+            "multi-slot enum payload reached codegen: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn multi_slot_struct_fields_are_rejected() {
+        let report = analyze(
+            r#"
+struct Bad { data: [i32; 3], }
+
+fn main() void { ret; }
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.code == "S14"
+                    && error.message.contains("data")
+                    && error.message.contains("one-slot aggregate representation")
+            }),
+            "multi-slot struct field reached codegen: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn repr_c_aggregate_fields_keep_their_real_layout() {
+        let report = analyze(
+            r#"
+@repr(C)
+struct Vec3 { data: [i32; 3], }
+
+fn main() void {
+    var v = Vec3 { data: [1, 2, 3] };
+}
+"#,
+        );
+        assert!(
+            !report.errors.iter().any(|error| {
+                error.code == "S14" && error.message.contains("one-slot aggregate representation")
+            }),
+            "@repr(C) array fields must keep their real layout: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn nested_fixed_array_literals_are_rejected() {
+        let report = analyze(
+            r#"
+fn main() void {
+    var matrix = [[1, 2], [3, 4]];
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.code == "S14" && error.message.contains("one-slot element representation")
+            }),
+            "nested fixed-array literal reached codegen: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn multi_slot_option_payloads_are_rejected() {
+        let contextual = analyze(
+            r#"
+fn main() void {
+    var value: Option[[i32; 3]] = Some([1, 2, 3]);
+}
+"#,
+        );
+        assert!(
+            contextual.errors.iter().any(|error| {
+                error.code == "S14" && error.message.contains("one-slot enum representation")
+            }),
+            "contextual multi-slot Option payload reached codegen: {:?}",
+            contextual.errors
+        );
+
+        let direct = analyze(
+            r#"
+fn main() void {
+    var value = Some([1, 2, 3]);
+}
+"#,
+        );
+        assert!(
+            direct.errors.iter().any(|error| {
+                error.code == "S14" && error.message.contains("one-slot enum representation")
+            }),
+            "direct multi-slot Option payload reached codegen: {:?}",
+            direct.errors
+        );
+
+        let qualified = analyze(
+            r#"
+fn main() void {
+    var value = Option.Some([1, 2, 3]);
+}
+"#,
+        );
+        assert!(
+            qualified.errors.iter().any(|error| {
+                error.code == "S14" && error.message.contains("one-slot enum representation")
+            }),
+            "qualified multi-slot Option payload reached codegen: {:?}",
+            qualified.errors
+        );
+    }
+
+    #[test]
+    fn qualified_enum_constructors_are_validated_in_analysis() {
+        let unknown_variant = analyze(
+            r#"
+fn main() void {
+    var value = Option.Nope(5);
+}
+"#,
+        );
+        assert!(
+            unknown_variant.errors.iter().any(|error| {
+                error.code == "S04"
+                    && error
+                        .message
+                        .contains("has no variant or associated function `Nope`")
+            }),
+            "unknown qualified variant must fail in analysis, not codegen: {:?}",
+            unknown_variant.errors
+        );
+
+        let arity = analyze(
+            r#"
+fn main() void {
+    var value = Option.Some(1, 2);
+}
+"#,
+        );
+        assert!(
+            arity.errors.iter().any(|error| {
+                error.code == "S08" && error.message.contains("expects exactly 1 argument")
+            }),
+            "qualified constructor arity must fail in analysis: {:?}",
+            arity.errors
+        );
+
+        let valid = analyze(
+            r#"
+fn divide(a: i32, b: i32) Option[i32] {
+    if (b == 0) { ret Option.None; }
+    ret Option.Some(a / b);
+}
+
+fn main() void {
+    var value = divide(10, 3);
+}
+"#,
+        );
+        assert!(
+            valid.errors.is_empty(),
+            "valid qualified constructors keep working: {:?}",
+            valid.errors
+        );
+    }
+
+    #[test]
+    fn generic_struct_instantiation_cannot_smuggle_multi_slot_fields() {
+        let report = analyze(
+            r#"
+struct Pocket[T] { value: T, }
+
+fn main() void {
+    var p = Pocket { value: [1, 2, 3] };
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.code == "S14"
+                    && error.message.contains("value")
+                    && error.message.contains("one-slot aggregate representation")
+            }),
+            "generic struct instantiation with multi-slot field reached codegen: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn fn_value_layouts_are_recorded_for_concrete_and_specialized_functions() {
+        let report = analyze(
+            r#"
+fn identity[T](value: T) T { ret value; }
+
+fn add(a: i32, b: i32) i32 { ret a + b; }
+
+fn collect(...items: i32) void { ret; }
+
+fn main() void {
+    var x = identity[i32](add(1, 2));
+    collect(x, 3);
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
+        let identity = report
+            .fn_value_layouts
+            .get("identity<i32>")
+            .expect("specialization layout recorded");
+        assert_eq!(identity.params.len(), 1);
+        assert_eq!(
+            identity.params[0].layout,
+            crate::runtime_layout::RuntimeValueLayout::Slot
+        );
+        assert_eq!(
+            identity.result.layout,
+            crate::runtime_layout::RuntimeValueLayout::Slot
+        );
+        let add = report
+            .fn_value_layouts
+            .get("add")
+            .expect("concrete function layout recorded");
+        assert_eq!(add.params.len(), 2);
+        let collect = report
+            .fn_value_layouts
+            .get("collect")
+            .expect("variadic function layout recorded");
+        assert!(collect.params.is_empty());
+        assert_eq!(
+            collect.variadic_element.map(|element| element.layout),
+            Some(crate::runtime_layout::RuntimeValueLayout::Slot)
+        );
+    }
+
+    #[test]
+    fn array_set_layout_records_the_real_signature() {
+        let report = analyze(
+            r#"
+struct Array[T] { marker: usize, }
+
+impl Array[T] {
+    fn new() Array[T] { ret Array { marker: 0 }; }
+
+    fn set(self: Array[T], idx: usize, val: T) void { ret; }
+}
+
+fn main() void {
+    var values: Array[i32] = Array.new();
+    values[0] = 1;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
+        let set = report
+            .fn_value_layouts
+            .get("Array.set<i32>")
+            .expect("Array.set specialization layout recorded");
+        assert_eq!(
+            set.params.len(),
+            3,
+            "Array.set must record receiver, index, and value: {:?}",
+            set.params
+        );
+        assert!(
+            set.params
+                .iter()
+                .all(|param| param.layout == crate::runtime_layout::RuntimeValueLayout::Slot)
+        );
+        assert_eq!(
+            set.params[2].move_kind,
+            crate::runtime_layout::MoveKind::Plain
+        );
+    }
+
+    #[test]
+    fn array_set_layout_marks_owned_elements() {
+        let report = analyze(
+            r#"
+struct String { marker: usize, }
+
+struct Array[T] { marker: usize, }
+
+impl Array[T] {
+    fn new() Array[T] { ret Array { marker: 0 }; }
+
+    fn set(self: Array[T], idx: usize, val: T) void { ret; }
+}
+
+fn main() void {
+    var values: Array[String] = Array.new();
+    var word = String { marker: 0 };
+    values[0] = word;
+}
+"#,
+        );
+        let set = report
+            .fn_value_layouts
+            .get("Array.set<String>")
+            .expect("Array.set[String] specialization layout recorded");
+        assert_eq!(set.params.len(), 3);
+        assert_eq!(
+            set.params[2].move_kind,
+            crate::runtime_layout::MoveKind::Owned
+        );
+    }
+
+    #[test]
     fn unrelated_named_types_are_not_compatible() {
         let report = analyze(
             r#"
@@ -3902,6 +4267,30 @@ fn invoke(value: dyn Apply) i32 { ret value.apply(|item| item + 1); }
             module_report.errors.is_empty(),
             "module-qualified calls should provide closure parameter types: {:?}",
             module_report.errors
+        );
+    }
+
+    #[test]
+    fn module_qualified_type_references_canonicalize_to_the_declaration() {
+        let report = analyze_module_pair(
+            r#"
+pub enum FsError { NotFound, Other, }
+
+pub fn read_file(path: str) Result[String, FsError] {
+    ret Result.Err(FsError.NotFound);
+}
+"#,
+            r#"
+import helpers;
+fn main() void {
+    const read: Result[String, helpers.FsError] = helpers.read_file("/proc/version");
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "module-qualified type annotation should unify with the declaration: {:?}",
+            report.errors
         );
     }
 

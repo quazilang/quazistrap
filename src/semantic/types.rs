@@ -398,6 +398,12 @@ pub struct SemanticReport {
     pub struct_generic_params: HashMap<String, Vec<String>>,
     /// Monomorphization requests: function name → list of concrete type args used at call sites.
     pub monomorphizations: Vec<MonomorphizationInfo>,
+    /// Recorded internal-ABI value layouts per function, keyed by the internal
+    /// function name and, for generic specializations, the canonical resolved
+    /// type arguments (`name` or `name<arg1,arg2>`). Recorded during analysis
+    /// so code generation can stop assuming one slot per value; the phase-1
+    /// gates still reject non-single-slot signatures.
+    pub fn_value_layouts: HashMap<String, crate::runtime_layout::FnValueLayout>,
     /// Type aliases: alias name → (generic_params, aliased TypeKind).
     pub type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
     /// Ordered parameter names per function (mangled or plain): used for named-arg resolution.

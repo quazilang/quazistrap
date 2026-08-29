@@ -41,6 +41,67 @@ impl RuntimeValueLayout {
     pub fn fits_single_slot(self) -> bool {
         self.slot_count() == Some(1)
     }
+
+    /// Byte footprint of one value in container storage. The current internal
+    /// model stores every value in whole eight-byte slots, so this derives
+    /// from the slot count; sized per-type layouts arrive with the generic
+    /// storage milestone.
+    pub fn byte_size(self) -> Option<usize> {
+        self.slot_count().map(|slots| slots * 8)
+    }
+
+    /// Alignment of one value in container storage. Every internal value is
+    /// slot-aligned today.
+    pub fn align(self) -> Option<usize> {
+        self.slot_count().map(|_| 8)
+    }
+}
+
+/// Whether copying a value's slot bits produces an independent value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveKind {
+    /// A bit-copy is an independent value (scalars, immutable views, raw
+    /// pointers, C function pointers, borrows).
+    Plain,
+    /// A bit-copy creates a second apparent owner; the source must be
+    /// deactivated (named aggregates, `String`, `fn` environments, `dyn`).
+    Owned,
+}
+
+/// Recorded internal-ABI layout of one resolved type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutInfo {
+    pub layout: RuntimeValueLayout,
+    pub move_kind: MoveKind,
+}
+
+/// Recorded internal-ABI layout of a function signature after alias
+/// resolution and generic substitution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FnValueLayout {
+    /// One entry per fixed parameter, in declaration order.
+    pub params: Vec<LayoutInfo>,
+    /// The element layout of a trailing Quazi variadic parameter, if any.
+    pub variadic_element: Option<LayoutInfo>,
+    pub result: LayoutInfo,
+}
+
+/// Return whether a resolved source type can be duplicated by copying its
+/// slot bits.
+pub fn runtime_move_kind(ty: &TypeKind) -> MoveKind {
+    match ty {
+        TypeKind::Named { .. } | TypeKind::Fn { .. } | TypeKind::Dyn { .. } => MoveKind::Owned,
+        TypeKind::Array { elem_ty, .. } => runtime_move_kind(&elem_ty.node),
+        _ => MoveKind::Plain,
+    }
+}
+
+/// Return the recorded internal-ABI layout for a fully resolved source type.
+pub fn runtime_layout_info(ty: &TypeKind) -> LayoutInfo {
+    LayoutInfo {
+        layout: runtime_value_layout(ty),
+        move_kind: runtime_move_kind(ty),
+    }
 }
 
 /// Return the internal runtime layout for a fully resolved source type.
@@ -136,6 +197,62 @@ mod tests {
                 len: 2,
             }),
             RuntimeValueLayout::RegisterBlock { slots: 6 }
+        );
+    }
+
+    #[test]
+    fn move_kind_distinguishes_plain_copies_from_owners() {
+        assert_eq!(runtime_move_kind(&TypeKind::Int32), MoveKind::Plain);
+        assert_eq!(runtime_move_kind(&TypeKind::Str), MoveKind::Plain);
+        assert_eq!(
+            runtime_move_kind(&TypeKind::RawPtr {
+                inner: Box::new(ty(TypeKind::Uint8)),
+            }),
+            MoveKind::Plain
+        );
+        for owner in [
+            TypeKind::Named {
+                name: "String".to_string(),
+                type_args: vec![],
+            },
+            TypeKind::Fn {
+                params: vec![],
+                return_ty: Box::new(ty(TypeKind::Void)),
+            },
+            TypeKind::Dyn {
+                trait_name: "Display".to_string(),
+            },
+        ] {
+            assert_eq!(runtime_move_kind(&owner), MoveKind::Owned, "{owner:?}");
+        }
+        let owned_block = TypeKind::Array {
+            elem_ty: Box::new(ty(TypeKind::Named {
+                name: "String".to_string(),
+                type_args: vec![],
+            })),
+            len: 2,
+        };
+        assert_eq!(runtime_move_kind(&owned_block), MoveKind::Owned);
+    }
+
+    #[test]
+    fn layout_info_tracks_container_storage_facts() {
+        let block = runtime_layout_info(&TypeKind::Array {
+            elem_ty: Box::new(ty(TypeKind::Int64)),
+            len: 3,
+        });
+        assert_eq!(block.layout.byte_size(), Some(24));
+        assert_eq!(block.layout.align(), Some(8));
+        assert_eq!(block.move_kind, MoveKind::Plain);
+        let owner = runtime_layout_info(&TypeKind::Named {
+            name: "String".to_string(),
+            type_args: vec![],
+        });
+        assert_eq!(owner.layout.byte_size(), Some(8));
+        assert_eq!(owner.move_kind, MoveKind::Owned);
+        assert_eq!(
+            runtime_layout_info(&TypeKind::Void).layout.byte_size(),
+            Some(0)
         );
     }
 }

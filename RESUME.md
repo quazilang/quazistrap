@@ -4,168 +4,119 @@ Audience: the next assistant continuing the current `feat/test` worktree.
 
 ## Read first
 
-- `/home/nam/Projects/qz/RESUME.md`
-- `/home/nam/Projects/qz/AGENTS.md`
-- `/home/nam/Projects/qz/quazistrap/AGENTS.md`
-- `/home/nam/Projects/qz/quazistrap/src/semantic/AGENTS.md`
+- `/home/amapekibert/quazilang/RESUME.md`
+- `/home/amapekibert/quazilang/AGENTS.md`
+- `/home/amapekibert/quazilang/quazistrap/AGENTS.md`
+- `/home/amapekibert/quazilang/quazistrap/src/semantic/AGENTS.md`
 - the full active objective linked from the workspace resume
 
 Do not commit this checkpoint unless the user explicitly authorizes the exact
-commit scope. Preserve the many unrelated/prior dirty changes.
+commit scope. Preserve unrelated/prior dirty changes.
 
-## Implemented in this checkpoint
+Note: the rustup proxies were unreliable during this checkpoint. Use
+`$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin` directly for
+cargo/rustc (1.98.0).
 
-- Added internal parser AST `TypeKind::Error`; source syntax cannot produce it.
-- Preserved trait parameter names and full method signatures for dynamic calls
-  and QZI source interfaces.
-- Replaced prelude trait placeholder `any` results with `Self`.
-- Rejected runtime `any` in functions, fields, enums, traits, aliases, casts,
-  locals, globals, impl targets, and generic arguments.
-- Restricted `any` to a final variadic parameter on an explicit `@format`
-  function; its body cannot access the pseudo-parameter.
-- Removed universal `any` and broad named-type compatibility.
-- Added contextual closure typing for typed bindings, returns, assignments,
-  constructor payloads, and positional or named arguments across bare/module
-  functions, function values, inherent methods, and dynamic trait methods.
-- Made `Some`/`None`/`Ok`/`Err` inherit surrounding `Option`/`Result` types,
-  including closure payloads, and added a successful-analysis invariant that
-  rejects unresolved `Error` types before codegen.
-- Recovered concrete builtin enum payload types in match bindings.
-- Added dynamic trait signature preservation and object-safety checks.
-- Added a codegen invariant rejecting `Any`/`Error` expression annotations.
-- Added public QZI rejection for runtime `any`, while allowing erased `@format`
-  tails and preserving trait receiver parameter names.
-- Added user docs, migration/change records, decision D-010, and audit status.
+## Implemented in this checkpoint (2026-08-30, second entry)
+
+Phase 1 of the generic-storage design (`docs/internals/generic-storage-layout.md`):
+
+- `src/runtime_layout.rs`: `MoveKind` (Plain/Owned), `LayoutInfo`,
+  `FnValueLayout`, `byte_size`/`align` queries, with unit tests.
+- `SemanticReport::fn_value_layouts`: every concrete function and generic
+  specialization records resolved parameter/variadic-element/result layouts
+  during analysis (`record_fn_value_layout` in `typecheck.rs`). Keys are the
+  internal name plus canonical resolved type arguments (`identity<i32>`),
+  never the lossy mangled name. The `Array.set` index-assignment site now
+  resolves the real symbol signature instead of a synthetic element-only one;
+  concrete functions are recorded after `fn_name` resolution, excluding the
+  erased `@format` pseudo-parameter.
+- New `S14` gates (all guarded to skip the `Error` recovery type): enum
+  payload declarations, struct field declarations (exempting `@repr(C)`,
+  which has a real layout solver), fixed-array literals with multi-slot
+  elements, generic struct instantiations via `StructInit`, contextual sum
+  constructors, and direct `Some`/`Ok`/`Err` calls.
+- Qualified enum constructor calls (`Option.Some(x)`, `Shape.Circle(5.0)`)
+  are now validated in the `MethodCall` arm: unknown variant/associated
+  function → `S04`, wrong arity → `S08`, unstorable payload → `S14`.
+  Previously they fell through every resolution path into an untyped value
+  and could reach internal codegen errors (`Option.Nope(5)`). Valid
+  constructors keep the historical untyped result; the intercept preserves
+  `reject_nested_owned_function_expression` and associated-function
+  resolution on enum types.
+- Change record `docs/changes/2026-08-30-value-layout-recording.md`; audit,
+  design doc status, and AGENTS.md notes updated.
 
 ## Current verified state
 
-- Builtin constructor symbols now use internal `Error`, and contextual
-  constructor analysis happens before payload analysis. Constructor identity is
-  gated on the actual zero-span builtin symbol rather than a name suffix.
-- Bare/called unconstrained `None` now carries `Option[Error]`; the general
-  empty-enum generic wildcard was removed. Direct typed `None` remains valid.
-- `TraitMethodSignature` now stores method generics; trait symbols store trait
-  generics.
-- `validate_trait_impl_conformance` was added. It substitutes trait generics and
-  `Self`, assumes an implicit receiver when the trait declaration omits one,
-  requires every method, and checks exact runtime parameter/return shapes.
-- Dynamic calls reject generic traits, generic methods, non-receiver `Self`, and
-  `Self` returns.
-- Trait conformance rejects an unsafe implementation of a safe trait method, so
-  dynamic dispatch cannot bypass the unsafe-call boundary.
-- Direct named function arguments receive contextual parameter types, and
-  named-argument validation reuses the expected type.
-- Trait conformance compares the runtime signature and excludes the
-  compiler-erased final `@format ...args: any` pseudo-parameter.
-- QZI rejects public generic methods without source template bodies, imports
-  impl-only modules into materialized gateways, preserves v7 trait receiver
-  names, and explicitly rejects ambiguous parameterized trait interfaces or
-  public runtime-`any` interfaces from v6.
-- Linux thread spawn checks allocation and `pthread_create`, frees on failure,
-  and returns zero. Joining zero is a no-op on Linux and Windows.
-- Shared references now use a conservative lexical model: directional and
-  invariant compatibility, local/parameter-only address-of, no return/owned
-  storage/rebinding/closure capture, and function-long owner borrow protection.
-- Scalar address-of emits explicit one-slot `Lea` metadata; every current
-  codegen `Lea` has a nonzero block length. QZI rejects implicit metadata and
-  QZC v4 invalidates stale exact-hit caches and pre-ownership closure chunks.
-- Ref-to-ref casts preserve exact runtime shape. Shared-reference method calls
-  are rejected for direct, dereferenced, and parameter receivers until receiver
-  mutability exists. Generic arguments and match results cannot manufacture
-  references, and inferred owned locals participate in move-while-borrowed
-  checks.
-- Legacy QZI v2-v5 bytecode is scanned for missing `Lea` metadata before it can
-  enter the linker. Register compaction fills low free slots around high pinned
-  registers without saturating or aliasing.
+- `cargo test --offline`: 451/451 (439 baseline + layout unit tests + gate
+  and recorder tests).
+- All 34 example projects build; example 03 runs; 32-testing 6/6.
+- End-to-end probes: `Option[[i32; 3]]` rejected on bare/contextual/
+  qualified paths; `Option.Nope(5)` fails in analysis; declaration gates and
+  the `@repr(C)` exemption verified; nested array literals rejected.
+- `git diff --check` passes; owned files are rustfmt-clean (whole-repo fmt
+  remains red only on pre-existing unrelated sections).
 
-## Verification completed
+## Review status
 
-```text
-cargo test --offline semantic::tests
-cargo test --offline bytecode::interface::tests
-cargo test --offline
-git diff --check
-cargo fmt -- --check
-```
+The golden-fixture/v2-reader review and the design-doc adversarial review
+were reconciled earlier today. The phase-1 implementation diff is assigned
+to a fresh read-only review; reconcile before phase 2.
 
-The latest full suite passed 425/425. `git diff --check` passes. `cargo fmt --
---check` remains red on
-pre-existing dirty formatting differences; do not reformat unrelated files.
+## Next up
 
-`cargo fmt -- --check` already had unrelated formatting failures in
-`backend/target.rs`, `lexer/mod.rs`, `loader.rs`, and `parser/format.rs`, plus
-some prior dirty compiler sections. Do not run whole-repo formatting blindly;
-format only owned lines/files without rewriting unrelated user changes.
+1. Phase 2: consume `fn_value_layouts` — register-block parameters/results
+   in call sites and callee bodies, indirect fallback beyond the per-value
+   block cap, mangled-only dispatch with hard errors (incl. the two
+   Index-read fallthroughs), `size_of`/`align_of` intrinsics, stride-correct
+   prelude storage. QZI v8 and QZC v6 land here.
+2. Documented follow-up: qualified enum constructors are validated but
+   untyped; semantic constructor resolution would type them properly.
 
-```text
-cd examples/32-testing
-../../target/debug/qz test --no-color
-```
+## Current verified state
 
-This passed 6/6. The current CLI also built `/tmp/quazi-thread-project` as Linux
-ELF and Windows COFF objects. `examples/04-closures` also checks, builds, and
-runs with explicit closure binding types. A native register-pressure program
-under `/tmp/quazi-reference-project` also returns success through `&local`.
+- `cargo test --offline`: 439/439.
+- `git diff --check` passes.
+- `cargo fmt -- --check` remains red on pre-existing unrelated formatting
+  differences (`backend/target.rs`, `lexer/mod.rs`, `loader.rs`,
+  `parser/format.rs`, and prior dirty sections). Do not reformat unrelated
+  files; format only owned lines.
 
-## Remaining follow-up
+## Review status
 
-- Final read-only semantic and register-allocation re-reviews challenged the
-  reference checkpoint. Their cast, method, inferred-owner, generic/match,
-  legacy-QZI, high-pinned-register, regression-quality, and documentation
-  findings were implemented and covered by focused tests. The semantic review's
-  final aggregate-alias finding was also fixed, and both reviewers confirmed no
-  remaining blockers in the reference checkpoint scope.
-- Historical QZI v2-v5 compatibility still lacks immutable golden files. V1
-  omitted required frame metadata and now fails explicitly; v6 trait ambiguity
-  also fails cleanly instead of guessing.
-- Decide separately whether trait declarations should carry `@format` metadata
-  for variadic formatting through `dyn Write`; current conformance correctly
-  compares erased runtime shape, but this user-facing dynamic-call capability is
-  not established.
-## Closure ownership checkpoint
+Both checkpoint reviews completed and were reconciled:
 
-The closure P0 is now resolved conservatively:
+- Reader/fixture review: verified the v2 fix byte-exact against the v2 writer,
+  hand-checked every fixture assertion, and confirmed no downstream safety
+  hole from the v2 flags=0 default. Fixed its three findings: a duplicated v4
+  assertion (now asserts the real export-adapter chunk name), vacuous
+  v6-lib relocation wording (v6 executables now assert non-empty relocations;
+  docs corrected), and a missing cross-era link-conflict caveat in the README.
+- Design review: found five HIGH and five MEDIUM issues in the first design
+  draft (no size mechanism for prelude allocation; borrowed-`get` incoherent
+  with function-long borrows and reallocation; place-level move double-destroy;
+  QZI/QZC bumps misplaced at phase 4; unexpressible Clone-conditional APIs;
+  plus the enum-payload storage subsystem, `take` holes, template-elimination
+  breadth, the fake `Array.set` recorder signature, and doc-drift nits). The
+  design doc was revised to address all of them: `size_of`/`align_of`
+  intrinsics, an itemized six-piece borrowed-access machinery list with a
+  container-freeze rule, place-level move-suppression rules, QZI v8/QZC v6 at
+  phase 2, borrow-only `get`, shift-down `remove`, enum payload layout, and an
+  expanded std migration inventory.
 
-- `fn` values are affine environment owners. Passing, returning, and assigning
-  transfer ownership; calls borrow; self-assignment is rejected.
-- Scope exit, replacement, discarded function temporaries, immediately called
-  temporaries, and consumed function parameters emit environment cleanup.
-- Returned function owners are deactivated in the producer and freed by the
-  caller. Assignment statements no longer free the newly stored environment.
-- Closure chunks reserve hidden environment r0 and all user parameter registers
-  before allocating capture registers. Nested closure IDs are unique and
-  repeated named-function values share one forwarder.
-- Runtime callable signatures are exact. Captures, closure parameters, and
-  results are restricted to immutable plain scalars; owned `fn` values cannot be
-  nested in aggregates or supplied as generic arguments until recursive cleanup
-  exists.
-- Conditional moves, function-valued match results, and consuming assignment
-  expressions are rejected until cleanup state is path-sensitive. Same-shape
-  casts propagate ownership transfer.
-- QZC is v4 and excludes chunks that depend on synthetic closure/forwarder
-  companions from partial restoration. QZI v7 is the affine ownership boundary;
-  pre-v7 public callable contracts and legacy synthetic chunks require rebuild.
+## Next up
 
-Verification: `cargo test --offline` passes 425/425; the closure example runs;
-the native closure-pressure project runs successfully on Linux and emits a
-verified x86-64 COFF object for Windows; example 32 passes 6/6 tests; example 29
-checks and builds. Hugo-friendly language, memory, migration, change, audit, and
-maintainer Markdown has been updated without adding site machinery.
-
-The next audited P0 is generic `Array[T]`/`Box[T]` one-word storage and recursive
-destruction. Three independent closure reviews (code generation, semantics, and
-test design) completed their post-fix passes with no release blockers. Suggested
-future hardening includes a true two-file partial-cache link/run fixture and
-allocator instrumentation, but neither blocks this conservative checkpoint.
-
-The generic-storage investigation has started but implementation is intentionally
-paused at maintainer decision D-001. Native evidence confirms ordinary named
-structs survive `Array`/`Box` as heap handles; fixed `[i32; 3]` elements lose all
-but the first register. Owned handles remain unsound because `get` shallow-copies,
-`set` does not drop the replaced element, and `free` only releases the backing
-buffer. Merely changing the stride cannot repair this. The short-term safe route
-restricts canonical prelude `Array[T]`/`Box[T]` to plain-copy slot types but
-breaks `std.net.Headers`; the complete route requires runtime layout metadata,
-multi-register generic ABI, borrowed/cloning access, take semantics, and
-recursive drop glue with a QZI/cache boundary. The baseline audit and D-001
-Markdown now state this corrected evidence.
+1. Phase 1 of the generic-storage design: extend `src/runtime_layout.rs` into
+   a size/alignment/move/drop model; turn `validate_specialized_internal_abi`
+   (`src/semantic/typecheck.rs`) into a per-specialization layout recorder
+   keyed by canonical substituted types (concrete declarations included; the
+   `Array.set` call site must resolve the real signature; use the `_variadic`
+   hook); gate multi-slot enum payloads, struct fields, and nested fixed-array
+   literals with `S14`. No ABI change in phase 1.
+2. Phase 2 lands QZI v8 and QZC v6 together with register-block
+   parameters/results, mangled-only dispatch with hard errors (including the
+   two Index-read fallthroughs), and `size_of`/`align_of` intrinsics.
+3. Known design hazards are mapped in the design doc's Risks section; the
+   dormant `for x : array` path (type checker rejects named iterables) is now
+   documented in `src/bytecode/AGENTS.md`.

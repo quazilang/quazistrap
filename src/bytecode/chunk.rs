@@ -332,7 +332,7 @@ fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
     let chunk_count = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
 
-    let min_chunk_bytes = if version >= 2 { 12 } else { 8 };
+    let min_chunk_bytes = if version >= 3 { 12 } else { 11 };
     if chunk_count > buf.len().saturating_sub(pos) / min_chunk_bytes {
         return Err("QZI chunk count exceeds remaining file size".to_string());
     }
@@ -356,7 +356,11 @@ fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
 
         let (param_count, reg_count, intrinsic, variadic, c_variadic, has_export, native_unmangled) =
             if version >= 2 {
-                if buf.len() < pos + 4 {
+                // v2 writes only param_count + reg_count; the chunk flags byte
+                // (intrinsic/variadic/export marks) was introduced with v3, so
+                // v2 artifacts default to no flags.
+                let header_len = if version >= 3 { 4 } else { 3 };
+                if buf.len() < pos + header_len {
                     return Err("truncated chunk params/regs/flags".to_string());
                 }
                 let pc = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
@@ -364,8 +368,8 @@ fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
                     return Err(format!("QZI chunk parameter count {pc} exceeds 255"));
                 }
                 let rc = buf[pos + 2];
-                let flags = buf[pos + 3];
-                pos += 4;
+                let flags = if version >= 3 { buf[pos + 3] } else { 0 };
+                pos += header_len;
                 (
                     pc,
                     rc,
@@ -1874,5 +1878,178 @@ mod tests {
         syscall.emit_rrr(Opcode::Ret, 0, 0, 0);
         let error = serialize_qzi(&[syscall]).expect_err("syscall metadata must be validated");
         assert!(error.contains("non-negative number"));
+    }
+
+    // --- Historical golden fixtures ------------------------------------
+    // Immutable artifacts produced by historical compiler writers (provenance
+    // and regeneration instructions: fixtures/qzi/README.md). They lock the
+    // documented compatible-QZI v2-v6 reading paths against real evidence
+    // instead of synthetic header edits.
+
+    const GOLDEN_V2_MAIN: &[u8] = include_bytes!("fixtures/qzi/v2/main.qzi");
+    const GOLDEN_V2_LEA: &[u8] = include_bytes!("fixtures/qzi/v2/lea.qzi");
+    const GOLDEN_V3_MAIN: &[u8] = include_bytes!("fixtures/qzi/v3/main.qzi");
+    const GOLDEN_V3_LEA: &[u8] = include_bytes!("fixtures/qzi/v3/lea.qzi");
+    const GOLDEN_V3_FFI: &[u8] = include_bytes!("fixtures/qzi/v3/ffi.qzi");
+    const GOLDEN_V4_MAIN: &[u8] = include_bytes!("fixtures/qzi/v4/main.qzi");
+    const GOLDEN_V4_LEA: &[u8] = include_bytes!("fixtures/qzi/v4/lea.qzi");
+    const GOLDEN_V4_FFI: &[u8] = include_bytes!("fixtures/qzi/v4/ffi.qzi");
+    const GOLDEN_V5_MAIN: &[u8] = include_bytes!("fixtures/qzi/v5/main.qzi");
+    const GOLDEN_V5_LEA: &[u8] = include_bytes!("fixtures/qzi/v5/lea.qzi");
+    const GOLDEN_V5_FFI: &[u8] = include_bytes!("fixtures/qzi/v5/ffi.qzi");
+    const GOLDEN_V6_MAIN: &[u8] = include_bytes!("fixtures/qzi/v6/main.qzi");
+    const GOLDEN_V6_LEA: &[u8] = include_bytes!("fixtures/qzi/v6/lea.qzi");
+    const GOLDEN_V6_FFI: &[u8] = include_bytes!("fixtures/qzi/v6/ffi.qzi");
+    const GOLDEN_V6_LIB: &[u8] = include_bytes!("fixtures/qzi/v6/lib.qzi");
+
+    fn golden_chunk_names(module: &QziModule) -> Vec<&str> {
+        module
+            .chunks
+            .iter()
+            .map(|chunk| chunk.name.as_str())
+            .collect()
+    }
+
+    fn golden_has_foreign_symbol(module: &QziModule, symbol: &str) -> bool {
+        module.chunks.iter().any(|chunk| {
+            chunk.constants.iter().any(
+                |constant| matches!(constant, ConstPoolEntry::ForeignSymbol(foreign) if foreign.symbol == symbol),
+            )
+        })
+    }
+
+    #[test]
+    fn golden_v2_main_decodes_with_synthesized_metadata() {
+        let module = deserialize_qzi_module(GOLDEN_V2_MAIN).expect("v2 main should decode");
+        assert_eq!(module.metadata.kind, QziModuleKind::Executable);
+        assert!(module.metadata.name.is_empty());
+        assert!(module.metadata.version.is_none());
+        assert!(module.interface.is_empty());
+        let names = golden_chunk_names(&module);
+        for expected in ["main", "unwrap_or", "Pair.new", "Pair.sum", "identity<i32>"] {
+            assert!(names.contains(&expected), "missing v2 chunk `{expected}`");
+        }
+        assert!(module.chunks.iter().any(|chunk| {
+            chunk.constants.iter().any(
+                |constant| matches!(constant, ConstPoolEntry::Str(value) if value == "qzi-golden-v2"),
+            )
+        }));
+        assert!(!module.call_relocations.is_empty());
+    }
+
+    #[test]
+    fn golden_legacy_main_artifacts_decode() {
+        for (version, bytes) in [
+            (3, GOLDEN_V3_MAIN),
+            (4, GOLDEN_V4_MAIN),
+            (5, GOLDEN_V5_MAIN),
+        ] {
+            let module = deserialize_qzi_module(bytes)
+                .unwrap_or_else(|error| panic!("v{version} main should decode: {error}"));
+            assert_eq!(module.metadata.kind, QziModuleKind::Executable);
+            assert!(golden_chunk_names(&module).contains(&"main"));
+        }
+        for (version, bytes) in [(4, GOLDEN_V4_MAIN), (5, GOLDEN_V5_MAIN)] {
+            let module = deserialize_qzi_module(bytes).expect("byte-string fixture decodes");
+            assert!(
+                module.chunks.iter().any(|chunk| {
+                    chunk
+                        .constants
+                        .iter()
+                        .any(|constant| matches!(constant, ConstPoolEntry::Bytes(_)))
+                }),
+                "v{version} main should carry a Bytes constant"
+            );
+        }
+    }
+
+    #[test]
+    fn golden_v3_ffi_keeps_legacy_string_call_metadata() {
+        // Authentic v3 behavior: @api symbols are plain `Str` constants (the
+        // `ForeignSymbol` ABI metadata arrived with v4) and @export names are
+        // not persisted at all. The backend retains a scalar-only legacy
+        // `CallExt` lowering for these artifacts, matching v3's scalar/pointer
+        // FFI phase.
+        let module = deserialize_qzi_module(GOLDEN_V3_FFI).expect("v3 ffi should decode");
+        assert!(module.chunks.iter().any(|chunk| {
+            chunk.constants.iter().any(
+                |constant| matches!(constant, ConstPoolEntry::Str(value) if value == "qzi_golden_ext"),
+            )
+        }));
+        assert!(module.chunks.iter().all(|chunk| {
+            chunk
+                .constants
+                .iter()
+                .all(|constant| !matches!(constant, ConstPoolEntry::ForeignSymbol(_)))
+        }));
+        assert!(module.chunks.iter().all(|chunk| chunk.export.is_none()));
+    }
+
+    #[test]
+    fn golden_v4_ffi_preserves_export_metadata() {
+        let module = deserialize_qzi_module(GOLDEN_V4_FFI).expect("v4 ffi should decode");
+        assert!(golden_has_foreign_symbol(&module, "qzi_golden_ext"));
+        assert!(golden_chunk_names(&module).contains(&"__quazi_export_adapter_sum_scalars_3"));
+        assert!(module.chunks.iter().any(|chunk| {
+            matches!(&chunk.export, Some(export) if export.symbol == "quazi_golden_sum")
+        }));
+    }
+
+    #[test]
+    fn golden_v5_ffi_preserves_foreign_globals() {
+        let module = deserialize_qzi_module(GOLDEN_V5_FFI).expect("v5 ffi should decode");
+        assert!(module.chunks.iter().any(|chunk| {
+            chunk.constants.iter().any(
+                |constant| matches!(constant, ConstPoolEntry::ForeignGlobal(global) if global.symbol == "qzi_golden_counter"),
+            )
+        }));
+    }
+
+    #[test]
+    fn golden_v6_executables_decode_through_the_sectioned_reader() {
+        for bytes in [GOLDEN_V6_MAIN, GOLDEN_V6_FFI] {
+            let module = deserialize_qzi_module(bytes).expect("v6 executable should decode");
+            assert_eq!(module.metadata.kind, QziModuleKind::Executable);
+            assert!(golden_chunk_names(&module).contains(&"main"));
+            assert!(!module.call_relocations.is_empty());
+        }
+    }
+
+    #[test]
+    fn golden_v6_library_decodes_metadata_interface_and_relocations() {
+        let module = deserialize_qzi_module(GOLDEN_V6_LIB).expect("v6 library should decode");
+        assert_eq!(module.metadata.name, "goldenlib");
+        assert_eq!(module.metadata.version.as_deref(), Some("0.1.0"));
+        assert_eq!(module.metadata.kind, QziModuleKind::Library);
+        assert!(module.interface.contains("pub fn add(a: i64, b: i64) i64;"));
+        assert!(golden_chunk_names(&module).contains(&"goldenlib.demo"));
+        // The v6 writer inlined and tree-shook every callee, so this artifact's
+        // relocation section is legitimately empty; non-empty relocations are
+        // covered by the v6 executable fixtures above.
+        assert!(
+            module
+                .call_relocations
+                .iter()
+                .all(|relocation| (relocation.chunk_index as usize) < module.chunks.len())
+        );
+    }
+
+    #[test]
+    fn golden_legacy_lea_artifacts_require_a_source_rebuild() {
+        for (version, bytes) in [
+            (2, GOLDEN_V2_LEA),
+            (3, GOLDEN_V3_LEA),
+            (4, GOLDEN_V4_LEA),
+            (5, GOLDEN_V5_LEA),
+            (6, GOLDEN_V6_LEA),
+        ] {
+            let error = deserialize_qzi_module(bytes)
+                .expect_err("legacy implicit address metadata must be rejected");
+            assert!(
+                error.contains("without address-taken register metadata"),
+                "v{version} lea fixture failed with an unexpected error: {error}"
+            );
+            assert!(error.contains(&format!("QZI v{version}")));
+        }
     }
 }

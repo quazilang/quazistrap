@@ -11,9 +11,9 @@ qz build -o array
 
 ## Features shown
 
-- `Array.new()`, `push`, `get`, `set`, `len`, `is_empty`
-- Index assignment: `arr[2] = 88`
-- Iteration: `for i : arr { ... }`
-- Borrowed iteration: `for word : &words { ... }`
-- `Array.from([...])` for array literals
-- `choose_value` shows `if/else if/else` with `ret` in each branch
+- `Array.new()` with an explicit `Array[i32]` binding, `push`, `set`, `len`
+- Index reads through the `Index` impl: `prices[index]`
+- Range-loop iteration over the length: `for index : 0..prices.len() { ... }`.
+  Direct `for x : arr` over a named `Array[T]` is not currently accepted by
+  the type checker; iterate a range or a slice instead.
+- Variadic formatting with `io.println`

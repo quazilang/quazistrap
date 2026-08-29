@@ -6,7 +6,12 @@ QZI v7 adds an instruction flag for unsigned division, remainder, and ordered
 comparison and preserves trait method parameter names in public source
 interfaces. It is also the affine function-value ownership boundary. Rebuild
 `.qzi` artifacts with the current compiler. The v7 compiler
-continues to read compatible v2-v6 bytecode, but it rejects v6 trait interfaces
+continues to read compatible v2-v6 bytecode (now locked by immutable golden
+fixtures from real historical writers), with two era caveats: v2 artifacts
+carry no chunk flags, so their intrinsic wrapper chunks lose compilation-local
+symbol scoping, and v3 artifacts keep `@api` imports as string metadata
+covered by the scalar legacy lowering but never persisted `@export` symbols.
+The reader rejects v6 trait interfaces
 that declare parameters: v6 replaced `self` and every other parameter name with
 `argN`, so consuming them under v7 could silently change receiver arity. Publish
 that dependency as source if rebuilding it is not possible. The reader also
