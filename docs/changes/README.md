@@ -17,3 +17,5 @@ tests or examples establishing behavior.
 - [Multi-slot internal ABI](2026-08-30-multi-slot-internal-abi.md)
 - [Layout intrinsics and QZI v8](2026-08-30-layout-intrinsics.md)
 - [LSP same-document navigation](2026-08-30-lsp-navigation.md)
+- [Generic specialization closure](2026-08-30-generic-specialization-closure.md)
+- [Native object metadata omission](2026-08-30-native-linker-metadata.md)
