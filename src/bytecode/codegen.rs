@@ -813,6 +813,9 @@ impl<'a> Codegen<'a> {
 
         // Index monomorphized specializations.
         for mono in &self.report.monomorphizations {
+            if is_unresolved_layout_intrinsic_mono(mono) {
+                continue;
+            }
             let mono_name = &mono.mangled_name;
             // Only add if the specialized name is reachable.
             if is_live(mono_name) && !self.fn_index.contains_key(mono_name) {
@@ -1004,6 +1007,9 @@ impl<'a> Codegen<'a> {
         // Compile monomorphized specializations (top-level fns and impl methods).
         let monos: Vec<_> = self.report.monomorphizations.clone();
         for mono in &monos {
+            if is_unresolved_layout_intrinsic_mono(mono) {
+                continue;
+            }
             let mono_name = &mono.mangled_name;
             if !self.fn_index.contains_key(mono_name) {
                 continue;
@@ -1722,7 +1728,12 @@ impl<'a> Codegen<'a> {
         }
         // @intrinsic: emit a platform-neutral Intrinsic instruction.
         if let Some(attr) = attributes.iter().find(|a| a.name == "intrinsic") {
-            return Ok(Some(self.compile_intrinsic_fn(name, params, attr)?));
+            return Ok(Some(self.compile_intrinsic_fn(
+                name,
+                params,
+                attr,
+                &type_subst,
+            )?));
         }
 
         // @syscall: emit a single Syscall instruction instead of the function body.
@@ -1837,6 +1848,7 @@ impl<'a> Codegen<'a> {
         name: &str,
         params: &[crate::parser::ast::Param],
         attr: &crate::parser::ast::Attribute,
+        type_subst: &HashMap<String, TypeKind>,
     ) -> Result<Chunk, String> {
         let mut chunk = Chunk::with_params(name, params.len());
         let instr_name = attr
@@ -1849,6 +1861,20 @@ impl<'a> Codegen<'a> {
                 _ => None,
             })
             .unwrap_or("");
+        if let Some(value) = self.layout_intrinsic_value(instr_name, type_subst)? {
+            if value <= u16::MAX as usize {
+                chunk.emit(ri16(Opcode::MovI, 0, value as u16));
+            } else {
+                let value = i64::try_from(value).map_err(|_| {
+                    format!("layout intrinsic `{instr_name}` value does not fit in a QZI integer")
+                })?;
+                let idx = chunk.add_constant(ConstPoolEntry::Int(value));
+                chunk.emit(ri16(Opcode::MovConst, 0, idx));
+            }
+            chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+            chunk.reg_count = 1;
+            return Ok(chunk);
+        }
         // Intrinsics with dedicated opcodes (not routed through Intrinsic case_id).
         {
             static INTRINSIC_OPCODE_MAP: LazyLock<HashMap<&'static str, Opcode>> =
@@ -1896,6 +1922,186 @@ impl<'a> Codegen<'a> {
         chunk.reg_count = arg_count; // ensure frame covers all param slots
         chunk.variadic = params.last().map(|p| p.variadic).unwrap_or(false);
         Ok(chunk)
+    }
+
+    fn layout_intrinsic_value(
+        &self,
+        instr_name: &str,
+        type_subst: &HashMap<String, TypeKind>,
+    ) -> Result<Option<usize>, String> {
+        if !matches!(instr_name, "quazi.size_of" | "quazi.align_of") {
+            return Ok(None);
+        }
+        if type_subst.len() != 1 {
+            return Err(format!(
+                "layout intrinsic `{instr_name}` requires exactly one concrete type argument"
+            ));
+        }
+        let ty = type_subst
+            .get("T")
+            .or_else(|| type_subst.values().next())
+            .expect("length checked");
+        let resolved = self.resolve_type_for_layout(ty, type_subst);
+        if Self::has_unresolved_layout_param(&resolved, type_subst) {
+            return Err(format!(
+                "layout intrinsic `{instr_name}` requires a concrete type argument, got `{resolved}`"
+            ));
+        }
+        let layout = crate::runtime_layout::runtime_value_layout(&resolved);
+        let value = match instr_name {
+            "quazi.size_of" => layout.byte_size(),
+            "quazi.align_of" => layout.align(),
+            _ => unreachable!(),
+        }
+        .ok_or_else(|| {
+            format!("layout intrinsic `{instr_name}` cannot represent type `{resolved}`")
+        })?;
+        Ok(Some(value))
+    }
+
+    fn resolve_type_for_layout(
+        &self,
+        ty: &TypeKind,
+        type_subst: &HashMap<String, TypeKind>,
+    ) -> TypeKind {
+        match ty {
+            TypeKind::Named { name, type_args } if type_args.is_empty() => {
+                if let Some(concrete) = type_subst.get(name) {
+                    if !types_equal(concrete, ty) {
+                        return self.resolve_type_for_layout(concrete, type_subst);
+                    }
+                }
+                let alias = self.report.type_aliases.get(name).or_else(|| {
+                    name.rsplit_once('.')
+                        .and_then(|(_, leaf)| self.report.type_aliases.get(leaf))
+                });
+                if let Some((params, target)) = alias
+                    && params.is_empty()
+                {
+                    return self.resolve_type_for_layout(target, type_subst);
+                }
+                ty.clone()
+            }
+            TypeKind::Named { name, type_args } => {
+                let alias = self.report.type_aliases.get(name).or_else(|| {
+                    name.rsplit_once('.')
+                        .and_then(|(_, leaf)| self.report.type_aliases.get(leaf))
+                });
+                if let Some((params, target)) = alias
+                    && params.len() == type_args.len()
+                {
+                    let mut alias_subst = type_subst.clone();
+                    for (param, arg) in params.iter().zip(type_args) {
+                        alias_subst.insert(
+                            param.clone(),
+                            self.resolve_type_for_layout(&arg.node, type_subst),
+                        );
+                    }
+                    return self.resolve_type_for_layout(target, &alias_subst);
+                }
+                TypeKind::Named {
+                    name: name.clone(),
+                    type_args: type_args
+                        .iter()
+                        .map(|arg| {
+                            Spanned::new(
+                                self.resolve_type_for_layout(&arg.node, type_subst),
+                                arg.span,
+                            )
+                        })
+                        .collect(),
+                }
+            }
+            TypeKind::Ref { inner } => TypeKind::Ref {
+                inner: Box::new(Spanned::new(
+                    self.resolve_type_for_layout(&inner.node, type_subst),
+                    inner.span,
+                )),
+            },
+            TypeKind::RawPtr { inner } => TypeKind::RawPtr {
+                inner: Box::new(Spanned::new(
+                    self.resolve_type_for_layout(&inner.node, type_subst),
+                    inner.span,
+                )),
+            },
+            TypeKind::Array { elem_ty, len } => TypeKind::Array {
+                elem_ty: Box::new(Spanned::new(
+                    self.resolve_type_for_layout(&elem_ty.node, type_subst),
+                    elem_ty.span,
+                )),
+                len: *len,
+            },
+            TypeKind::FlexibleArray { elem_ty } => TypeKind::FlexibleArray {
+                elem_ty: Box::new(Spanned::new(
+                    self.resolve_type_for_layout(&elem_ty.node, type_subst),
+                    elem_ty.span,
+                )),
+            },
+            TypeKind::Slice { elem_ty } => TypeKind::Slice {
+                elem_ty: Box::new(Spanned::new(
+                    self.resolve_type_for_layout(&elem_ty.node, type_subst),
+                    elem_ty.span,
+                )),
+            },
+            TypeKind::Fn { params, return_ty } => TypeKind::Fn {
+                params: params
+                    .iter()
+                    .map(|param| {
+                        Spanned::new(
+                            self.resolve_type_for_layout(&param.node, type_subst),
+                            param.span,
+                        )
+                    })
+                    .collect(),
+                return_ty: Box::new(Spanned::new(
+                    self.resolve_type_for_layout(&return_ty.node, type_subst),
+                    return_ty.span,
+                )),
+            },
+            TypeKind::CFn { params, return_ty } => TypeKind::CFn {
+                params: params
+                    .iter()
+                    .map(|param| {
+                        Spanned::new(
+                            self.resolve_type_for_layout(&param.node, type_subst),
+                            param.span,
+                        )
+                    })
+                    .collect(),
+                return_ty: Box::new(Spanned::new(
+                    self.resolve_type_for_layout(&return_ty.node, type_subst),
+                    return_ty.span,
+                )),
+            },
+            other => other.clone(),
+        }
+    }
+
+    fn has_unresolved_layout_param(ty: &TypeKind, type_subst: &HashMap<String, TypeKind>) -> bool {
+        match ty {
+            TypeKind::Named { name, type_args } => {
+                (type_args.is_empty() && type_subst.contains_key(name))
+                    || type_args
+                        .iter()
+                        .any(|arg| Self::has_unresolved_layout_param(&arg.node, type_subst))
+            }
+            TypeKind::Ref { inner }
+            | TypeKind::RawPtr { inner }
+            | TypeKind::FlexibleArray { elem_ty: inner }
+            | TypeKind::Slice { elem_ty: inner } => {
+                Self::has_unresolved_layout_param(&inner.node, type_subst)
+            }
+            TypeKind::Array { elem_ty, .. } => {
+                Self::has_unresolved_layout_param(&elem_ty.node, type_subst)
+            }
+            TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {
+                params
+                    .iter()
+                    .any(|param| Self::has_unresolved_layout_param(&param.node, type_subst))
+                    || Self::has_unresolved_layout_param(&return_ty.node, type_subst)
+            }
+            _ => false,
+        }
     }
 
     fn compile_api_fn(
@@ -2570,6 +2776,78 @@ impl<'a> FnCompiler<'a> {
             .iter()
             .find(|m| m.fn_name == fn_name && types_equal_slice(&m.type_args, &raw_kinds))
             .map(|m| m.mangled_name.clone())
+    }
+
+    fn layout_intrinsic_call_value(&mut self, fn_name: &str, type_args: &[Type]) -> Option<usize> {
+        let intrinsic = match fn_name.rsplit('.').next().unwrap_or(fn_name) {
+            "size_of" => "quazi.size_of",
+            "align_of" => "quazi.align_of",
+            _ => return None,
+        };
+        if type_args.len() != 1 {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("layout intrinsic `{intrinsic}` requires exactly one type argument")
+            });
+            return Some(0);
+        }
+        let resolved = self.resolve_type(&type_args[0].node);
+        if self.has_unresolved_layout_param(&resolved) {
+            self.codegen_error.get_or_insert_with(|| {
+                format!(
+                    "layout intrinsic `{intrinsic}` requires a concrete type argument, got `{resolved}`"
+                )
+            });
+            return Some(0);
+        }
+        let layout = crate::runtime_layout::runtime_value_layout(&resolved);
+        let value = match intrinsic {
+            "quazi.size_of" => layout.byte_size(),
+            "quazi.align_of" => layout.align(),
+            _ => unreachable!(),
+        };
+        value.or_else(|| {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("layout intrinsic `{intrinsic}` cannot represent type `{resolved}`")
+            });
+            Some(0)
+        })
+    }
+
+    fn has_unresolved_layout_param(&self, ty: &TypeKind) -> bool {
+        match ty {
+            TypeKind::Named { name, type_args } => {
+                (type_args.is_empty() && self.type_subst.contains_key(name))
+                    || type_args
+                        .iter()
+                        .any(|arg| self.has_unresolved_layout_param(&arg.node))
+            }
+            TypeKind::Ref { inner }
+            | TypeKind::RawPtr { inner }
+            | TypeKind::FlexibleArray { elem_ty: inner }
+            | TypeKind::Slice { elem_ty: inner } => self.has_unresolved_layout_param(&inner.node),
+            TypeKind::Array { elem_ty, .. } => self.has_unresolved_layout_param(&elem_ty.node),
+            TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {
+                params
+                    .iter()
+                    .any(|param| self.has_unresolved_layout_param(&param.node))
+                    || self.has_unresolved_layout_param(&return_ty.node)
+            }
+            _ => false,
+        }
+    }
+
+    fn emit_usize_constant(&mut self, dst: u8, value: usize) {
+        if value <= u16::MAX as usize {
+            self.chunk.emit(ri16(Opcode::MovI, dst, value as u16));
+        } else if let Ok(value) = i64::try_from(value) {
+            let idx = self.chunk.add_constant(ConstPoolEntry::Int(value));
+            self.chunk.emit(ri16(Opcode::MovConst, dst, idx));
+        } else {
+            self.codegen_error.get_or_insert_with(|| {
+                "layout intrinsic value does not fit in a QZI integer".to_string()
+            });
+            self.chunk.emit(ri16(Opcode::MovI, dst, 0));
+        }
     }
 
     fn enum_ctor_tag(&self, name: &str) -> Option<usize> {
@@ -5534,6 +5812,10 @@ impl<'a> FnCompiler<'a> {
                     if self.emit_c_variadic_call(&call_name, args, dst) {
                         return dst;
                     }
+                    if let Some(value) = self.layout_intrinsic_call_value(&call_name, type_args) {
+                        self.emit_usize_constant(dst, value);
+                        return dst;
+                    }
                     // Panic calls: inject file/line constants from the call site span.
                     // Only use the builtin panic path when the resolved name is the bare
                     // builtin "panic"; a user-defined `fn panic` in a module keeps the
@@ -5827,6 +6109,10 @@ impl<'a> FnCompiler<'a> {
                         .resolved_fn_for_span(expr.span)
                         .unwrap_or_else(|| format!("{}.{}", module_base, method));
                     if self.emit_c_variadic_call(&call_target, args, dst) {
+                        return dst;
+                    }
+                    if let Some(value) = self.layout_intrinsic_call_value(&call_target, type_args) {
+                        self.emit_usize_constant(dst, value);
                         return dst;
                     }
 
@@ -7039,6 +7325,45 @@ fn type_contains_unrepresentable_runtime_type(ty: &TypeKind) -> bool {
     }
 }
 
+fn is_unresolved_layout_intrinsic_mono(mono: &crate::semantic::MonomorphizationInfo) -> bool {
+    matches!(
+        mono.fn_name.rsplit('.').next(),
+        Some("size_of" | "align_of")
+    ) && mono
+        .type_args
+        .iter()
+        .any(type_kind_mentions_unresolved_param)
+}
+
+fn type_kind_mentions_unresolved_param(ty: &TypeKind) -> bool {
+    match ty {
+        TypeKind::Named { name, type_args } => {
+            (type_args.is_empty() && is_generic_param_name(name))
+                || type_args
+                    .iter()
+                    .any(|arg| type_kind_mentions_unresolved_param(&arg.node))
+        }
+        TypeKind::Ref { inner }
+        | TypeKind::RawPtr { inner }
+        | TypeKind::FlexibleArray { elem_ty: inner }
+        | TypeKind::Slice { elem_ty: inner } => type_kind_mentions_unresolved_param(&inner.node),
+        TypeKind::Array { elem_ty, .. } => type_kind_mentions_unresolved_param(&elem_ty.node),
+        TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {
+            params
+                .iter()
+                .any(|param| type_kind_mentions_unresolved_param(&param.node))
+                || type_kind_mentions_unresolved_param(&return_ty.node)
+        }
+        _ => false,
+    }
+}
+
+fn is_generic_param_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// Maps receiver types to their `PrimToStr` tag value.
 fn prim_to_str_tag(receiver_type: Option<&TypeKind>) -> u8 {
     match receiver_type {
@@ -7130,12 +7455,14 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
         m.insert("quazi.str_concat", 14);
         m.insert("quazi.int_to_str", 15);
         m.insert("quazi.float_to_str", 16);
+        m.insert("quazi.size_of", 17);
         // Threading: malloc+pthread_create/CreateThread; pthread_join+free/WaitForSingleObject
         m.insert("quazi.thread.spawn", 18);
         m.insert("quazi.thread.join", 19);
         // Net: only the ops that need sockaddr_in construction (accept uses 0 directly now)
         m.insert("quazi.net.bind_tcp", 20);
         m.insert("quazi.net.connect_tcp", 21);
+        m.insert("quazi.align_of", 22);
         // String primitives needed to implement format in void
         m.insert("quazi.str.byte_at", 23);
         m.insert("quazi.str.from_byte", 24);
@@ -7595,6 +7922,99 @@ mod tests {
             .expect("compile library");
         let names: HashSet<&str> = chunks.iter().map(|chunk| chunk.name.as_str()).collect();
         assert_eq!(names, HashSet::from(["api"]));
+    }
+
+    #[test]
+    fn layout_intrinsics_compile_to_specialized_constants() {
+        let chunks = compile(
+            r#"
+@intrinsic("quazi.size_of")
+fn size_of[T]() usize;
+
+@intrinsic("quazi.align_of")
+fn align_of[T]() usize;
+
+fn main() i32 {
+    const byte_count: usize = size_of[[i32; 3]]();
+    const alignment: usize = align_of[i32]();
+    ret (byte_count + alignment) as i32;
+}
+"#,
+        );
+        let size_of = chunks
+            .iter()
+            .find(|chunk| chunk.name.starts_with("size_of<"))
+            .expect("size_of specialization");
+        assert!(
+            size_of
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::MovI as u8
+                    && instruction.ri16() == (0, 24)),
+            "size_of[[i32; 3]] must compile to 24 bytes: {:?}",
+            size_of.code
+        );
+        let align_of = chunks
+            .iter()
+            .find(|chunk| chunk.name.starts_with("align_of<"))
+            .expect("align_of specialization");
+        assert!(
+            align_of
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::MovI as u8
+                    && instruction.ri16() == (0, 8)),
+            "align_of[i32] must compile to 8 bytes: {:?}",
+            align_of.code
+        );
+    }
+
+    #[test]
+    fn layout_intrinsics_in_generic_methods_lower_at_concrete_call_sites() {
+        let chunks = compile(
+            r#"
+@intrinsic("quazi.malloc")
+fn malloc(size: usize) *u8;
+
+@intrinsic("quazi.size_of")
+fn size_of[T]() usize;
+
+struct Buffer[T] {
+    ptr: *u8,
+}
+
+impl Buffer[T] {
+    fn new() Buffer[T] {
+        var ptr: *u8;
+        unsafe { ptr = malloc(size_of[T]()); }
+        ret Buffer { ptr: ptr };
+    }
+}
+
+fn main() i32 {
+    var buffer: Buffer[i32] = Buffer.new();
+    ret 0;
+}
+"#,
+        );
+        let new = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Buffer.new<i32>")
+            .expect("Buffer.new[i32] specialization");
+        assert!(
+            new.code.iter().any(|instruction| {
+                instruction.opcode == Opcode::MovI as u8 && instruction.ri16().1 == 8
+            }),
+            "size_of[T] inside Buffer.new[i32] must lower to the concrete i32 size: {:?}",
+            new.code
+        );
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.name != "size_of<T>" && chunk.name != "layout.size_of<T>"),
+            "template-only layout intrinsic chunks must not be emitted: {:?}",
+            chunks.iter().map(|chunk| &chunk.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]

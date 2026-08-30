@@ -669,7 +669,7 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
             }
             if opcode == Opcode::Intrinsic {
                 let id = instruction.ri16().1;
-                if !matches!(id, 0..=16 | 18..=21 | 23..=36) {
+                if !matches!(id, 0..=36) {
                     return fail("unknown intrinsic id");
                 }
             }
@@ -680,7 +680,7 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 7;
+pub const QZI_VERSION: u8 = 8;
 const QZI_LEGACY_VERSION: u8 = 5;
 const QZI_FIRST_SECTIONED_VERSION: u8 = 6;
 
@@ -1506,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn qzi_v7_roundtrips_module_metadata_and_interface() {
+    fn current_qzi_roundtrips_module_metadata_and_interface() {
         let mut chunk = Chunk::new("math.add");
         chunk.reg_count = 1;
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
@@ -1522,16 +1522,16 @@ mod tests {
             chunks: vec![chunk],
         };
 
-        let encoded = serialize_qzi_module(&module).expect("serialize QZI v7 module");
-        assert_eq!(encoded[4], 7);
-        let decoded = deserialize_qzi_module(&encoded).expect("deserialize QZI v7 module");
+        let encoded = serialize_qzi_module(&module).expect("serialize current QZI module");
+        assert_eq!(encoded[4], QZI_VERSION);
+        let decoded = deserialize_qzi_module(&encoded).expect("deserialize current QZI module");
         assert_eq!(decoded.metadata, module.metadata);
         assert_eq!(decoded.interface, module.interface);
         assert_eq!(decoded.chunks[0].name, "math.add");
     }
 
     #[test]
-    fn qzi_v7_reader_accepts_v6_sectioned_modules() {
+    fn current_qzi_reader_accepts_v6_sectioned_modules() {
         let mut chunk = Chunk::new("main");
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
         let mut encoded = serialize_qzi(&[chunk]).expect("serialize current QZI");
@@ -1663,16 +1663,16 @@ mod tests {
     }
 
     #[test]
-    fn qzi_v7_roundtrips_unsigned_flags_and_v6_rejects_them() {
+    fn current_qzi_roundtrips_unsigned_flags_and_v6_rejects_them() {
         let mut chunk = Chunk::with_params("divide", 2);
         chunk.reg_count = 3;
         let mut division = crate::bytecode::instruction::rrr(Opcode::Div, 2, 0, 1);
         division.flags |= crate::bytecode::instruction::UNSIGNED_FLAG;
         chunk.emit(division);
         chunk.emit_rrr(Opcode::Ret, 2, 0, 0);
-        let encoded = serialize_qzi(&[chunk]).expect("serialize QZI v7 unsigned division");
+        let encoded = serialize_qzi(&[chunk]).expect("serialize current QZI unsigned division");
 
-        let decoded = deserialize_qzi(&encoded).expect("read QZI v7 unsigned division");
+        let decoded = deserialize_qzi(&encoded).expect("read current QZI unsigned division");
         assert_ne!(
             decoded[0].code[0].flags & crate::bytecode::instruction::UNSIGNED_FLAG,
             0

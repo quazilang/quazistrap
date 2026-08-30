@@ -43,7 +43,7 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x07` (readers retain compatible v2-v6 bytecode; v1 omitted
+- Version: `0x08` (readers retain compatible v2-v7 bytecode; v1 omitted
   required frame metadata and parameterized v6 trait interfaces need rebuilding)
 
 Immutable golden fixtures from real historical writers (v2-v6) live in
@@ -139,7 +139,8 @@ never persisted.
   compilation and named-function forwarders are emitted once.
   Parent chunks with closure or forwarder `FnAddr` constants must not be reused
   independently by partial QZC restoration. QZI v7 is the affine ownership
-  boundary; reject older public callable contracts and legacy synthetic chunks.
+  boundary; QZI v8 is the phase-2 layout-intrinsic boundary. Reject older public
+  callable contracts and legacy synthetic chunks.
 
 ### Monomorphization
 
@@ -153,6 +154,10 @@ never persisted.
 ### Intrinsic Dispatch
 
 - `INTRINSIC_MAP` HashMap; array ops via `INTRINSIC_OPCODE_MAP` HashMap.
+- `quazi.size_of[T]()` and `quazi.align_of[T]()` are generic layout intrinsics.
+  Codegen resolves their single concrete type argument during monomorphization
+  and emits a constant, so native backends should not see their intrinsic IDs in
+  executable chunks.
 - Intrinsic 33 compares UTF-8 string contents lexicographically; intrinsic 34
   counts Unicode scalar values for `str.len()`. Both are dependency-free native
   loops. `bytes_len()` continues to use byte-oriented `StrLen`.

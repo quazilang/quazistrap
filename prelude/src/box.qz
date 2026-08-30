@@ -3,12 +3,13 @@
 // SPDX-License-Identifier: 0BSD
 
 // prelude.box — heap-allocated smart pointer Box[T]
+import layout.size_of;
 
 @intrinsic("quazi.array.store")
-fn __box_write(base: *u8, idx: usize, val: usize) void;
+fn __box_write[T](base: *u8, idx: usize, val: T) void;
 
 @intrinsic("quazi.array.load")
-fn __box_read(base: *u8, idx: usize) usize;
+fn __box_read[T](base: *u8, idx: usize) T;
 
 @intrinsic("quazi.malloc")
 unsafe fn __box_malloc(size: usize) *u8;
@@ -23,7 +24,7 @@ pub struct Box[T] {
 impl Box[T] {
     pub fn new(val: T) Box[T] {
         var p: *u8;
-        unsafe { p = __box_malloc(8); }
+        unsafe { p = __box_malloc(size_of[T]()); }
         __box_write(p, 0, val);
         ret Box { ptr: p };
     }

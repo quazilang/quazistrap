@@ -1,8 +1,8 @@
 # Standard Library Guide
 
 The prelude supplies `String`, `Array`, `Box`, `Option`, `Result`, common
-traits, formatting, parsing errors, and panic support. Other modules are
-explicit imports.
+traits, formatting, parsing errors, compile-time layout queries, and panic
+support. Other modules are explicit imports.
 
 - `std.io`: UTF-8-safe console output; owned fallible `read`, `readln`, `readkey`.
 - `std.fmt`: `{}` formatting and format specifications used by I/O functions.

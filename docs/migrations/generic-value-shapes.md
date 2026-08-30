@@ -28,9 +28,12 @@ borrowing, `take`, replacement, and recursive destruction are still being
 stabilized. Avoid manufacturing aliases by repeatedly extracting an owned value,
 and do not treat explicit `free()` as a cloning mechanism.
 
-QZC v5 automatically ignores older incremental caches. No manual cache deletion
+QZC v6 automatically ignores older incremental caches. No manual cache deletion
 is required. QZI libraries with public generic templates must continue to be
-published as source.
+published as source. Current prelude allocation code now uses
+`size_of[T]()` instead of hardcoded eight-byte element sizes, but
+multi-register generic parameters and results remain rejected until the rest of
+the phase-2 ABI is implemented.
 
 Generic constructors with no value arguments can now infer their type arguments
 from an annotated binding:

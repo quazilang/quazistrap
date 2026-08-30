@@ -12,6 +12,7 @@ pub import ./string.Rune;
 pub import ./string.ParseError;
 pub import ./number;
 pub import ./box.Box;
+pub import ./layout;
 pub import ./option;
 pub import ./result;
 pub import ./traits;

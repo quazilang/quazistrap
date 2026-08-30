@@ -10,3 +10,4 @@ are treated as stable.
 - [Migrating function values and closures](closures.md)
 - [Migrating multi-register generic values](generic-value-shapes.md)
 - [QZI v7](qzi-v7.md)
+- [QZI v8](qzi-v8.md)

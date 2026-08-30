@@ -5,6 +5,7 @@
 // prelude.array — safe generic dynamic array backed by heap memory
 import traits;
 import panic.panic;
+import layout.size_of;
 
 @intrinsic("quazi.malloc")
 fn __array_malloc(size: usize) *u8;
@@ -32,8 +33,9 @@ pub struct Array[T] {
 impl Array[T] {
     pub fn new() Array[T] {
         var buf: *u8;
-        unsafe { buf = __array_malloc(64); }
-        ret Array { ptr: buf, len: 0, cap: 8 };
+        const initial_cap: usize = 8;
+        unsafe { buf = __array_malloc(size_of[T]() * initial_cap); }
+        ret Array { ptr: buf, len: 0, cap: initial_cap };
     }
 
     pub fn from(...items: T) Array[T] {
@@ -47,7 +49,7 @@ impl Array[T] {
     pub fn push(self: Array[T], val: T) void {
         if (self.len >= self.cap) {
             self.cap = self.cap * 2;
-            unsafe { self.ptr = __array_realloc(self.ptr, self.cap * 8); }
+            unsafe { self.ptr = __array_realloc(self.ptr, self.cap * size_of[T]()); }
         }
         __ptr_store(self.ptr, self.len, val);
         self.len = self.len + 1;

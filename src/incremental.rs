@@ -12,7 +12,7 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-const QZC_VERSION: u8 = 5;
+const QZC_VERSION: u8 = 6;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {

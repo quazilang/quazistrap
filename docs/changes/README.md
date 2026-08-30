@@ -14,3 +14,4 @@ tests or examples establishing behavior.
 - [Generic value-shape validation](2026-08-29-generic-value-shapes.md)
 - [QZI historical golden fixtures and the v2 chunk-header fix](2026-08-30-qzi-golden-fixtures.md)
 - [Value-layout recording and the remaining one-slot gates](2026-08-30-value-layout-recording.md)
+- [Layout intrinsics and QZI v8](2026-08-30-layout-intrinsics.md)
