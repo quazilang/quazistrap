@@ -129,6 +129,9 @@ strong symbol, or unresolved non-weak symbol stops the build with a diagnostic.
 The linker does not guess, truncate, or silently import a library.
 
 Metadata and non-loaded debugging sections do not appear in the final image.
+GNU property notes (`.note.gnu.property`) and `.eh_frame` unwind metadata are
+also omitted: Quazi's freestanding output has neither a dynamic loader nor an
+unwinder. Other allocated section types remain rejected.
 Objects that depend on other allocated section types, TLS, COMDAT/group
 selection, symbol versioning, linker scripts, dynamic relocations, or archive
 member extraction are outside the current contract.

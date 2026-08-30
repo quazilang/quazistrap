@@ -81,6 +81,7 @@ pub fn link_elf_objects(objects: &[&[u8]], output: &Path) -> Result<(), String> 
     for (object, file) in files.iter().enumerate() {
         for section in file.sections() {
             let kind = section.kind();
+            let name = section.name().unwrap_or("<unnamed>");
             if !matches!(
                 kind,
                 SectionKind::Text
@@ -89,12 +90,19 @@ pub fn link_elf_objects(objects: &[&[u8]], output: &Path) -> Result<(), String> 
                     | SectionKind::Data
                     | SectionKind::UninitializedData
             ) {
+                // GNU property notes and DWARF unwind tables describe the
+                // input object rather than code or data needed by Quazi's
+                // freestanding executable. They may carry SHF_ALLOC even
+                // though the resulting image has no dynamic loader or
+                // unwinder, so omitting them is intentional.
+                if matches!(name, ".note.gnu.property" | ".eh_frame") {
+                    continue;
+                }
                 let allocated = matches!(
                     section.flags(),
                     SectionFlags::Elf { sh_flags } if sh_flags & 0x2 != 0
                 );
                 if allocated {
-                    let name = section.name().unwrap_or("<unnamed>");
                     return Err(format!(
                         "built-in linker: unsupported allocated section `{name}` in input object #{}",
                         object + 1
@@ -694,6 +702,30 @@ mod tests {
         object.write().expect("object")
     }
 
+    fn object_with_gnu_property_note() -> Vec<u8> {
+        let mut object = Object::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let text = object.section_id(StandardSection::Text);
+        object.append_section_data(text, &[0x31, 0xff, 0xb8, 60, 0, 0, 0, 0x0f, 0x05], 16);
+        object.add_symbol(Symbol {
+            name: b"_start".to_vec(),
+            value: 0,
+            size: 9,
+            kind: SymbolKind::Text,
+            scope: SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Section(text),
+            flags: SymbolFlags::None,
+        });
+        let note = object.add_section(
+            Vec::new(),
+            b".note.gnu.property".to_vec(),
+            SectionKind::Note,
+        );
+        object.section_mut(note).flags = SectionFlags::Elf { sh_flags: 0x2 };
+        object.append_section_data(note, &[0; 32], 8);
+        object.write().expect("object")
+    }
+
     #[test]
     fn links_a_static_elf_without_an_external_tool() {
         let directory = std::env::temp_dir();
@@ -761,6 +793,17 @@ mod tests {
             std::env::temp_dir().join(format!("qz_builtin_linker_tls_{}", std::process::id()));
         let error = link_elf_objects(&[&object], &output).expect_err("TLS must be rejected");
         assert!(error.contains("unsupported allocated section `.tdata`"));
+    }
+
+    #[test]
+    fn omits_gnu_property_notes_from_native_objects() {
+        let object = object_with_gnu_property_note();
+        let output = std::env::temp_dir().join(format!(
+            "qz_builtin_linker_gnu_property_{}",
+            std::process::id()
+        ));
+        link_elf_objects(&[&object], &output).expect("GNU property note is metadata");
+        let _ = std::fs::remove_file(output);
     }
 
     #[test]
