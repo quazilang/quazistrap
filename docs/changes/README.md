@@ -16,3 +16,4 @@ tests or examples establishing behavior.
 - [Value-layout recording and the remaining one-slot gates](2026-08-30-value-layout-recording.md)
 - [Multi-slot internal ABI](2026-08-30-multi-slot-internal-abi.md)
 - [Layout intrinsics and QZI v8](2026-08-30-layout-intrinsics.md)
+- [LSP same-document navigation](2026-08-30-lsp-navigation.md)

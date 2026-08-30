@@ -215,8 +215,8 @@ impl Analyzer {
                             continue;
                         }
                         let resolved = self.resolve_type_aliases(&param.ty.node);
-                        let erased_format_param = erased_format_variadic
-                            && matches!(resolved, TypeKind::Any);
+                        let erased_format_param =
+                            erased_format_variadic && matches!(resolved, TypeKind::Any);
                         if !erased_format_param
                             && !crate::runtime_layout::runtime_value_layout(&resolved)
                                 .fits_single_slot()
@@ -342,7 +342,7 @@ impl Analyzer {
                         p.name.clone(),
                         Symbol {
                             kind: SymbolKind::Parameter,
-                            span: item.span,
+                            span: p.name_span,
                             ty: Some(ty),
                             params: vec![],
                             used: false,
@@ -5717,6 +5717,13 @@ impl Analyzer {
         reachable: bool,
         resolved_fn: Option<String>,
     ) {
+        let resolved_binding = resolved_fn
+            .as_deref()
+            .and_then(|name| self.resolved_binding_for_name(name))
+            .or_else(|| match &expr.node {
+                ExprKind::Ident(name) => self.resolved_binding_for_name(name),
+                _ => None,
+            });
         self.annotated_exprs.push(ExprAnnotation {
             span: expr.span,
             ty: eval.ty.clone(),
@@ -5724,6 +5731,7 @@ impl Analyzer {
             reachable,
             resolved_fn,
             resolved_global: None,
+            resolved_binding,
             auto_deref: false,
             c_abi_function: false,
         });
@@ -5736,6 +5744,15 @@ impl Analyzer {
         }
     }
 
+    fn resolved_binding_for_name(&self, name: &str) -> Option<ResolvedBinding> {
+        let symbol = self.resolve_symbol(name)?;
+        (symbol.span.end > symbol.span.start).then(|| ResolvedBinding {
+            name: name.to_string(),
+            span: symbol.span,
+            kind: symbol.kind,
+        })
+    }
+
     fn annotate_foreign_global_expr(
         &mut self,
         expr: &Expr,
@@ -5743,6 +5760,7 @@ impl Analyzer {
         reachable: bool,
         resolved_global: String,
     ) {
+        let resolved_binding = self.resolved_binding_for_name(&resolved_global);
         self.annotated_exprs.push(ExprAnnotation {
             span: expr.span,
             ty: eval.ty.clone(),
@@ -5750,6 +5768,7 @@ impl Analyzer {
             reachable,
             resolved_fn: None,
             resolved_global: Some(resolved_global),
+            resolved_binding,
             auto_deref: false,
             c_abi_function: false,
         });
@@ -5765,6 +5784,13 @@ impl Analyzer {
         resolved_fn: Option<String>,
     ) {
         let ty = eval.ty.clone().map(Self::autoderef_type);
+        let resolved_binding = resolved_fn
+            .as_deref()
+            .and_then(|name| self.resolved_binding_for_name(name))
+            .or_else(|| match &expr.node {
+                ExprKind::Ident(name) => self.resolved_binding_for_name(name),
+                _ => None,
+            });
         self.annotated_exprs.push(ExprAnnotation {
             span: expr.span,
             ty,
@@ -5772,6 +5798,7 @@ impl Analyzer {
             reachable,
             resolved_fn,
             resolved_global: None,
+            resolved_binding,
             auto_deref: true,
             c_abi_function: false,
         });

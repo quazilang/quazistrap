@@ -6,9 +6,13 @@ Basic server is running.
 
 - ✅ Diagnostics (publish on open/change/save)
 - ✅ Hover (type + const value, fallback to symbol table)
-- ✅ Goto Definition (naïve: searches symbol table by name, no scoping)
+- ✅ Goto Definition (semantic call targets plus best-effort lexical priority)
 - ✅ Completion (trigger on `.` — **only** for `std.*` chains via filesystem scanning)
 - ✅ Document formatting
+- ✅ Flat document symbols from the semantic snapshot
+- ✅ Signature help for current-document and loaded standard-library functions
+- ✅ Same-document references and rename for semantically resolved bindings
+- ✅ Full-document semantic tokens for lexical tokens and known semantic symbols
 
 ## Position Model
 
@@ -20,9 +24,8 @@ Basic server is running.
 ## Missing
 
 - ✅ General identifier completion from the current semantic snapshot
-- ❌ Scoped/resolving goto-definition
-- ❌ Find references
-- ❌ Rename symbol
+- ❌ Fully scoped/resolving goto-definition for all binding uses
+- ❌ Cross-file references and rename
 - ❌ Code actions / quick fixes
 - ❌ Inlay hints
 - ❌ Workspace symbols

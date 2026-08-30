@@ -11,7 +11,10 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use super::document::DocumentState;
-use super::{analysis, completion, diagnostics, formatting, goto_def, hover};
+use super::{
+    analysis, completion, diagnostics, formatting, goto_def, hover, references, semantic_tokens,
+    signature, symbols,
+};
 
 pub struct VoidLanguageServer {
     pub client: Client,
@@ -70,10 +73,27 @@ impl LanguageServer for VoidLanguageServer {
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_string()]),
                     ..Default::default()
                 }),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_string()]),
+                    retrigger_characters: Some(vec![",".to_string()]),
+                    ..Default::default()
+                }),
+                semantic_tokens_provider: Some(
+                    SemanticTokensOptions {
+                        legend: semantic_tokens::legend(),
+                        range: None,
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
@@ -153,6 +173,31 @@ impl LanguageServer for VoidLanguageServer {
         Ok(None)
     }
 
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let docs = self.documents.read().await;
+        let Some(doc) = docs.get(uri) else {
+            return Ok(None);
+        };
+        Ok(doc
+            .report
+            .as_ref()
+            .and_then(|report| references::references_at(report, &doc.source, uri, position)))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let docs = self.documents.read().await;
+        let Some(doc) = docs.get(uri) else {
+            return Ok(None);
+        };
+        Ok(doc.report.as_ref().and_then(|report| {
+            references::rename_edits(report, &doc.source, uri, position, &params.new_name)
+        }))
+    }
+
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let pos = params.text_document_position.position;
         let uri = &params.text_document_position.text_document.uri;
@@ -167,11 +212,53 @@ impl LanguageServer for VoidLanguageServer {
         Ok(None)
     }
 
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let docs = self.documents.read().await;
+        let Some(doc) = docs.get(uri) else {
+            return Ok(None);
+        };
+        Ok(doc
+            .report
+            .as_ref()
+            .and_then(|report| signature::signature_help_at(report, &doc.source, position)))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let docs = self.documents.read().await;
+        let Some(doc) = docs.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        Ok(doc.report.as_ref().map(|report| {
+            SemanticTokensResult::Tokens(semantic_tokens::tokens_for(report, &doc.source))
+        }))
+    }
+
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let docs = self.documents.read().await;
         if let Some(doc) = docs.get(&params.text_document.uri) {
             return Ok(formatting::format_document(&doc.source));
         }
         Ok(None)
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let docs = self.documents.read().await;
+        let Some(doc) = docs.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        let Some(report) = &doc.report else {
+            return Ok(None);
+        };
+        Ok(Some(DocumentSymbolResponse::Nested(
+            symbols::document_symbols(report, &doc.source),
+        )))
     }
 }

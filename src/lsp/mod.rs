@@ -9,8 +9,12 @@ mod document;
 mod formatting;
 mod goto_def;
 mod hover;
+mod references;
+mod semantic_tokens;
 mod server;
+mod signature;
 mod span;
+mod symbols;
 
 use server::VoidLanguageServer;
 use tokio::io::{stdin, stdout};

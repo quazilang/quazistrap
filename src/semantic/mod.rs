@@ -1221,7 +1221,8 @@ impl Analyzer {
     }
 
     /// Recursively expand type aliases in a TypeKind.
-    pub(super) fn resolve_type_aliases(&self, ty: &TypeKind) -> TypeKind {        match ty {
+    pub(super) fn resolve_type_aliases(&self, ty: &TypeKind) -> TypeKind {
+        match ty {
             TypeKind::Named { name, type_args } => {
                 let alias_entry = self.type_aliases.get(name).or_else(|| {
                     // Dotted name like "ffi.c_int": also try the leaf segment "c_int".
@@ -1898,6 +1899,42 @@ fn main() void {
                 .constant_evaluations
                 .iter()
                 .any(|entry| entry.value == ConstValue::Int(3))
+        );
+    }
+
+    #[test]
+    fn identifier_annotations_retain_the_resolved_declaration_span() {
+        let source = r#"
+fn first() i32 {
+    const value: i32 = 1;
+    ret value;
+}
+fn main() i32 {
+    const value: i32 = 2;
+    ret value;
+}
+"#;
+        let report = analyze(source);
+        let use_start = source
+            .rfind("value;")
+            .map(|byte| source[..byte].chars().count())
+            .expect("main value use");
+        let declaration_start = source
+            .rfind("const value")
+            .map(|byte| source[..byte].chars().count())
+            .expect("main value declaration");
+        let annotation = report
+            .annotated_exprs
+            .iter()
+            .find(|annotation| annotation.span.start == use_start)
+            .expect("identifier annotation");
+
+        assert_eq!(
+            annotation
+                .resolved_binding
+                .as_ref()
+                .map(|binding| binding.span.start),
+            Some(declaration_start)
         );
     }
 

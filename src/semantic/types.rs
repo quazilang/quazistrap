@@ -216,6 +216,15 @@ pub struct SemanticSuggestion {
     pub span: Option<Span>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBinding {
+    /// Canonical semantic symbol name, which distinguishes bindings that share
+    /// an enclosing declaration span (such as a function and its parameters).
+    pub name: String,
+    pub span: Span,
+    pub kind: SymbolKind,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExprAnnotation {
     pub span: Span,
@@ -227,6 +236,9 @@ pub struct ExprAnnotation {
     pub resolved_fn: Option<String>,
     /// Canonical binding name for an imported C data symbol.
     pub resolved_global: Option<String>,
+    /// Declaration span of the binding referenced by this expression. This is
+    /// stable across shadowed names and is used by tooling navigation.
+    pub resolved_binding: Option<ResolvedBinding>,
     /// If true, codegen should load the value pointed to by this reference expression.
     /// Set when a `&T` expression is used in a context that expects the value `T`.
     pub auto_deref: bool,

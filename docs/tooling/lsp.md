@@ -16,12 +16,17 @@ synchronization. The server reports its version from the compiler package.
 
 - Diagnostics after open, full-document change, and save.
 - Hover information from semantic types and constant evaluation.
-- Go-to-definition for symbols resolved by the current document analysis.
+- Go-to-definition for semantic call targets, including methods, plus
+  best-effort resolution of local declarations in the current document.
 - Completion for `std.*` module paths and public module symbols.
 - General identifier completion from the current document's semantic symbol
   snapshot. Suggestions include functions, types, variables, and parameters
   declared before the cursor.
 - Whole-document formatting.
+- Document symbols for user declarations in the current open document.
+- Signature help for functions known to the current semantic snapshot.
+- References and rename for semantic bindings within the current open document.
+- Full-document semantic tokens for lexical tokens and known semantic symbols.
 
 Completion uses the most recent successful semantic analysis. While a document
 has a parse error, only the filesystem-backed `std.*` path completion is
@@ -34,8 +39,8 @@ than a name-resolution guarantee.
 
 - Text synchronization is full-document only; incremental edits are not
   negotiated.
-- References, rename, signature help, workspace symbols, semantic tokens,
-  inlay hints, code actions, cancellation, and workspace-wide indexing are not
+- Cross-file references and rename, workspace symbols, inlay hints, code
+  actions, cancellation, and workspace-wide indexing are not
   implemented.
 - Diagnostics and navigation operate on the current document only. Imported
   source locations are not yet exposed as cross-file locations.
@@ -44,10 +49,11 @@ than a name-resolution guarantee.
 
 ## Verification
 
-Run the focused completion checks from the compiler repository:
+Run the focused LSP checks from the compiler repository:
 
 ```bash
-$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --offline lsp::completion
+env RUSTC=$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc \
+  $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --offline lsp::
 ```
 
 The compiler test suite also compiles the server implementation. Real editor

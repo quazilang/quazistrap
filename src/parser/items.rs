@@ -42,7 +42,12 @@ impl Parser {
                 } else {
                     false
                 };
-                let param_name = self.parse_ident()?;
+                let param_name_token = self.expect_ident_token()?;
+                let param_name = match param_name_token.kind {
+                    TokenKind::Ident(name) => name,
+                    _ => unreachable!("expect_ident_token returned a non-identifier"),
+                };
+                let param_name_span = to_ast_span(param_name_token.span);
                 self.expect(TokenKind::Colon)?;
                 let param_ty = self.parse_type()?;
                 let is_last = self.at(TokenKind::RParen);
@@ -53,6 +58,7 @@ impl Parser {
                 }
                 params.push(Param {
                     name: param_name,
+                    name_span: param_name_span,
                     ty: param_ty,
                     variadic,
                     attributes: param_attributes,

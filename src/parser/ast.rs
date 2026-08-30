@@ -434,6 +434,7 @@ pub enum ForLoop {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
+    pub name_span: Span,
     pub ty: Type,
     pub variadic: bool,
     pub attributes: Vec<Attribute>,
