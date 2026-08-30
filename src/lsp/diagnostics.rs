@@ -74,22 +74,21 @@ pub fn parse_error_range(rendered: &str, source: &str) -> Range {
     let char_idx = col.saturating_sub(1);
     let max_line = source.lines().count().saturating_sub(1) as u32;
     let line_idx = line_idx.min(max_line);
-    let line_len = source
-        .lines()
-        .nth(line_idx as usize)
-        .map(|line| line.chars().count() as u32)
-        .unwrap_or(0);
-    let char_idx = char_idx.min(line_len);
-    let end = if char_idx < line_len {
-        char_idx + 1
-    } else {
-        char_idx
-    };
+    let line = source.lines().nth(line_idx as usize).unwrap_or("");
+    let scalar_len = line.chars().count() as u32;
+    let char_idx = char_idx.min(scalar_len);
+    let start = line
+        .chars()
+        .take(char_idx as usize)
+        .map(char::len_utf16)
+        .sum::<usize>() as u32;
+    let end = line
+        .chars()
+        .nth(char_idx as usize)
+        .map(|ch| start + ch.len_utf16() as u32)
+        .unwrap_or(start);
 
-    Range::new(
-        Position::new(line_idx, char_idx),
-        Position::new(line_idx, end),
-    )
+    Range::new(Position::new(line_idx, start), Position::new(line_idx, end))
 }
 
 fn parse_rendered_location(message: &str) -> Option<(u32, u32)> {
@@ -118,5 +117,14 @@ mod tests {
         let range = parse_error_range(input, source);
         assert_eq!(range.start.line, 3);
         assert_eq!(range.start.character, 0);
+    }
+
+    #[test]
+    fn parse_error_range_uses_utf16_columns() {
+        let source = "🚀x";
+        let input = "error[E01]: expected identifier\n  --> 1:2";
+        let range = parse_error_range(input, source);
+        assert_eq!(range.start.character, 2);
+        assert_eq!(range.end.character, 3);
     }
 }

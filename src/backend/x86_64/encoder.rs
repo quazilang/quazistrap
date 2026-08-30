@@ -18,11 +18,11 @@ use std::collections::HashMap;
 use iced_x86::code_asm::*;
 
 use crate::abi::{AbiSignature, AbiType, ForeignSymbol};
-use crate::backend::{BackendError, TargetSpec, target::Abi};
-use crate::bytecode::{Chunk, ConstPoolEntry, Opcode, instruction::MemWidth};
+use crate::backend::{target::Abi, BackendError, TargetSpec};
+use crate::bytecode::{instruction::MemWidth, Chunk, ConstPoolEntry, Opcode};
 
 use super::relocations::{PendingReloc, RelocKind};
-use super::sysv_abi::{EightbyteClass, TypeClass, classify};
+use super::sysv_abi::{classify, EightbyteClass, TypeClass};
 
 // ── Calling-convention register tables ──────────────────────────────────────
 
@@ -837,7 +837,13 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.add(rsp, stack_size as i32));
                         }
                     }
-                    emit!(asm.mov(slot(dst), rax));
+                    // Multi-slot results are returned through a hidden sret
+                    // buffer passed as the first argument; the caller already
+                    // reserved that buffer and will copy from it, so do not
+                    // overwrite the destination with rax.
+                    if instr.flags <= 1 {
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     pending_args.clear();
                 }
 
@@ -876,7 +882,10 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.add(rsp, stack_size as i32));
                         }
                     }
-                    emit!(asm.mov(slot(dst), rax));
+                    // See CallIdx: multi-slot results use a hidden sret buffer.
+                    if instr.flags <= 1 {
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     pending_args.clear();
                 }
 
@@ -1988,7 +1997,22 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::Ret) => {
-                emit!(asm.mov(rax, slot(instr.ops[0])));
+                let result_slots = instr.flags as usize;
+                if result_slots > 1 {
+                    // r0 holds the hidden sret pointer; r1..rN hold the result.
+                    // Caller stack slots grow downward, so slot(base+offset) lives
+                    // at address base - offset*8. Write the result block in that
+                    // order so the caller's reserved block is contiguous by register
+                    // number.
+                    let sret_ptr = instr.ops[0];
+                    emit!(asm.mov(r10, slot(sret_ptr)));
+                    for offset in 0..result_slots {
+                        emit!(asm.mov(rax, slot((1 + offset) as u8)));
+                        emit!(asm.mov(qword_ptr(r10 - (offset * 8) as i32), rax));
+                    }
+                } else {
+                    emit!(asm.mov(rax, slot(instr.ops[0])));
+                }
                 emit!(asm.mov(rsp, rbp));
                 emit!(asm.pop(rbp));
                 emit!(asm.ret());
@@ -2054,27 +2078,56 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::ArrayStore) => {
-                // RRR: ops[0]=val, ops[1]=base_ptr, ops[2]=idx — base[idx*8] = val
+                // RRR: ops[0]=val_base, ops[1]=base_ptr, ops[2]=idx
+                // flags = number of slots in the element value.
                 let (val, base, idx) = instr.rrr();
+                let slots = instr.flags as usize;
+                let slots = if slots == 0 { 1 } else { slots };
                 emit!(asm.mov(rax, slot(base)));
                 emit!(asm.mov(rcx, slot(idx)));
-                emit!(asm.mov(rdx, 8i64));
-                emit!(asm.imul_2(rcx, rdx));
+                if slots > 1 {
+                    emit!(asm.mov(rdx, (slots * 8) as i64));
+                    emit!(asm.imul_2(rcx, rdx));
+                } else {
+                    emit!(asm.shl(rcx, 3i32));
+                }
                 emit!(asm.add(rax, rcx));
-                emit!(asm.mov(rcx, slot(val)));
-                emit!(asm.mov(qword_ptr(rax), rcx));
+                for offset in 0..slots {
+                    emit!(asm.mov(rdx, slot(val + offset as u8)));
+                    emit!(asm.mov(qword_ptr(rax + (offset * 8) as i32), rdx));
+                }
             }
 
             Some(Opcode::ArrayLoad) => {
-                // RRR: ops[0]=dst, ops[1]=base_ptr, ops[2]=idx — dst = base[idx*8]
+                // RRR: ops[0]=dst_base, ops[1]=base_ptr, ops[2]=idx
+                // flags = number of slots in the element value.
+                // For multi-slot elements dst_base holds the hidden sret pointer
+                // provided by the caller; copy the element into that buffer.
                 let (dst, base, idx) = instr.rrr();
-                emit!(asm.mov(rax, slot(base)));
-                emit!(asm.mov(rcx, slot(idx)));
-                emit!(asm.mov(rdx, 8i64));
-                emit!(asm.imul_2(rcx, rdx));
-                emit!(asm.add(rax, rcx));
-                emit!(asm.mov(rax, qword_ptr(rax)));
-                emit!(asm.mov(slot(dst), rax));
+                let slots = instr.flags as usize;
+                let slots = if slots == 0 { 1 } else { slots };
+                if slots > 1 {
+                    emit!(asm.mov(rdi, slot(dst))); // sret pointer
+                    emit!(asm.mov(rax, slot(base)));
+                    emit!(asm.mov(rcx, slot(idx)));
+                    emit!(asm.mov(rdx, (slots * 8) as i64));
+                    emit!(asm.imul_2(rcx, rdx));
+                    emit!(asm.add(rax, rcx));
+                    for offset in 0..slots {
+                        emit!(asm.mov(rdx, qword_ptr(rax + (offset * 8) as i32)));
+                        // Register blocks grow downward in the stack frame.
+                        // `dst` points at the first slot, so later slots must
+                        // follow the same descending-address convention as Ret.
+                        emit!(asm.mov(qword_ptr(rdi - (offset * 8) as i32), rdx));
+                    }
+                } else {
+                    emit!(asm.mov(rax, slot(base)));
+                    emit!(asm.mov(rcx, slot(idx)));
+                    emit!(asm.shl(rcx, 3i32));
+                    emit!(asm.add(rax, rcx));
+                    emit!(asm.mov(rax, qword_ptr(rax)));
+                    emit!(asm.mov(slot(dst), rax));
+                }
             }
 
             Some(Opcode::Syscall) => {
@@ -2595,7 +2648,7 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.test(rax, rax));
                             emit!(asm.je(allocation_failed));
                             emit!(asm.mov(rbx, rax)); // rbx = thread_storage_ptr
-                            // pthread_create(storage, NULL, fn_ptr, NULL)
+                                                      // pthread_create(storage, NULL, fn_ptr, NULL)
                             emit!(asm.mov(rdi, rbx));
                             emit!(asm.xor(rsi, rsi));
                             emit!(asm.mov(rdx, slot(dst)));
@@ -3256,10 +3309,12 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(rax, 0x736c6166u64 as i64)); // "fals" LE
                         if is_win64 {
                             emit!(asm.mov(dword_ptr(rcx), eax));
-                            emit!(asm.mov(word_ptr(rcx + 4i32), 0x65u32 as i32)); // "e\0"
+                            emit!(asm.mov(word_ptr(rcx + 4i32), 0x65u32 as i32));
+                        // "e\0"
                         } else {
                             emit!(asm.mov(dword_ptr(rdi), eax));
-                            emit!(asm.mov(word_ptr(rdi + 4i32), 0x65u32 as i32)); // "e\0"
+                            emit!(asm.mov(word_ptr(rdi + 4i32), 0x65u32 as i32));
+                            // "e\0"
                         }
                         emit!(asm.set_label(&mut lbl_end));
                     }
@@ -3721,7 +3776,7 @@ mod tests {
     use crate::abi::{AbiField, ForeignGlobal};
     use crate::backend::target::{Arch, Os};
     use crate::bytecode::instruction::{call_c_reg, ri16, rrr};
-    use iced_x86::{Decoder, DecoderOptions, Mnemonic};
+    use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 
     fn pair_type() -> AbiType {
         AbiType::Aggregate {
@@ -3777,6 +3832,31 @@ mod tests {
             result.push(decoder.decode().mnemonic());
         }
         result
+    }
+
+    #[test]
+    fn multi_slot_array_load_writes_sret_in_register_block_order() {
+        let mut chunk = Chunk::with_params("multi_slot_array_load", 3);
+        let mut load = rrr(Opcode::ArrayLoad, 0, 1, 2);
+        load.flags = 3;
+        chunk.emit(load);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let (bytes, _) = encode(&chunk, Abi::SysV);
+        let mut decoder = Decoder::new(64, &bytes, DecoderOptions::NONE);
+        let mut displacements = Vec::new();
+        while decoder.can_decode() {
+            let instruction = decoder.decode();
+            if instruction.mnemonic() == Mnemonic::Mov
+                && instruction.op0_kind() == OpKind::Memory
+                && instruction.memory_base() == Register::RDI
+                && instruction.op1_register() == Register::RDX
+            {
+                displacements.push(instruction.memory_displacement64() as i64);
+            }
+        }
+
+        assert_eq!(displacements, vec![0, -8, -16]);
     }
 
     #[test]
@@ -3845,11 +3925,9 @@ mod tests {
 
             let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
             assert!(!windows_bytes.is_empty());
-            assert!(
-                windows_relocs
-                    .iter()
-                    .any(|reloc| reloc.symbol == "BCryptGenRandom")
-            );
+            assert!(windows_relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "BCryptGenRandom"));
         }
     }
 
@@ -3864,22 +3942,18 @@ mod tests {
         let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
         let linux_mnemonics = mnemonics(&linux_bytes);
         assert!(linux_relocs.iter().any(|reloc| reloc.symbol == "malloc"));
-        assert!(
-            linux_relocs
-                .iter()
-                .any(|reloc| reloc.symbol == "pthread_create")
-        );
+        assert!(linux_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "pthread_create"));
         assert!(linux_relocs.iter().any(|reloc| reloc.symbol == "free"));
         assert!(linux_mnemonics.contains(&Mnemonic::Je));
         assert!(linux_mnemonics.contains(&Mnemonic::Jne));
 
         let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
         assert!(!windows_bytes.is_empty());
-        assert!(
-            windows_relocs
-                .iter()
-                .any(|reloc| reloc.symbol == "CreateThread")
-        );
+        assert!(windows_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "CreateThread"));
         assert!(!windows_relocs.iter().any(|reloc| reloc.symbol == "free"));
     }
 
@@ -3908,25 +3982,19 @@ mod tests {
             .position(|instruction| instruction.memory_base() == Register::RBX)
             .expect("Linux join must load pthread_t through its storage handle");
         assert!(guard < handle_deref);
-        assert!(
-            linux_relocs
-                .iter()
-                .any(|reloc| reloc.symbol == "pthread_join")
-        );
+        assert!(linux_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "pthread_join"));
         assert!(linux_relocs.iter().any(|reloc| reloc.symbol == "free"));
 
         let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
         assert!(mnemonics(&windows_bytes).contains(&Mnemonic::Je));
-        assert!(
-            windows_relocs
-                .iter()
-                .any(|reloc| reloc.symbol == "WaitForSingleObject")
-        );
-        assert!(
-            windows_relocs
-                .iter()
-                .any(|reloc| reloc.symbol == "CloseHandle")
-        );
+        assert!(windows_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "WaitForSingleObject"));
+        assert!(windows_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "CloseHandle"));
     }
 
     #[test]
@@ -3963,11 +4031,9 @@ mod tests {
         for abi in [Abi::SysV, Abi::Win64] {
             let (bytes, relocs) = encode(&chunk, abi);
             assert!(!bytes.is_empty());
-            assert!(
-                relocs
-                    .iter()
-                    .any(|reloc| reloc.symbol == "native_transform")
-            );
+            assert!(relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "native_transform"));
             assert!(relocs.iter().any(|reloc| reloc.symbol == "malloc"));
         }
     }
@@ -3998,11 +4064,9 @@ mod tests {
         for abi in [Abi::SysV, Abi::Win64] {
             let (bytes, relocs) = encode(&chunk, abi);
             assert!(!bytes.is_empty());
-            assert!(
-                !relocs
-                    .iter()
-                    .any(|reloc| reloc.symbol == "<function-pointer>")
-            );
+            assert!(!relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "<function-pointer>"));
         }
     }
 

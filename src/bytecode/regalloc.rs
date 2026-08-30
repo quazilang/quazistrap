@@ -251,8 +251,9 @@ pub fn linear_scan_alloc(chunk: &mut Chunk) {
 }
 
 // Registers that must keep their current slot numbers.
-// Params obey the calling convention. Consecutive groups (Lea/Intrinsic/Syscall)
-// must stay consecutive because the encoder infers adjacent slots by arithmetic.
+// Params obey the calling convention. Consecutive groups and the multi-slot
+// return ABI must stay consecutive because the encoder infers adjacent slots by
+// arithmetic.
 fn compute_pinned(chunk: &Chunk) -> HashSet<u8> {
     let mut pinned = HashSet::new();
 
@@ -267,6 +268,18 @@ fn compute_pinned(chunk: &Chunk) -> HashSet<u8> {
         if (op == Opcode::Intrinsic as u8 || op == Opcode::Syscall as u8) && instr.flags > 1 {
             for i in 0..instr.flags {
                 pinned.insert(instr.ops[0].wrapping_add(i));
+            }
+        }
+        if op == Opcode::ArrayStore as u8 && instr.flags > 1 {
+            for i in 0..instr.flags {
+                pinned.insert(instr.ops[0].wrapping_add(i));
+            }
+        }
+        if op == Opcode::Ret as u8 && instr.flags > 1 {
+            // Multi-slot returns use r0 as the hidden sret pointer and write
+            // the value block from the fixed ABI registers r1..rN.
+            for i in 0..=instr.flags {
+                pinned.insert(i);
             }
         }
     }
@@ -411,6 +424,9 @@ fn instr_def(instr: &Instruction) -> Option<u8> {
         | Opcode::Store
         | Opcode::FieldStore
         | Opcode::ArrayStore => None,
+        // Multi-slot ArrayLoad writes through ops[0], which is a hidden sret
+        // pointer rather than a destination register.
+        Opcode::ArrayLoad if instr.flags > 1 => None,
         _ => Some(instr.ops[0]),
     }
 }
@@ -420,6 +436,10 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
         return vec![];
     };
     match op {
+        // A multi-slot return writes r1..rN through the hidden sret pointer
+        // in ops[0]. The regular form returns only ops[0] in the native result
+        // register.
+        Opcode::Ret if instr.flags > 1 => (0..=instr.flags).collect(),
         Opcode::Ret => vec![instr.ops[0]],
 
         Opcode::Nop
@@ -492,9 +512,21 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
         Opcode::Cmp => vec![instr.ops[1], instr.ops[2]],
 
         // ArrayStore: ops[0]=val, ops[1]=base, ops[2]=idx — all sources.
+        // The multi-slot form reads a contiguous value block from ops[0].
+        Opcode::ArrayStore if instr.flags > 1 => {
+            let mut uses: Vec<_> = (0..instr.flags)
+                .map(|offset| instr.ops[0].wrapping_add(offset))
+                .collect();
+            uses.extend([instr.ops[1], instr.ops[2]]);
+            uses
+        }
         Opcode::ArrayStore => vec![instr.ops[0], instr.ops[1], instr.ops[2]],
 
-        // ArrayLoad: ops[0]=dst, ops[1]=base, ops[2]=idx.
+        // A single-slot ArrayLoad defines ops[0]. The multi-slot form writes
+        // through its ops[0] sret pointer, so all three operands are sources.
+        Opcode::ArrayLoad if instr.flags > 1 => {
+            vec![instr.ops[0], instr.ops[1], instr.ops[2]]
+        }
         Opcode::ArrayLoad => vec![instr.ops[1], instr.ops[2]],
 
         // Two-source RRR: ops[0]=dst, ops[1]=src1, ops[2]=src2.
@@ -637,5 +669,96 @@ mod tests {
         assert_eq!(chunk.code[200].ops[0], 200, "pinned slot must stay fixed");
         assert_eq!(chunk.code[201].ops[0], 201, "next free slot is preserved");
         assert_eq!(chunk.reg_count, 202);
+    }
+
+    #[test]
+    fn multi_slot_array_load_is_not_eliminated_as_a_dead_register_definition() {
+        let mut chunk = Chunk::with_params("array_load_sret", 4);
+        chunk.emit(mem_lea_block(0, 1, 0, 3));
+        let mut load = rrr(Opcode::ArrayLoad, 1, 2, 3);
+        load.flags = 3;
+        chunk.emit(load);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        elim_dead_regs(&mut chunk);
+
+        assert!(
+            chunk
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode() == Some(Opcode::ArrayLoad)),
+            "a multi-slot ArrayLoad writes through its sret pointer and must survive DCE"
+        );
+    }
+
+    #[test]
+    fn multi_slot_array_store_keeps_every_value_register_live() {
+        let mut chunk = Chunk::with_params("array_store_block", 2);
+        chunk.emit(ri16(Opcode::MovI, 3, 4));
+        chunk.emit(ri16(Opcode::MovI, 4, 5));
+        chunk.emit(ri16(Opcode::MovI, 5, 6));
+        let mut store = rrr(Opcode::ArrayStore, 3, 0, 1);
+        store.flags = 3;
+        chunk.emit(store);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        elim_dead_regs(&mut chunk);
+
+        assert_eq!(
+            chunk
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode() == Some(Opcode::MovI))
+                .count(),
+            3,
+            "a multi-slot ArrayStore must retain every source slot"
+        );
+    }
+
+    #[test]
+    fn multi_slot_return_keeps_every_result_register_live() {
+        let mut chunk = Chunk::with_params("return_sret", 4);
+        chunk.emit(ri16(Opcode::MovI, 1, 4));
+        chunk.emit(ri16(Opcode::MovI, 2, 5));
+        chunk.emit(ri16(Opcode::MovI, 3, 6));
+        let mut ret = rrr(Opcode::Ret, 0, 0, 0);
+        ret.flags = 3;
+        chunk.emit(ret);
+
+        elim_dead_regs(&mut chunk);
+
+        assert_eq!(
+            chunk
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode() == Some(Opcode::MovI))
+                .count(),
+            3,
+            "a multi-slot return must retain every result register"
+        );
+    }
+
+    #[test]
+    fn multi_slot_return_keeps_result_slots_in_abi_order() {
+        let mut chunk = Chunk::with_params("return_sret", 1);
+        chunk.emit(ri16(Opcode::MovI, 4, 4));
+        chunk.emit(ri16(Opcode::MovI, 5, 5));
+        chunk.emit(ri16(Opcode::MovI, 6, 6));
+        chunk.emit(rrr(Opcode::Mov, 1, 4, 0));
+        chunk.emit(rrr(Opcode::Mov, 2, 5, 0));
+        chunk.emit(rrr(Opcode::Mov, 3, 6, 0));
+        let mut ret = rrr(Opcode::Ret, 0, 0, 0);
+        ret.flags = 3;
+        chunk.emit(ret);
+
+        linear_scan_alloc(&mut chunk);
+
+        let result_copies: Vec<_> = chunk
+            .code
+            .iter()
+            .filter(|instr| instr.opcode == Opcode::Mov as u8)
+            .map(|instr| (instr.ops[0], instr.ops[1]))
+            .collect();
+        assert_eq!(result_copies, vec![(1, 4), (2, 5), (3, 6)]);
     }
 }

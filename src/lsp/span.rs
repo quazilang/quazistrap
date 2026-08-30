@@ -6,41 +6,96 @@ use tower_lsp::lsp_types::{Position, Range};
 
 use crate::parser::ast::Span;
 
-pub fn span_to_range(span: Span, _source: &str) -> Range {
-    let start = Position {
-        line: span.line.saturating_sub(1) as u32,
-        character: span.col.saturating_sub(1) as u32,
-    };
-    let end = Position {
-        line: start.line,
-        character: start.character + (span.end.saturating_sub(span.start)) as u32,
-    };
-    Range { start, end }
+/// Convert compiler span offsets (Unicode scalar indexes) to LSP UTF-16
+/// positions. Compiler line/column fields cannot be used directly because LSP
+/// counts supplementary Unicode scalars as two code units.
+pub fn span_to_range(span: Span, source: &str) -> Range {
+    Range {
+        start: char_offset_to_position(span.start, source),
+        end: char_offset_to_position(span.end, source),
+    }
 }
 
 pub fn position_to_byte_offset(pos: Position, source: &str) -> Option<usize> {
-    let mut current_line = 0u32;
-    let mut line_start = 0usize;
-    for (i, ch) in source.char_indices() {
-        if current_line == pos.line {
-            let line_bytes = &source[line_start..];
-            let mut col_utf16 = 0u32;
-            for (j, c) in line_bytes.char_indices() {
-                if col_utf16 == pos.character {
-                    return Some(line_start + j);
-                }
-                col_utf16 += if (c as u32) < 0x10000 { 1 } else { 2 };
+    let mut line = 0u32;
+    let mut utf16_column = 0u32;
+    for (byte_offset, ch) in source.char_indices() {
+        if line == pos.line {
+            if utf16_column == pos.character {
+                return Some(byte_offset);
             }
-            return Some(line_start + line_bytes.len());
+            if ch == '\n' {
+                return None;
+            }
+            let width = ch.len_utf16() as u32;
+            if pos.character < utf16_column + width {
+                return None;
+            }
+            utf16_column += width;
         }
         if ch == '\n' {
-            current_line += 1;
-            line_start = i + 1;
+            line += 1;
+            utf16_column = 0;
         }
     }
-    if current_line == pos.line {
+    if line == pos.line && utf16_column == pos.character {
         Some(source.len())
     } else {
         None
+    }
+}
+
+pub fn position_to_char_offset(pos: Position, source: &str) -> Option<usize> {
+    let byte_offset = position_to_byte_offset(pos, source)?;
+    byte_offset_to_char_offset(byte_offset, source)
+}
+
+pub fn byte_offset_to_char_offset(byte_offset: usize, source: &str) -> Option<usize> {
+    source
+        .get(..byte_offset)
+        .map(|prefix| prefix.chars().count())
+}
+
+pub fn char_offset_to_position(offset: usize, source: &str) -> Position {
+    let mut line = 0u32;
+    let mut utf16_column = 0u32;
+    for (char_offset, ch) in source.chars().enumerate() {
+        if char_offset == offset {
+            return Position::new(line, utf16_column);
+        }
+        if ch == '\n' {
+            line += 1;
+            utf16_column = 0;
+        } else {
+            utf16_column += ch.len_utf16() as u32;
+        }
+    }
+    Position::new(line, utf16_column)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{position_to_byte_offset, span_to_range};
+    use crate::parser::ast::Span;
+    use tower_lsp::lsp_types::Position;
+
+    #[test]
+    fn converts_unicode_scalar_spans_to_utf16_ranges() {
+        let source = "const rocket = \"🚀\";\n";
+        let start = source.find('🚀').expect("rocket byte offset");
+        let start_chars = source[..start].chars().count();
+        let range = span_to_range(
+            Span::new(1, start_chars + 1, start_chars, start_chars + 1),
+            source,
+        );
+        let utf16_start = source[..start].encode_utf16().count() as u32;
+        assert_eq!(range.start, Position::new(0, utf16_start));
+        assert_eq!(range.end, Position::new(0, utf16_start + 2));
+    }
+
+    #[test]
+    fn rejects_positions_inside_a_utf16_surrogate_pair() {
+        assert_eq!(position_to_byte_offset(Position::new(0, 1), "🚀"), None);
+        assert_eq!(position_to_byte_offset(Position::new(0, 2), "🚀"), Some(4));
     }
 }

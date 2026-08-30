@@ -14,6 +14,7 @@ older QZI artifacts subject to the v7 ownership, runtime-`any`, and explicit
 `Lea` metadata restrictions documented in [QZI v7](qzi-v7.md).
 
 No Quazi source changes are expected for ordinary scalar or handle-based
-container code. Multi-register generic values such as `Array[[i32; 3]]` are
-still rejected at generic function boundaries until the remaining phase-2
-register-block ABI work lands.
+container code. The v8 compiler supports multi-register values at ordinary and
+generic function boundaries, including `Array[[i32; 3]]` and `Box[[i32; 3]]`.
+Multi-slot variadic elements, inline enum payloads, and inline struct fields
+remain outside this ABI milestone.

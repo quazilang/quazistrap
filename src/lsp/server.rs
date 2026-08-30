@@ -158,7 +158,11 @@ impl LanguageServer for VoidLanguageServer {
         let uri = &params.text_document_position.text_document.uri;
         let docs = self.documents.read().await;
         if let Some(doc) = docs.get(uri) {
-            return Ok(completion::complete_at(&doc.source, pos));
+            return Ok(completion::complete_with_report(
+                &doc.source,
+                pos,
+                doc.report.as_ref(),
+            ));
         }
         Ok(None)
     }

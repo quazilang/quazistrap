@@ -61,32 +61,17 @@ impl Analyzer {
         };
         self.fn_value_layouts.insert(key, record);
 
-        for param in params {
-            let physical_ty = self.resolve_type_aliases(param);
+        // Multi-slot register-block parameters and results are now supported
+        // by the internal ABI. Variadic elements remain gated because the
+        // call-site expansion still assumes one slot per vararg.
+        if let Some(element) = variadic_element {
+            let physical_ty = self.resolve_type_aliases(element);
             if !crate::runtime_layout::runtime_value_layout(&physical_ty).fits_single_slot() {
                 self.push_error(
                     span,
                     "S14",
                     format!(
-                        "specialization `{function}` cannot pass `{physical_ty}` through the current one-slot internal generic ABI"
-                    ),
-                );
-            }
-        }
-
-        if let Some(return_ty) = return_ty {
-            let resolved = self.resolve_type_aliases(return_ty);
-            let layout = crate::runtime_layout::runtime_value_layout(&resolved);
-            if !matches!(
-                layout,
-                crate::runtime_layout::RuntimeValueLayout::Empty
-                    | crate::runtime_layout::RuntimeValueLayout::Slot
-            ) {
-                self.push_error(
-                    span,
-                    "S14",
-                    format!(
-                        "specialization `{function}` cannot return `{resolved}` through the current one-slot internal generic ABI"
+                        "specialization `{function}` cannot pass variadic `{physical_ty}` through the current one-slot internal ABI"
                     ),
                 );
             }
@@ -222,10 +207,15 @@ impl Analyzer {
                     .iter()
                     .any(|a| a.name == "syscall" || a.name == "api" || a.name == "intrinsic");
                 if !is_foreign {
+                    // Fixed parameters and results may use the multi-slot
+                    // register-block ABI. Variadic parameters remain limited to
+                    // one slot until vararg packing is generalized.
                     for param in params {
+                        if !param.variadic {
+                            continue;
+                        }
                         let resolved = self.resolve_type_aliases(&param.ty.node);
                         let erased_format_param = erased_format_variadic
-                            && param.variadic
                             && matches!(resolved, TypeKind::Any);
                         if !erased_format_param
                             && !crate::runtime_layout::runtime_value_layout(&resolved)
@@ -235,28 +225,11 @@ impl Analyzer {
                                 param.ty.span,
                                 "S14",
                                 format!(
-                                    "{} cannot be passed by value in parameter `{}` through the current one-slot internal ABI",
+                                    "{} cannot be passed by value in variadic parameter `{}` through the current one-slot internal ABI",
                                     resolved, param.name
                                 ),
                             );
                         }
-                    }
-                    let resolved_return = self.resolve_type_aliases(&return_ty.node);
-                    let return_layout =
-                        crate::runtime_layout::runtime_value_layout(&resolved_return);
-                    if !matches!(
-                        return_layout,
-                        crate::runtime_layout::RuntimeValueLayout::Empty
-                            | crate::runtime_layout::RuntimeValueLayout::Slot
-                    ) {
-                        self.push_error(
-                            return_ty.span,
-                            "S14",
-                            format!(
-                                "{} cannot be returned by value through the current one-slot internal ABI",
-                                resolved_return
-                            ),
-                        );
                     }
                 }
                 // Functions with raw pointer params/return must be declared unsafe fn.
@@ -4564,22 +4537,6 @@ impl Analyzer {
                 }
                 // Fixed arrays are contiguous register blocks whose elements
                 // must each fit one slot; nested multi-slot elements are
-                // rejected until element layout drives storage.
-                if let Some(elem) = &elem_ty {
-                    let resolved = self.resolve_type_aliases(elem);
-                    if !matches!(resolved, TypeKind::Error)
-                        && !crate::runtime_layout::runtime_value_layout(&resolved)
-                            .fits_single_slot()
-                    {
-                        self.push_error(
-                            expr.span,
-                            "S14",
-                            format!(
-                                "fixed arrays cannot store `{resolved}` elements through the current one-slot element representation"
-                            ),
-                        );
-                    }
-                }
                 let elem_spanned = elem_ty
                     .clone()
                     .map(|k| crate::parser::ast::Spanned::new(k, expr.span));

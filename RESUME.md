@@ -17,7 +17,32 @@ Note: the rustup proxies were unreliable during this checkpoint. Use
 `$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin` directly for
 cargo/rustc (1.98.0).
 
-## Implemented in this checkpoint (2026-08-30, second entry)
+## Implemented in this checkpoint (2026-08-30, third entry)
+
+Phase 2 of the generic-storage design is implemented and verified:
+
+- Codegen consumes canonical layout records through a derived mangled-name
+  lookup. Multi-slot parameters reserve contiguous registers; multi-slot
+  results use a hidden sret pointer and fixed `r1..rN` result slots.
+- `ArrayLoad`/`ArrayStore` encode element slot count for stride and block copy.
+  Array and Box wrappers lower concrete multi-slot storage directly rather
+  than invoking the one-slot generic template.
+- The allocator preserves multi-slot store sources, sret load effects, and
+  return slots through DCE and register remapping. Missing specializations are
+  code-generation errors, not template fallbacks.
+- The contained LSP gained semantic identifier completion and UTF-16 position
+  conversion; `docs/tooling/lsp.md` documents capabilities and limits.
+
+Verification: `cargo test --offline` passes 465 tests, the native
+`examples/35-multi-slot-arrays` project prints all expected triples, and a
+`Box[[i32; 3]]` round trip exits zero. Targeted rustfmt checks and
+`git diff --check` pass.
+
+The still-open Phase 2 representation issue is values wider than the 255-slot
+register-block limit. It requires an explicit indirect-value design; do not
+relax the current compile error without that representation and tests.
+
+## Prior checkpoint (2026-08-30, second entry)
 
 Phase 1 of the generic-storage design (`docs/internals/generic-storage-layout.md`):
 

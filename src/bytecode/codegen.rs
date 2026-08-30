@@ -204,6 +204,10 @@ fn abi_type_from_layout(
 
 pub struct Codegen<'a> {
     report: &'a SemanticReport,
+    /// Layout records are canonical in semantic analysis, while bytecode chunks
+    /// are addressed by monomorphized names. Keep a derived codegen lookup so
+    /// the latter never falls back to the historical one-slot ABI.
+    fn_value_layouts: HashMap<String, crate::runtime_layout::FnValueLayout>,
     fn_index: HashMap<String, u16>,
     const_map: HashMap<(usize, usize), ConstValue>,
     type_map: HashMap<(usize, usize), TypeKind>,
@@ -282,8 +286,22 @@ impl<'a> Codegen<'a> {
                 variadic_fn_info.insert(entry.name.clone(), fixed);
             }
         }
+        let mut fn_value_layouts = report.fn_value_layouts.clone();
+        for mono in &report.monomorphizations {
+            let type_args = mono
+                .type_args
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let canonical_name = format!("{}<{type_args}>", mono.fn_name);
+            if let Some(layout) = report.fn_value_layouts.get(&canonical_name) {
+                fn_value_layouts.insert(mono.mangled_name.clone(), layout.clone());
+            }
+        }
         Self {
             report,
+            fn_value_layouts,
             fn_index: HashMap::new(),
             const_map,
             type_map,
@@ -1262,6 +1280,20 @@ impl<'a> Codegen<'a> {
                         continue;
                     }
 
+                    // The inline pass only knows how to move a single return
+                    // register into the caller's destination. Multi-slot
+                    // register-block returns use a hidden sret buffer and are
+                    // left as real calls until the inline expander is generalized.
+                    let result_slots = self
+                        .fn_value_layouts
+                        .get(callee_name.as_str())
+                        .and_then(|layout| layout.result.layout.slot_count())
+                        .unwrap_or(1);
+                    if result_slots > 1 {
+                        i += 1;
+                        continue;
+                    }
+
                     // Collect preceding CallArg instructions.
                     let (call_start, arg_regs) = if callee.variadic {
                         // Variadic: scan backward for all consecutive CallArgs.
@@ -1751,9 +1783,35 @@ impl<'a> Codegen<'a> {
             return Ok(None);
         };
 
-        // Variadic param needs 2 registers: ptr (the param name) + len (__len_<name>).
+        // Parameter binding is driven by the recorded internal-ABI layouts so
+        // multi-slot values (fixed arrays, and later owned generic blocks) occupy
+        // consecutive virtual registers. The chunk's `param_count` becomes the
+        // total number of parameter slots, not the logical parameter count.
+        // Functions returning more than one slot receive a hidden sret pointer
+        // in r0; explicit parameters start at r1.
         let has_variadic = params.last().map(|p| p.variadic).unwrap_or(false);
-        let effective_param_count = params.len() + if has_variadic { 1 } else { 0 };
+        let layouts = self.fn_value_layouts.get(name);
+        let result_slots = layouts
+            .and_then(|layout| layout.result.layout.slot_count())
+            .unwrap_or(1);
+        let needs_sret = result_slots > 1;
+        let effective_param_count = layouts
+            .map(|layout| {
+                let fixed_slots: usize = layout
+                    .params
+                    .iter()
+                    .map(|param| param.layout.slot_count().unwrap_or(1))
+                    .sum();
+                let sret_slot = if needs_sret { 1 } else { 0 };
+                fixed_slots
+                    + sret_slot
+                    + if layout.variadic_element.is_some() {
+                        2
+                    } else {
+                        0
+                    }
+            })
+            .unwrap_or_else(|| params.len() + if has_variadic { 1 } else { 0 });
         let mut fc = FnCompiler::new(
             name,
             effective_param_count,
@@ -1777,6 +1835,7 @@ impl<'a> Codegen<'a> {
             &self.str_variadic_fns,
             &self.variadic_intrinsic_fns,
             &self.report.monomorphizations,
+            &self.fn_value_layouts,
             &self.report.trait_method_slots,
             output_chunks,
             next_closure_idx,
@@ -1790,14 +1849,28 @@ impl<'a> Codegen<'a> {
         // every return and on fallthrough. Method `self` remains borrowed,
         // matching the language's receiver semantics.
         fc.drop_scopes.push(Vec::new());
-        for p in params {
+        if needs_sret {
+            let sret_reg = fc.alloc_reg();
+            fc.regs.insert("__quazi_sret".to_string(), sret_reg);
+        }
+        for (index, p) in params.iter().enumerate() {
             if p.variadic {
                 fc.bind(p.name.clone());
                 fc.local_types
                     .insert(p.name.clone(), fc.resolve_type(&p.ty.node));
                 fc.bind(format!("__len_{}", p.name));
             } else {
-                let reg = fc.bind(p.name.clone());
+                let param_slots = layouts
+                    .and_then(|layout| layout.params.get(index))
+                    .and_then(|param| param.layout.slot_count())
+                    .unwrap_or(1);
+                let reg = if param_slots > 1 {
+                    let base = fc.reserve_reg_block(param_slots);
+                    fc.regs.insert(p.name.clone(), base);
+                    base
+                } else {
+                    fc.bind(p.name.clone())
+                };
                 let param_ty = fc.resolve_type(&p.ty.node);
                 fc.local_types.insert(p.name.clone(), param_ty.clone());
                 if p.name != "self" {
@@ -1810,7 +1883,10 @@ impl<'a> Codegen<'a> {
         if fc.chunk.code.last().map(|i| i.opcode) != Some(Opcode::Ret as u8) {
             fc.emit_scope_cleanup();
             fc.chunk.emit(ri16(Opcode::MovI, 0, 0));
-            fc.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+            let result_slots = fc.result_slot_count();
+            let mut ret = rrr(Opcode::Ret, 0, 0, 0);
+            ret.flags = result_slots as u8;
+            fc.chunk.emit(ret);
         }
         fc.drop_scopes.pop();
         if let Some(error) = fc.codegen_error {
@@ -1890,21 +1966,37 @@ impl<'a> Codegen<'a> {
                 // Params are bound to r0, r1, r2 in declaration order.
                 match op {
                     Opcode::ArrayStore => {
-                        // fn __ptr_store(base: *u8, idx: usize, val: usize)
-                        // ArrayStore: val=ops[0], base=ops[1], idx=ops[2]
-                        chunk.emit(rrr(op, 2, 0, 1));
+                        // fn __ptr_store[T](base: *u8, idx: usize, val: T) void
+                        // ArrayStore: val=ops[0], base=ops[1], idx=ops[2], flags=slots(T)
+                        // The `val` parameter occupies a contiguous register block.
+                        let element_slots = self.intrinsic_element_slots(params, type_subst);
+                        let mut instr = rrr(op, 2, 0, 1);
+                        instr.flags = element_slots as u8;
+                        chunk.emit(instr);
+                        chunk.reg_count = (2 + element_slots) as u8;
                     }
                     Opcode::ArrayLoad => {
-                        // fn __ptr_load(base: *u8, idx: usize) -> usize
-                        // ArrayLoad: dst=ops[0], base=ops[1], idx=ops[2]
-                        chunk.emit(rrr(op, 0, 0, 1));
+                        // fn __ptr_load[T](base: *u8, idx: usize) T
+                        // For single-slot T: dst=ops[0], base=ops[0], idx=ops[1], flags=1.
+                        // For multi-slot T: the caller passes a hidden sret pointer in
+                        // r0; base is r1 and idx is r2. ArrayLoad writes into [r0].
+                        let element_slots = self.intrinsic_element_slots(&[], type_subst);
+                        let mut instr = if element_slots > 1 {
+                            rrr(op, 0, 1, 2)
+                        } else {
+                            rrr(op, 0, 0, 1)
+                        };
+                        instr.flags = element_slots as u8;
+                        chunk.emit(instr);
+                        chunk.reg_count = if element_slots > 1 { 3 } else { 2 };
                     }
                     _ => {
                         chunk.emit(rrr(op, 0, 0, 0));
+                        chunk.reg_count = params.len() as u8;
                     }
                 }
                 chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
-                chunk.reg_count = params.len() as u8;
+                chunk.param_count = chunk.reg_count as usize;
                 return Ok(chunk);
             }
         }
@@ -1922,6 +2014,27 @@ impl<'a> Codegen<'a> {
         chunk.reg_count = arg_count; // ensure frame covers all param slots
         chunk.variadic = params.last().map(|p| p.variadic).unwrap_or(false);
         Ok(chunk)
+    }
+
+    /// Number of QZI slots occupied by the element type of an array intrinsic.
+    /// For the generic `__ptr_store[T]` / `__ptr_load[T]` helpers this is the
+    /// concrete substitution of `T`; non-generic array intrinsics default to one
+    /// slot for backward compatibility.
+    fn intrinsic_element_slots(
+        &self,
+        params: &[crate::parser::ast::Param],
+        type_subst: &HashMap<String, TypeKind>,
+    ) -> usize {
+        let ty = type_subst
+            .get("T")
+            .cloned()
+            .or_else(|| type_subst.values().next().cloned())
+            .or_else(|| params.last().map(|p| p.ty.node.clone()))
+            .unwrap_or(TypeKind::Void);
+        let resolved = self.resolve_type_for_layout(&ty, type_subst);
+        crate::runtime_layout::runtime_value_layout(&resolved)
+            .slot_count()
+            .unwrap_or(1)
     }
 
     fn layout_intrinsic_value(
@@ -2183,6 +2296,8 @@ struct FnCompiler<'a> {
     variadic_intrinsic_fns: &'a HashSet<String>,
     /// Monomorphization info: used to resolve mangled names for generic calls.
     monomorphizations: &'a [crate::semantic::MonomorphizationInfo],
+    /// Recorded internal-ABI layouts: used to size parameter blocks at call sites.
+    fn_value_layouts: &'a HashMap<String, crate::runtime_layout::FnValueLayout>,
     /// Vtable method slot order per trait: trait name → ordered method names.
     trait_method_slots: &'a HashMap<String, Vec<String>>,
     /// Output chunks accumulator — closure chunks are pushed here.
@@ -2299,6 +2414,7 @@ impl<'a> FnCompiler<'a> {
         str_variadic_fns: &'a HashSet<String>,
         variadic_intrinsic_fns: &'a HashSet<String>,
         monomorphizations: &'a [crate::semantic::MonomorphizationInfo],
+        fn_value_layouts: &'a HashMap<String, crate::runtime_layout::FnValueLayout>,
         trait_method_slots: &'a HashMap<String, Vec<String>>,
         output_chunks: &'a mut Vec<Chunk>,
         next_closure_idx: &'a mut u16,
@@ -2334,6 +2450,7 @@ impl<'a> FnCompiler<'a> {
             str_variadic_fns,
             variadic_intrinsic_fns,
             monomorphizations,
+            fn_value_layouts,
             trait_method_slots,
             output_chunks,
             next_closure_idx,
@@ -2778,6 +2895,30 @@ impl<'a> FnCompiler<'a> {
             .map(|m| m.mangled_name.clone())
     }
 
+    /// Resolve a generic call to an emitted specialization. Falling back to an
+    /// unmangled template would reintroduce the historical one-slot ABI for a
+    /// concrete multi-slot value, so missing specializations are fatal.
+    fn require_monomorphized_name(&mut self, fn_name: &str, type_args: &[Type]) -> Option<String> {
+        let specialization = self.resolve_monomorphized_name(fn_name, type_args);
+        if let Some(name) = specialization.as_ref()
+            && self.fn_index.contains_key(name)
+        {
+            return specialization;
+        }
+
+        if self.codegen_error.is_none() {
+            let args = type_args
+                .iter()
+                .map(|arg| self.resolve_type(&arg.node).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.codegen_error = Some(format!(
+                "internal codegen error: required specialization `{fn_name}<{args}>` is missing from the function table"
+            ));
+        }
+        None
+    }
+
     fn layout_intrinsic_call_value(&mut self, fn_name: &str, type_args: &[Type]) -> Option<usize> {
         let intrinsic = match fn_name.rsplit('.').next().unwrap_or(fn_name) {
             "size_of" => "quazi.size_of",
@@ -3220,7 +3361,7 @@ impl<'a> FnCompiler<'a> {
                             let obj = self.compile_expr(object);
                             let idx_regs: Vec<u8> =
                                 indices.iter().map(|i| self.compile_expr(i)).collect();
-                            let dst = self.alloc_reg();
+                            let dst = self.alloc_result_block(&mangled);
                             let mut all_args = vec![obj];
                             all_args.extend_from_slice(&idx_regs);
                             self.emit_call_by_name(&mangled, &all_args, dst);
@@ -3535,7 +3676,7 @@ impl<'a> FnCompiler<'a> {
                 index_target,
                 ..
             } => {
-                let dst = self.alloc_reg();
+                let dst = self.alloc_result_block(index_target);
                 self.emit_call_by_name(index_target, &[*obj, *idx], dst);
                 dst
             }
@@ -3674,6 +3815,91 @@ impl<'a> FnCompiler<'a> {
             let _ = self.alloc_reg();
         }
         base
+    }
+
+    fn emit_block_copy(&mut self, dst_base: u8, src_base: u8, slots: usize) {
+        for offset in 0..slots {
+            self.chunk.emit(rrr(
+                Opcode::Mov,
+                dst_base + offset as u8,
+                src_base + offset as u8,
+                0,
+            ));
+        }
+    }
+
+    fn result_slot_count(&self) -> usize {
+        self.fn_value_layouts
+            .get(&self.chunk.name)
+            .and_then(|layout| layout.result.layout.slot_count())
+            .unwrap_or(1)
+    }
+
+    fn result_base_reg(&self) -> u8 {
+        if self.result_slot_count() > 1 { 1 } else { 0 }
+    }
+
+    fn alloc_result_block(&mut self, callee_name: &str) -> u8 {
+        let slots = self
+            .fn_value_layouts
+            .get(callee_name)
+            .and_then(|layout| layout.result.layout.slot_count())
+            .or_else(|| self.generic_storage_intrinsic_slots(callee_name))
+            .unwrap_or(1);
+        self.reserve_reg_block(slots)
+    }
+
+    /// Generic storage wrappers are source-level declarations for the two
+    /// array opcodes. Their generic body has no concrete element layout, so a
+    /// multi-slot call from an enclosing specialization must be lowered here.
+    /// Scalar calls still use the shared wrapper chunks.
+    fn generic_storage_intrinsic_slots(&self, name: &str) -> Option<usize> {
+        if !matches!(
+            name,
+            "array.__ptr_load" | "array.__ptr_store" | "box.__box_read" | "box.__box_write"
+        ) {
+            return None;
+        }
+        let ty = self
+            .type_subst
+            .get("T")
+            .or_else(|| self.type_subst.values().next())?;
+        let resolved = self.resolve_type(ty);
+        let slots = crate::runtime_layout::runtime_value_layout(&resolved).slot_count()?;
+        (slots > 1).then_some(slots)
+    }
+
+    fn emit_specialized_storage_intrinsic(
+        &mut self,
+        name: &str,
+        arg_bases: &[u8],
+        dst: u8,
+    ) -> bool {
+        let Some(slots) = self.generic_storage_intrinsic_slots(name) else {
+            return false;
+        };
+        let opcode = match name {
+            "array.__ptr_store" | "box.__box_write" => Opcode::ArrayStore,
+            "array.__ptr_load" | "box.__box_read" => Opcode::ArrayLoad,
+            _ => return false,
+        };
+        match opcode {
+            Opcode::ArrayStore if arg_bases.len() == 3 => {
+                let mut store = rrr(Opcode::ArrayStore, arg_bases[2], arg_bases[0], arg_bases[1]);
+                store.flags = slots as u8;
+                self.chunk.emit(store);
+                true
+            }
+            Opcode::ArrayLoad if arg_bases.len() == 2 => {
+                let ptr = self.alloc_reg();
+                self.chunk.emit(mem_lea_block(dst, ptr, 0, slots as u8));
+                let mut load = rrr(Opcode::ArrayLoad, ptr, arg_bases[0], arg_bases[1]);
+                load.flags = slots as u8;
+                self.chunk.emit(load);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Recursively compile a pattern match against `value_reg`.
@@ -4222,10 +4448,21 @@ impl<'a> FnCompiler<'a> {
                 false
             }
             StmtKind::Return(expr) => {
+                let result_slots = self.result_slot_count();
+                let result_base = self.result_base_reg();
                 if let Some(expr) = expr {
                     self.mark_consumed_expr(expr);
                     let src = self.compile_expr(expr);
-                    if self.has_active_drops() {
+                    if result_slots > 1 {
+                        if self.has_active_drops() {
+                            let tmp_base = self.reserve_reg_block(result_slots);
+                            self.emit_block_copy(tmp_base, src, result_slots);
+                            self.emit_all_cleanup();
+                            self.emit_block_copy(result_base, tmp_base, result_slots);
+                        } else if src != result_base {
+                            self.emit_block_copy(result_base, src, result_slots);
+                        }
+                    } else if self.has_active_drops() {
                         let tmp = self.alloc_reg();
                         self.chunk.emit(rrr(Opcode::Mov, tmp, src, 0));
                         self.emit_all_cleanup();
@@ -4239,7 +4476,9 @@ impl<'a> FnCompiler<'a> {
                     self.emit_all_cleanup();
                     self.chunk.emit(ri16(Opcode::MovI, 0, 0));
                 }
-                self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+                let mut ret = rrr(Opcode::Ret, 0, 0, 0);
+                ret.flags = result_slots as u8;
+                self.chunk.emit(ret);
                 true
             }
             StmtKind::ExprStmt(expr) => {
@@ -4839,12 +5078,55 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
-    fn emit_call_by_name(&mut self, name: &str, arg_regs: &[u8], dst: u8) {
+    /// Emit a call to a named function. `arg_bases` carries one base register
+    /// per *logical* argument; multi-slot parameters are expanded to the
+    /// recorded number of consecutive slots before `CallIdx` is emitted.
+    /// `dst` is the base of a result block that must already be large enough
+    /// for the callee's result layout.
+    fn emit_call_by_name(&mut self, name: &str, arg_bases: &[u8], dst: u8) {
+        if self.emit_specialized_storage_intrinsic(name, arg_bases, dst) {
+            return;
+        }
         if let Some(&idx) = self.fn_index.get(name) {
-            for &r in arg_regs {
-                self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
+            let result_slots = self
+                .fn_value_layouts
+                .get(name)
+                .and_then(|layout| layout.result.layout.slot_count())
+                .unwrap_or(1);
+            let needs_sret = result_slots > 1;
+            let sret_base = if needs_sret {
+                let base = self.reserve_reg_block(result_slots);
+                let ptr = self.alloc_reg();
+                self.chunk
+                    .emit(mem_lea_block(base, ptr, 0, result_slots as u8));
+                self.chunk.emit(rrr(Opcode::CallArg, ptr, 0, 0));
+                Some(base)
+            } else {
+                None
+            };
+            if let Some(layout) = self.fn_value_layouts.get(name) {
+                let fixed = layout.params.len();
+                for (i, &base) in arg_bases.iter().take(fixed).enumerate() {
+                    let slots = layout.params[i].layout.slot_count().unwrap_or(1);
+                    for offset in 0..slots {
+                        self.chunk
+                            .emit(rrr(Opcode::CallArg, base + offset as u8, 0, 0));
+                    }
+                }
+                for &base in &arg_bases[fixed..] {
+                    self.chunk.emit(rrr(Opcode::CallArg, base, 0, 0));
+                }
+            } else {
+                for &r in arg_bases {
+                    self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
+                }
             }
-            self.chunk.emit(ri16(Opcode::CallIdx, dst, idx));
+            let mut call = ri16(Opcode::CallIdx, dst, idx);
+            call.flags = result_slots as u8;
+            self.chunk.emit(call);
+            if let Some(base) = sret_base {
+                self.emit_block_copy(dst, base, result_slots);
+            }
         } else {
             if self.codegen_error.is_none() {
                 self.codegen_error = Some(format!(
@@ -5886,10 +6168,12 @@ impl<'a> FnCompiler<'a> {
                         return dst;
                     }
                     // Monomorphized generic function: resolve to mangled name.
-                    if !type_args.is_empty()
-                        && let Some(mono_name) =
-                            self.resolve_monomorphized_name(&call_name, type_args)
-                    {
+                    if !type_args.is_empty() {
+                        let Some(mono_name) =
+                            self.require_monomorphized_name(&call_name, type_args)
+                        else {
+                            return dst;
+                        };
                         let arg_regs: Vec<u8> = args
                             .iter()
                             .map(|a| {
@@ -5897,8 +6181,9 @@ impl<'a> FnCompiler<'a> {
                                 self.compile_expr(a)
                             })
                             .collect();
-                        self.emit_call_by_name(&mono_name, &arg_regs, dst);
-                        return dst;
+                        let result_dst = self.alloc_result_block(&mono_name);
+                        self.emit_call_by_name(&mono_name, &arg_regs, result_dst);
+                        return result_dst;
                     }
                     // str_variadic dispatch: auto-coerce args to str at call sites.
                     if self.str_variadic_fns.contains(call_name.as_str()) && !args.is_empty() {
@@ -6003,7 +6288,9 @@ impl<'a> FnCompiler<'a> {
                         let mut all_regs = fixed_regs;
                         all_regs.push(r_ptr);
                         all_regs.push(r_len);
-                        self.emit_call_by_name(&call_name, &all_regs, dst);
+                        let result_dst = self.alloc_result_block(&call_name);
+                        self.emit_call_by_name(&call_name, &all_regs, result_dst);
+                        return result_dst;
                     } else if let Some(tag) = self.enum_ctor_tag(&call_name) {
                         // Enum variant constructor: allocate heap struct, store discriminant + payloads.
                         let payload_regs: Vec<u8> = args
@@ -6060,7 +6347,9 @@ impl<'a> FnCompiler<'a> {
                                 self.compile_expr(a)
                             })
                             .collect();
-                        self.emit_call_by_name(&call_name, &arg_regs, dst);
+                        let result_dst = self.alloc_result_block(&call_name);
+                        self.emit_call_by_name(&call_name, &arg_regs, result_dst);
+                        return result_dst;
                     }
                 } else {
                     // Indirect call: callee is an expression (variable, closure, etc.)
@@ -6117,10 +6406,12 @@ impl<'a> FnCompiler<'a> {
                     }
 
                     // Monomorphized generic function: resolve to mangled name.
-                    if !type_args.is_empty()
-                        && let Some(mono_name) =
-                            self.resolve_monomorphized_name(&call_target, type_args)
-                    {
+                    if !type_args.is_empty() {
+                        let Some(mono_name) =
+                            self.require_monomorphized_name(&call_target, type_args)
+                        else {
+                            return dst;
+                        };
                         call_target = mono_name;
                     }
                     let is_fmt_fn = self.str_variadic_fns.contains(call_target.as_str());
@@ -6193,9 +6484,10 @@ impl<'a> FnCompiler<'a> {
                                 self.compile_expr(a)
                             })
                             .collect();
-                        self.emit_call_by_name(&call_target, &arg_regs, dst);
+                        let result_dst = self.alloc_result_block(&call_target);
+                        self.emit_call_by_name(&call_target, &arg_regs, result_dst);
+                        return result_dst;
                     }
-                    return dst;
                 }
 
                 // Enum namespace call: `Option.Some(42)`, `Result.Ok(v)`, `Shape.Circle(r)`, etc.
@@ -6275,9 +6567,9 @@ impl<'a> FnCompiler<'a> {
                                     self.compile_expr(a)
                                 })
                                 .collect();
-                            let dst = self.alloc_reg();
-                            self.emit_call_by_name(&call_target, &arg_regs, dst);
-                            return dst;
+                            let result_dst = self.alloc_result_block(&call_target);
+                            self.emit_call_by_name(&call_target, &arg_regs, result_dst);
+                            return result_dst;
                         }
                     }
                 }
@@ -6290,26 +6582,37 @@ impl<'a> FnCompiler<'a> {
                 // before reconstructing it from the receiver annotation: calls
                 // chained through generic helpers such as `Result.unwrap()` can
                 // lose enough surface type information for reconstruction.
-                if let Some(call_target) = self.resolved_fn_for_span(expr.span)
-                    && self.fn_index.contains_key(&call_target)
-                {
-                    let arg_regs: Vec<u8> = args
-                        .iter()
-                        .map(|arg| {
-                            self.mark_consumed_expr(arg);
-                            self.compile_expr(arg)
-                        })
-                        .collect();
-                    let dst = self.alloc_reg();
-                    let mut all_args = vec![obj];
-                    all_args.extend_from_slice(&arg_regs);
-                    self.emit_call_by_name(&call_target, &all_args, dst);
-                    if method == "free"
-                        && let ExprKind::Ident(name) = &object.node
-                    {
-                        self.deactivate_drop_local(name);
+                if let Some(resolved_target) = self.resolved_fn_for_span(expr.span) {
+                    let call_target = match self.type_of_expr(object) {
+                        Some(TypeKind::Named { type_args, .. }) if !type_args.is_empty() => {
+                            let Some(target) =
+                                self.require_monomorphized_name(&resolved_target, &type_args)
+                            else {
+                                return self.alloc_reg();
+                            };
+                            target
+                        }
+                        _ => resolved_target,
+                    };
+                    if self.fn_index.contains_key(&call_target) {
+                        let arg_regs: Vec<u8> = args
+                            .iter()
+                            .map(|arg| {
+                                self.mark_consumed_expr(arg);
+                                self.compile_expr(arg)
+                            })
+                            .collect();
+                        let result_dst = self.alloc_result_block(&call_target);
+                        let mut all_args = vec![obj];
+                        all_args.extend_from_slice(&arg_regs);
+                        self.emit_call_by_name(&call_target, &all_args, result_dst);
+                        if method == "free"
+                            && let ExprKind::Ident(name) = &object.node
+                        {
+                            self.deactivate_drop_local(name);
+                        }
+                        return result_dst;
                     }
-                    return dst;
                 }
 
                 // Resolve the receiver type through monomorphization substitution,
@@ -6382,26 +6685,28 @@ impl<'a> FnCompiler<'a> {
                                 } else {
                                     template_reg
                                 };
-                                let dst = self.alloc_reg();
-                                self.emit_call_by_name(&mangled_check, &[obj, fmt_reg], dst);
-                                return dst;
+                                let result_dst = self.alloc_result_block(&mangled_check);
+                                self.emit_call_by_name(&mangled_check, &[obj, fmt_reg], result_dst);
+                                return result_dst;
                             }
                         }
                     }
 
                     let base_mangled = format!("{}.{}", type_name, method);
                     let mangled = if receiver_type_args.is_empty() {
-                        base_mangled.clone()
+                        Some(base_mangled.clone())
                     } else {
-                        let type_kinds: Vec<TypeKind> =
-                            receiver_type_args.iter().map(|t| t.node.clone()).collect();
-                        crate::semantic::typecheck::mangle_monomorphized(&base_mangled, &type_kinds)
+                        self.require_monomorphized_name(&base_mangled, &receiver_type_args)
                     };
                     let lookup = if prefer_primitive_builtin {
                         None
-                    } else if self.fn_index.contains_key(&mangled) {
-                        Some(mangled.clone())
-                    } else if self.fn_index.contains_key(&base_mangled) {
+                    } else if let Some(mangled) = mangled
+                        && self.fn_index.contains_key(&mangled)
+                    {
+                        Some(mangled)
+                    } else if receiver_type_args.is_empty()
+                        && self.fn_index.contains_key(&base_mangled)
+                    {
                         Some(base_mangled.clone())
                     } else {
                         None
@@ -6414,16 +6719,16 @@ impl<'a> FnCompiler<'a> {
                                 self.compile_expr(a)
                             })
                             .collect();
-                        let dst = self.alloc_reg();
+                        let result_dst = self.alloc_result_block(&call_target);
                         let mut all_args = vec![obj];
                         all_args.extend_from_slice(&arg_regs);
-                        self.emit_call_by_name(&call_target, &all_args, dst);
+                        self.emit_call_by_name(&call_target, &all_args, result_dst);
                         if method == "free"
                             && let ExprKind::Ident(name) = &object.node
                         {
                             self.deactivate_drop_local(name);
                         }
-                        return dst;
+                        return result_dst;
                     }
                 }
 
@@ -6746,15 +7051,26 @@ impl<'a> FnCompiler<'a> {
                         .map(|ts| ts.contains("Index"))
                         .unwrap_or(false);
                     if implements_index {
-                        let mangled = format!("{}.index", type_name);
-                        if self.fn_index.contains_key(&mangled) {
+                        let base_target = format!("{}.index", type_name);
+                        let index_target = match &object_ty {
+                            TypeKind::Named { type_args, .. } if !type_args.is_empty() => {
+                                let Some(target) =
+                                    self.require_monomorphized_name(&base_target, type_args)
+                                else {
+                                    return self.alloc_reg();
+                                };
+                                target
+                            }
+                            _ => base_target,
+                        };
+                        if self.fn_index.contains_key(&index_target) {
                             let obj = self.compile_expr(object);
                             let idx_regs: Vec<u8> =
                                 indices.iter().map(|i| self.compile_expr(i)).collect();
-                            let dst = self.alloc_reg();
+                            let dst = self.alloc_result_block(&index_target);
                             let mut all_args = vec![obj];
                             all_args.extend_from_slice(&idx_regs);
-                            self.emit_call_by_name(&mangled, &all_args, dst);
+                            self.emit_call_by_name(&index_target, &all_args, dst);
                             return dst;
                         }
                     }
@@ -7023,6 +7339,7 @@ impl<'a> FnCompiler<'a> {
                     self.str_variadic_fns,
                     self.variadic_intrinsic_fns,
                     self.monomorphizations,
+                    self.fn_value_layouts,
                     self.trait_method_slots,
                     &mut temp_chunks,
                     &mut *self.next_closure_idx,
@@ -7875,6 +8192,72 @@ mod tests {
             "expected Add instruction"
         );
         assert_eq!(chunk.code.last().unwrap().opcode, Opcode::Ret as u8);
+    }
+
+    #[test]
+    fn fixed_array_arguments_and_results_use_the_register_block_abi() {
+        let chunks = compile(
+            r#"
+fn identity(values: [i64; 3]) [i64; 3] {
+    ret values;
+}
+
+fn main() i32 {
+    const values = identity([1, 2, 3]);
+    ret values[1] as i32;
+}
+"#,
+        );
+        let identity = chunks
+            .iter()
+            .find(|chunk| chunk.name == "identity")
+            .expect("identity chunk");
+        assert_eq!(
+            identity.param_count, 4,
+            "sret pointer plus three value slots"
+        );
+        assert_eq!(identity.code.last().map(|instr| instr.flags), Some(3));
+
+        let main = chunks
+            .iter()
+            .find(|chunk| chunk.name == "main")
+            .expect("main chunk");
+        assert!(
+            main.code
+                .iter()
+                .any(|instr| { instr.opcode == Opcode::CallIdx as u8 && instr.flags == 3 })
+        );
+    }
+
+    #[test]
+    fn missing_generic_specialization_is_a_codegen_error() {
+        let source = r#"
+fn identity[T](value: T) T {
+    ret value;
+}
+
+fn main() i32 {
+    ret identity[i32](7);
+}
+"#;
+        let program = Parser::new(Lexer::new(source).tokenize())
+            .parse()
+            .expect("parse failed");
+        let mut report = Analyzer::new().analyze_program(&program);
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
+        report.monomorphizations.clear();
+
+        let error = Codegen::new(&report)
+            .compile_program(&program, &[])
+            .expect_err("missing specialization must not fall back to its template");
+        assert!(
+            error.contains("required specialization `identity<i32>` is missing"),
+            "unexpected codegen error: {error}"
+        );
     }
 
     #[test]

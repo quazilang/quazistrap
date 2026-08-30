@@ -121,12 +121,12 @@ result layouts and stores them in `SemanticReport`. Details that matter:
 ### 3. Multi-slot internal ABI (phase 2, with the format bumps)
 
 - Parameter binding in `compile_fn_with_subst` (`src/bytecode/codegen.rs`)
-  reserves one register per parameter today; it must reserve each parameter's
-  recorded slot count, exactly like the existing variadic packing convention
-  (consecutive slots plus a pinned `Lea` block). Recorded layouts drive
-  **callee body codegen as well as call-site packing**: reads, `&param`, and
-  `Lea` pinning compile differently for block parameters than for handles.
-- Results wider than one slot return in a register block starting at `r0`.
+  reserves each parameter's recorded slot count. Recorded layouts drive both
+  callee-body binding and call-site expansion, while register allocation pins
+  every adjacency-sensitive block.
+- Results wider than one slot use a hidden sret pointer in `r0`; the callee
+  writes its value block from fixed ABI registers `r1..rN` into that buffer.
+  The caller reserves and pins the buffer before the call.
   Two distinct limits apply: the per-value register-block cap
   (`fixed_array_block_length`) — beyond which the value is passed by heap
   handle with ownership transferred, exactly how named aggregates already
@@ -136,26 +136,20 @@ result layouts and stores them in `SemanticReport`. Details that matter:
 - Multi-slot variadic elements remain `S14` in this milestone: stride-aware
   variadic packing and the meaning of the length register (elements versus
   slots) are deferred deliberately.
-- The unmangled generic *template* chunks that codegen compiles today with an
-  empty substitution assume one slot per value. With per-specialization
-  layouts they become unsound. Eliminating them is wider than it looks:
-  semantic adds unconditional dependency edges to unmangled names, and codegen
-  falls back to unmangled targets at instance/static method calls, `Array.set`
-  lvalue stores, compound assignment, assignment indexing, for-loop lowering,
-  iterator protocol calls, drop glue, and `resolve_monomorphized_name`. The
-  work item is to condition those edges and convert **every** fallback into a
-  hard compile error naming the missing specialization — silently compiling
-  against a one-slot template is how the old bug happened. Two Index-read
-  paths (`compile_expr_inner` and `emit_lvalue_load`) are the most dangerous:
-  they never mangle today and fall through to builtin register arithmetic on a
-  heap handle, producing wrong code instead of an error.
+- The unmangled generic *template* chunks compile with an empty substitution
+  and therefore assume one slot per value. They are never a valid fallback for
+  a concrete call: codegen resolves required specializations to emitted
+  mangled chunks and reports a code-generation error when one is absent.
+  This includes direct calls, module-qualified calls, inherent-method
+  dispatch, and `Index` reads. Silently compiling against a one-slot template
+  is prohibited because it truncates concrete multi-slot values.
 
 ### 4. Container storage and element access (phase 4, after D-002 receivers)
 
-- `Array[T]`/`Box[T]` stop hardcoding 8 via the `size_of`/`align_of`
-  intrinsics; the `ArrayLoad`/`ArrayStore` intrinsics gain stride metadata
-  (encoded in QZI, validated on read) or are replaced by typed copy/drop
-  helper intrinsics (also used for element deref loads below).
+- `Array[T]`/`Box[T]` use `size_of` for allocation, and multi-slot
+  `ArrayLoad`/`ArrayStore` carry their concrete element-slot count as stride
+  metadata. The encoder copies the full element block. Typed copy/drop helpers
+  are still required for owned element semantics.
 - `get` returns a borrow `&T`. This is the largest semantic work item in the
   design and is itemized honestly — each piece is new machinery:
   1. Lift the ban on returning non-string references for references derived

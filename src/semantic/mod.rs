@@ -3148,7 +3148,7 @@ fn main() void {
     }
 
     #[test]
-    fn multi_slot_generic_specializations_fail_before_codegen() {
+    fn multi_slot_generic_specializations_are_accepted_except_variadic() {
         let direct = analyze(
             r#"
 fn identity[T](value: T) T { ret value; }
@@ -3160,37 +3160,9 @@ fn main() void {
 "#,
         );
         assert!(
-            direct.errors.iter().any(|error| {
-                error.code == "S14"
-                    && error.message.contains("identity")
-                    && error.message.contains("one-slot internal generic ABI")
-            }),
-            "multi-slot generic function specialization reached codegen: {:?}",
+            direct.errors.is_empty(),
+            "multi-slot generic function specialization should be accepted: {:?}",
             direct.errors
-        );
-
-        let method = analyze(
-            r#"
-struct Holder[T] { marker: usize, }
-
-impl Holder[T] {
-    fn consume(self: Holder[T], value: T) void { ret; }
-}
-
-fn main() void {
-    var holder: Holder[[i32; 2]] = Holder { marker: 0 };
-    holder.consume([1, 2]);
-}
-"#,
-        );
-        assert!(
-            method.errors.iter().any(|error| {
-                error.code == "S14"
-                    && error.message.contains("Holder.consume")
-                    && error.message.contains("one-slot internal generic ABI")
-            }),
-            "multi-slot generic method specialization reached codegen: {:?}",
-            method.errors
         );
 
         let variadic = analyze(
@@ -3210,11 +3182,11 @@ fn main() void {
                 .filter(|error| {
                     error.code == "S14"
                         && error.message.contains("collect")
-                        && error.message.contains("one-slot internal generic ABI")
+                        && error.message.contains("one-slot internal ABI")
                 })
                 .count()
-                >= 2,
-            "multi-slot variadic elements reached codegen: {:?}",
+                >= 1,
+            "multi-slot variadic elements must still be rejected: {:?}",
             variadic.errors
         );
     }
@@ -3281,7 +3253,7 @@ fn main() void {
     }
 
     #[test]
-    fn nested_fixed_array_literals_are_rejected() {
+    fn nested_fixed_array_literals_are_accepted() {
         let report = analyze(
             r#"
 fn main() void {
@@ -3290,10 +3262,8 @@ fn main() void {
 "#,
         );
         assert!(
-            report.errors.iter().any(|error| {
-                error.code == "S14" && error.message.contains("one-slot element representation")
-            }),
-            "nested fixed-array literal reached codegen: {:?}",
+            report.errors.is_empty(),
+            "nested fixed-array literal should be accepted: {:?}",
             report.errors
         );
     }
@@ -3731,32 +3701,28 @@ impl Index[isize, Rune] for String {
     }
 
     #[test]
-    fn generic_index_operator_rejects_multi_slot_results() {
+    fn index_operator_accepts_multi_slot_results() {
         let report = analyze(
             r#"
 trait Index[I, O] {
     fn index(i: I) O;
 }
 
-struct Array[T] { value: T, }
+struct Array { marker: usize, }
 
-impl Index[usize, T] for Array[T] {
-    fn index(self: Array[T], i: usize) T { ret self.value; }
+impl Index[usize, [i32; 2]] for Array {
+    fn index(self: Array, i: usize) [i32; 2] { ret [0, 0]; }
 }
 
 fn main() void {
-    var lines: Array[[i32; 2]];
+    var lines = Array { marker: 0 };
     var line = lines[0];
 }
 "#,
         );
         assert!(
-            report.errors.iter().any(|error| {
-                error.code == "S14"
-                    && error.message.contains("Array.index")
-                    && error.message.contains("cannot return `[i32; 2]`")
-            }),
-            "multi-slot generic index result reached codegen: {:?}",
+            report.errors.is_empty(),
+            "multi-slot index result should be accepted: {:?}",
             report.errors
         );
     }
@@ -5847,21 +5813,27 @@ fn main() void {
     }
 
     #[test]
-    fn fixed_arrays_cannot_cross_the_function_abi_by_value() {
+    fn fixed_arrays_cross_the_function_abi_by_value() {
         let parameter = analyze("fn read(values: [i64; 3]) i64 { ret values[0]; }");
-        assert!(parameter.errors.iter().any(|error| {
-            error.code == "S14" && error.message.contains("cannot be passed by value")
-        }));
+        assert!(
+            parameter.errors.is_empty(),
+            "fixed-array parameter should be accepted: {:?}",
+            parameter.errors
+        );
 
         let returned = analyze("fn make() [i64; 3] { ret [1, 2, 3]; }");
-        assert!(returned.errors.iter().any(|error| {
-            error.code == "S14" && error.message.contains("cannot be returned by value")
-        }));
+        assert!(
+            returned.errors.is_empty(),
+            "fixed-array return should be accepted: {:?}",
+            returned.errors
+        );
 
         let empty = analyze("fn make() [i64; 0] { ret []; }");
-        assert!(empty.errors.iter().any(|error| {
-            error.code == "S14" && error.message.contains("cannot be returned by value")
-        }));
+        assert!(
+            empty.errors.is_empty(),
+            "empty fixed-array return should be accepted: {:?}",
+            empty.errors
+        );
     }
 
     #[test]
