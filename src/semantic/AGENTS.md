@@ -47,6 +47,10 @@ element, result, and plain-copy/owner kinds into
 `SemanticReport::fn_value_layouts` for the phase-2 ABI work, keyed by
 canonical resolved type arguments (mangling is not injective).
 
+After all semantic passes, generic template call edges are instantiated for
+each concrete caller specialization. The closure must add both the concrete
+callee monomorphization and its layout record before bytecode codegen.
+
 ## Warning Suppression
 
 `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)` suppress W01/W02/W03/W07.

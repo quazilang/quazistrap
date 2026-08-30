@@ -13,7 +13,7 @@ impl Analyzer {
     /// current gate: until the multi-slot internal ABI lands, non-single-slot
     /// parameters and results remain S14 errors. Records are keyed by the
     /// canonical resolved type arguments rather than the lossy mangled name.
-    fn record_fn_value_layout(
+    pub(super) fn record_fn_value_layout(
         &mut self,
         function: &str,
         type_args: &[TypeKind],

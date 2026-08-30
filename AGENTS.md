@@ -96,6 +96,11 @@ multi-register shapes with `S14`. Qualified enum constructor calls
 representation) even though their result remains untyped until semantic
 constructor resolution exists.
 
+Generic call dependencies are closed over every concrete caller
+specialization after analysis. This records each transitive concrete callee and
+its value layout before bytecode emission, rather than falling back to a raw
+generic template at codegen time.
+
 ### Loader (`src/loader.rs`)
 
 - `load_programs` — resolves imports recursively, merges dependency-first, parses as one `Program`.

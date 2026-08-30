@@ -149,6 +149,9 @@ never persisted.
 - Pre-pass searches both `ItemKind::Fn` and `ItemKind::Impl`.
 - `struct_generic_params` in `SemanticReport` maps struct name → param names for subst.
 - Mangled format: `name<type1,type2>`.
+- Generic dependency closure emits concrete callees required by a concrete
+  generic method body. Specialization lookup compares resolved aliases, so
+  source aliases and their concrete runtime types select the same chunk.
 - Struct mono MethodCall: receiver type `Named { type_args }` → mangle call target; falls back to unmangled if mangled not in `fn_index`.
 
 ### Intrinsic Dispatch

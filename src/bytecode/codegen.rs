@@ -2887,6 +2887,23 @@ impl<'a> FnCompiler<'a> {
                 }
             }
         }
+
+        // Call-site annotations may have expanded a type alias (for example
+        // `Rune` to `u32`) while semantic monomorphization retained the source
+        // spelling. Specializations are keyed by concrete runtime shape, so
+        // compare the resolved forms before declaring a real missing chunk.
+        let resolved_kinds: Vec<TypeKind> =
+            raw_kinds.iter().map(|ty| self.resolve_type(ty)).collect();
+        if let Some(mono) = self.monomorphizations.iter().find(|mono| {
+            let resolved_mono_args: Vec<TypeKind> = mono
+                .type_args
+                .iter()
+                .map(|ty| self.resolve_type(ty))
+                .collect();
+            mono.fn_name == fn_name && types_equal_slice(&resolved_mono_args, &resolved_kinds)
+        }) {
+            return Some(mono.mangled_name.clone());
+        }
         // Fall back to a raw match. emit_call_by_name reports a codegen error if
         // the resulting specialization was not registered in the function table.
         self.monomorphizations
@@ -8257,6 +8274,55 @@ fn main() i32 {
         assert!(
             error.contains("required specialization `identity<i32>` is missing"),
             "unexpected codegen error: {error}"
+        );
+    }
+
+    #[test]
+    fn generic_impl_specializations_include_transitive_method_calls() {
+        let chunks = compile(
+            r#"
+struct Wrapper[T] { value: T, }
+
+impl Wrapper[T] {
+    fn inner(self: Wrapper[T]) T { ret self.value; }
+    fn outer(self: Wrapper[T]) T { ret self.inner(); }
+}
+
+fn main() i32 {
+    const value: Wrapper[i32] = Wrapper { value: 7 };
+    ret value.outer();
+}
+"#,
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.name == "Wrapper.outer<i32>"),
+            "outer specialization was not emitted"
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.name == "Wrapper.inner<i32>"),
+            "transitive inner specialization was not emitted"
+        );
+    }
+
+    #[test]
+    fn generic_specializations_match_resolved_type_aliases() {
+        let chunks = compile(
+            r#"
+type Word = u32;
+
+fn inner[T](value: T) T { ret value; }
+fn outer[T](value: T) T { ret inner[T](value); }
+
+fn main() void { outer[Word](7); }
+"#,
+        );
+        assert!(
+            chunks.iter().any(|chunk| chunk.name == "inner<Word>"),
+            "inner alias specialization was not emitted"
         );
     }
 

@@ -10,12 +10,33 @@ Audience: the next assistant continuing the current `feat/test` worktree.
 - `/home/amapekibert/quazilang/quazistrap/src/semantic/AGENTS.md`
 - the full active objective linked from the workspace resume
 
-Do not commit this checkpoint unless the user explicitly authorizes the exact
-commit scope. Preserve unrelated/prior dirty changes.
+Commit only the completed task's owned files when the user explicitly requests
+it. Preserve unrelated/prior dirty changes.
 
 Note: the rustup proxies were unreliable during this checkpoint. Use
 `$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin` directly for
 cargo/rustc (1.98.0).
+
+## Implemented in this checkpoint (2026-08-30, fourth entry)
+
+Example-build regressions are fixed and every example now compiles:
+
+- Semantic analysis closes generic template call dependencies for each concrete
+  caller specialization and records the resulting callee layout. This prevents
+  valid calls such as `Array.get[str]` from being absent during bytecode
+  emission.
+- Codegen resolves type aliases before matching monomorphizations, so aliases
+  such as `Rune` and their concrete `u32` representation select the same
+  generic chunk.
+- The built-in ELF linker skips allocated GNU property notes and `.eh_frame`
+  metadata from native C objects while continuing to reject unsupported loaded
+  sections such as TLS.
+- The standard library compares `String` values through `.as_str()` in HTTP
+  parsing paths, keeping comparison operand types compatible.
+
+Verification: `cargo test --offline -q` passes 481 tests. Examples `01` through
+`35` all build using the canonical `~/.quazi/std`, including the Git-backed
+example `28` after its dependency fetch.
 
 ## Implemented in this checkpoint (2026-08-30, third entry)
 

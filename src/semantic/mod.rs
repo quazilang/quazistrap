@@ -698,6 +698,13 @@ impl Analyzer {
         // Pass 7: borrow / move checker.
         self.run_borrow_check_pass(program);
 
+        // Generic method bodies are checked once against their declared type
+        // parameters. Close that template call graph over every concrete call
+        // site before handing the report to code generation, otherwise a
+        // specialization such as `Array.index<str>` can call a missing
+        // `Array.get<str>` chunk.
+        self.close_monomorphization_dependencies();
+
         // A successful analysis must leave no representation-less inference
         // sentinels for code generation. Error recovery may still use them
         // when another diagnostic has already made the program non-buildable.
@@ -1071,6 +1078,119 @@ impl Analyzer {
         }
     }
 
+    fn close_monomorphization_dependencies(&mut self) {
+        let template_monos = self.monomorphizations.clone();
+        let mut pending = self.monomorphizations.clone();
+
+        while let Some(source) = pending.pop() {
+            let source_params = self.generic_params_for_function(&source.fn_name);
+            if source_params.len() != source.type_args.len()
+                || source
+                    .type_args
+                    .iter()
+                    .any(|ty| type_mentions_params(ty, &source_params))
+            {
+                continue;
+            }
+            let substitution: HashMap<String, TypeKind> = source_params
+                .iter()
+                .cloned()
+                .zip(source.type_args.iter().cloned())
+                .collect();
+            let targets = self
+                .call_dependencies
+                .get(&source.fn_name)
+                .cloned()
+                .unwrap_or_default();
+
+            for target_name in targets {
+                let Some(template) = template_monos
+                    .iter()
+                    .find(|mono| mono.mangled_name == target_name)
+                else {
+                    continue;
+                };
+                let type_args: Vec<TypeKind> = template
+                    .type_args
+                    .iter()
+                    .map(|ty| substitute_type_kind(ty, &substitution))
+                    .collect();
+                let target_params = self.generic_params_for_function(&template.fn_name);
+                if target_params.len() != type_args.len()
+                    || type_args
+                        .iter()
+                        .any(|ty| type_mentions_params(ty, &target_params))
+                {
+                    continue;
+                }
+
+                let mangled_name = typecheck::mangle_monomorphized(&template.fn_name, &type_args);
+                if self
+                    .monomorphizations
+                    .iter()
+                    .any(|mono| mono.mangled_name == mangled_name)
+                {
+                    continue;
+                }
+
+                self.record_specialization_layout(&template.fn_name, &target_params, &type_args);
+                self.add_dependency_edge(DependencyKind::Call, &source.mangled_name, &mangled_name);
+                let specialization = MonomorphizationInfo {
+                    fn_name: template.fn_name.clone(),
+                    type_args,
+                    mangled_name,
+                };
+                pending.push(specialization.clone());
+                self.monomorphizations.push(specialization);
+            }
+        }
+    }
+
+    fn generic_params_for_function(&self, fn_name: &str) -> Vec<String> {
+        let mut params = fn_name
+            .split_once('.')
+            .and_then(|(type_name, _)| self.struct_generic_params.get(type_name))
+            .cloned()
+            .unwrap_or_default();
+        if let Some(symbol) = self.resolve_symbol(fn_name) {
+            params.extend(symbol.generic_params.clone());
+        }
+        params
+    }
+
+    fn record_specialization_layout(
+        &mut self,
+        fn_name: &str,
+        generic_params: &[String],
+        type_args: &[TypeKind],
+    ) {
+        let Some(symbol) = self.resolve_symbol(fn_name) else {
+            return;
+        };
+        let substitution: HashMap<String, TypeKind> = generic_params
+            .iter()
+            .cloned()
+            .zip(type_args.iter().cloned())
+            .collect();
+        let params = symbol
+            .params
+            .iter()
+            .map(|param| substitute_type_kind(param, &substitution))
+            .collect::<Vec<_>>();
+        let result = symbol
+            .ty
+            .as_ref()
+            .map(|ty| substitute_type_kind(ty, &substitution));
+        self.record_fn_value_layout(
+            fn_name,
+            type_args,
+            &params,
+            result.as_ref(),
+            symbol.variadic,
+            symbol.span,
+        );
+    }
+
     fn build_symbol_table(&self) -> SymbolTable {
         let mut entries = Vec::new();
 
@@ -1432,6 +1552,36 @@ impl Analyzer {
 impl Default for Analyzer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn type_mentions_params(ty: &TypeKind, params: &[String]) -> bool {
+    match ty {
+        TypeKind::Named { name, type_args } => {
+            (type_args.is_empty() && params.contains(name))
+                || type_args
+                    .iter()
+                    .any(|argument| type_mentions_params(&argument.node, params))
+        }
+        TypeKind::Ref { inner }
+        | TypeKind::RawPtr { inner }
+        | TypeKind::FlexibleArray { elem_ty: inner }
+        | TypeKind::Slice { elem_ty: inner } => type_mentions_params(&inner.node, params),
+        TypeKind::Array { elem_ty, .. } => type_mentions_params(&elem_ty.node, params),
+        TypeKind::Fn {
+            params: arguments,
+            return_ty,
+        }
+        | TypeKind::CFn {
+            params: arguments,
+            return_ty,
+        } => {
+            arguments
+                .iter()
+                .any(|argument| type_mentions_params(&argument.node, params))
+                || type_mentions_params(&return_ty.node, params)
+        }
+        _ => false,
     }
 }
 
