@@ -14,7 +14,9 @@ synchronization. The server reports its version from the compiler package.
 
 ## Supported Features
 
-- Diagnostics after open, full-document change, and save.
+- Generation-gated diagnostics after open and full-document change; save
+  republishes the current diagnostic snapshot, and closing a document clears
+  its published diagnostics.
 - Hover information from semantic types and constant evaluation.
 - Go-to-definition for semantic call targets, including methods, plus
   best-effort resolution of local declarations in the current document.
@@ -37,8 +39,8 @@ than a name-resolution guarantee.
 
 ## Current Limitations
 
-- Text synchronization is full-document only; incremental edits are not
-  negotiated.
+- Text synchronization is version-gated and full-document only; incremental
+  edits are not negotiated.
 - Cross-file references and rename, workspace symbols, inlay hints, code
   actions, cancellation, and workspace-wide indexing are not
   implemented.

@@ -19,3 +19,4 @@ tests or examples establishing behavior.
 - [LSP same-document navigation](2026-08-30-lsp-navigation.md)
 - [Generic specialization closure](2026-08-30-generic-specialization-closure.md)
 - [Native object metadata omission](2026-08-30-native-linker-metadata.md)
+- [Reliable full-document LSP lifecycle](2026-08-31-lsp-document-lifecycle.md)

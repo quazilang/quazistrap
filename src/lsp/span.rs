@@ -73,9 +73,16 @@ pub fn char_offset_to_position(offset: usize, source: &str) -> Position {
     Position::new(line, utf16_column)
 }
 
+/// Return the exclusive end position of a complete LSP document range.
+/// This deliberately walks Unicode scalars because LSP columns are UTF-16
+/// code units; `str::len` is a byte count and is invalid for this purpose.
+pub fn document_end_position(source: &str) -> Position {
+    char_offset_to_position(source.chars().count(), source)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{position_to_byte_offset, span_to_range};
+    use super::{document_end_position, position_to_byte_offset, span_to_range};
     use crate::parser::ast::Span;
     use tower_lsp::lsp_types::Position;
 
@@ -97,5 +104,11 @@ mod tests {
     fn rejects_positions_inside_a_utf16_surrogate_pair() {
         assert_eq!(position_to_byte_offset(Position::new(0, 1), "🚀"), None);
         assert_eq!(position_to_byte_offset(Position::new(0, 2), "🚀"), Some(4));
+    }
+
+    #[test]
+    fn finds_end_of_document_in_utf16_with_a_trailing_newline() {
+        assert_eq!(document_end_position("let icon = \"🚀\";\n"), Position::new(1, 0));
+        assert_eq!(document_end_position("🚀"), Position::new(0, 2));
     }
 }

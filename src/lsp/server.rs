@@ -30,12 +30,34 @@ impl VoidLanguageServer {
     }
 
     async fn reanalyze_and_publish(&self, uri: Url, text: String, version: i32) {
+        // Register the full document before analysis. Analysis can be slower than
+        // later didChange notifications, so its result is committed only if this
+        // exact document generation is still current.
+        {
+            let mut docs = self.documents.write().await;
+            let accepted = match docs.get_mut(&uri) {
+                Some(doc) => doc.update_if_newer(text.clone(), version),
+                None => {
+                    docs.insert(
+                        uri.clone(),
+                        DocumentState::new(uri.clone(), text.clone(), version),
+                    );
+                    true
+                }
+            };
+            if !accepted {
+                return;
+            }
+        }
+
         let result = analysis::analyze_source(&text);
         let mut docs = self.documents.write().await;
-        let doc = docs
-            .entry(uri.clone())
-            .or_insert_with(|| DocumentState::new(uri.clone(), text.clone(), version));
-        doc.update(text.clone(), version);
+        let Some(doc) = docs.get_mut(&uri) else {
+            return;
+        };
+        if !doc.is_generation(&text, version) {
+            return;
+        }
 
         match result {
             Ok(report) => {
@@ -144,6 +166,16 @@ impl LanguageServer for VoidLanguageServer {
                 .publish_diagnostics(params.text_document.uri.clone(), diags, None)
                 .await;
         }
+    }
+
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        self.documents
+            .write()
+            .await
+            .remove(&params.text_document.uri);
+        self.client
+            .publish_diagnostics(params.text_document.uri, Vec::new(), None)
+            .await;
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {

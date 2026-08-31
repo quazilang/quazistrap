@@ -7,3 +7,4 @@ grammar, formatting, diagnostics, editor integrations, and compatibility tests.
 
 - [Contained Quazi language server](lsp.md)
 - [Tree-sitter grammar contract](tree-sitter.md)
+- [Editor integrations](editors.md)
