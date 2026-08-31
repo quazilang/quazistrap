@@ -168,7 +168,7 @@ fn public_item_with_runtime_any(item: &Item) -> Option<&str> {
             ..
         } => fields
             .iter()
-            .any(|(_, ty, _)| type_contains_any(&ty.node))
+            .any(|field| type_contains_any(&field.ty.node))
             .then_some(name),
         ItemKind::Trait {
             name,
@@ -364,7 +364,7 @@ fn public_item_contains_owned_fn(item: &Item) -> bool {
             ..
         } => fields
             .iter()
-            .any(|(_, ty, _)| type_contains_owned_fn(&ty.node)),
+            .any(|field| type_contains_owned_fn(&field.ty.node)),
         ItemKind::Trait {
             methods,
             public: true,
@@ -462,7 +462,6 @@ fn render_public_item(item: &Item) -> Option<(String, Vec<String>)> {
             name,
             generic_params,
             fields,
-            bit_widths,
             is_union,
             attributes,
             public,
@@ -476,18 +475,19 @@ fn render_public_item(item: &Item) -> Option<(String, Vec<String>)> {
             output.push_str(name);
             render_generic_params(&mut output, generic_params);
             output.push_str(" {\n");
-            for (index, (field, ty, is_const)) in fields.iter().enumerate() {
+            for field in fields {
                 output.push_str("    ");
-                if *is_const {
+                if field.is_const {
                     output.push_str("const ");
                 }
-                output.push_str(field);
+                output.push_str(&field.name);
                 output.push_str(": ");
-                output.push_str(&ty.node.to_string());
-                if let Some(width) = bit_widths.get(index).and_then(|width| *width) {
+                output.push_str(&field.ty.node.to_string());
+                if let Some(width) = field.bit_width {
                     output.push_str(" : ");
                     output.push_str(&width.to_string());
                 }
+                render_inline_attributes(&mut output, &field.attributes);
                 output.push_str(",\n");
             }
             output.push_str("}\n");
@@ -690,28 +690,42 @@ fn render_attributes(attributes: &[Attribute]) -> String {
         if matches!(attribute.name.as_str(), "export" | "inline" | "test") {
             continue;
         }
-        output.push('@');
-        output.push_str(&attribute.name);
-        if !attribute.args.is_empty() {
-            output.push('(');
-            for (index, argument) in attribute.args.iter().enumerate() {
-                if index > 0 {
-                    output.push_str(", ");
-                }
-                match argument {
-                    AttrArg::Positional(value) => render_attr_value(&mut output, value),
-                    AttrArg::KeyValue(key, value) => {
-                        output.push_str(key);
-                        output.push_str(" = ");
-                        render_attr_value(&mut output, value);
-                    }
-                }
-            }
-            output.push(')');
-        }
+        render_attribute(&mut output, attribute);
         output.push('\n');
     }
     output
+}
+
+/// Render opaque field metadata on the same declaration line. Unlike item
+/// attributes, no names are compiler-reserved at this position, so every
+/// attribute must survive a QZI interface round trip unchanged.
+fn render_inline_attributes(output: &mut String, attributes: &[Attribute]) {
+    for attribute in attributes {
+        output.push(' ');
+        render_attribute(output, attribute);
+    }
+}
+
+fn render_attribute(output: &mut String, attribute: &Attribute) {
+    output.push('@');
+    output.push_str(&attribute.name);
+    if !attribute.args.is_empty() {
+        output.push('(');
+        for (index, argument) in attribute.args.iter().enumerate() {
+            if index > 0 {
+                output.push_str(", ");
+            }
+            match argument {
+                AttrArg::Positional(value) => render_attr_value(output, value),
+                AttrArg::KeyValue(key, value) => {
+                    output.push_str(key);
+                    output.push_str(" = ");
+                    render_attr_value(output, value);
+                }
+            }
+        }
+        output.push(')');
+    }
 }
 
 fn render_attr_value(output: &mut String, value: &AttrVal) {
@@ -796,6 +810,35 @@ pub type Coordinate = i32;
         Parser::new(lexer.tokenize())
             .parse()
             .expect("generated type interface should parse");
+    }
+
+    #[test]
+    fn public_field_attributes_survive_interface_round_trip() {
+        let source = r#"pub struct User {
+    name: str @ini("username") @json(name="user_name"),
+}"#;
+        let program = Parser::new(Lexer::new(source).tokenize())
+            .parse()
+            .expect("parse source");
+        let encoded = build_qzi_interface("users", &program, &[], &HashSet::new(), &HashSet::new())
+            .expect("build interface");
+        let bundle = parse_qzi_interface(&encoded).expect("parse interface bundle");
+        assert!(bundle.modules[0].source.contains("@ini(\"username\")"));
+        assert!(
+            bundle.modules[0]
+                .source
+                .contains("@json(name = \"user_name\")")
+        );
+
+        let reparsed = Parser::new(Lexer::new(&bundle.modules[0].source).tokenize())
+            .parse()
+            .expect("generated interface should parse");
+        let ItemKind::Struct { fields, .. } = &reparsed.items[0].node else {
+            panic!("expected public struct");
+        };
+        assert_eq!(fields[0].attributes.len(), 2);
+        assert_eq!(fields[0].attributes[0].name, "ini");
+        assert_eq!(fields[0].attributes[1].name, "json");
     }
 
     #[test]

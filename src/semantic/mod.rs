@@ -1608,6 +1608,23 @@ mod tests {
         analyzer.analyze_program(&program)
     }
 
+    #[test]
+    fn accepts_unknown_aggregate_field_attributes_as_metadata() {
+        let report = analyze(
+            r#"
+struct User {
+    name: str @ini("username") @community_format(version=2),
+}
+fn main() void {}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
+    }
+
     fn analyze_module_pair(module_src: &str, main_src: &str) -> SemanticReport {
         let merged = format!("{module_src}\n{main_src}");
         let module_len = module_src.chars().count();

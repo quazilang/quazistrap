@@ -191,7 +191,6 @@ impl Analyzer {
             ItemKind::Struct {
                 name,
                 fields,
-                bit_widths,
                 is_union,
                 generic_params,
                 attributes,
@@ -219,15 +218,14 @@ impl Analyzer {
                 // Register field layout for codegen
                 let field_defs: Vec<(String, TypeKind)> = fields
                     .iter()
-                    .map(|(fname, ftype, _)| (fname.clone(), ftype.node.clone()))
+                    .map(|field| (field.name.clone(), field.ty.node.clone()))
                     .collect();
                 self.struct_defs.insert(name.clone(), field_defs);
                 self.struct_field_bit_widths.insert(
                     name.clone(),
                     fields
                         .iter()
-                        .zip(bit_widths)
-                        .map(|((field_name, _, _), width)| (field_name.clone(), *width))
+                        .map(|field| (field.name.clone(), field.bit_width))
                         .collect(),
                 );
                 if attributes.iter().any(|attr| {
@@ -259,10 +257,9 @@ impl Analyzer {
                             _ => {}
                         }
                     }
-                    if fields
-                        .last()
-                        .is_some_and(|(_, ty, _)| matches!(ty.node, TypeKind::FlexibleArray { .. }))
-                    {
+                    if fields.last().is_some_and(|field| {
+                        matches!(field.ty.node, TypeKind::FlexibleArray { .. })
+                    }) {
                         self.flexible_array_structs.insert(name.clone());
                     }
                 }

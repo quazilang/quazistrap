@@ -440,6 +440,21 @@ pub struct Param {
     pub attributes: Vec<Attribute>,
 }
 
+/// A named member of a struct or union.
+///
+/// Attributes are intentionally preserved without language-level interpretation.
+/// Libraries and source tools may assign meaning to them while every parser can
+/// still represent attributes it does not recognize.
+#[derive(Debug, Clone)]
+pub struct AggregateField {
+    pub name: String,
+    pub ty: Type,
+    pub is_const: bool,
+    /// Optional C bit width, meaningful only for `@repr(C)` aggregates.
+    pub bit_width: Option<u8>,
+    pub attributes: Vec<Attribute>,
+}
+
 #[derive(Debug, Clone)]
 pub enum StmtKind {
     Var {
@@ -544,9 +559,7 @@ pub enum ItemKind {
     Struct {
         name: String,
         generic_params: Vec<String>,
-        fields: Vec<(String, Type, bool)>, // (name, type, const?)
-        /// Optional C bit width for each field, parallel to `fields`.
-        bit_widths: Vec<Option<u8>>,
+        fields: Vec<AggregateField>,
         is_union: bool,
         attributes: Vec<Attribute>,
         public: bool,

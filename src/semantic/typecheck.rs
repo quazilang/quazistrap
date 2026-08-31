@@ -437,12 +437,13 @@ impl Analyzer {
                 name,
                 generic_params,
                 fields,
-                bit_widths,
                 is_union,
                 attributes,
                 ..
             } => {
-                for (field_name, field_ty, _) in fields {
+                for field in fields {
+                    let field_name = &field.name;
+                    let field_ty = &field.ty;
                     if type_contains_any(&field_ty.node) {
                         self.push_error(
                             field_ty.span,
@@ -534,9 +535,10 @@ impl Analyzer {
                                 ),
                             );
                         }
-                        for (index, ((field_name, field_ty, _), bit_width)) in
-                            fields.iter().zip(bit_widths).enumerate()
-                        {
+                        for (index, field) in fields.iter().enumerate() {
+                            let field_name = &field.name;
+                            let field_ty = &field.ty;
+                            let bit_width = &field.bit_width;
                             let resolved = self.resolve_type_aliases(&field_ty.node);
                             let field_supported = ffi_aggregate_field(&resolved);
                             if !field_supported {

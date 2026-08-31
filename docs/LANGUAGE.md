@@ -261,6 +261,39 @@ do not consume their owner. See [TYPES_AND_MEMORY.md](TYPES_AND_MEMORY.md).
 
 ## Attributes
 
+Attributes have a universal syntactic form: `@name(arguments...)`. Their
+arguments are string or integer literals, identifiers, or named values such as
+`name="value"`. The parser preserves attributes it does not recognize; it never
+maintains a whitelist for third-party metadata.
+
+Struct and union fields accept postfix attributes after their type (and, for C
+bitfields, before or after the width):
+
+```quazi
+struct User {
+    name: String @ini("username") @json(name="user_name"),
+    age: u32 @ini("age"),
+}
+```
+
+These field attributes are opaque language metadata. Quazi itself does not
+make `@ini`, `@json`, or any other field attribute imply serialization,
+validation, or layout behavior. A library, derive implementation, or external
+tool chooses its meaning. Metadata is retained in the parsed AST and public QZI
+interfaces so tooling can handle future community attributes without a parser
+upgrade. Runtime reflection is not implied by this mechanism.
+
+### Custom attribute API
+
+There is no attribute-registration declaration: an attribute author creates a
+custom field attribute by choosing an identifier and documenting its arguments
+and meaning. For example, a serialization package may define
+`@my_serializer(name="wire_name")`; users can apply it immediately to an
+appropriate field. This deliberately prevents a new community attribute from
+requiring a compiler or parser update. A consuming library or tool is
+responsible for reporting an unknown, misplaced, or invalid attribute in its
+own domain.
+
 - `@cfg(target_os="linux")`, `target_arch`, `target_abi`: conditional compile.
 - `@inline`: request inlining; recursive functions remain excluded.
 - `@derive(...)`: register derived traits.

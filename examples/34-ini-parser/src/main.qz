@@ -2,6 +2,7 @@ import std.fs.File;
 import std.fs.read_to_string;
 import std.io;
 import parse_ini.IniDocument;
+import parse_ini.IniError;
 
 fn main(args: Array[str]) i32 {
     var input_path: str = "input.ini";
@@ -11,7 +12,17 @@ fn main(args: Array[str]) i32 {
 
     const input: String = read_to_string(input_path).unwrap();
     var config = IniDocument.new();
-    config.parse_string(input.as_str());
+    const parsed = config.parse_string(input.as_str());
+    if parsed.is_err() {
+        match parsed.unwrap_err() {
+            IniError.EmptySection(line) => io.errln("{}:{}: empty section name", input_path, line),
+            IniError.InvalidSection(line) => io.errln("{}:{}: invalid section header", input_path, line),
+            IniError.MissingSeparator(line) => io.errln("{}:{}: expected '=' in key/value pair", input_path, line),
+            IniError.EmptyKey(line) => io.errln("{}:{}: empty key", input_path, line),
+        };
+        config.free();
+        ret 1;
+    }
 
     const serialized: String = config.stringify();
     const output: File = File.create(output_path).unwrap();

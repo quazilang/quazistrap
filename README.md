@@ -150,6 +150,7 @@ An unterminated raw string is a compile error.
 qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
          [--bin name|--lib] [--target x86_64-linux|x86_64-windows]
          [--linker builtin|path] [-L dir] [-l name]
+         [--static-lib|--shared-lib] [--no-incremental]
          [--silent|--no-progress] [--no-color] [--no-unicode]
 qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
@@ -178,13 +179,13 @@ retaining the discovered package identity in `quazi.lock`; no separate
 then validates it against downloaded package metadata. Git `--version` accepts
 a tag, commit hash, or `latest`.
 
-Project builds use QZC v5 at `build/quazi/<target>/<artifact>/incremental.qzc`.
+Project builds use QZC v6 at `build/quazi/<target>/<artifact>/incremental.qzc`.
 Exact hits reuse linked QZI; partial hits restore unchanged pre-WPO functions,
 compile changed files, and rerun full WPO. Progress reports hit/partial/miss,
 restored/compiled function counts, and cache writes.
 Pass `--no-incremental` to bypass both reads and writes. See
 [Libraries, QZI, and incremental builds](docs/LIBRARIES.md) for dependency TOML,
-QZI v7 library rules, lockfile behavior, and cache guarantees.
+QZI v8 library rules, lockfile behavior, and cache guarantees.
 
 `qz header` reads the current project when no files are supplied and emits the
 public C surface formed by `@export` functions and their C-compatible type
@@ -198,11 +199,13 @@ Quazi project.
 - `-c` — emit `.o` object file only (no linker)
 - `-r` — run the emitted binary after `qz build`
 - `-s` — strip symbols
+- `--static-lib` / `--shared-lib` — emit a native static or shared library
+- `--no-incremental` — bypass reads and writes of the project QZC cache
 - `--linker builtin` — require the in-process ELF/PE linker
 - `--linker <path>` — explicitly use an external linker
 - `-L <dir>` / `-l <name>` — opt into a native library search path/library
 
-- `-q`, `--silent` â€” emit nothing for successful builds; errors still print
+- `-q`, `--silent` — emit nothing for successful builds; errors still print
 - `--no-progress` â€” hide stages and print only `built <name>` on success
 - `--no-color` â€” remove ANSI color from progress and diagnostics
 - `--no-unicode` â€” use ASCII headers, trees, and `[ok]`/`[fail]` markers

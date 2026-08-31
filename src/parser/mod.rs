@@ -2223,6 +2223,26 @@ fn main() void {
     }
 
     #[test]
+    fn parses_opaque_postfix_attributes_on_aggregate_fields() {
+        let program = parse_program(
+            r#"struct User {
+    name: String @ini("username") @json(name="user_name"),
+    flags: u32 @bits(legacy, width=3):3 @wire("v1"),
+}"#,
+        );
+        let ItemKind::Struct { fields, .. } = &program.items[0].node else {
+            panic!("expected struct item");
+        };
+        assert_eq!(fields[0].name, "name");
+        assert_eq!(fields[0].attributes.len(), 2);
+        assert_eq!(fields[0].attributes[0].name, "ini");
+        assert_eq!(fields[0].attributes[1].name, "json");
+        assert_eq!(fields[1].bit_width, Some(3));
+        assert_eq!(fields[1].attributes[0].name, "bits");
+        assert_eq!(fields[1].attributes[1].name, "wire");
+    }
+
+    #[test]
     fn parses_generic_fn_struct_trait_and_impl_headers() {
         let program = parse_program(
             r#"

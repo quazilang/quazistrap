@@ -5,13 +5,14 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::cli::HeaderTarget;
-use crate::parser::ast::{AttrArg, AttrVal, Attribute, ItemKind, Program, Type, TypeKind};
+use crate::parser::ast::{
+    AggregateField, AttrArg, AttrVal, Attribute, ItemKind, Program, Type, TypeKind,
+};
 
 #[derive(Clone)]
 struct Aggregate<'a> {
     name: &'a str,
-    fields: &'a [(String, Type, bool)],
-    bit_widths: &'a [Option<u8>],
+    fields: &'a [AggregateField],
     is_union: bool,
     attributes: &'a [Attribute],
 }
@@ -63,7 +64,6 @@ pub fn generate(
                 name,
                 generic_params,
                 fields,
-                bit_widths,
                 is_union,
                 attributes,
                 public: _,
@@ -73,7 +73,6 @@ pub fn generate(
                     Aggregate {
                         name,
                         fields,
-                        bit_widths,
                         is_union: *is_union,
                         attributes,
                     },
@@ -305,17 +304,17 @@ fn emit_aggregate(
             .unwrap_or_default(),
     };
     out.push_str(&format!("{kind}{modifier} {} {{\n", aggregate.name));
-    for (index, (name, ty, _)) in aggregate.fields.iter().enumerate() {
-        match declaration(&ty.node, name, context) {
-            Ok(mut field) => {
-                if let Some(width) = aggregate.bit_widths.get(index).copied().flatten() {
-                    field.push_str(&format!(" : {width}"));
+    for aggregate_field in aggregate.fields {
+        match declaration(&aggregate_field.ty.node, &aggregate_field.name, context) {
+            Ok(mut declaration) => {
+                if let Some(width) = aggregate_field.bit_width {
+                    declaration.push_str(&format!(" : {width}"));
                 }
-                out.push_str(&format!("    {field};\n"));
+                out.push_str(&format!("    {declaration};\n"));
             }
             Err(error) => errors.push(format!(
-                "field `{}.{name}` cannot be written to C: {error}",
-                aggregate.name
+                "field `{}.{}` cannot be written to C: {error}",
+                aggregate.name, aggregate_field.name
             )),
         }
     }
@@ -463,8 +462,8 @@ fn expand_required_types(context: &HeaderContext<'_>, required: &mut HashSet<Str
                 collect_named_types(alias.ty, required);
             }
             if let Some(aggregate) = context.aggregates.get(name.as_str()) {
-                for (_, ty, _) in aggregate.fields {
-                    collect_named_types(&ty.node, required);
+                for field in aggregate.fields {
+                    collect_named_types(&field.ty.node, required);
                 }
             }
         }

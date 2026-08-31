@@ -412,7 +412,6 @@ pub fn semantic_context_hash(
                 name,
                 generic_params,
                 fields,
-                bit_widths,
                 is_union,
                 attributes,
                 public,
@@ -420,12 +419,13 @@ pub fn semantic_context_hash(
                 hasher.update(b"struct");
                 hasher.update(name.as_bytes());
                 hasher.update(format!("{:?}", generic_params).as_bytes());
-                for (field, ty, constant) in fields {
-                    hasher.update(field.as_bytes());
-                    hasher.update(ty.node.to_string().as_bytes());
-                    hasher.update([u8::from(*constant)]);
+                for field in fields {
+                    hasher.update(field.name.as_bytes());
+                    hasher.update(field.ty.node.to_string().as_bytes());
+                    hasher.update([u8::from(field.is_const)]);
+                    hasher.update(format!("{:?}", field.bit_width).as_bytes());
+                    hash_attributes(&mut hasher, &field.attributes);
                 }
-                hasher.update(format!("{:?}", bit_widths).as_bytes());
                 hasher.update([u8::from(*is_union), u8::from(*public)]);
                 hash_attributes(&mut hasher, attributes);
             }

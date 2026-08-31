@@ -1,196 +1,203 @@
-pub struct IniDocument {
-    content: String,
+// Small, deterministic INI reader: blank lines and full-line `#`/`;` comments
+// are ignored; whitespace around names is ignored; the first `=` splits a pair;
+// later definitions of a key win; and values are kept verbatim apart from edge
+// whitespace. Parsing validates the complete document before replacing it.
+pub struct IniDocument { content: String, }
+
+pub enum IniError { EmptySection(usize), InvalidSection(usize), MissingSeparator(usize), EmptyKey(usize), }
+
+fn section_name(line: str) String {
+    const text = line.trim();
+    if text.len() < 2 || !text.starts_with("[") || !text.ends_with("]") { ret String.new(); }
+    ret text[1:-1].trim();
 }
 
-pub trait ReadableConfig {
-    fn parse_string(content: str) void;
+fn ignored(line: str) bool {
+    const text = line.trim();
+    ret text.is_empty() || text.starts_with("#") || text.starts_with(";");
 }
 
-pub trait WriteableConfig {
-    fn stringify() String;
+fn validate(content: str) Result[bool, IniError] {
+    var start: usize = 0;
+    var index: usize = 0;
+    var line_number: usize = 1;
+    const length = content.len();
+    for index <= length {
+        if index == length || content[index as isize] == 10 {
+            const line = content[start as isize:index as isize];
+            const text = line.as_str().trim();
+            if !ignored(text.as_str()) {
+                const opens_section = text.starts_with("[");
+                const closes_section = text.ends_with("]");
+                if opens_section || closes_section {
+                    if !opens_section || !closes_section { ret Err(IniError.InvalidSection(line_number)); }
+                    const name = text.as_str()[1:-1].trim();
+                    if name.is_empty() { ret Err(IniError.EmptySection(line_number)); }
+                } else {
+                    const equal = text.as_str().find("=");
+                    if equal.is_none() { ret Err(IniError.MissingSeparator(line_number)); }
+                    const key = text.as_str()[0:equal.unwrap() as isize].trim();
+                    if key.is_empty() { ret Err(IniError.EmptyKey(line_number)); }
+                }
+            }
+            start = index + 1;
+            line_number++;
+        }
+        index++;
+    }
+    ret Ok(true);
+}
+
+fn lookup(content: str, wanted_section: str, wanted_key: str) Option[String] {
+    var section = String.new();
+    var found = false;
+    var result = String.new();
+    var start: usize = 0;
+    var index: usize = 0;
+    const length = content.len();
+    for index <= length {
+        if index == length || content[index as isize] == 10 {
+            const line = content[start as isize:index as isize];
+            if !ignored(line.as_str()) {
+                const next_section = section_name(line.as_str());
+                if !next_section.is_empty() {
+                    section.free();
+                    section = next_section;
+                } else if section.as_str() == wanted_section {
+                    const equal = line.as_str().find("=");
+                    if equal.is_some() {
+                        const at = equal.unwrap();
+                        const key = line.as_str()[0:at as isize].trim();
+                        if key.as_str() == wanted_key {
+                            const value = line.as_str()[at as isize + 1:].trim();
+                            result.free();
+                            result = value;
+                            found = true;
+                        }
+                    }
+                }
+            }
+            start = index + 1;
+        }
+        index++;
+    }
+    section.free();
+    if found { ret Some(result); }
+    result.free();
+    ret None;
+}
+
+fn has_key_in(content: str, wanted_section: str, wanted_key: str) bool {
+    var section = String.new();
+    var start: usize = 0;
+    var index: usize = 0;
+    const length = content.len();
+    for index <= length {
+        if index == length || content[index as isize] == 10 {
+            const line = content[start as isize:index as isize];
+            if !ignored(line.as_str()) {
+                const next_section = section_name(line.as_str());
+                if !next_section.is_empty() {
+                    section.free();
+                    section = next_section;
+                } else if section.as_str() == wanted_section {
+                    const equal = line.as_str().find("=");
+                    if equal.is_some() {
+                        const key = line.as_str()[0:equal.unwrap() as isize].trim();
+                        if key.as_str() == wanted_key { section.free(); ret true; }
+                    }
+                }
+            }
+            start = index + 1;
+        }
+        index++;
+    }
+    section.free();
+    ret false;
+}
+
+fn has_section_in(content: str, wanted: str) bool {
+    var start: usize = 0;
+    var index: usize = 0;
+    const length = content.len();
+    for index <= length {
+        if index == length || content[index as isize] == 10 {
+            const line = content[start as isize:index as isize];
+            const section = section_name(line.as_str());
+            if section.as_str() == wanted { ret true; }
+            section.free();
+            start = index + 1;
+        }
+        index++;
+    }
+    ret false;
 }
 
 impl IniDocument {
-    pub fn new() IniDocument {
-        ret IniDocument { content: String.new() };
-    }
-
-    pub fn get(self: IniDocument, section: str, key: str) String {
-        var current_section = String.new();
-        var result = String.new();
-        var line_start: usize = 0;
-        var index: usize = 0;
-        const content = self.content.as_str();
-        const content_len: usize = content.len();
-
-        for index <= content_len {
-            const at_end: bool = index == content_len;
-            if at_end || content[index as isize] == 10 {
-                const line = content[line_start as isize:index as isize];
-                const trimmed = line.trim();
-
-                if !trimmed.is_empty()
-                    && !trimmed.starts_with(";")
-                    && !trimmed.starts_with("#") {
-                    if trimmed.starts_with("[") && trimmed.ends_with("]") {
-                        current_section = trimmed[1:-1].trim();
-                    } else if current_section.as_str() == section {
-                        var separator: isize = -1;
-                        var position: usize = 0;
-                        for position < trimmed.len() {
-                            if trimmed[position as isize] == 61 {
-                                separator = position as isize;
-                                break;
-                            }
-                            position++;
-                        }
-
-                        if separator >= 0 {
-                            const candidate = trimmed[0:separator].trim();
-                            if candidate.as_str() == key {
-                                result = trimmed[separator + 1:].trim();
-                            }
-                        }
-                    }
-                }
-
-                line_start = index + 1;
-            }
-            index++;
-        }
-
-        ret result;
-    }
-
-    pub fn contains(self: IniDocument, section: str, key: str) bool {
-        var current_section = String.new();
-        var line_start: usize = 0;
-        var index: usize = 0;
-        const content = self.content.as_str();
-        const content_len: usize = content.len();
-
-        for index <= content_len {
-            const at_end: bool = index == content_len;
-            if at_end || content[index as isize] == 10 {
-                const line = content[line_start as isize:index as isize];
-                const trimmed = line.trim();
-
-                if !trimmed.is_empty()
-                    && !trimmed.starts_with(";")
-                    && !trimmed.starts_with("#") {
-                    if trimmed.starts_with("[") && trimmed.ends_with("]") {
-                        current_section = trimmed[1:-1].trim();
-                    } else if current_section.as_str() == section {
-                        var separator: isize = -1;
-                        var position: usize = 0;
-                        for position < trimmed.len() {
-                            if trimmed[position as isize] == 61 {
-                                separator = position as isize;
-                                break;
-                            }
-                            position++;
-                        }
-
-                        if separator >= 0 {
-                            const candidate = trimmed[0:separator].trim();
-                            if candidate.as_str() == key { ret true; }
-                        }
-                    }
-                }
-
-                line_start = index + 1;
-            }
-            index++;
-        }
-
-        ret false;
-    }
-
-    pub fn has_section(self: IniDocument, section: str) bool {
-        var line_start: usize = 0;
-        var index: usize = 0;
-        const content = self.content.as_str();
-        const content_len: usize = content.len();
-
-        for index <= content_len {
-            const at_end: bool = index == content_len;
-            if at_end || content[index as isize] == 10 {
-                const line = content[line_start as isize:index as isize];
-                const trimmed = line.trim();
-                if trimmed.starts_with("[") && trimmed.ends_with("]") {
-                    const name = trimmed[1:-1].trim();
-                    if name.as_str() == section { ret true; }
-                }
-                line_start = index + 1;
-            }
-            index++;
-        }
-
-        ret false;
-    }
-
-    pub fn free(self: IniDocument) void {
-        self.content.free();
-        self.content = String.new();
-    }
-}
-
-impl ReadableConfig for IniDocument {
-    pub fn parse_string(self: IniDocument, content: str) void {
+    pub fn new() IniDocument { ret IniDocument { content: String.new() }; }
+    pub fn get(self: IniDocument, section: str, key: str) Option[String] { ret lookup(self.content.as_str(), section, key); }
+    pub fn contains(self: IniDocument, section: str, key: str) bool { ret has_key_in(self.content.as_str(), section, key); }
+    pub fn has_section(self: IniDocument, section: str) bool { ret has_section_in(self.content.as_str(), section); }
+    pub fn free(self: IniDocument) void { self.content.free(); self.content = String.new(); }
+    pub fn parse_string(self: IniDocument, content: str) Result[bool, IniError] {
+        const checked = validate(content);
+        if checked.is_err() { ret Err(checked.unwrap_err()); }
         self.content.free();
         self.content = String.from(content);
+        ret Ok(true);
     }
-}
-
-impl WriteableConfig for IniDocument {
-    pub fn stringify(self: IniDocument) String {
-        ret String.from(self.content.as_str());
-    }
+    pub fn stringify(self: IniDocument) String { ret String.from(self.content.as_str()); }
 }
 
 @test
-fn parses_sections_values_and_comments() void {
+fn parses_sections_values_comments_and_crlf() void {
     var config = IniDocument.new();
-    config.parse_string(`# global comment
-app_version = 1.0.0
-
-[database]
-host = localhost
-port = 5432
-
-[server]
-token = left=right
-empty =
-`);
-
-    const host = config.get("database", "host");
+    config.parse_string("# comment\r\n[database]\r\nhost = localhost\r\n[server]\r\ntoken = left=right\r\nempty =\r\n").unwrap();
+    const host = config.get("database", "host").unwrap();
     if host.as_str() != "localhost" { panic("database.host was parsed incorrectly"); }
-
-    const token = config.get("server", "token");
-    if token.as_str() != "left=right" { panic("values must preserve embedded equals signs"); }
-
-    if !config.has_section("database") { panic("database section was not found"); }
-    if !config.contains("server", "empty") { panic("empty values must remain present"); }
-    if config.contains("server", "missing") { panic("missing key was reported as present"); }
+    const token = config.get("server", "token").unwrap();
+    if token.as_str() != "left=right" { panic("embedded equals signs were lost"); }
+    if !config.has_section("database") || !config.contains("server", "empty") { panic("section or empty value was lost"); }
+    const serialized = config.stringify();
+    if serialized.as_str() != "# comment\r\n[database]\r\nhost = localhost\r\n[server]\r\ntoken = left=right\r\nempty =\r\n" { panic("stringify changed the source"); }
     config.free();
 }
 
 @test
-fn reparsing_replaces_the_document() void {
+fn duplicate_keys_and_reparse_are_deterministic() void {
     var config = IniDocument.new();
-    config.parse_string("[old]\nvalue = stale\n");
-    config.parse_string("[new]\nvalue = fresh\n");
-
-    if config.has_section("old") { panic("reparse retained the previous document"); }
-    const value = config.get("new", "value");
-    if value.as_str() != "fresh" { panic("reparse did not install the new document"); }
-
-    const serialized = config.stringify();
-    if serialized.as_str() != "[new]\nvalue = fresh\n" {
-        panic("stringify did not preserve the reparsed source");
-    }
+    config.parse_string("[app]\nmode = development\nmode = production\n").unwrap();
+    const mode = config.get("app", "mode").unwrap();
+    if mode.as_str() != "production" { panic("later key definitions must win"); }
+    config.parse_string("[new]\nvalue = fresh\n").unwrap();
+    if config.has_section("app") || config.get("new", "value").unwrap().as_str() != "fresh" { panic("reparse did not replace source"); }
     config.free();
+}
+
+@test
+fn rejects_invalid_input_without_replacing_the_document() void {
+    var config = IniDocument.new();
+    config.parse_string("[stable]\nvalue = kept\n").unwrap();
+    const malformed = config.parse_string("[broken\nvalue = lost\n");
+    if malformed.is_ok() { panic("unterminated section was accepted"); }
+    if config.get("stable", "value").unwrap().as_str() != "kept" { panic("failed parse replaced the previous document"); }
     config.free();
-    const after_free = config.stringify();
-    if !after_free.is_empty() { panic("free must leave an empty reusable document"); }
+}
+
+@test
+fn reports_each_invalid_form_with_its_line() void {
+    var config = IniDocument.new();
+    const empty_section = config.parse_string("\n[]\n");
+    const missing_separator = config.parse_string("[app]\nvalue\n");
+    const empty_key = config.parse_string("[app]\n = value\n");
+    const stray_bracket = config.parse_string("[app]\nvalue]\n");
+    const empty_section_line = match empty_section.unwrap_err() { IniError.EmptySection(line) => line, _ => 0, };
+    const missing_separator_line = match missing_separator.unwrap_err() { IniError.MissingSeparator(line) => line, _ => 0, };
+    const empty_key_line = match empty_key.unwrap_err() { IniError.EmptyKey(line) => line, _ => 0, };
+    const stray_bracket_line = match stray_bracket.unwrap_err() { IniError.InvalidSection(line) => line, _ => 0, };
+    if empty_section_line != 2 { panic("empty section error or line was wrong"); }
+    if missing_separator_line != 2 { panic("missing separator error or line was wrong"); }
+    if empty_key_line != 2 { panic("empty key error or line was wrong"); }
+    if stray_bracket_line != 2 { panic("invalid section error or line was wrong"); }
+    config.free();
 }

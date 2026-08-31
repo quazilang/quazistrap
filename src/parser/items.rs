@@ -138,8 +138,7 @@ impl Parser {
         let generic_params = self.parse_optional_generic_params()?;
 
         self.expect(TokenKind::LBrace)?;
-        let mut fields: Vec<(String, Type, bool)> = Vec::new();
-        let mut bit_widths = Vec::new();
+        let mut fields = Vec::new();
 
         while !self.at(TokenKind::RBrace) {
             if self.at(TokenKind::Eof) {
@@ -156,6 +155,11 @@ impl Parser {
             let field_name = self.parse_ident()?;
             self.expect(TokenKind::Colon)?;
             let field_ty = self.parse_type()?;
+
+            // Field attributes are source-level metadata.  Their names and
+            // arguments remain opaque to the compiler so libraries and tools
+            // can evolve independently of the language parser.
+            let mut field_attributes = self.parse_attributes()?;
 
             let bit_width = if self.at(TokenKind::Colon) {
                 self.advance();
@@ -176,8 +180,17 @@ impl Parser {
                 None
             };
 
-            fields.push((field_name, field_ty, is_const));
-            bit_widths.push(bit_width);
+            // Also accept attributes after a C bitfield width. This keeps the
+            // metadata position ergonomic for both ordinary and C aggregates.
+            field_attributes.extend(self.parse_attributes()?);
+
+            fields.push(AggregateField {
+                name: field_name,
+                ty: field_ty,
+                is_const,
+                bit_width,
+                attributes: field_attributes,
+            });
 
             if self.at(TokenKind::Comma) || self.at(TokenKind::Semicolon) {
                 self.advance();
@@ -192,7 +205,6 @@ impl Parser {
                 name,
                 generic_params,
                 fields,
-                bit_widths,
                 is_union,
                 attributes,
                 public: is_pub,
