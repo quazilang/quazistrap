@@ -11,7 +11,23 @@ use crate::lexer::Lexer;
 use crate::lexer::token::TokenKind;
 use crate::parser::Parser;
 use crate::parser::ast::{ItemKind, Program};
-use crate::semantic::SourceFile;
+use crate::semantic::{SourceFile, item_should_include_for};
+
+/// Compilation target used while resolving conditional imports.
+#[derive(Debug, Clone, Copy)]
+pub struct CfgTarget<'a> {
+    pub os: &'a str,
+    pub arch: &'a str,
+    pub abi: &'a str,
+}
+
+fn host_cfg_target() -> CfgTarget<'static> {
+    #[cfg(target_os = "windows")]
+    let abi = "win64";
+    #[cfg(not(target_os = "windows"))]
+    let abi = "sysv";
+    CfgTarget { os: std::env::consts::OS, arch: std::env::consts::ARCH, abi }
+}
 
 pub struct LoadResult {
     pub merged_source: String,
@@ -96,6 +112,17 @@ pub fn load_programs_configured(
     include_std: bool,
     additional_roots: &[PathBuf],
 ) -> Result<LoadResult, String> {
+    load_programs_configured_for_target(entries, resolver, include_std, additional_roots, host_cfg_target())
+}
+
+/// Load sources after excluding imports disabled for `target`.
+pub fn load_programs_configured_for_target(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    additional_roots: &[PathBuf],
+    target: CfgTarget<'_>,
+) -> Result<LoadResult, String> {
     let effective_resolver = resolver_with_builtin_modules(resolver, include_std);
 
     // Auto-inject prelude before user entries (as a library file).
@@ -121,6 +148,7 @@ pub fn load_programs_configured(
         prelude_path.as_deref(),
         additional_roots,
         true,
+        target,
     )
     .and_then(finalize_sources)
 }
@@ -143,6 +171,7 @@ fn collect_sources_with_prelude(
     prelude: Option<&Path>,
     additional_roots: &[PathBuf],
     strict: bool,
+    target: CfgTarget<'_>,
 ) -> Result<SourceCollection, String> {
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut sources: Vec<(PathBuf, String)> = Vec::new();
@@ -175,6 +204,7 @@ fn collect_sources_with_prelude(
             resolver,
             strict,
             &mut dep_edges,
+            target,
         )?;
     }
 
@@ -192,6 +222,7 @@ fn collect_sources_with_prelude(
             resolver,
             strict,
             &mut dep_edges,
+            target,
         )?;
     }
 
@@ -205,6 +236,7 @@ fn collect_sources_with_prelude(
             resolver,
             strict,
             &mut dep_edges,
+            target,
         )?;
     }
 
@@ -717,12 +749,25 @@ fn find_builtin_prelude_root() -> Option<PathBuf> {
     None
 }
 
-fn used_std_modules(src: &str) -> HashSet<String> {
+fn used_std_modules(src: &str, target: CfgTarget<'_>) -> HashSet<String> {
     let mut lexer = Lexer::new(src);
     let tokens = lexer.tokenize();
     let mut modules = HashSet::new();
+    let disabled_ranges: Vec<_> = parse_source(src)
+        .ok()
+        .into_iter()
+        .flat_map(|program| program.items)
+        .filter(|item| !item_is_enabled(item, target))
+        .map(|item| item.span.start..item.span.end)
+        .collect();
 
     for window in tokens.windows(4) {
+        if disabled_ranges
+            .iter()
+            .any(|range| range.contains(&window[0].span.start))
+        {
+            continue;
+        }
         if matches!(&window[0].kind, TokenKind::Ident(name) if name == "std")
             && matches!(window[1].kind, TokenKind::Dot)
             && matches!(&window[2].kind, TokenKind::Ident(_))
@@ -745,6 +790,7 @@ fn collect(
     resolver: Option<&ModuleResolver>,
     strict: bool,
     dep_edges: &mut Vec<(PathBuf, PathBuf)>,
+    target: CfgTarget<'_>,
 ) -> Result<(), String> {
     let canonical = path
         .canonicalize()
@@ -757,7 +803,7 @@ fn collect(
     let src = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
 
-    for (dep, dep_is_lib) in local_import_paths(&canonical, &src, resolver, strict)? {
+    for (dep, dep_is_lib) in local_import_paths(&canonical, &src, resolver, strict, target)? {
         dep_edges.push((canonical.clone(), dep.clone()));
         collect(
             &dep,
@@ -768,6 +814,7 @@ fn collect(
             resolver,
             strict,
             dep_edges,
+            target,
         )?;
     }
 
@@ -785,6 +832,7 @@ fn local_import_paths(
     src: &str,
     resolver: Option<&ModuleResolver>,
     strict: bool,
+    target: CfgTarget<'_>,
 ) -> Result<Vec<(PathBuf, bool)>, String> {
     let dir = file.parent().unwrap_or(Path::new("."));
 
@@ -802,6 +850,9 @@ fn local_import_paths(
         let ItemKind::Import(ip) = &item.node else {
             continue;
         };
+        if !item_should_include_for(&ip.attributes, target.os, target.arch, target.abi) {
+            continue;
+        }
 
         let Some((base, remainder)) = import_base_and_remainder(ip) else {
             continue;
@@ -813,11 +864,11 @@ fn local_import_paths(
         {
             if remainder.is_empty() && base == "std" {
                 // import std; — only load sub-modules actually used in source
-                for module in used_std_modules(src) {
-                    if let Some(target) = resolve_module_file(spec, &module)
-                        && seen.insert(target.clone())
+                for module in used_std_modules(src, target) {
+                    if let Some(module_path) = resolve_module_file(spec, &module, target)
+                        && seen.insert(module_path.clone())
                     {
-                        paths.push((target, true));
+                        paths.push((module_path, true));
                     }
                 }
                 continue;
@@ -827,7 +878,7 @@ fn local_import_paths(
                 spec.entry.clone()
             } else if spec.entry_is_package_root
                 && remainder.len() == 1
-                && is_public_item_in_entry(&spec.entry, &remainder[0])?
+                && is_public_item_in_entry(&spec.entry, &remainder[0], target)?
             {
                 // A library entry is its package root. Public declarations in
                 // that file are exported directly; mod.qz is not required to
@@ -837,13 +888,13 @@ fn local_import_paths(
                 let root_mod_entry = spec.src_dir.join("mod.qz");
                 if root_mod_entry.exists() {
                     let exported = &remainder[0];
-                    if strict && !is_pub_exported_from_mod(&root_mod_entry, exported)? {
+                    if strict && !is_pub_exported_from_mod(&root_mod_entry, exported, target)? {
                         return Err(format!(
                             "cannot access '{}' from '{}': '{}' is not pub-imported in mod.qz",
                             exported, base, exported
                         ));
                     }
-                    if let Some(specific) = find_pub_exported_file(&root_mod_entry, exported) {
+                    if let Some(specific) = find_pub_exported_file(&root_mod_entry, exported, target) {
                         if seen.insert(specific.clone()) {
                             paths.push((specific, true));
                         }
@@ -858,14 +909,14 @@ fn local_import_paths(
                     if mod_entry_path.exists() {
                         if remainder.len() > 1 {
                             let sub = &remainder[1];
-                            if strict && !is_pub_exported_from_mod(&mod_entry_path, sub)? {
+                            if strict && !is_pub_exported_from_mod(&mod_entry_path, sub, target)? {
                                 return Err(format!(
                                     "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.qz'",
                                     sub, first, sub, first
                                 ));
                             }
                             // Targeted: load only the specific file, skip mod.qz
-                            if let Some(specific) = find_pub_exported_file(&mod_entry_path, sub) {
+                            if let Some(specific) = find_pub_exported_file(&mod_entry_path, sub, target) {
                                 if seen.insert(specific.clone()) {
                                     paths.push((specific, true));
                                 }
@@ -891,7 +942,7 @@ fn local_import_paths(
                             }
                         }
                         if found.is_none() {
-                            found = resolve_module_file(spec, &remainder[0]);
+                            found = resolve_module_file(spec, &remainder[0], target);
                         }
                         if found.is_none() && spec.entry.exists() {
                             // A package may expose its API directly from its entry
@@ -935,14 +986,14 @@ fn local_import_paths(
             let mod_entry = base_dir.join("mod.qz");
             if mod_entry.exists() {
                 let sub = &remainder[0];
-                if strict && !is_pub_exported_from_mod(&mod_entry, sub)? {
+                if strict && !is_pub_exported_from_mod(&mod_entry, sub, target)? {
                     return Err(format!(
                         "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.qz'",
                         sub, base, sub, base
                     ));
                 }
                 // Targeted: load only the specific file, skip mod.qz
-                if let Some(specific) = find_pub_exported_file(&mod_entry, sub) {
+                if let Some(specific) = find_pub_exported_file(&mod_entry, sub, target) {
                     if seen.insert(specific.clone()) {
                         paths.push((specific, true));
                     }
@@ -1015,10 +1066,10 @@ fn local_import_paths(
     Ok(paths)
 }
 
-fn resolve_module_file(spec: &ModuleSpec, module: &str) -> Option<PathBuf> {
+fn resolve_module_file(spec: &ModuleSpec, module: &str, target: CfgTarget<'_>) -> Option<PathBuf> {
     let root_mod_entry = spec.src_dir.join("mod.qz");
     if root_mod_entry.exists() {
-        return find_pub_exported_file(&root_mod_entry, module);
+        return find_pub_exported_file(&root_mod_entry, module, target);
     }
 
     let target = spec.src_dir.join(module);
@@ -1035,12 +1086,30 @@ fn resolve_module_file(spec: &ModuleSpec, module: &str) -> Option<PathBuf> {
     None
 }
 
-fn is_public_item_in_entry(entry: &Path, name: &str) -> Result<bool, String> {
+fn item_is_enabled(item: &crate::parser::ast::Item, target: CfgTarget<'_>) -> bool {
+    let attributes = match &item.node {
+        ItemKind::Fn { attributes, .. }
+        | ItemKind::Struct { attributes, .. }
+        | ItemKind::Trait { attributes, .. }
+        | ItemKind::Enum { attributes, .. }
+        | ItemKind::TypeAlias { attributes, .. }
+        | ItemKind::ForeignGlobal { attributes, .. } => attributes,
+        ItemKind::Import(import_path) => &import_path.attributes,
+        _ => return true,
+    };
+    item_should_include_for(attributes, target.os, target.arch, target.abi)
+}
+
+fn is_public_item_in_entry(
+    entry: &Path,
+    name: &str,
+    target: CfgTarget<'_>,
+) -> Result<bool, String> {
     let source = std::fs::read_to_string(entry)
         .map_err(|error| format!("cannot read '{}': {error}", entry.display()))?;
     let program = parse_source(&source)
         .map_err(|error| format!("cannot parse library entry '{}': {error}", entry.display()))?;
-    Ok(program.items.iter().any(|item| match &item.node {
+    Ok(program.items.iter().any(|item| item_is_enabled(item, target) && match &item.node {
         ItemKind::Fn {
             name: item_name,
             pub_fn,
@@ -1077,7 +1146,7 @@ fn is_public_item_in_entry(entry: &Path, name: &str) -> Result<bool, String> {
 
 /// Find the file that a `mod.qz` pub-exports `name` from.
 /// e.g. `pub import map.Map` → returns `mod_entry_dir/map.qz`
-fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
+fn find_pub_exported_file(mod_entry: &Path, name: &str, target: CfgTarget<'_>) -> Option<PathBuf> {
     let src = std::fs::read_to_string(mod_entry).ok()?;
     let prog = parse_source(&src).ok()?;
     let mod_dir = mod_entry.parent()?;
@@ -1086,6 +1155,9 @@ fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
         let ItemKind::Import(ip) = &item.node else {
             continue;
         };
+        if !item_should_include_for(&ip.attributes, target.os, target.arch, target.abi) {
+            continue;
+        }
         if !ip.pub_import {
             continue;
         }
@@ -1132,7 +1204,7 @@ fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
                     }
                     let sub_mod_entry = sub_mod.join("mod.qz");
                     if sub_mod_entry.exists()
-                        && let Some(found) = find_pub_exported_file(&sub_mod_entry, name)
+                        && let Some(found) = find_pub_exported_file(&sub_mod_entry, name, target)
                     {
                         return Some(found);
                     }
@@ -1170,7 +1242,7 @@ fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-fn is_pub_exported_from_mod(mod_entry: &Path, name: &str) -> Result<bool, String> {
+fn is_pub_exported_from_mod(mod_entry: &Path, name: &str, target: CfgTarget<'_>) -> Result<bool, String> {
     let src = std::fs::read_to_string(mod_entry)
         .map_err(|e| format!("cannot read '{}': {}", mod_entry.display(), e))?;
     let Ok(prog) = parse_source(&src) else {
@@ -1180,6 +1252,9 @@ fn is_pub_exported_from_mod(mod_entry: &Path, name: &str) -> Result<bool, String
         let ItemKind::Import(ip) = &item.node else {
             continue;
         };
+        if !item_should_include_for(&ip.attributes, target.os, target.arch, target.abi) {
+            continue;
+        }
         if !ip.pub_import {
             continue;
         }
@@ -1495,6 +1570,113 @@ mod tests {
             result.library_file_paths
         );
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn skips_cfg_disabled_imports_before_loading_dependencies() {
+        let root = temp_dir("quazi_loader_cfg_imports");
+        let package_root = root.join("pkg");
+        let src_dir = package_root.join("src");
+        fs::create_dir_all(&src_dir).expect("create package source directory");
+        let module_entry = src_dir.join("mod.qz");
+        let windows = src_dir.join("windows.qz");
+        fs::write(
+            &module_entry,
+            "@cfg(target_os=\"windows\") pub import windows;",
+        )
+        .expect("write module entry");
+        fs::write(&windows, "pub fn only_windows() void { ret; }")
+            .expect("write windows module");
+        let main_path = root.join("main.qz");
+        fs::write(
+            &main_path,
+            "@cfg(target_os=\"windows\") import pkg.windows.only_windows;",
+        )
+        .expect("write entry");
+        parse_source(&fs::read_to_string(&main_path).expect("read entry"))
+            .expect("conditional import must parse");
+
+        let mut resolver = ModuleResolver::default();
+        resolver
+            .insert(ModuleSpec {
+                name: "pkg".to_string(),
+                root: package_root.clone(),
+                src_dir: src_dir.clone(),
+                entry: module_entry.clone(),
+                entry_is_package_root: false,
+                version: None,
+            })
+            .expect("insert module");
+
+        let linux = load_programs_configured_for_target(
+            &[main_path.clone()],
+            Some(&resolver),
+            false,
+            &[],
+            CfgTarget { os: "linux", arch: "x86_64", abi: "sysv" },
+        )
+        .expect("load linux target");
+        assert!(!linux.loaded_files.contains(&windows));
+
+        let windows_target = load_programs_configured_for_target(
+            &[main_path],
+            Some(&resolver),
+            false,
+            &[],
+            CfgTarget { os: "windows", arch: "x86_64", abi: "win64" },
+        )
+        .expect("load windows target");
+        assert!(
+            windows_target.loaded_files.contains(&windows),
+            "windows target loaded {:?}, expected {}",
+            windows_target.loaded_files,
+            windows.display()
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ignores_std_modules_referenced_only_in_disabled_items() {
+        let source = r#"
+import std;
+@cfg(target_os="windows")
+fn hidden() void { std.windows.sleep(1); }
+"#;
+        let linux = used_std_modules(
+            source,
+            CfgTarget { os: "linux", arch: "x86_64", abi: "sysv" },
+        );
+        assert!(!linux.contains("windows"));
+        let windows = used_std_modules(
+            source,
+            CfgTarget { os: "windows", arch: "x86_64", abi: "win64" },
+        );
+        assert!(windows.contains("windows"));
+    }
+
+    #[test]
+    fn direct_package_exports_respect_cfg_target() {
+        let root = temp_dir("quazi_loader_cfg_direct_export");
+        let entry = root.join("lib.qz");
+        fs::write(
+            &entry,
+            "@cfg(target_os=\"windows\") pub fn only_windows() void { ret; }",
+        )
+        .expect("write package entry");
+        assert!(!is_public_item_in_entry(
+            &entry,
+            "only_windows",
+            CfgTarget { os: "linux", arch: "x86_64", abi: "sysv" },
+        )
+        .expect("inspect linux export"));
+        assert!(is_public_item_in_entry(
+            &entry,
+            "only_windows",
+            CfgTarget { os: "windows", arch: "x86_64", abi: "win64" },
+        )
+        .expect("inspect windows export"));
         let _ = fs::remove_dir_all(root);
     }
 

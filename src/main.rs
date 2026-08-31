@@ -516,14 +516,43 @@ fn external_tool_path(path: &std::path::Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn load_with_optional_project(files: &[PathBuf]) -> Result<loader::LoadResult, String> {
+fn load_with_optional_project_for_target(
+    files: &[PathBuf],
+    target: TargetSpec,
+) -> Result<loader::LoadResult, String> {
     let ctx = ProjectContext::discover(&files[0])?;
     let settings = ctx
         .as_ref()
         .map(|context| context.config.package)
         .unwrap_or_default();
     let resolver_owned = ctx.map(|context| context.resolver);
-    loader::load_programs_configured(files, resolver_owned.as_ref(), settings.std, &[])
+    loader::load_programs_configured_for_target(
+        files,
+        resolver_owned.as_ref(),
+        settings.std,
+        &[],
+        cfg_target_for_spec(&target),
+    )
+}
+
+fn cfg_target_for_spec(target: &TargetSpec) -> loader::CfgTarget<'static> {
+    match target.os {
+        backend::target::Os::Windows => loader::CfgTarget {
+            os: "windows",
+            arch: "x86_64",
+            abi: "win64",
+        },
+        backend::target::Os::Linux => loader::CfgTarget {
+            os: "linux",
+            arch: "x86_64",
+            abi: "sysv",
+        },
+        backend::target::Os::MacOs => loader::CfgTarget {
+            os: "macos",
+            arch: "x86_64",
+            abi: "sysv",
+        },
+    }
 }
 
 fn apply_package_settings(
@@ -983,14 +1012,15 @@ fn build_with_progress(
     prog.begin("frontend");
     let result = match project_resolver
         .map(|resolver| {
-            loader::load_programs_configured(
+            loader::load_programs_configured_for_target(
                 files,
                 Some(resolver),
                 package_settings.std,
                 &[],
+                cfg_target_for_spec(&target),
             )
         })
-        .unwrap_or_else(|| load_with_optional_project(files))
+        .unwrap_or_else(|| load_with_optional_project_for_target(files, target.clone()))
     {
         Ok(r) => r,
         Err(e) => {
@@ -1951,16 +1981,21 @@ fn main() {
             output,
             target,
         } => {
+            let loader_target = match target {
+                cli::HeaderTarget::X86_64Linux => TargetSpec::x86_64_linux(),
+                cli::HeaderTarget::X86_64Windows => TargetSpec::x86_64_windows(),
+            };
             let result = if files.is_empty() {
                 let ctx = load_project_context();
-                loader::load_programs_configured(
+                loader::load_programs_configured_for_target(
                     &[ctx.config.entry],
                     Some(&ctx.resolver),
                     ctx.config.package.std,
                     &[],
+                    cfg_target_for_spec(&loader_target),
                 )
             } else {
-                load_with_optional_project(&files)
+                load_with_optional_project_for_target(&files, loader_target.clone())
             }
             .unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {error}");
@@ -2025,11 +2060,17 @@ fn main() {
                     std::process::exit(1);
                 });
             let entry = ctx.config.entry.clone();
-            let result = loader::load_programs_configured(
+            let target = match target {
+                Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
+                Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
+                None => TargetSpec::host(),
+            };
+            let result = loader::load_programs_configured_for_target(
                 &[entry],
                 Some(&ctx.resolver),
                 ctx.config.package.std,
                 &[],
+                cfg_target_for_spec(&target),
             )
                 .unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
@@ -2044,11 +2085,6 @@ fn main() {
                 .iter()
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
-            let target = match target {
-                Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
-                Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
-                None => TargetSpec::host(),
-            };
             let (target_os, target_abi) = match target.os {
                 backend::target::Os::Windows => ("windows", "win64"),
                 backend::target::Os::Linux => ("linux", "sysv"),

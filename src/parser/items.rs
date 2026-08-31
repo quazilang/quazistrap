@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: 0BSD
 
 use crate::lexer::token::TokenKind;
-use crate::parser::Parser;
 use crate::parser::ast::*;
 use crate::parser::common::{merge_token_spans, to_ast_span};
+use crate::parser::Parser;
 
 impl Parser {
     pub fn parse_fn(
@@ -450,7 +450,11 @@ impl Parser {
         ))
     }
 
-    pub fn parse_import(&mut self, pub_import: bool) -> Result<Item, String> {
+    pub fn parse_import(
+        &mut self,
+        pub_import: bool,
+        attributes: Vec<Attribute>,
+    ) -> Result<Item, String> {
         let start = self.expect(TokenKind::Import)?.span;
 
         // Detect `./` prefix: Dot + Slash → relative import (local-only, skips module resolver).
@@ -545,6 +549,7 @@ impl Parser {
             ItemKind::Import(ImportPath {
                 path,
                 items,
+                attributes,
                 pub_import,
                 relative,
                 span: to_ast_span(span_tok),

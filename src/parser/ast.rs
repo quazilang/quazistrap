@@ -507,6 +507,8 @@ pub struct Block {
 pub struct ImportPath {
     pub path: Vec<String>,
     pub items: ImportItems,
+    /// Attributes attached to this import, including target-selection `@cfg`.
+    pub attributes: Vec<Attribute>,
     pub span: Span,
     pub pub_import: bool,
     /// True when the import starts with `./` — forces local-only file resolution,

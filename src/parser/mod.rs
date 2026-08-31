@@ -94,7 +94,7 @@ impl Parser {
             TokenKind::Error(msg) => {
                 Err(self.err_here_with_code("E00", format!("lexer error: {}", msg)))
             }
-            TokenKind::Import => self.parse_import(is_pub),
+            TokenKind::Import => self.parse_import(is_pub, attributes),
             TokenKind::Unsafe => {
                 self.advance(); // consume 'unsafe'
                 self.parse_fn(attributes, true, is_pub)

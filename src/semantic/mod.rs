@@ -472,6 +472,7 @@ pub fn strip_cfg_for(
             | ItemKind::Enum { attributes, .. }
             | ItemKind::TypeAlias { attributes, .. }
             | ItemKind::ForeignGlobal { attributes, .. } => Some(attributes),
+            ItemKind::Import(import_path) => Some(&mut import_path.attributes),
             _ => None,
         };
         if let Some(attributes) = attributes {
@@ -488,6 +489,7 @@ pub fn strip_cfg_for(
             | ItemKind::Enum { attributes, .. }
             | ItemKind::TypeAlias { attributes, .. }
             | ItemKind::ForeignGlobal { attributes, .. } => Some(attributes),
+            ItemKind::Import(import_path) => Some(&import_path.attributes),
             _ => None,
         };
         if attrs.is_some_and(|attributes| {
@@ -1665,6 +1667,7 @@ fn main() void {}
 @cfg(target_os="windows") type platform_word = i32;
 @cfg(target_abi="sysv") fn linux_only() void {}
 @cfg(target_abi="win64") fn windows_only() void {}
+@cfg(target_os="windows") import pkg.only_windows;
 "#,
         );
         let linux = strip_cfg_for(&program, "linux", "x86_64", "sysv");
@@ -1677,6 +1680,10 @@ fn main() void {}
             })
             .collect();
         assert_eq!(names, ["platform_word", "linux_only"]);
+        assert!(linux
+            .items
+            .iter()
+            .all(|item| !matches!(item.node, ItemKind::Import(_))));
         assert!(linux.items.iter().all(|item| match &item.node {
             ItemKind::TypeAlias { attributes, .. } | ItemKind::Fn { attributes, .. } =>
                 attributes.iter().all(|attribute| attribute.name != "cfg"),
