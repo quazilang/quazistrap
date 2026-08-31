@@ -22,6 +22,11 @@ identifier arguments remain opaque. A consumer must not reject an attribute
 just because it does not recognize its name. The authoritative language
 semantics and argument syntax are in the [language guide](../LANGUAGE.md#attributes).
 
+Top-level imports also retain leading attributes. In particular, editors can
+parse conditional module gateways such as
+`@cfg(target_os="windows") pub import std.windows.*;` without producing an
+error node. Target evaluation remains the compiler's responsibility.
+
 Run the grammar corpus from its repository with:
 
 ```bash
