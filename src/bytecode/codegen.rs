@@ -6407,12 +6407,22 @@ impl<'a> FnCompiler<'a> {
                     merged_owned = self.merge_named_args(method, args, named_args);
                     &merged_owned
                 };
-                if let Some(module_base) = self.module_import_base(object) {
+                // Sema also resolves a namespaced file's own module calls
+                // (`thread.thread_spawn()` inside `std.thread`). Such a module
+                // is not imported into itself, so retain the resolved target as
+                // authoritative instead of trying to compile `thread` as a
+                // local value register.
+                let resolved_module_call = self.resolved_fn_for_span(expr.span);
+                let module_base = self.module_import_base(object).or_else(|| {
+                    let (base, _) = extract_field_chain(object)?;
+                    let expected = format!("{}.{}", base, method);
+                    (resolved_module_call.as_deref() == Some(expected.as_str())).then_some(base)
+                });
+                if let Some(module_base) = module_base {
                     let dst = self.alloc_reg();
                     // Use sema-resolved name when available; otherwise form the target from
                     // the module chain. The resolved name already accounts for namespacing.
-                    let mut call_target = self
-                        .resolved_fn_for_span(expr.span)
+                    let mut call_target = resolved_module_call
                         .unwrap_or_else(|| format!("{}.{}", module_base, method));
                     if self.emit_c_variadic_call(&call_target, args, dst) {
                         return dst;

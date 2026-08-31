@@ -4816,6 +4816,13 @@ impl Analyzer {
         if self.struct_defs.contains_key(&base) {
             return false;
         }
+        // A namespaced source file may call its own top-level functions through
+        // its module name (`thread.thread_spawn()`). This is not an import, but
+        // it resolves to the same mangled symbol and must not be rejected merely
+        // because a module never imports itself.
+        if self.current_module_path.as_deref() == Some(base.as_str()) {
+            return true;
+        }
         self.resolve_symbol(&base).is_some_and(|sym| sym.is_import)
     }
 
@@ -4902,6 +4909,9 @@ impl Analyzer {
     /// actual source file module).
     fn resolve_module_method(&self, object: &Expr, method: &str) -> Option<String> {
         let (base, path) = Self::extract_field_chain(object)?;
+        if self.current_module_path.as_deref() == Some(base.as_str()) && path.is_empty() {
+            return Some(format!("{}.{}", base, method));
+        }
         let sym = self.resolve_symbol(&base)?;
         if !sym.is_import {
             return None;
