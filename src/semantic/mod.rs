@@ -120,6 +120,8 @@ pub struct Analyzer {
     pub(super) flexible_array_structs: std::collections::HashSet<String>,
     /// Derived traits: struct name → list of trait names from @derive.
     pub(super) derived_traits: HashMap<String, Vec<String>>,
+    /// Serialization-specific derive input retained in declaration order.
+    pub(super) serialization_derives: HashMap<String, SerializationDeriveMetadata>,
     /// Trait implementations: type name → set of trait names explicitly implemented via `impl Trait for Type`.
     pub(super) trait_impls: HashMap<String, std::collections::HashSet<String>>,
     /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
@@ -584,6 +586,7 @@ impl Analyzer {
             repr_c_alignments: HashMap::new(),
             flexible_array_structs: std::collections::HashSet::new(),
             derived_traits: HashMap::new(),
+            serialization_derives: HashMap::new(),
             trait_impls: HashMap::new(),
             trait_method_slots: HashMap::new(),
             trait_method_signatures: HashMap::new(),
@@ -737,6 +740,12 @@ impl Analyzer {
         let math_optimizations = std::mem::take(&mut self.math_optimizations);
         let lazy_import_hints = std::mem::take(&mut self.lazy_import_hints);
         let dead_functions: Vec<String> = self.unreachable_functions.iter().cloned().collect();
+        let mut serialization_derives = self.serialization_derives.clone();
+        for derive in serialization_derives.values_mut() {
+            for field in &mut derive.fields {
+                field.ty = self.resolve_type_aliases(&field.ty);
+            }
+        }
 
         let annotated_program = AnnotatedProgram {
             span: program.span,
@@ -894,6 +903,7 @@ impl Analyzer {
             repr_c_structs: self.repr_c_structs.clone(),
             repr_c_unions: self.repr_c_unions.clone(),
             flexible_array_structs: self.flexible_array_structs.clone(),
+            serialization_derives,
             namespaced_paths: self.namespaced_paths.clone(),
             main_takes_args: self.main_takes_args,
             test_functions: self.test_functions.clone(),
@@ -935,6 +945,7 @@ impl Analyzer {
         self.struct_field_bit_widths.clear();
         self.struct_generic_params.clear();
         self.derived_traits.clear();
+        self.serialization_derives.clear();
         self.trait_impls.clear();
         self.trait_method_slots.clear();
         self.trait_method_signatures.clear();
@@ -1625,6 +1636,64 @@ fn main() void {}
             "unexpected errors: {:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn records_ordered_serialization_derive_metadata() {
+        let report = analyze(
+            r#"
+type UserName = str;
+@derive(Serialize, Deserialize)
+struct User {
+    name: UserName @json(name="display_name") @community_format(version=2),
+    active: bool,
+}
+fn main() void {}
+"#,
+        );
+        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+        let metadata = report
+            .serialization_derives
+            .get("User")
+            .expect("serialization derive metadata");
+        assert_eq!(metadata.type_name, "User");
+        assert_eq!(metadata.requested_traits, ["Serialize", "Deserialize"]);
+        assert_eq!(metadata.fields.len(), 2);
+        assert_eq!(metadata.fields[0].name, "name");
+        assert_eq!(metadata.fields[0].json_name.as_deref(), Some("display_name"));
+        assert!(matches!(metadata.fields[0].ty, TypeKind::Str));
+        assert_eq!(metadata.fields[0].attributes[1].name, "community_format");
+        assert_eq!(metadata.fields[1].name, "active");
+        assert_eq!(metadata.fields[1].json_name, None);
+    }
+
+    #[test]
+    fn rejects_invalid_or_misplaced_json_field_attributes() {
+        let report = analyze(
+            r#"
+struct Plain {
+    value: str @json(name="value"),
+}
+@derive(Serialize, Serialize)
+struct Invalid {
+    first: str @json(name="first") @json(alias="first"),
+    second: str @json(name=""),
+    third: str @json(name="first"),
+}
+@derive(Serialize)
+struct Generic[T] { value: T, }
+@derive(Deserialize)
+union Value { integer: i32, }
+fn main() void {}
+"#,
+        );
+        let messages: Vec<&str> = report.errors.iter().map(|error| error.message.as_str()).collect();
+        assert!(messages.iter().any(|message| message.contains("only valid")));
+        assert!(messages.iter().any(|message| message.contains("must be exactly")));
+        assert!(messages.iter().any(|message| message.contains("JSON key 'first'")));
+        assert!(messages.iter().any(|message| message.contains("duplicate serialization derive")));
+        assert!(messages.iter().any(|message| message.contains("generic structs")));
+        assert!(messages.iter().any(|message| message.contains("not unions")));
     }
 
     fn analyze_module_pair(module_src: &str, main_src: &str) -> SemanticReport {

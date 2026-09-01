@@ -288,6 +288,123 @@ impl Analyzer {
                 if !derives.is_empty() {
                     self.derived_traits.insert(name.clone(), derives);
                 }
+                let mut serialization_traits: Vec<String> = Vec::new();
+                for attribute in attributes.iter().filter(|attribute| attribute.name == "derive") {
+                    for argument in &attribute.args {
+                        let AttrArg::Positional(AttrVal::Ident(trait_name)) = argument else {
+                            continue;
+                        };
+                        if trait_name != "Serialize" && trait_name != "Deserialize" {
+                            continue;
+                        }
+                        if serialization_traits.contains(trait_name) {
+                            self.push_error(
+                                attribute.span,
+                                "S06",
+                                format!("duplicate serialization derive '{trait_name}'"),
+                            );
+                        } else {
+                            serialization_traits.push(trait_name.clone());
+                        }
+                    }
+                }
+                let has_serialization_derive = !serialization_traits.is_empty();
+                if has_serialization_derive && *is_union {
+                    self.push_error(
+                        item.span,
+                        "S14",
+                        "Serialize and Deserialize currently support structs, not unions".to_string(),
+                    );
+                }
+                if has_serialization_derive && !generic_params.is_empty() {
+                    self.push_error(
+                        item.span,
+                        "S14",
+                        "Serialize and Deserialize currently do not support generic structs"
+                            .to_string(),
+                    );
+                }
+                let mut json_names: HashMap<String, String> = HashMap::new();
+                let serialization_fields = fields
+                    .iter()
+                    .map(|field| {
+                        let json_attributes: Vec<&Attribute> = field
+                            .attributes
+                            .iter()
+                            .filter(|attribute| attribute.name == "json")
+                            .collect();
+                        let json_name = json_attributes.iter().find_map(|attribute| match attribute.args.as_slice() {
+                            [AttrArg::KeyValue(key, AttrVal::Str(value))]
+                                if key == "name" && !value.is_empty() => Some(value.clone()),
+                            _ => None,
+                        });
+
+                        if !json_attributes.is_empty() && !has_serialization_derive {
+                            self.push_error(
+                                json_attributes[0].span,
+                                "S06",
+                                "@json is only valid on a field of a struct deriving Serialize or Deserialize"
+                                    .to_string(),
+                            );
+                        }
+                        if json_attributes.len() > 1 {
+                            self.push_error(
+                                json_attributes[1].span,
+                                "S06",
+                                format!("field '{}' has more than one @json attribute", field.name),
+                            );
+                        }
+                        for attribute in &json_attributes {
+                            if !matches!(
+                                attribute.args.as_slice(),
+                                [AttrArg::KeyValue(key, AttrVal::Str(value))]
+                                    if key == "name" && !value.is_empty()
+                            ) {
+                                self.push_error(
+                                    attribute.span,
+                                    "S06",
+                                    "@json must be exactly @json(name=\"non-empty JSON key\")"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        let wire_name = json_name.clone().unwrap_or_else(|| field.name.clone());
+                        if let Some(previous_field) = json_names.insert(wire_name.clone(), field.name.clone())
+                        {
+                            self.push_error(
+                                json_attributes.first().map_or(field.ty.span, |attribute| attribute.span),
+                                "S06",
+                                format!(
+                                    "JSON key '{}' is used by both '{}' and '{}'",
+                                    wire_name, previous_field, field.name
+                                ),
+                            );
+                        }
+
+                        SerializationFieldMetadata {
+                            name: field.name.clone(),
+                            ty: field.ty.node.clone(),
+                            json_name,
+                            attributes: field
+                                .attributes
+                                .iter()
+                                .map(derive_field_attribute)
+                                .collect(),
+                        }
+                    })
+                    .collect();
+                if has_serialization_derive {
+                    self.serialization_derives.insert(
+                        name.clone(),
+                        SerializationDeriveMetadata {
+                            type_name: name.clone(),
+                            requested_traits: serialization_traits,
+                            generic_params: generic_params.clone(),
+                            is_union: *is_union,
+                            fields: serialization_fields,
+                        },
+                    );
+                }
             }
             ItemKind::Trait {
                 name,
@@ -912,6 +1029,33 @@ impl Analyzer {
                 generic_params: original.generic_params.clone(),
             },
         );
+    }
+}
+
+fn derive_field_attribute(attribute: &Attribute) -> DeriveFieldAttribute {
+    DeriveFieldAttribute {
+        name: attribute.name.clone(),
+        args: attribute
+            .args
+            .iter()
+            .map(|argument| match argument {
+                AttrArg::Positional(value) => {
+                    DeriveAttributeArgument::Positional(derive_attribute_value(value))
+                }
+                AttrArg::KeyValue(key, value) => DeriveAttributeArgument::KeyValue {
+                    key: key.clone(),
+                    value: derive_attribute_value(value),
+                },
+            })
+            .collect(),
+    }
+}
+
+fn derive_attribute_value(value: &AttrVal) -> DeriveAttributeValue {
+    match value {
+        AttrVal::Str(value) => DeriveAttributeValue::String(value.clone()),
+        AttrVal::Int(value) => DeriveAttributeValue::Integer(*value),
+        AttrVal::Ident(value) => DeriveAttributeValue::Identifier(value.clone()),
     }
 }
 

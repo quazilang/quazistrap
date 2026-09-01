@@ -368,6 +368,58 @@ pub struct TraitMethodSignature {
     pub return_ty: TypeKind,
 }
 
+/// An attribute value retained in compiler-owned derive metadata.
+///
+/// This deliberately mirrors source-level attribute shapes without exposing the
+/// parser AST as a public semantic contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeriveAttributeValue {
+    String(String),
+    Integer(i64),
+    Identifier(String),
+}
+
+/// One positional or named attribute argument retained for a derived field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeriveAttributeArgument {
+    Positional(DeriveAttributeValue),
+    KeyValue {
+        key: String,
+        value: DeriveAttributeValue,
+    },
+}
+
+/// An opaque source attribute attached to an aggregate field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeriveFieldAttribute {
+    pub name: String,
+    pub args: Vec<DeriveAttributeArgument>,
+}
+
+/// Ordered field information made available to compiler-backed derives.
+#[derive(Debug, Clone)]
+pub struct SerializationFieldMetadata {
+    pub name: String,
+    pub ty: TypeKind,
+    /// Explicit wire key requested by `@json(name="...")`, if any.
+    pub json_name: Option<String>,
+    /// All field attributes, including attributes unknown to the compiler.
+    pub attributes: Vec<DeriveFieldAttribute>,
+}
+
+/// Stable, compiler-owned input for the JSON serialization derives.
+///
+/// Metadata records source declaration order and declared source types, but it
+/// does not grant runtime reflection or synthesize an implementation by itself.
+#[derive(Debug, Clone)]
+pub struct SerializationDeriveMetadata {
+    pub type_name: String,
+    pub requested_traits: Vec<String>,
+    pub generic_params: Vec<String>,
+    pub is_union: bool,
+    pub fields: Vec<SerializationFieldMetadata>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SemanticReport {
     pub errors: Vec<SemanticError>,
@@ -430,6 +482,9 @@ pub struct SemanticReport {
     pub repr_c_unions: std::collections::HashSet<String>,
     /// Aggregates whose final field is a C flexible array member.
     pub flexible_array_structs: std::collections::HashSet<String>,
+    /// Ordered field metadata for structs requesting `Serialize` and/or
+    /// `Deserialize`. Code generation consumes this in the serialization stage.
+    pub serialization_derives: HashMap<String, SerializationDeriveMetadata>,
     /// Files whose top-level definitions were mangled with their module name.
     pub namespaced_paths: std::collections::HashSet<String>,
     /// Whether the entry point is `fn main(args: Array[str])`.

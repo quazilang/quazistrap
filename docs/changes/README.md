@@ -21,3 +21,4 @@ tests or examples establishing behavior.
 - [Native object metadata omission](2026-08-30-native-linker-metadata.md)
 - [Reliable full-document LSP lifecycle](2026-08-31-lsp-document-lifecycle.md)
 - [UTF-8 validation at file and socket text boundaries](2026-09-01-utf8-text-boundaries.md)
+- [Serialization derive metadata](2026-09-01-serialization-derive-metadata.md)

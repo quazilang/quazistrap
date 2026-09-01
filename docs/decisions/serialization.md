@@ -69,3 +69,11 @@ ship together. Each step requires source/QZI round trips, exact JSON fixtures,
 malformed and adversarial decode cases, nested values, Unicode keys/strings,
 numeric boundaries, cross-target tests, and a no-generated-code fallback
 diagnostic for unsupported fields.
+
+## Implementation checkpoint
+
+Step 2 is partially implemented: the semantic report now records ordered,
+type-alias-resolved metadata for `Serialize`/`Deserialize` requests and
+validates the reserved `@json(name="...")` field attribute. This metadata is
+compiler-internal and does not yet generate an implementation. The `std.codec`
+contract and JSON object writer/decoder remain prerequisites for steps 3–4.
