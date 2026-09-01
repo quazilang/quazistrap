@@ -34,11 +34,21 @@ those reports; this page records only the current state and remaining work.
 
 ## Priority sequence
 
-1. Implement and test the runtime-owned child-process primitives described by
+1. **Serialization foundation:** specify and implement bounded `std.json` and
+   the compiler-backed `@derive(Serialize, Deserialize)` sequence from D-012.
+   The initial release is non-generic named structs only, with deterministic
+   JSON, explicit errors/limits, and `@json(name="...")`; it must not pretend
+   that general reflection or comptime already exists.
+2. **Serialization expansion, only after v1:** retain complete aggregate and
+   enum-variant metadata; consider typed compile-time reflection; then design a
+   restricted comptime evaluator that can emit constants. Generating arbitrary
+   `impl` declarations is the final, macro-like stage and requires separate
+   hygiene, determinism, resource-limit, diagnostic, and QZI design.
+3. Implement and test the runtime-owned child-process primitives described by
    D-011 before exposing `std.process`.
-2. Establish destruction and panic/concurrency runtime behavior before promising
+4. Establish destruction and panic/concurrency runtime behavior before promising
    broad RAII or cancellation semantics in further standard-library APIs.
-3. Complete canonical language/API/tutorial documentation alongside verified
+5. Complete canonical language/API/tutorial documentation alongside verified
    implementation contracts, then add persistent LSP indexing and remaining
    editor protocol work.
 
