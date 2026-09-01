@@ -98,3 +98,7 @@ call-site convention and does not create an `any` value. A future dynamic-value
 feature requires an explicit maintainer decision covering representation,
 ownership/destruction, trait interaction, casts and pattern matching, FFI, and
 QZI compatibility; it must not restore universal implicit compatibility.
+
+## D-011: child-process creation
+
+Resolved 2026-09-01: [child-process creation belongs to the runtime](process-runtime.md).
