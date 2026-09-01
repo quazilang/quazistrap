@@ -21,6 +21,26 @@ pub struct VoidLanguageServer {
     pub documents: Arc<RwLock<HashMap<Url, DocumentState>>>,
 }
 
+fn workspace_symbols_for_open_documents(
+    documents: &HashMap<Url, DocumentState>,
+    query: &str,
+) -> Vec<SymbolInformation> {
+    let mut results = Vec::new();
+    for (uri, doc) in documents {
+        if let Some(report) = &doc.report {
+            results.extend(symbols::workspace_symbols(report, &doc.source, uri, query));
+        }
+    }
+    results.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.location.uri.as_str().cmp(right.location.uri.as_str()))
+    });
+    results
+}
+
 impl VoidLanguageServer {
     pub fn new(client: Client) -> Self {
         Self {
@@ -98,6 +118,7 @@ impl LanguageServer for VoidLanguageServer {
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_string()]),
                     ..Default::default()
@@ -292,5 +313,53 @@ impl LanguageServer for VoidLanguageServer {
         Ok(Some(DocumentSymbolResponse::Nested(
             symbols::document_symbols(report, &doc.source),
         )))
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        let docs = self.documents.read().await;
+        Ok(Some(workspace_symbols_for_open_documents(
+            &docs,
+            &params.query,
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::workspace_symbols_for_open_documents;
+    use crate::lsp::{analysis::analyze_source, document::DocumentState};
+    use tower_lsp::lsp_types::Url;
+
+    #[test]
+    fn workspace_symbol_search_aggregates_open_documents_deterministically() {
+        let first_uri = Url::parse("file:///workspace/first.qz").expect("first URI");
+        let first_source =
+            "fn alpha() i32 { ret 1; }\nfn add() i32 { const added = 2; ret added; }";
+        let mut first = DocumentState::new(first_uri.clone(), first_source.to_string(), 1);
+        first.report = Some(analyze_source(first_source).expect("analyze first source"));
+
+        let second_uri = Url::parse("file:///workspace/second.qz").expect("second URI");
+        let second_source = "fn Address() i32 { ret 3; }";
+        let mut second = DocumentState::new(second_uri.clone(), second_source.to_string(), 1);
+        second.report = Some(analyze_source(second_source).expect("analyze second source"));
+
+        let mut documents = HashMap::new();
+        documents.insert(second_uri.clone(), second);
+        documents.insert(first_uri.clone(), first);
+
+        let matching = workspace_symbols_for_open_documents(&documents, "AD");
+        let names: Vec<_> = matching.iter().map(|symbol| symbol.name.as_str()).collect();
+        assert_eq!(names, ["add", "Address"]);
+        assert_eq!(matching[0].location.uri, first_uri);
+        assert_eq!(matching[1].location.uri, second_uri);
+
+        let all = workspace_symbols_for_open_documents(&documents, "");
+        let names: Vec<_> = all.iter().map(|symbol| symbol.name.as_str()).collect();
+        assert_eq!(names, ["add", "Address", "alpha"]);
     }
 }

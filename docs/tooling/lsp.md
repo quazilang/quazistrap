@@ -26,6 +26,9 @@ synchronization. The server reports its version from the compiler package.
   declared before the cursor.
 - Whole-document formatting.
 - Document symbols for user declarations in the current open document.
+- Workspace-symbol search across successfully analyzed open documents. Results
+  contain matching top-level declarations only; opening a file is what adds it
+  to this temporary workspace index.
 - Signature help for functions known to the current semantic snapshot.
 - References and rename for semantic bindings within the current open document.
 - Full-document semantic tokens for lexical tokens and known semantic symbols.
@@ -41,9 +44,8 @@ than a name-resolution guarantee.
 
 - Text synchronization is version-gated and full-document only; incremental
   edits are not negotiated.
-- Cross-file references and rename, workspace symbols, inlay hints, code
-  actions, cancellation, and workspace-wide indexing are not
-  implemented.
+- Cross-file references and rename, persistent workspace-wide indexing, inlay
+  hints, code actions, and cancellation are not implemented.
 - Diagnostics and navigation operate on the current document only. Imported
   source locations are not yet exposed as cross-file locations.
 - Formatting and position conversion need a real-editor protocol smoke suite

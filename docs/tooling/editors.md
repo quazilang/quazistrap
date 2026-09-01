@@ -25,5 +25,7 @@ troubleshooting, local development, and packaging instructions.
 The server is currently reliable for versioned **full-document** updates only.
 It provides current-document diagnostics, hover, definitions, completion,
 formatting, symbols, signature help, references, rename, and semantic tokens.
-Workspace indexing, cross-file references/rename, incremental synchronization,
-and cancellation are not implemented. See [the LSP contract](lsp.md).
+Workspace-symbol search covers the successfully analyzed documents currently
+open in the editor. Persistent workspace indexing, cross-file
+references/rename, incremental synchronization, and cancellation are not
+implemented. See [the LSP contract](lsp.md).

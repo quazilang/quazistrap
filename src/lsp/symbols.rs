@@ -2,7 +2,9 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind as LspSymbolKind};
+use tower_lsp::lsp_types::{
+    DocumentSymbol, Location, Range, SymbolInformation, SymbolKind as LspSymbolKind, Url,
+};
 
 use crate::semantic::{SemanticReport, SymbolKind};
 
@@ -38,6 +40,42 @@ pub fn document_symbols(report: &SemanticReport, source: &str) -> Vec<DocumentSy
             .cmp(&right.range.start)
             .then_with(|| left.name.cmp(&right.name))
     });
+    symbols
+}
+
+/// Returns matching top-level declarations for a workspace symbol query.
+///
+/// Library imports and local bindings do not have stable project-wide locations,
+/// so this intentionally exposes only declarations in the module scope.
+#[allow(deprecated)] // Required by lsp-types 0.94's backward-compatible struct shape.
+pub fn workspace_symbols(
+    report: &SemanticReport,
+    source: &str,
+    uri: &Url,
+    query: &str,
+) -> Vec<SymbolInformation> {
+    let query = query.to_lowercase();
+    let mut symbols: Vec<_> = report
+        .symbol_table
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.scope_depth == 0
+                && !entry.symbol.is_import
+                && entry.symbol.span.end > entry.symbol.span.start
+                && (query.is_empty() || entry.name.to_lowercase().contains(&query))
+        })
+        .map(|entry| SymbolInformation {
+            name: display_name(&entry.name),
+            kind: lsp_kind(entry.symbol.kind),
+            tags: None,
+            deprecated: None,
+            location: Location::new(uri.clone(), span_to_range(entry.symbol.span, source)),
+            container_name: None,
+        })
+        .collect();
+
+    symbols.sort_by(|left, right| left.name.cmp(&right.name));
     symbols
 }
 
@@ -106,9 +144,9 @@ fn char_offset_to_byte(offset: usize, source: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::document_symbols;
+    use super::{document_symbols, workspace_symbols};
     use crate::lsp::analysis::analyze_source;
-    use tower_lsp::lsp_types::SymbolKind;
+    use tower_lsp::lsp_types::{SymbolKind, Url};
 
     #[test]
     fn lists_user_declarations_in_source_order() {
@@ -128,5 +166,25 @@ fn add(left: i32, right: i32) i32 {
         assert_eq!(symbols[1].kind, SymbolKind::FUNCTION);
         assert_eq!(symbols[4].kind, SymbolKind::CONSTANT);
         assert_eq!(symbols[1].selection_range.start.line, 2);
+    }
+
+    #[test]
+    fn workspace_symbols_only_include_matching_module_declarations() {
+        let source = r#"
+struct Point { x: i32 }
+fn add(left: i32, right: i32) i32 {
+    const total = left + right;
+    ret total;
+}
+fn address() i32 { ret 1; }
+"#;
+        let report = analyze_source(source).expect("analyze source");
+        let uri = Url::parse("file:///workspace/main.qz").expect("test URI");
+
+        let symbols = workspace_symbols(&report, source, &uri, "ad");
+        let names: Vec<_> = symbols.iter().map(|symbol| symbol.name.as_str()).collect();
+
+        assert_eq!(names, ["add", "address"]);
+        assert!(symbols.iter().all(|symbol| symbol.location.uri == uri));
     }
 }
