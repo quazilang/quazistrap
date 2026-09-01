@@ -38,6 +38,11 @@ max_depth)` preserves resource failures as `InputLimit` and `DepthLimit`:
 const enabled: bool = codec.decode_bool("false").unwrap();
 ```
 
+`decode_string(source)` and `decode_string_with_limits` expose the same typed
+boundary for one JSON string token. They preserve the JSON module's Unicode,
+surrogate-pair, and embedded-NUL guarantees while normalizing failures to
+`DecodeError`.
+
 The language currently requires every trait method to have a receiver, so it
 cannot express a sound static `Deserialize.from_json(source)` trait method.
 Decode entry points remain explicit functions until receiverless trait methods

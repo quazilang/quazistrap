@@ -24,3 +24,4 @@ tests or examples establishing behavior.
 - [Serialization derive metadata](2026-09-01-serialization-derive-metadata.md)
 - [Typed JSON codec foundation](2026-09-01-typed-json-codec.md)
 - [Unicode-safe JSON string decoding](2026-09-01-json-string-decoding.md)
+- [Bounded JSON object field lookup](2026-09-01-json-object-lookup.md)

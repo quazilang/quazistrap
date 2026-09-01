@@ -51,6 +51,15 @@ and trailing JSON whitespace, decode the short escapes and `\uXXXX`, combine
 valid UTF-16 surrogate pairs into UTF-8, and reject lone or malformed
 surrogates. The decoded string may contain U+0000 safely.
 
+## Object fields
+
+`object_field(source, key)` returns the exact raw JSON token for `key` from one
+top-level object, or `None` when it is absent. The raw owned token can be sent
+to a typed decoder such as `codec.decode_string`. Its `_with_limits` variant
+accepts the input and nesting policy. It decodes Unicode key escapes before
+comparison and rejects duplicate occurrences of the requested wire key rather
+than selecting a winner. It is a field-extraction primitive, not a JSON DOM.
+
 ## Error handling
 
 Validation returns `Result[bool, JsonError]`. `JsonError` distinguishes input
