@@ -9,3 +9,4 @@ the presently documented subset.
 Documented modules:
 
 - [`std.thread`](thread.md) — experimental native threads and callback ABI.
+- [`std.time`](time.md) — monotonic durations and elapsed-time instants.
