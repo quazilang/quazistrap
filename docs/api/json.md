@@ -42,6 +42,15 @@ const encoded: String = json.quote("Ada\\nLovelace");
 `false`; `null()` returns `null`. Numeric writing and complete object/array
 construction are intentionally not yet public contracts.
 
+## Decoding strings
+
+`decode_string(source)` decodes exactly one JSON string token into an owned
+`String`. `decode_string_with_limits(source, max_input, max_depth)` lets callers
+set the same input and nesting limits used by validation. Both accept leading
+and trailing JSON whitespace, decode the short escapes and `\uXXXX`, combine
+valid UTF-16 surrogate pairs into UTF-8, and reject lone or malformed
+surrogates. The decoded string may contain U+0000 safely.
+
 ## Error handling
 
 Validation returns `Result[bool, JsonError]`. `JsonError` distinguishes input

@@ -23,3 +23,4 @@ tests or examples establishing behavior.
 - [UTF-8 validation at file and socket text boundaries](2026-09-01-utf8-text-boundaries.md)
 - [Serialization derive metadata](2026-09-01-serialization-derive-metadata.md)
 - [Typed JSON codec foundation](2026-09-01-typed-json-codec.md)
+- [Unicode-safe JSON string decoding](2026-09-01-json-string-decoding.md)
