@@ -42,11 +42,11 @@ nonzero-handle requirements is invalid use of this experimental unsafe API.
 
 ## `Thread`
 
-`Thread.spawn` and `Thread.join` wrap the low-level functions. `spawn` currently
-returns `Thread` even when its stored handle is zero. Joining that value is a
-safe no-op; callers only need to inspect `thread.handle()` when they must detect
-creation failure. This is a known usability limitation; a typed creation result
-is a future compatibility decision, not current behavior.
+`unsafe Thread.spawn(f)` returns `Result[Thread, ThreadError]`. A native
+creation failure is `Err(ThreadError.CreationFailed)`; no zero-handle `Thread`
+is exposed through this safe wrapper. `unsafe Thread.join(self)` consumes a
+successful handle, and `handle()` exposes its opaque nonzero value for
+low-level interoperability.
 
 ## Scheduling helpers
 
