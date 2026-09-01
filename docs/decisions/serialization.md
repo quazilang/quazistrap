@@ -28,7 +28,9 @@ struct AddArgs {
 ```
 
 It generates ordinary typed implementations of standard-library traits for
-supported aggregate fields. The initial wire format is JSON. Field order follows
+supported aggregate fields. The initial wire format is JSON. The first release
+is intentionally limited to non-generic named structs and an explicit scalar,
+`String`, `Option`, and nested-derived-struct field matrix. Field order follows
 source declaration order; `@json(name="...")` changes only the JSON key. Unknown
 input keys, missing required fields, duplicate keys, defaults, enum tagging,
 numeric ranges, recursion and allocation limits are explicit codec-contract
@@ -46,11 +48,13 @@ keeps binary size, ownership, error reporting, and compatibility auditable.
    primitive/collection field matrix.
 2. Carry ordered aggregate-field names, resolved types, and opaque attributes
    into stable compiler derive metadata; reject misplaced or invalid `@json`
-   arguments with source spans.
+   arguments with source spans. Generate a synthetic semantic/codegen IR rather
+   than mutating parsed source declarations.
 3. Implement `@derive(Serialize)` for non-recursive structs and primitive
    fields, with deterministic JSON output and regression fixtures.
-4. Implement bounded JSON decoding and `@derive(Deserialize)`, then enums and
-   recursive/container types only after ownership and destruction support is
+4. Implement bounded JSON decoding and `@derive(Deserialize)`, then enums
+   (whose variant attributes are not retained today), generic/container types,
+   and a dynamic JSON DOM only after ownership and destruction support is
    verified.
 
 General compile-time reflection and comptime code execution remain separate
