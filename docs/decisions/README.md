@@ -102,3 +102,7 @@ QZI compatibility; it must not restore universal implicit compatibility.
 ## D-011: child-process creation
 
 Resolved 2026-09-01: [child-process creation belongs to the runtime](process-runtime.md).
+
+## D-012: serialization
+
+Resolved 2026-09-01: [serialization uses static typed derives, not runtime reflection](serialization.md).
