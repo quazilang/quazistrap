@@ -8,3 +8,4 @@ regression, documentation, and verification evidence all agree.
 
 - [2026-08-29 workspace baseline](2026-08-29-workspace-baseline.md)
 - [2026-08-31 tooling rebaseline](2026-08-31-tooling-rebaseline.md)
+- [2026-09-01 foundations rebaseline](2026-09-01-foundations-rebaseline.md)
