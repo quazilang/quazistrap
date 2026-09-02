@@ -401,6 +401,8 @@ pub struct DeriveFieldAttribute {
 pub struct SerializationFieldMetadata {
     pub name: String,
     pub ty: TypeKind,
+    /// Field type location, retained for derived-code diagnostics.
+    pub span: Span,
     /// Explicit wire key requested by `@json(name="...")`, if any.
     pub json_name: Option<String>,
     /// All field attributes, including attributes unknown to the compiler.

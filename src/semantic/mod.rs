@@ -533,9 +533,270 @@ pub fn strip_cfg_for(
         remove_cfg_attributes(&mut node);
         items.push(Spanned::new(node, item.span));
     }
+    let stripped = Program {
+        items,
+        span: program.span,
+    };
+    expand_serialize_derives(&stripped)
+}
+
+/// Build compiler-owned implementations for the first `Serialize` derive
+/// matrix. The parsed program stays immutable: this returns a distinct AST
+/// which is then analyzed and compiled through the ordinary impl-method path.
+///
+/// Generated spans live outside source ranges so they cannot collide with user
+/// annotations or source diagnostics. The public source still owns the derive
+/// declaration and its field metadata; this lowered AST is deliberately not a
+/// user-visible metaprogramming facility.
+fn expand_serialize_derives(program: &Program) -> Program {
+    struct Builder {
+        next: usize,
+    }
+
+    impl Builder {
+        fn span(&mut self) -> Span {
+            let start = self.next;
+            self.next = self.next.saturating_add(1);
+            Span::new(0, 0, start, self.next)
+        }
+
+        fn expr(&mut self, node: ExprKind) -> Expr {
+            let span = self.span();
+            Spanned::new(node, span)
+        }
+
+        fn ty(&mut self, node: TypeKind) -> Type {
+            let span = self.span();
+            Spanned::new(node, span)
+        }
+
+        fn named_ty(&mut self, name: &str) -> Type {
+            self.ty(TypeKind::Named {
+                name: name.to_string(),
+                type_args: Vec::new(),
+            })
+        }
+
+        fn array_ty(&mut self, element: TypeKind) -> Type {
+            let element = self.ty(element);
+            self.ty(TypeKind::Named {
+                name: "Array".to_string(),
+                type_args: vec![element],
+            })
+        }
+
+        fn ident(&mut self, name: &str) -> Expr {
+            self.expr(ExprKind::Ident(name.to_string()))
+        }
+
+        fn field(&mut self, object: Expr, name: &str) -> Expr {
+            self.expr(ExprKind::Field {
+                object: Box::new(object),
+                name: name.to_string(),
+            })
+        }
+
+        fn method_call(&mut self, object: Expr, method: &str, args: Vec<Expr>) -> Expr {
+            self.expr(ExprKind::MethodCall {
+                object: Box::new(object),
+                method: method.to_string(),
+                type_args: Vec::new(),
+                args,
+                named_args: Vec::new(),
+            })
+        }
+
+        fn stmt(&mut self, node: StmtKind) -> Stmt {
+            let span = self.span();
+            Spanned::new(node, span)
+        }
+
+        fn string_literal(&mut self, value: String) -> Expr {
+            self.expr(ExprKind::Literal(Literal::String(value)))
+        }
+    }
+
+    fn serialize_derive_span(attributes: &[Attribute]) -> Option<Span> {
+        attributes.iter().find_map(|attribute| {
+            (attribute.name == "derive"
+                && attribute.args.iter().any(|argument| {
+                    matches!(argument, AttrArg::Positional(AttrVal::Ident(name)) if name == "Serialize")
+                }))
+            .then_some(attribute.span)
+        })
+    }
+
+    fn json_field_name(field: &AggregateField) -> String {
+        field
+            .attributes
+            .iter()
+            .find(|attribute| attribute.name == "json")
+            .and_then(|attribute| match attribute.args.as_slice() {
+                [AttrArg::KeyValue(key, AttrVal::Str(value))] if key == "name" => {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| field.name.clone())
+    }
+
+    let mut builder = Builder {
+        next: 1_000_000_000,
+    };
+    let mut items = program.items.clone();
+    for item in &program.items {
+        let ItemKind::Struct {
+            name,
+            generic_params,
+            fields,
+            is_union,
+            attributes,
+            ..
+        } = &item.node
+        else {
+            continue;
+        };
+        let Some(derive_span) = serialize_derive_span(attributes) else {
+            continue;
+        };
+        if *is_union || !generic_params.is_empty() {
+            continue;
+        }
+
+        let mut statements = Vec::new();
+        let array_type = builder.ident("Array");
+        let keys_value = builder.method_call(array_type, "new", Vec::new());
+        let keys_type = builder.array_ty(TypeKind::Str);
+        let keys_statement = builder.stmt(StmtKind::Var {
+            name: "__quazi_json_keys".to_string(),
+            ty: Some(keys_type),
+            value: Some(keys_value),
+            attributes: Vec::new(),
+        });
+        statements.push(keys_statement);
+        for field in fields {
+            let key = builder.string_literal(json_field_name(field));
+            let keys = builder.ident("__quazi_json_keys");
+            let call = builder.method_call(keys, "push", vec![key]);
+            statements.push(builder.stmt(StmtKind::ExprStmt(call)));
+        }
+
+        let array_type = builder.ident("Array");
+        let values_value = builder.method_call(array_type, "new", Vec::new());
+        let values_type = builder.array_ty(TypeKind::Named {
+            name: "String".to_string(),
+            type_args: Vec::new(),
+        });
+        let values_statement = builder.stmt(StmtKind::Var {
+            name: "__quazi_json_values".to_string(),
+            ty: Some(values_type),
+            value: Some(values_value),
+            attributes: Vec::new(),
+        });
+        statements.push(values_statement);
+        for field in fields {
+            let receiver = builder.ident("self");
+            let field_value = builder.field(receiver, &field.name);
+            let encoded = builder.method_call(field_value, "to_json", Vec::new());
+            let value = builder.expr(ExprKind::Try {
+                expr: Box::new(encoded),
+            });
+            let values = builder.ident("__quazi_json_values");
+            let call = builder.method_call(values, "push", vec![value]);
+            statements.push(builder.stmt(StmtKind::ExprStmt(call)));
+        }
+
+        let codec = builder.ident("codec");
+        let keys = builder.ident("__quazi_json_keys");
+        let values = builder.ident("__quazi_json_values");
+        let result = builder.method_call(codec, "object", vec![keys, values]);
+        statements.push(builder.stmt(StmtKind::Return(Some(result))));
+        let body_span = builder.span();
+        // A generated impl is not present in the parsed source. Give it the
+        // derive attribute's span so any semantic conflict (for example, an
+        // explicit Serialize impl) points at actionable user source instead
+        // of a synthetic 0:0 location.
+        let method_span = derive_span;
+        let receiver_type = builder.named_ty(name);
+        let string_type = builder.named_ty("String");
+        let error_type = builder.named_ty("EncodeError");
+        let result_type = builder.ty(TypeKind::Named {
+            name: "Result".to_string(),
+            type_args: vec![string_type, error_type],
+        });
+        let serialize_trait = builder.named_ty("Serialize");
+        let for_type = builder.named_ty(name);
+        let method = Spanned::new(
+            ItemKind::Fn {
+                name: "to_json".to_string(),
+                generic_params: Vec::new(),
+                params: vec![Param {
+                    name: "self".to_string(),
+                    name_span: builder.span(),
+                    ty: receiver_type,
+                    variadic: false,
+                    attributes: Vec::new(),
+                }],
+                return_ty: result_type,
+                body: Some(Block {
+                    stmts: statements,
+                    span: body_span,
+                }),
+                attributes: Vec::new(),
+                unsafe_fn: false,
+                pub_fn: true,
+                c_variadic: false,
+            },
+            method_span,
+        );
+        let impl_span = derive_span;
+        items.push(Spanned::new(
+            ItemKind::Impl {
+                trait_ty: Some(serialize_trait),
+                for_ty: for_type,
+                methods: vec![method],
+            },
+            impl_span,
+        ));
+    }
     Program {
         items,
         span: program.span,
+    }
+}
+
+/// The initial compiler-generated JSON serializer is deliberately narrow. Keep
+/// this check shared by declaration diagnostics and lowering so an unsupported
+/// source field never reaches code generation as a half-formed method.
+pub(super) fn initial_serialize_field_supported(ty: &TypeKind) -> bool {
+    match ty {
+        TypeKind::Bool | TypeKind::Int64 => true,
+        TypeKind::Named { name, type_args } => name == "String" && type_args.is_empty(),
+        _ => false,
+    }
+}
+
+impl Analyzer {
+    fn validate_initial_serialize_fields(&mut self) {
+        let derives: Vec<_> = self.serialization_derives.values().cloned().collect();
+        for derive in derives {
+            if !derive.requested_traits.iter().any(|trait_name| trait_name == "Serialize") {
+                continue;
+            }
+            for field in derive.fields {
+                let resolved = self.resolve_type_aliases(&field.ty);
+                if !initial_serialize_field_supported(&resolved) {
+                    self.push_error(
+                        field.span,
+                        "S14",
+                        format!(
+                            "Serialize does not support field '{}' of type {}; supported field types are bool, i64, and String",
+                            field.name, resolved
+                        ),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -674,11 +935,13 @@ impl Analyzer {
 
     pub fn analyze_program(&mut self, program: &Program) -> SemanticReport {
         self.reset_state();
+        self.validate_panic_handler_count(program);
 
         // Pass 1: gather top-level declarations and imports.
         for item in &program.items {
             self.declare_top_level_item(item);
         }
+        self.validate_initial_serialize_fields();
 
         // Pass 2: type checking + usage tracking + initialization checks + annotations.
         for item in &program.items {
@@ -908,6 +1171,34 @@ impl Analyzer {
             main_takes_args: self.main_takes_args,
             test_functions: self.test_functions.clone(),
             library_char_ranges: self.library_char_ranges.clone(),
+        }
+    }
+
+    fn validate_panic_handler_count(&mut self, program: &Program) {
+        let mut first: Option<Span> = None;
+        for item in &program.items {
+            let ItemKind::Fn { attributes, .. } = &item.node else {
+                continue;
+            };
+            if !item_should_include(attributes)
+                || !attributes
+                    .iter()
+                    .any(|attribute| attribute.name == "panic_handler")
+            {
+                continue;
+            }
+            if let Some(previous) = first {
+                self.push_error(
+                    item.span,
+                    "S13",
+                    format!(
+                        "only one @panic_handler is allowed (previous handler at {})",
+                        self.describe_span(previous)
+                    ),
+                );
+            } else {
+                first = Some(item.span);
+            }
         }
     }
 
@@ -1643,7 +1934,7 @@ fn main() void {}
         let report = analyze(
             r#"
 type UserName = str;
-@derive(Serialize, Deserialize)
+@derive(Deserialize)
 struct User {
     name: UserName @json(name="display_name") @community_format(version=2),
     active: bool,
@@ -1657,7 +1948,7 @@ fn main() void {}
             .get("User")
             .expect("serialization derive metadata");
         assert_eq!(metadata.type_name, "User");
-        assert_eq!(metadata.requested_traits, ["Serialize", "Deserialize"]);
+        assert_eq!(metadata.requested_traits, ["Deserialize"]);
         assert_eq!(metadata.fields.len(), 2);
         assert_eq!(metadata.fields[0].name, "name");
         assert_eq!(metadata.fields[0].json_name.as_deref(), Some("display_name"));
@@ -1665,6 +1956,113 @@ fn main() void {}
         assert_eq!(metadata.fields[0].attributes[1].name, "community_format");
         assert_eq!(metadata.fields[1].name, "active");
         assert_eq!(metadata.fields[1].json_name, None);
+    }
+
+    #[test]
+    fn generated_serialize_conflict_points_at_the_derive_attribute() {
+        let source = r#"
+@derive(Serialize)
+struct Request { value: bool, }
+
+impl Serialize for Request {
+    pub fn to_json(self: Request) Result[String, EncodeError] {
+        ret Ok(String.from("manual"));
+    }
+}
+fn main() void {}
+"#;
+        let program = strip_cfg_for(&parse_program(source), "linux", "x86_64", "sysv");
+        let mut analyzer = Analyzer::new();
+        let report = analyzer.analyze_program(&program);
+        let error = report
+            .errors
+            .iter()
+            .find(|error| error.message.contains("duplicate declaration 'Request.to_json'"))
+            .expect("derive and explicit Serialize impl must conflict");
+        assert_eq!(error.span.start, source.find("@derive").unwrap());
+    }
+
+    #[test]
+    fn panic_handler_requires_the_runtime_panicinfo_abi_and_never_return() {
+        let report = analyze(
+            r#"
+struct PanicInfo { message: str, file: str, line: usize, }
+struct Lookalike { message: str, file: str, line: usize, }
+
+@panic_handler
+fn valid(info: PanicInfo) ! { panic("stop"); }
+
+@panic_handler
+fn text(info: str) ! { panic(info); }
+
+@panic_handler
+fn lookalike(info: Lookalike) ! { panic("stop"); }
+
+@panic_handler
+fn returning(info: PanicInfo) void { ret; }
+
+@panic_handler
+fn variadic(info: PanicInfo, ...extra: str) ! { panic("stop"); }
+
+@panic_handler
+fn generic[T](info: PanicInfo) ! { panic("stop"); }
+
+@panic_handler
+fn duplicate(info: PanicInfo) ! { panic("stop"); }
+
+fn main() void {}
+"#,
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.message.contains("text' parameter must be PanicInfo")),
+            "str handler must be rejected: {:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error
+                    .message
+                    .contains("lookalike' parameter must be PanicInfo")
+            }),
+            "unrelated named handler parameter must be rejected: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.message.contains("returning' must return !")),
+            "returning handler must be rejected: {:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error
+                    .message
+                    .contains("variadic' must take exactly one PanicInfo parameter")
+            }),
+            "variadic handler must be rejected: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.message.contains("generic' cannot be generic")),
+            "generic handler must be rejected: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.message.contains("only one @panic_handler is allowed")),
+            "multiple handlers must be rejected: {:?}",
+            report.errors
+        );
     }
 
     #[test]

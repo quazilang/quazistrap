@@ -2,9 +2,9 @@
 
 `std.json` is the low-level JSON foundation for Quazi serialization. It is safe
 to use as a bounded syntax gate for untrusted input and to encode individual
-string/boolean/null tokens. It does not yet decode a JSON value or serialize a
-struct; those APIs arrive with the compiler-backed `Serialize` and
-`Deserialize` derives described in [D-012](../decisions/serialization.md).
+string/boolean/null tokens. Compiler-backed `Serialize` derives compose these
+primitives for a deliberately narrow first field matrix; `Deserialize` is not
+implemented yet. See [D-012](../decisions/serialization.md).
 
 ## Validation
 
@@ -39,8 +39,27 @@ const encoded: String = json.quote("Ada\\nLovelace");
 ```
 
 `boolean(true)` and `boolean(false)` return the JSON literals `true` and
-`false`; `null()` returns `null`. Numeric writing and complete object/array
-construction are intentionally not yet public contracts.
+`false`; `null()` returns `null`. These helpers return borrowed `str` values
+and do not allocate. Numeric and array writing are not yet public contracts.
+
+`object(keys, values)` composes a deterministic JSON object from equally sized
+ordered arrays with a 1 MiB output limit and nesting depth 64. Every key is
+escaped with `quote`; every value must already be one valid JSON value token.
+It returns `ObjectLengthMismatch` for unequal arrays, `DuplicateKey` for
+repeated keys, `OutputLimit` for oversized output, and the validation error for
+an invalid value token. `object_with_limits(keys, values, max_output,
+max_depth)` lets callers select the aggregate output and nested-value policy.
+This is the composition boundary intended for compiler-generated struct
+encoders; it does not parse into or expose a dynamic JSON value tree.
+
+```quazi
+var keys: Array[str] = Array.new();
+keys.push("enabled"); keys.push("label");
+var values: Array[String] = Array.new();
+values.push(String.from("true")); values.push(json.quote("ready"));
+const encoded: String = json.object(keys, values).unwrap();
+// encoded is exactly {"enabled":true,"label":"ready"}.
+```
 
 ## Decoding strings
 

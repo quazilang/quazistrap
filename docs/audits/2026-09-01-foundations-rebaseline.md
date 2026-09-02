@@ -25,9 +25,10 @@ those reports; this page records only the current state and remaining work.
   actions, and inlay hints remain open.
 - Wall-clock time, calendars, civil-time parsing/formatting, time zones, and
   time-zone data policy remain deliberately deferred by D-009.
-- Structural destruction, full resource lifecycle guarantees, and the complete
-  panic/concurrency model require their remaining compiler/runtime work despite
-  the resolved decisions D-002 and D-003.
+- Receiver ownership (D-002), structural destruction (D-003), full resource
+  lifecycle guarantees, and the complete panic/concurrency model require their
+  remaining compiler/runtime work. `Map`/`Set` avoid owner aliasing through
+  in-place updates, but that does not implement the language-wide model.
 - The language specification, comprehensive API reference, tutorial, and guides
   are not yet complete. A documentation website remains intentionally excluded
   by maintainer direction.

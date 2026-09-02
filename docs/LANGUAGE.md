@@ -141,7 +141,8 @@ else { ... }
 for i : 0..10 { ... }              // exclusive upper bound
 for value : values { ... }
 for index, value : values { ... }
-for (var i = 0; i < 10; i++) { ... }
+for var i = 0; i < 10; i++ { ... }
+for ; condition; update { ... }
 for (condition) { ... }
 for { ... }
 ```
@@ -299,7 +300,8 @@ own domain.
 - `@derive(...)`: register derived traits.
 - `@ignore`, `@ignore(unused_vars)`, `@ignore(dead_code)`: warning control.
 - `@test`: declare a zero-argument `void` test run by `qz test`.
-- `@panic_handler`: declare the validated panic handler.
+- `@panic_handler`: declare a terminal `fn(PanicInfo) !` handler; see
+  [panic handling](language/panic.md).
 - `@repr(C)`, `@opaque`, `@api`, `@export`: C interoperability.
 - `@intrinsic`, `@syscall`: compiler/standard-library implementation tools.
 

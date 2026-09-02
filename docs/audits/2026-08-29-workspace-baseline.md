@@ -237,12 +237,17 @@ Intended behavior: mutating methods should update the receiver in place and
 return `Result[void, E]`, or ownership-consuming receivers must be represented
 and enforced explicitly. Shallow owner copies are invalid.
 
-Compatibility: changing return types is source-breaking; changing receiver move
-semantics is language-wide. Decision D-002 is required.
+Checkpoint status (2026-09-02): resolved for the current integer collections.
+`Map` and `Set` now mutate their sole owner in place; `insert` returns
+`Result[bool, Error]` and `remove` returns `bool`, so no update result aliases
+the original allocation. This is a source-breaking migration from assignment
+style to `map.insert(key, value)?`. The language-wide D-002 receiver-ownership
+decision remains open.
 
-Verification: native insert/grow/replace/remove tests under allocator poisoning,
-early return, and scope cleanup; compiler ownership tests for assignment from a
-receiver-derived result.
+Verification: native insert/grow/replace/remove tests cover normal scope
+cleanup and explicit early `free`; a Windows x86-64 COFF smoke compiles. The
+unimplemented language-wide consuming-receiver model still requires its own
+compiler ownership regressions when designed.
 
 ### P0 — Owned resource cleanup is shallow and explicit cleanup can repeat
 
@@ -328,18 +333,18 @@ multi-file projects, and JSON-RPC lifecycle tests.
 
 Confirmed examples:
 
-- Linux TCP send uses `write(2)`, permitting process-killing `SIGPIPE` instead
-  of returning `NetError`.
-- Portable `std.thread` and `std.os` functions call Unix APIs unconditionally.
 - Formatting returns `str` with mixed borrowed/heap behavior and deliberately
   clears the only owner, leaking formatted allocations; `Display.to_string`
   claims ownership but returns `str`.
-- Custom panic-handler validation accepts ABI-incompatible named/string
-  parameters and returning handlers despite the runtime passing `PanicInfo` and
-  panic being non-returning.
 
-Each needs a focused contract, regression, implementation fix, and change or
-migration note before API expansion.
+Checkpoint status (2026-09-02): Linux TCP sends now use `MSG_NOSIGNAL`, so a
+closed peer becomes `NetError.BrokenPipe` rather than a process-killing
+`SIGPIPE`; `std.os` and `std.thread` scheduler helpers select Linux or Windows
+operations by target; and `@panic_handler` now requires exactly one
+non-generic, non-variadic `fn(PanicInfo) !` implementation. These corrections
+have focused semantic/backend regressions plus Linux native and Windows COFF
+smokes. Formatting ownership remains open and must be resolved before expanding
+that API.
 
 ### P1 — Bytecode and low-level ABI validation is incomplete
 

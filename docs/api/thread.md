@@ -52,10 +52,13 @@ low-level interoperability.
 
 - `sleep(ms: u64)` suspends the current thread for approximately the requested
   number of milliseconds using `std.core`.
-- `yield_now()` asks the operating system scheduler to yield the current thread.
+- `yield_now()` asks the operating-system scheduler to yield the current thread:
+  Linux uses `sched_yield`, while Windows uses `Sleep(0)`. It is not a
+  synchronization primitive.
 - `current_tid()` returns the Linux kernel thread identifier. Despite its
-  current public shape, this helper is not portable to Windows and should be
-  treated as Linux-only.
+  current public shape, this helper is not portable: it returns `-1` on
+  Windows rather than issuing a Linux syscall. Portable thread identifiers are
+  not yet provided.
 
 ## Unsupported behavior
 

@@ -2,15 +2,16 @@
 
 Audience: language and tooling developers.
 
-Status: approved direction, reviewed against the implementation; **phase 1 is
-implemented** (layout model, per-function layout recording into
-`SemanticReport::fn_value_layouts`, and the extended `S14` gates for enum
-payloads, struct fields, nested fixed-array literals, and constructor
-payloads, including qualified-constructor validation). This page turns maintainer decisions
+Status: approved direction, reviewed against the implementation; **phases 1-2
+are implemented** (layout model, per-function layout recording into
+`SemanticReport::fn_value_layouts`, extended `S14` gates for enum payloads,
+struct fields, nested fixed-array literals, and constructor payloads, plus
+multi-slot parameter/result ABI, layout intrinsics, and stride-aware generic
+storage). Phases 3-4 remain design work. This page turns maintainer decisions
 [D-001](../decisions/README.md#d-001-generic-value-layout) (full
 runtime-layout implementation), [D-002](../decisions/README.md#d-002-receiver-ownership)
-(explicit `&`/`&mut`/consuming receivers), and [D-003](../decisions/README.md#d-003-destruction-and-explicit-close)
-(structural destruction with a Drop hook) into a concrete compiler and
+(future explicit `&`/`&mut`/consuming receivers), and [D-003](../decisions/README.md#d-003-destruction-and-explicit-close)
+(future structural destruction with a Drop hook) into a concrete compiler and
 standard-library plan. It was revised after an independent adversarial review;
 the phasing and the reference-model work items below reflect that review.
 
@@ -45,7 +46,7 @@ Generic storage today is one machine word per element:
   `HttpRequest`, `HttpResponse`) contain owned fields with no destructor at
   all, and `headers()` accessors move owned fields out of borrowed receivers.
 
-## Decided semantics
+## Proposed target semantics
 
 1. Every type has a compiler-known layout: slot count, byte size, alignment,
    and a move/drop kind (`Plain`, `Owned`, or aggregate of owned parts).
@@ -60,7 +61,7 @@ Generic storage today is one machine word per element:
    and reassignment keep exactly-once semantics; explicit `free()` is a
    move-out that suppresses automatic destruction. Panic terminates without
    unwinding; destructor guarantees cover normal control flow only.
-4. Method receivers are explicit: `self: &T` shared borrow, `self: &mut T`
+4. Method receivers become explicit: `self: &T` shared borrow, `self: &mut T`
    exclusive, `self: T` consuming. Container element APIs become
    ownership-correct: `get` borrows, `set` destroys the replaced element
    (legal only under an exclusive receiver), and `remove` moves an element
@@ -261,8 +262,9 @@ result layouts and stores them in `SemanticReport`. Details that matter:
 - `std.random.choose` returns a borrowed element (this requires references
   derived from *parameters*, not only receivers — piece 1 of the §4
   machinery); `shuffle` uses borrowed swaps instead of alias-then-overwrite.
-- `Map`/`Set` insertion moves from returned shallow copies to `self: &mut`
-  in-place mutation returning `Result[void, E]` (D-002).
+- `Map`/`Set` already mutate their current borrowed receiver in place and
+  return insertion/removal booleans. If D-002 introduces `&mut self`, migrate
+  those signatures without reintroducing a returned owner alias.
 - Every signature change gets a migration note in `docs/migrations/`. The
   phases also falsify statements in existing docs, which must be updated in
   the same change: `docs/TYPES_AND_MEMORY.md` (free-idempotence wording) and

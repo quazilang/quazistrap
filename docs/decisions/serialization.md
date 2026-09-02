@@ -29,12 +29,13 @@ struct AddArgs {
 
 It generates ordinary typed implementations of standard-library traits for
 supported aggregate fields. The initial wire format is JSON. The first release
-is intentionally limited to non-generic named structs and an explicit scalar,
-`String`, `Option`, and nested-derived-struct field matrix. Field order follows
-source declaration order; `@json(name="...")` changes only the JSON key. Unknown
-input keys, missing required fields, duplicate keys, defaults, enum tagging,
-numeric ranges, recursion and allocation limits are explicit codec-contract
-questions that must be specified before implementation.
+is intentionally limited to non-generic named structs with `bool`, `i64`, and
+owned `String` fields. `Option` and nested derived structs are not yet part of
+the field matrix. Field order follows source declaration order; `@json(name="...")`
+changes only the JSON key. Unknown input keys, missing required fields,
+duplicate keys, defaults, enum tagging, numeric ranges, recursion and
+allocation limits are explicit codec-contract questions that must be specified
+before implementation.
 
 Generated implementations are compiler-owned metadata/codegen, not runtime
 reflection. They have no `Type` value, no ability to enumerate arbitrary types
@@ -72,8 +73,25 @@ diagnostic for unsupported fields.
 
 ## Implementation checkpoint
 
-Step 2 is partially implemented: the semantic report now records ordered,
-type-alias-resolved metadata for `Serialize`/`Deserialize` requests and
-validates the reserved `@json(name="...")` field attribute. This metadata is
-compiler-internal and does not yet generate an implementation. The `std.codec`
-contract and JSON object writer/decoder remain prerequisites for steps 3–4.
+Steps 2 and 3 are implemented for the initial `Serialize` matrix. The compiler
+records ordered, type-alias-resolved metadata for `Serialize`/`Deserialize`
+requests, validates the reserved `@json(name="...")` field attribute, and
+lowers `@derive(Serialize)` into a compiler-owned ordinary `Serialize` impl
+before semantic analysis. The parsed source AST remains immutable; generated
+methods then use the normal type-checking, dependency, and bytecode paths.
+
+The JSON composition prerequisite for step 3 is now available as
+`std.json.object(keys, values)`: it quotes keys, validates each raw value token,
+preserves source-provided ordering, rejects duplicate keys, and applies a
+bounded aggregate-output policy. The first generated-serialization matrix is
+now fixed to `bool`, `i64`, and owned `String` fields only. Each field is
+required, encoded under its source or `@json(name=...)` key, and emitted in
+source declaration order. Borrowed `str`, other integer widths, floats,
+`Option`, collections, and nested structs remain unsupported until their
+ownership and error contracts are added deliberately. Decode policy, including
+unknown and missing fields, remains a step-4 prerequisite.
+
+An explicit `impl Serialize for Type` conflicts with the generated method and
+is rejected as a duplicate `Type.to_json` declaration. The diagnostic points to
+the `@derive(Serialize)` attribute, since it is the source request that caused
+the compiler-owned implementation.

@@ -12,8 +12,8 @@ gains per-monomorphization size/alignment/move/drop metadata, an ABI that no
 longer truncates multi-register values, ownership-correct element access
 (`get` borrows or clones; `take` transfers), and recursive drop glue. The
 change crosses the internal ABI, so QZI/QZC boundaries are bumped with it and
-legacy artifacts require a source rebuild. Depends on D-002 (receiver
-ownership) and D-003 (destruction model), both resolved below.
+legacy artifacts require a source rebuild. It still depends on a future
+receiver-ownership decision (D-002) and a complete destruction model (D-003).
 
 Original question: compiler-sized inline generic storage, boxed generic
 elements, or an explicit temporary restriction to one-word plain-copy values.
@@ -26,32 +26,27 @@ source-breaking for owned-element uses in the standard library.
 
 ## D-002: receiver ownership
 
-Resolved 2026-08-29: **explicit receiver markers**. `self: &T` takes a shared
-borrow, `self: &mut T` takes an exclusive mutable borrow, and a plain
-`self: T` consumes the receiver by move. Ownership is therefore unambiguous at
-every call site, and mutating methods no longer need to return shallow owner
-copies (the unsound `map = map.insert()` idiom). Standard-library signatures
-migrate mechanically; this extends the conservative reference model rather
-than adding a new concept.
+Open. The current compiler treats ordinary method receivers, including
+`self: T`, as borrowed. It does not implement `&mut` receiver syntax or a
+receiver move at a method call. APIs must therefore either mutate their sole
+owner in place (as `std.collections` now does) or avoid returning an owning
+alias. The older claim that explicit `&`/`&mut`/consuming receivers were
+implemented was not true of the current compiler.
 
-Original question: decide whether ordinary `self: T` methods borrow, consume,
-or depend on an explicit receiver marker. Mutation-returning owners such as
-`map = map.insert()` cannot be made sound until receiver and return ownership
-are unambiguous.
+Decision required: decide whether methods gain explicit shared/mutable/consuming
+receivers, how calls record a receiver move, and which legacy APIs migrate.
+Until then, mutation-returning owners such as `map = map.insert()` are invalid;
+new APIs must not expose that pattern.
 
 ## D-003: destruction and explicit close
 
-Resolved 2026-08-29: **structural destruction with a Drop hook**. The compiler
-recursively destroys owned fields in reverse declaration order; an explicit
-`Drop` hook (the existing `free(self)` convention formalized) runs first for
-the aggregate itself. Moves and reassignment keep exactly-once semantics: the
-replaced value is destroyed before the new one is installed, and moved-from
-values are suppressed. Calling `free()` explicitly acts as a move-out that
-suppresses later automatic destruction. Panic terminates the process without
-unwinding, so destructor guarantees apply to normal control flow only; this is
-documented behavior, not an implicit promise.
+Open. Current scope cleanup recognizes a named type's `free(self)` method and
+suppresses that cleanup after an explicit `free()` call. It does not yet
+recursively destroy owned fields/elements, track aggregate-place moves, or
+provide a formal Drop hook. The earlier claim that structural destruction was
+implemented was not true of the current compiler.
 
-Original question: define whether destruction is structural, trait-based, or
+Decision required: define whether destruction is structural, trait-based, or
 both; its order; move suppression; behavior on assignment/return/panic/thread
 exit; and how explicit `close`/`free` prevents later automatic destruction.
 
@@ -106,3 +101,7 @@ Resolved 2026-09-01: [child-process creation belongs to the runtime](process-run
 ## D-012: serialization
 
 Resolved 2026-09-01: [serialization uses static typed derives, not runtime reflection](serialization.md).
+
+## D-013: formatting result ownership
+
+Open: [choose an owned result contract for dynamic formatting](formatting-ownership.md).

@@ -2430,15 +2430,50 @@ impl<'a> FnEncoder<'a> {
                     12 => {
                         // quazi.sleep_ms(ms) → void
                         if is_win64 {
-                            emit!(asm.mov(rcx, slot(dst)));
+                            // Sleep takes a DWORD. Preserve the u64 public
+                            // contract by issuing bounded calls rather than
+                            // silently truncating durations above 49.7 days.
+                            // `0xffff_ffff` is INFINITE, so each chunk stays
+                            // one millisecond below that sentinel.
+                            let mut sleep_more = asm.create_label();
+                            let mut sleep_final = asm.create_label();
+                            emit!(asm.push(rbx));
+                            emit!(asm.mov(rbx, slot(dst)));
+                            emit!(asm.set_label(&mut sleep_more));
+                            emit!(asm.mov(rax, 4_294_967_294i64));
+                            emit!(asm.cmp(rbx, rax));
+                            emit!(asm.jbe(sleep_final));
+                            emit!(asm.sub(rbx, rax));
+                            emit!(asm.mov(rcx, rax));
+                            emit!(asm.sub(rsp, 40i32));
                             call_ext!("Sleep".into(), RelocKind::Plt32);
+                            emit!(asm.add(rsp, 40i32));
+                            emit!(asm.jmp(sleep_more));
+                            emit!(asm.set_label(&mut sleep_final));
+                            emit!(asm.mov(rcx, rbx));
+                            emit!(asm.sub(rsp, 40i32));
+                            call_ext!("Sleep".into(), RelocKind::Plt32);
+                            emit!(asm.add(rsp, 40i32));
+                            emit!(asm.pop(rbx));
                         } else {
-                            // usleep takes microseconds; multiply ms by 1000
+                            // Linux nanosleep(req, null), with a stack-local
+                            // timespec { seconds, nanoseconds }. Keeping this
+                            // intrinsic syscall-only lets built-in-linked
+                            // executables sleep without a libc dependency.
+                            emit!(asm.sub(rsp, 16i32));
                             emit!(asm.mov(rax, slot(dst)));
                             emit!(asm.mov(rcx, 1000i64));
-                            emit!(asm.imul_2(rax, rcx));
-                            emit!(asm.mov(rdi, rax));
-                            call_ext!("usleep".into(), RelocKind::Plt32);
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.div(rcx));
+                            emit!(asm.mov(qword_ptr(rsp), rax));
+                            emit!(asm.mov(rcx, 1_000_000i64));
+                            emit!(asm.imul_2(rdx, rcx));
+                            emit!(asm.mov(qword_ptr(rsp + 8i32), rdx));
+                            emit!(asm.mov(rdi, rsp));
+                            emit!(asm.xor(esi, esi));
+                            emit!(asm.mov(rax, 35i64));
+                            emit!(asm.syscall());
+                            emit!(asm.add(rsp, 16i32));
                         }
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
@@ -3929,6 +3964,52 @@ mod tests {
                 .iter()
                 .any(|reloc| reloc.symbol == "BCryptGenRandom"));
         }
+    }
+
+    #[test]
+    fn sleep_intrinsic_is_libc_free_on_linux_and_calls_sleep_on_windows() {
+        let mut chunk = Chunk::with_params("sleep", 1);
+        let mut sleep = ri16(Opcode::Intrinsic, 0, 12);
+        sleep.flags = 1;
+        chunk.emit(sleep);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+        assert!(!linux_bytes.is_empty());
+        assert!(linux_relocs.is_empty());
+        assert!(mnemonics(&linux_bytes).contains(&Mnemonic::Syscall));
+
+        let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
+        assert!(!windows_bytes.is_empty());
+        assert_eq!(
+            windows_relocs
+                .iter()
+                .filter(|reloc| reloc.symbol == "Sleep")
+                .count(),
+            2,
+            "large and final Windows sleep paths must each call Sleep"
+        );
+        let windows_mnemonics = mnemonics(&windows_bytes);
+        assert!(windows_mnemonics.contains(&Mnemonic::Cmp));
+        assert!(windows_mnemonics.contains(&Mnemonic::Sub));
+        assert!(windows_mnemonics.contains(&Mnemonic::Push));
+        assert!(windows_mnemonics.contains(&Mnemonic::Pop));
+        let mut decoder = Decoder::new(64, &windows_bytes, DecoderOptions::NONE);
+        let mut shadow_space_allocations = 0;
+        let mut shadow_space_restorations = 0;
+        while decoder.can_decode() {
+            let instruction = decoder.decode();
+            if instruction.op0_register() != Register::RSP || instruction.immediate64() != 40 {
+                continue;
+            }
+            match instruction.mnemonic() {
+                Mnemonic::Sub => shadow_space_allocations += 1,
+                Mnemonic::Add => shadow_space_restorations += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(shadow_space_allocations, 2);
+        assert_eq!(shadow_space_restorations, 2);
     }
 
     #[test]

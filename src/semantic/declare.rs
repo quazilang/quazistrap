@@ -144,46 +144,55 @@ impl Analyzer {
                         generic_params: generic_params.clone(),
                     },
                 );
-                // @panic_handler validation: must take exactly one PanicInfo or str param,
-                // return ! or void.
+                // The panic runtime constructs exactly one PanicInfo value and
+                // never resumes the handler. Accepting another named type,
+                // str, or a returning signature would give the replacement
+                // handler an incompatible Quazi ABI.
                 if attr_names.iter().any(|a| a == "panic_handler") {
-                    let non_variadic: Vec<_> = params.iter().filter(|p| !p.variadic).collect();
-                    if non_variadic.len() != 1 {
+                    if params.len() != 1 || params.first().is_some_and(|param| param.variadic) {
                         self.push_error(
                             item.span,
                             "S13",
                             format!(
-                                "@panic_handler '{}' must take exactly one parameter (PanicInfo or str), found {}",
+                                "@panic_handler '{}' must take exactly one PanicInfo parameter, found {}",
                                 name,
-                                non_variadic.len()
+                                params.len()
                             ),
                         );
                     } else {
-                        let param_ty = unwrap_type(&non_variadic[0].ty);
+                        let param_ty = unwrap_type(&params[0].ty);
                         let ok = matches!(
                             &param_ty,
-                            TypeKind::Str | TypeKind::Ref { .. } | TypeKind::Named { .. }
+                            TypeKind::Named { name, type_args }
+                                if name == "PanicInfo" && type_args.is_empty()
                         );
                         if !ok {
                             self.push_error(
                                 item.span,
                                 "S13",
                                 format!(
-                                    "@panic_handler '{}' parameter must be PanicInfo or str, found {}",
+                                "@panic_handler '{}' parameter must be PanicInfo, found {}",
                                     name, param_ty
                                 ),
                             );
                         }
                     }
                     let ret = unwrap_type(return_ty);
-                    if !matches!(ret, TypeKind::Never | TypeKind::Void) {
+                    if !matches!(ret, TypeKind::Never) {
                         self.push_error(
                             item.span,
                             "S13",
                             format!(
-                                "@panic_handler '{}' must return ! or void, found {}",
+                                "@panic_handler '{}' must return !, found {}",
                                 name, ret
                             ),
+                        );
+                    }
+                    if !generic_params.is_empty() {
+                        self.push_error(
+                            item.span,
+                            "S13",
+                            format!("@panic_handler '{}' cannot be generic", name),
                         );
                     }
                 }
@@ -384,6 +393,7 @@ impl Analyzer {
                         SerializationFieldMetadata {
                             name: field.name.clone(),
                             ty: field.ty.node.clone(),
+                            span: field.ty.span,
                             json_name,
                             attributes: field
                                 .attributes

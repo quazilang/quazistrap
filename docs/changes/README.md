@@ -25,3 +25,8 @@ tests or examples establishing behavior.
 - [Typed JSON codec foundation](2026-09-01-typed-json-codec.md)
 - [Unicode-safe JSON string decoding](2026-09-01-json-string-decoding.md)
 - [Bounded JSON object field lookup](2026-09-01-json-object-lookup.md)
+- [Deterministic JSON object composition](2026-09-02-json-object-composition.md)
+- [Portable current-process yield and process ID](2026-09-02-os-portability.md)
+- [Linux TCP SIGPIPE handling (2026-09-02)](2026-09-02-net-sigpipe.md)
+- [Custom panic-handler ABI validation](2026-09-02-panic-handler-abi.md)
+- [Collections single-owner update semantics](2026-09-02-collections-single-owner.md)
