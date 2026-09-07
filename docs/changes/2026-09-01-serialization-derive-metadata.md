@@ -22,7 +22,7 @@ serialization derives. Its only accepted form is a single non-empty string
 name:
 
 ```quazi
-@derive(Serialize, Deserialize)
+@derive(Serialize)
 struct AddArgs {
     force: bool,
     output: String @json(name="out"),
@@ -34,7 +34,10 @@ attributes on one field, duplicate serialization derives, and duplicate
 effective JSON keys (including a renamed field colliding with another field's
 default name). `Serialize` and `Deserialize` currently diagnose generic
 structs and unions as unsupported; their first supported shape remains a
-non-generic named struct.
+non-generic named struct. As of the later decoder-safety correction,
+`Deserialize` is also rejected until its bounded struct-decoding contract and
+generated implementation exist. The metadata remains compiler-internal input
+for that future work.
 
 ## Compatibility and migration
 

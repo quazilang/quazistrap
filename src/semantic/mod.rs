@@ -1931,8 +1931,7 @@ fn main() void {}
 
     #[test]
     fn records_ordered_serialization_derive_metadata() {
-        let report = analyze(
-            r#"
+        let source = r#"
 type UserName = str;
 @derive(Deserialize)
 struct User {
@@ -1940,9 +1939,19 @@ struct User {
     active: bool,
 }
 fn main() void {}
-"#,
-        );
-        assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
+"#;
+        let report = analyze(source);
+        let error = report
+            .errors
+            .iter()
+            .find(|error| {
+                error.code == "S14"
+                    && error
+                        .message
+                        .contains("Deserialize derive is not implemented")
+            })
+            .expect("Deserialize must be rejected until bounded struct decoding exists");
+        assert_eq!(error.span.start, source.find("@derive").unwrap());
         let metadata = report
             .serialization_derives
             .get("User")
@@ -1956,6 +1965,32 @@ fn main() void {}
         assert_eq!(metadata.fields[0].attributes[1].name, "community_format");
         assert_eq!(metadata.fields[1].name, "active");
         assert_eq!(metadata.fields[1].json_name, None);
+    }
+
+    #[test]
+    fn rejects_deserialize_even_when_serialize_is_also_requested() {
+        let source = r#"
+@derive(Serialize, Deserialize)
+struct Request { value: bool, }
+fn main() void {}
+"#;
+        let report = analyze(source);
+        let error = report
+            .errors
+            .iter()
+            .find(|error| {
+                error.code == "S14"
+                    && error
+                        .message
+                        .contains("Deserialize derive is not implemented")
+            })
+            .expect("combined derive must not compile with a non-existent decoder");
+        assert_eq!(error.span.start, source.find("@derive").unwrap());
+        let metadata = report
+            .serialization_derives
+            .get("Request")
+            .expect("derive metadata remains available for the later decoder implementation");
+        assert_eq!(metadata.requested_traits, ["Serialize", "Deserialize"]);
     }
 
     #[test]

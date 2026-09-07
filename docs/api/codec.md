@@ -97,9 +97,10 @@ const offset: i64 = codec.decode_i64("-42").unwrap();
 
 The language currently requires every trait method to have a receiver, so it
 cannot express a sound static `Deserialize.from_json(source)` trait method.
-Decode entry points remain explicit functions until receiverless trait methods
-are added to the language. This is a language limitation, not a promise that
-generic `Deserialize` already works.
+`@derive(Deserialize)` is reserved but rejected with `S14`; it is not a no-op
+marker. Decode entry points remain explicit functions until receiverless trait
+methods and bounded object-decoding policy are available. This is a language
+limitation, not a promise that generic `Deserialize` already works.
 
 `DecodeError` also reserves limit, missing/duplicate/unknown field, and
 invalid-value variants for bounded struct decoding. Those cases are not yet

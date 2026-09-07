@@ -314,6 +314,18 @@ impl Analyzer {
                             );
                         } else {
                             serialization_traits.push(trait_name.clone());
+                            if trait_name == "Deserialize" {
+                                // This name is reserved and its source metadata is retained for
+                                // the planned derive, but accepting it today falsely suggests a
+                                // decoder exists. The language has no receiverless trait methods
+                                // and D-012 has not yet defined bounded struct-decoding policy.
+                                self.push_error(
+                                    attribute.span,
+                                    "S14",
+                                    "Deserialize derive is not implemented; use explicit codec.decode_* functions"
+                                        .to_string(),
+                                );
+                            }
                         }
                     }
                 }

@@ -20,7 +20,7 @@ derive implementation.
 The first supported serialization surface is a compiler-backed, static derive:
 
 ```quazi
-@derive(Serialize, Deserialize)
+@derive(Serialize)
 struct AddArgs {
     force: bool @json(name="force"),
     output: String @json(name="output"),
@@ -65,11 +65,12 @@ determinism, QZI compatibility, diagnostics, and declaration hygiene.
 
 ## Compatibility and verification
 
-The derive names and JSON field naming become public API only when steps 1–3
-ship together. Each step requires source/QZI round trips, exact JSON fixtures,
-malformed and adversarial decode cases, nested values, Unicode keys/strings,
-numeric boundaries, cross-target tests, and a no-generated-code fallback
-diagnostic for unsupported fields.
+The `Serialize` derive name and JSON field naming become public API when steps
+1–3 ship together. `Deserialize` remains reserved for step 4 and is rejected
+until its bounded object-decoding contract exists. Each step requires source/QZI
+round trips, exact JSON fixtures, malformed and adversarial decode cases,
+nested values, Unicode keys/strings, numeric boundaries, cross-target tests,
+and a no-generated-code fallback diagnostic for unsupported fields.
 
 ## Implementation checkpoint
 
@@ -90,6 +91,12 @@ source declaration order. Borrowed `str`, other integer widths, floats,
 `Option`, collections, and nested structs remain unsupported until their
 ownership and error contracts are added deliberately. Decode policy, including
 unknown and missing fields, remains a step-4 prerequisite.
+
+`@derive(Deserialize)` is therefore rejected with `S14`, rather than silently
+recorded as a no-op. The compiler retains its ordered metadata internally so a
+future, fully specified decoder can consume it, but users must call the
+explicit `codec.decode_bool`, `codec.decode_i64`, or `codec.decode_string`
+functions today.
 
 An explicit `impl Serialize for Type` conflicts with the generated method and
 is rejected as a duplicate `Type.to_json` declaration. The diagnostic points to

@@ -15,12 +15,13 @@ implemented in `std.json`; codec normalizes string failures to `DecodeError`.
 
 ## Compatibility
 
-This is additive. It does not make `@derive(Serialize, Deserialize)` generate
-an implementation, and it does not provide generic struct or text decoding.
-`Deserialize` is intentionally absent: Quazi traits currently require a
+This checkpoint was additive: it initially did not make either derive generate
+an implementation. The later `Serialize` checkpoint now generates serializers
+for its documented bounded field matrix. `Deserialize` remains unavailable and
+is rejected rather than accepted as a no-op: Quazi traits currently require a
 receiver and cannot represent a static constructor safely. Adding receiverless
-trait methods is a language-design prerequisite, recorded here rather than
-shipping a non-callable trait surface.
+trait methods and bounded object-decoding policy are language-design
+prerequisites, recorded here rather than shipping a non-callable trait surface.
 
 ## Verification
 

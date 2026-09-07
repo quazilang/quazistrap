@@ -30,3 +30,4 @@ tests or examples establishing behavior.
 - [Linux TCP SIGPIPE handling (2026-09-02)](2026-09-02-net-sigpipe.md)
 - [Custom panic-handler ABI validation](2026-09-02-panic-handler-abi.md)
 - [Collections single-owner update semantics](2026-09-02-collections-single-owner.md)
+- [Rejecting the unavailable `Deserialize` derive](2026-09-07-deserialize-derive-gate.md)
