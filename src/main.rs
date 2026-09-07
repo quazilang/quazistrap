@@ -1312,7 +1312,7 @@ fn build_with_progress(
 
         EmitType::Object => {
             // ── Step 3: Native ────────────────────────────────────────────────
-            let arch = arch_label();
+            let arch = arch_label(target);
             prog.begin(&format!("native  {}", arch));
             let obj_bytes = compile_to_object(
                 &chunks,
@@ -1336,7 +1336,7 @@ fn build_with_progress(
 
         EmitType::Binary => {
             // ── Step 3: Native ────────────────────────────────────────────────
-            let arch = arch_label();
+            let arch = arch_label(target);
             prog.begin(&format!("native  {}", arch));
             let obj_bytes = compile_to_object(
                 &chunks,

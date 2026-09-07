@@ -9,6 +9,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::backend::{TargetSpec, target::Os};
+
 const SPIN: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // ── TTY ───────────────────────────────────────────────────────────────────────
@@ -485,14 +487,22 @@ pub fn codegen_stats(chunks: &[crate::bytecode::Chunk], is_tty: bool) -> String 
     }
 }
 
-pub fn arch_label() -> &'static str {
-    if cfg!(target_arch = "x86_64") && cfg!(target_os = "windows") {
-        "x86_64·windows"
-    } else if cfg!(target_arch = "x86_64") && cfg!(target_os = "linux") {
-        "x86_64·linux"
-    } else if cfg!(target_arch = "x86_64") && cfg!(target_os = "macos") {
-        "x86_64·macos"
-    } else {
-        "unknown"
+pub fn arch_label(target: &TargetSpec) -> &'static str {
+    match target.os {
+        Os::Linux => "x86_64·linux",
+        Os::Windows => "x86_64·windows",
+        Os::MacOs => "x86_64·macos",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::arch_label;
+    use crate::backend::TargetSpec;
+
+    #[test]
+    fn reports_the_selected_target_not_the_compiler_host() {
+        assert_eq!(arch_label(&TargetSpec::x86_64_linux()), "x86_64·linux");
+        assert_eq!(arch_label(&TargetSpec::x86_64_windows()), "x86_64·windows");
     }
 }
