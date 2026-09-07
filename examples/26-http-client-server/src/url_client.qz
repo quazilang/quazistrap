@@ -4,6 +4,11 @@ import std.net.{HttpMethod, HttpRequest, HttpResponse, NetError, Url};
 // Regression client for HttpRequest.send_url: the constructor's deliberately
 // wrong host and target must not determine the connection or request line.
 fn main() i32 {
+    const query_url: Url = Url.parse("http://localhost:8080?mode=test").unwrap();
+    if (query_url.path() != "/?mode=test") { ret 5; }
+    const query_request: HttpRequest = HttpRequest.from_url(HttpMethod.Get, query_url);
+    if (query_request.encode().find("GET /?mode=test HTTP/1.1").is_none()) { ret 6; }
+
     // `localhost` exercises the getaddrinfo path; the wrong constructor
     // address verifies that send_url replaces the actual routing target.
     const url: Url = Url.parse("http://localhost:8080/url-routed").unwrap();

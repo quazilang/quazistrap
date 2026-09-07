@@ -72,7 +72,8 @@ payload. `UdpSocket` provides `close`, automatic `free`, and `handle` like TCP.
 `Url.parse` accepts only `http` and `https`, host, optional numeric port, and a
 path (default `/`). It is intentionally a small parser, not a general URL
 implementation: no IPv6 literals, authority userinfo, query normalization, or
-percent-decoding contract is supplied.
+percent-decoding contract is supplied. A raw query without an explicit path is
+preserved as a `/?query` request target.
 
 `Headers.new`, `append`, `set`, `get`, `contains`, `len`, `get_at`, and `encode`
 manage ordered headers. Lookup and replacement are case-insensitive; encoding
