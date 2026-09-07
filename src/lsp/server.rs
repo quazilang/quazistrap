@@ -49,11 +49,12 @@ impl VoidLanguageServer {
         }
     }
 
-    async fn reanalyze_and_publish(&self, uri: Url, text: String, version: i32) {
-        // Register the full document before analysis. Analysis can be slower than
-        // later didChange notifications, so its result is committed only if this
-        // exact document generation is still current.
-        {
+    async fn analyze_and_publish(&self, uri: Url, text: String, version: i32, install: bool) {
+        // Register a full document before analysis. Incremental edits are
+        // installed atomically by `did_change` before reaching here. Analysis
+        // can be slower than later notifications, so its result is committed
+        // only if this exact document generation is still current.
+        if install {
             let mut docs = self.documents.write().await;
             let accepted = match docs.get_mut(&uri) {
                 Some(doc) => doc.update_if_newer(text.clone(), version),
@@ -83,7 +84,10 @@ impl VoidLanguageServer {
             Ok(report) => {
                 let diags = diagnostics::to_lsp_diagnostics(&report, &text);
                 doc.report = Some(report);
-                drop(docs);
+                // Keep the document lock until the notification is queued.
+                // Otherwise a close or newer change can queue its clear/new
+                // diagnostics first, after which this stale analysis could
+                // repopulate the client with an obsolete snapshot.
                 self.client
                     .publish_diagnostics(uri, diags, Some(version))
                     .await;
@@ -96,7 +100,9 @@ impl VoidLanguageServer {
                     message: diagnostics::strip_ansi(&parse_err),
                     ..Default::default()
                 };
-                drop(docs);
+                // See the successful-analysis branch: queue this diagnostic
+                // before allowing a later generation or close to queue its
+                // authoritative replacement.
                 self.client
                     .publish_diagnostics(uri, vec![diag], Some(version))
                     .await;
@@ -111,7 +117,7 @@ impl LanguageServer for VoidLanguageServer {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
+                    TextDocumentSyncKind::INCREMENTAL,
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
@@ -158,23 +164,30 @@ impl LanguageServer for VoidLanguageServer {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        self.reanalyze_and_publish(
+        self.analyze_and_publish(
             params.text_document.uri,
             params.text_document.text,
             params.text_document.version,
+            true,
         )
         .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        if let Some(change) = params.content_changes.into_iter().last() {
-            self.reanalyze_and_publish(
-                params.text_document.uri,
-                change.text,
-                params.text_document.version,
-            )
-            .await;
-        }
+        let uri = params.text_document.uri;
+        let version = params.text_document.version;
+        let text = {
+            let mut docs = self.documents.write().await;
+            let Some(doc) = docs.get_mut(&uri) else {
+                return;
+            };
+            doc.apply_changes_if_newer(&params.content_changes, version)
+        };
+        let Some(text) = text else {
+            return;
+        };
+
+        self.analyze_and_publish(uri, text, version, false).await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {

@@ -2,9 +2,11 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-use tower_lsp::lsp_types::Url;
+use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
 
 use crate::semantic::SemanticReport;
+
+use super::span::position_to_byte_offset;
 
 pub struct DocumentState {
     pub uri: Url,
@@ -44,12 +46,61 @@ impl DocumentState {
     pub fn is_generation(&self, source: &str, version: i32) -> bool {
         self.version == version && self.source == source
     }
+
+    /// Apply an LSP incremental-change batch to the currently held document.
+    ///
+    /// Positions and the optional replacement length use UTF-16 code units,
+    /// while Rust strings are UTF-8. Invalid ranges (including a position in
+    /// the middle of a surrogate pair) leave the document unchanged so a
+    /// malformed client notification cannot corrupt the diagnostic snapshot.
+    /// The LSP guarantees that changes in one notification are ordered, so
+    /// each later range is resolved against the text produced by its
+    /// predecessor.
+    pub fn apply_changes_if_newer(
+        &mut self,
+        changes: &[TextDocumentContentChangeEvent],
+        version: i32,
+    ) -> Option<String> {
+        if version <= self.version {
+            return None;
+        }
+
+        let mut source = self.source.clone();
+        for change in changes {
+            source = apply_change(&source, change)?;
+        }
+        self.update(source.clone(), version);
+        Some(source)
+    }
+}
+
+fn apply_change(source: &str, change: &TextDocumentContentChangeEvent) -> Option<String> {
+    let Some(range) = change.range else {
+        return Some(change.text.clone());
+    };
+    let start = position_to_byte_offset(range.start, source)?;
+    let end = position_to_byte_offset(range.end, source)?;
+    if start > end {
+        return None;
+    }
+    if let Some(expected_length) = change.range_length {
+        let actual_length = source[start..end].encode_utf16().count() as u32;
+        if actual_length != expected_length {
+            return None;
+        }
+    }
+
+    let mut updated = String::with_capacity(source.len() - (end - start) + change.text.len());
+    updated.push_str(&source[..start]);
+    updated.push_str(&change.text);
+    updated.push_str(&source[end..]);
+    Some(updated)
 }
 
 #[cfg(test)]
 mod tests {
     use super::DocumentState;
-    use tower_lsp::lsp_types::Url;
+    use tower_lsp::lsp_types::{Position, Range, TextDocumentContentChangeEvent, Url};
 
     #[test]
     fn rejects_an_out_of_order_full_document_update() {
@@ -62,5 +113,74 @@ mod tests {
         assert!(document.is_generation("const value = 2;", 2));
         assert!(document.update_if_newer("const value = 3;".to_string(), 3));
         assert!(document.is_generation("const value = 3;", 3));
+    }
+
+    #[test]
+    fn applies_ordered_incremental_edits_using_utf16_positions() {
+        let uri = Url::parse("file:///workspace/main.qz").expect("test URI");
+        let mut document = DocumentState::new(uri, "const icon = \"🚀\";\n".to_string(), 1);
+        let changes = vec![
+            TextDocumentContentChangeEvent {
+                range: Some(Range::new(Position::new(0, 14), Position::new(0, 16))),
+                range_length: Some(2),
+                text: "🛰️".to_string(),
+            },
+            TextDocumentContentChangeEvent {
+                range: Some(Range::new(Position::new(0, 0), Position::new(0, 0))),
+                range_length: Some(0),
+                text: "// edited\n".to_string(),
+            },
+        ];
+
+        let updated = document
+            .apply_changes_if_newer(&changes, 2)
+            .expect("valid incremental changes");
+        assert_eq!(updated, "// edited\nconst icon = \"🛰️\";\n");
+        assert!(document.is_generation("// edited\nconst icon = \"🛰️\";\n", 2));
+    }
+
+    #[test]
+    fn rejects_invalid_incremental_edits_without_advancing_generation() {
+        let uri = Url::parse("file:///workspace/main.qz").expect("test URI");
+        let mut document = DocumentState::new(uri, "const icon = \"🚀\";".to_string(), 4);
+        let invalid = TextDocumentContentChangeEvent {
+            range: Some(Range::new(Position::new(0, 14), Position::new(0, 15))),
+            range_length: Some(1),
+            text: "x".to_string(),
+        };
+
+        assert!(document.apply_changes_if_newer(&[invalid], 5).is_none());
+        assert!(document.is_generation("const icon = \"🚀\";", 4));
+    }
+
+    #[test]
+    fn accepts_full_document_replacement_in_incremental_mode() {
+        let uri = Url::parse("file:///workspace/main.qz").expect("test URI");
+        let mut document = DocumentState::new(uri, "const old = 1;".to_string(), 1);
+        let replacement = TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: "const new = 2;".to_string(),
+        };
+
+        assert_eq!(
+            document.apply_changes_if_newer(&[replacement], 2),
+            Some("const new = 2;".to_string())
+        );
+        assert!(document.is_generation("const new = 2;", 2));
+    }
+
+    #[test]
+    fn rejects_a_mismatched_utf16_range_length() {
+        let uri = Url::parse("file:///workspace/main.qz").expect("test URI");
+        let mut document = DocumentState::new(uri, "const value = 1;".to_string(), 1);
+        let invalid = TextDocumentContentChangeEvent {
+            range: Some(Range::new(Position::new(0, 14), Position::new(0, 15))),
+            range_length: Some(2),
+            text: "2".to_string(),
+        };
+
+        assert!(document.apply_changes_if_newer(&[invalid], 2).is_none());
+        assert!(document.is_generation("const value = 1;", 1));
     }
 }

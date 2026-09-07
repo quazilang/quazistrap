@@ -5,9 +5,10 @@ Basic server is running.
 ## Capabilities
 
 - ✅ Diagnostics (publish on open/change/save)
+- ✅ Full-document and UTF-16-safe incremental text synchronization
 - ✅ Hover (type + const value, fallback to symbol table)
 - ✅ Goto Definition (semantic call targets plus best-effort lexical priority)
-- ✅ Completion (trigger on `.` — **only** for `std.*` chains via filesystem scanning)
+- ✅ Completion for `std.*` chains plus identifiers in the current semantic snapshot
 - ✅ Document formatting
 - ✅ Flat document symbols from the semantic snapshot
 - ✅ Signature help for current-document and loaded standard-library functions
@@ -28,4 +29,4 @@ Basic server is running.
 - ❌ Cross-file references and rename
 - ❌ Code actions / quick fixes
 - ❌ Inlay hints
-- ❌ Workspace symbols
+- ✅ Workspace symbols for successfully analyzed open documents

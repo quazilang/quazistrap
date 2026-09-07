@@ -9,14 +9,17 @@ qz lsp
 ```
 
 It communicates over standard input/output using the Language Server Protocol.
-Editors should start one process per workspace and use full-document text
-synchronization. The server reports its version from the compiler package.
+Editors should start one process per workspace. The server negotiates
+incremental text synchronization and also accepts full-document replacements.
+The server reports its version from the compiler package.
 
 ## Supported Features
 
-- Generation-gated diagnostics after open and full-document change; save
-  republishes the current diagnostic snapshot, and closing a document clears
-  its published diagnostics.
+- Generation-gated diagnostics after open, incremental changes, and
+  full-document replacements. Incremental ranges and optional replacement
+  lengths are validated as UTF-16 positions; malformed ranges do not replace
+  the last coherent document snapshot. Save republishes the current diagnostic
+  snapshot, and closing a document clears its published diagnostics.
 - Hover information from semantic types and constant evaluation.
 - Go-to-definition for semantic call targets, including methods, plus
   best-effort resolution of local declarations in the current document.
@@ -42,8 +45,6 @@ than a name-resolution guarantee.
 
 ## Current Limitations
 
-- Text synchronization is version-gated and full-document only; incremental
-  edits are not negotiated.
 - Cross-file references and rename, persistent workspace-wide indexing, inlay
   hints, code actions, and cancellation are not implemented.
 - Diagnostics and navigation operate on the current document only. Imported

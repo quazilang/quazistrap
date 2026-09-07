@@ -31,3 +31,4 @@ tests or examples establishing behavior.
 - [Custom panic-handler ABI validation](2026-09-02-panic-handler-abi.md)
 - [Collections single-owner update semantics](2026-09-02-collections-single-owner.md)
 - [Rejecting the unavailable `Deserialize` derive](2026-09-07-deserialize-derive-gate.md)
+- [Incremental LSP text synchronization](2026-09-07-lsp-incremental-sync.md)
