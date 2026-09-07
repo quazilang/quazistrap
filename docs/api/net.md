@@ -25,9 +25,10 @@ the requested limit. `receive_all` requires EOF before the limit and returns
 ## Addresses
 
 `SocketAddress.new(host, port)` validates a non-empty host and port `0..65535`.
-`host()` and `port()` expose its fields. `resolve()` performs a platform DNS
-lookup and returns an IPv4 numeric address; it does not provide a multi-address
-result, IPv6, DNS timeout, caching, or a configurable resolver policy.
+`host()` and `port()` expose its fields. `resolve()` returns a numeric IPv4
+literal unchanged or performs a platform DNS lookup for a name; it does not
+provide a multi-address result, IPv6, DNS timeout, caching, or a configurable
+resolver policy.
 
 ## TCP
 
@@ -84,7 +85,11 @@ request. `header` replaces a header case-insensitively, `body` changes its
 owned text body, and `max_response_bytes` sets the `receive_all` cap used by
 `send`. `encode` adds absent `Host`, `Content-Length`, and `Connection: close`
 headers. `send(port)` connects, sends, reads one complete response, closes the
-stream, and parses it. `send_url(url)` rejects HTTPS with `TlsUnavailable`; it
+stream, and parses it. `send_url(url)` routes to the URL host and port and uses
+the URL path as the request target while preserving the request's method, body,
+headers, and response limit. A caller-supplied `Host` header remains an
+intentional virtual-host override; otherwise it adds the URL authority,
+including a non-default HTTP port. It rejects HTTPS with `TlsUnavailable` and
 does not silently downgrade transport security. `parse(raw)` parses an owned
 request text.
 

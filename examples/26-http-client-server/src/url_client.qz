@@ -1,0 +1,23 @@
+import std.io;
+import std.net.{HttpMethod, HttpRequest, HttpResponse, NetError, Url};
+
+// Regression client for HttpRequest.send_url: the constructor's deliberately
+// wrong host and target must not determine the connection or request line.
+fn main() i32 {
+    const url: Url = Url.parse("http://127.0.0.1:8080/url-routed").unwrap();
+    const request: HttpRequest = HttpRequest.with_method(HttpMethod.Get, "/wrong-target", "127.0.0.2");
+    const response: Result[HttpResponse, NetError] = request.send_url(url);
+    if (response.is_err()) {
+        io.errln("request failed: {}", response.unwrap_err().message());
+        ret 1;
+    }
+    if (response.unwrap().status() != 200) { ret 2; }
+    const secure_url: Url = Url.parse("https://127.0.0.1:8080/never-connect").unwrap();
+    const secure_request: HttpRequest = HttpRequest.with_method(HttpMethod.Get, "/wrong", "127.0.0.2");
+    const rejected: Result[HttpResponse, NetError] = secure_request.send_url(secure_url);
+    if (rejected.is_ok()) { ret 3; }
+    ret match rejected.unwrap_err() {
+        NetError.TlsUnavailable => 0,
+        _ => 4,
+    };
+}
