@@ -7,6 +7,8 @@ pub mod analysis;
 mod backend;
 pub mod bytecode;
 pub mod cli;
+#[cfg(test)]
+mod docs;
 mod header;
 mod incremental;
 pub mod lexer;
