@@ -45,7 +45,7 @@ remain unproven or explicitly deferred:
 | Concurrency | Native thread primitives remain experimental. | Structured lifetime, result/error/panic propagation, cancellation policy, synchronization contract. |
 | Serialization | Bounded scalar decode and limited `Serialize` exist; derived `Deserialize`, options, collections, and nested structs do not. | Receiverless decoding design and bounded object policy with compiler/std tests. |
 | LSP | Workspace symbols and loader-backed definitions for local/package/std imports exist. | Cross-file references/rename, cancellation, code actions, inlay hints, real-editor smoke coverage. |
-| Documentation | API coverage is substantially improved but tutorial, language specification, and guide requirements are incomplete. | Runnable progressive tutorial, exhaustive supported-language reference, checked links/examples. |
+| Documentation | Language specification (9 pages), progressive tutorial (10 chapters), and practical guides (4 guides) are now written. API coverage accounts for every `std` module. | Automated example verification, cross-link checking, and runnable tutorial validation against current compiler. |
 | Editors | Local integration repositories exist. | Versioned runtime smoke validation for each supported editor. |
 
 No open item should be closed solely because current compiler tests pass: each
