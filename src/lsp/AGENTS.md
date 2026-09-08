@@ -25,7 +25,9 @@ Basic server is running.
 ## Missing
 
 - ✅ General identifier completion from the current semantic snapshot
-- ❌ Fully scoped/resolving goto-definition for all binding uses
+- ✅ Relative leaf-import go-to-definition for unique public declarations in
+  regular local workspace files; broader import resolution still needs loader
+  source mapping.
 - ❌ Cross-file references and rename
 - ❌ Code actions / quick fixes
 - ❌ Inlay hints

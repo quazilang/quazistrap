@@ -48,6 +48,15 @@ impl WorkspaceIndex {
         Url::from_file_path(path).ok()
     }
 
+    /// Resolve the file portion of a `import ./name.symbol` declaration. The
+    /// caller still validates the imported symbol and visibility in the target
+    /// document; this helper only enforces the workspace path boundary.
+    pub fn relative_leaf_target(&self, importer: &Url, leaf: &str) -> Option<Url> {
+        let importer = local_workspace_source(importer, &self.roots)?;
+        let candidate = importer.parent()?.join(leaf).with_extension("qz");
+        self.canonical_uri(&Url::from_file_path(candidate).ok()?)
+    }
+
     /// Rebuild atomically from local disk state. This is intentionally a
     /// caller-controlled operation until watched-file support exists.
     pub fn rescan(&mut self) {

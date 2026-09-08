@@ -22,7 +22,9 @@ The server reports its version from the compiler package.
   snapshot, and closing a document clears its published diagnostics.
 - Hover information from semantic types and constant evaluation.
 - Go-to-definition for semantic call targets, including methods, plus
-  best-effort resolution of local declarations in the current document.
+  best-effort local declarations and explicit relative leaf imports such as
+  `import ./helpers.answer as answer`. The imported declaration must be public
+  and live in a regular local workspace file.
 - Completion for `std.*` module paths and public module symbols.
 - General identifier completion from the current document's semantic symbol
   snapshot. Suggestions include functions, types, variables, and parameters
@@ -51,8 +53,9 @@ than a name-resolution guarantee.
   and automatic filesystem watching are not implemented. The workspace-symbol
   snapshot is built during initialization; files changed externally are picked
   up when the server is restarted or opened and saved through the LSP.
-- Diagnostics and navigation operate on the current document only. Imported
-  source locations are not yet exposed as cross-file locations.
+- Cross-file definition currently covers only explicit relative leaf imports.
+  Module, wildcard, package, dependency, and standard-library imports need the
+  compiler loader's source mapping before their locations can be exposed.
 - Formatting and position conversion need a real-editor protocol smoke suite
   before they can be treated as stable across all Unicode input.
 
