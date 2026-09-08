@@ -8,6 +8,7 @@ prevents the API index from implying that undocumented modules are stable.
 | Module | API page | Current documentation status |
 | --- | --- | --- |
 | `std.codec` | [codec](codec.md) | Initial typed JSON encoding/decoding contract. |
+| `std.ini` | [ini](ini.md) | Deterministic source-backed INI documents and typed field decoding. |
 | `std.fs` | [fs](fs.md) | Current owned-file and text-read surface. |
 | `std.json` | [json](json.md) | Bounded JSON validation and composition. |
 | `std.net` | [net](net.md) | IPv4 sockets and limited HTTP helpers. |

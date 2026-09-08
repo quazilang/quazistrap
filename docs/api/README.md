@@ -23,6 +23,7 @@ Documented modules:
 - [`std.time`](time.md) — monotonic durations and elapsed-time instants.
 - [`std.json`](json.md) — bounded JSON validation and token encoding.
 - [`std.codec`](codec.md) — typed JSON serialization foundation.
+- [`std.ini`](ini.md) — deterministic, source-backed INI documents.
 - [`std.fs`](fs.md) — owned file handles, text reads, and directory operations.
 - [`std.net`](net.md) — IPv4 TCP/UDP and bounded HTTP/1.1 helpers.
 - [`std.os`](os.md) — host information and current-process boundaries.
