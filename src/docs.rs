@@ -249,9 +249,58 @@ fn invalid_local_links(docs_root: &Path) -> Result<Vec<String>, String> {
 mod tests {
     use super::{
         heading_ids, inline_link_destinations, invalid_local_links, local_destination,
-        resolve_repository_path,
+        markdown_files, resolve_repository_path,
     };
+    use std::collections::BTreeSet;
+    use std::fs;
     use std::path::Path;
+
+    fn tutorial_fixture_entries(root: &Path) -> Vec<(String, std::path::PathBuf)> {
+        let mut fixtures = Vec::new();
+        let mut entries = fs::read_dir(root)
+            .expect("tutorial fixture tree can be listed")
+            .map(|entry| entry.expect("tutorial fixture entry can be read").path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for entry in entries {
+            if entry.is_dir() {
+                let entry_source = entry.join("main.qz");
+                if entry_source.is_file() {
+                    fixtures.push((
+                        entry
+                            .file_name()
+                            .expect("fixture directory has a name")
+                            .to_string_lossy()
+                            .into_owned(),
+                        entry_source,
+                    ));
+                }
+            } else if entry.extension().is_some_and(|extension| extension == "qz") {
+                fixtures.push((
+                    entry
+                        .file_stem()
+                        .expect("fixture source has a stem")
+                        .to_string_lossy()
+                        .into_owned(),
+                    entry,
+                ));
+            }
+        }
+        fixtures
+    }
+
+    fn tutorial_chapter_ids(root: &Path) -> BTreeSet<String> {
+        markdown_files(root)
+            .expect("tutorial chapters can be listed")
+            .into_iter()
+            .filter_map(|chapter| {
+                let name = chapter.file_name()?.to_str()?;
+                name.strip_suffix(".md")
+                    .filter(|name| name.as_bytes().get(2) == Some(&b'-'))
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
 
     #[test]
     fn extracts_inline_link_destinations() {
@@ -323,5 +372,56 @@ mod tests {
             "broken canonical documentation links:\n{}",
             invalid.join("\n")
         );
+    }
+
+    #[test]
+    fn tutorial_fixtures_analyze_and_lower_to_bytecode() {
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/tutorial/fixtures");
+        let fixtures = tutorial_fixture_entries(&fixture_root);
+        assert!(!fixtures.is_empty(), "tutorial fixtures must not be empty");
+        let fixture_ids = fixtures
+            .iter()
+            .map(|(chapter, _)| chapter.clone())
+            .collect::<BTreeSet<_>>();
+        let tutorial_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/tutorial");
+        assert_eq!(fixture_ids, tutorial_chapter_ids(&tutorial_root));
+        for (_, fixture) in fixtures {
+            let mut loaded = crate::loader::load_programs_configured(
+                std::slice::from_ref(&fixture),
+                None,
+                true,
+                &[],
+            )
+            .unwrap_or_else(|error| panic!("cannot load {}: {error}", fixture.display()));
+            assert!(
+                loaded.parse_error.is_none(),
+                "cannot parse {}: {}",
+                fixture.display(),
+                loaded.parse_error.take().unwrap_or_default()
+            );
+            let program = crate::semantic::strip_cfg(&loaded.program);
+            let namespaced_paths = loaded
+                .namespaced_paths
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            let report = crate::analysis::analyze_program_with_source_files(
+                &loaded.merged_source,
+                &program,
+                loaded.library_fn_names,
+                loaded.library_char_ranges,
+                loaded.source_files.clone(),
+                namespaced_paths,
+            );
+            assert!(
+                report.errors.is_empty(),
+                "tutorial fixture {} has semantic errors: {:#?}",
+                fixture.display(),
+                report.errors
+            );
+            crate::bytecode::Codegen::new(&report)
+                .compile_program(&program, &loaded.source_files)
+                .unwrap_or_else(|error| panic!("cannot lower {}: {error}", fixture.display()));
+        }
     }
 }

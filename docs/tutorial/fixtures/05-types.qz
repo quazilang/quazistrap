@@ -1,0 +1,16 @@
+struct Point { x: i32, y: i32, }
+
+enum Direction { North, South, }
+
+fn distance_from_origin(point: Point) i32 {
+    ret point.x + point.y;
+}
+
+fn main() i32 {
+    const point = Point { x: 2, y: 3 };
+    const status = match Direction.North {
+        Direction.North => distance_from_origin(point) - 5,
+        Direction.South => 1,
+    };
+    ret status;
+}

@@ -1,0 +1,11 @@
+import std.fs;
+import std.io;
+
+fn main() i32 {
+    const message = match fs.read_to_string("tutorial-input.txt") {
+        Ok(content) => content.as_str(),
+        Err(_) => "Cannot read file",
+    };
+    io.println("{}", message);
+    ret 0;
+}

@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-09-09: Compiler-checked tutorial fixtures](2026-09-09-tutorial-fixtures.md)
 - [2026-09-09: Documentation verification](2026-09-09-documentation-verification.md)
 
 Audience: language users and maintainers.

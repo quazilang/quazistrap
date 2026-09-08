@@ -1,0 +1,7 @@
+fn main() i32 {
+    var values: Array[i32] = Array.new();
+    values.push(2);
+    values.push(3);
+    values[0] = 4;
+    ret values[0] + values[1] - 7;
+}

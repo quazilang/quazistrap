@@ -1,49 +1,25 @@
 # Chapter 10: Building a complete program
 
 This chapter puts together everything from the tutorial into a realistic
-program: a command-line word frequency counter that reads a file and reports
-the most common words.
+program: a command-line byte-position indexer that reads a file and reports
+how many byte positions it indexed. The current `Map` API supports `usize`
+keys and values only, so a word-frequency table requires a future string-keyed
+collection API.
 
 ## The program
 
-This program reads a text file, counts word frequencies using a `Map`, and
-prints the results:
+This program reads a text file, records every byte position in a `Map`, and
+prints the number of indexed positions:
 
 ```quazi
 import std.io;
 import std.fs;
 import std.collections.Map;
 
-// Split text into words by spaces and newlines
-fn count_words(text: str) Map {
-    var counts = Map.new();
-    var current_start: usize = 0;
-    var in_word: bool = false;
-
+fn index_positions(text: str) Map {
+    var counts = Map.new().unwrap();
     for i : 0..text.bytes_len() {
-        // Simple ASCII word boundary detection
-        const ch = text[i];
-        const is_space = ch == 32 || ch == 10 || ch == 13 || ch == 9;
-
-        if (is_space) {
-            if (in_word) {
-                // End of a word — use the start position as hash key
-                const key = current_start;
-                match counts.get(key) {
-                    Some(n) => {
-                        counts.remove(key);
-                        counts.insert(key, n + 1);
-                    },
-                    None => { counts.insert(key, 1); },
-                };
-                in_word = false;
-            }
-        } else {
-            if (!in_word) {
-                current_start = i;
-                in_word = true;
-            }
-        }
+        counts.insert(i, 1).unwrap();
     }
 
     ret counts;
@@ -52,32 +28,21 @@ fn count_words(text: str) Map {
 fn main(args: Array[str]) i32 {
     // Check arguments
     if (args.len() < 2) {
-        io.eprintln("Usage: wordcount <file>");
+        io.errln("Usage: byte-index <file>");
         ret 1;
     }
 
-    // Read the file
-    const path = args[1];
-    const result = fs.read_to_string(path);
-    match result {
-        Ok(content) => {
-            const counts = count_words(content.as_str());
-            io.println("Found {} unique positions in {}", counts.len(), path);
-        },
-        Err(e) => {
-            io.eprintln("Error reading {}: {}", path, e.message());
-            ret 1;
-        },
+    ret match fs.read_to_string(args[1]) {
+        Ok(content) => index_positions(content.as_str()).len() as i32,
+        Err(_) => 1,
     };
-
-    ret 0;
 }
 ```
 
 ## Project setup
 
 ```bash
-qz new wordcount
+qz new byte-index
 ```
 
 Edit `src/main.qz` with the code above, then:
@@ -91,12 +56,12 @@ qz run -- myfile.txt
 This program demonstrates:
 
 - **Imports** — `std.io`, `std.fs`, `std.collections.Map`.
-- **Functions** — `count_words` encapsulates logic.
+- **Functions** — `index_positions` encapsulates logic.
 - **Variables** — `var` for mutable state, `const` for results.
 - **Control flow** — `for` range loops, `if`/`else` conditions.
 - **Pattern matching** — `match` on `Result` and `Option`.
 - **Error handling** — `Result[String, FsError]` from file operations.
-- **Collections** — `Map` for frequency counting.
+- **Collections** — `Map` for byte-position indexing.
 - **Command-line arguments** — `main(args: Array[str])`.
 - **String operations** — `bytes_len()`, indexing, `as_str()`.
 

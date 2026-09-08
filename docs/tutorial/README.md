@@ -37,3 +37,12 @@ runnable examples from the [`examples/`](../../examples/README.md) directory.
 All examples use current Quazi syntax and are designed to compile with the
 current compiler. Features labeled experimental in the
 [language specification](../language/README.md) are noted where they appear.
+
+## Verified fixtures
+
+Complete source fixtures for each numbered chapter live in
+[`fixtures/`](fixtures/README.md). The compiler test suite derives the fixture
+set from the chapter filenames, loads each fixture and its local imports, then
+checks semantic analysis and bytecode lowering. Explanatory fragments in the
+chapter prose remain intentionally small; the fixture is the runnable complete
+program for that chapter.
