@@ -62,6 +62,7 @@ pub struct Analyzer {
     pub(super) used_import_paths: BTreeSet<String>,
     pub(super) unused_import_paths: BTreeSet<String>,
     pub(super) annotated_exprs: Vec<ExprAnnotation>,
+    pub(super) binding_declarations: Vec<BindingDeclaration>,
     pub(super) constant_evaluations: Vec<ConstantEvaluation>,
     pub(super) inline_candidates: Vec<InlineCandidate>,
     pub(super) enums: HashMap<String, EnumInfo>,
@@ -814,6 +815,7 @@ impl Analyzer {
             used_import_paths: BTreeSet::new(),
             unused_import_paths: BTreeSet::new(),
             annotated_exprs: Vec::new(),
+            binding_declarations: Vec::new(),
             constant_evaluations: Vec::new(),
             inline_candidates: Vec::new(),
             enums: HashMap::new(),
@@ -1001,6 +1003,7 @@ impl Analyzer {
         let unused_imports_vec: Vec<String> = self.unused_import_paths.iter().cloned().collect();
 
         let annotated_exprs = std::mem::take(&mut self.annotated_exprs);
+        let binding_declarations = std::mem::take(&mut self.binding_declarations);
         let constant_evaluations = std::mem::take(&mut self.constant_evaluations);
         let inline_candidates = std::mem::take(&mut self.inline_candidates);
         let math_optimizations = std::mem::take(&mut self.math_optimizations);
@@ -1040,6 +1043,7 @@ impl Analyzer {
             used_imports_map,
             unused_imports: unused_imports_vec,
             annotated_exprs,
+            binding_declarations,
             annotated_program,
             symbol_table,
             constant_evaluations,
@@ -1216,6 +1220,7 @@ impl Analyzer {
         self.used_import_paths.clear();
         self.unused_import_paths.clear();
         self.annotated_exprs.clear();
+        self.binding_declarations.clear();
         self.constant_evaluations.clear();
         self.inline_candidates.clear();
         self.enums.clear();
@@ -1586,7 +1591,10 @@ impl Analyzer {
         DependencyGraph { edges, calls_from }
     }
 
-    pub(super) fn declare(&mut self, name: String, symbol: Symbol) {
+    /// Insert a symbol into the current scope and report whether this call
+    /// created the declaration. Callers that attach source metadata must only
+    /// do so when this returns `true`.
+    pub(super) fn declare(&mut self, name: String, symbol: Symbol) -> bool {
         let existing = self
             .scopes
             .last()
@@ -1598,7 +1606,7 @@ impl Analyzer {
             if symbol.is_import && prev.is_import {
                 // Same-path duplicate import is a no-op (two modules both import std.io, etc.)
                 if symbol.import_path == prev.import_path {
-                    return;
+                    return false;
                 }
                 self.push_error(
                     symbol.span,
@@ -1609,7 +1617,7 @@ impl Analyzer {
                         self.describe_span(prev.span)
                     ),
                 );
-                return;
+                return false;
             }
 
             let prev_location = self.describe_span(prev.span);
@@ -1621,7 +1629,7 @@ impl Analyzer {
                     name, prev_location
                 ),
             );
-            return;
+            return false;
         }
 
         let current_scope = self
@@ -1629,6 +1637,7 @@ impl Analyzer {
             .last_mut()
             .expect("semantic analyzer must always have at least one scope");
         current_scope.insert(name, symbol);
+        true
     }
 
     /// Whether `name` refers to a declared type (struct, enum, trait, or
@@ -2642,6 +2651,42 @@ fn main() i32 { ret helper(42); }
         assert_eq!(
             annotation.binding_span.map(|span| span.end - span.start),
             Some("helper".chars().count())
+        );
+        let declaration = report
+            .binding_declarations
+            .iter()
+            .find(|declaration| declaration.binding.name == "helper")
+            .expect("function declaration");
+        assert_eq!(
+            declaration.name_span.start,
+            source
+                .find("helper(value")
+                .map(|byte| source[..byte].chars().count())
+                .expect("function name")
+        );
+        assert_eq!(declaration.name_span.end - declaration.name_span.start, 6);
+    }
+
+    #[test]
+    fn records_only_the_accepted_top_level_function_declaration() {
+        let report = analyze(
+            r#"
+fn duplicate() void {}
+fn duplicate() void {}
+"#,
+        );
+
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("duplicate declaration 'duplicate'")));
+        assert_eq!(
+            report
+                .binding_declarations
+                .iter()
+                .filter(|declaration| declaration.binding.name == "duplicate")
+                .count(),
+            1
         );
     }
 

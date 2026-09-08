@@ -28,6 +28,7 @@ impl Analyzer {
         match &item.node {
             ItemKind::Fn {
                 name,
+                name_span,
                 return_ty,
                 params,
                 attributes,
@@ -125,8 +126,8 @@ impl Analyzer {
                         .map(|p| p.name.clone())
                         .collect(),
                 );
-                self.declare(
-                    register_name,
+                let declared = self.declare(
+                    register_name.clone(),
                     Symbol {
                         kind: SymbolKind::Function,
                         span: item.span,
@@ -144,6 +145,16 @@ impl Analyzer {
                         generic_params: generic_params.clone(),
                     },
                 );
+                if declared && let Some(name_span) = name_span {
+                    self.binding_declarations.push(BindingDeclaration {
+                        binding: ResolvedBinding {
+                            name: register_name,
+                            span: item.span,
+                            kind: SymbolKind::Function,
+                        },
+                        name_span: *name_span,
+                    });
+                }
                 // The panic runtime constructs exactly one PanicInfo value and
                 // never resumes the handler. Accepting another named type,
                 // str, or a returning signature would give the replacement

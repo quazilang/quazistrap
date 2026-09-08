@@ -225,6 +225,15 @@ pub struct ResolvedBinding {
     pub kind: SymbolKind,
 }
 
+/// A source-backed declaration spelling for a resolved binding. Unlike a
+/// symbol's declaration span, `name_span` is limited to the identifier token
+/// and is therefore suitable for editor navigation and rename edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingDeclaration {
+    pub binding: ResolvedBinding,
+    pub name_span: Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExprAnnotation {
     pub span: Span,
@@ -436,6 +445,8 @@ pub struct SemanticReport {
     pub used_imports_map: HashMap<String, ImportInfo>,
     pub unused_imports: Vec<String>,
     pub annotated_exprs: Vec<ExprAnnotation>,
+    /// Exact source spellings of declarations that have a resolved binding.
+    pub binding_declarations: Vec<BindingDeclaration>,
     pub annotated_program: AnnotatedProgram,
     pub symbol_table: SymbolTable,
     pub constant_evaluations: Vec<ConstantEvaluation>,
