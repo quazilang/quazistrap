@@ -437,6 +437,7 @@ pub fn strip_cfg_for(
         match node {
             ItemKind::Fn {
                 name,
+                name_span,
                 return_ty,
                 params,
                 body,
@@ -447,6 +448,7 @@ pub fn strip_cfg_for(
                 c_variadic,
             } => ItemKind::Fn {
                 name: name.clone(),
+                name_span: *name_span,
                 return_ty: return_ty.clone(),
                 params: params.clone(),
                 body: body
@@ -729,6 +731,7 @@ fn expand_serialize_derives(program: &Program) -> Program {
         let method = Spanned::new(
             ItemKind::Fn {
                 name: "to_json".to_string(),
+                name_span: None,
                 generic_params: Vec::new(),
                 params: vec![Param {
                     name: "self".to_string(),

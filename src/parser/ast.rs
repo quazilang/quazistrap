@@ -506,7 +506,15 @@ pub struct Block {
 #[derive(Debug, Clone)]
 pub struct ImportPath {
     pub path: Vec<String>,
+    /// Source spans for `path`, in the same order as its segments.
+    pub path_spans: Vec<Span>,
     pub items: ImportItems,
+    /// Exact source spans of imported identifier selectors. A single or
+    /// aliased import has one entry; a braced import has one per listed
+    /// selector. Wildcard imports have no identifier selector and are empty.
+    pub selector_spans: Vec<Span>,
+    /// Exact source span of the local alias, when the import has one.
+    pub alias_span: Option<Span>,
     /// Attributes attached to this import, including target-selection `@cfg`.
     pub attributes: Vec<Attribute>,
     pub span: Span,
@@ -547,6 +555,9 @@ pub struct EnumVariant {
 pub enum ItemKind {
     Fn {
         name: String,
+        /// Exact source span of the declared name. Synthetic compiler-generated
+        /// functions have no source spelling and use `None`.
+        name_span: Option<Span>,
         generic_params: Vec<String>,
         params: Vec<Param>,
         return_ty: Type,

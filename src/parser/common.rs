@@ -62,9 +62,13 @@ impl Parser {
     }
 
     pub(crate) fn parse_ident(&mut self) -> Result<String, String> {
+        Ok(self.parse_ident_with_span()?.0)
+    }
+
+    pub(crate) fn parse_ident_with_span(&mut self) -> Result<(String, ast::Span), String> {
         let tok = self.expect_ident_token()?;
         match tok.kind {
-            TokenKind::Ident(name) => Ok(name),
+            TokenKind::Ident(name) => Ok((name, to_ast_span(tok.span))),
             _ => unreachable!(),
         }
     }

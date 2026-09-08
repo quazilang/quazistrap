@@ -16,7 +16,7 @@ impl Parser {
     ) -> Result<Item, String> {
         let start = self.expect(TokenKind::Fn)?.span;
 
-        let name = self.parse_ident()?;
+        let (name, name_span) = self.parse_ident_with_span()?;
         let generic_params = self.parse_optional_generic_params()?;
         self.expect(TokenKind::LParen)?;
 
@@ -92,6 +92,7 @@ impl Parser {
         Ok(Spanned::new(
             ItemKind::Fn {
                 name,
+                name_span: Some(name_span),
                 generic_params,
                 params,
                 return_ty,
@@ -468,10 +469,12 @@ impl Parser {
         };
 
         let mut path: Vec<String> = Vec::new();
+        let mut path_spans: Vec<Span> = Vec::new();
 
         // base path: a.b.c
-        let first = self.parse_ident()?;
+        let (first, first_span) = self.parse_ident_with_span()?;
         path.push(first);
+        path_spans.push(first_span);
 
         while self.at(TokenKind::Dot) {
             let save = self.pos;
@@ -486,7 +489,9 @@ impl Parser {
 
             match self.peek_kind() {
                 TokenKind::Ident(_) => {
-                    path.push(self.parse_ident()?);
+                    let (segment, span) = self.parse_ident_with_span()?;
+                    path.push(segment);
+                    path_spans.push(span);
                 }
                 _ => {
                     self.pos = save;
@@ -495,6 +500,8 @@ impl Parser {
             }
         }
 
+        let mut selector_spans = Vec::new();
+        let mut alias_span = None;
         let items = if self.at(TokenKind::Dot) {
             self.advance();
 
@@ -504,7 +511,9 @@ impl Parser {
 
                 if !self.at(TokenKind::RBrace) {
                     loop {
-                        names.push(self.parse_ident()?);
+                        let (name, span) = self.parse_ident_with_span()?;
+                        names.push(name);
+                        selector_spans.push(span);
 
                         if self.at(TokenKind::Comma) {
                             self.advance();
@@ -520,10 +529,12 @@ impl Parser {
                 self.advance();
                 ImportItems::All
             } else {
-                let name = self.parse_ident()?;
+                let (name, name_span) = self.parse_ident_with_span()?;
+                selector_spans.push(name_span);
                 if self.at(TokenKind::As) {
                     self.advance();
-                    let alias = self.parse_ident()?;
+                    let (alias, span) = self.parse_ident_with_span()?;
+                    alias_span = Some(span);
                     ImportItems::Aliased(name, alias)
                 } else {
                     ImportItems::Single(name)
@@ -533,9 +544,14 @@ impl Parser {
             let last = path
                 .pop()
                 .ok_or_else(|| self.err_here("invalid import path".to_string()))?;
+            let last_span = path_spans
+                .pop()
+                .expect("import path segments and spans stay aligned");
+            selector_spans.push(last_span);
             if self.at(TokenKind::As) {
                 self.advance();
-                let alias = self.parse_ident()?;
+                let (alias, span) = self.parse_ident_with_span()?;
+                alias_span = Some(span);
                 ImportItems::Aliased(last, alias)
             } else {
                 ImportItems::Single(last)
@@ -548,7 +564,10 @@ impl Parser {
         Ok(Spanned::new(
             ItemKind::Import(ImportPath {
                 path,
+                path_spans,
                 items,
+                selector_spans,
+                alias_span,
                 attributes,
                 pub_import,
                 relative,

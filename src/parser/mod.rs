@@ -2223,6 +2223,95 @@ fn main() void {
     }
 
     #[test]
+    fn retains_function_and_import_identifier_spans() {
+        let source = concat!(
+            "fn sample() void {}\n",
+            "import toolkit.math.{add, sub};\n",
+            "import toolkit.value as local;\n",
+            "import direct;\n",
+            "import ./relative.value as local_relative;\n",
+            "import toolkit.*;\n",
+        );
+        let program = parse_program(source);
+
+        let ItemKind::Fn { name, name_span, .. } = &program.items[0].node else {
+            panic!("expected function");
+        };
+        assert_eq!(name, "sample");
+        assert_eq!(
+            name_span.map(|span| span.start),
+            Some(
+                source
+                    .find("sample")
+                    .map(|byte| source[..byte].chars().count())
+                    .expect("function name")
+            )
+        );
+        assert_eq!(
+            name_span.map(|span| span.end - span.start),
+            Some("sample".chars().count())
+        );
+
+        let ItemKind::Import(grouped) = &program.items[1].node else {
+            panic!("expected grouped import");
+        };
+        assert_eq!(grouped.path, ["toolkit", "math"]);
+        assert_eq!(grouped.path_spans.len(), 2);
+        assert_eq!(grouped.selector_spans.len(), 2);
+        assert!(grouped.alias_span.is_none());
+        assert_eq!(
+            grouped.selector_spans[0].start,
+            source
+                .find("add")
+                .map(|byte| source[..byte].chars().count())
+                .expect("selector")
+        );
+
+        let ItemKind::Import(aliased) = &program.items[2].node else {
+            panic!("expected aliased import");
+        };
+        assert_eq!(aliased.path, ["toolkit"]);
+        assert_eq!(aliased.selector_spans.len(), 1);
+        assert_eq!(
+            aliased.alias_span.map(|span| span.start),
+            source.find("local").map(|byte| source[..byte].chars().count())
+        );
+
+        let ItemKind::Import(bare) = &program.items[3].node else {
+            panic!("expected bare import");
+        };
+        assert!(bare.path.is_empty());
+        assert_eq!(bare.selector_spans.len(), 1);
+        assert_eq!(
+            bare.selector_spans[0].start,
+            source
+                .find("direct")
+                .map(|byte| source[..byte].chars().count())
+                .expect("bare selector")
+        );
+
+        let ItemKind::Import(relative) = &program.items[4].node else {
+            panic!("expected relative import");
+        };
+        assert!(relative.relative);
+        assert_eq!(relative.path, ["relative"]);
+        assert_eq!(relative.selector_spans.len(), 1);
+        assert_eq!(
+            relative.alias_span.map(|span| span.start),
+            source
+                .find("local_relative")
+                .map(|byte| source[..byte].chars().count())
+        );
+
+        let ItemKind::Import(wildcard) = &program.items[5].node else {
+            panic!("expected wildcard import");
+        };
+        assert!(matches!(wildcard.items, ImportItems::All));
+        assert!(wildcard.selector_spans.is_empty());
+        assert!(wildcard.alias_span.is_none());
+    }
+
+    #[test]
     fn parses_opaque_postfix_attributes_on_aggregate_fields() {
         let program = parse_program(
             r#"struct User {
