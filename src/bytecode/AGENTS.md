@@ -231,6 +231,6 @@ sizing so less-common opcodes cannot access slots outside the allocated frame.
 
 ## Recent Cleanups
 
-- **`as` casts**: Previously a lazy no-op (`..` pattern). Now explicit with a comment: QZI uses 64-bit slots for all values, so integer/float size changes are no-ops at the bytecode level; the typechecker has already validated.
+- **`as` casts**: Previously a lazy no-op (`..` pattern). Now explicit with a comment. The current typechecker permits integer-family and same-family float casts; integer/float cross-family conversion needs dedicated lowering and remains rejected.
 - **`Array.from` hardcoding removed**: Previously codegen had an inline `new() + push()` special case for `Array.from([...])`. Now `Array.from(...items: T)` is a real variadic method in `prelude/src/array.qz` that iterates the variadic slice and pushes each element. Generic inference for variadic static methods was fixed in `typecheck.rs` (`infer_type_subst` now handles `Slice` types).
 - **`import_aliases` removed**: Unnecessary `HashMap` added by a teammate that did not change behavior; cleaned up from `Codegen` and `FnCompiler`.

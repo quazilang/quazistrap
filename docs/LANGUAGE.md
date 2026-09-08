@@ -53,8 +53,10 @@ escapes, and escaped newlines. Backtick strings preserve contents exactly.
 
 ```quazi
 const wide: i64 = 42 as i64;
-const ratio: f64 = 3 as f64 / 2.0;
 ```
+
+The current compiler supports `as` within the integer family; integer-to-float
+and float-to-integer casts are not implemented yet.
 
 `str` is immutable UTF-8. Indexes count Unicode scalars, negative indexes count
 from the end, and slices follow Python spelling: `text[start:end:step]`.

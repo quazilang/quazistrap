@@ -78,8 +78,8 @@ error: expected 'i32', found 'str'
 
 The expression type does not match what is expected.
 
-**Fix**: Use explicit `as` conversions for numeric types, or adjust the
-expression.
+**Fix**: Use an explicit supported conversion (for example, an integer-family
+`as` cast), or adjust the expression.
 
 ### Move after use
 

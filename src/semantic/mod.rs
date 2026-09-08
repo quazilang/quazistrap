@@ -6528,6 +6528,29 @@ unsafe fn cast(address: usize) Callback { ret address as Callback; }
     }
 
     #[test]
+    fn numeric_casts_do_not_cross_integer_and_float_families() {
+        let report = analyze(
+            r#"
+fn main() i32 {
+    const ratio: f64 = 3 as f64;
+    const count: i32 = 3.0 as i32;
+    ret 0;
+}
+"#,
+        );
+        assert_eq!(
+            report
+                .errors
+                .iter()
+                .filter(|error| error.code == "S06" && error.message.contains("invalid cast"))
+                .count(),
+            2,
+            "numeric cross-family casts: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn ffi_flexible_array_is_final_pointer_only_and_has_zero_size_contribution() {
         let report = analyze(
             r#"

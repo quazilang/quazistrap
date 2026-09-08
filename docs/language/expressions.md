@@ -88,14 +88,15 @@ bits = bits >> 1;
 
 ## Type casts
 
-`as` performs explicit type conversion between numeric types and between
-pointer types:
+`as` performs explicit conversion within the integer family and between
+supported pointer/function-pointer representations:
 
 ```quazi
 const wide: i64 = 42 as i64;
-const ratio: f64 = 3 as f64 / 2.0;
 const index: usize = length as usize;
 ```
+
+Integer-to-float and float-to-integer casts are not implemented yet.
 
 ## Function calls
 

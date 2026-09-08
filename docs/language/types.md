@@ -202,14 +202,13 @@ function; the compiler converts each argument at the call site.
 
 ## Conversions
 
-`as` performs explicit type conversion:
+`as` performs explicit conversion within the integer family:
 
 ```quazi
 const wide: i64 = 42 as i64;
-const ratio: f64 = 3 as f64 / 2.0;
 const byte: u8 = 256 as u8; // truncation
 ```
 
-Conversions that may change representation are always explicit. Integer
-overflow checking is not a substitute for input validation; parsing returns
-`Result` and rejects malformed or out-of-range values.
+Integer-to-float and float-to-integer casts are not implemented by the current
+compiler. Integer overflow checking is not a substitute for input validation;
+parsing returns `Result` and rejects malformed or out-of-range values.

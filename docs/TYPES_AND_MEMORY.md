@@ -12,9 +12,11 @@ width. Signedness affects comparisons, shifts, extension, parsing, and C ABI
 classification. `f16`, `f32`, and `f64` are distinct source types; Quazi's
 internal slots preserve required target conversion at C boundaries.
 
-Conversions that may change representation are explicit with `as`. Integer
-overflow checking is not a substitute for input validation; parsing returns
-`Result` and rejects malformed/out-of-range values.
+Supported representation-changing conversions are explicit with `as`.
+Integer-family casts are supported; integer-to-float and float-to-integer casts
+are not implemented yet. Integer overflow checking is not a substitute for
+input validation; parsing returns `Result` and rejects malformed/out-of-range
+values.
 
 Fallible public APIs use typed error enums. Match variants for recovery logic;
 use each enum's `message()` method for display. Raw numeric error codes remain

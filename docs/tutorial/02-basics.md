@@ -70,16 +70,17 @@ const no: bool = false;
 
 ## Type conversions
 
-Use `as` for explicit conversions between numeric types:
+Use `as` for explicit conversions within the integer family:
 
 ```quazi
 const x: i32 = 42;
 const y: i64 = x as i64;
-const z: f64 = x as f64;
 const narrow: u8 = 256 as u8; // truncates to 0
 ```
 
-Conversions that may change representation are always explicit.
+Integer-to-float and float-to-integer casts are not implemented by the current
+compiler. Write a correctly typed literal when practical, or keep the value in
+its original numeric family until an explicit conversion API is available.
 
 ## Strings
 
