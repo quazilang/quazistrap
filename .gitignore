@@ -8,6 +8,7 @@ target/*
 *.pdb
 *.exe
 *.qzi
+!src/bytecode/fixtures/qzi/*/*.qzi
 *.qzc
 .idea/*
 .claude/*
