@@ -4,6 +4,7 @@
 - [2026-09-09: Tutorial API alignment](2026-09-09-tutorial-api-alignment.md)
 - [2026-09-09: Compiler-checked tutorial fixtures](2026-09-09-tutorial-fixtures.md)
 - [2026-09-09: Documentation verification](2026-09-09-documentation-verification.md)
+- [2026-09-09: Loader-backed cross-file LSP references](2026-09-09-lsp-cross-file-references.md)
 
 Audience: language users and maintainers.
 

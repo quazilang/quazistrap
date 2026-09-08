@@ -22,9 +22,8 @@ The server reports its version from the compiler package.
   snapshot, and closing a document clears its published diagnostics.
 - Hover information from semantic types and constant evaluation.
 - Go-to-definition for semantic call targets, including methods, plus
-  best-effort local declarations and explicit relative leaf imports such as
-  `import ./helpers.answer as answer`. The imported declaration must be public
-  and live in a regular local workspace file.
+  best-effort local declarations and compiler-loader-backed local, package,
+  and standard-library imports.
 - Completion for `std.*` module paths and public module symbols.
 - General identifier completion from the current document's semantic symbol
   snapshot. Suggestions include functions, types, variables, and parameters
@@ -37,7 +36,12 @@ The server reports its version from the compiler package.
   on-disk file snapshot; saving updates it. The index never follows symlinks
   or scans outside the client-selected roots.
 - Signature help for functions known to the current semantic snapshot.
-- References and rename for semantic bindings within the current open document.
+- References for compiler-resolved bindings across the current document's
+  configured local, package, and standard-library import graph. Rename uses
+  the same loader-backed source map, but is offered only when every affected
+  source is beneath a client-negotiated workspace root; it never edits a
+  dependency or the standard library. Renaming an imported declaration updates
+  its import selector while preserving a local `as` alias and its uses.
 - Full-document semantic tokens for lexical tokens and known semantic symbols.
 
 Completion uses the most recent successful semantic analysis. While a document
@@ -49,20 +53,19 @@ than a name-resolution guarantee.
 
 ## Current Limitations
 
-- Cross-file references and rename, inlay hints, code actions, cancellation,
-  and automatic filesystem watching are not implemented. The workspace-symbol
-  snapshot is built during initialization; files changed externally are picked
-  up when the server is restarted or opened and saved through the LSP.
+- Inlay hints, code actions, cancellation, and automatic filesystem watching
+  are not implemented. The workspace-symbol snapshot is built during
+  initialization; files changed externally are picked up when the server is
+  restarted or opened and saved through the LSP.
 - Go-to-definition follows semantic bindings across the current document's
   configured local, package, and standard-library import graph. Open file
   buffers override disk text for every loaded source before spans are rebased
   to LSP locations. Namespace and wildcard import forms remain limited by the
-  compiler's current semantic annotations; cross-file references and rename
-  are not yet supported.
-- The loader-backed definition snapshot is rebuilt for each request. Caching,
-  cancellation, and performance targets remain follow-up work.
-  Module, wildcard, package, dependency, and standard-library imports need the
-  compiler loader's source mapping before their locations can be exposed.
+  compiler's current semantic annotations.
+- Loader-backed definition, reference, and rename snapshots are rebuilt for
+  each request. Caching, cancellation, and performance targets remain
+  follow-up work. Namespace and wildcard imports still depend on the
+  compiler's available semantic annotations.
 - Formatting and position conversion need a real-editor protocol smoke suite
   before they can be treated as stable across all Unicode input.
 

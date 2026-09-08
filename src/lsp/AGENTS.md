@@ -29,14 +29,21 @@ Basic server is running.
   package, and standard-library imports. The loader receives canonical open
   document overlays and supplies the effective per-file source map used to
   rebase declaration spans to LSP locations.
-- ❌ Cross-file references and rename
+- ✅ Loader-backed cross-file references and workspace-scoped rename
 - ❌ Code actions / quick fixes
 - ❌ Inlay hints
 - ✅ Persistent workspace symbols for parseable local `.qz` files under the
   negotiated workspace roots; open buffers override their on-disk snapshots.
 
+Cross-file references and rename use a fresh compiler-loader snapshot, not the
+workspace-symbol index. Every loaded span is rebased through the loader's
+effective source map, including unsaved open-document overlays. References can
+include local, package, and standard-library import graphs; rename is offered
+only when every affected file is beneath a client-negotiated workspace root,
+so it cannot modify dependencies or the standard library.
+
 Workspace indexing is read-only: normalize only local file workspace folders
 (or the legacy `rootUri`), never follow symlinks, skip `.git`, and retain no
 stale symbol snapshot after a file fails to parse. It provides symbols only;
-do not reuse its independently analyzed reports for cross-file navigation,
-references, or rename without a source-map/span-rebasing design.
+do not reuse its independently analyzed reports for cross-file navigation
+without a source-map/span-rebasing design.

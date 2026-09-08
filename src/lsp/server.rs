@@ -346,26 +346,53 @@ impl LanguageServer for VoidLanguageServer {
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let docs = self.documents.read().await;
-        let Some(doc) = docs.get(uri) else {
+        let (source, overlays) = {
+            let docs = self.documents.read().await;
+            let Some(doc) = docs.get(uri) else {
+                return Ok(None);
+            };
+            (doc.source.clone(), loader_overlays(&docs))
+        };
+        let Some(path) = uri.to_file_path().ok() else {
             return Ok(None);
         };
-        Ok(doc
-            .report
-            .as_ref()
-            .and_then(|report| references::references_at(report, &doc.source, uri, position)))
+        let Ok(snapshot) = analysis::analyze_loaded_document(&path, &overlays) else {
+            return Ok(None);
+        };
+        Ok(references::loaded_references_at(
+            &snapshot,
+            &source,
+            uri,
+            position,
+            params.context.include_declaration,
+        ))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let docs = self.documents.read().await;
-        let Some(doc) = docs.get(uri) else {
+        let (source, overlays) = {
+            let docs = self.documents.read().await;
+            let Some(doc) = docs.get(uri) else {
+                return Ok(None);
+            };
+            (doc.source.clone(), loader_overlays(&docs))
+        };
+        let Some(path) = uri.to_file_path().ok() else {
             return Ok(None);
         };
-        Ok(doc.report.as_ref().and_then(|report| {
-            references::rename_edits(report, &doc.source, uri, position, &params.new_name)
-        }))
+        let Ok(snapshot) = analysis::analyze_loaded_document(&path, &overlays) else {
+            return Ok(None);
+        };
+        let workspace = self.workspace.read().await;
+        Ok(references::loaded_rename_edits(
+            &snapshot,
+            &source,
+            uri,
+            position,
+            &params.new_name,
+            |candidate| workspace.canonical_uri(candidate).is_some(),
+        ))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {

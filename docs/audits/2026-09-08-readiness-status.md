@@ -44,7 +44,7 @@ remain unproven or explicitly deferred:
 | Civil time | Only monotonic `Duration`/`Instant` are shipped. | Calendar, UTC, zone, ambiguity, and serialization contract plus deterministic tests. |
 | Concurrency | Native thread primitives remain experimental. | Structured lifetime, result/error/panic propagation, cancellation policy, synchronization contract. |
 | Serialization | Bounded scalar decode and limited `Serialize` exist; derived `Deserialize`, options, collections, and nested structs do not. | Receiverless decoding design and bounded object policy with compiler/std tests. |
-| LSP | Workspace symbols and loader-backed definitions for local/package/std imports exist. | Cross-file references/rename, cancellation, code actions, inlay hints, real-editor smoke coverage. |
+| LSP | Workspace symbols, loader-backed definitions, and loader-backed cross-file references exist for local/package/std imports. Rename produces one atomic workspace edit only when every resolved occurrence is inside client-negotiated workspace roots. | Cancellation, code actions, inlay hints, and real-editor smoke coverage. |
 | Documentation | Language specification (9 pages), progressive tutorial (10 chapters), and practical guides (4 guides) are now written. API coverage accounts for every `std` module. Offline compiler tests validate repository-local Markdown paths and heading fragments, and compiler-backed fixtures cover every complete tutorial chapter program. | Repair or explicitly label remaining illustrative snippets that do not match the current compiler or standard-library API. |
 | Editors | Local integration repositories exist. | Versioned runtime smoke validation for each supported editor. |
 
