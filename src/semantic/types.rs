@@ -228,6 +228,11 @@ pub struct ResolvedBinding {
 #[derive(Debug, Clone)]
 pub struct ExprAnnotation {
     pub span: Span,
+    /// Exact source span of the identifier through which this expression
+    /// resolves a binding. This differs from `span` for calls and other
+    /// compound expressions, whose full span includes arguments or operators.
+    /// Tooling uses it for precise navigation and edits.
+    pub binding_span: Option<Span>,
     pub ty: Option<TypeKind>,
     pub const_value: Option<ConstValue>,
     pub reachable: bool,

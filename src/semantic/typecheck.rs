@@ -5738,6 +5738,7 @@ impl Analyzer {
             });
         self.annotated_exprs.push(ExprAnnotation {
             span: expr.span,
+            binding_span: binding_occurrence_span(expr, resolved_binding.as_ref()),
             ty: eval.ty.clone(),
             const_value: eval.const_value.clone(),
             reachable,
@@ -5775,6 +5776,7 @@ impl Analyzer {
         let resolved_binding = self.resolved_binding_for_name(&resolved_global);
         self.annotated_exprs.push(ExprAnnotation {
             span: expr.span,
+            binding_span: binding_occurrence_span(expr, resolved_binding.as_ref()),
             ty: eval.ty.clone(),
             const_value: None,
             reachable,
@@ -5805,6 +5807,7 @@ impl Analyzer {
             });
         self.annotated_exprs.push(ExprAnnotation {
             span: expr.span,
+            binding_span: binding_occurrence_span(expr, resolved_binding.as_ref()),
             ty,
             const_value: eval.const_value.clone(),
             reachable,
@@ -6560,6 +6563,20 @@ impl Analyzer {
             }
         }
         t
+    }
+}
+
+/// Return the spelling that introduced a resolved binding in an expression.
+/// The semantic annotation still covers the whole expression for type and
+/// code-generation consumers; this narrower span is reserved for tooling that
+/// must never replace an argument list or another surrounding construct.
+fn binding_occurrence_span(expr: &Expr, binding: Option<&ResolvedBinding>) -> Option<Span> {
+    binding?;
+    match &expr.node {
+        ExprKind::Ident(_) => Some(expr.span),
+        ExprKind::Call { callee, .. } => binding_occurrence_span(callee, binding),
+        ExprKind::Group(inner) => binding_occurrence_span(inner, binding),
+        _ => None,
     }
 }
 

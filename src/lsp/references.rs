@@ -34,7 +34,8 @@ pub fn references_at(
             .annotated_exprs
             .iter()
             .filter(|annotation| annotation.resolved_binding.as_ref() == Some(&binding))
-            .map(|annotation| reference_range(annotation.span, name, source)),
+            .filter_map(|annotation| annotation.binding_span)
+            .map(|span| span_to_range(span, source)),
     );
     ranges.sort_by_key(|range| (range.start, range.end));
     ranges.dedup();
@@ -85,7 +86,9 @@ fn binding_at(
         .annotated_exprs
         .iter()
         .filter(|annotation| {
-            annotation.span.start <= char_offset && char_offset < annotation.span.end
+            annotation
+                .binding_span
+                .is_some_and(|span| span.start <= char_offset && char_offset < span.end)
         })
         .min_by_key(|annotation| annotation.span.end - annotation.span.start)
         .and_then(|annotation| annotation.resolved_binding.clone())
@@ -122,14 +125,6 @@ fn definition_entry<'a>(
     })
 }
 
-fn reference_range(span: Span, name: &str, source: &str) -> Range {
-    let source_text = source_span(span, source);
-    if source_text == Some(name) {
-        return span_to_range(span, source);
-    }
-    callable_name_range(span, name, source).unwrap_or_else(|| span_to_range(span, source))
-}
-
 fn identifier_range(span: Span, name: &str, source: &str) -> Range {
     let Some((start, _)) = char_span_to_bytes(span, source) else {
         return span_to_range(span, source);
@@ -140,50 +135,6 @@ fn identifier_range(span: Span, name: &str, source: &str) -> Range {
     let name_start = source[..start + offset].chars().count();
     let name_end = name_start + name.chars().count();
     span_to_range(Span::new(0, 0, name_start, name_end), source)
-}
-
-fn callable_name_range(span: Span, name: &str, source: &str) -> Option<Range> {
-    let text = source_span(span, source)?;
-    let base = span.start;
-    let tokens = Lexer::new(text).tokenize();
-    for (index, token) in tokens.iter().enumerate() {
-        let TokenKind::Ident(candidate) = &token.kind else {
-            continue;
-        };
-        if candidate != name || !is_call_callee(&tokens[index + 1..]) {
-            continue;
-        }
-        let start = base + token.span.start;
-        let end = base + token.span.end;
-        return Some(span_to_range(Span::new(0, 0, start, end), source));
-    }
-    None
-}
-
-fn is_call_callee(tokens: &[crate::lexer::token::Token]) -> bool {
-    match tokens.first().map(|token| &token.kind) {
-        Some(TokenKind::LParen) => true,
-        Some(TokenKind::LBracket) => {
-            let mut depth = 0usize;
-            for (index, token) in tokens.iter().enumerate() {
-                match &token.kind {
-                    TokenKind::LBracket => depth += 1,
-                    TokenKind::RBracket => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return matches!(
-                                tokens.get(index + 1),
-                                Some(next) if matches!(next.kind, TokenKind::LParen)
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            false
-        }
-        _ => false,
-    }
 }
 
 fn source_span(span: Span, source: &str) -> Option<&str> {
@@ -280,7 +231,14 @@ fn main() i32 {
 
         let edit = rename_edits(&report, source, &uri, Position::new(3, 8), "compute")
             .expect("function rename");
-        assert_eq!(edit.changes.as_ref().expect("changes")[&uri].len(), 2);
+        let edits = &edit.changes.as_ref().expect("changes")[&uri];
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[1].range, locations[1].range);
+        assert_eq!(
+            edits[1].range.end.character - edits[1].range.start.character,
+            "helper".encode_utf16().count() as u32
+        );
+        assert!(references_at(&report, source, &uri, Position::new(3, 14)).is_none());
     }
 
     #[test]

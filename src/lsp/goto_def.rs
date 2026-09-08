@@ -28,7 +28,9 @@ pub fn goto_definition(
         .annotated_exprs
         .iter()
         .filter(|annotation| {
-            annotation.span.start <= char_offset && char_offset < annotation.span.end
+            annotation
+                .binding_span
+                .is_some_and(|span| span.start <= char_offset && char_offset < span.end)
         })
         .min_by_key(|annotation| annotation.span.end - annotation.span.start)
         .and_then(|annotation| annotation.resolved_fn.as_deref());
@@ -68,7 +70,9 @@ pub fn loaded_goto_definition(
         .annotated_exprs
         .iter()
         .filter(|annotation| {
-            annotation.span.start <= merged_offset && merged_offset < annotation.span.end
+            annotation
+                .binding_span
+                .is_some_and(|span| span.start <= merged_offset && merged_offset < span.end)
         })
         .min_by_key(|annotation| annotation.span.end - annotation.span.start)
         .and_then(|annotation| annotation.resolved_binding.as_ref())?;
@@ -235,6 +239,18 @@ fn main() i32 {
             panic!("expected a definition location");
         };
         assert_eq!(location.range.start.line, 6);
+    }
+
+    #[test]
+    fn does_not_resolve_a_callee_from_its_call_delimiters() {
+        let source = r#"
+fn helper() i32 { ret 1; }
+fn main() i32 { ret helper(); }
+"#;
+        let report = analyze_source(source).expect("analyze source");
+        let uri = Url::parse("file:///workspace/main.qz").expect("URI");
+
+        assert!(goto_definition(&report, source, &uri, Position::new(2, 27)).is_none());
     }
 
     #[test]

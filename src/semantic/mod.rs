@@ -2612,6 +2612,34 @@ fn main() i32 {
                 .map(|binding| binding.span.start),
             Some(declaration_start)
         );
+        assert_eq!(annotation.binding_span, Some(annotation.span));
+    }
+
+    #[test]
+    fn call_annotations_retain_only_the_callee_binding_span() {
+        let source = r#"
+fn helper(value: i32) i32 { ret value; }
+fn main() i32 { ret helper(42); }
+"#;
+        let report = analyze(source);
+        let call_start = source
+            .find("helper(42)")
+            .map(|byte| source[..byte].chars().count())
+            .expect("call start");
+        let annotation = report
+            .annotated_exprs
+            .iter()
+            .find(|annotation| annotation.span.start == call_start)
+            .expect("call annotation");
+
+        assert_eq!(
+            annotation.binding_span.map(|span| span.start),
+            Some(call_start)
+        );
+        assert_eq!(
+            annotation.binding_span.map(|span| span.end - span.start),
+            Some("helper".chars().count())
+        );
     }
 
     #[test]
