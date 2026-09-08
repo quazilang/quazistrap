@@ -13,6 +13,9 @@ Audience: maintainers planning the next local checkpoints.
   behavior.
 - Canonical `std` API coverage includes the public INI contract. No compiler
   INI behavior was introduced; INI parsing remains entirely in `std.ini`.
+- The canonical Linux `qz test ini` invocation passes all five source-level
+  `std.ini` tests. Test-root discovery now keeps target-gated modules behind
+  their normal import edges.
 
 ## Completed recent checkpoints
 
@@ -23,6 +26,9 @@ Audience: maintainers planning the next local checkpoints.
 - LSP workspace symbols index parseable local files beneath selected roots;
   open buffers override disk snapshots. Relative leaf imports resolve a unique
   public target declaration, with all broader imports deliberately excluded.
+- `qz test` adds source files as independent roots only when they declare an
+  `@test`; all `tests/` files remain roots for diagnostics. This preserves
+  discovery of unimported tests without loading target-disabled modules.
 
 ## Not complete
 
@@ -35,7 +41,6 @@ remain unproven or explicitly deferred:
 | Civil time | Only monotonic `Duration`/`Instant` are shipped. | Calendar, UTC, zone, ambiguity, and serialization contract plus deterministic tests. |
 | Concurrency | Native thread primitives remain experimental. | Structured lifetime, result/error/panic propagation, cancellation policy, synchronization contract. |
 | Serialization | Bounded scalar decode and limited `Serialize` exist; derived `Deserialize`, options, collections, and nested structs do not. | Receiverless decoding design and bounded object policy with compiler/std tests. |
-| Standard-library tests | `qz test` collects every `src/*.qz` file as an independent root. That bypasses the target-gated `std.windows` import, so Linux runs fail on Windows-only FFI declarations before INI tests execute. | Make test-root discovery respect target-gated module reachability, then add Linux and Windows regression coverage for the standard-library test command. |
 | LSP | Workspace symbols and a narrow relative definition path exist. | Loader-backed source map for package/std imports, cross-file references/rename, cancellation, code actions, inlay hints, real-editor smoke coverage. |
 | Documentation | API coverage is substantially improved but tutorial, language specification, and guide requirements are incomplete. | Runnable progressive tutorial, exhaustive supported-language reference, checked links/examples. |
 | Editors | Local integration repositories exist. | Versioned runtime smoke validation for each supported editor. |

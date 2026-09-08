@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::backend::TargetSpec;
 use crate::backend::linker::link_object;
+use crate::backend::TargetSpec;
 use crate::bytecode::chunk::{QziMetadata, QziModule, QziModuleKind};
 use crate::bytecode::instruction::{ri16, rrr};
 use crate::bytecode::opcode::Opcode;
-use crate::bytecode::{Chunk, Codegen, deserialize_qzi_module, link_qzi_modules};
+use crate::bytecode::{deserialize_qzi_module, link_qzi_modules, Chunk, Codegen};
 use crate::project::ProjectContext;
 
 fn collect_qz_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -31,6 +31,47 @@ fn collect_qz_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String>
         }
     }
     Ok(())
+}
+
+/// Return whether `path` must be loaded as an independent test root.
+///
+/// Ordinary source modules are loaded through the package entry and its imports,
+/// where conditional imports are resolved for the active target. Loading every
+/// source file independently bypasses those import conditions. We only need an
+/// additional root for a file that declares a test. The loader deduplicates
+/// files already reached through imports.
+fn source_declares_test(path: &Path) -> Result<bool, String> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read test source '{}': {error}", path.display()))?;
+    let mut lexer = crate::lexer::Lexer::new(&source);
+    let tokens = lexer.tokenize();
+    let mut parser = crate::parser::Parser::new_with_source(tokens, &source);
+    let Ok(program) = parser.parse() else {
+        return Ok(false);
+    };
+    Ok(program.items.iter().any(|item| {
+        matches!(
+            &item.node,
+            crate::parser::ast::ItemKind::Fn { attributes, .. }
+                if attributes.iter().any(|attribute| attribute.name == "test")
+        )
+    }))
+}
+
+fn additional_test_roots(
+    source_paths: impl IntoIterator<Item = PathBuf>,
+    test_paths: impl IntoIterator<Item = PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
+    let mut roots = source_paths
+        .into_iter()
+        .filter_map(|path| match source_declares_test(&path) {
+            Ok(true) => Some(Ok(path)),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    roots.extend(test_paths);
+    Ok(roots)
 }
 
 fn relative_module_name(
@@ -160,19 +201,22 @@ fn run_project(
             ))
         })
         .collect::<Result<HashMap<_, _>, String>>()?;
-    let mut additional_roots = source_roots;
-    additional_roots.extend(test_roots);
+    let mut additional_roots =
+        additional_test_roots(source_roots.iter().cloned(), test_roots.iter().cloned())?;
     let mut seen = HashSet::new();
     additional_roots.retain(|path| {
         path.canonicalize()
             .is_ok_and(|path| path != entry && seen.insert(path))
     });
 
-    let mut loaded = crate::loader::load_programs_configured(
+    let target =
+        crate::apply_package_settings(crate::backend::TargetSpec::host(), context.config.package);
+    let mut loaded = crate::loader::load_programs_configured_for_target(
         std::slice::from_ref(&entry),
         Some(&context.resolver),
         context.config.package.std,
         &additional_roots,
+        crate::cfg_target_for_spec(&target),
     )?;
     if let Some(error) = loaded.parse_error.take() {
         return Err(error);
@@ -180,7 +224,6 @@ fn run_project(
     set_module_names(&mut loaded.source_files, &source_module_names);
     set_module_names(&mut loaded.source_files, &test_module_names);
 
-    let target = crate::apply_package_settings(TargetSpec::host(), context.config.package);
     context.config.link = context.link_for_target(target.triple());
     let (target_os, target_abi) = match target.os {
         crate::backend::target::Os::Windows => ("windows", "win64"),
@@ -317,7 +360,11 @@ fn file_name(name: &str, windows: bool) -> String {
             }
         })
         .collect();
-    if windows { format!("{safe}.exe") } else { safe }
+    if windows {
+        format!("{safe}.exe")
+    } else {
+        safe
+    }
 }
 
 #[cfg(test)]
@@ -354,6 +401,27 @@ mod tests {
                 root.join("nested/m.qz"),
                 root.join("z.qz")
             ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn additional_roots_include_test_sources_and_all_test_directory_files() {
+        let root = temp_dir("test-roots");
+        let ordinary = root.join("ordinary.qz");
+        let test = root.join("test.qz");
+        let malformed = root.join("malformed.qz");
+        std::fs::write(&ordinary, "fn helper() void { ret; }\n").unwrap();
+        std::fs::write(&test, "@test\nfn works() void { ret; }\n").unwrap();
+        std::fs::write(&malformed, "@test fn broken(\n").unwrap();
+
+        assert_eq!(
+            additional_test_roots([ordinary.clone(), test.clone(), malformed.clone()], []).unwrap(),
+            [test]
+        );
+        assert_eq!(
+            additional_test_roots([], [malformed.clone()]).unwrap(),
+            [malformed]
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -432,11 +500,42 @@ mod tests {
         .unwrap();
 
         assert!(run_project(&root, None, true, true).unwrap());
-        assert!(
-            root.join("build/tests")
-                .join(file_name("tests.basic.passes", cfg!(target_os = "windows")))
-                .exists()
-        );
+        assert!(root
+            .join("build/tests")
+            .join(file_name("tests.basic.passes", cfg!(target_os = "windows")))
+            .exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn target_gated_modules_are_not_loaded_as_independent_test_roots() {
+        let root = temp_dir("target-gated-module");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(
+            root.join("quazi.toml"),
+            "[package]\nname = \"runner_cfg\"\nstd = false\ncrash_handler = false\n\n\
+             [[bin]]\nname = \"runner_cfg\"\npath = \"src/main.qz\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/main.qz"),
+            "@cfg(target_os=\"windows\")\nimport blocked;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/blocked.qz"),
+            "@api\nfn unsupported(value: str) void;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tests/basic.qz"),
+            "@test\nfn passes() void { ret; }\n",
+        )
+        .unwrap();
+
+        assert!(run_project(&root, None, true, true).unwrap());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

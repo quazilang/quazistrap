@@ -35,3 +35,4 @@ tests or examples establishing behavior.
 - [URL-targeted HTTP requests and numeric IPv4 routing](2026-09-07-http-url-routing.md)
 - [Accurate cross-target native build labels](2026-09-07-target-progress-label.md)
 - [Persistent local workspace symbols and relative definitions](2026-09-08-lsp-workspace-index.md)
+- [Target-aware test discovery](2026-09-08-target-aware-test-discovery.md)
