@@ -29,6 +29,9 @@ Audience: maintainers planning the next local checkpoints.
 - `qz test` adds source files as independent roots only when they declare an
   `@test`; all `tests/` files remain roots for diagnostics. This preserves
   discovery of unimported tests without loading target-disabled modules.
+- LSP definition requests now use the compiler loader's configured import
+  graph and effective per-file source map, including canonical open-buffer
+  overlays, for local, package, and standard-library bindings.
 
 ## Not complete
 
@@ -41,7 +44,7 @@ remain unproven or explicitly deferred:
 | Civil time | Only monotonic `Duration`/`Instant` are shipped. | Calendar, UTC, zone, ambiguity, and serialization contract plus deterministic tests. |
 | Concurrency | Native thread primitives remain experimental. | Structured lifetime, result/error/panic propagation, cancellation policy, synchronization contract. |
 | Serialization | Bounded scalar decode and limited `Serialize` exist; derived `Deserialize`, options, collections, and nested structs do not. | Receiverless decoding design and bounded object policy with compiler/std tests. |
-| LSP | Workspace symbols and a narrow relative definition path exist. | Loader-backed source map for package/std imports, cross-file references/rename, cancellation, code actions, inlay hints, real-editor smoke coverage. |
+| LSP | Workspace symbols and loader-backed definitions for local/package/std imports exist. | Cross-file references/rename, cancellation, code actions, inlay hints, real-editor smoke coverage. |
 | Documentation | API coverage is substantially improved but tutorial, language specification, and guide requirements are incomplete. | Runnable progressive tutorial, exhaustive supported-language reference, checked links/examples. |
 | Editors | Local integration repositories exist. | Versioned runtime smoke validation for each supported editor. |
 

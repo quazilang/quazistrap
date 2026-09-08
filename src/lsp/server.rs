@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: 0BSD
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -86,6 +87,18 @@ fn workspace_symbols(
             .then_with(|| left.location.uri.as_str().cmp(right.location.uri.as_str()))
     });
     results
+}
+
+fn loader_overlays(documents: &HashMap<Url, DocumentState>) -> HashMap<PathBuf, String> {
+    documents
+        .iter()
+        .filter_map(|(uri, document)| {
+            uri.to_file_path()
+                .ok()
+                .and_then(|path| path.canonicalize().ok())
+                .map(|path| (path, document.source.clone()))
+        })
+        .collect()
 }
 
 impl VoidLanguageServer {
@@ -292,6 +305,14 @@ impl LanguageServer for VoidLanguageServer {
         if let Some(doc) = docs.get(uri)
             && let Some(report) = &doc.report
         {
+            if let Some(path) = uri.to_file_path().ok()
+                && let Ok(snapshot) =
+                    analysis::analyze_loaded_document(&path, &loader_overlays(&docs))
+                && let Some(definition) =
+                    goto_def::loaded_goto_definition(&snapshot, &doc.source, uri, pos)
+            {
+                return Ok(Some(definition));
+            }
             let workspace = self.workspace.read().await;
             if let Some((target_uri, exported)) =
                 goto_def::relative_leaf_import_target(&doc.source, uri, pos, &workspace)

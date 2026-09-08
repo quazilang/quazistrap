@@ -6,9 +6,10 @@ use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position, Url};
 
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use crate::parser::ast::{ImportItems, ItemKind};
+use crate::parser::ast::{ImportItems, ItemKind, Span};
 use crate::semantic::{SemanticReport, SymbolTableEntry};
 
+use super::analysis::LoadedSnapshot;
 use super::hover::word_at_offset;
 use super::span::{position_to_byte_offset, position_to_char_offset, span_to_range};
 use super::workspace::WorkspaceIndex;
@@ -40,6 +41,56 @@ pub fn goto_definition(
         uri: uri.clone(),
         range: span_to_range(entry.symbol.span, source),
     }))
+}
+
+/// Resolve a binding using the compiler's complete configured import graph.
+/// The request position is converted from the open document into merged-source
+/// coordinates, then the semantic declaration span is rebased through the
+/// loader-owned source map.
+pub fn loaded_goto_definition(
+    snapshot: &LoadedSnapshot,
+    source: &str,
+    uri: &Url,
+    pos: Position,
+) -> Option<GotoDefinitionResponse> {
+    let local_offset = position_to_char_offset(pos, source)?;
+    let path = uri.to_file_path().ok()?.canonicalize().ok()?;
+    let file = snapshot
+        .source_files
+        .iter()
+        .find(|file| std::path::Path::new(&file.path) == path)?;
+    let merged_offset = file.start.checked_add(local_offset)?;
+    if merged_offset >= file.end {
+        return None;
+    }
+    let binding = snapshot
+        .report
+        .annotated_exprs
+        .iter()
+        .filter(|annotation| {
+            annotation.span.start <= merged_offset && merged_offset < annotation.span.end
+        })
+        .min_by_key(|annotation| annotation.span.end - annotation.span.start)
+        .and_then(|annotation| annotation.resolved_binding.as_ref())?;
+    location_for_loaded_span(snapshot, binding.span).map(GotoDefinitionResponse::Scalar)
+}
+
+fn location_for_loaded_span(snapshot: &LoadedSnapshot, span: Span) -> Option<Location> {
+    let file = snapshot
+        .source_files
+        .iter()
+        .find(|file| file.contains(span))?;
+    let path = std::path::PathBuf::from(&file.path);
+    let source = snapshot.effective_sources.get(&path)?;
+    let start = span.start.checked_sub(file.start)?;
+    let end = span.end.checked_sub(file.start)?;
+    if end > source.chars().count() {
+        return None;
+    }
+    Some(Location {
+        uri: Url::from_file_path(path).ok()?,
+        range: span_to_range(Span::new(0, 0, start, end), source),
+    })
 }
 
 /// Returns the imported target URI and original exported name for a cursor on
@@ -124,10 +175,14 @@ fn definition_for_name<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fs;
 
-    use super::{goto_definition, public_top_level_definition, relative_leaf_import_target};
-    use crate::lsp::analysis::analyze_source;
+    use super::{
+        goto_definition, loaded_goto_definition, public_top_level_definition,
+        relative_leaf_import_target,
+    };
+    use crate::lsp::analysis::{analyze_loaded_document, analyze_source};
     use crate::lsp::workspace::WorkspaceIndex;
     use tower_lsp::lsp_types::{
         GotoDefinitionResponse, InitializeParams, Position, Url, WorkspaceFolder,
@@ -223,6 +278,173 @@ fn main() i32 {
         assert!(
             public_top_level_definition(&target.report, &target.source, &uri, "private").is_none()
         );
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[test]
+    fn resolves_std_imports_with_loader_source_map_and_utf16_ranges() {
+        let root = std::env::temp_dir().join(format!(
+            "quazi_lsp_loaded_std_definition_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create workspace");
+        let main_path = root.join("main.qz");
+        let source = "import std.core.write;\n// 🚀\nfn main() void { unsafe { write(1, \"x\", 1); } ret; }\n";
+        fs::write(&main_path, source).expect("write source");
+        let snapshot = analyze_loaded_document(&main_path, &HashMap::new()).expect("load source");
+        let uri = Url::from_file_path(&main_path).expect("URI");
+
+        let Some(GotoDefinitionResponse::Scalar(location)) =
+            loaded_goto_definition(&snapshot, source, &uri, Position::new(2, 27))
+        else {
+            panic!("expected standard-library definition");
+        };
+        let std_core = crate::loader::find_builtin_std_root()
+            .expect("standard library")
+            .join("src/core.qz");
+        assert_eq!(
+            location.uri,
+            Url::from_file_path(std_core).expect("std core URI")
+        );
+        assert_eq!(location.range.start.line, 13);
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[test]
+    fn loaded_definition_uses_unsaved_importer_and_target_overlays() {
+        let root = std::env::temp_dir().join(format!(
+            "quazi_lsp_loaded_overlay_definition_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create workspace");
+        let helper_path = root.join("helper.qz");
+        fs::write(&helper_path, "pub fn exported() i32 { ret 1; }\n").expect("write helper");
+        let main_path = root.join("main.qz");
+        let main_source = "import helper.exported as local;\nfn main() i32 { ret local(); }\n";
+        fs::write(&main_path, "fn main() i32 { ret 0; }\n").expect("write disk main");
+        let overlay_source = "// unsaved\n\npub fn exported() i32 { ret 2; }\n";
+        let mut overlays = HashMap::new();
+        overlays.insert(
+            main_path.canonicalize().expect("canonical main"),
+            main_source.to_string(),
+        );
+        overlays.insert(
+            helper_path.canonicalize().expect("canonical helper"),
+            overlay_source.to_string(),
+        );
+        let snapshot = analyze_loaded_document(&main_path, &overlays).expect("load source");
+        let uri = Url::from_file_path(&main_path).expect("URI");
+
+        assert!(
+            snapshot.report.errors.is_empty(),
+            "unexpected analysis errors: {:?}",
+            snapshot.report.errors
+        );
+
+        let Some(GotoDefinitionResponse::Scalar(location)) =
+            loaded_goto_definition(&snapshot, main_source, &uri, Position::new(1, 21))
+        else {
+            panic!("expected overlay definition");
+        };
+        assert_eq!(
+            location.uri,
+            Url::from_file_path(&helper_path).expect("helper URI")
+        );
+        assert_eq!(location.range.start.line, 2);
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[test]
+    fn loaded_snapshot_uses_unsaved_importer_and_gateway_overlays() {
+        let root = std::env::temp_dir().join(format!(
+            "quazi_lsp_loaded_gateway_overlay_{}",
+            std::process::id()
+        ));
+        let library = root.join("library");
+        fs::create_dir_all(&library).expect("create workspace");
+        let main_path = root.join("main.qz");
+        fs::write(&main_path, "fn main() i32 { ret 0; }\n").expect("write disk main");
+        let gateway_path = library.join("mod.qz");
+        fs::write(&gateway_path, "pub import old.exported;\n").expect("write disk gateway");
+        fs::write(
+            &library.join("old.qz"),
+            "pub fn exported() i32 { ret 1; }\n",
+        )
+        .expect("write old target");
+        let new_path = library.join("new.qz");
+        fs::write(&new_path, "pub fn exported() i32 { ret 2; }\n").expect("write new target");
+        let main_source = "// unsaved importer prefix\nimport library.exported;\nfn main() i32 { ret exported(); }\n";
+        let mut overlays = HashMap::new();
+        overlays.insert(
+            main_path.canonicalize().expect("canonical main"),
+            main_source.to_string(),
+        );
+        overlays.insert(
+            gateway_path.canonicalize().expect("canonical gateway"),
+            "pub import new.exported;\n".to_string(),
+        );
+        let snapshot = analyze_loaded_document(&main_path, &overlays).expect("load source");
+        assert!(
+            snapshot
+                .effective_sources
+                .contains_key(&new_path.canonicalize().expect("canonical new target"))
+        );
+        assert!(
+            !snapshot.effective_sources.contains_key(
+                &library
+                    .join("old.qz")
+                    .canonicalize()
+                    .expect("canonical old target")
+            )
+        );
+        assert_eq!(
+            snapshot
+                .effective_sources
+                .get(&main_path.canonicalize().expect("canonical main")),
+            Some(&main_source.to_string())
+        );
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[test]
+    fn resolves_a_local_package_dependency_through_the_loader() {
+        let root = std::env::temp_dir().join(format!(
+            "quazi_lsp_loaded_package_definition_{}",
+            std::process::id()
+        ));
+        let app_src = root.join("app/src");
+        let dep_src = root.join("dep/src");
+        fs::create_dir_all(&app_src).expect("create app source");
+        fs::create_dir_all(&dep_src).expect("create dependency source");
+        fs::write(
+            root.join("app/quazi.toml"),
+            "[package]\nname = \"app\"\nstd = false\n\n[[bin]]\nname = \"app\"\npath = \"src/main.qz\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+        )
+        .expect("write app manifest");
+        fs::write(
+            root.join("dep/quazi.toml"),
+            "[package]\nname = \"dep\"\nstd = false\n\n[lib]\nname = \"dep\"\npath = \"src/lib.qz\"\n",
+        )
+        .expect("write dependency manifest");
+        let dependency_path = dep_src.join("lib.qz");
+        fs::write(&dependency_path, "pub fn answer() i32 { ret 42; }\n")
+            .expect("write dependency source");
+        let main_path = app_src.join("main.qz");
+        let main_source = "import dep.answer;\nfn main() i32 { ret answer(); }\n";
+        fs::write(&main_path, main_source).expect("write app source");
+        let snapshot = analyze_loaded_document(&main_path, &HashMap::new()).expect("load source");
+        let uri = Url::from_file_path(&main_path).expect("URI");
+
+        let Some(GotoDefinitionResponse::Scalar(location)) =
+            loaded_goto_definition(&snapshot, main_source, &uri, Position::new(1, 24))
+        else {
+            panic!("expected package definition");
+        };
+        assert_eq!(
+            location.uri,
+            Url::from_file_path(&dependency_path).expect("dependency URI")
+        );
+        assert_eq!(location.range.start.line, 0);
         fs::remove_dir_all(root).expect("remove workspace");
     }
 }

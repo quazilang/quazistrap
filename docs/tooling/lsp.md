@@ -53,7 +53,14 @@ than a name-resolution guarantee.
   and automatic filesystem watching are not implemented. The workspace-symbol
   snapshot is built during initialization; files changed externally are picked
   up when the server is restarted or opened and saved through the LSP.
-- Cross-file definition currently covers only explicit relative leaf imports.
+- Go-to-definition follows semantic bindings across the current document's
+  configured local, package, and standard-library import graph. Open file
+  buffers override disk text for every loaded source before spans are rebased
+  to LSP locations. Namespace and wildcard import forms remain limited by the
+  compiler's current semantic annotations; cross-file references and rename
+  are not yet supported.
+- The loader-backed definition snapshot is rebuilt for each request. Caching,
+  cancellation, and performance targets remain follow-up work.
   Module, wildcard, package, dependency, and standard-library imports need the
   compiler loader's source mapping before their locations can be exposed.
 - Formatting and position conversion need a real-editor protocol smoke suite

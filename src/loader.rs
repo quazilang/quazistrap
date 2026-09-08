@@ -26,7 +26,11 @@ fn host_cfg_target() -> CfgTarget<'static> {
     let abi = "win64";
     #[cfg(not(target_os = "windows"))]
     let abi = "sysv";
-    CfgTarget { os: std::env::consts::OS, arch: std::env::consts::ARCH, abi }
+    CfgTarget {
+        os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        abi,
+    }
 }
 
 pub struct LoadResult {
@@ -35,6 +39,10 @@ pub struct LoadResult {
     pub loaded_files: Vec<PathBuf>,
     /// SHA-256 of the exact source text parsed for each canonical file path.
     pub source_hashes: HashMap<String, [u8; 32]>,
+    /// Effective source text used for every canonical loaded path. Callers
+    /// supplying in-memory overlays receive those exact texts after loader
+    /// compatibility filtering, rather than needing to reread stale disk files.
+    pub effective_sources: HashMap<PathBuf, String>,
     /// Function names declared in dependency (library) files.
     pub library_fn_names: HashSet<String>,
     /// Paths of files that were loaded from external modules (not user source).
@@ -112,7 +120,13 @@ pub fn load_programs_configured(
     include_std: bool,
     additional_roots: &[PathBuf],
 ) -> Result<LoadResult, String> {
-    load_programs_configured_for_target(entries, resolver, include_std, additional_roots, host_cfg_target())
+    load_programs_configured_for_target(
+        entries,
+        resolver,
+        include_std,
+        additional_roots,
+        host_cfg_target(),
+    )
 }
 
 /// Load sources after excluding imports disabled for `target`.
@@ -122,6 +136,26 @@ pub fn load_programs_configured_for_target(
     include_std: bool,
     additional_roots: &[PathBuf],
     target: CfgTarget<'_>,
+) -> Result<LoadResult, String> {
+    load_programs_configured_with_overlays_for_target(
+        entries,
+        resolver,
+        include_std,
+        additional_roots,
+        target,
+        &HashMap::new(),
+    )
+}
+
+/// Load sources with canonical-path source overrides, used by editor clients
+/// to analyze unsaved buffers using the same import graph as a normal build.
+pub fn load_programs_configured_with_overlays_for_target(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    additional_roots: &[PathBuf],
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
 ) -> Result<LoadResult, String> {
     let effective_resolver = resolver_with_builtin_modules(resolver, include_std);
 
@@ -149,6 +183,7 @@ pub fn load_programs_configured_for_target(
         additional_roots,
         true,
         target,
+        overrides,
     )
     .and_then(finalize_sources)
 }
@@ -172,6 +207,7 @@ fn collect_sources_with_prelude(
     additional_roots: &[PathBuf],
     strict: bool,
     target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
 ) -> Result<SourceCollection, String> {
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut sources: Vec<(PathBuf, String)> = Vec::new();
@@ -205,6 +241,7 @@ fn collect_sources_with_prelude(
             strict,
             &mut dep_edges,
             target,
+            overrides,
         )?;
     }
 
@@ -223,6 +260,7 @@ fn collect_sources_with_prelude(
             strict,
             &mut dep_edges,
             target,
+            overrides,
         )?;
     }
 
@@ -237,6 +275,7 @@ fn collect_sources_with_prelude(
             strict,
             &mut dep_edges,
             target,
+            overrides,
         )?;
     }
 
@@ -304,6 +343,7 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
     }
 
     let loaded_files: Vec<PathBuf> = sources.iter().map(|(p, _)| p.clone()).collect();
+    let effective_sources: HashMap<PathBuf, String> = sources.iter().cloned().collect();
     let library_file_paths: Vec<PathBuf> = sources
         .iter()
         .filter(|(p, _)| library_paths.contains(p))
@@ -418,6 +458,7 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         program,
         loaded_files,
         source_hashes,
+        effective_sources,
         library_fn_names,
         library_file_paths,
         library_char_ranges,
@@ -791,6 +832,7 @@ fn collect(
     strict: bool,
     dep_edges: &mut Vec<(PathBuf, PathBuf)>,
     target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
 ) -> Result<(), String> {
     let canonical = path
         .canonicalize()
@@ -800,10 +842,11 @@ fn collect(
         return Ok(());
     }
 
-    let src = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
+    let src = source_for_path(&canonical, overrides)?;
 
-    for (dep, dep_is_lib) in local_import_paths(&canonical, &src, resolver, strict, target)? {
+    for (dep, dep_is_lib) in
+        local_import_paths(&canonical, &src, resolver, strict, target, overrides)?
+    {
         dep_edges.push((canonical.clone(), dep.clone()));
         collect(
             &dep,
@@ -815,6 +858,7 @@ fn collect(
             strict,
             dep_edges,
             target,
+            overrides,
         )?;
     }
 
@@ -825,6 +869,17 @@ fn collect(
     Ok(())
 }
 
+fn source_for_path(path: &Path, overrides: &HashMap<PathBuf, String>) -> Result<String, String> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve '{}': {error}", path.display()))?;
+    match overrides.get(&canonical) {
+        Some(source) => Ok(source.clone()),
+        None => std::fs::read_to_string(&canonical)
+            .map_err(|error| format!("cannot read '{}': {error}", canonical.display())),
+    }
+}
+
 /// Parse `src` just enough to find imports that resolve to local `.qz` files.
 /// Returns `(path, is_library)` pairs — library=true for module-resolver imports.
 fn local_import_paths(
@@ -833,6 +888,7 @@ fn local_import_paths(
     resolver: Option<&ModuleResolver>,
     strict: bool,
     target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
 ) -> Result<Vec<(PathBuf, bool)>, String> {
     let dir = file.parent().unwrap_or(Path::new("."));
 
@@ -865,7 +921,7 @@ fn local_import_paths(
             if remainder.is_empty() && base == "std" {
                 // import std; — only load sub-modules actually used in source
                 for module in used_std_modules(src, target) {
-                    if let Some(module_path) = resolve_module_file(spec, &module, target)
+                    if let Some(module_path) = resolve_module_file(spec, &module, target, overrides)
                         && seen.insert(module_path.clone())
                     {
                         paths.push((module_path, true));
@@ -878,7 +934,7 @@ fn local_import_paths(
                 spec.entry.clone()
             } else if spec.entry_is_package_root
                 && remainder.len() == 1
-                && is_public_item_in_entry(&spec.entry, &remainder[0], target)?
+                && is_public_item_in_entry(&spec.entry, &remainder[0], target, overrides)?
             {
                 // A library entry is its package root. Public declarations in
                 // that file are exported directly; mod.qz is not required to
@@ -888,13 +944,17 @@ fn local_import_paths(
                 let root_mod_entry = spec.src_dir.join("mod.qz");
                 if root_mod_entry.exists() {
                     let exported = &remainder[0];
-                    if strict && !is_pub_exported_from_mod(&root_mod_entry, exported, target)? {
+                    if strict
+                        && !is_pub_exported_from_mod(&root_mod_entry, exported, target, overrides)?
+                    {
                         return Err(format!(
                             "cannot access '{}' from '{}': '{}' is not pub-imported in mod.qz",
                             exported, base, exported
                         ));
                     }
-                    if let Some(specific) = find_pub_exported_file(&root_mod_entry, exported, target) {
+                    if let Some(specific) =
+                        find_pub_exported_file(&root_mod_entry, exported, target, overrides)
+                    {
                         if seen.insert(specific.clone()) {
                             paths.push((specific, true));
                         }
@@ -909,14 +969,18 @@ fn local_import_paths(
                     if mod_entry_path.exists() {
                         if remainder.len() > 1 {
                             let sub = &remainder[1];
-                            if strict && !is_pub_exported_from_mod(&mod_entry_path, sub, target)? {
+                            if strict
+                                && !is_pub_exported_from_mod(&mod_entry_path, sub, target, overrides)?
+                            {
                                 return Err(format!(
                                     "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.qz'",
                                     sub, first, sub, first
                                 ));
                             }
                             // Targeted: load only the specific file, skip mod.qz
-                            if let Some(specific) = find_pub_exported_file(&mod_entry_path, sub, target) {
+                            if let Some(specific) =
+                                find_pub_exported_file(&mod_entry_path, sub, target, overrides)
+                            {
                                 if seen.insert(specific.clone()) {
                                     paths.push((specific, true));
                                 }
@@ -942,7 +1006,7 @@ fn local_import_paths(
                             }
                         }
                         if found.is_none() {
-                            found = resolve_module_file(spec, &remainder[0], target);
+                            found = resolve_module_file(spec, &remainder[0], target, overrides);
                         }
                         if found.is_none() && spec.entry.exists() {
                             // A package may expose its API directly from its entry
@@ -986,14 +1050,14 @@ fn local_import_paths(
             let mod_entry = base_dir.join("mod.qz");
             if mod_entry.exists() {
                 let sub = &remainder[0];
-                if strict && !is_pub_exported_from_mod(&mod_entry, sub, target)? {
+                if strict && !is_pub_exported_from_mod(&mod_entry, sub, target, overrides)? {
                     return Err(format!(
                         "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.qz'",
                         sub, base, sub, base
                     ));
                 }
                 // Targeted: load only the specific file, skip mod.qz
-                if let Some(specific) = find_pub_exported_file(&mod_entry, sub, target) {
+                if let Some(specific) = find_pub_exported_file(&mod_entry, sub, target, overrides) {
                     if seen.insert(specific.clone()) {
                         paths.push((specific, true));
                     }
@@ -1066,10 +1130,15 @@ fn local_import_paths(
     Ok(paths)
 }
 
-fn resolve_module_file(spec: &ModuleSpec, module: &str, target: CfgTarget<'_>) -> Option<PathBuf> {
+fn resolve_module_file(
+    spec: &ModuleSpec,
+    module: &str,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+) -> Option<PathBuf> {
     let root_mod_entry = spec.src_dir.join("mod.qz");
     if root_mod_entry.exists() {
-        return find_pub_exported_file(&root_mod_entry, module, target);
+        return find_pub_exported_file(&root_mod_entry, module, target, overrides);
     }
 
     let target = spec.src_dir.join(module);
@@ -1104,50 +1173,58 @@ fn is_public_item_in_entry(
     entry: &Path,
     name: &str,
     target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
 ) -> Result<bool, String> {
-    let source = std::fs::read_to_string(entry)
-        .map_err(|error| format!("cannot read '{}': {error}", entry.display()))?;
+    let source = source_for_path(entry, overrides)?;
     let program = parse_source(&source)
         .map_err(|error| format!("cannot parse library entry '{}': {error}", entry.display()))?;
-    Ok(program.items.iter().any(|item| item_is_enabled(item, target) && match &item.node {
-        ItemKind::Fn {
-            name: item_name,
-            pub_fn,
-            ..
-        } => item_name == name && *pub_fn,
-        ItemKind::Struct {
-            name: item_name,
-            public,
-            ..
-        }
-        | ItemKind::Trait {
-            name: item_name,
-            public,
-            ..
-        }
-        | ItemKind::Enum {
-            name: item_name,
-            public,
-            ..
-        }
-        | ItemKind::TypeAlias {
-            name: item_name,
-            public,
-            ..
-        }
-        | ItemKind::ForeignGlobal {
-            name: item_name,
-            public,
-            ..
-        } => item_name == name && *public,
-        _ => false,
+    Ok(program.items.iter().any(|item| {
+        item_is_enabled(item, target)
+            && match &item.node {
+                ItemKind::Fn {
+                    name: item_name,
+                    pub_fn,
+                    ..
+                } => item_name == name && *pub_fn,
+                ItemKind::Struct {
+                    name: item_name,
+                    public,
+                    ..
+                }
+                | ItemKind::Trait {
+                    name: item_name,
+                    public,
+                    ..
+                }
+                | ItemKind::Enum {
+                    name: item_name,
+                    public,
+                    ..
+                }
+                | ItemKind::TypeAlias {
+                    name: item_name,
+                    public,
+                    ..
+                }
+                | ItemKind::ForeignGlobal {
+                    name: item_name,
+                    public,
+                    ..
+                } => item_name == name && *public,
+                _ => false,
+            }
     }))
 }
 
 /// Find the file that a `mod.qz` pub-exports `name` from.
 /// e.g. `pub import map.Map` → returns `mod_entry_dir/map.qz`
-fn find_pub_exported_file(mod_entry: &Path, name: &str, target: CfgTarget<'_>) -> Option<PathBuf> {
-    let src = std::fs::read_to_string(mod_entry).ok()?;
+fn find_pub_exported_file(
+    mod_entry: &Path,
+    name: &str,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+) -> Option<PathBuf> {
+    let src = source_for_path(mod_entry, overrides).ok()?;
     let prog = parse_source(&src).ok()?;
     let mod_dir = mod_entry.parent()?;
 
@@ -1204,7 +1281,8 @@ fn find_pub_exported_file(mod_entry: &Path, name: &str, target: CfgTarget<'_>) -
                     }
                     let sub_mod_entry = sub_mod.join("mod.qz");
                     if sub_mod_entry.exists()
-                        && let Some(found) = find_pub_exported_file(&sub_mod_entry, name, target)
+                        && let Some(found) =
+                            find_pub_exported_file(&sub_mod_entry, name, target, overrides)
                     {
                         return Some(found);
                     }
@@ -1242,9 +1320,13 @@ fn find_pub_exported_file(mod_entry: &Path, name: &str, target: CfgTarget<'_>) -
     None
 }
 
-fn is_pub_exported_from_mod(mod_entry: &Path, name: &str, target: CfgTarget<'_>) -> Result<bool, String> {
-    let src = std::fs::read_to_string(mod_entry)
-        .map_err(|e| format!("cannot read '{}': {}", mod_entry.display(), e))?;
+fn is_pub_exported_from_mod(
+    mod_entry: &Path,
+    name: &str,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+) -> Result<bool, String> {
+    let src = source_for_path(mod_entry, overrides)?;
     let Ok(prog) = parse_source(&src) else {
         return Ok(false);
     };
@@ -1586,8 +1668,7 @@ mod tests {
             "@cfg(target_os=\"windows\") pub import windows;",
         )
         .expect("write module entry");
-        fs::write(&windows, "pub fn only_windows() void { ret; }")
-            .expect("write windows module");
+        fs::write(&windows, "pub fn only_windows() void { ret; }").expect("write windows module");
         let main_path = root.join("main.qz");
         fs::write(
             &main_path,
@@ -1614,7 +1695,11 @@ mod tests {
             Some(&resolver),
             false,
             &[],
-            CfgTarget { os: "linux", arch: "x86_64", abi: "sysv" },
+            CfgTarget {
+                os: "linux",
+                arch: "x86_64",
+                abi: "sysv",
+            },
         )
         .expect("load linux target");
         assert!(!linux.loaded_files.contains(&windows));
@@ -1624,7 +1709,11 @@ mod tests {
             Some(&resolver),
             false,
             &[],
-            CfgTarget { os: "windows", arch: "x86_64", abi: "win64" },
+            CfgTarget {
+                os: "windows",
+                arch: "x86_64",
+                abi: "win64",
+            },
         )
         .expect("load windows target");
         assert!(
@@ -1646,12 +1735,20 @@ fn hidden() void { std.windows.sleep(1); }
 "#;
         let linux = used_std_modules(
             source,
-            CfgTarget { os: "linux", arch: "x86_64", abi: "sysv" },
+            CfgTarget {
+                os: "linux",
+                arch: "x86_64",
+                abi: "sysv",
+            },
         );
         assert!(!linux.contains("windows"));
         let windows = used_std_modules(
             source,
-            CfgTarget { os: "windows", arch: "x86_64", abi: "win64" },
+            CfgTarget {
+                os: "windows",
+                arch: "x86_64",
+                abi: "win64",
+            },
         );
         assert!(windows.contains("windows"));
     }
@@ -1665,18 +1762,32 @@ fn hidden() void { std.windows.sleep(1); }
             "@cfg(target_os=\"windows\") pub fn only_windows() void { ret; }",
         )
         .expect("write package entry");
-        assert!(!is_public_item_in_entry(
-            &entry,
-            "only_windows",
-            CfgTarget { os: "linux", arch: "x86_64", abi: "sysv" },
-        )
-        .expect("inspect linux export"));
-        assert!(is_public_item_in_entry(
-            &entry,
-            "only_windows",
-            CfgTarget { os: "windows", arch: "x86_64", abi: "win64" },
-        )
-        .expect("inspect windows export"));
+        assert!(
+            !is_public_item_in_entry(
+                &entry,
+                "only_windows",
+                CfgTarget {
+                    os: "linux",
+                    arch: "x86_64",
+                    abi: "sysv"
+                },
+                &HashMap::new(),
+            )
+            .expect("inspect linux export")
+        );
+        assert!(
+            is_public_item_in_entry(
+                &entry,
+                "only_windows",
+                CfgTarget {
+                    os: "windows",
+                    arch: "x86_64",
+                    abi: "win64"
+                },
+                &HashMap::new(),
+            )
+            .expect("inspect windows export")
+        );
         let _ = fs::remove_dir_all(root);
     }
 

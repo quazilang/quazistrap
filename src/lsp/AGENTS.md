@@ -25,9 +25,10 @@ Basic server is running.
 ## Missing
 
 - ✅ General identifier completion from the current semantic snapshot
-- ✅ Relative leaf-import go-to-definition for unique public declarations in
-  regular local workspace files; broader import resolution still needs loader
-  source mapping.
+- ✅ Loader-backed go-to-definition for semantic bindings across local,
+  package, and standard-library imports. The loader receives canonical open
+  document overlays and supplies the effective per-file source map used to
+  rebase declaration spans to LSP locations.
 - ❌ Cross-file references and rename
 - ❌ Code actions / quick fixes
 - ❌ Inlay hints
