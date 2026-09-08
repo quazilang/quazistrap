@@ -292,23 +292,21 @@ impl LanguageServer for VoidLanguageServer {
         if let Some(doc) = docs.get(uri)
             && let Some(report) = &doc.report
         {
-            if let Some(definition) = goto_def::goto_definition(report, &doc.source, uri, pos) {
-                return Ok(Some(definition));
-            }
             let workspace = self.workspace.read().await;
             if let Some((target_uri, exported)) =
                 goto_def::relative_leaf_import_target(&doc.source, uri, pos, &workspace)
             {
                 if let Some((open_uri, open_doc)) = docs.iter().find(|(open_uri, _)| {
                     workspace.canonical_uri(open_uri).as_ref() == Some(&target_uri)
-                }) && let Some(report) = &open_doc.report
-                {
-                    return Ok(goto_def::public_top_level_definition(
-                        report,
-                        &open_doc.source,
-                        open_uri,
-                        &exported,
-                    ));
+                }) {
+                    return Ok(open_doc.report.as_ref().and_then(|target_report| {
+                        goto_def::public_top_level_definition(
+                            target_report,
+                            &open_doc.source,
+                            open_uri,
+                            &exported,
+                        )
+                    }));
                 }
                 if let Some(target) = workspace.documents().get(&target_uri) {
                     return Ok(goto_def::public_top_level_definition(
@@ -319,6 +317,7 @@ impl LanguageServer for VoidLanguageServer {
                     ));
                 }
             }
+            return Ok(goto_def::goto_definition(report, &doc.source, uri, pos));
         }
         Ok(None)
     }

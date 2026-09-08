@@ -84,12 +84,16 @@ pub fn public_top_level_definition(
     uri: &Url,
     name: &str,
 ) -> Option<GotoDefinitionResponse> {
-    let entry = report.symbol_table.entries.iter().find(|entry| {
+    let mut entries = report.symbol_table.entries.iter().filter(|entry| {
         entry.scope_depth == 0
             && entry.name == name
             && entry.symbol.public
             && entry.symbol.span.end > entry.symbol.span.start
-    })?;
+    });
+    let entry = entries.next()?;
+    if entries.next().is_some() {
+        return None;
+    }
     Some(GotoDefinitionResponse::Scalar(Location {
         uri: uri.clone(),
         range: span_to_range(entry.symbol.span, source),
