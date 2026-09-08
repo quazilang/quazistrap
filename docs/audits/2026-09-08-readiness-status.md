@@ -35,6 +35,7 @@ remain unproven or explicitly deferred:
 | Civil time | Only monotonic `Duration`/`Instant` are shipped. | Calendar, UTC, zone, ambiguity, and serialization contract plus deterministic tests. |
 | Concurrency | Native thread primitives remain experimental. | Structured lifetime, result/error/panic propagation, cancellation policy, synchronization contract. |
 | Serialization | Bounded scalar decode and limited `Serialize` exist; derived `Deserialize`, options, collections, and nested structs do not. | Receiverless decoding design and bounded object policy with compiler/std tests. |
+| Standard-library tests | `qz test` collects every `src/*.qz` file as an independent root. That bypasses the target-gated `std.windows` import, so Linux runs fail on Windows-only FFI declarations before INI tests execute. | Make test-root discovery respect target-gated module reachability, then add Linux and Windows regression coverage for the standard-library test command. |
 | LSP | Workspace symbols and a narrow relative definition path exist. | Loader-backed source map for package/std imports, cross-file references/rename, cancellation, code actions, inlay hints, real-editor smoke coverage. |
 | Documentation | API coverage is substantially improved but tutorial, language specification, and guide requirements are incomplete. | Runnable progressive tutorial, exhaustive supported-language reference, checked links/examples. |
 | Editors | Local integration repositories exist. | Versioned runtime smoke validation for each supported editor. |
