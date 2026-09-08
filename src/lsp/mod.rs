@@ -15,6 +15,7 @@ mod server;
 mod signature;
 mod span;
 mod symbols;
+mod workspace;
 
 use server::VoidLanguageServer;
 use tokio::io::{stdin, stdout};

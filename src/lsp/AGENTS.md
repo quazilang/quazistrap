@@ -29,4 +29,11 @@ Basic server is running.
 - ❌ Cross-file references and rename
 - ❌ Code actions / quick fixes
 - ❌ Inlay hints
-- ✅ Workspace symbols for successfully analyzed open documents
+- ✅ Persistent workspace symbols for parseable local `.qz` files under the
+  negotiated workspace roots; open buffers override their on-disk snapshots.
+
+Workspace indexing is read-only: normalize only local file workspace folders
+(or the legacy `rootUri`), never follow symlinks, skip `.git`, and retain no
+stale symbol snapshot after a file fails to parse. It provides symbols only;
+do not reuse its independently analyzed reports for cross-file navigation,
+references, or rename without a source-map/span-rebasing design.

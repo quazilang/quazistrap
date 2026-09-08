@@ -22,10 +22,12 @@ troubleshooting, local development, and packaging instructions.
 
 ## LSP boundary
 
-The server is currently reliable for versioned **full-document** updates only.
+The server accepts versioned UTF-16-safe incremental updates and compatible
+full-document replacements.
 It provides current-document diagnostics, hover, definitions, completion,
 formatting, symbols, signature help, references, rename, and semantic tokens.
-Workspace-symbol search covers the successfully analyzed documents currently
-open in the editor. Persistent workspace indexing, cross-file
-references/rename, incremental synchronization, and cancellation are not
+Workspace-symbol search covers parseable local `.qz` files below the selected
+workspace roots; unsaved open buffers override their disk snapshots. The index
+does not follow symlinks or scan outside the selected roots. Cross-file
+references/rename, code actions, inlay hints, and cancellation are not
 implemented. See [the LSP contract](lsp.md).

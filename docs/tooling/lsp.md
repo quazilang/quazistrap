@@ -29,9 +29,11 @@ The server reports its version from the compiler package.
   declared before the cursor.
 - Whole-document formatting.
 - Document symbols for user declarations in the current open document.
-- Workspace-symbol search across successfully analyzed open documents. Results
-  contain matching top-level declarations only; opening a file is what adds it
-  to this temporary workspace index.
+- Workspace-symbol search across successfully parsed `.qz` files under local
+  workspace folders (or the legacy local `rootUri`). Results contain matching
+  top-level declarations only. Unsaved open buffers temporarily override their
+  on-disk file snapshot; saving updates it. The index never follows symlinks
+  or scans outside the client-selected roots.
 - Signature help for functions known to the current semantic snapshot.
 - References and rename for semantic bindings within the current open document.
 - Full-document semantic tokens for lexical tokens and known semantic symbols.
@@ -45,8 +47,10 @@ than a name-resolution guarantee.
 
 ## Current Limitations
 
-- Cross-file references and rename, persistent workspace-wide indexing, inlay
-  hints, code actions, and cancellation are not implemented.
+- Cross-file references and rename, inlay hints, code actions, cancellation,
+  and automatic filesystem watching are not implemented. The workspace-symbol
+  snapshot is built during initialization; files changed externally are picked
+  up when the server is restarted or opened and saved through the LSP.
 - Diagnostics and navigation operate on the current document only. Imported
   source locations are not yet exposed as cross-file locations.
 - Formatting and position conversion need a real-editor protocol smoke suite

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -11,6 +11,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use super::document::DocumentState;
+use super::workspace::WorkspaceIndex;
 use super::{
     analysis, completion, diagnostics, formatting, goto_def, hover, references, semantic_tokens,
     signature, symbols,
@@ -19,6 +20,7 @@ use super::{
 pub struct VoidLanguageServer {
     pub client: Client,
     pub documents: Arc<RwLock<HashMap<Url, DocumentState>>>,
+    pub workspace: Arc<RwLock<WorkspaceIndex>>,
 }
 
 fn workspace_symbols_for_open_documents(
@@ -41,11 +43,57 @@ fn workspace_symbols_for_open_documents(
     results
 }
 
+fn workspace_symbols(
+    workspace: &WorkspaceIndex,
+    documents: &HashMap<Url, DocumentState>,
+    query: &str,
+) -> Vec<SymbolInformation> {
+    let mut results = Vec::new();
+    let open_workspace_uris: HashSet<_> = documents
+        .keys()
+        .filter_map(|uri| workspace.canonical_uri(uri))
+        .collect();
+    for (uri, document) in workspace.documents() {
+        if open_workspace_uris.contains(uri) {
+            continue;
+        }
+        results.extend(symbols::workspace_symbols(
+            &document.report,
+            &document.source,
+            uri,
+            query,
+        ));
+    }
+    for (uri, document) in documents {
+        if workspace.canonical_uri(uri).is_none() {
+            continue;
+        }
+        let Some(report) = &document.report else {
+            continue;
+        };
+        results.extend(symbols::workspace_symbols(
+            report,
+            &document.source,
+            uri,
+            query,
+        ));
+    }
+    results.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.location.uri.as_str().cmp(right.location.uri.as_str()))
+    });
+    results
+}
+
 impl VoidLanguageServer {
     pub fn new(client: Client) -> Self {
         Self {
             client,
             documents: Arc::new(RwLock::new(HashMap::new())),
+            workspace: Arc::new(RwLock::new(WorkspaceIndex::default())),
         }
     }
 
@@ -113,7 +161,11 @@ impl VoidLanguageServer {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for VoidLanguageServer {
-    async fn initialize(&self, _params: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // Build the snapshot before initialization completes so the first
+        // workspace/symbol request sees the client-selected workspace.
+        let index = WorkspaceIndex::from_initialize_params(&params);
+        *self.workspace.write().await = index;
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -199,6 +251,12 @@ impl LanguageServer for VoidLanguageServer {
             self.client
                 .publish_diagnostics(params.text_document.uri.clone(), diags, None)
                 .await;
+        }
+        if let Some(doc) = docs.get(&params.text_document.uri) {
+            self.workspace
+                .write()
+                .await
+                .update_from_source(&params.text_document.uri, &doc.source);
         }
     }
 
@@ -333,20 +391,20 @@ impl LanguageServer for VoidLanguageServer {
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
         let docs = self.documents.read().await;
-        Ok(Some(workspace_symbols_for_open_documents(
-            &docs,
-            &params.query,
-        )))
+        let workspace = self.workspace.read().await;
+        Ok(Some(workspace_symbols(&workspace, &docs, &params.query)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fs;
 
-    use super::workspace_symbols_for_open_documents;
+    use super::{workspace_symbols, workspace_symbols_for_open_documents};
+    use crate::lsp::workspace::WorkspaceIndex;
     use crate::lsp::{analysis::analyze_source, document::DocumentState};
-    use tower_lsp::lsp_types::Url;
+    use tower_lsp::lsp_types::{InitializeParams, Url, WorkspaceFolder};
 
     #[test]
     fn workspace_symbol_search_aggregates_open_documents_deterministically() {
@@ -374,5 +432,82 @@ mod tests {
         let all = workspace_symbols_for_open_documents(&documents, "");
         let names: Vec<_> = all.iter().map(|symbol| symbol.name.as_str()).collect();
         assert_eq!(names, ["add", "Address", "alpha"]);
+    }
+
+    #[test]
+    fn open_document_overrides_a_matching_workspace_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "quazi_lsp_workspace_overlay_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create workspace");
+        let path = root.join("main.qz");
+        fs::write(&path, "fn disk_value() i32 { ret 1; }").expect("write disk source");
+        let uri = Url::from_file_path(&path).expect("URI");
+        let disk_source = "fn disk_value() i32 { ret 1; }";
+        let open_source = "fn buffer_value() i32 { ret 2; }";
+        let mut open = DocumentState::new(uri.clone(), open_source.to_string(), 1);
+        open.report = Some(analyze_source(open_source).expect("analyze open source"));
+        let mut documents = HashMap::new();
+        documents.insert(uri.clone(), open);
+
+        let workspace = WorkspaceIndex::from_initialize_params(&InitializeParams {
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: Url::from_file_path(&root).expect("workspace URI"),
+                name: "test".to_string(),
+            }]),
+            ..Default::default()
+        });
+        assert!(
+            workspace
+                .documents()
+                .get(&uri)
+                .expect("disk snapshot")
+                .source
+                .contains(disk_source)
+        );
+        let results = workspace_symbols(&workspace, &documents, "value");
+        let names: Vec<_> = results.iter().map(|symbol| symbol.name.as_str()).collect();
+        assert_eq!(names, ["buffer_value"]);
+        fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn workspace_symbol_search_excludes_open_documents_outside_the_root() {
+        let root = std::env::temp_dir().join(format!(
+            "quazi_lsp_workspace_boundary_root_{}",
+            std::process::id()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "quazi_lsp_workspace_boundary_outside_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create root");
+        fs::create_dir_all(&outside).expect("create outside directory");
+        fs::write(root.join("main.qz"), "fn inside_value() i32 { ret 1; }")
+            .expect("write root source");
+        let outside_path = outside.join("outside.qz");
+        let outside_source = "fn outside_value() i32 { ret 2; }";
+        fs::write(&outside_path, outside_source).expect("write outside source");
+        let outside_uri = Url::from_file_path(outside_path).expect("outside URI");
+        let mut outside_document =
+            DocumentState::new(outside_uri.clone(), outside_source.into(), 1);
+        outside_document.report =
+            Some(analyze_source(outside_source).expect("analyze outside source"));
+        let mut documents = HashMap::new();
+        documents.insert(outside_uri, outside_document);
+        let workspace = WorkspaceIndex::from_initialize_params(&InitializeParams {
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: Url::from_file_path(&root).expect("root URI"),
+                name: "test".to_string(),
+            }]),
+            ..Default::default()
+        });
+
+        let results = workspace_symbols(&workspace, &documents, "value");
+        let names: Vec<_> = results.iter().map(|symbol| symbol.name.as_str()).collect();
+        assert_eq!(names, ["inside_value"]);
+        fs::remove_dir_all(root).expect("remove root");
+        fs::remove_dir_all(outside).expect("remove outside directory");
     }
 }
