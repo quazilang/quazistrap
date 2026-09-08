@@ -234,6 +234,17 @@ pub struct BindingDeclaration {
     pub name_span: Span,
 }
 
+/// A source-backed import selector that resolves to a specific binding. The
+/// selector and alias are distinct: renaming the imported declaration updates
+/// `selector_span`, while a local alias keeps its spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingImport {
+    pub binding: ResolvedBinding,
+    pub selector_span: Span,
+    pub alias_span: Option<Span>,
+    pub local_name: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExprAnnotation {
     pub span: Span,
@@ -447,6 +458,8 @@ pub struct SemanticReport {
     pub annotated_exprs: Vec<ExprAnnotation>,
     /// Exact source spellings of declarations that have a resolved binding.
     pub binding_declarations: Vec<BindingDeclaration>,
+    /// Exact import selectors resolved during declaration analysis.
+    pub binding_imports: Vec<BindingImport>,
     pub annotated_program: AnnotatedProgram,
     pub symbol_table: SymbolTable,
     pub constant_evaluations: Vec<ConstantEvaluation>,

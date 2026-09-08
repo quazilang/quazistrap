@@ -765,18 +765,39 @@ impl Analyzer {
             ImportItems::Single(name) => {
                 let full = build_import_path(&import_path.path, name);
                 let mangled = mangle_import_path(&full);
-                self.declare_import_binding(name.clone(), full, mangled, span);
+                self.declare_import_binding(
+                    name.clone(),
+                    full,
+                    mangled,
+                    import_path.selector_spans.first().copied(),
+                    None,
+                    span,
+                );
             }
             ImportItems::Aliased(name, alias) => {
                 let full = build_import_path(&import_path.path, name);
                 let mangled = mangle_import_path(&full);
-                self.declare_import_binding(alias.clone(), full, mangled, span);
+                self.declare_import_binding(
+                    alias.clone(),
+                    full,
+                    mangled,
+                    import_path.selector_spans.first().copied(),
+                    import_path.alias_span,
+                    span,
+                );
             }
             ImportItems::Multiple(names) => {
-                for name in names {
+                for (name, selector_span) in names.iter().zip(&import_path.selector_spans) {
                     let full = build_import_path(&import_path.path, name);
                     let mangled = mangle_import_path(&full);
-                    self.declare_import_binding(name.clone(), full, mangled, span);
+                    self.declare_import_binding(
+                        name.clone(),
+                        full,
+                        mangled,
+                        Some(*selector_span),
+                        None,
+                        span,
+                    );
                 }
             }
             ImportItems::All => {
@@ -826,6 +847,8 @@ impl Analyzer {
         local_name: String,
         full_path: String,
         mangled: Option<String>,
+        selector_span: Option<Span>,
+        alias_span: Option<Span>,
         span: Span,
     ) {
         self.add_dependency_edge(DependencyKind::Import, "__program__", &full_path);
@@ -861,6 +884,36 @@ impl Analyzer {
             }
             self.explicitly_imported_fns
                 .insert(local_name.clone(), full_path.clone());
+            if let (Some(mangled_target), Some(selector_span)) =
+                (mangled.as_ref(), selector_span)
+            {
+                let leaf = mangled_target
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(mangled_target)
+                    .to_string();
+                let resolved = self
+                    .resolve_symbol(mangled_target)
+                    .filter(|symbol| !symbol.is_import)
+                    .map(|symbol| (symbol, mangled_target.clone()))
+                    .or_else(|| {
+                        self.resolve_symbol(&leaf)
+                            .filter(|symbol| !symbol.is_import)
+                            .map(|symbol| (symbol, leaf))
+                    });
+                if let Some((target, target_name)) = resolved {
+                    self.binding_imports.push(BindingImport {
+                        binding: ResolvedBinding {
+                            name: target_name,
+                            span: target.span,
+                            kind: SymbolKind::Function,
+                        },
+                        selector_span,
+                        alias_span,
+                        local_name,
+                    });
+                }
+            }
             return;
         }
 
@@ -896,10 +949,12 @@ impl Analyzer {
             .next()
             .unwrap_or(&mangled_target)
             .to_string();
-        let original = self
-            .resolve_symbol(&mangled_target)
-            .or_else(|| self.resolve_symbol(&leaf));
-        let Some(original) = original else {
+        let (original, resolved_target) = if let Some(original) = self.resolve_symbol(&mangled_target)
+        {
+            (original, mangled_target.clone())
+        } else if let Some(original) = self.resolve_symbol(&leaf) {
+            (original, leaf.clone())
+        } else {
             // Target doesn't exist yet — possibly a type/constant import or the file
             // hasn't been loaded. Fall back to a namespace variable.
             self.declare(
@@ -1043,8 +1098,8 @@ impl Analyzer {
 
         self.explicitly_imported_fns
             .insert(local_name.clone(), full_path.clone());
-        self.declare(
-            local_name,
+        let declared = self.declare(
+            local_name.clone(),
             Symbol {
                 kind: SymbolKind::Function,
                 ty: original.ty,
@@ -1062,6 +1117,18 @@ impl Analyzer {
                 generic_params: original.generic_params.clone(),
             },
         );
+        if declared && let Some(selector_span) = selector_span {
+            self.binding_imports.push(BindingImport {
+                binding: ResolvedBinding {
+                    name: resolved_target,
+                    span: original.span,
+                    kind: SymbolKind::Function,
+                },
+                selector_span,
+                alias_span,
+                local_name,
+            });
+        }
     }
 }
 

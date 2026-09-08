@@ -63,6 +63,7 @@ pub struct Analyzer {
     pub(super) unused_import_paths: BTreeSet<String>,
     pub(super) annotated_exprs: Vec<ExprAnnotation>,
     pub(super) binding_declarations: Vec<BindingDeclaration>,
+    pub(super) binding_imports: Vec<BindingImport>,
     pub(super) constant_evaluations: Vec<ConstantEvaluation>,
     pub(super) inline_candidates: Vec<InlineCandidate>,
     pub(super) enums: HashMap<String, EnumInfo>,
@@ -816,6 +817,7 @@ impl Analyzer {
             unused_import_paths: BTreeSet::new(),
             annotated_exprs: Vec::new(),
             binding_declarations: Vec::new(),
+            binding_imports: Vec::new(),
             constant_evaluations: Vec::new(),
             inline_candidates: Vec::new(),
             enums: HashMap::new(),
@@ -1004,6 +1006,7 @@ impl Analyzer {
 
         let annotated_exprs = std::mem::take(&mut self.annotated_exprs);
         let binding_declarations = std::mem::take(&mut self.binding_declarations);
+        let binding_imports = std::mem::take(&mut self.binding_imports);
         let constant_evaluations = std::mem::take(&mut self.constant_evaluations);
         let inline_candidates = std::mem::take(&mut self.inline_candidates);
         let math_optimizations = std::mem::take(&mut self.math_optimizations);
@@ -1044,6 +1047,7 @@ impl Analyzer {
             unused_imports: unused_imports_vec,
             annotated_exprs,
             binding_declarations,
+            binding_imports,
             annotated_program,
             symbol_table,
             constant_evaluations,
@@ -1221,6 +1225,7 @@ impl Analyzer {
         self.unused_import_paths.clear();
         self.annotated_exprs.clear();
         self.binding_declarations.clear();
+        self.binding_imports.clear();
         self.constant_evaluations.clear();
         self.inline_candidates.clear();
         self.enums.clear();
@@ -2688,6 +2693,78 @@ fn duplicate() void {}
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn records_exact_import_selector_and_alias_spans_for_a_function_binding() {
+        let module = "pub fn apply(value: i32) i32 { ret value; }\n";
+        let main = "import helpers.apply as local;\nfn main() i32 { ret local(1); }\n";
+        let report = analyze_module_pair(module, main);
+        let import = report
+            .binding_imports
+            .iter()
+            .find(|import| import.local_name == "local")
+            .expect("function import");
+        let main_offset = module.chars().count() + 1;
+
+        assert_eq!(import.binding.name, "helpers.apply");
+        assert_eq!(
+            import.selector_span.start,
+            main_offset
+                + main
+                    .find("apply")
+                    .map(|byte| main[..byte].chars().count())
+                    .expect("import selector")
+        );
+        assert_eq!(
+            import.alias_span.map(|span| span.start),
+            Some(
+                main_offset
+                    + main
+                        .find("local;")
+                        .map(|byte| main[..byte].chars().count())
+                        .expect("import alias")
+            )
+        );
+    }
+
+    #[test]
+    fn import_occurrences_use_the_resolved_bare_fallback_identity() {
+        let report = analyze_module_pair(
+            "@export pub fn apply(value: i32) i32 { ret value; }\n",
+            "import helpers.apply as local;\nfn main() i32 { ret local(1); }\n",
+        );
+        let import = report
+            .binding_imports
+            .iter()
+            .find(|import| import.local_name == "local")
+            .expect("function import");
+
+        assert_eq!(import.binding.name, "apply");
+    }
+
+    #[test]
+    fn repeated_imports_keep_the_target_declaration_identity() {
+        let module = "pub fn apply(value: i32) i32 { ret value; }\n";
+        let report = analyze_module_pair(
+            module,
+            "import helpers.apply;\nimport helpers.apply;\nfn main() i32 { ret apply(1); }\n",
+        );
+        let imports: Vec<_> = report
+            .binding_imports
+            .iter()
+            .filter(|import| import.binding.name == "helpers.apply")
+            .collect();
+
+        assert_eq!(imports.len(), 2);
+        let declaration = report
+            .binding_declarations
+            .iter()
+            .find(|declaration| declaration.binding.name == "helpers.apply")
+            .expect("function declaration");
+        assert!(imports
+            .iter()
+            .all(|import| import.binding.span == declaration.binding.span));
     }
 
     #[test]
