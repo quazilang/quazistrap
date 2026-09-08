@@ -32,10 +32,16 @@ fn main(args: Array[str]) i32 {
         ret 1;
     }
 
-    ret match fs.read_to_string(args[1]) {
+    const indexed: i32 = match fs.read_to_string(args[1]) {
         Ok(content) => index_positions(content.as_str()).len() as i32,
-        Err(_) => 1,
+        Err(_) => -1,
     };
+    if (indexed < 0) {
+        io.errln("Cannot read input file");
+        ret 1;
+    }
+    io.println("Indexed {} byte positions", indexed);
+    ret 0;
 }
 ```
 
@@ -57,13 +63,13 @@ This program demonstrates:
 
 - **Imports** — `std.io`, `std.fs`, `std.collections.Map`.
 - **Functions** — `index_positions` encapsulates logic.
-- **Variables** — `var` for mutable state, `const` for results.
-- **Control flow** — `for` range loops, `if`/`else` conditions.
-- **Pattern matching** — `match` on `Result` and `Option`.
+- **Variables** — `var` for mutable state and `const` for results.
+- **Control flow** — `for` range loops and `if` conditions.
+- **Pattern matching** — `match` on `Result`.
 - **Error handling** — `Result[String, FsError]` from file operations.
 - **Collections** — `Map` for byte-position indexing.
 - **Command-line arguments** — `main(args: Array[str])`.
-- **String operations** — `bytes_len()`, indexing, `as_str()`.
+- **String operations** — `bytes_len()` and `as_str()`.
 
 ## Testing
 
@@ -71,8 +77,8 @@ Add tests alongside the application:
 
 ```quazi
 @test
-fn empty_text_has_no_words() void {
-    const counts = count_words("");
+fn empty_text_has_no_positions() void {
+    const counts = index_positions("");
     if (counts.len() != 0) {
         panic("expected empty map for empty text");
     }

@@ -1,7 +1,18 @@
+import std.collections.Map;
+import std.collections.Set;
+
 fn main() i32 {
     var values: Array[i32] = Array.new();
     values.push(2);
     values.push(3);
     values[0] = 4;
+    var scores = Map.new().unwrap();
+    scores.insert(1, 100).unwrap();
+    scores.insert(2, 85).unwrap();
+    scores.remove(2);
+
+    var seen = Set.new().unwrap();
+    seen.insert(10).unwrap();
+    seen.remove(10);
     ret values[0] + values[1] - 7;
 }

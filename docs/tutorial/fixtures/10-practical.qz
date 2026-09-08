@@ -12,11 +12,17 @@ fn index_positions(text: str) Map {
 
 fn main(args: Array[str]) i32 {
     if (args.len() < 2) {
-        io.errln("Usage: wordcount <file>");
+        io.errln("Usage: byte-index <file>");
         ret 1;
     }
-    ret match fs.read_to_string(args[1]) {
+    const indexed: i32 = match fs.read_to_string(args[1]) {
         Ok(content) => index_positions(content.as_str()).len() as i32,
-        Err(_) => 1,
+        Err(_) => -1,
     };
+    if (indexed < 0) {
+        io.errln("Cannot read input file");
+        ret 1;
+    }
+    io.println("Indexed {} byte positions", indexed);
+    ret 0;
 }

@@ -1,11 +1,19 @@
 import std.fs;
 import std.io;
 
+fn write_greeting(path: str) Result[usize, FsError] {
+    const file = File.create(path)?;
+    ret file.write_str("Hello from Quazi!\n");
+}
+
 fn main() i32 {
     const message = match fs.read_to_string("tutorial-input.txt") {
         Ok(content) => content.as_str(),
         Err(_) => "Cannot read file",
     };
+    if (fs.exists("tutorial-input.txt")) {
+        io.println("The file exists");
+    }
     io.println("{}", message);
     ret 0;
 }

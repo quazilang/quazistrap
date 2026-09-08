@@ -75,14 +75,15 @@ and values:
 
 ```quazi
 import std.collections.Map;
+import std.io;
 
 fn main() i32 {
-    var scores = Map.new();
+    var scores = Map.new().unwrap();
 
     // Insert (mutates in place, returns whether a new entry was added)
-    scores.insert(1, 100)?;
-    scores.insert(2, 85)?;
-    scores.insert(3, 92)?;
+    scores.insert(1, 100).unwrap();
+    scores.insert(2, 85).unwrap();
+    scores.insert(3, 92).unwrap();
 
     // Lookup
     match scores.get(2) {
@@ -96,7 +97,7 @@ fn main() i32 {
     }
 
     // Remove (mutates in place)
-    scores.remove(3)?;
+    scores.remove(3);
 
     io.println("Total players: {}", scores.len());
     ret 0;
@@ -109,7 +110,7 @@ fn main() i32 {
 
 ```quazi
 // Correct:
-scores.insert(4, 77)?;
+scores.insert(4, 77).unwrap();
 
 // No longer needed (old pattern):
 // scores = scores.insert(4, 77)?;
@@ -121,19 +122,20 @@ scores.insert(4, 77)?;
 
 ```quazi
 import std.collections.Set;
+import std.io;
 
 fn main() i32 {
-    var seen = Set.new();
+    var seen = Set.new().unwrap();
 
-    seen.insert(10)?;
-    seen.insert(20)?;
-    seen.insert(30)?;
+    seen.insert(10).unwrap();
+    seen.insert(20).unwrap();
+    seen.insert(30).unwrap();
 
     if (seen.contains(20)) {
         io.println("20 is in the set");
     }
 
-    seen.remove(20)?;
+    seen.remove(20);
     io.println("Set size: {}", seen.len());
     ret 0;
 }
