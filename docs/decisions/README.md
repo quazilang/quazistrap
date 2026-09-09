@@ -96,7 +96,9 @@ QZI compatibility; it must not restore universal implicit compatibility.
 
 ## D-011: child-process creation
 
-Resolved 2026-09-01: [child-process creation belongs to the runtime](process-runtime.md).
+Accepted 2026-09-01: [child-process creation belongs to the runtime](process-runtime.md).
+The runtime boundary is decided; the public process ownership and result
+contract remains pending maintainer approval.
 
 ## D-012: serialization
 

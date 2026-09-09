@@ -40,7 +40,7 @@ remain unproven or explicitly deferred:
 
 | Milestone | Current status | Required next evidence |
 | --- | --- | --- |
-| Process API | Deferred by D-011 because safe argument/handle marshalling belongs in compiler/runtime support. | Approved runtime contract, Linux/Windows implementation, failure and cleanup tests. |
+| Process API | D-011 accepts compiler/runtime ownership of child-process creation, but the public argument, exit-status, termination, close/destruction, and spawn-result contracts remain unapproved. | Maintainer-approved contract, Linux/Windows implementation, and failure/cleanup tests. |
 | Civil time | Only monotonic `Duration`/`Instant` are shipped. | Calendar, UTC, zone, ambiguity, and serialization contract plus deterministic tests. |
 | Concurrency | Native thread primitives remain experimental. | Structured lifetime, result/error/panic propagation, cancellation policy, synchronization contract. |
 | Serialization | Bounded scalar decode and limited `Serialize` exist; derived `Deserialize`, options, collections, and nested structs do not. | Receiverless decoding design and bounded object policy with compiler/std tests. |
