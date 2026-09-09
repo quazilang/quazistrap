@@ -111,13 +111,16 @@ fn resolve_repository_path(
 
 fn heading_ids(source: &str) -> Vec<String> {
     let mut headings = Vec::new();
-    let mut in_fence = false;
+    let mut active_fence = None;
     for line in source.lines() {
-        if line.trim_start().starts_with("```") {
-            in_fence = !in_fence;
+        if let Some((marker, width)) = active_fence {
+            if markdown_fence_closes(line, marker, width) {
+                active_fence = None;
+            }
             continue;
         }
-        if in_fence {
+        if let Some((marker, width, _)) = markdown_fence_opening(line) {
+            active_fence = Some((marker, width));
             continue;
         }
         let trimmed = line.trim_start();
@@ -248,13 +251,16 @@ fn invalid_local_links(docs_root: &Path) -> Result<Vec<String>, String> {
     for path in documents {
         let source = fs::read_to_string(&path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        let mut in_fence = false;
+        let mut active_fence = None;
         for (line_number, line) in source.lines().enumerate() {
-            if line.trim_start().starts_with("```") {
-                in_fence = !in_fence;
+            if let Some((marker, width)) = active_fence {
+                if markdown_fence_closes(line, marker, width) {
+                    active_fence = None;
+                }
                 continue;
             }
-            if in_fence {
+            if let Some((marker, width, _)) = markdown_fence_opening(line) {
+                active_fence = Some((marker, width));
                 continue;
             }
             for destination in inline_link_destinations(line) {
@@ -430,6 +436,17 @@ mod tests {
     }
 
     #[test]
+    fn ignores_headings_inside_markdown_fences() {
+        assert_eq!(
+            heading_ids(
+                "# Before\n~~~~text\n# Not a heading\n~~~\n```\n# Still not a heading\n~~~~\n    ~~~\n# After\n"
+            ),
+            ["before", "after"]
+        );
+        assert_eq!(heading_ids("    ```text\n# Visible\n"), ["visible"]);
+    }
+
+    #[test]
     fn does_not_follow_links_outside_the_repository() {
         let root = Path::new("/workspace/quazistrap");
         assert_eq!(
@@ -459,6 +476,30 @@ mod tests {
             "broken canonical documentation links:\n{}",
             invalid.join("\n")
         );
+    }
+
+    #[test]
+    fn link_check_ignores_links_inside_markdown_fences() {
+        let temporary_root = std::env::temp_dir().join(format!(
+            "quazi_documentation_fence_links_{}",
+            std::process::id()
+        ));
+        if temporary_root.exists() {
+            fs::remove_dir_all(&temporary_root).expect("stale documentation directory is removed");
+        }
+        let docs_root = temporary_root.join("docs");
+        fs::create_dir_all(&docs_root).expect("documentation directory is created");
+        fs::write(
+            docs_root.join("guide.md"),
+            "~~~~text\n[not a link](missing.md)\n~~~\n```\n[also not a link](missing.md)\n~~~~\n    ~~~\n[real link](target.md)\n",
+        )
+        .expect("test documentation is written");
+        fs::write(docs_root.join("target.md"), "# Target\n")
+            .expect("linked test documentation is written");
+
+        let invalid = invalid_local_links(&docs_root).expect("test documentation can be scanned");
+        fs::remove_dir_all(&temporary_root).expect("test documentation directory is removed");
+        assert!(invalid.is_empty(), "unexpected broken links: {invalid:#?}");
     }
 
     #[test]

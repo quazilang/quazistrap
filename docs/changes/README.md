@@ -8,6 +8,7 @@
 - [2026-09-09: Compiler-backed LSP type inlay hints](2026-09-09-lsp-inlay-hints.md)
 - [2026-09-09: LSP unused-import quick fix](2026-09-09-lsp-unused-import-quickfix.md)
 - [2026-09-09: Tutorial fence verification](2026-09-09-tutorial-fence-verification.md)
+- [2026-09-09: Markdown fence verification](2026-09-09-markdown-fence-verification.md)
 
 Audience: language users and maintainers.
 
