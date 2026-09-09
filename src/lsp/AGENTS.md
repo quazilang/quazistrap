@@ -35,10 +35,14 @@ Basic server is running.
 - ✅ Persistent workspace symbols for parseable local `.qz` files under the
   negotiated workspace roots; open buffers override their on-disk snapshots.
 
-The tower-lsp transport handles `$/cancelRequest` for pending requests. This
-does not make compiler analysis cooperatively cancellable: current parser,
-semantic, and loader work runs synchronously and must be redesigned with an
-explicit cancellation boundary before claiming CPU-work interruption.
+The tower-lsp transport handles `$/cancelRequest` for pending requests.
+Compiler and loader snapshots run on Tokio's blocking pool, which keeps them
+off async server workers, but this does not make them cooperatively
+cancellable: an already-running parser, semantic analysis, or loader task
+must finish. Before returning a loader-backed result, verify that every open
+buffer included in its snapshot is still open with the same source text;
+otherwise discard it. An explicit compiler cancellation boundary is still required
+before claiming CPU-work interruption.
 
 Cross-file references and rename use a fresh compiler-loader snapshot, not the
 workspace-symbol index. Every loaded span is rebased through the loader's

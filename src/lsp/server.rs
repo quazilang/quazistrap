@@ -101,6 +101,84 @@ fn loader_overlays(documents: &HashMap<Url, DocumentState>) -> HashMap<PathBuf, 
         .collect()
 }
 
+/// A loader snapshot is usable only while each captured overlay is still open
+/// with the same text, and every subsequently open loaded buffer agrees with
+/// its effective source. This prevents an asynchronous request from returning
+/// locations or edits calculated from superseded overlays.
+fn loaded_snapshot_matches_open_documents(
+    snapshot: &analysis::LoadedSnapshot,
+    overlays: &HashMap<PathBuf, String>,
+    documents: &HashMap<Url, DocumentState>,
+) -> bool {
+    for (path, source) in overlays {
+        if !snapshot.effective_sources.contains_key(path) {
+            continue;
+        }
+        let matches_overlay = documents.iter().any(|(uri, document)| {
+            uri.to_file_path()
+                .ok()
+                .and_then(|candidate| candidate.canonicalize().ok())
+                .as_ref()
+                == Some(path)
+                && document.source == *source
+        });
+        if !matches_overlay {
+            return false;
+        }
+    }
+    documents.iter().all(|(uri, document)| {
+        let Some(path) = uri
+            .to_file_path()
+            .ok()
+            .and_then(|path| path.canonicalize().ok())
+        else {
+            return true;
+        };
+        snapshot
+            .effective_sources
+            .get(&path)
+            .is_none_or(|source| source == &document.source)
+    })
+}
+
+fn document_matches_source(
+    documents: &HashMap<Url, DocumentState>,
+    uri: &Url,
+    source: &str,
+) -> bool {
+    documents
+        .get(uri)
+        .is_some_and(|document| document.source == source)
+}
+
+/// Run compiler work away from Tokio's async worker threads. Cancellation of a
+/// request can then stop waiting for the snapshot, although the compiler does
+/// not yet expose a cooperative cancellation boundary for work already running
+/// on the blocking pool.
+async fn run_in_blocking_pool<T>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> std::result::Result<T, String>
+where
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("LSP blocking task failed: {error}"))
+}
+
+async fn analyze_source_in_background(
+    source: String,
+) -> std::result::Result<crate::semantic::SemanticReport, String> {
+    run_in_blocking_pool(move || analysis::analyze_source(&source)).await?
+}
+
+async fn analyze_loaded_document_in_background(
+    path: PathBuf,
+    overlays: HashMap<PathBuf, String>,
+) -> std::result::Result<analysis::LoadedSnapshot, String> {
+    run_in_blocking_pool(move || analysis::analyze_loaded_document(&path, &overlays)).await?
+}
+
 impl VoidLanguageServer {
     pub fn new(client: Client) -> Self {
         Self {
@@ -132,7 +210,7 @@ impl VoidLanguageServer {
             }
         }
 
-        let result = analysis::analyze_source(&text);
+        let result = analyze_source_in_background(text.clone()).await;
         let mut docs = self.documents.write().await;
         let Some(doc) = docs.get_mut(&uri) else {
             return;
@@ -309,46 +387,62 @@ impl LanguageServer for VoidLanguageServer {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let pos = params.text_document_position_params.position;
         let uri = &params.text_document_position_params.text_document.uri;
-        let docs = self.documents.read().await;
-        if let Some(doc) = docs.get(uri)
-            && let Some(report) = &doc.report
+        let (source, report, overlays) = {
+            let docs = self.documents.read().await;
+            let Some(doc) = docs.get(uri) else {
+                return Ok(None);
+            };
+            let Some(report) = doc.report.clone() else {
+                return Ok(None);
+            };
+            (doc.source.clone(), report, loader_overlays(&docs))
+        };
+        if let Some(path) = uri.to_file_path().ok()
+            && let Ok(snapshot) =
+                analyze_loaded_document_in_background(path, overlays.clone()).await
         {
-            if let Some(path) = uri.to_file_path().ok()
-                && let Ok(snapshot) =
-                    analysis::analyze_loaded_document(&path, &loader_overlays(&docs))
-                && let Some(definition) =
-                    goto_def::loaded_goto_definition(&snapshot, &doc.source, uri, pos)
+            let docs = self.documents.read().await;
+            if !document_matches_source(&docs, uri, &source)
+                || !loaded_snapshot_matches_open_documents(&snapshot, &overlays, &docs)
+            {
+                return Ok(None);
+            }
+            if let Some(definition) = goto_def::loaded_goto_definition(&snapshot, &source, uri, pos)
             {
                 return Ok(Some(definition));
             }
-            let workspace = self.workspace.read().await;
-            if let Some((target_uri, exported)) =
-                goto_def::relative_leaf_import_target(&doc.source, uri, pos, &workspace)
-            {
-                if let Some((open_uri, open_doc)) = docs.iter().find(|(open_uri, _)| {
-                    workspace.canonical_uri(open_uri).as_ref() == Some(&target_uri)
-                }) {
-                    return Ok(open_doc.report.as_ref().and_then(|target_report| {
-                        goto_def::public_top_level_definition(
-                            target_report,
-                            &open_doc.source,
-                            open_uri,
-                            &exported,
-                        )
-                    }));
-                }
-                if let Some(target) = workspace.documents().get(&target_uri) {
-                    return Ok(goto_def::public_top_level_definition(
-                        &target.report,
-                        &target.source,
-                        &target_uri,
-                        &exported,
-                    ));
-                }
-            }
-            return Ok(goto_def::goto_definition(report, &doc.source, uri, pos));
         }
-        Ok(None)
+
+        let workspace = self.workspace.read().await;
+        let docs = self.documents.read().await;
+        if !document_matches_source(&docs, uri, &source) {
+            return Ok(None);
+        }
+        if let Some((target_uri, exported)) =
+            goto_def::relative_leaf_import_target(&source, uri, pos, &workspace)
+        {
+            if let Some((open_uri, open_doc)) = docs.iter().find(|(open_uri, _)| {
+                workspace.canonical_uri(open_uri).as_ref() == Some(&target_uri)
+            }) {
+                return Ok(open_doc.report.as_ref().and_then(|target_report| {
+                    goto_def::public_top_level_definition(
+                        target_report,
+                        &open_doc.source,
+                        open_uri,
+                        &exported,
+                    )
+                }));
+            }
+            if let Some(target) = workspace.documents().get(&target_uri) {
+                return Ok(goto_def::public_top_level_definition(
+                    &target.report,
+                    &target.source,
+                    &target_uri,
+                    &exported,
+                ));
+            }
+        }
+        Ok(goto_def::goto_definition(&report, &source, uri, pos))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -364,9 +458,16 @@ impl LanguageServer for VoidLanguageServer {
         let Some(path) = uri.to_file_path().ok() else {
             return Ok(None);
         };
-        let Ok(snapshot) = analysis::analyze_loaded_document(&path, &overlays) else {
+        let Ok(snapshot) = analyze_loaded_document_in_background(path, overlays.clone()).await
+        else {
             return Ok(None);
         };
+        let docs = self.documents.read().await;
+        if !document_matches_source(&docs, uri, &source)
+            || !loaded_snapshot_matches_open_documents(&snapshot, &overlays, &docs)
+        {
+            return Ok(None);
+        }
         Ok(references::loaded_references_at(
             &snapshot,
             &source,
@@ -389,9 +490,18 @@ impl LanguageServer for VoidLanguageServer {
         let Some(path) = uri.to_file_path().ok() else {
             return Ok(None);
         };
-        let Ok(snapshot) = analysis::analyze_loaded_document(&path, &overlays) else {
+        let Ok(snapshot) = analyze_loaded_document_in_background(path, overlays.clone()).await
+        else {
             return Ok(None);
         };
+        {
+            let docs = self.documents.read().await;
+            if !document_matches_source(&docs, uri, &source)
+                || !loaded_snapshot_matches_open_documents(&snapshot, &overlays, &docs)
+            {
+                return Ok(None);
+            }
+        }
         let workspace = self.workspace.read().await;
         Ok(references::loaded_rename_edits(
             &snapshot,
@@ -509,10 +619,65 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
 
-    use super::{workspace_symbols, workspace_symbols_for_open_documents};
+    use super::{
+        loaded_snapshot_matches_open_documents, run_in_blocking_pool, workspace_symbols,
+        workspace_symbols_for_open_documents,
+    };
     use crate::lsp::workspace::WorkspaceIndex;
     use crate::lsp::{analysis::analyze_source, document::DocumentState};
     use tower_lsp::lsp_types::{InitializeParams, Url, WorkspaceFolder};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compiler_work_uses_the_blocking_pool() {
+        let current_thread = std::thread::current().id();
+        let blocking_thread = run_in_blocking_pool(|| std::thread::current().id())
+            .await
+            .expect("blocking task completes");
+        assert_ne!(current_thread, blocking_thread);
+    }
+
+    #[test]
+    fn loaded_snapshot_rejects_a_changed_open_overlay() {
+        let root = std::env::temp_dir().join(format!(
+            "quazi_lsp_snapshot_generation_{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).expect("stale test directory is removed");
+        }
+        fs::create_dir_all(&root).expect("test directory is created");
+        let path = root.join("main.qz");
+        fs::write(&path, "fn main() void { ret; }\n").expect("test source is written");
+        let canonical_path = path.canonicalize().expect("canonical test source");
+        let uri = Url::from_file_path(&canonical_path).expect("test source URI");
+        let old_source = "fn main() void { ret; }\n".to_string();
+        let snapshot = crate::lsp::analysis::LoadedSnapshot {
+            report: analyze_source(&old_source).expect("test source analyzes"),
+            source_files: Vec::new(),
+            effective_sources: HashMap::from([(canonical_path, old_source.clone())]),
+        };
+        let mut documents = HashMap::from([(
+            uri.clone(),
+            DocumentState::new(uri, "fn main() void { ret 1; }\n".to_string(), 2),
+        )]);
+        let overlays = HashMap::from([(
+            path.canonicalize().expect("canonical overlay"),
+            old_source.clone(),
+        )]);
+        assert!(!loaded_snapshot_matches_open_documents(
+            &snapshot, &overlays, &documents
+        ));
+
+        documents.values_mut().next().expect("open document").source = old_source;
+        assert!(loaded_snapshot_matches_open_documents(
+            &snapshot, &overlays, &documents
+        ));
+        documents.clear();
+        assert!(!loaded_snapshot_matches_open_documents(
+            &snapshot, &overlays, &documents
+        ));
+        fs::remove_dir_all(root).expect("test directory is removed");
+    }
 
     #[test]
     fn workspace_symbol_search_aggregates_open_documents_deterministically() {

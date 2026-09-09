@@ -60,11 +60,14 @@ than a name-resolution guarantee.
 ## Current Limitations
 
 - The transport honors JSON-RPC `$/cancelRequest` for pending LSP requests.
-  Compiler analysis and loader work are still synchronous, so cancellation
-  cannot preempt or reclaim an already-running analysis task. Automatic
-  filesystem watching is not implemented; the workspace-symbol snapshot is
-  built during initialization, and externally changed files are picked up when
-  the server is restarted or opened and saved through the LSP.
+  Compiler and loader snapshots run on Tokio's blocking pool, so they do not
+  occupy an async server worker. Cancellation can stop waiting for a request,
+  but cannot preempt or reclaim an already-running compiler task. A completed
+  loader snapshot is discarded if a captured open buffer changed or closed
+  while it was running. Automatic filesystem watching is not implemented; the
+  workspace-symbol snapshot is built during initialization, and externally
+  changed files are picked up when the server is restarted or opened and saved
+  through the LSP.
 - Go-to-definition follows semantic bindings across the current document's
   configured local, package, and standard-library import graph. Open file
   buffers override disk text for every loaded source before spans are rebased
