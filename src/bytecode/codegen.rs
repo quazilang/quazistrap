@@ -466,10 +466,15 @@ impl<'a> Codegen<'a> {
     /// Return the resolved symbol name for a top-level item defined at `span`.
     /// Namespaced files use `module.name`; entry files use the bare `name`.
     /// Internal runtime symbols (`__quazi_*`) keep their bare names.
-    /// `@export` functions keep their source identity here; a synthetic adapter
-    /// receives the external symbol and C ABI metadata after body compilation.
-    fn resolve_item_name(&self, span: Span, name: &str, _attributes: &[Attribute]) -> String {
-        if name.starts_with("__quazi_") {
+    /// `@export` functions keep their bare semantic identity; a synthetic
+    /// adapter receives the external symbol and C ABI metadata after body
+    /// compilation.
+    fn resolve_item_name(&self, span: Span, name: &str, attributes: &[Attribute]) -> String {
+        if name.starts_with("__quazi_")
+            || attributes
+                .iter()
+                .any(|attribute| attribute.name == "export")
+        {
             return name.to_string();
         }
         if let Some(sf) = self.source_files.iter().find(|f| f.contains(span))
@@ -8192,7 +8197,7 @@ mod tests {
     use super::*;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
-    use crate::semantic::Analyzer;
+    use crate::semantic::{Analyzer, SourceFile};
 
     fn compile(src: &str) -> Vec<Chunk> {
         let tokens = Lexer::new(src).tokenize();
@@ -8205,6 +8210,39 @@ mod tests {
         );
         Codegen::new(&report)
             .compile_program(&program, &[])
+            .expect("code generation should succeed")
+    }
+
+    fn compile_namespaced_module(module_src: &str, main_src: &str) -> Vec<Chunk> {
+        let merged = format!("{module_src}\n{main_src}");
+        let module_len = module_src.chars().count();
+        let source_files = vec![
+            SourceFile {
+                path: "helpers.qz".to_string(),
+                module_name: Some("helpers".to_string()),
+                start: 0,
+                end: module_len,
+                line_start: 1,
+            },
+            SourceFile {
+                path: "main.qz".to_string(),
+                module_name: None,
+                start: module_len + 1,
+                end: merged.chars().count(),
+                line_start: module_src.lines().count() + 1,
+            },
+        ];
+        let tokens = Lexer::new(&merged).tokenize();
+        let program = Parser::new_with_source_files(tokens, &merged, source_files.clone())
+            .parse()
+            .expect("parse failed");
+        let mut analyzer = Analyzer::new();
+        analyzer.set_source_files(source_files.clone());
+        analyzer.set_namespaced_paths(std::collections::HashSet::from(["helpers.qz".to_string()]));
+        let report = analyzer.analyze_program(&program);
+        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        Codegen::new(&report)
+            .compile_program(&program, &source_files)
             .expect("code generation should succeed")
     }
 
@@ -9223,6 +9261,33 @@ fn main() i32 {
                 ConstPoolEntry::ForeignSymbol(symbol)
                     if symbol.symbol == "<function-pointer>"
                         && symbol.signature.params.len() == 1
+            )
+        }));
+    }
+
+    #[test]
+    fn namespaced_exported_callback_uses_its_bare_semantic_identity() {
+        let chunks = compile_namespaced_module(
+            r#"
+@repr(C) type Callback = fn(i32) i32;
+@export("increment") pub fn increment(value: i32) i32 { ret value + 1; }
+pub unsafe fn start() void {
+    var callback: Callback = increment;
+    const ignored = callback(1);
+    ret;
+}
+"#,
+            "import helpers;\nfn main() void { unsafe { helpers.start(); } }",
+        );
+        let start = chunks
+            .iter()
+            .find(|chunk| chunk.name == "helpers.start")
+            .expect("namespaced caller chunk");
+        assert!(start.constants.iter().any(|constant| {
+            matches!(
+                constant,
+                ConstPoolEntry::FnAddr(name)
+                    if name.starts_with("__quazi_export_adapter_increment_")
             )
         }));
     }
