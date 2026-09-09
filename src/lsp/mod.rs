@@ -9,6 +9,7 @@ mod document;
 mod formatting;
 mod goto_def;
 mod hover;
+mod inlay_hints;
 mod references;
 mod semantic_tokens;
 mod server;

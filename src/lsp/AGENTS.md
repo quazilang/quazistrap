@@ -31,7 +31,7 @@ Basic server is running.
   rebase declaration spans to LSP locations.
 - ✅ Loader-backed cross-file references and workspace-scoped rename
 - ❌ Code actions / quick fixes
-- ❌ Inlay hints
+- ✅ Compiler-backed inferred type inlay hints for unannotated local declarations
 - ✅ Persistent workspace symbols for parseable local `.qz` files under the
   negotiated workspace roots; open buffers override their on-disk snapshots.
 
@@ -41,6 +41,11 @@ effective source map, including unsaved open-document overlays. References can
 include local, package, and standard-library import graphs; rename is offered
 only when every affected file is beneath a client-negotiated workspace root,
 so it cannot modify dependencies or the standard library.
+
+Type inlay hints are derived from parsed `var`/`const` declarations that omit
+a written type and from the matching semantic declaration span. They display
+the compiler's resolved type, respect the client-requested visible range, and
+do not guess types from identifier names or text.
 
 Workspace indexing is read-only: normalize only local file workspace folders
 (or the legacy `rootUri`), never follow symlinks, skip `.git`, and retain no

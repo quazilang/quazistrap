@@ -43,6 +43,9 @@ The server reports its version from the compiler package.
   dependency or the standard library. Renaming an imported declaration updates
   its import selector while preserving a local `as` alias and its uses.
 - Full-document semantic tokens for lexical tokens and known semantic symbols.
+- Type inlay hints for unannotated local `var` and `const` declarations. Hints
+  use the compiler-resolved type and are limited to the range requested by the
+  editor; declarations with an explicit type receive no duplicate hint.
 
 Completion uses the most recent successful semantic analysis. While a document
 has a parse error, only the filesystem-backed `std.*` path completion is
@@ -53,10 +56,10 @@ than a name-resolution guarantee.
 
 ## Current Limitations
 
-- Inlay hints, code actions, cancellation, and automatic filesystem watching
-  are not implemented. The workspace-symbol snapshot is built during
-  initialization; files changed externally are picked up when the server is
-  restarted or opened and saved through the LSP.
+- Code actions, cancellation, and automatic filesystem watching are not
+  implemented. The workspace-symbol snapshot is built during initialization;
+  files changed externally are picked up when the server is restarted or
+  opened and saved through the LSP.
 - Go-to-definition follows semantic bindings across the current document's
   configured local, package, and standard-library import graph. Open file
   buffers override disk text for every loaded source before spans are rebased

@@ -14,8 +14,8 @@ use tower_lsp::{Client, LanguageServer};
 use super::document::DocumentState;
 use super::workspace::WorkspaceIndex;
 use super::{
-    analysis, completion, diagnostics, formatting, goto_def, hover, references, semantic_tokens,
-    signature, symbols,
+    analysis, completion, diagnostics, formatting, goto_def, hover, inlay_hints, references,
+    semantic_tokens, signature, symbols,
 };
 
 pub struct VoidLanguageServer {
@@ -208,6 +208,7 @@ impl LanguageServer for VoidLanguageServer {
                     }
                     .into(),
                 ),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
@@ -393,6 +394,17 @@ impl LanguageServer for VoidLanguageServer {
             &params.new_name,
             |candidate| workspace.canonical_uri(candidate).is_some(),
         ))
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let docs = self.documents.read().await;
+        let Some(doc) = docs.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        Ok(doc
+            .report
+            .as_ref()
+            .map(|report| inlay_hints::type_hints(report, &doc.source, params.range)))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
