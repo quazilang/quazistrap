@@ -12,8 +12,8 @@ attributes.
 |---|---|---|---|
 | VS Code | `../vscode-quazi/` | extension with language registration and LSP launcher | manifest parsing and `npm pack --dry-run` |
 | Neovim | `../nvim-quazi/` | native Neovim 0.11+ LSP configuration | headless configuration and real-client LSP smoke on Neovim 0.12 |
-| Helix | `../helix-quazi/` | configuration/runtime query package | static configuration review; Helix binary unavailable |
-| Zed | `../zed-quazi/` | Zed language extension | `cargo check` and formatting check |
+| Helix | `../helix-quazi/` | configuration/runtime query package | canonical grammar-asset check; Helix binary unavailable |
+| Zed | `../zed-quazi/` | Zed language extension | canonical grammar-asset check, `cargo check`, and formatting check |
 
 The canonical grammar is the separate [`tree-sitter`](../../../tree-sitter/)
 repository. Its immutable grammar revision is pinned by integrations that need
