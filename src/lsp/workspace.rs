@@ -83,18 +83,25 @@ impl WorkspaceIndex {
     /// Update one indexed file after a successful save. Non-local documents
     /// and files outside the negotiated roots never enter the disk index.
     pub fn update_from_source(&mut self, uri: &Url, source: &str) {
+        self.update_from_analysis(uri, source.to_string(), analysis::analyze_source(source));
+    }
+
+    /// Install a source snapshot whose compiler result was prepared by the
+    /// caller. This lets the LSP perform analysis on its blocking pool without
+    /// holding the workspace index lock.
+    pub fn update_from_analysis(
+        &mut self,
+        uri: &Url,
+        source: String,
+        analysis_result: Result<SemanticReport, String>,
+    ) {
         let Some(canonical_uri) = self.canonical_uri(uri) else {
             return;
         };
-        match analysis::analyze_source(source) {
+        match analysis_result {
             Ok(report) => {
-                self.documents.insert(
-                    canonical_uri,
-                    IndexedDocument {
-                        source: source.to_string(),
-                        report,
-                    },
-                );
+                self.documents
+                    .insert(canonical_uri, IndexedDocument { source, report });
             }
             Err(_) => {
                 self.documents.remove(&canonical_uri);
@@ -188,6 +195,8 @@ mod tests {
 
     use tower_lsp::lsp_types::{InitializeParams, Url, WorkspaceFolder};
 
+    use crate::lsp::analysis;
+
     use super::WorkspaceIndex;
 
     static NEXT_TEMP_DIR: AtomicUsize = AtomicUsize::new(0);
@@ -243,7 +252,9 @@ mod tests {
         let mut index = WorkspaceIndex::from_initialize_params(&params(&root));
         assert!(index.documents().contains_key(&uri));
 
-        index.update_from_source(&uri, "fn saved_name() i32 { ret 2; }");
+        let saved_source = "fn saved_name() i32 { ret 2; }".to_string();
+        let saved_analysis = analysis::analyze_source(&saved_source);
+        index.update_from_analysis(&uri, saved_source, saved_analysis);
         assert!(
             index
                 .documents()

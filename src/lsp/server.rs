@@ -255,7 +255,9 @@ impl LanguageServer for VoidLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         // Build the snapshot before initialization completes so the first
         // workspace/symbol request sees the client-selected workspace.
-        let index = WorkspaceIndex::from_initialize_params(&params);
+        let index = run_in_blocking_pool(move || WorkspaceIndex::from_initialize_params(&params))
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
         *self.workspace.write().await = index;
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -351,12 +353,37 @@ impl LanguageServer for VoidLanguageServer {
                 .publish_diagnostics(params.text_document.uri.clone(), diags, None)
                 .await;
         }
-        if let Some(doc) = docs.get(&params.text_document.uri) {
-            self.workspace
-                .write()
-                .await
-                .update_from_source(&params.text_document.uri, &doc.source);
+        let Some(doc) = docs.get(&params.text_document.uri) else {
+            return;
+        };
+        let source = doc.source.clone();
+        let version = doc.version;
+        drop(docs);
+
+        let analysis_source = source.clone();
+        let Ok(analysis_result) =
+            run_in_blocking_pool(move || analysis::analyze_source(&analysis_source)).await
+        else {
+            self.client
+                .log_message(
+                    MessageType::ERROR,
+                    "LSP workspace index analysis task did not complete; preserving its prior snapshot",
+                )
+                .await;
+            return;
+        };
+        // Hold the workspace write lock before rechecking the document
+        // generation, so no later save can commit an older analysis between
+        // this check and the index mutation.
+        let mut workspace = self.workspace.write().await;
+        let docs = self.documents.read().await;
+        if !docs
+            .get(&params.text_document.uri)
+            .is_some_and(|doc| doc.is_generation(&source, version))
+        {
+            return;
         }
+        workspace.update_from_analysis(&params.text_document.uri, source, analysis_result);
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {

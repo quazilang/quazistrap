@@ -61,7 +61,8 @@ than a name-resolution guarantee.
 
 - The transport honors JSON-RPC `$/cancelRequest` for pending LSP requests.
   Compiler and loader snapshots run on Tokio's blocking pool, so they do not
-  occupy an async server worker. Cancellation can stop waiting for a request,
+  occupy an async server worker. Workspace initialization scans and saved-file
+  index updates use the same pool. Cancellation can stop waiting for a request,
   but cannot preempt or reclaim an already-running compiler task. A completed
   loader snapshot is discarded if a captured open buffer changed or closed
   while it was running. Automatic filesystem watching is not implemented; the

@@ -10,6 +10,7 @@
 - [2026-09-09: Tutorial fence verification](2026-09-09-tutorial-fence-verification.md)
 - [2026-09-09: Markdown fence verification](2026-09-09-markdown-fence-verification.md)
 - [2026-09-09: LSP background compiler snapshots](2026-09-09-lsp-background-analysis.md)
+- [2026-09-09: LSP workspace background indexing](2026-09-09-lsp-workspace-background-indexing.md)
 
 Audience: language users and maintainers.
 

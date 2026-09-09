@@ -37,11 +37,12 @@ Basic server is running.
 
 The tower-lsp transport handles `$/cancelRequest` for pending requests.
 Compiler and loader snapshots run on Tokio's blocking pool, which keeps them
-off async server workers, but this does not make them cooperatively
-cancellable: an already-running parser, semantic analysis, or loader task
-must finish. Before returning a loader-backed result, verify that every open
-buffer included in its snapshot is still open with the same source text;
-otherwise discard it. An explicit compiler cancellation boundary is still required
+off async server workers; workspace initialization scans and save-time index
+updates use the pool too. This does not make them cooperatively cancellable:
+an already-running parser, semantic analysis, or loader task must finish.
+Before returning a loader-backed result, verify that every open buffer included
+in its snapshot is still open with the same source text; otherwise discard it.
+An explicit compiler cancellation boundary is still required
 before claiming CPU-work interruption.
 
 Cross-file references and rename use a fresh compiler-loader snapshot, not the
