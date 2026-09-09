@@ -34,9 +34,13 @@ runnable examples from the [`examples/`](../../examples/README.md) directory.
 
 ## Style
 
-All examples use current Quazi syntax and are designed to compile with the
-current compiler. Features labeled experimental in the
-[language specification](../language/README.md) are noted where they appear.
+Every Quazi fence starts with a visible `// tutorial:` status comment.
+`runnable` means the complete source can be checked independently; `fragment`
+means the excerpt depends on declarations, imports, or a project layout shown
+elsewhere in its chapter; and `invalid` marks a deliberate diagnostic example.
+The compiler test suite rejects an unclassified tutorial fence. Features
+labeled experimental in the [language specification](../language/README.md)
+are noted where they appear.
 
 ## Verified fixtures
 

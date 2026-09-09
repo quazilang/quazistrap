@@ -16,6 +16,7 @@ This creates a `quazi.toml` manifest and a `src/main.qz` entry point. Open
 `src/main.qz` and write:
 
 ```quazi
+// tutorial: runnable
 import std.io;
 
 fn main() i32 {
@@ -70,6 +71,7 @@ executable. Useful for catching errors quickly during development.
 `main` can also accept command-line arguments:
 
 ```quazi
+// tutorial: runnable
 import std.io;
 
 fn main(args: Array[str]) i32 {

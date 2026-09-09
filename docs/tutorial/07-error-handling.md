@@ -17,12 +17,14 @@ Quazi separates expected failures from bugs:
 `Option` represents a value that may or may not exist:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 enum Option[T] { Some(T), None, }
 ```
 
 ### Creating Options
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 const found: Option[i32] = Some(42);
 const missing: Option[i32] = None;
 ```
@@ -30,6 +32,7 @@ const missing: Option[i32] = None;
 ### Using Options
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn safe_divide(a: i32, b: i32) Option[i32] {
     if (b == 0) { ret None; }
     ret Some(a / b);
@@ -62,12 +65,14 @@ fn main() i32 {
 `Result` carries either a success value or a typed error:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 enum Result[T, E] { Ok(T), Err(E), }
 ```
 
 ### Using Results
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn parse_port(text: str) Result[u16, ParseError] {
     ret text.parse[u16]();
 }
@@ -94,6 +99,7 @@ fn main() i32 {
 On `Err`/`None`, it returns early:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn load_config(path: str) Result[i32, ParseError] {
     const text = "42"; // would come from a file
     const value = text.parse[i32]()?;  // returns Err early if parsing fails
@@ -107,6 +113,7 @@ type.
 ### Chaining with `?`
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn process(input: str) Result[i32, ParseError] {
     const a = input.parse[i32]()?;
     const b = "10".parse[i32]()?;
@@ -136,6 +143,7 @@ diagnostics.
 `panic` terminates the process for unrecoverable situations:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn checked_access(items: Array[i32], index: usize) i32 {
     if (index >= items.len()) {
         panic("index out of bounds");
@@ -151,6 +159,7 @@ There is no recovery from a panic. Use `Result` for expected failures.
 A program may install one custom panic handler:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 import std.core;
 
 @panic_handler

@@ -12,6 +12,7 @@ This program reads a text file, records every byte position in a `Map`, and
 prints the number of indexed positions:
 
 ```quazi
+// tutorial: runnable
 import std.io;
 import std.fs;
 import std.collections.Map;
@@ -76,6 +77,7 @@ This program demonstrates:
 Add tests alongside the application:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 @test
 fn empty_text_has_no_positions() void {
     const counts = index_positions("");
@@ -110,6 +112,7 @@ qz build --target x86_64-windows
 Use `@cfg` for platform-specific code:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 @cfg(target_os="windows")
 fn path_separator() str { ret "\\"; }
 

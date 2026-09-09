@@ -6,6 +6,7 @@ and closures.
 ## Basic functions
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn add(a: i32, b: i32) i32 {
     ret a + b;
 }
@@ -24,6 +25,7 @@ must reach a `ret`.
 Positional arguments must come before named arguments:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn create_user(name: str, age: i32, active: bool) void { ... }
 
 // All positional:
@@ -38,6 +40,7 @@ create_user("Alice", active=true, age=30);
 The final parameter can accept multiple values:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn sum(first: i32, ...rest: i32) i32 {
     var total: i32 = first;
     for value : rest {
@@ -55,6 +58,7 @@ Functions can call themselves. A terminating base case is your
 responsibility:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn factorial(n: i64) i64 {
     if (n <= 1) { ret 1; }
     ret n * factorial(n - 1);
@@ -66,6 +70,7 @@ fn factorial(n: i64) i64 {
 Type parameters let you write functions that work with any type:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn first[T](items: Array[T]) T {
     ret items[0];
 }
@@ -82,6 +87,7 @@ Generic calls normally infer type arguments. Use explicit arguments when
 inference is ambiguous:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 const value = first[i32](numbers);
 ```
 
@@ -90,6 +96,7 @@ const value = first[i32](numbers);
 Closure expressions create function values:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 var double: fn(i32) i32 = |x| x * 2;
 var add: fn(i32, i32) i32 = |a, b| a + b;
 
@@ -103,6 +110,7 @@ binding needs an explicit type annotation.
 ### Passing closures as arguments
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn apply(value: i32, f: fn(i32) i32) i32 {
     ret f(value);
 }
@@ -116,6 +124,7 @@ io.println("5 squared = {}", result);
 A named function can be used as a function value:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn triple(x: i32) i32 { ret x * 3; }
 
 var f: fn(i32) i32 = triple;
@@ -128,6 +137,7 @@ io.println("f(4) = {}", f(4));
 ownership. Calling only borrows it, so it can be called repeatedly:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 var f: fn(i32) i32 = |x| x + 1;
 io.println("{}", f(1)); // ok: calling borrows
 io.println("{}", f(2)); // ok: still valid

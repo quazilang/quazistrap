@@ -139,6 +139,93 @@ fn heading_ids(source: &str) -> Vec<String> {
     headings
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum TutorialFenceKind {
+    Runnable,
+    Fragment,
+    Invalid,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct TutorialFence {
+    kind: TutorialFenceKind,
+    opening_line: usize,
+    body: String,
+}
+
+fn markdown_fence_opening(line: &str) -> Option<(char, usize, &str)> {
+    let indent = line.bytes().take_while(|byte| *byte == b' ').count();
+    if indent > 3 {
+        return None;
+    }
+    let rest = &line[indent..];
+    let marker = rest.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let width = rest.chars().take_while(|character| *character == marker).count();
+    if width < 3 {
+        return None;
+    }
+    Some((marker, width, rest[width..].trim()))
+}
+
+fn markdown_fence_closes(line: &str, marker: char, width: usize) -> bool {
+    let indent = line.bytes().take_while(|byte| *byte == b' ').count();
+    if indent > 3 {
+        return false;
+    }
+    let rest = &line[indent..];
+    let closing_width = rest.chars().take_while(|character| *character == marker).count();
+    closing_width >= width && rest[closing_width..].trim().is_empty()
+}
+
+/// Parse visible classification comments from Quazi tutorial fences.
+fn tutorial_quazi_fences(source: &str) -> Result<Vec<TutorialFence>, String> {
+    let mut fences = Vec::new();
+    let mut active: Option<(char, usize, bool, usize, Vec<&str>)> = None;
+
+    for (index, line) in source.lines().enumerate() {
+        let line_number = index + 1;
+        if let Some((marker, width, is_quazi, opening_line, body)) = &mut active {
+            if markdown_fence_closes(line, *marker, *width) {
+                if *is_quazi {
+                    let (marker_offset, classification) = body
+                        .iter()
+                        .enumerate()
+                        .find_map(|(offset, line)| (!line.trim().is_empty()).then_some((offset, line.trim())))
+                        .ok_or_else(|| format!("line {opening_line}: Quazi fence has no classification"))?;
+                    let Some(classification) = classification.strip_prefix("// tutorial:") else {
+                        return Err(format!("line {}: Quazi fence must begin with `// tutorial:`", *opening_line + marker_offset + 1));
+                    };
+                    let (kind, detail) = classification.trim().split_once(char::is_whitespace).unwrap_or((classification.trim(), ""));
+                    let kind = match kind {
+                        "runnable" if detail.trim().is_empty() => TutorialFenceKind::Runnable,
+                        "fragment" if !detail.trim().is_empty() => TutorialFenceKind::Fragment,
+                        "invalid" if !detail.trim().is_empty() => TutorialFenceKind::Invalid,
+                        "runnable" => return Err(format!("line {}: runnable fence must not add a reason", *opening_line + marker_offset + 1)),
+                        "fragment" | "invalid" => return Err(format!("line {}: {kind} fence needs a reason", *opening_line + marker_offset + 1)),
+                        _ => return Err(format!("line {}: unknown Quazi fence classification `{kind}`", *opening_line + marker_offset + 1)),
+                    };
+                    fences.push(TutorialFence { kind, opening_line: *opening_line, body: body.join("\n") });
+                }
+                active = None;
+            } else {
+                body.push(line);
+            }
+            continue;
+        }
+        if let Some((marker, width, info)) = markdown_fence_opening(line) {
+            active = Some((marker, width, info.split_whitespace().next() == Some("quazi"), line_number, Vec::new()));
+        }
+    }
+    if let Some((_, _, is_quazi, opening_line, _)) = active {
+        let kind = if is_quazi { "Quazi" } else { "Markdown" };
+        return Err(format!("line {opening_line}: unterminated {kind} fence"));
+    }
+    Ok(fences)
+}
+
 /// Checks repository-local inline Markdown links in the canonical documentation tree.
 ///
 /// This intentionally does not fetch external URLs or traverse links into sibling
@@ -249,7 +336,7 @@ fn invalid_local_links(docs_root: &Path) -> Result<Vec<String>, String> {
 mod tests {
     use super::{
         heading_ids, inline_link_destinations, invalid_local_links, local_destination,
-        markdown_files, resolve_repository_path,
+        markdown_files, resolve_repository_path, tutorial_quazi_fences, TutorialFenceKind,
     };
     use std::collections::BTreeSet;
     use std::fs;
@@ -372,6 +459,135 @@ mod tests {
             "broken canonical documentation links:\n{}",
             invalid.join("\n")
         );
+    }
+
+    #[test]
+    fn classifies_visible_tutorial_quazi_fence_markers() {
+        let source = "```quazi\n// tutorial: runnable\nfn main() void { ret; }\n```\n\n\
+```quazi\n\n// tutorial: fragment — assumes `value` is in scope.\nvalue;\n```\n\n\
+~~~quazi\n// tutorial: invalid — demonstrates a parser error.\n...\n~~~\n";
+        let fences = tutorial_quazi_fences(source).expect("fences are classified");
+        assert_eq!(
+            fences.iter().map(|fence| fence.kind).collect::<Vec<_>>(),
+            [
+                TutorialFenceKind::Runnable,
+                TutorialFenceKind::Fragment,
+                TutorialFenceKind::Invalid,
+            ]
+        );
+        assert!(fences[0].body.starts_with("// tutorial: runnable"));
+    }
+
+    #[test]
+    fn rejects_unclassified_or_malformed_tutorial_quazi_fences() {
+        assert!(tutorial_quazi_fences("```quazi\nconst value = 1;\n```\n").is_err());
+        assert!(tutorial_quazi_fences("```quazi\n// tutorial: fragment\nvalue;\n```\n").is_err());
+        assert!(tutorial_quazi_fences("```quazi\n// tutorial: unknown\nvalue;\n```\n").is_err());
+        assert!(tutorial_quazi_fences("```quazi\n// tutorial: runnable\n").is_err());
+    }
+
+    #[test]
+    fn every_tutorial_quazi_fence_has_a_visible_classification() {
+        let tutorial_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/tutorial");
+        for chapter in markdown_files(&tutorial_root)
+            .expect("tutorial chapters can be listed")
+            .into_iter()
+            .filter(|chapter| {
+                chapter
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.as_bytes().get(2) == Some(&b'-'))
+            })
+        {
+            let source = fs::read_to_string(&chapter).expect("chapter can be read");
+            tutorial_quazi_fences(&source)
+                .unwrap_or_else(|error| panic!("{}: {error}", chapter.display()));
+        }
+    }
+
+    #[test]
+    fn runnable_tutorial_fences_analyze_and_lower_to_bytecode() {
+        let tutorial_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/tutorial");
+        let temporary_root = std::env::temp_dir().join(format!(
+            "quazi_tutorial_runnable_fences_{}",
+            std::process::id()
+        ));
+        if temporary_root.exists() {
+            fs::remove_dir_all(&temporary_root).expect("stale tutorial fence directory is removed");
+        }
+        fs::create_dir_all(&temporary_root).expect("tutorial fence directory is created");
+
+        let mut runnable_count = 0;
+        for chapter in markdown_files(&tutorial_root)
+            .expect("tutorial chapters can be listed")
+            .into_iter()
+            .filter(|chapter| {
+                chapter
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.as_bytes().get(2) == Some(&b'-'))
+            })
+        {
+            let source = fs::read_to_string(&chapter).expect("chapter can be read");
+            for (index, fence) in tutorial_quazi_fences(&source)
+                .unwrap_or_else(|error| panic!("{}: {error}", chapter.display()))
+                .into_iter()
+                .enumerate()
+            {
+                if fence.kind != TutorialFenceKind::Runnable {
+                    continue;
+                }
+                runnable_count += 1;
+                let stem = chapter.file_stem().and_then(|stem| stem.to_str()).expect("chapter stem");
+                let path = temporary_root.join(format!("{stem}-{index}.qz"));
+                fs::write(&path, fence.body).expect("runnable tutorial fence is written");
+                let mut loaded = crate::loader::load_programs_configured(
+                    std::slice::from_ref(&path),
+                    None,
+                    true,
+                    &[],
+                )
+                .unwrap_or_else(|error| panic!("cannot load {}: {error}", path.display()));
+                assert!(
+                    loaded.parse_error.is_none(),
+                    "cannot parse {}: {}",
+                    chapter.display(),
+                    loaded.parse_error.take().unwrap_or_default()
+                );
+                let program = crate::semantic::strip_cfg(&loaded.program);
+                let namespaced_paths = loaded
+                    .namespaced_paths
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
+                let report = crate::analysis::analyze_program_with_source_files(
+                    &loaded.merged_source,
+                    &program,
+                    loaded.library_fn_names,
+                    loaded.library_char_ranges,
+                    loaded.source_files.clone(),
+                    namespaced_paths,
+                );
+                assert!(
+                    report.errors.is_empty(),
+                    "runnable tutorial fence {}:{} has semantic errors: {:#?}",
+                    chapter.display(),
+                    fence.opening_line,
+                    report.errors
+                );
+                crate::bytecode::Codegen::new(&report)
+                    .compile_program(&program, &loaded.source_files)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "cannot lower runnable tutorial fence {}:{}: {error}",
+                            chapter.display(),
+                            fence.opening_line
+                        )
+                    });
+            }
+        }
+        fs::remove_dir_all(&temporary_root).expect("tutorial fence directory is removed");
+        assert!(runnable_count > 0, "tutorial must include runnable fences");
     }
 
     #[test]

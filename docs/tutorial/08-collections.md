@@ -7,6 +7,7 @@ This chapter covers arrays, maps, and sets.
 Fixed arrays have a known size at compile time:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 const rgb: [u8; 3] = [255, 128, 0];
 const first: u8 = rgb[0];     // 255
 const count: usize = rgb.len(); // 3 (if applicable)
@@ -19,10 +20,11 @@ Indexing is bounds-checked in safe code.
 `Array[T]` is the prelude's growable collection:
 
 ```quazi
+// tutorial: runnable
 import std.io;
 
 fn main() i32 {
-    var numbers: Array[i32] = Array[i32].new();
+    var numbers: Array[i32] = Array.new();
 
     // Adding elements
     numbers.push(10);
@@ -36,14 +38,9 @@ fn main() i32 {
     // Modifying elements
     numbers[0] = 99;
 
-    // Iterating
-    for value : numbers {
-        io.println("Value: {}", value);
-    }
-
-    // Index-value iteration
-    for i, value : numbers {
-        io.println("[{}] = {}", i, value);
+    // Iterate by index; Array does not yet expose an iterator.
+    for i : 0..numbers.len() {
+        io.println("[{}] = {}", i, numbers[i]);
     }
 
     ret 0;
@@ -55,6 +52,7 @@ fn main() i32 {
 `get(index)` returns `Option[T]` instead of panicking:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 const maybe = numbers.get(10);
 match maybe {
     Some(v) => io.println("Found: {}", v),
@@ -74,6 +72,7 @@ early release if needed.
 and values:
 
 ```quazi
+// tutorial: runnable
 import std.collections.Map;
 import std.io;
 
@@ -109,6 +108,7 @@ fn main() i32 {
 `insert` and `remove` mutate the map directly. They do not return a new map:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 // Correct:
 scores.insert(4, 77).unwrap();
 
@@ -121,6 +121,7 @@ scores.insert(4, 77).unwrap();
 `std.collections` provides an open-addressing set with `usize` values:
 
 ```quazi
+// tutorial: runnable
 import std.collections.Set;
 import std.io;
 
@@ -146,6 +147,7 @@ fn main() i32 {
 `Box[T]` is a heap-allocated single value:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 var boxed = Box[i32].new(42);
 io.println("Value: {}", boxed.get());
 boxed.set(100);
@@ -158,6 +160,7 @@ io.println("Updated: {}", boxed.get());
 Strings support collection-style operations:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 const text: str = "Hello, Quazi!";
 
 // Length

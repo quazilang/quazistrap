@@ -9,6 +9,7 @@ Each `.qz` file is a module. Module paths use `.`, never `::`.
 ### Single item import
 
 ```quazi
+// tutorial: runnable
 import std.io.println;
 
 fn main() i32 {
@@ -20,6 +21,7 @@ fn main() i32 {
 ### Module import
 
 ```quazi
+// tutorial: runnable
 import std.io;
 
 fn main() i32 {
@@ -31,12 +33,14 @@ fn main() i32 {
 ### Multi-item import
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 import std.io.{println, eprintln};
 ```
 
 ### Aliased import
 
 ```quazi
+// tutorial: runnable
 import std.io.println as log;
 
 fn main() i32 {
@@ -63,6 +67,7 @@ my_project/
 ### Writing a module
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 // src/math.qz
 pub fn square(x: i32) i32 {
     ret x * x;
@@ -80,6 +85,7 @@ fn internal_helper() void {
 ### Using a module
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 // src/main.qz
 import math.square;
 import math.cube;
@@ -97,11 +103,13 @@ A directory becomes a module through `mod.qz`. The gateway controls what is
 visible:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 // src/utils/mod.qz
 pub import ./helpers.format_name;
 ```
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 // src/utils/helpers.qz
 pub fn format_name(first: str, last: str) String {
     ret format("{} {}", first, last);
@@ -109,6 +117,7 @@ pub fn format_name(first: str, last: str) String {
 ```
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 // src/main.qz
 import utils.format_name;
 ```
@@ -118,6 +127,7 @@ import utils.format_name;
 `./` forces resolution relative to the current file:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 import ./local_helper.value;
 ```
 
@@ -141,6 +151,7 @@ math_lib = { path = "../math_lib" }
 Use it:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 import math_lib.factorial;
 ```
 
@@ -178,6 +189,7 @@ The entry point is `src/lib.qz`. Its `pub` declarations become direct
 package exports:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 // src/lib.qz
 pub fn factorial(n: i64) i64 {
     if (n <= 1) { ret 1; }
@@ -188,6 +200,7 @@ pub fn factorial(n: i64) i64 {
 Consumers import directly:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 import my_lib.factorial;
 ```
 

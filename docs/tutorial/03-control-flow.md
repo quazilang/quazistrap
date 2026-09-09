@@ -7,6 +7,7 @@ This chapter covers conditionals, loops, and pattern matching.
 ### `if` / `else if` / `else`
 
 ```quazi
+// tutorial: runnable
 import std.io;
 
 fn classify(temp: i32) str {
@@ -37,6 +38,7 @@ Quazi uses `for` for all loop forms.
 ### Range loops
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 // Exclusive upper bound: 0, 1, 2, ..., 9
 for i : 0..10 {
     io.println("{}", i);
@@ -51,6 +53,7 @@ for i : 1..=5 {
 ### Iterator loops
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 var items = [10, 20, 30];
 for value : items {
     io.println("Value: {}", value);
@@ -60,6 +63,7 @@ for value : items {
 ### Index-value loops
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 var names = ["Alice", "Bob", "Carol"];
 for index, name : names {
     io.println("{}: {}", index, name);
@@ -69,6 +73,7 @@ for index, name : names {
 ### C-style loops
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 for var i = 0; i < 5; i++ {
     io.println("Step {}", i);
 }
@@ -77,6 +82,7 @@ for var i = 0; i < 5; i++ {
 ### Condition loops (while-like)
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 var count: i32 = 10;
 for (count > 0) {
     io.println("Countdown: {}", count);
@@ -87,6 +93,7 @@ for (count > 0) {
 ### Infinite loops
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 var tries: i32 = 0;
 for {
     tries++;
@@ -100,6 +107,7 @@ io.println("Stopped after {} tries", tries);
 `break` exits the nearest loop. `continue` skips to the next iteration:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 // Print odd numbers up to 20
 for i : 1..=20 {
     if (i % 2 == 0) { continue; }
@@ -120,6 +128,7 @@ for i : 51..100 {
 `match` tests a value against patterns:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 const day: i32 = 3;
 const name: str = match day {
     1 => "Monday",
@@ -135,6 +144,7 @@ io.println("Day: {}", name);
 ### Enum matching
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 enum Shape {
     Circle(f64),
     Rect(f64, f64),
@@ -153,6 +163,7 @@ fn area(s: Shape) f64 {
 Patterns can include `if` conditions:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn describe(value: i32) str {
     ret match value {
         0 => "zero",
@@ -165,6 +176,7 @@ fn describe(value: i32) str {
 ### Option matching
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn safe_divide(a: i32, b: i32) Option[i32] {
     if (b == 0) { ret None; }
     ret Some(a / b);

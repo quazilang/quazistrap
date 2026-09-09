@@ -7,6 +7,7 @@ This chapter covers custom types and polymorphism.
 Structs group related data into named fields:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 struct Point {
     x: f64,
     y: f64,
@@ -25,6 +26,7 @@ fn main() i32 {
 Fields marked `const` cannot be modified after construction:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 struct Config {
     const name: str,
     var retries: i32,
@@ -36,6 +38,7 @@ struct Config {
 `pub` makes a struct accessible outside its module:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 pub struct Color { r: u8, g: u8, b: u8, }
 ```
 
@@ -46,6 +49,7 @@ pub struct Color { r: u8, g: u8, b: u8, }
 `impl` blocks add methods to a struct:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 struct Rectangle { width: f64, height: f64, }
 
 impl Rectangle {
@@ -80,6 +84,7 @@ syntax on a value.
 Enums define a type with a fixed set of variants:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 enum Direction { North, South, East, West, }
 
 enum Shape {
@@ -92,6 +97,7 @@ enum Shape {
 Variants may carry payload values. Construction:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 const dir = Direction.North;
 const circle = Shape.Circle(5.0);
 const rect = Shape.Rect(4.0, 6.0);
@@ -102,6 +108,7 @@ const rect = Shape.Rect(4.0, 6.0);
 Enum matches must cover every variant:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn area(s: Shape) f64 {
     ret match s {
         Shape.Circle(r) => r * r * 3.14159,
@@ -116,6 +123,7 @@ fn area(s: Shape) f64 {
 The prelude provides `Option[T]` and `Result[T, E]`:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 enum Option[T] { Some(T), None, }
 enum Result[T, E] { Ok(T), Err(E), }
 ```
@@ -128,6 +136,7 @@ qualification when the type is clear from context.
 Traits declare shared behavior:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 trait Area {
     fn area(self: Self) f64;
 }
@@ -136,6 +145,7 @@ trait Area {
 ### Implementing traits
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 struct Circle { radius: f64, }
 
 impl Area for Circle {
@@ -148,6 +158,7 @@ impl Area for Circle {
 ### Using trait methods
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 const c = Circle { radius: 5.0 };
 io.println("Area: {}", c.area());
 ```
@@ -158,6 +169,7 @@ io.println("Area: {}", c.area());
 vtable:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 fn print_area(shape: dyn Area) void {
     io.println("Area: {}", shape.area());
 }
@@ -166,6 +178,7 @@ fn print_area(shape: dyn Area) void {
 ## Generic structs
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 struct Pair[A, B] {
     first: A,
     second: B,
@@ -177,6 +190,7 @@ const p = Pair[str, i32] { first: "age", second: 30 };
 ## Type aliases
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 type Rune = u32;
 type Coordinate = f64;
 ```
@@ -188,6 +202,7 @@ Aliases are transparent to the type system.
 `@derive` registers trait implementations:
 
 ```quazi
+// tutorial: fragment — requires the surrounding chapter context.
 @derive(Serialize)
 struct User {
     name: String,
