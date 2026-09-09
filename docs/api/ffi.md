@@ -10,10 +10,11 @@ threading, and error rules documented alongside it.
 
 ## C ABI aliases
 
-Fixed-width aliases such as `c_int`, `c_uint`, `c_short`, `c_uchar`,
-`c_float`, and `c_double` map to their corresponding Quazi fixed-width scalar
-types. `c_size`, `c_ssize`, `c_ptrdiff`, `c_intptr`, and `c_uintptr` follow the
-target pointer width.
+Fixed-width aliases such as `c_schar`, `c_uchar`, `c_short`, `c_ushort`,
+`c_int`, `c_uint`, `c_long_long`, `c_ulong_long`, `c_float`, and `c_double`
+map to their corresponding Quazi fixed-width scalar types. `c_bool` is
+Quazi's `bool`. `c_size`, `c_ssize`, `c_ptrdiff`, `c_intptr`, and `c_uintptr`
+follow the target pointer width.
 
 `c_long` and `c_ulong` are target dependent: they are 32-bit on Windows and
 64-bit on Linux and macOS. Use the fixed-width aliases when a foreign contract

@@ -26,7 +26,8 @@ after a successful close.
 
 `raw_handle()` exposes the platform handle as `usize` for a foreign API that
 explicitly requires it. It remains valid only while the `DynamicLibrary` owner
-is open.
+is open. `DynamicLibraryError.message()` provides display text for diagnostics;
+callers should match error variants when behavior depends on the failure kind.
 
 ## Symbols
 

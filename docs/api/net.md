@@ -73,7 +73,8 @@ payload. `UdpSocket` provides `close`, automatic `free`, and `handle` like TCP.
 path (default `/`). It is intentionally a small parser, not a general URL
 implementation: no IPv6 literals, authority userinfo, query normalization, or
 percent-decoding contract is supplied. A raw query without an explicit path is
-preserved as a `/?query` request target.
+preserved as a `/?query` request target. `scheme()`, `host()`, `port()`, and
+`path()` return the parsed components as borrowed text or the numeric port.
 
 `Headers.new`, `append`, `set`, `get`, `contains`, `len`, `get_at`, and `encode`
 manage ordered headers. Lookup and replacement are case-insensitive; encoding
@@ -83,8 +84,9 @@ without their own validation.
 
 `HttpRequest.new(method, target, host)`, `with_method`, and `from_url` build a
 request. `header` replaces a header case-insensitively, `body` changes its
-owned text body, and `max_response_bytes` sets the `receive_all` cap used by
-`send`. `encode` adds absent `Host`, `Content-Length`, and `Connection: close`
+owned text body, `body_text()` borrows its current text, and
+`max_response_bytes` sets the `receive_all` cap used by `send`. `encode` adds
+absent `Host`, `Content-Length`, and `Connection: close`
 headers. `send(port)` connects, sends, reads one complete response, closes the
 stream, and parses it. `send_url(url)` routes to the URL host and port and uses
 the URL path as the request target while preserving the request's method, body,

@@ -11,6 +11,7 @@
 - [2026-09-09: Markdown fence verification](2026-09-09-markdown-fence-verification.md)
 - [2026-09-09: LSP background compiler snapshots](2026-09-09-lsp-background-analysis.md)
 - [2026-09-09: LSP workspace background indexing](2026-09-09-lsp-workspace-background-indexing.md)
+- [2026-09-09: API reference surface alignment](2026-09-09-api-reference-surface-alignment.md)
 
 Audience: language users and maintainers.
 

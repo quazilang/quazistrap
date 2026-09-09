@@ -104,4 +104,6 @@ limitation, not a promise that generic `Deserialize` already works.
 
 `DecodeError` also reserves limit, missing/duplicate/unknown field, and
 invalid-value variants for bounded struct decoding. Those cases are not yet
-produced by the current scalar decoder.
+produced by the current scalar decoder. `EncodeError.message()` and
+`DecodeError.message()` provide display text; callers should make policy from
+the structured variants instead of matching the message.
