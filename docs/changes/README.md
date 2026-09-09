@@ -6,6 +6,7 @@
 - [2026-09-09: Documentation verification](2026-09-09-documentation-verification.md)
 - [2026-09-09: Loader-backed cross-file LSP references](2026-09-09-lsp-cross-file-references.md)
 - [2026-09-09: Compiler-backed LSP type inlay hints](2026-09-09-lsp-inlay-hints.md)
+- [2026-09-09: LSP unused-import quick fix](2026-09-09-lsp-unused-import-quickfix.md)
 
 Audience: language users and maintainers.
 

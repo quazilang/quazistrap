@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: 0BSD
 
 mod analysis;
+mod code_actions;
 mod completion;
 pub(crate) mod diagnostics;
 mod document;

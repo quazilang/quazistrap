@@ -30,7 +30,7 @@ Basic server is running.
   document overlays and supplies the effective per-file source map used to
   rebase declaration spans to LSP locations.
 - ✅ Loader-backed cross-file references and workspace-scoped rename
-- ❌ Code actions / quick fixes
+- ✅ Safe W03 unused-import quick fix for single-selector imports
 - ✅ Compiler-backed inferred type inlay hints for unannotated local declarations
 - ✅ Persistent workspace symbols for parseable local `.qz` files under the
   negotiated workspace roots; open buffers override their on-disk snapshots.
@@ -46,6 +46,12 @@ Type inlay hints are derived from parsed `var`/`const` declarations that omit
 a written type and from the matching semantic declaration span. They display
 the compiler's resolved type, respect the client-requested visible range, and
 do not guess types from identifier names or text.
+
+The code-action provider offers `Remove unused import` only for a current W03
+diagnostic on a parsed single-selector import. The edit removes the complete
+import declaration and its line ending. It deliberately excludes wildcard and
+multi-selector imports because deleting those declarations could remove used
+bindings.
 
 Workspace indexing is read-only: normalize only local file workspace folders
 (or the legacy `rootUri`), never follow symlinks, skip `.git`, and retain no

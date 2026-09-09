@@ -14,8 +14,8 @@ use tower_lsp::{Client, LanguageServer};
 use super::document::DocumentState;
 use super::workspace::WorkspaceIndex;
 use super::{
-    analysis, completion, diagnostics, formatting, goto_def, hover, inlay_hints, references,
-    semantic_tokens, signature, symbols,
+    analysis, code_actions, completion, diagnostics, formatting, goto_def, hover, inlay_hints,
+    references, semantic_tokens, signature, symbols,
 };
 
 pub struct VoidLanguageServer {
@@ -209,6 +209,13 @@ impl LanguageServer for VoidLanguageServer {
                     .into(),
                 ),
                 inlay_hint_provider: Some(OneOf::Left(true)),
+                code_action_provider: Some(
+                    CodeActionOptions {
+                        code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
@@ -405,6 +412,22 @@ impl LanguageServer for VoidLanguageServer {
             .report
             .as_ref()
             .map(|report| inlay_hints::type_hints(report, &doc.source, params.range)))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let docs = self.documents.read().await;
+        let Some(doc) = docs.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        Ok(doc.report.as_ref().map(|report| {
+            code_actions::unused_import_actions(
+                report,
+                &doc.source,
+                &params.text_document.uri,
+                params.range,
+                &params.context,
+            )
+        }))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
