@@ -24,9 +24,9 @@ cd ../vscode-quazi
 node tests/extension-lifecycle.test.js
 ```
 
-An isolated VS Code 1.133 extension-development host was also opened on a
-`.qz` file with the built `qz` executable on `PATH`. Its extension-host log
-recorded activation of `quazilang.quazi` and `quazilang language server
-initialized`; shutdown had no disposable-type error. This is an
-activation/lifecycle smoke, not a substitute for a real-client feature-request
-suite.
+The `tests/run-vscode-hover-smoke.sh` command launches an isolated VS Code
+1.133 extension-test host, creates a temporary Quazi project directory,
+activates the development extension with the selected `qz` executable, and
+asks VS Code's hover-provider API for a literal's `i32 = 42` type/value
+information and exact range. It passed with the contained server. Zed and
+Helix still need their own runtime evidence.
