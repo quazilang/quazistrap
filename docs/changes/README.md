@@ -12,6 +12,7 @@
 - [2026-09-09: LSP background compiler snapshots](2026-09-09-lsp-background-analysis.md)
 - [2026-09-09: LSP workspace background indexing](2026-09-09-lsp-workspace-background-indexing.md)
 - [2026-09-09: API reference surface alignment](2026-09-09-api-reference-surface-alignment.md)
+- [2026-09-09: VS Code LSP lifecycle compatibility](2026-09-09-vscode-lsp-lifecycle.md)
 
 Audience: language users and maintainers.
 
