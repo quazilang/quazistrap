@@ -44,9 +44,11 @@ nonzero-handle requirements is invalid use of this experimental unsafe API.
 
 `unsafe Thread.spawn(f)` returns `Result[Thread, ThreadError]`. A native
 creation failure is `Err(ThreadError.CreationFailed)`; no zero-handle `Thread`
-is exposed through this safe wrapper. `unsafe Thread.join(self)` consumes a
-successful handle, and `handle()` exposes its opaque nonzero value for
-low-level interoperability.
+is exposed through this safe wrapper. `unsafe Thread.join(self)` invalidates
+its stored handle before performing the native join, so calling it again is a
+no-op through the zero-handle low-level contract. `handle()` exposes the opaque
+nonzero value for low-level interoperability until the wrapper is joined; using
+an extracted handle remains an unsafe low-level operation.
 
 ## Scheduling helpers
 
