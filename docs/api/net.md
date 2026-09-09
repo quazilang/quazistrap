@@ -42,13 +42,16 @@ instead of terminating the process.
 `receive(limit)` returns one available UTF-8 text read; `receive_all(limit)`
 reads until peer EOF. `recv(ptr, len)` is unsafe and returns the native count
 or failure sentinel. `shutdown(Shutdown.Read|Write|Both)` requests a half- or
-full shutdown. `close()` invalidates the socket and `free()` is its automatic
+full shutdown. `close()` invalidates the socket and is idempotent: calls after
+the first, including automatic `free()` after an explicit close, are no-ops and
+do not call the native socket-close operation. `free()` is its automatic
 destructor; `handle()` is target-specific interop only.
 
 `TcpListener.bind(port)` listens with backlog 128;
 `bind_with_backlog(port, backlog)` selects the backlog. `accept()` returns an
-owning `TcpStream`. Listeners have the same `close`, `free`, and `handle`
-semantics as streams. These owners are not a shared, thread-safe socket API.
+owning `TcpStream`. Listeners have the same idempotent `close`, `free`, and
+`handle` semantics as streams. These owners are not a shared, thread-safe
+socket API.
 
 ## UDP
 
@@ -63,7 +66,8 @@ returns a `UdpDatagram`, whose `text()` borrows the payload and `address()`
 returns the source address. A zero `receive_from` limit returns
 `MessageTooLarge`. A too-small nonzero buffer follows platform datagram
 semantics; callers should choose a limit large enough for the protocol’s maximum
-payload. `UdpSocket` provides `close`, automatic `free`, and `handle` like TCP.
+payload. `UdpSocket` provides idempotent `close`, automatic `free`, and
+`handle` like TCP.
 
 ## HTTP/1.1 helpers
 
