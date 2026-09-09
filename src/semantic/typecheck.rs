@@ -4927,7 +4927,22 @@ impl Analyzer {
             // the import path (`bar` from `bar` or `foo.bar`).
             segments.last().copied().unwrap_or(&base)
         };
-        Some(format!("{}.{}", module_file, method))
+        let resolved = format!("{}.{}", module_file, method);
+        if self.resolve_symbol(&resolved).is_some() {
+            return Some(resolved);
+        }
+
+        // A package's entry file may be imported through its file path from
+        // within the package (for example `std.core`), while its declarations
+        // use the package-root namespace (`std`). Fall back to that root when
+        // the file-qualified name is absent; external modules keep the
+        // file-qualified name above.
+        let package_root = segments.first().copied().unwrap_or(&base);
+        let package_resolved = format!("{}.{}", package_root, method);
+        if self.resolve_symbol(&package_resolved).is_some() {
+            return Some(package_resolved);
+        }
+        Some(resolved)
     }
 
     fn validate_named_args(

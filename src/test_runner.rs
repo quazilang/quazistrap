@@ -8,7 +8,7 @@ use crate::bytecode::chunk::{QziMetadata, QziModule, QziModuleKind};
 use crate::bytecode::instruction::{ri16, rrr};
 use crate::bytecode::opcode::Opcode;
 use crate::bytecode::{deserialize_qzi_module, link_qzi_modules, Chunk, Codegen};
-use crate::project::ProjectContext;
+use crate::project::{ProjectContext, ProjectKind};
 
 fn collect_qz_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     if !root.exists() {
@@ -119,7 +119,9 @@ fn set_module_names(
     module_names: &HashMap<PathBuf, String>,
 ) {
     for source_file in source_files {
-        if let Some(module_name) = module_names.get(Path::new(&source_file.path)) {
+        if source_file.module_name.is_none()
+            && let Some(module_name) = module_names.get(Path::new(&source_file.path))
+        {
             source_file.module_name = Some(module_name.clone());
         }
     }
@@ -220,6 +222,12 @@ fn run_project(
     )?;
     if let Some(error) = loaded.parse_error.take() {
         return Err(error);
+    }
+    // A library entry is also its public module when tests load an additional
+    // source file. Keep its declarations namespaced so a test importing the
+    // library name resolves its public API through that namespace.
+    if context.config.kind == ProjectKind::Lib {
+        loaded.namespaced_paths.insert(entry.clone());
     }
     set_module_names(&mut loaded.source_files, &source_module_names);
     set_module_names(&mut loaded.source_files, &test_module_names);
@@ -504,6 +512,53 @@ mod tests {
             .join("build/tests")
             .join(file_name("tests.basic.passes", cfg!(target_os = "windows")))
             .exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn library_test_modules_can_call_the_public_entry_namespace() {
+        let root = temp_dir("library-entry-namespace");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("quazi.toml"),
+            "[package]\nname = \"library_entry\"\ncrash_handler = false\n\n\
+             [lib]\nname = \"library_entry\"\npath = \"src/core.qz\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/core.qz"),
+            "pub fn answer() i32 { ret 42; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/time.qz"),
+            "import library_entry;\n@test\nfn calls_library_entry_namespace() void {\n    if library_entry.answer() != 42 { panic(\"library entry namespace failed\"); }\n    ret;\n}\n",
+        )
+        .unwrap();
+
+        assert!(run_project(&root, None, true, true).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn binary_test_modules_keep_entry_functions_bare() {
+        let root = temp_dir("binary-entry-bare");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(
+            root.join("quazi.toml"),
+            "[package]\nname = \"binary_entry\"\ncrash_handler = false\n\n\
+             [[bin]]\nname = \"binary_entry\"\npath = \"src/main.qz\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/main.qz"), "fn answer() i32 { ret 42; }\n").unwrap();
+        std::fs::write(
+            root.join("tests/basic.qz"),
+            "@test\nfn calls_bare_entry_function() void {\n    if answer() != 42 { panic(\"binary entry became namespaced\"); }\n    ret;\n}\n",
+        )
+        .unwrap();
+
+        assert!(run_project(&root, None, true, true).unwrap());
         std::fs::remove_dir_all(root).unwrap();
     }
 
