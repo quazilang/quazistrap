@@ -11,7 +11,7 @@ attributes.
 | Editor | Project | Integration type | Local verification |
 |---|---|---|---|
 | VS Code | `../vscode-quazi/` | extension with language registration and LSP launcher | manifest parsing and `npm pack --dry-run` |
-| Neovim | `../nvim-quazi/` | native Neovim 0.11+ LSP configuration | headless configuration test |
+| Neovim | `../nvim-quazi/` | native Neovim 0.11+ LSP configuration | headless configuration and real-client LSP smoke on Neovim 0.12 |
 | Helix | `../helix-quazi/` | configuration/runtime query package | static configuration review; Helix binary unavailable |
 | Zed | `../zed-quazi/` | Zed language extension | `cargo check` and formatting check |
 
@@ -24,10 +24,13 @@ troubleshooting, local development, and packaging instructions.
 
 The server accepts versioned UTF-16-safe incremental updates and compatible
 full-document replacements.
-It provides current-document diagnostics, hover, definitions, completion,
-formatting, symbols, signature help, references, rename, and semantic tokens.
+It provides diagnostics, hover, definitions, completion, formatting, symbols,
+signature help, references, rename, semantic tokens, inferred type hints, and
+safe unused-import quick fixes.
 Workspace-symbol search covers parseable local `.qz` files below the selected
 workspace roots; unsaved open buffers override their disk snapshots. The index
 does not follow symlinks or scan outside the selected roots. Cross-file
-references/rename, code actions, inlay hints, and cancellation are not
-implemented. See [the LSP contract](lsp.md).
+references and rename follow loader-backed imports when edits remain in
+client-negotiated workspace roots. JSON-RPC transport cancellation is supported
+for pending requests, but compiler work is not yet cooperatively cancellable.
+See [the LSP contract](lsp.md).
