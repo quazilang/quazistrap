@@ -22,6 +22,7 @@
 - [2026-09-10: Repeat-safe owned string release](2026-09-10-string-release.md)
 - [2026-09-10: Repeat-safe collection release](2026-09-10-collection-release.md)
 - [2026-09-10: Generic owner release and dependency closure](2026-09-10-generic-owner-release.md)
+- [2026-09-10: Repeat-safe Windows process-snapshot release](2026-09-10-process-snapshot-release.md)
 
 Audience: language users and maintainers.
 

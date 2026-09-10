@@ -50,6 +50,10 @@ Audience: maintainers planning the next local checkpoints.
   release for `Array`, `Box`, `Map`, and `Set`. This corrects raw-owner release
   behavior only; element destruction and general aggregate ownership remain
   deferred.
+- Windows `std.os` process-snapshot cleanup now recognizes both cleared and
+  all-ones invalid handles, preventing repeat cleanup from passing `0` to
+  `CloseHandle`. The Linux workspace can type-check this target-gated path but
+  cannot execute it on Windows.
 - `Thread.join()` now invalidates its wrapper before the native join, preventing
   a repeated call from reusing released pthread/Windows-handle storage. The
   experimental concurrency contract remains incomplete because structured

@@ -42,7 +42,7 @@ use env instead.
 | name() | "Linux" or "Windows" on supported targets, otherwise "Unknown". |
 | version() | Owned display-oriented release text. Linux currently returns "Linux" without a kernel release; Windows derives edition/build text from compiler-provided Windows metadata. It is not a stable machine-readable version API. |
 | cpu_name() | Best-effort owned CPU-brand text, or "unknown" on failure. |
-| shell() / terminal() | Best-effort interactive-environment names. Linux reads SHELL/TERM; Windows uses environment hints and a bounded parent-process scan. They may be "unknown", "Console", or "Windows Console" and must not drive security or compatibility policy. |
+| shell() / terminal() | Best-effort interactive-environment names. Linux reads SHELL/TERM; Windows uses environment hints and a bounded parent-process scan whose native snapshot handle is released once. They may be "unknown", "Console", or "Windows Console" and must not drive security or compatibility policy. |
 | hostname() | Owned host name from the platform intrinsic, or "unknown" on failure. |
 | memory_total() / memory_available() | Physical-memory counters in bytes. Linux currently uses sysinfo.free_ram for “available”, which is not Linux’s broader reclaimable-memory estimate. Values can change immediately after return. |
 
