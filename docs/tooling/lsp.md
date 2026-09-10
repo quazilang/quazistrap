@@ -62,11 +62,13 @@ than a name-resolution guarantee.
 - The transport honors JSON-RPC `$/cancelRequest` for pending LSP requests.
   Loader-backed definition, reference, and rename requests bridge cancellation
   to their blocking worker and discard the snapshot when cancellation is
-  observed. Compiler and loader snapshots otherwise run on Tokio's blocking
-  pool, so they do not occupy an async server worker. Cancellation remains
-  cooperative: parser, loader, and semantic hot paths do not yet poll the token
-  while executing, so an already-running phase can finish before its result is
-  discarded. Workspace initialization scans and saved-file index updates use
+  observed. Diagnostics attach a token to each open-document generation:
+  a replacement or close interrupts tokenization and parsing between tokens
+  and top-level declarations, and cancellation is never published as a source
+  diagnostic. Compiler and loader snapshots otherwise run on Tokio's blocking
+  pool, so they do not occupy an async server worker. Semantic analysis and
+  loader hot paths do not yet poll the token, so an already-running later phase
+  can finish before its result is discarded. Workspace initialization scans and saved-file index updates use
   the same pool. A completed loader snapshot is also discarded if a captured
   open buffer changed or closed while it was running. Automatic filesystem
   watching is not implemented; the workspace-symbol snapshot is built during

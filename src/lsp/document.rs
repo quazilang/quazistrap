@@ -4,6 +4,7 @@
 
 use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
 
+use crate::cancel::CancellationToken;
 use crate::semantic::SemanticReport;
 
 use super::span::position_to_byte_offset;
@@ -13,6 +14,7 @@ pub struct DocumentState {
     pub source: String,
     pub report: Option<SemanticReport>,
     pub version: i32,
+    analysis_cancellation: CancellationToken,
 }
 
 impl DocumentState {
@@ -22,13 +24,16 @@ impl DocumentState {
             source,
             report: None,
             version,
+            analysis_cancellation: CancellationToken::new(),
         }
     }
 
     pub fn update(&mut self, source: String, version: i32) {
+        self.analysis_cancellation.cancel();
         self.source = source;
         self.version = version;
         self.report = None;
+        self.analysis_cancellation = CancellationToken::new();
     }
 
     /// Install a full-document notification only when it is newer than
@@ -45,6 +50,14 @@ impl DocumentState {
 
     pub fn is_generation(&self, source: &str, version: i32) -> bool {
         self.version == version && self.source == source
+    }
+
+    pub fn analysis_cancellation(&self) -> CancellationToken {
+        self.analysis_cancellation.clone()
+    }
+
+    pub fn cancel_analysis(&self) {
+        self.analysis_cancellation.cancel();
     }
 
     /// Apply an LSP incremental-change batch to the currently held document.
@@ -100,6 +113,7 @@ fn apply_change(source: &str, change: &TextDocumentContentChangeEvent) -> Option
 #[cfg(test)]
 mod tests {
     use super::DocumentState;
+    use crate::lexer::Lexer;
     use tower_lsp::lsp_types::{Position, Range, TextDocumentContentChangeEvent, Url};
 
     #[test]
@@ -113,6 +127,52 @@ mod tests {
         assert!(document.is_generation("const value = 2;", 2));
         assert!(document.update_if_newer("const value = 3;".to_string(), 3));
         assert!(document.is_generation("const value = 3;", 3));
+    }
+
+    #[test]
+    fn replacing_a_generation_cancels_its_analysis() {
+        let uri = Url::parse("file:///workspace/main.qz").expect("test URI");
+        let mut document = DocumentState::new(uri, "const value = 1;".to_string(), 1);
+        let previous = document.analysis_cancellation();
+
+        document.update("const value = 2;".to_string(), 2);
+
+        assert!(previous.is_cancelled());
+        assert!(!document.analysis_cancellation().is_cancelled());
+    }
+
+    #[test]
+    fn replacing_a_generation_interrupts_its_inflight_lexer() {
+        let uri = Url::parse("file:///workspace/main.qz").expect("test URI");
+        let mut document = DocumentState::new(uri, "alpha beta gamma".to_string(), 1);
+        let cancellation = document.analysis_cancellation();
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+
+        let worker = std::thread::spawn(move || {
+            let mut lexer = Lexer::new("alpha beta gamma");
+            let mut polls = 0;
+            lexer.tokenize_with_checkpoint(|| {
+                polls += 1;
+                if polls == 2 {
+                    paused_tx.send(()).expect("worker pauses after one token");
+                    resume_rx.recv().expect("worker resumes after replacement");
+                }
+                cancellation.check()
+            })
+        });
+
+        paused_rx
+            .recv()
+            .expect("lexer reaches its cancellation point");
+        document.update("const replacement: i32 = 2;".to_string(), 2);
+        resume_tx.send(()).expect("resume lexer");
+
+        assert!(matches!(
+            worker.join().expect("worker does not panic"),
+            Err(_)
+        ));
+        assert!(!document.is_generation("alpha beta gamma", 1));
     }
 
     #[test]

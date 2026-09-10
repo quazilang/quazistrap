@@ -13,6 +13,12 @@ use crate::semantic::{Analyzer, SemanticReport, Symbol, SymbolKind};
 
 use crate::semantic::SourceFile;
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum CancellableAnalysisError {
+    Parse(String),
+    Cancelled,
+}
+
 /// Compiler-backed snapshot for one document and every file reached through
 /// its configured import graph. Spans in `report` are coordinates in
 /// `merged_source`; `source_files` and `effective_sources` rebase them to
@@ -28,6 +34,37 @@ pub fn analyze_source(source: &str) -> Result<SemanticReport, String> {
     let tokens = lexer.tokenize();
     let mut parser = Parser::new_with_source(tokens, source);
     let program = parser.parse()?;
+    let mut analyzer = Analyzer::new();
+    let (library_fn_names, library_symbols) = std_symbols_for_source(source, &program);
+    analyzer.set_library_fns(library_fn_names);
+    analyzer.set_library_symbols(library_symbols);
+    Ok(analyzer.analyze_program(&program))
+}
+
+/// Analyze one open document while honoring a request/document cancellation
+/// token during lexing and parsing. Semantic analysis currently remains an
+/// atomic compiler phase; check once more before entering it so a cancelled
+/// request never starts that phase.
+pub fn analyze_source_cancellable(
+    source: &str,
+    cancellation: &crate::cancel::CancellationToken,
+) -> Result<SemanticReport, CancellableAnalysisError> {
+    let mut lexer = Lexer::new(source);
+    let tokens = lexer
+        .tokenize_with_checkpoint(|| cancellation.check())
+        .map_err(|_| CancellableAnalysisError::Cancelled)?;
+    let mut parser = Parser::new_with_source(tokens, source);
+    let program = parser
+        .parse_cancellable(cancellation)
+        .map_err(|error| match error {
+            crate::parser::CancellableParseError::Parse(error) => {
+                CancellableAnalysisError::Parse(error)
+            }
+            crate::parser::CancellableParseError::Cancelled => CancellableAnalysisError::Cancelled,
+        })?;
+    cancellation
+        .check()
+        .map_err(|_| CancellableAnalysisError::Cancelled)?;
     let mut analyzer = Analyzer::new();
     let (library_fn_names, library_symbols) = std_symbols_for_source(source, &program);
     analyzer.set_library_fns(library_fn_names);
@@ -271,6 +308,17 @@ fn zero_span() -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_analysis_does_not_create_a_parse_diagnostic() {
+        let cancellation = crate::cancel::CancellationToken::new();
+        cancellation.cancel();
+
+        assert!(matches!(
+            analyze_source_cancellable("const value: i32 = 1;", &cancellation),
+            Err(CancellableAnalysisError::Cancelled)
+        ));
+    }
 
     #[test]
     fn resolves_explicit_std_function_import() {

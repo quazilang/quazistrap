@@ -12,6 +12,14 @@ use crate::lexer::token::{Token, TokenKind};
 use crate::parser::ast::*;
 use crate::parser::common::{merge_token_spans, to_ast_span};
 
+/// Distinguishes a source parse failure from a caller-requested interruption.
+/// A cancelled parse must not be rendered as a source diagnostic.
+#[derive(Debug, Eq, PartialEq)]
+pub enum CancellableParseError {
+    Parse(String),
+    Cancelled,
+}
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -52,11 +60,25 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Result<Program, String> {
+        self.parse_with_checkpoint(|| Ok::<(), std::convert::Infallible>(()))
+            .expect("an infallible parser checkpoint cannot fail")
+    }
+
+    /// Parse while polling before each top-level item.
+    ///
+    /// Parsing an item is intentionally still atomic: this keeps the existing
+    /// parser error-recovery contract intact while allowing large generated
+    /// files to stop between declarations.
+    pub fn parse_with_checkpoint<E>(
+        &mut self,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<Result<Program, String>, E> {
         let mut items = Vec::new();
         let start = self.current_span();
         let mut first_err: Option<String> = None;
 
         while !self.at(TokenKind::Eof) {
+            checkpoint()?;
             match self.parse_item() {
                 Ok(item) => items.push(item),
                 Err(err) => {
@@ -69,7 +91,7 @@ impl Parser {
         }
 
         if let Some(err) = first_err {
-            return Err(err);
+            return Ok(Err(err));
         }
 
         let end = self.current_span();
@@ -79,7 +101,16 @@ impl Parser {
             Some(to_ast_span(merge_token_spans(start, end)))
         };
 
-        Ok(Program { items, span })
+        Ok(Ok(Program { items, span }))
+    }
+
+    pub fn parse_cancellable(
+        &mut self,
+        cancellation: &crate::cancel::CancellationToken,
+    ) -> Result<Program, CancellableParseError> {
+        self.parse_with_checkpoint(|| cancellation.check())
+            .map_err(|_| CancellableParseError::Cancelled)?
+            .map_err(CancellableParseError::Parse)
     }
 
     fn parse_item(&mut self) -> Result<Item, String> {
@@ -1984,6 +2015,23 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new_with_source(tokens, src);
         parser.parse().expect_err("source should fail to parse")
+    }
+
+    #[test]
+    fn checkpoint_can_interrupt_between_top_level_items() {
+        let source = "fn first() void {} fn second() void {}";
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(tokens);
+        let mut polls = 0;
+
+        let result = parser.parse_with_checkpoint(|| {
+            polls += 1;
+            if polls == 2 { Err(()) } else { Ok(()) }
+        });
+
+        assert!(matches!(result, Err(())));
+        assert_eq!(polls, 2);
     }
 
     #[test]

@@ -602,9 +602,21 @@ impl Lexer {
     }
 
     pub fn tokenize(&mut self) -> Vec<Token> {
+        self.tokenize_with_checkpoint(|| Ok::<(), std::convert::Infallible>(()))
+            .expect("an infallible lexer checkpoint cannot fail")
+    }
+
+    /// Tokenize while polling a caller-owned cooperative cancellation point
+    /// before each token. The lexer does not retain the callback, so callers
+    /// can use request-scoped state without changing ordinary compiler paths.
+    pub fn tokenize_with_checkpoint<E>(
+        &mut self,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<Vec<Token>, E> {
         let mut tokens = Vec::new();
 
         loop {
+            checkpoint()?;
             let tok = self.next_token();
             let is_eof = tok.kind == TokenKind::Eof;
             tokens.push(tok);
@@ -613,7 +625,7 @@ impl Lexer {
             }
         }
 
-        tokens
+        Ok(tokens)
     }
 }
 
@@ -643,6 +655,20 @@ mod tests {
             tokens.first().map(|t| &t.kind),
             Some(TokenKind::Error(_))
         ));
+    }
+
+    #[test]
+    fn checkpoint_can_interrupt_tokenization_between_tokens() {
+        let mut lexer = Lexer::new("alpha beta gamma");
+        let mut polls = 0;
+
+        let result = lexer.tokenize_with_checkpoint(|| {
+            polls += 1;
+            if polls == 3 { Err(()) } else { Ok(()) }
+        });
+
+        assert_eq!(result, Err(()));
+        assert_eq!(polls, 3);
     }
 
     #[test]

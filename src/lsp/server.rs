@@ -28,6 +28,7 @@ pub struct VoidLanguageServer {
 #[derive(Debug)]
 enum CancellableTaskError {
     Cancelled,
+    Parse(String),
     Failed,
 }
 
@@ -196,8 +197,15 @@ where
 
 async fn analyze_source_in_background(
     source: String,
-) -> std::result::Result<crate::semantic::SemanticReport, String> {
-    run_in_blocking_pool(move || analysis::analyze_source(&source)).await?
+    cancellation: CancellationToken,
+) -> std::result::Result<crate::semantic::SemanticReport, CancellableTaskError> {
+    run_in_blocking_pool(move || analysis::analyze_source_cancellable(&source, &cancellation))
+        .await
+        .map_err(|_| CancellableTaskError::Failed)?
+        .map_err(|error| match error {
+            analysis::CancellableAnalysisError::Cancelled => CancellableTaskError::Cancelled,
+            analysis::CancellableAnalysisError::Parse(error) => CancellableTaskError::Parse(error),
+        })
 }
 
 async fn analyze_loaded_document_cancellable_in_background(
@@ -249,7 +257,17 @@ impl VoidLanguageServer {
             }
         }
 
-        let result = analyze_source_in_background(text.clone()).await;
+        let cancellation = {
+            let docs = self.documents.read().await;
+            let Some(doc) = docs.get(&uri) else {
+                return;
+            };
+            if !doc.is_generation(&text, version) {
+                return;
+            }
+            doc.analysis_cancellation()
+        };
+        let result = analyze_source_in_background(text.clone(), cancellation).await;
         let mut docs = self.documents.write().await;
         let Some(doc) = docs.get_mut(&uri) else {
             return;
@@ -270,7 +288,7 @@ impl VoidLanguageServer {
                     .publish_diagnostics(uri, diags, Some(version))
                     .await;
             }
-            Err(parse_err) => {
+            Err(CancellableTaskError::Parse(parse_err)) => {
                 let diag = Diagnostic {
                     range: diagnostics::parse_error_range(&parse_err, &text),
                     severity: Some(DiagnosticSeverity::ERROR),
@@ -285,6 +303,8 @@ impl VoidLanguageServer {
                     .publish_diagnostics(uri, vec![diag], Some(version))
                     .await;
             }
+            Err(CancellableTaskError::Cancelled) => {}
+            Err(CancellableTaskError::Failed) => {}
         }
     }
 }
@@ -426,10 +446,14 @@ impl LanguageServer for VoidLanguageServer {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        self.documents
+        if let Some(document) = self
+            .documents
             .write()
             .await
-            .remove(&params.text_document.uri);
+            .remove(&params.text_document.uri)
+        {
+            document.cancel_analysis();
+        }
         self.client
             .publish_diagnostics(params.text_document.uri, Vec::new(), None)
             .await;
