@@ -53,10 +53,11 @@ ownership of the pointer.
   remains alive. `unsafe as_ptr()` exposes its raw pointer under the same
   lifetime restriction.
 
-Normal local scope cleanup invokes `CString.free()` once. Call `free()` only
-for an earlier release and never use the `CString`, its `CStr`, or its raw
-pointer afterward. Do not call `core.free` on a pointer borrowed from `CStr`;
-only the matching `CString` owner may release its allocation.
+Normal local scope cleanup invokes `CString.free()` when no earlier explicit
+release occurs. An explicit `free()` invalidates the owner, clears its length,
+and is repeat-safe when called again. Do not use its `CStr` or raw pointer
+after the first release. Do not call `core.free` on a pointer borrowed from
+`CStr`; only the matching `CString` owner may release its allocation.
 
 ```quazi
 import std.ffi;

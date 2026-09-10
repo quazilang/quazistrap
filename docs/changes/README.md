@@ -18,6 +18,7 @@
 - [2026-09-09: Idempotent network socket close](2026-09-09-network-close-idempotence.md)
 - [2026-09-10: Imported inherent-method dispatch](2026-09-10-imported-inherent-method-dispatch.md)
 - [2026-09-10: Exact Windows file-handle sentinel](2026-09-10-file-handle-sentinel.md)
+- [2026-09-10: Repeat-safe C-string release](2026-09-10-cstring-release.md)
 
 Audience: language users and maintainers.
 
