@@ -120,6 +120,53 @@ fn path_separator() str { ret "\\"; }
 fn path_separator() str { ret "/"; }
 ```
 
+## Measuring elapsed work
+
+Use `std.time` only for elapsed-time measurements. Its `Instant` values are
+monotonic and deliberately are not calendar timestamps, so do not use them for
+file names, logs that need a date, or serialized deadlines.
+
+```quazi
+// tutorial: fragment — add imports and handle TimeError in the surrounding application.
+import std.time.Instant;
+
+const started = Instant.now()?;
+index_positions(content.as_str());
+const elapsed = started.elapsed()?;
+```
+
+See [`std.time`](../api/time.md) for the checked `Duration` arithmetic and
+platform-resolution limits.
+
+## Networking and background work
+
+The current networking surface is blocking IPv4 TCP/UDP plus small HTTP/1.1
+helpers. Start with the documented request and response types in
+[`std.net`](../api/net.md), and set response-size limits before reading
+untrusted peers. HTTPS, TLS certificate validation, IPv6, and socket timeouts
+are not yet available, so applications that need those guarantees must not
+treat the current HTTP helpers as a secure general-purpose client.
+
+`std.thread` is experimental. It exposes a constrained native callback ABI,
+not structured concurrency: there is no cancellation, synchronization,
+result propagation, or automatic join. Read the complete safety contract in
+[`std.thread`](../api/thread.md) before using it; most applications should keep
+their first projects single-threaded.
+
+Quazi does not yet provide a supported `std.process` child-process API.
+Do not build shell command strings or depend on undocumented compiler/runtime
+internals for process execution. The contract is intentionally deferred until
+argument ownership, native handles, cancellation, and cross-platform cleanup
+are specified.
+
+## Debugging failures
+
+Use `qz check` for type diagnostics before a native build, and reduce failures
+to the smallest complete program. The [diagnostics guide](../guides/diagnostics.md)
+explains error locations, warning codes, and source snippets. For tests, use
+the chapter's `@test` pattern and run `qz test`; do not depend on elapsed-time
+thresholds or host-local configuration in a test.
+
 ## What to explore next
 
 Now that you have completed the tutorial, explore these resources:
