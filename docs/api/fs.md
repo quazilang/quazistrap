@@ -31,7 +31,10 @@ policy must handle `Native` conservatively.
 the handle on lexical exits when the compiler can discover the destructor.
 Use explicit `close()` only when the resource must be released before the end
 of scope. A successful close invalidates the value; a later automatic cleanup
-is a no-op. `close()` returns `Ok(false)` for an already-invalid handle.
+is a no-op. `close()` returns `Ok(false)` for an already-invalid handle. On
+Windows a valid native handle can have a negative `isize` bit pattern; only
+the exact `-1` bit pattern is invalid, and callers must not use a sign check
+to test `raw_handle()` validity.
 
 ```quazi
 import std.fs;
