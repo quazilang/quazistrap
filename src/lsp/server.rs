@@ -17,11 +17,18 @@ use super::{
     analysis, code_actions, completion, diagnostics, formatting, goto_def, hover, inlay_hints,
     references, semantic_tokens, signature, symbols,
 };
+use crate::cancel::CancellationToken;
 
 pub struct VoidLanguageServer {
     pub client: Client,
     pub documents: Arc<RwLock<HashMap<Url, DocumentState>>>,
     pub workspace: Arc<RwLock<WorkspaceIndex>>,
+}
+
+#[derive(Debug)]
+enum CancellableTaskError {
+    Cancelled,
+    Failed,
 }
 
 fn workspace_symbols_for_open_documents(
@@ -166,17 +173,49 @@ where
         .map_err(|error| format!("LSP blocking task failed: {error}"))
 }
 
+/// Bridge tower-lsp request cancellation to compiler work on the blocking
+/// pool. tower-lsp drops a canceled request future; the guard then signals the
+/// token retained by the worker. A worker must check that token and discard
+/// any partial result itself.
+async fn run_cancellable_in_blocking_pool<T>(
+    work: impl FnOnce(CancellationToken) -> std::result::Result<T, CancellableTaskError>
+    + Send
+    + 'static,
+) -> std::result::Result<T, CancellableTaskError>
+where
+    T: Send + 'static,
+{
+    let token = CancellationToken::new();
+    let guard = token.cancel_on_drop();
+    let result = tokio::task::spawn_blocking(move || work(token))
+        .await
+        .map_err(|_| CancellableTaskError::Failed)?;
+    guard.disarm();
+    result
+}
+
 async fn analyze_source_in_background(
     source: String,
 ) -> std::result::Result<crate::semantic::SemanticReport, String> {
     run_in_blocking_pool(move || analysis::analyze_source(&source)).await?
 }
 
-async fn analyze_loaded_document_in_background(
+async fn analyze_loaded_document_cancellable_in_background(
     path: PathBuf,
     overlays: HashMap<PathBuf, String>,
-) -> std::result::Result<analysis::LoadedSnapshot, String> {
-    run_in_blocking_pool(move || analysis::analyze_loaded_document(&path, &overlays)).await?
+) -> std::result::Result<analysis::LoadedSnapshot, CancellableTaskError> {
+    run_cancellable_in_blocking_pool(move |cancellation| {
+        cancellation
+            .check()
+            .map_err(|_| CancellableTaskError::Cancelled)?;
+        let snapshot = analysis::analyze_loaded_document(&path, &overlays)
+            .map_err(|_| CancellableTaskError::Failed)?;
+        cancellation
+            .check()
+            .map_err(|_| CancellableTaskError::Cancelled)?;
+        Ok(snapshot)
+    })
+    .await
 }
 
 impl VoidLanguageServer {
@@ -426,7 +465,7 @@ impl LanguageServer for VoidLanguageServer {
         };
         if let Some(path) = uri.to_file_path().ok()
             && let Ok(snapshot) =
-                analyze_loaded_document_in_background(path, overlays.clone()).await
+                analyze_loaded_document_cancellable_in_background(path, overlays.clone()).await
         {
             let docs = self.documents.read().await;
             if !document_matches_source(&docs, uri, &source)
@@ -485,7 +524,8 @@ impl LanguageServer for VoidLanguageServer {
         let Some(path) = uri.to_file_path().ok() else {
             return Ok(None);
         };
-        let Ok(snapshot) = analyze_loaded_document_in_background(path, overlays.clone()).await
+        let Ok(snapshot) =
+            analyze_loaded_document_cancellable_in_background(path, overlays.clone()).await
         else {
             return Ok(None);
         };
@@ -517,7 +557,8 @@ impl LanguageServer for VoidLanguageServer {
         let Some(path) = uri.to_file_path().ok() else {
             return Ok(None);
         };
-        let Ok(snapshot) = analyze_loaded_document_in_background(path, overlays.clone()).await
+        let Ok(snapshot) =
+            analyze_loaded_document_cancellable_in_background(path, overlays.clone()).await
         else {
             return Ok(None);
         };
@@ -647,8 +688,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        loaded_snapshot_matches_open_documents, run_in_blocking_pool, workspace_symbols,
-        workspace_symbols_for_open_documents,
+        loaded_snapshot_matches_open_documents, run_cancellable_in_blocking_pool,
+        run_in_blocking_pool, workspace_symbols, workspace_symbols_for_open_documents,
     };
     use crate::lsp::workspace::WorkspaceIndex;
     use crate::lsp::{analysis::analyze_source, document::DocumentState};
@@ -661,6 +702,28 @@ mod tests {
             .await
             .expect("blocking task completes");
         assert_ne!(current_thread, blocking_thread);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_a_cancellable_request_signals_its_blocking_worker() {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (cancelled_tx, cancelled_rx) = std::sync::mpsc::channel();
+        let request = tokio::spawn(run_cancellable_in_blocking_pool(move |token| {
+            started_tx.send(()).expect("worker start is observed");
+            while !token.is_cancelled() {
+                std::thread::yield_now();
+            }
+            cancelled_tx
+                .send(())
+                .expect("worker cancellation is observed");
+            Ok(())
+        }));
+
+        started_rx.recv().expect("worker starts");
+        request.abort();
+        cancelled_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("dropped request cancels the worker token");
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod abi;
 pub mod analysis;
 mod backend;
 pub mod bytecode;
+pub mod cancel;
 pub mod cli;
 #[cfg(test)]
 mod docs;

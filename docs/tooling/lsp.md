@@ -60,24 +60,27 @@ than a name-resolution guarantee.
 ## Current Limitations
 
 - The transport honors JSON-RPC `$/cancelRequest` for pending LSP requests.
-  Compiler and loader snapshots run on Tokio's blocking pool, so they do not
-  occupy an async server worker. Workspace initialization scans and saved-file
-  index updates use the same pool. Cancellation can stop waiting for a request,
-  but cannot preempt or reclaim an already-running compiler task. A completed
-  loader snapshot is discarded if a captured open buffer changed or closed
-  while it was running. Automatic filesystem watching is not implemented; the
-  workspace-symbol snapshot is built during initialization, and externally
-  changed files are picked up when the server is restarted or opened and saved
-  through the LSP.
+  Loader-backed definition, reference, and rename requests bridge cancellation
+  to their blocking worker and discard the snapshot when cancellation is
+  observed. Compiler and loader snapshots otherwise run on Tokio's blocking
+  pool, so they do not occupy an async server worker. Cancellation remains
+  cooperative: parser, loader, and semantic hot paths do not yet poll the token
+  while executing, so an already-running phase can finish before its result is
+  discarded. Workspace initialization scans and saved-file index updates use
+  the same pool. A completed loader snapshot is also discarded if a captured
+  open buffer changed or closed while it was running. Automatic filesystem
+  watching is not implemented; the workspace-symbol snapshot is built during
+  initialization, and externally changed files are picked up when the server
+  is restarted or opened and saved through the LSP.
 - Go-to-definition follows semantic bindings across the current document's
   configured local, package, and standard-library import graph. Open file
   buffers override disk text for every loaded source before spans are rebased
   to LSP locations. Namespace and wildcard import forms remain limited by the
   compiler's current semantic annotations.
 - Loader-backed definition, reference, and rename snapshots are rebuilt for
-  each request. Caching, cancellation, and performance targets remain
-  follow-up work. Namespace and wildcard imports still depend on the
-  compiler's available semantic annotations.
+  each request. Caching, compiler hot-path cancellation polling, and
+  performance targets remain follow-up work. Namespace and wildcard imports
+  still depend on the compiler's available semantic annotations.
 - Formatting and position conversion need a real-editor protocol smoke suite
   before they can be treated as stable across all Unicode input.
 
