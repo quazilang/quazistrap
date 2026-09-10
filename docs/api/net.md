@@ -45,7 +45,10 @@ or failure sentinel. `shutdown(Shutdown.Read|Write|Both)` requests a half- or
 full shutdown. `close()` invalidates the socket and is idempotent: calls after
 the first, including automatic `free()` after an explicit close, are no-ops and
 do not call the native socket-close operation. `free()` is its automatic
-destructor; `handle()` is target-specific interop only.
+destructor; `handle()` is target-specific interop only. On Windows its `isize`
+bit pattern may be negative for a valid Winsock handle; only `-1` denotes an
+invalidated wrapper, so application code must not use a sign check to test
+validity.
 
 `TcpListener.bind(port)` listens with backlog 128;
 `bind_with_backlog(port, backlog)` selects the backlog. `accept()` returns an
