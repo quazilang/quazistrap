@@ -63,3 +63,4 @@ tests or examples establishing behavior.
 - [Loader-backed LSP definitions](2026-09-08-lsp-loader-definitions.md)
 - [2026-09-10: Canonical documentation navigation](2026-09-10-canonical-documentation-navigation.md)
 - [2026-09-10: Tutorial runtime-boundary guidance](2026-09-10-tutorial-runtime-boundaries.md)
+- [2026-09-10: Build `-r` flag documentation correction](2026-09-10-build-run-flag.md)

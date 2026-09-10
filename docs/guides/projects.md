@@ -96,12 +96,16 @@ This is for bare-metal or minimal programs.
 | Command | Effect |
 | --- | --- |
 | `qz build` | Compile and link |
-| `qz build -r` | Release (optimized) build |
+| `qz build -r` | Build, then run the native artifact |
 | `qz build -c` | Compile to object file only |
 | `qz build -i` | Compile to QZI bytecode only |
+| `qz build -s` | Strip debug symbols from a native artifact |
 | `qz run` | Build and execute |
 | `qz check` | Parse and analyze without building |
 | `qz clean` | Remove the output directory |
+
+There is no release-profile flag yet. In particular, `-r` is the short form
+of `--run`, not an optimization setting.
 
 ### Target selection
 

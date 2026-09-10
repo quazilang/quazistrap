@@ -93,13 +93,16 @@ Run tests:
 qz test
 ```
 
-## Building for release
+## Building an application
 
 ```bash
-qz build -r
+qz build
 ```
 
-The `-r` flag produces an optimized release build.
+The compiler does not currently expose a release-profile flag. `qz build`
+produces the normal native artifact; use `qz build -s` only when stripping
+debug symbols is appropriate. Note that `qz build -r` means **run after a
+successful build**, not a release build.
 
 ## Cross-platform builds
 
