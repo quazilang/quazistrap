@@ -9293,6 +9293,79 @@ pub unsafe fn start() void {
     }
 
     #[test]
+    fn imported_named_type_method_uses_the_declared_impl_chunk() {
+        let chunks = compile_namespaced_module(
+            r#"
+pub struct File { state: i32, }
+
+impl File {
+    pub fn close(self: File) i32 { ret self.state; }
+}
+
+pub fn open() File { ret File { state: 7 }; }
+"#,
+            r#"
+import helpers;
+
+fn main() i32 {
+    const file: helpers.File = helpers.open();
+    ret file.close();
+}
+"#,
+        );
+        assert!(
+            chunks.iter().any(|chunk| chunk.name == "File.close"),
+            "the imported type's inherent method must be emitted"
+        );
+        let main = chunks
+            .iter()
+            .find(|chunk| chunk.name == "main")
+            .expect("main chunk");
+        assert!(
+            main.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::CallIdx as u8),
+            "the imported inherent method must compile as a direct call"
+        );
+        assert!(
+            !main.code.iter().any(|instruction| {
+                instruction.opcode == Opcode::VtblLoad as u8
+                    || instruction.opcode == Opcode::CallReg as u8
+            }),
+            "an inherent method must not fall back to vtable dispatch"
+        );
+    }
+
+    #[test]
+    fn imported_generic_named_type_method_uses_the_declared_impl_chunk() {
+        let chunks = compile_namespaced_module(
+            r#"
+pub struct Wrapper[T] { value: T, }
+
+impl Wrapper[T] {
+    pub fn value(self: Wrapper[T]) T { ret self.value; }
+}
+
+pub fn make() Wrapper[i32] { ret Wrapper { value: 7 }; }
+"#,
+            r#"
+import helpers;
+
+fn main() i32 {
+    const wrapper: helpers.Wrapper[i32] = helpers.make();
+    ret wrapper.value();
+}
+"#,
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.name == "Wrapper.value<i32>"),
+            "the imported generic type's specialization must be emitted"
+        );
+    }
+
+    #[test]
     fn cast_native_address_uses_c_indirect_call() {
         let chunks = compile(
             r#"

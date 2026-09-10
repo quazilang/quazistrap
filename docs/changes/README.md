@@ -16,6 +16,7 @@
 - [2026-09-09: Editor grammar alignment](2026-09-09-editor-grammar-alignment.md)
 - [2026-09-09: Thread join handle invalidation](2026-09-09-thread-join-handle-invalidation.md)
 - [2026-09-09: Idempotent network socket close](2026-09-09-network-close-idempotence.md)
+- [2026-09-10: Imported inherent-method dispatch](2026-09-10-imported-inherent-method-dispatch.md)
 
 Audience: language users and maintainers.
 

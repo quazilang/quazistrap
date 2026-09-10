@@ -2367,6 +2367,7 @@ impl Analyzer {
     }
 
     pub(super) fn type_check_expr(&mut self, expr: &Expr, reachable: bool) -> ExprEval {
+        let mut resolved_method: Option<String> = None;
         let result = match &expr.node {
             ExprKind::Literal(lit) => {
                 let ty = match lit {
@@ -3606,7 +3607,7 @@ impl Analyzer {
                     // `i64.foo`, and so on) as named types, which keeps their API in
                     // Quazi instead of hardcoding every convenience method here.
                     // Returns Some(return_ty) when an impl method is found and side-effects recorded.
-                    let impl_resolved: Option<Option<TypeKind>> = if let Some(object_ty) =
+                    let impl_resolved: Option<(Option<TypeKind>, String)> = if let Some(object_ty) =
                         &object_eval.ty.clone()
                     {
                         // These operations are representation-level compiler builtins on
@@ -3634,7 +3635,25 @@ impl Analyzer {
                                 _ => Vec::new(),
                             };
                             let mangled = format!("{}.{}", type_name, method);
-                            if let Some(sym) = self.resolve_for_read(&mangled) {
+                            // Impl chunks are indexed by their declared type name. An
+                            // imported type may carry a module-qualified display name
+                            // (`fs.File`) in expression annotations, but its impl body
+                            // is still indexed as `File.close`. Keep lookup in the
+                            // qualified semantic namespace, then record the canonical
+                            // codegen key for reachability and direct dispatch.
+                            let declared_type_name =
+                                type_name.rsplit('.').next().unwrap_or(type_name.as_str());
+                            let codegen_mangled = format!(
+                                "{}.{}",
+                                declared_type_name,
+                                method
+                            );
+                            let resolved_mangled = if self.resolve_symbol(&mangled).is_some() {
+                                mangled.clone()
+                            } else {
+                                codegen_mangled.clone()
+                            };
+                            if let Some(sym) = self.resolve_for_read(&resolved_mangled) {
                                 let from = self
                                     .current_function
                                     .last()
@@ -3643,7 +3662,7 @@ impl Analyzer {
                                 let subst: std::collections::HashMap<String, TypeKind> =
                                     if !type_args.is_empty() {
                                         if let Some(struct_params) =
-                                            self.struct_generic_params.get(type_name.as_str())
+                                            self.struct_generic_params.get(declared_type_name)
                                         {
                                             struct_params
                                                 .iter()
@@ -3716,7 +3735,7 @@ impl Analyzer {
                                 if !named_arg_evals.is_empty() {
                                     let param_names = self
                                         .fn_param_names
-                                        .get(&mangled)
+                                        .get(&codegen_mangled)
                                         .cloned()
                                         .unwrap_or_default();
                                     let mut seen: std::collections::HashSet<String> =
@@ -3738,7 +3757,7 @@ impl Analyzer {
                                                 "S09",
                                                 format!(
                                                     "unknown parameter name `{}` for method `{}`",
-                                                    arg_name, mangled
+                                                    arg_name, codegen_mangled
                                                 ),
                                             );
                                             continue;
@@ -3782,21 +3801,22 @@ impl Analyzer {
                                     let type_kinds: Vec<TypeKind> =
                                         type_args.iter().map(|t| t.node.clone()).collect();
                                     self.record_fn_value_layout(
-                                        &mangled,
+                                        &codegen_mangled,
                                         &type_kinds,
                                         &substituted_params,
                                         ret_ty.as_ref(),
                                         is_variadic,
                                         expr.span,
                                     );
-                                    let mono_name = mangle_monomorphized(&mangled, &type_kinds);
+                                    let mono_name =
+                                        mangle_monomorphized(&codegen_mangled, &type_kinds);
                                     if !self
                                         .monomorphizations
                                         .iter()
                                         .any(|m| m.mangled_name == mono_name)
                                     {
                                         self.monomorphizations.push(MonomorphizationInfo {
-                                            fn_name: mangled.clone(),
+                                            fn_name: codegen_mangled.clone(),
                                             type_args: type_kinds,
                                             mangled_name: mono_name.clone(),
                                         });
@@ -3807,7 +3827,11 @@ impl Analyzer {
                                         &mono_name,
                                     );
                                 }
-                                self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
+                                self.add_dependency_edge(
+                                    DependencyKind::Call,
+                                    &from,
+                                    &codegen_mangled,
+                                );
                                 if sym.unsafe_fn && self.unsafe_depth == 0 {
                                     self.push_error(
                                         expr.span,
@@ -3818,7 +3842,7 @@ impl Analyzer {
                                         ),
                                     );
                                 }
-                                Some(ret_ty)
+                                Some((ret_ty, codegen_mangled))
                             } else {
                                 None
                             }
@@ -3935,15 +3959,17 @@ impl Analyzer {
                         None
                     };
 
-                    let ty = if let Some(impl_ty) = impl_resolved {
-                        impl_ty
+                    let (ty, resolved_impl_method) = if let Some((impl_ty, resolved_method)) =
+                        impl_resolved
+                    {
+                        (impl_ty, Some(resolved_method))
                     } else if let Some(dyn_ty) = dyn_resolved {
-                        dyn_ty
+                        (dyn_ty, None)
                     } else {
                         let ref_str = TypeKind::Ref {
                             inner: Box::new(Spanned::new(TypeKind::Str, expr.span)),
                         };
-                        match method.as_str() {
+                        let builtin_ty = match method.as_str() {
                             "len" => Some(TypeKind::Usize),
                             "to_str" => Some(ref_str.clone()),
                             // Runtime primitive formatting currently returns a heap-backed,
@@ -4010,8 +4036,10 @@ impl Analyzer {
                                 _ => None,
                             },
                             _ => None,
-                        }
+                        };
+                        (builtin_ty, None)
                     };
+                    resolved_method = resolved_impl_method;
                     ExprEval {
                         ty,
                         const_value: None,
@@ -4802,7 +4830,7 @@ impl Analyzer {
         };
 
         self.reject_nested_owned_function_expression(expr, &result);
-        self.annotate_expr(expr, &result, reachable, None);
+        self.annotate_expr(expr, &result, reachable, resolved_method);
         result
     }
 
