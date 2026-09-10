@@ -273,8 +273,11 @@ returns, branches, loops, explicit close/free, and panic/termination paths.
 Checkpoint status (2026-09-10): `CString.free` and `String.free` now invalidate
 their own direct owner state and tolerate a repeated explicit release. The
 compiler already suppresses automatic cleanup for a direct `free()` call on a
-named local. Structural destruction, aggregate-place moves, and cleanup of
-owned fields/elements remain open under D-003.
+named local. `Map.free` and `Set.free` now likewise invalidate their raw table
+owners and tolerate a repeated explicit release. Structural destruction,
+aggregate-place moves, and cleanup of owned fields/elements remain open under
+D-003. Array/Box repeated-release coverage is also blocked on the separately
+observed generic-call lowering defect.
 
 ### P0 — Text APIs promote unchecked bytes into valid UTF-8 strings
 

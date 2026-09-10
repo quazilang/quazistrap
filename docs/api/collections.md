@@ -40,7 +40,9 @@ policy.
 Method receivers are borrowed by the language, so `insert` and `remove` mutate
 the one owning container rather than returning an alias. Normal scope cleanup
 releases the backing allocations once. `free(self)` is available only when an
-earlier release is necessary; do not use the map or set after calling it.
+earlier release is necessary. It invalidates the container and is repeat-safe;
+after the first call `len()` returns zero, while lookup and mutation remain
+invalid use.
 
 The current surface remains limited until generic element bounds and fully
 audited drop-aware storage exist; do not treat it as a substitute for a general

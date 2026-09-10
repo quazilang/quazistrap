@@ -20,6 +20,7 @@
 - [2026-09-10: Exact Windows file-handle sentinel](2026-09-10-file-handle-sentinel.md)
 - [2026-09-10: Repeat-safe C-string release](2026-09-10-cstring-release.md)
 - [2026-09-10: Repeat-safe owned string release](2026-09-10-string-release.md)
+- [2026-09-10: Repeat-safe collection release](2026-09-10-collection-release.md)
 
 Audience: language users and maintainers.
 
