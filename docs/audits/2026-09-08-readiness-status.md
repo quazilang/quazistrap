@@ -33,6 +33,30 @@ Audience: maintainers planning the next local checkpoints.
   graph and effective per-file source map, including canonical open-buffer
   overlays, for local, package, and standard-library bindings.
 
+## Follow-up evidence (2026-09-10)
+
+- The standard-library socket owners now invalidate before issuing their native
+  close operation. `TcpStream`, `TcpListener`, and `UdpSocket` ignore repeated
+  `close()`/`free()` calls instead of forwarding the `-1` sentinel to Linux or
+  Winsock. A source-level UDP regression binds an ephemeral local socket and
+  verifies invalidation through explicit close, repeated close, and `free()`.
+  This is a resource-safety correction, not evidence that the broader network
+  timeout, streaming, or TLS milestones are complete.
+- `Thread.join()` now invalidates its wrapper before the native join, preventing
+  a repeated call from reusing released pthread/Windows-handle storage. The
+  experimental concurrency contract remains incomplete because structured
+  lifetime, result/panic propagation, cancellation, and synchronization policy
+  still require a maintainer decision.
+- The process-runtime decision now records the concrete public-contract gates:
+  argument and executable lookup, exit-status representation, termination,
+  close/destruction of a running child, and a multi-field spawn result ABI.
+  This narrows the implementation path but intentionally does not approve a
+  `std.process` API.
+- Neovim and VS Code each have isolated real-client hover smoke coverage; Zed
+  and Helix synchronize their copied grammar assets with the canonical
+  Tree-sitter revision and verify that alignment statically. Their editor
+  runtimes remain unavailable in this workspace.
+
 ## Not complete
 
 The production-readiness plan is **not complete**. The following requirements
