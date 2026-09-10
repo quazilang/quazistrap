@@ -597,7 +597,12 @@ impl String {
     pub fn parse_f64(self: String) Result[f64, ParseError] { ret self.data.parse_f64(); }
 
     pub fn free(self: String) void {
-        if (self.cap > 0) { __string_free(self.data); }
+        if (self.cap > 0) {
+            __string_free(self.data);
+            self.data = "";
+            self.len = 0;
+            self.cap = 0;
+        }
     }
 }
 

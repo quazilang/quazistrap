@@ -253,9 +253,9 @@ compiler ownership regressions when designed.
 
 Evidence: codegen only searches for `.free` on the exact named local type and
 does not recursively destroy owned fields. Network aggregates containing
-`String`, `Array`, or socket owners define no aggregate destructor. `CString.free`
-does not invalidate its pointer, while callers also remain eligible for automatic
-scope cleanup.
+`String`, `Array`, or socket owners define no aggregate destructor. At the
+baseline, `CString.free` and `String.free` left released owners with live-looking
+state.
 
 Impact: leaks for composite values and possible double-free after explicit
 cleanup. Documentation currently promises broader RAII behavior than exists.
@@ -269,6 +269,12 @@ surface invalid shallow copies. Decision D-003 is required before broad changes.
 
 Verification: destructor-order/count tests for nested fields, reassignment,
 returns, branches, loops, explicit close/free, and panic/termination paths.
+
+Checkpoint status (2026-09-10): `CString.free` and `String.free` now invalidate
+their own direct owner state and tolerate a repeated explicit release. The
+compiler already suppresses automatic cleanup for a direct `free()` call on a
+named local. Structural destruction, aggregate-place moves, and cleanup of
+owned fields/elements remain open under D-003.
 
 ### P0 — Text APIs promote unchecked bytes into valid UTF-8 strings
 

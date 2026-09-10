@@ -82,6 +82,12 @@ This applies on:
 - Normal fallthrough at the end of a block.
 - Early return via `ret`.
 
+`String.free()` can release an owned string before scope exit. It leaves the
+value in the same empty state as `String.new()`, so a repeated explicit call is
+a no-op. A direct `free()` call on a named local suppresses that local's later
+automatic cleanup. Any borrowed string view or raw pointer obtained before the
+first release is invalid afterward.
+
 Assignment to a previously initialized owned variable destroys the old value
 before storing the new one. Returning an owned value transfers it to the
 caller, skipping destruction.
