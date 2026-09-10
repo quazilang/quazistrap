@@ -1425,6 +1425,15 @@ impl Analyzer {
                     .iter()
                     .find(|mono| mono.mangled_name == target_name)
                 else {
+                    // A specialized generic body can call ordinary functions
+                    // too (for example, Array.push[T] calls the non-generic
+                    // array realloc intrinsic). Preserve those edges under
+                    // the concrete caller so reachability indexes the callee.
+                    self.add_dependency_edge(
+                        DependencyKind::Call,
+                        &source.mangled_name,
+                        &target_name,
+                    );
                     continue;
                 };
                 let type_args: Vec<TypeKind> = template
@@ -1442,6 +1451,7 @@ impl Analyzer {
                 }
 
                 let mangled_name = typecheck::mangle_monomorphized(&template.fn_name, &type_args);
+                self.add_dependency_edge(DependencyKind::Call, &source.mangled_name, &mangled_name);
                 if self
                     .monomorphizations
                     .iter()
@@ -1451,7 +1461,6 @@ impl Analyzer {
                 }
 
                 self.record_specialization_layout(&template.fn_name, &target_params, &type_args);
-                self.add_dependency_edge(DependencyKind::Call, &source.mangled_name, &mangled_name);
                 let specialization = MonomorphizationInfo {
                     fn_name: template.fn_name.clone(),
                     type_args,
@@ -6680,6 +6689,53 @@ fn main() void {
         assert!(report.monomorphizations.iter().any(|mono| {
             mono.fn_name == "Array.set" && mono.mangled_name.contains("Array.set")
         }));
+    }
+
+    #[test]
+    fn generic_specialization_inherits_ordinary_call_dependencies() {
+        let report = analyze(
+            r#"
+fn helper() void { ret; }
+
+struct Bucket[T] { value: T, }
+
+impl Bucket[T] {
+    fn new() Bucket[T] { ret Bucket { value: 0 }; }
+    fn touch(self: Bucket[T]) void { helper(); }
+}
+
+fn main() void {
+    var bucket: Bucket[i32] = Bucket.new();
+    bucket.touch();
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "generic dependency test: {:?}", report.errors);
+        assert!(report
+            .dependency_graph
+            .calls_from
+            .get("Bucket.touch<i32>")
+            .is_some_and(|targets| targets.iter().any(|target| target == "helper")));
+    }
+
+    #[test]
+    fn each_generic_specialization_inherits_an_existing_callee_edge() {
+        let report = analyze(
+            r#"
+fn leaf[T](value: T) void { ret; }
+fn live[T](value: T) void { leaf[T](value); }
+fn dead[T](value: T) void { leaf[T](value); }
+
+fn main() void { live[i32](1); }
+fn unused() void { dead[i32](1); }
+"#,
+        );
+        assert!(report.errors.is_empty(), "generic dependency test: {:?}", report.errors);
+        assert!(report
+            .dependency_graph
+            .calls_from
+            .get("live<i32>")
+            .is_some_and(|targets| targets.iter().any(|target| target == "leaf<i32>")));
     }
 
     #[test]

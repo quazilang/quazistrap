@@ -42,6 +42,14 @@ Audience: maintainers planning the next local checkpoints.
   verifies invalidation through explicit close, repeated close, and `free()`.
   This is a resource-safety correction, not evidence that the broader network
   timeout, streaming, or TLS milestones are complete.
+- Prelude `Array[T]` and `Box[T]` now invalidate their raw pointers after an
+  explicit release, making repeated `free()` calls no-ops. The compiler's
+  generic-specialization closure now also carries ordinary helper and intrinsic
+  calls from a generic template into each concrete specialization; this keeps
+  `Array.push()`'s realloc path reachable. Source regressions cover repeat-safe
+  release for `Array`, `Box`, `Map`, and `Set`. This corrects raw-owner release
+  behavior only; element destruction and general aggregate ownership remain
+  deferred.
 - `Thread.join()` now invalidates its wrapper before the native join, preventing
   a repeated call from reusing released pthread/Windows-handle storage. The
   experimental concurrency contract remains incomplete because structured

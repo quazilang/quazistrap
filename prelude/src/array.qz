@@ -78,7 +78,12 @@ impl Array[T] {
     }
 
     pub fn free(self: Array[T]) void {
-        unsafe { __array_free(self.ptr); }
+        if (self.ptr != 0) {
+            unsafe { __array_free(self.ptr); }
+        }
+        self.ptr = 0;
+        self.len = 0;
+        self.cap = 0;
     }
 }
 
