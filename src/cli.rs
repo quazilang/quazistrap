@@ -307,6 +307,13 @@ mod tests {
     }
 
     #[test]
+    fn build_short_r_means_run_after_build() {
+        let args = Args::try_parse_from(["qz", "build", "-r"])
+            .expect("build --run shorthand should parse");
+        assert!(matches!(args.command, Command::Build { run: true, .. }));
+    }
+
+    #[test]
     fn header_accepts_files_output_and_target() {
         let args = Args::try_parse_from([
             "qz",
