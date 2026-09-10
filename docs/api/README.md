@@ -2,12 +2,13 @@
 
 Audience: language users.
 
-Status: structure established; exhaustive public-API documentation is in
-progress. See [the current standard-library guide](../STANDARD_LIBRARY.md) for
-the presently documented subset.
+Status: every module exported by the canonical `std` gateway has a current API
+reference or an explicit implementation-boundary note. The older
+[standard-library guide](../STANDARD_LIBRARY.md) is retained for historical
+context, not as the current API contract.
 
 See the [coverage ledger](coverage.md) for every exported `std` module and the
-remaining API-reference work.
+support boundary of each reference.
 
 Documented modules:
 

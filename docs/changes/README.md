@@ -61,3 +61,4 @@ tests or examples establishing behavior.
 - [Persistent local workspace symbols and relative definitions](2026-09-08-lsp-workspace-index.md)
 - [Target-aware test discovery](2026-09-08-target-aware-test-discovery.md)
 - [Loader-backed LSP definitions](2026-09-08-lsp-loader-definitions.md)
+- [2026-09-10: Canonical documentation navigation](2026-09-10-canonical-documentation-navigation.md)
