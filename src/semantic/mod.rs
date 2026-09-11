@@ -2086,6 +2086,51 @@ mod tests {
     }
 
     #[test]
+    fn guarded_match_arm_type_mismatch_span_includes_the_result_expression() {
+        let source = r#"
+enum Choice { First, Second, }
+fn value(choice: Choice) i32 {
+    ret match choice {
+        First => 1,
+        Second if true => "wrong",
+    };
+}
+"#;
+        let report = analyze(source);
+        let mismatch = report
+            .errors
+            .iter()
+            .find(|error| error.message.contains("match arm type mismatch"))
+            .expect("guarded arm result type mismatch");
+        let result_end = source.find("\"wrong\"").unwrap() + "\"wrong\"".len();
+
+        assert_eq!(mismatch.span.end, result_end);
+    }
+
+    #[test]
+    fn unreachable_match_arm_span_includes_the_result_expression() {
+        let source = r#"
+enum Choice { First, Second, }
+fn value(choice: Choice) i32 {
+    ret match choice {
+        First => 1,
+        First => 2,
+        Second => 3,
+    };
+}
+"#;
+        let report = analyze(source);
+        let unreachable = report
+            .warnings
+            .iter()
+            .find(|warning| warning.message.contains("already covered"))
+            .expect("unreachable duplicate match arm warning");
+        let result_end = source.find("First => 2").unwrap() + "First => 2".len();
+
+        assert_eq!(unreachable.span.end, result_end);
+    }
+
+    #[test]
     fn accepts_unknown_aggregate_field_attributes_as_metadata() {
         let report = analyze(
             r#"

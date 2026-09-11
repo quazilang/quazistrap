@@ -4316,6 +4316,7 @@ impl Analyzer {
                 for arm in arms {
                     let (mut arm_info, bindings) =
                         self.validate_match_pattern(&arm.pattern, &scrutinee_eval.ty);
+                    arm_info.span = arm.span;
                     arm_info.has_guard = arm.guard.is_some();
 
                     self.enter_scope();

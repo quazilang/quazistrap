@@ -1451,8 +1451,10 @@ impl Parser {
             self.expect(TokenKind::FatArrow)?;
             let arm_expr = self.parse_expr()?;
 
-            let end_span = guard.as_ref().map(|g| g.span).unwrap_or(arm_expr.span);
-            let arm_span = Span::merge(pattern.span, end_span);
+            // A guarded arm extends through its result expression, not merely
+            // its guard. Semantic diagnostics use this span for the complete
+            // `pattern [if guard] => expression` construct.
+            let arm_span = Span::merge(pattern.span, arm_expr.span);
             arms.push(MatchArm {
                 pattern,
                 guard,
@@ -2734,6 +2736,36 @@ fn value(c: Color) i32 {
         };
 
         assert!(matches!(arms[1].pattern.node, PatternKind::Wildcard));
+    }
+
+    #[test]
+    fn guarded_match_arm_span_includes_its_result_expression() {
+        let program = parse_program(
+            r#"
+enum Choice { First, Second, }
+fn value(choice: Choice) i32 {
+    ret match choice {
+        First => 1,
+        Second if true => 2,
+    };
+}
+"#,
+        );
+
+        let ItemKind::Fn { body, .. } = &program.items[1].node else {
+            panic!("expected function item");
+        };
+        let StmtKind::Return(Some(expr)) = &body.as_ref().unwrap().stmts[0].node else {
+            panic!("expected return with expression");
+        };
+        let ExprKind::Match { arms, .. } = &expr.node else {
+            panic!("expected match expression");
+        };
+
+        let guarded = &arms[1];
+        assert!(guarded.guard.is_some());
+        assert_eq!(guarded.span.end, guarded.expr.span.end);
+        assert!(guarded.span.end > guarded.guard.as_ref().unwrap().span.end);
     }
 
     #[test]
