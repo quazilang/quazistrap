@@ -1,6 +1,7 @@
 # Change records
 
 - [2026-09-11: Loader-backed LSP cancellation](2026-09-11-lsp-loader-cancellation.md)
+- [2026-09-11: Process contract status correction](2026-09-11-process-contract-status.md)
 - [2026-09-11: LSP statement-boundary semantic cancellation](2026-09-11-lsp-statement-cancellation.md)
 - [2026-09-11: Complete guarded match-arm diagnostic spans](2026-09-11-guarded-match-arm-spans.md)
 - [2026-09-11: LSP text synchronization negotiation](2026-09-11-lsp-sync-negotiation.md)

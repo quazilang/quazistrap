@@ -4,7 +4,8 @@ Audience: Quazi application developers.
 
 std.os is a small current-process and host-information module. It is not the
 planned child-process API; see the [process runtime decision](../decisions/process-runtime.md)
-for why process creation is intentionally deferred to compiler/runtime work.
+for the approved contract and the compiler/runtime implementation still needed
+before process creation is public.
 
 ## Process control
 

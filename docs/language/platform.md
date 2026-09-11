@@ -133,7 +133,9 @@ The following features exist but have known limitations:
   result propagation, cancellation, and synchronization are not designed.
 - **Serialization**: Limited `@derive(Serialize)` exists; `Deserialize`,
   generic structs, nested types, and collections are not yet supported.
-- **Process management**: Deferred by D-011 pending safe runtime marshalling.
+- **Process management**: D-011 approves a minimal shell-free contract, but
+  the required runtime marshalling and `std.process` implementation are not
+  shipped.
 - **Civil time**: Only monotonic `Duration`/`Instant` exist; calendar, UTC,
   and time zones are not implemented.
 - **Generic storage**: Values wider than 255 register slots require an

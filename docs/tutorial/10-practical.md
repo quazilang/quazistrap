@@ -158,9 +158,9 @@ their first projects single-threaded.
 
 Quazi does not yet provide a supported `std.process` child-process API.
 Do not build shell command strings or depend on undocumented compiler/runtime
-internals for process execution. The contract is intentionally deferred until
-argument ownership, native handles, cancellation, and cross-platform cleanup
-are specified.
+internals for process execution. The first shell-free process contract is
+decided, but its runtime primitives and cross-platform cleanup evidence are
+not implemented yet.
 
 ## Debugging failures
 

@@ -59,11 +59,11 @@ Audience: maintainers planning the next local checkpoints.
   experimental concurrency contract remains incomplete because structured
   lifetime, result/panic propagation, cancellation, and synchronization policy
   still require a maintainer decision.
-- The process-runtime decision now records the concrete public-contract gates:
-  argument and executable lookup, exit-status representation, termination,
-  close/destruction of a running child, and a multi-field spawn result ABI.
-  This narrows the implementation path but intentionally does not approve a
-  `std.process` API.
+- The process-runtime decision now approves the concrete first-release
+  contract: exact executable paths and borrowed arguments, exit-status
+  representation, forced termination, close/destruction of a running child,
+  and a multi-field spawn-result ABI. No `std.process` API is shipped until
+  matching runtime primitives and cross-target evidence exist.
 - Neovim and VS Code each have isolated real-client hover smoke coverage; Zed
   and Helix synchronize their copied grammar assets with the canonical
   Tree-sitter revision and verify that alignment statically. Their editor
@@ -81,7 +81,7 @@ remain unproven or explicitly deferred:
 
 | Milestone | Current status | Required next evidence |
 | --- | --- | --- |
-| Process API | D-011 accepts compiler/runtime ownership of child-process creation, but the public argument, exit-status, termination, close/destruction, and spawn-result contracts remain unapproved. | Maintainer-approved contract, Linux/Windows implementation, and failure/cleanup tests. |
+| Process API | D-011 approves the minimal public contract and assigns platform work to compiler runtime primitives; no `std.process` module or process intrinsics are implemented yet. | Linux/Windows implementation, public `std.process` surface, and executable/argument/failure/cleanup tests. |
 | Civil time | Only monotonic `Duration`/`Instant` are shipped. | Calendar, UTC, zone, ambiguity, and serialization contract plus deterministic tests. |
 | Concurrency | Native thread primitives remain experimental. | Structured lifetime, result/error/panic propagation, cancellation policy, synchronization contract. |
 | Serialization | Bounded scalar decode and limited `Serialize` exist; derived `Deserialize`, options, collections, and nested structs do not. | Receiverless decoding design and bounded object policy with compiler/std tests. |

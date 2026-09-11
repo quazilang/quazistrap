@@ -96,9 +96,10 @@ QZI compatibility; it must not restore universal implicit compatibility.
 
 ## D-011: child-process creation
 
-Accepted 2026-09-01: [child-process creation belongs to the runtime](process-runtime.md).
-The runtime boundary is decided; the public process ownership and result
-contract remains pending maintainer approval.
+Accepted 2026-09-01 and expanded with an approved first-release contract on
+2026-09-10: [child-process creation belongs to the runtime](process-runtime.md).
+The runtime boundary and public ownership/result contract are decided; the
+runtime primitives and `std.process` implementation remain unshipped.
 
 ## D-012: serialization
 
