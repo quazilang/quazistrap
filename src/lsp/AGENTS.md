@@ -41,15 +41,17 @@ off async server workers; workspace initialization scans and save-time index
 updates use the pool too. Diagnostics attach a token to each open-document
 generation: replacing or closing a document interrupts lexer work between
 tokens, parser work between top-level declarations, and semantic analysis at
-pass and top-level-item boundaries. Loader-backed navigation requests use the
+pass, top-level-item, and long pass-internal collection/traversal boundaries.
+Loader-backed navigation requests use the
 same operational cancellation outcome while traversing imports, resolving
 public exports, and lexing/parsing loader sources. Cancellation must never
-become a source diagnostic. Individual filesystem reads and expensive inner
-semantic loops remain non-interruptible once they begin, so those phases may
-finish before their result is discarded.
+become a source diagnostic. Individual filesystem reads, pass-input snapshots,
+and semantic work within one top-level declaration remain non-interruptible
+once they begin, so those units may finish before their result is discarded.
 Before returning a loader-backed result, verify that every open buffer included
 in its snapshot is still open with the same source text; otherwise discard it.
-Polling inside expensive semantic loops is still required before claiming
+Cancellation is cooperative rather than preemptive; polling remains required
+for any newly introduced long-running semantic traversal before claiming
 complete CPU-work interruption.
 
 Cross-file references and rename use a fresh compiler-loader snapshot, not the

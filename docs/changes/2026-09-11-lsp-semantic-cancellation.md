@@ -25,8 +25,9 @@ generation remains authoritative.
 The loader's recursive import traversal and its merged-program analysis do not
 yet poll cancellation. A cancelled definition, references, or rename request
 can therefore still run to completion before its snapshot is discarded.
-Likewise, an individual expensive semantic pass is only interrupted at its
-next declared boundary, not preempted in the middle of a single item.
+Long semantic collection and graph traversals now poll during their work. The
+remaining atomic semantic boundary is checking within a single top-level
+declaration; cancellation is cooperative rather than preemptive.
 
 ## Verification
 

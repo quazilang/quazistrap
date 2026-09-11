@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::parser::ast::*;
 use crate::semantic::typecheck::substitute_type_kind;
@@ -994,17 +994,17 @@ impl Analyzer {
 
         // Pass 5: tree-shaking — find functions not reachable from main.
         checkpoint()?;
-        self.run_tree_shake_pass(program);
+        self.run_tree_shake_pass(program, &mut checkpoint)?;
 
         // Pass 6: optimization hints.
         checkpoint()?;
-        self.run_inline_candidate_pass(program);
+        self.run_inline_candidate_pass(program, &mut checkpoint)?;
         checkpoint()?;
-        self.run_exhaustiveness_pass();
+        self.run_exhaustiveness_pass(&mut checkpoint)?;
         checkpoint()?;
         self.run_import_optimization_pass();
         checkpoint()?;
-        self.run_lazy_import_pass();
+        self.run_lazy_import_pass(&mut checkpoint)?;
 
         // Pass 7: borrow / move checker.
         checkpoint()?;
@@ -1016,7 +1016,7 @@ impl Analyzer {
         // specialization such as `Array.index<str>` can call a missing
         // `Array.get<str>` chunk.
         checkpoint()?;
-        self.close_monomorphization_dependencies();
+        self.close_monomorphization_dependencies(&mut checkpoint)?;
 
         // A successful analysis must leave no representation-less inference
         // sentinels for code generation. Error recovery may still use them
@@ -1074,7 +1074,7 @@ impl Analyzer {
             dead_functions: dead_functions.clone(),
         };
 
-        let dependency_graph = self.build_dependency_graph();
+        let dependency_graph = self.build_dependency_graph(&mut checkpoint)?;
 
         checkpoint()?;
         Ok(SemanticReport {
@@ -1434,11 +1434,21 @@ impl Analyzer {
         }
     }
 
-    fn close_monomorphization_dependencies(&mut self) {
-        let template_monos = self.monomorphizations.clone();
+    fn close_monomorphization_dependencies(
+        &mut self,
+        checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<(), crate::cancel::Cancelled> {
+        let template_monos: HashMap<String, MonomorphizationInfo> = self
+            .monomorphizations
+            .iter()
+            .cloned()
+            .map(|mono| (mono.mangled_name.clone(), mono))
+            .collect();
+        let mut known_mangled: HashSet<String> = template_monos.keys().cloned().collect();
         let mut pending = self.monomorphizations.clone();
 
         while let Some(source) = pending.pop() {
+            checkpoint()?;
             let source_params = self.generic_params_for_function(&source.fn_name);
             if source_params.len() != source.type_args.len()
                 || source
@@ -1460,10 +1470,8 @@ impl Analyzer {
                 .unwrap_or_default();
 
             for target_name in targets {
-                let Some(template) = template_monos
-                    .iter()
-                    .find(|mono| mono.mangled_name == target_name)
-                else {
+                checkpoint()?;
+                let Some(template) = template_monos.get(&target_name) else {
                     // A specialized generic body can call ordinary functions
                     // too (for example, Array.push[T] calls the non-generic
                     // array realloc intrinsic). Preserve those edges under
@@ -1491,11 +1499,7 @@ impl Analyzer {
 
                 let mangled_name = typecheck::mangle_monomorphized(&template.fn_name, &type_args);
                 self.add_dependency_edge(DependencyKind::Call, &source.mangled_name, &mangled_name);
-                if self
-                    .monomorphizations
-                    .iter()
-                    .any(|mono| mono.mangled_name == mangled_name)
-                {
+                if !known_mangled.insert(mangled_name.clone()) {
                     continue;
                 }
 
@@ -1509,6 +1513,7 @@ impl Analyzer {
                 self.monomorphizations.push(specialization);
             }
         }
+        Ok(())
     }
 
     fn generic_params_for_function(&self, fn_name: &str) -> Vec<String> {
@@ -1624,24 +1629,32 @@ impl Analyzer {
         map
     }
 
-    fn build_dependency_graph(&self) -> DependencyGraph {
-        let edges = self
-            .dependency_edges
-            .iter()
-            .map(|(kind, from, to)| DependencyEdge {
+    fn build_dependency_graph(
+        &self,
+        checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<DependencyGraph, crate::cancel::Cancelled> {
+        let mut edges = Vec::with_capacity(self.dependency_edges.len());
+        for (kind, from, to) in &self.dependency_edges {
+            checkpoint()?;
+            edges.push(DependencyEdge {
                 from: from.clone(),
                 to: to.clone(),
                 kind: *kind,
-            })
-            .collect();
+            });
+        }
 
-        let calls_from = self
-            .call_dependencies
-            .iter()
-            .map(|(from, targets)| (from.clone(), targets.iter().cloned().collect()))
-            .collect();
+        let mut calls_from = HashMap::with_capacity(self.call_dependencies.len());
+        for (from, targets) in &self.call_dependencies {
+            checkpoint()?;
+            let mut target_names = Vec::with_capacity(targets.len());
+            for target in targets {
+                checkpoint()?;
+                target_names.push(target.clone());
+            }
+            calls_from.insert(from.clone(), target_names);
+        }
 
-        DependencyGraph { edges, calls_from }
+        Ok(DependencyGraph { edges, calls_from })
     }
 
     /// Insert a symbol into the current scope and report whether this call
@@ -1962,7 +1975,10 @@ mod tests {
         ast::{ItemKind, Span, Spanned, TypeKind},
     };
 
-    use super::{Analyzer, ConstValue, DependencyKind, SemanticReport, strip_cfg_for};
+    use super::{
+        Analyzer, ConstValue, DependencyKind, EnumInfo, MatchArmInfo, MatchArmKindInfo,
+        MatchCandidate, SemanticReport, strip_cfg_for,
+    };
 
     fn parse_program(src: &str) -> crate::parser::ast::Program {
         let mut lexer = Lexer::new(src);
@@ -1992,6 +2008,80 @@ mod tests {
             }
         });
 
+        assert!(matches!(result, Err(crate::cancel::Cancelled)));
+    }
+
+    #[test]
+    fn tree_shake_poll_stops_while_visiting_call_edges() {
+        let program = parse_program("fn main() void {}\n");
+        let mut analyzer = Analyzer::new();
+        analyzer.add_dependency_edge(DependencyKind::Call, "main", "external");
+        let mut checkpoints_before_cancellation = 2;
+
+        let result = analyzer.run_tree_shake_pass(&program, &mut || {
+            if checkpoints_before_cancellation == 0 {
+                Err(crate::cancel::Cancelled)
+            } else {
+                checkpoints_before_cancellation -= 1;
+                Ok(())
+            }
+        });
+
+        // The first poll collects `main`, the second admits it to the BFS, and
+        // the third is inside its outgoing-edge traversal.
+        assert!(matches!(result, Err(crate::cancel::Cancelled)));
+    }
+
+    #[test]
+    fn dependency_graph_poll_stops_before_copying_edges() {
+        let mut analyzer = Analyzer::new();
+        analyzer.add_dependency_edge(DependencyKind::Call, "main", "worker");
+
+        let result = analyzer.build_dependency_graph(&mut || Err(crate::cancel::Cancelled));
+
+        assert!(matches!(result, Err(crate::cancel::Cancelled)));
+    }
+
+    #[test]
+    fn exhaustiveness_poll_stops_while_visiting_match_arms() {
+        let span = Span::new(1, 1, 0, 1);
+        let mut analyzer = Analyzer::new();
+        analyzer.enums.insert(
+            "Choice".to_string(),
+            EnumInfo {
+                variants: [("yes".to_string(), 0)].into_iter().collect(),
+                variant_fields: [("yes".to_string(), Vec::new())].into_iter().collect(),
+                order: vec!["yes".to_string()],
+            },
+        );
+        analyzer.match_candidates.push(MatchCandidate {
+            span,
+            scrutinee_ty: Some(TypeKind::Named {
+                name: "Choice".to_string(),
+                type_args: Vec::new(),
+            }),
+            arms: vec![MatchArmInfo {
+                span,
+                kind: MatchArmKindInfo::Variant {
+                    enum_name: None,
+                    variant: "yes".to_string(),
+                },
+                has_guard: false,
+            }],
+        });
+        let mut checkpoints_before_cancellation = 1;
+
+        let result = analyzer.run_exhaustiveness_pass(&mut || {
+            if checkpoints_before_cancellation == 0 {
+                Err(crate::cancel::Cancelled)
+            } else {
+                checkpoints_before_cancellation -= 1;
+                Ok(())
+            }
+        });
+
+        // The first poll admits the candidate; the second is while walking its
+        // match arms.
         assert!(matches!(result, Err(crate::cancel::Cancelled)));
     }
 

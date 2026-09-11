@@ -94,10 +94,14 @@ impl Analyzer {
         None
     }
 
-    pub(super) fn run_lazy_import_pass(&mut self) {
+    pub(super) fn run_lazy_import_pass(
+        &mut self,
+        checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<(), crate::cancel::Cancelled> {
         let accesses = self.lazy_import_accesses.clone();
 
         for (local_name, paths) in &accesses {
+            checkpoint()?;
             let sym = match self.resolve_symbol(local_name) {
                 Some(s) if s.is_import => s,
                 _ => continue,
@@ -105,18 +109,26 @@ impl Analyzer {
 
             let import_path = sym.import_path.as_deref().unwrap_or(local_name).to_string();
 
-            // Keep only deepest paths (remove any that are a strict prefix of another).
-            let mut paths_vec: Vec<String> = paths.iter().cloned().collect();
+            // Sorted module paths sharing a dotted prefix are contiguous. A
+            // path therefore has a deeper descendant exactly when its next
+            // neighbour begins with `path.`; this avoids comparing every
+            // access with every other access.
+            let mut paths_vec = Vec::with_capacity(paths.len());
+            for path in paths {
+                checkpoint()?;
+                paths_vec.push(path.clone());
+            }
             paths_vec.sort();
-            let deepest: Vec<String> = paths_vec
-                .iter()
-                .filter(|p| {
-                    !paths_vec
-                        .iter()
-                        .any(|other| other != *p && other.starts_with(&format!("{}.", p)))
-                })
-                .cloned()
-                .collect();
+            let mut deepest = Vec::with_capacity(paths_vec.len());
+            for (index, path) in paths_vec.iter().enumerate() {
+                checkpoint()?;
+                let has_deeper_neighbour = paths_vec
+                    .get(index + 1)
+                    .is_some_and(|next| next.starts_with(&format!("{}.", path)));
+                if !has_deeper_neighbour {
+                    deepest.push(path.clone());
+                }
+            }
 
             // Only emit when the accessed paths are strictly deeper than the import itself.
             let narrower: Vec<String> = deepest
@@ -147,22 +159,26 @@ impl Analyzer {
                 suggested_imports: suggested,
             });
         }
+        Ok(())
     }
 
-    pub(super) fn run_tree_shake_pass(&mut self, program: &Program) {
+    pub(super) fn run_tree_shake_pass(
+        &mut self,
+        program: &Program,
+        checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<(), crate::cancel::Cancelled> {
         // Collect all locally-defined function names.
-        let all_fns: BTreeSet<String> = program
-            .items
-            .iter()
-            .filter_map(|item| match &item.node {
-                ItemKind::Fn { name, .. } => Some(name.clone()),
-                _ => None,
-            })
-            .collect();
+        let mut all_fns = BTreeSet::new();
+        for item in &program.items {
+            checkpoint()?;
+            if let ItemKind::Fn { name, .. } = &item.node {
+                all_fns.insert(name.clone());
+            }
+        }
 
         // Library mode: no main → can't determine reachability, skip.
         if !all_fns.contains("main") {
-            return;
+            return Ok(());
         }
 
         // BFS from main using Call edges.
@@ -171,8 +187,10 @@ impl Analyzer {
         let mut queue: Vec<String> = vec!["main".to_string()];
 
         while let Some(fn_name) = queue.pop() {
+            checkpoint()?;
             if let Some(targets) = self.call_dependencies.get(&fn_name) {
                 for to in targets {
+                    checkpoint()?;
                     if all_fns.contains(to) && reachable.insert(to.clone()) {
                         queue.push(to.clone());
                     }
@@ -190,6 +208,7 @@ impl Analyzer {
             .clone();
 
         for fn_name in all_fns.difference(&reachable) {
+            checkpoint()?;
             let is_called_by_someone = self.called_functions.contains(fn_name);
             if is_called_by_someone && let Some(sym) = global_scope.get(fn_name) {
                 self.push_warning_with_suggestion(
@@ -204,10 +223,16 @@ impl Analyzer {
             }
             self.unreachable_functions.insert(fn_name.clone());
         }
+        Ok(())
     }
 
-    pub(super) fn run_inline_candidate_pass(&mut self, program: &Program) {
+    pub(super) fn run_inline_candidate_pass(
+        &mut self,
+        program: &Program,
+        checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<(), crate::cancel::Cancelled> {
         for item in &program.items {
+            checkpoint()?;
             // Skip @cfg-disabled items.
             let attrs = match &item.node {
                 ItemKind::Fn { attributes, .. } => Some(attributes),
@@ -225,13 +250,14 @@ impl Analyzer {
                     attributes,
                     ..
                 } => {
-                    self.maybe_add_inline_candidate(name, body, attributes, item.span);
+                    self.maybe_add_inline_candidate(name, body, attributes, item.span, checkpoint)?;
                 }
                 ItemKind::Impl {
                     for_ty, methods, ..
                 } => {
                     let type_name = crate::semantic::declare::type_kind_base_name(&for_ty.node);
                     for method in methods {
+                        checkpoint()?;
                         if let ItemKind::Fn {
                             name,
                             body: Some(body),
@@ -245,13 +271,15 @@ impl Analyzer {
                                 body,
                                 attributes,
                                 method.span,
-                            );
+                                checkpoint,
+                            )?;
                         }
                     }
                 }
                 _ => {}
             }
         }
+        Ok(())
     }
 
     pub(super) fn maybe_add_inline_candidate(
@@ -260,28 +288,29 @@ impl Analyzer {
         body: &Block,
         attributes: &[Attribute],
         span: Span,
-    ) {
+        checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<(), crate::cancel::Cancelled> {
         if name == "main" || attributes.iter().any(|attribute| attribute.name == "test") {
-            return;
+            return Ok(());
         }
 
         if attributes
             .iter()
             .any(|a| matches!(a.name.as_str(), "syscall" | "api"))
         {
-            return;
+            return Ok(());
         }
 
         let inline_hint = attributes.iter().any(|a| a.name == "inline");
-        if self.is_recursive(name) {
-            return;
+        if self.is_recursive(name, checkpoint)? {
+            return Ok(());
         }
 
         let is_small = self.is_small_inline_body(body);
         let (is_hot, call_count, called_from_main) = self.is_hot_call_target(name);
 
         if !inline_hint && (!is_small || !is_hot) {
-            return;
+            return Ok(());
         }
         let reason = if inline_hint {
             "inline attribute".to_string()
@@ -306,6 +335,7 @@ impl Analyzer {
             reason,
         };
         self.inline_candidates.push(candidate.clone());
+        Ok(())
     }
 
     fn is_small_inline_body(&self, body: &Block) -> bool {
@@ -329,25 +359,31 @@ impl Analyzer {
         })
     }
 
-    fn is_recursive(&self, name: &str) -> bool {
+    fn is_recursive(
+        &self,
+        name: &str,
+        checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<bool, crate::cancel::Cancelled> {
         let mut stack = vec![name.to_string()];
         let mut visited: HashSet<String> = HashSet::new();
 
         while let Some(current) = stack.pop() {
+            checkpoint()?;
             if !visited.insert(current.clone()) {
                 continue;
             }
             if let Some(targets) = self.call_dependencies.get(&current) {
                 for to in targets {
+                    checkpoint()?;
                     if to == name {
-                        return true;
+                        return Ok(true);
                     }
                     stack.push(to.clone());
                 }
             }
         }
 
-        false
+        Ok(false)
     }
 
     fn is_hot_call_target(&self, name: &str) -> (bool, usize, bool) {
@@ -365,10 +401,14 @@ impl Analyzer {
         // No additional aggregate suggestion needed.
     }
 
-    pub(super) fn run_exhaustiveness_pass(&mut self) {
+    pub(super) fn run_exhaustiveness_pass(
+        &mut self,
+        checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<(), crate::cancel::Cancelled> {
         let candidates = std::mem::take(&mut self.match_candidates);
 
         for candidate in candidates {
+            checkpoint()?;
             let Some(TypeKind::Named {
                 name: scrutinee_enum,
                 ..
@@ -387,6 +427,7 @@ impl Analyzer {
             let mut covered: BTreeSet<String> = BTreeSet::new();
 
             for arm in &candidate.arms {
+                checkpoint()?;
                 match &arm.kind {
                     MatchArmKindInfo::Wildcard => {
                         if arm.has_guard {
@@ -456,19 +497,21 @@ impl Analyzer {
             }
 
             if !wildcard_seen {
-                let missing_variants: Vec<String> = enum_info
-                    .variants
-                    .keys()
-                    .filter(|name| !covered.contains(*name))
-                    .cloned()
-                    .collect();
+                let mut missing_variants = Vec::new();
+                for name in enum_info.variants.keys() {
+                    checkpoint()?;
+                    if !covered.contains(name) {
+                        missing_variants.push(name.clone());
+                    }
+                }
 
                 if !missing_variants.is_empty() {
-                    let missing_joined = missing_variants
-                        .iter()
-                        .map(|v| format!("{}.{}", scrutinee_enum, v))
-                        .collect::<Vec<_>>()
-                        .join(", ");
+                    let mut missing_names = Vec::with_capacity(missing_variants.len());
+                    for variant in &missing_variants {
+                        checkpoint()?;
+                        missing_names.push(format!("{}.{}", scrutinee_enum, variant));
+                    }
+                    let missing_joined = missing_names.join(", ");
 
                     self.push_error(
                         candidate.span,
@@ -494,5 +537,6 @@ impl Analyzer {
                 }
             }
         }
+        Ok(())
     }
 }
