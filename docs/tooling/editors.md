@@ -32,5 +32,7 @@ workspace roots; unsaved open buffers override their disk snapshots. The index
 does not follow symlinks or scan outside the selected roots. Cross-file
 references and rename follow loader-backed imports when edits remain in
 client-negotiated workspace roots. JSON-RPC transport cancellation is supported
-for pending requests, but compiler work is not yet cooperatively cancellable.
-See [the LSP contract](lsp.md).
+for pending requests; superseded diagnostic analyses cooperatively stop at
+lexer, parser, and semantic pass/top-level-item boundaries. Loader traversal
+and expensive semantic inner loops remain non-cooperative. See [the LSP
+contract](lsp.md).

@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-09-11: LSP semantic-analysis cancellation](2026-09-11-lsp-semantic-cancellation.md)
 - [2026-09-09: Numeric cast boundary](2026-09-09-numeric-cast-boundary.md)
 - [2026-09-09: Tutorial API alignment](2026-09-09-tutorial-api-alignment.md)
 - [2026-09-09: Compiler-checked tutorial fixtures](2026-09-09-tutorial-fixtures.md)

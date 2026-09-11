@@ -40,14 +40,15 @@ Compiler and loader snapshots run on Tokio's blocking pool, which keeps them
 off async server workers; workspace initialization scans and save-time index
 updates use the pool too. Diagnostics attach a token to each open-document
 generation: replacing or closing a document interrupts lexer work between
-tokens and parser work between top-level declarations. Cancellation must never
-become a source diagnostic. Semantic analysis and loader work are still not
-interruptible once they begin, so those phases may finish before their result
-is discarded.
+tokens, parser work between top-level declarations, and semantic analysis at
+pass and top-level-item boundaries. Cancellation must never become a source
+diagnostic. Loader work and expensive inner semantic loops remain
+non-interruptible once they begin, so those phases may finish before their
+result is discarded.
 Before returning a loader-backed result, verify that every open buffer included
 in its snapshot is still open with the same source text; otherwise discard it.
-An explicit semantic/loader cancellation boundary is still required before
-claiming complete CPU-work interruption.
+An explicit loader cancellation boundary and polling inside expensive semantic
+loops are still required before claiming complete CPU-work interruption.
 
 Cross-file references and rename use a fresh compiler-loader snapshot, not the
 workspace-symbol index. Every loaded span is rebased through the loader's

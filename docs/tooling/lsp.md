@@ -63,12 +63,13 @@ than a name-resolution guarantee.
   Loader-backed definition, reference, and rename requests bridge cancellation
   to their blocking worker and discard the snapshot when cancellation is
   observed. Diagnostics attach a token to each open-document generation:
-  a replacement or close interrupts tokenization and parsing between tokens
-  and top-level declarations, and cancellation is never published as a source
-  diagnostic. Compiler and loader snapshots otherwise run on Tokio's blocking
-  pool, so they do not occupy an async server worker. Semantic analysis and
-  loader hot paths do not yet poll the token, so an already-running later phase
-  can finish before its result is discarded. Workspace initialization scans and saved-file index updates use
+  a replacement or close interrupts tokenization, parsing, and semantic
+  analysis between top-level declarations and pass boundaries; cancellation is
+  never published as a source diagnostic. Compiler and loader snapshots
+  otherwise run on Tokio's blocking pool, so they do not occupy an async
+  server worker. Loader hot paths and expensive inner semantic loops do not yet
+  poll the token, so an already-running later phase can finish before its
+  result is discarded. Workspace initialization scans and saved-file index updates use
   the same pool. A completed loader snapshot is also discarded if a captured
   open buffer changed or closed while it was running. Automatic filesystem
   watching is not implemented; the workspace-symbol snapshot is built during
@@ -80,9 +81,10 @@ than a name-resolution guarantee.
   to LSP locations. Namespace and wildcard import forms remain limited by the
   compiler's current semantic annotations.
 - Loader-backed definition, reference, and rename snapshots are rebuilt for
-  each request. Caching, compiler hot-path cancellation polling, and
-  performance targets remain follow-up work. Namespace and wildcard imports
-  still depend on the compiler's available semantic annotations.
+  each request. Caching, loader cancellation polling, semantic inner-loop
+  cancellation polling, and performance targets remain follow-up work.
+  Namespace and wildcard imports still depend on the compiler's available
+  semantic annotations.
 - Formatting and position conversion need a real-editor protocol smoke suite
   before they can be treated as stable across all Unicode input.
 

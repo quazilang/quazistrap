@@ -42,9 +42,7 @@ pub fn analyze_source(source: &str) -> Result<SemanticReport, String> {
 }
 
 /// Analyze one open document while honoring a request/document cancellation
-/// token during lexing and parsing. Semantic analysis currently remains an
-/// atomic compiler phase; check once more before entering it so a cancelled
-/// request never starts that phase.
+/// token during lexing, parsing, and semantic-analysis pass boundaries.
 pub fn analyze_source_cancellable(
     source: &str,
     cancellation: &crate::cancel::CancellationToken,
@@ -69,7 +67,9 @@ pub fn analyze_source_cancellable(
     let (library_fn_names, library_symbols) = std_symbols_for_source(source, &program);
     analyzer.set_library_fns(library_fn_names);
     analyzer.set_library_symbols(library_symbols);
-    Ok(analyzer.analyze_program(&program))
+    analyzer
+        .analyze_program_cancellable(&program, cancellation)
+        .map_err(|_| CancellableAnalysisError::Cancelled)
 }
 
 pub fn analyze_loaded_document(

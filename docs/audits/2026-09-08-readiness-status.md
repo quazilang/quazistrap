@@ -33,7 +33,7 @@ Audience: maintainers planning the next local checkpoints.
   graph and effective per-file source map, including canonical open-buffer
   overlays, for local, package, and standard-library bindings.
 
-## Follow-up evidence (2026-09-10)
+## Follow-up evidence (2026-09-10–11)
 
 - The standard-library socket owners now invalidate before issuing their native
   close operation. `TcpStream`, `TcpListener`, and `UdpSocket` ignore repeated
@@ -68,6 +68,10 @@ Audience: maintainers planning the next local checkpoints.
   and Helix synchronize their copied grammar assets with the canonical
   Tree-sitter revision and verify that alignment statically. Their editor
   runtimes remain unavailable in this workspace.
+- Superseded LSP document generations now interrupt tokenization, parsing,
+  semantic pass boundaries, and the walk between top-level declarations. The
+  compiler returns an operational cancellation result rather than publishing a
+  partial report or source diagnostic. The focused semantic and LSP tests pass.
 
 ## Not complete
 
@@ -80,7 +84,7 @@ remain unproven or explicitly deferred:
 | Civil time | Only monotonic `Duration`/`Instant` are shipped. | Calendar, UTC, zone, ambiguity, and serialization contract plus deterministic tests. |
 | Concurrency | Native thread primitives remain experimental. | Structured lifetime, result/error/panic propagation, cancellation policy, synchronization contract. |
 | Serialization | Bounded scalar decode and limited `Serialize` exist; derived `Deserialize`, options, collections, and nested structs do not. | Receiverless decoding design and bounded object policy with compiler/std tests. |
-| LSP | Workspace symbols, loader-backed definitions, and loader-backed cross-file references exist for local/package/std imports. Rename produces one atomic workspace edit only when every resolved occurrence is inside client-negotiated workspace roots. Compiler-backed inferred type hints are available for unannotated local declarations, and W03 single-selector imports offer a safe removal quick fix. Compiler and workspace-index snapshots run on Tokio's blocking pool; loader snapshots are discarded if their included open buffers change or close, and save-time index writes are generation-checked. The transport honors pending-request cancellation. Neovim 0.12 and VS Code 1.133 have isolated real-client hover smokes. | Cooperative cancellation of CPU-bound compiler work and real-client feature-request coverage for Zed and Helix. |
+| LSP | Workspace symbols, loader-backed definitions, and loader-backed cross-file references exist for local/package/std imports. Rename produces one atomic workspace edit only when every resolved occurrence is inside client-negotiated workspace roots. Compiler-backed inferred type hints are available for unannotated local declarations, and W03 single-selector imports offer a safe removal quick fix. Compiler and workspace-index snapshots run on Tokio's blocking pool; loader snapshots are discarded if their included open buffers change or close, and save-time index writes are generation-checked. The transport honors pending-request cancellation. Superseded document diagnostics cooperatively stop in lexer/parser work and at semantic pass/top-level-item boundaries. Neovim 0.12 and VS Code 1.133 have isolated real-client hover smokes. | Cooperative cancellation throughout loader traversal and inside expensive semantic passes, plus real-client feature-request coverage for Zed and Helix. |
 | Documentation | Language specification (9 pages), progressive tutorial (10 chapters), and practical guides (4 guides) are now written. API coverage accounts for every `std` module. Offline compiler tests validate repository-local Markdown paths and heading fragments; every tutorial Quazi fence now visibly identifies itself as runnable, contextual, or intentionally invalid, and runnable fences plus complete chapter fixtures are compiler-checked through bytecode lowering. | Continue correcting any newly discovered API drift; fragments are explicitly scoped rather than treated as standalone programs. |
 | Editors | Local integration repositories exist. Neovim 0.12 has a headless real-client smoke that opens a `.qz` project, starts `qz lsp`, requests hover, and performs the shutdown/exit protocol path. VS Code 1.133 has an isolated extension-test host that opens a temporary `.qz` file and requests its literal hover through the VS Code provider API. Zed and Helix pin the current canonical Tree-sitter revision and statically verify their copied highlight query against it. | Versioned runtime validation for Zed and Helix; their runtimes are unavailable locally. |
 

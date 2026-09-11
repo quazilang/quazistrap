@@ -940,37 +940,74 @@ impl Analyzer {
         self.library_symbols = symbols;
     }
 
+    /// Analyze a program using the normal, non-cancellable compiler API.
     pub fn analyze_program(&mut self, program: &Program) -> SemanticReport {
+        self.analyze_program_with_checkpoint(program, || Ok(()))
+            .expect("an infallible semantic-analysis checkpoint cannot cancel")
+    }
+
+    /// Analyze a program while polling a cooperative cancellation token at
+    /// pass boundaries and between top-level items.
+    ///
+    /// The returned [`crate::cancel::Cancelled`] is an operational result, not
+    /// a source diagnostic. Callers must discard the partially populated
+    /// analyzer rather than publishing a partial semantic report.
+    pub fn analyze_program_cancellable(
+        &mut self,
+        program: &Program,
+        cancellation: &crate::cancel::CancellationToken,
+    ) -> Result<SemanticReport, crate::cancel::Cancelled> {
+        self.analyze_program_with_checkpoint(program, || cancellation.check())
+    }
+
+    fn analyze_program_with_checkpoint(
+        &mut self,
+        program: &Program,
+        mut checkpoint: impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<SemanticReport, crate::cancel::Cancelled> {
+        checkpoint()?;
         self.reset_state();
         self.validate_panic_handler_count(program);
+        checkpoint()?;
 
         // Pass 1: gather top-level declarations and imports.
         for item in &program.items {
+            checkpoint()?;
             self.declare_top_level_item(item);
         }
         self.validate_initial_serialize_fields();
+        checkpoint()?;
 
         // Pass 2: type checking + usage tracking + initialization checks + annotations.
         for item in &program.items {
+            checkpoint()?;
             self.type_check_item(item);
         }
 
         // Pass 3: unused symbol/import analysis.
+        checkpoint()?;
         self.run_unused_pass();
 
         // Pass 4: dead code detection (reachability).
+        checkpoint()?;
         self.run_dead_code_pass(program);
 
         // Pass 5: tree-shaking — find functions not reachable from main.
+        checkpoint()?;
         self.run_tree_shake_pass(program);
 
         // Pass 6: optimization hints.
+        checkpoint()?;
         self.run_inline_candidate_pass(program);
+        checkpoint()?;
         self.run_exhaustiveness_pass();
+        checkpoint()?;
         self.run_import_optimization_pass();
+        checkpoint()?;
         self.run_lazy_import_pass();
 
         // Pass 7: borrow / move checker.
+        checkpoint()?;
         self.run_borrow_check_pass(program);
 
         // Generic method bodies are checked once against their declared type
@@ -978,6 +1015,7 @@ impl Analyzer {
         // site before handing the report to code generation, otherwise a
         // specialization such as `Array.index<str>` can call a missing
         // `Array.get<str>` chunk.
+        checkpoint()?;
         self.close_monomorphization_dependencies();
 
         // A successful analysis must leave no representation-less inference
@@ -1038,7 +1076,8 @@ impl Analyzer {
 
         let dependency_graph = self.build_dependency_graph();
 
-        SemanticReport {
+        checkpoint()?;
+        Ok(SemanticReport {
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
             suggestions: std::mem::take(&mut self.suggestions),
@@ -1182,7 +1221,7 @@ impl Analyzer {
             main_takes_args: self.main_takes_args,
             test_functions: self.test_functions.clone(),
             library_char_ranges: self.library_char_ranges.clone(),
-        }
+        })
     }
 
     fn validate_panic_handler_count(&mut self, program: &Program) {
@@ -1936,6 +1975,24 @@ mod tests {
         let program = parse_program(src);
         let mut analyzer = Analyzer::new();
         analyzer.analyze_program(&program)
+    }
+
+    #[test]
+    fn cancellable_analysis_stops_between_top_level_items() {
+        let program = parse_program("fn first() void {}\nfn second() void {}\nfn main() void {}\n");
+        let mut analyzer = Analyzer::new();
+        let mut checkpoints_before_cancellation = 3;
+
+        let result = analyzer.analyze_program_with_checkpoint(&program, || {
+            if checkpoints_before_cancellation == 0 {
+                Err(crate::cancel::Cancelled)
+            } else {
+                checkpoints_before_cancellation -= 1;
+                Ok(())
+            }
+        });
+
+        assert!(matches!(result, Err(crate::cancel::Cancelled)));
     }
 
     #[test]
