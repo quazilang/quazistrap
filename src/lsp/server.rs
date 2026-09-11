@@ -277,6 +277,32 @@ fn server_capabilities() -> ServerCapabilities {
     }
 }
 
+/// Commit a saved source to the workspace index only while its open-document
+/// generation is still current. Keep the document read lock while acquiring
+/// the workspace write lock: all paths that need both locks use this same
+/// document-then-workspace order, avoiding an inversion with workspace-symbol
+/// requests while a document update is queued.
+async fn update_workspace_from_saved_generation(
+    workspace: &RwLock<WorkspaceIndex>,
+    documents: &RwLock<HashMap<Url, DocumentState>>,
+    uri: &Url,
+    source: String,
+    version: i32,
+    analysis_result: std::result::Result<crate::semantic::SemanticReport, String>,
+) -> bool {
+    let documents = documents.read().await;
+    if !documents
+        .get(uri)
+        .is_some_and(|document| document.is_generation(&source, version))
+    {
+        return false;
+    }
+
+    let mut workspace = workspace.write().await;
+    workspace.update_from_analysis(uri, source, analysis_result);
+    true
+}
+
 impl VoidLanguageServer {
     pub fn new(client: Client) -> Self {
         Self {
@@ -444,18 +470,15 @@ impl LanguageServer for VoidLanguageServer {
                 .await;
             return;
         };
-        // Hold the workspace write lock before rechecking the document
-        // generation, so no later save can commit an older analysis between
-        // this check and the index mutation.
-        let mut workspace = self.workspace.write().await;
-        let docs = self.documents.read().await;
-        if !docs
-            .get(&params.text_document.uri)
-            .is_some_and(|doc| doc.is_generation(&source, version))
-        {
-            return;
-        }
-        workspace.update_from_analysis(&params.text_document.uri, source, analysis_result);
+        update_workspace_from_saved_generation(
+            &self.workspace,
+            &self.documents,
+            &params.text_document.uri,
+            source,
+            version,
+            analysis_result,
+        )
+        .await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -516,11 +539,11 @@ impl LanguageServer for VoidLanguageServer {
             }
         }
 
-        let workspace = self.workspace.read().await;
         let docs = self.documents.read().await;
         if !document_matches_source(&docs, uri, &source) {
             return Ok(None);
         }
+        let workspace = self.workspace.read().await;
         if let Some((target_uri, exported)) =
             goto_def::relative_leaf_import_target(&source, uri, pos, &workspace)
         {
@@ -723,11 +746,12 @@ impl LanguageServer for VoidLanguageServer {
 mod tests {
     use std::collections::HashMap;
     use std::fs;
+    use tokio::sync::RwLock;
 
     use super::{
         loaded_snapshot_matches_open_documents, run_cancellable_in_blocking_pool,
-        run_in_blocking_pool, server_capabilities, workspace_symbols,
-        workspace_symbols_for_open_documents,
+        run_in_blocking_pool, server_capabilities, update_workspace_from_saved_generation,
+        workspace_symbols, workspace_symbols_for_open_documents,
     };
     use crate::lsp::workspace::WorkspaceIndex;
     use crate::lsp::{analysis::analyze_source, document::DocumentState};
@@ -759,6 +783,96 @@ mod tests {
             .await
             .expect("blocking task completes");
         assert_ne!(current_thread, blocking_thread);
+    }
+
+    #[tokio::test]
+    async fn saved_workspace_update_rejects_a_superseded_document_generation() {
+        let root =
+            std::env::temp_dir().join(format!("quazi_lsp_save_generation_{}", std::process::id()));
+        fs::create_dir_all(&root).expect("create workspace");
+        let path = root.join("main.qz");
+        let old_source = "fn old_value() i32 { ret 1; }";
+        let new_source = "fn new_value() i32 { ret 2; }";
+        fs::write(&path, old_source).expect("write workspace source");
+        let uri = Url::from_file_path(&path).expect("workspace URI");
+
+        let workspace = RwLock::new(WorkspaceIndex::from_initialize_params(&InitializeParams {
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: Url::from_file_path(&root).expect("workspace root URI"),
+                name: "test".to_string(),
+            }]),
+            ..Default::default()
+        }));
+        let mut document = DocumentState::new(uri.clone(), old_source.to_string(), 1);
+        document.report = Some(analyze_source(old_source).expect("analyze old source"));
+        document.update_if_newer(new_source.to_string(), 2);
+        let documents = RwLock::new(HashMap::from([(uri.clone(), document)]));
+
+        let committed = update_workspace_from_saved_generation(
+            &workspace,
+            &documents,
+            &uri,
+            old_source.to_string(),
+            1,
+            analyze_source(old_source),
+        )
+        .await;
+
+        assert!(!committed);
+        assert!(
+            workspace
+                .read()
+                .await
+                .documents()
+                .get(&uri)
+                .is_some_and(|document| document.source == old_source)
+        );
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[tokio::test]
+    async fn saved_workspace_update_commits_the_current_document_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "quazi_lsp_current_save_generation_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create workspace");
+        let path = root.join("main.qz");
+        let source = "fn saved_value() i32 { ret 3; }";
+        fs::write(&path, source).expect("write workspace source");
+        let uri = Url::from_file_path(&path).expect("workspace URI");
+
+        let workspace = RwLock::new(WorkspaceIndex::from_initialize_params(&InitializeParams {
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: Url::from_file_path(&root).expect("workspace root URI"),
+                name: "test".to_string(),
+            }]),
+            ..Default::default()
+        }));
+        let mut document = DocumentState::new(uri.clone(), source.to_string(), 4);
+        document.report = Some(analyze_source(source).expect("analyze saved source"));
+        let documents = RwLock::new(HashMap::from([(uri.clone(), document)]));
+
+        let committed = update_workspace_from_saved_generation(
+            &workspace,
+            &documents,
+            &uri,
+            source.to_string(),
+            4,
+            analyze_source(source),
+        )
+        .await;
+
+        assert!(committed);
+        assert!(
+            workspace
+                .read()
+                .await
+                .documents()
+                .get(&uri)
+                .is_some_and(|document| document.source == source)
+        );
+        fs::remove_dir_all(root).expect("remove workspace");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

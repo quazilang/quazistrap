@@ -59,6 +59,12 @@ Cancellation is cooperative rather than preemptive; polling remains required
 for any newly introduced long-running semantic traversal before claiming
 complete CPU-work interruption.
 
+When one operation needs both the open-document map and the workspace index,
+acquire the document lock before the workspace lock. Save-time indexing keeps
+its document read guard through the generation check and index update; this
+prevents stale commits and avoids inversion with workspace-symbol and fallback
+definition requests.
+
 Cross-file references and rename use a fresh compiler-loader snapshot, not the
 workspace-symbol index. Every loaded span is rebased through the loader's
 effective source map, including unsaved open-document overlays. References can
