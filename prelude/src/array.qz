@@ -77,6 +77,14 @@ impl Array[T] {
         ret self.len == 0;
     }
 
+    // Exposes the first contiguous element for FFI-style borrowed slices.
+    // The pointer is invalidated by any operation that can reallocate or free
+    // this array. Callers must stay within len elements and preserve valid
+    // initialized values and ownership invariants when writing through it.
+    pub unsafe fn as_ptr(self: Array[T]) *T {
+        ret self.ptr as *T;
+    }
+
     pub fn free(self: Array[T]) void {
         if (self.ptr != 0) {
             unsafe { __array_free(self.ptr); }

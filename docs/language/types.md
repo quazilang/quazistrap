@@ -84,8 +84,12 @@ parameters for arrays.
 ### `Array[T]`
 
 Owned growable collection from the prelude. Supports `push`, `get`, `set`,
-`len`, `free`, and checked index assignment. Implements `Index` for `[]`
-syntax.
+`len`, `is_empty`, `free`, and checked index assignment. Implements `Index`
+for `[]` syntax. `unsafe as_ptr()` exposes a borrowed pointer to the first
+contiguous element for FFI-style APIs; it is invalidated by reallocation,
+freeing, or owner cleanup. Callers must not access past `len()` elements and
+must preserve valid initialized values and ownership invariants when writing
+through the pointer.
 
 ```quazi
 var items: Array[i32] = Array[i32].new();

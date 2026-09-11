@@ -1942,6 +1942,39 @@ mod tests {
     }
 
     #[test]
+    fn prelude_array_as_ptr_typechecks_as_an_unsafe_element_pointer() {
+        let root = temp_dir("quazi_loader_prelude_array_as_ptr");
+        let main_path = root.join("main.qz");
+        fs::write(
+            &main_path,
+            "fn main() void { var args: Array[str] = Array.from(\"one\", \"two\"); unsafe { const raw: *str = args.as_ptr(); if (*raw != \"one\") { panic(\"wrong first argument\"); } } args.free(); }",
+        )
+        .expect("write main source");
+
+        let result = load_programs(&[main_path]).expect("load program with prelude Array");
+        let namespaced_paths = result
+            .namespaced_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let report = crate::analysis::analyze_program_with_source_files(
+            &result.merged_source,
+            &result.program,
+            result.library_fn_names,
+            result.library_char_ranges,
+            result.source_files,
+            namespaced_paths,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "Array[str].as_ptr() must type-check as *str inside unsafe: {:?}",
+            report.errors
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mod_entry_exports_flatten_child_imports() {
         let root = temp_dir("quazi_loader_mod_exports");
         let foo_dir = root.join("foo");
