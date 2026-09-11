@@ -78,7 +78,16 @@ impl Analyzer {
         }
     }
 
-    pub(super) fn type_check_item(&mut self, item: &Item) {
+    /// Type-check one declaration while polling at statement boundaries.
+    ///
+    /// A cancellation result intentionally skips scope cleanup: callers must
+    /// discard this partially populated analyzer rather than publish it.
+    pub(super) fn type_check_item(
+        &mut self,
+        item: &Item,
+        checkpoint: &mut dyn FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<(), crate::cancel::Cancelled> {
+        checkpoint()?;
         // Skip items disabled by @cfg on this platform.
         let attrs = match &item.node {
             ItemKind::TypeAlias { attributes, .. }
@@ -92,7 +101,7 @@ impl Analyzer {
         if let Some(attrs) = attrs
             && !super::item_should_include(attrs)
         {
-            return;
+            return Ok(());
         }
         if let Some(attributes) = attrs {
             for attribute in attributes {
@@ -408,7 +417,7 @@ impl Analyzer {
                 }
 
                 let guaranteed = if let Some(body) = body {
-                    self.type_check_block(body, Some(&expected))
+                    self.type_check_block(body, Some(&expected), checkpoint)?
                 } else {
                     true // bodyless declaration — no return check
                 };
@@ -818,7 +827,7 @@ impl Analyzer {
                     if let ItemKind::Fn { name, .. } = &method.node {
                         self.current_fn_name_override = Some(format!("{}.{}", type_name, name));
                     }
-                    self.type_check_item(method);
+                    self.type_check_item(method, checkpoint)?;
                 }
                 let _ = self.current_generic_params.pop();
             }
@@ -915,6 +924,7 @@ impl Analyzer {
                 }
             }
         }
+        Ok(())
     }
 
     fn validate_trait_impl_conformance(
@@ -1439,7 +1449,8 @@ impl Analyzer {
         &mut self,
         block: &Block,
         expected_return: Option<&TypeKind>,
-    ) -> bool {
+        checkpoint: &mut dyn FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<bool, crate::cancel::Cancelled> {
         self.enter_scope();
         let mut reachable = true;
         let mut guaranteed_return = false;
@@ -1450,22 +1461,24 @@ impl Analyzer {
                 continue;
             }
 
-            if self.type_check_stmt(stmt, expected_return) {
+            if self.type_check_stmt(stmt, expected_return, checkpoint)? {
                 reachable = false;
                 guaranteed_return = true;
             }
         }
 
         self.exit_scope_collect();
-        guaranteed_return
+        Ok(guaranteed_return)
     }
 
     pub(super) fn type_check_stmt(
         &mut self,
         stmt: &Stmt,
         expected_return: Option<&TypeKind>,
-    ) -> bool {
-        match &stmt.node {
+        checkpoint: &mut dyn FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<bool, crate::cancel::Cancelled> {
+        checkpoint()?;
+        Ok(match &stmt.node {
             StmtKind::Var {
                 name,
                 value,
@@ -1729,7 +1742,8 @@ impl Analyzer {
                     );
                 }
 
-                let mut then_returns = self.type_check_block(then_block, expected_return);
+                let mut then_returns =
+                    self.type_check_block(then_block, expected_return, checkpoint)?;
                 for (else_if_cond, else_if_block) in else_if {
                     let else_if_eval = self.type_check_expr(else_if_cond, true);
                     if let Some(ty) = else_if_eval.ty
@@ -1742,11 +1756,14 @@ impl Analyzer {
                             format!("if condition must be bool or integer, got {}", ty),
                         );
                     }
-                    then_returns =
-                        self.type_check_block(else_if_block, expected_return) && then_returns;
+                    then_returns = self.type_check_block(
+                        else_if_block,
+                        expected_return,
+                        checkpoint,
+                    )? && then_returns;
                 }
                 let else_returns = if let Some(else_block) = else_block {
-                    self.type_check_block(else_block, expected_return)
+                    self.type_check_block(else_block, expected_return, checkpoint)?
                 } else {
                     false
                 };
@@ -1771,17 +1788,17 @@ impl Analyzer {
                             );
                         }
                         self.loop_depth += 1;
-                        let _ = self.type_check_block(body, expected_return);
+                        let _ = self.type_check_block(body, expected_return, checkpoint)?;
                         self.loop_depth -= 1;
                         self.exit_scope_collect();
-                        return false;
+                        return Ok(false);
                     }
                     ForLoop::Cond { condition: None } => {
                         self.loop_depth += 1;
-                        let _ = self.type_check_block(body, expected_return);
+                        let _ = self.type_check_block(body, expected_return, checkpoint)?;
                         self.loop_depth -= 1;
                         self.exit_scope_collect();
-                        return false;
+                        return Ok(false);
                     }
                     ForLoop::CStyle {
                         init,
@@ -1789,7 +1806,7 @@ impl Analyzer {
                         update,
                     } => {
                         if let Some(init_stmt) = init {
-                            self.type_check_stmt(init_stmt, expected_return);
+                            self.type_check_stmt(init_stmt, expected_return, checkpoint)?;
                         }
                         if let Some(cond) = condition {
                             let cond_eval = self.type_check_expr(cond, true);
@@ -1811,10 +1828,10 @@ impl Analyzer {
                             self.type_check_expr(upd, true);
                         }
                         self.loop_depth += 1;
-                        self.type_check_block(body, expected_return);
+                        let _ = self.type_check_block(body, expected_return, checkpoint)?;
                         self.loop_depth -= 1;
                         self.exit_scope_collect();
-                        return false;
+                        return Ok(false);
                     }
                     ForLoop::Each { vars, iter } => {
                         let loop_var_ty = match iter {
@@ -1914,10 +1931,10 @@ impl Analyzer {
                             );
                         }
                         self.loop_depth += 1;
-                        self.type_check_block(body, expected_return);
+                        let _ = self.type_check_block(body, expected_return, checkpoint)?;
                         self.loop_depth -= 1;
                         self.exit_scope_collect();
-                        return false;
+                        return Ok(false);
                     }
                 }
             }
@@ -1935,7 +1952,7 @@ impl Analyzer {
             }
             StmtKind::UnsafeBlock { body } => {
                 self.unsafe_depth += 1;
-                self.type_check_block(body, expected_return);
+                let _ = self.type_check_block(body, expected_return, checkpoint)?;
                 self.unsafe_depth -= 1;
                 false
             }
@@ -1945,11 +1962,11 @@ impl Analyzer {
             }
             StmtKind::CfgBlock { body, condition } => {
                 if super::item_should_include(std::slice::from_ref(condition)) {
-                    self.type_check_block(body, expected_return);
+                    let _ = self.type_check_block(body, expected_return, checkpoint)?;
                 }
                 false
             }
-        }
+        })
     }
 
     fn type_check_expr_expected(

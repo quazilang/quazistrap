@@ -55,6 +55,14 @@ callee monomorphization and its layout record before bytecode codegen.
 
 `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)` suppress W01/W02/W03/W07.
 
+## Cooperative cancellation
+
+The cancellable analyzer returns `Cancelled` as an operational result. It
+polls at pass, top-level-item, and reachable-statement boundaries; an
+individual expression remains atomic. A cancellation may leave scopes and
+other semantic state partially populated, so callers must discard that
+`Analyzer` rather than publish a partial report.
+
 ## `@cfg` Evaluation
 
 Keys `target_os`, `target_arch`, `target_abi` are evaluated against the host for

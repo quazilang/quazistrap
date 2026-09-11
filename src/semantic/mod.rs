@@ -947,7 +947,7 @@ impl Analyzer {
     }
 
     /// Analyze a program while polling a cooperative cancellation token at
-    /// pass boundaries and between top-level items.
+    /// pass, top-level-item, and reachable-statement boundaries.
     ///
     /// The returned [`crate::cancel::Cancelled`] is an operational result, not
     /// a source diagnostic. Callers must discard the partially populated
@@ -981,7 +981,7 @@ impl Analyzer {
         // Pass 2: type checking + usage tracking + initialization checks + annotations.
         for item in &program.items {
             checkpoint()?;
-            self.type_check_item(item);
+            self.type_check_item(item, &mut checkpoint)?;
         }
 
         // Pass 3: unused symbol/import analysis.
@@ -2009,6 +2009,54 @@ mod tests {
         });
 
         assert!(matches!(result, Err(crate::cancel::Cancelled)));
+    }
+
+    #[test]
+    fn cancellable_analysis_stops_inside_a_single_function_body() {
+        let program = parse_program(
+            "fn main() void {\n\
+             const first: i32 = 1;\n\
+             const second: i32 = 2;\n\
+             const third: i32 = 3;\n\
+             const fourth: i32 = 4;\n\
+             }\n",
+        );
+        let mut analyzer = Analyzer::new();
+        let mut checkpoints_before_cancellation = 7;
+
+        let result = analyzer.analyze_program_with_checkpoint(&program, || {
+            if checkpoints_before_cancellation == 0 {
+                Err(crate::cancel::Cancelled)
+            } else {
+                checkpoints_before_cancellation -= 1;
+                Ok(())
+            }
+        });
+
+        assert!(matches!(result, Err(crate::cancel::Cancelled)));
+        assert!(
+            analyzer.annotated_exprs.len() < 4,
+            "cancellation must interrupt the function body before every statement is analyzed"
+        );
+    }
+
+    #[test]
+    fn cancellable_analysis_stops_before_a_c_style_for_initializer() {
+        let program = parse_program("fn main() void { for var i = 0; ; {} }\n");
+        let mut analyzer = Analyzer::new();
+        let mut checkpoints_before_cancellation = 7;
+
+        let result = analyzer.analyze_program_with_checkpoint(&program, || {
+            if checkpoints_before_cancellation == 0 {
+                Err(crate::cancel::Cancelled)
+            } else {
+                checkpoints_before_cancellation -= 1;
+                Ok(())
+            }
+        });
+
+        assert!(matches!(result, Err(crate::cancel::Cancelled)));
+        assert!(analyzer.annotated_exprs.is_empty());
     }
 
     #[test]
