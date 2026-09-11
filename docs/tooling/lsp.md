@@ -9,9 +9,10 @@ qz lsp
 ```
 
 It communicates over standard input/output using the Language Server Protocol.
-Editors should start one process per workspace. The server negotiates
-incremental text synchronization and also accepts full-document replacements.
-The server reports its version from the compiler package.
+Editors should start one process per workspace. The server explicitly
+negotiates open/close and save notifications plus incremental text
+synchronization; it also accepts full-document replacements. The server
+reports its version from the compiler package.
 
 ## Supported Features
 

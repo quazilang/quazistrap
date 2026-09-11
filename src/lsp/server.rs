@@ -228,6 +228,55 @@ async fn analyze_loaded_document_cancellable_in_background(
     .await
 }
 
+fn server_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        // The options form is required to negotiate the notifications this
+        // server consumes. The legacy integer form can only describe changes.
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::INCREMENTAL),
+                save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+                ..Default::default()
+            },
+        )),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec![".".to_string()]),
+            ..Default::default()
+        }),
+        signature_help_provider: Some(SignatureHelpOptions {
+            trigger_characters: Some(vec!["(".to_string()]),
+            retrigger_characters: Some(vec![",".to_string()]),
+            ..Default::default()
+        }),
+        semantic_tokens_provider: Some(
+            SemanticTokensOptions {
+                legend: semantic_tokens::legend(),
+                range: None,
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                ..Default::default()
+            }
+            .into(),
+        ),
+        inlay_hint_provider: Some(OneOf::Left(true)),
+        code_action_provider: Some(
+            CodeActionOptions {
+                code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                ..Default::default()
+            }
+            .into(),
+        ),
+        document_formatting_provider: Some(OneOf::Left(true)),
+        ..Default::default()
+    }
+}
+
 impl VoidLanguageServer {
     pub fn new(client: Client) -> Self {
         Self {
@@ -321,45 +370,7 @@ impl LanguageServer for VoidLanguageServer {
             .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
         *self.workspace.write().await = index;
         Ok(InitializeResult {
-            capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
-                )),
-                hover_provider: Some(HoverProviderCapability::Simple(true)),
-                definition_provider: Some(OneOf::Left(true)),
-                references_provider: Some(OneOf::Left(true)),
-                rename_provider: Some(OneOf::Left(true)),
-                document_symbol_provider: Some(OneOf::Left(true)),
-                workspace_symbol_provider: Some(OneOf::Left(true)),
-                completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_string()]),
-                    ..Default::default()
-                }),
-                signature_help_provider: Some(SignatureHelpOptions {
-                    trigger_characters: Some(vec!["(".to_string()]),
-                    retrigger_characters: Some(vec![",".to_string()]),
-                    ..Default::default()
-                }),
-                semantic_tokens_provider: Some(
-                    SemanticTokensOptions {
-                        legend: semantic_tokens::legend(),
-                        range: None,
-                        full: Some(SemanticTokensFullOptions::Bool(true)),
-                        ..Default::default()
-                    }
-                    .into(),
-                ),
-                inlay_hint_provider: Some(OneOf::Left(true)),
-                code_action_provider: Some(
-                    CodeActionOptions {
-                        code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
-                        ..Default::default()
-                    }
-                    .into(),
-                ),
-                document_formatting_provider: Some(OneOf::Left(true)),
-                ..Default::default()
-            },
+            capabilities: server_capabilities(),
             server_info: Some(ServerInfo {
                 name: "quazi-lsp".to_string(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -715,11 +726,31 @@ mod tests {
 
     use super::{
         loaded_snapshot_matches_open_documents, run_cancellable_in_blocking_pool,
-        run_in_blocking_pool, workspace_symbols, workspace_symbols_for_open_documents,
+        run_in_blocking_pool, server_capabilities, workspace_symbols,
+        workspace_symbols_for_open_documents,
     };
     use crate::lsp::workspace::WorkspaceIndex;
     use crate::lsp::{analysis::analyze_source, document::DocumentState};
-    use tower_lsp::lsp_types::{InitializeParams, Url, WorkspaceFolder};
+    use tower_lsp::lsp_types::{
+        InitializeParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+        TextDocumentSyncSaveOptions, Url, WorkspaceFolder,
+    };
+
+    #[test]
+    fn advertises_open_close_incremental_and_save_synchronization() {
+        let capabilities = server_capabilities();
+        let Some(TextDocumentSyncCapability::Options(sync)) = capabilities.text_document_sync
+        else {
+            panic!("server must advertise explicit text synchronization options");
+        };
+
+        assert_eq!(sync.open_close, Some(true));
+        assert_eq!(sync.change, Some(TextDocumentSyncKind::INCREMENTAL));
+        assert_eq!(
+            sync.save,
+            Some(TextDocumentSyncSaveOptions::Supported(true))
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn compiler_work_uses_the_blocking_pool() {

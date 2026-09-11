@@ -2,6 +2,11 @@
 
 Basic server is running.
 
+It explicitly negotiates document open/close and save notifications together
+with incremental text changes. Do not replace this options-based capability
+with the legacy sync-kind integer: that integer cannot request the lifecycle
+notifications the server consumes.
+
 ## Capabilities
 
 - ✅ Diagnostics (publish on open/change/save)
