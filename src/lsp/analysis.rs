@@ -16,6 +16,7 @@ use crate::semantic::SourceFile;
 #[derive(Debug, Eq, PartialEq)]
 pub enum CancellableAnalysisError {
     Parse(String),
+    Load(String),
     Cancelled,
 }
 
@@ -109,6 +110,65 @@ pub fn analyze_loaded_document(
         loaded.source_files.clone(),
         namespaced_paths,
     );
+    Ok(LoadedSnapshot {
+        report,
+        source_files: loaded.source_files,
+        effective_sources: loaded.effective_sources,
+    })
+}
+
+/// Analyze a loader-backed document while preserving cancellation as an
+/// operational outcome across import traversal and semantic analysis.
+pub fn analyze_loaded_document_cancellable(
+    path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+    cancellation: &crate::cancel::CancellationToken,
+) -> Result<LoadedSnapshot, CancellableAnalysisError> {
+    cancellation
+        .check()
+        .map_err(|_| CancellableAnalysisError::Cancelled)?;
+    let path = path.canonicalize().map_err(|error| {
+        CancellableAnalysisError::Load(format!(
+            "cannot resolve LSP document '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let context =
+        crate::project::ProjectContext::discover(&path).map_err(CancellableAnalysisError::Load)?;
+    let settings = context
+        .as_ref()
+        .map(|context| context.config.package)
+        .unwrap_or_default();
+    let target = crate::apply_package_settings(crate::backend::TargetSpec::host(), settings);
+    let loaded = crate::loader::load_programs_configured_with_overlays_for_target_cancellable(
+        std::slice::from_ref(&path),
+        context.as_ref().map(|context| &context.resolver),
+        settings.std,
+        &[],
+        crate::cfg_target_for_spec(&target),
+        overlays,
+        cancellation,
+    )
+    .map_err(|error| match error {
+        crate::loader::CancellableLoadError::Load(error) => CancellableAnalysisError::Load(error),
+        crate::loader::CancellableLoadError::Cancelled => CancellableAnalysisError::Cancelled,
+    })?;
+    if let Some(error) = loaded.parse_error {
+        return Err(CancellableAnalysisError::Parse(error));
+    }
+    let namespaced_paths = loaded
+        .namespaced_paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    let mut analyzer = Analyzer::new();
+    analyzer.set_library_fns(loaded.library_fn_names);
+    analyzer.set_library_char_ranges(loaded.library_char_ranges);
+    analyzer.set_source_files(loaded.source_files.clone());
+    analyzer.set_namespaced_paths(namespaced_paths);
+    let report = analyzer
+        .analyze_program_cancellable(&loaded.program, cancellation)
+        .map_err(|_| CancellableAnalysisError::Cancelled)?;
     Ok(LoadedSnapshot {
         report,
         source_files: loaded.source_files,
@@ -308,6 +368,8 @@ fn zero_span() -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn cancelled_analysis_does_not_create_a_parse_diagnostic() {
@@ -318,6 +380,27 @@ mod tests {
             analyze_source_cancellable("const value: i32 = 1;", &cancellation),
             Err(CancellableAnalysisError::Cancelled)
         ));
+    }
+
+    #[test]
+    fn cancelled_loaded_analysis_stops_before_loader_io() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "quazi_lsp_cancelled_loader_{}_{}.qz",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::write(&path, "fn main() void { ret; }").expect("write source");
+        let cancellation = crate::cancel::CancellationToken::new();
+        cancellation.cancel();
+
+        let result = analyze_loaded_document_cancellable(&path, &HashMap::new(), &cancellation);
+
+        assert!(matches!(result, Err(CancellableAnalysisError::Cancelled)));
+        let _ = fs::remove_file(path);
     }
 
     #[test]

@@ -205,6 +205,7 @@ async fn analyze_source_in_background(
         .map_err(|error| match error {
             analysis::CancellableAnalysisError::Cancelled => CancellableTaskError::Cancelled,
             analysis::CancellableAnalysisError::Parse(error) => CancellableTaskError::Parse(error),
+            analysis::CancellableAnalysisError::Load(_) => CancellableTaskError::Failed,
         })
 }
 
@@ -216,12 +217,13 @@ async fn analyze_loaded_document_cancellable_in_background(
         cancellation
             .check()
             .map_err(|_| CancellableTaskError::Cancelled)?;
-        let snapshot = analysis::analyze_loaded_document(&path, &overlays)
-            .map_err(|_| CancellableTaskError::Failed)?;
-        cancellation
-            .check()
-            .map_err(|_| CancellableTaskError::Cancelled)?;
-        Ok(snapshot)
+        analysis::analyze_loaded_document_cancellable(&path, &overlays, &cancellation).map_err(
+            |error| match error {
+                analysis::CancellableAnalysisError::Cancelled => CancellableTaskError::Cancelled,
+                analysis::CancellableAnalysisError::Parse(_)
+                | analysis::CancellableAnalysisError::Load(_) => CancellableTaskError::Failed,
+            },
+        )
     })
     .await
 }
