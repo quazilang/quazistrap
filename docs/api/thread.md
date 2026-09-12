@@ -3,8 +3,9 @@
 Audience: language users.
 
 Status: experimental. The callback ABI and zero-on-failure low-level contract
-are implemented; typed creation errors, panic propagation, cancellation, and
-structured concurrency are not yet available.
+are implemented; safe concurrency is blocked on implementation of
+[D-014](../decisions/whole-program-ownership.md). Typed creation errors, panic
+propagation, cancellation, and structured concurrency are not yet available.
 
 ## Callback type
 

@@ -2,9 +2,10 @@
 
 Audience: Quazi application developers.
 
-Status: Linux implementation available. Windows process creation is not yet
-implemented, so applications requiring Windows support must not depend on this
-module.
+Status: Linux implementation available. Windows process creation and all
+resource-retaining/asynchronous extensions are blocked on the implementation
+of [D-014](../decisions/whole-program-ownership.md). Applications requiring
+Windows support must not depend on this module.
 
 ## Launching
 

@@ -3,6 +3,7 @@
 - [2026-09-12: Full-width decimal integer literals](2026-09-12-full-u64-literals.md)
 - [2026-09-12: Exact JSON container-depth limits](2026-09-12-json-depth-limits.md)
 - [2026-09-12: Linux runtime-backed process support](2026-09-12-linux-process-runtime.md)
+- [2026-09-12: Whole-program ownership and QZI escape-analysis decision](2026-09-12-whole-program-ownership-decision.md)
 - [2026-09-11: Loader-backed LSP cancellation](2026-09-11-lsp-loader-cancellation.md)
 - [2026-09-11: Array backing-pointer accessor](2026-09-11-array-backing-pointer.md)
 - [2026-09-11: Process contract status correction](2026-09-11-process-contract-status.md)

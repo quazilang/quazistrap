@@ -9,10 +9,11 @@ struct fields, nested fixed-array literals, and constructor payloads, plus
 multi-slot parameter/result ABI, layout intrinsics, and stride-aware generic
 storage). Phases 3-4 remain design work. This page turns maintainer decisions
 [D-001](../decisions/README.md#d-001-generic-value-layout) (full
-runtime-layout implementation), [D-002](../decisions/README.md#d-002-receiver-ownership)
-(future explicit `&`/`&mut`/consuming receivers), and [D-003](../decisions/README.md#d-003-destruction-and-explicit-close)
-(future structural destruction with a Drop hook) into a concrete compiler and
-standard-library plan. It was revised after an independent adversarial review;
+runtime-layout implementation), [D-002](../decisions/README.md#d-002-receiver-ownership),
+[D-003](../decisions/README.md#d-003-destruction-and-explicit-close), and
+[D-014](../decisions/whole-program-ownership.md) (whole-program escape
+analysis) into a concrete compiler and standard-library plan. It was revised
+after an independent adversarial review;
 the phasing and the reference-model work items below reflect that review.
 
 ## Problem statement

@@ -70,6 +70,16 @@ compatibility and validation update.
 The required Win64 ABI and cleanup sequence are maintained in
 [Windows process-runtime lowering](../internals/windows-process-lowering.md).
 
+## Ownership-analysis gate
+
+The direct, single-owner `Child` operations in the Linux first release are
+deliberately narrow. Further D-011 work is gated by
+[D-014](whole-program-ownership.md): do not add Win64 process support or
+public APIs involving retained arguments, captured output, callbacks, pipes,
+asynchronous waiting, or shared resources until its whole-program ownership
+analysis and QZI-only summary contract are implemented and audited. A
+synchronous launch may borrow its inputs only for the call itself.
+
 Linux compiler-generated executable startup retains the kernel `envp` vector,
 which is the environment passed to `execve`. Native-library and object-only
 embeddings do not run that startup path. Before `std.process` is shipped for

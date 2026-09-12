@@ -26,29 +26,19 @@ source-breaking for owned-element uses in the standard library.
 
 ## D-002: receiver ownership
 
-Open. The current compiler treats ordinary method receivers, including
-`self: T`, as borrowed. It does not implement `&mut` receiver syntax or a
-receiver move at a method call. APIs must therefore either mutate their sole
-owner in place (as `std.collections` now does) or avoid returning an owning
-alias. The older claim that explicit `&`/`&mut`/consuming receivers were
-implemented was not true of the current compiler.
-
-Decision required: decide whether methods gain explicit shared/mutable/consuming
-receivers, how calls record a receiver move, and which legacy APIs migrate.
-Until then, mutation-returning owners such as `map = map.insert()` are invalid;
-new APIs must not expose that pattern.
+Resolved 2026-09-12 by [D-014](whole-program-ownership.md): receivers are
+explicit shared (`self: &T`), exclusive (`self: &mut T`), or consuming
+(`self: T`) capabilities. The current compiler still treats ordinary receivers
+as borrowed; grammar, call-site moves, and legacy API migration remain
+implementation work.
 
 ## D-003: destruction and explicit close
 
-Open. Current scope cleanup recognizes a named type's `free(self)` method and
-suppresses that cleanup after an explicit `free()` call. It does not yet
-recursively destroy owned fields/elements, track aggregate-place moves, or
-provide a formal Drop hook. The earlier claim that structural destruction was
-implemented was not true of the current compiler.
-
-Decision required: define whether destruction is structural, trait-based, or
-both; its order; move suppression; behavior on assignment/return/panic/thread
-exit; and how explicit `close`/`free` prevents later automatic destruction.
+Resolved 2026-09-12 by [D-014](whole-program-ownership.md): destruction is
+structural, begins with a Drop hook, then destroys owned fields/elements in
+reverse declaration order; moves and explicit `free`/`close` suppress later
+destruction, and termination-only panic does not unwind. Current cleanup is
+not yet that implementation.
 
 ## D-004: compatibility and stability
 
@@ -72,6 +62,10 @@ Define native Quazi thread/task semantics, result and panic propagation,
 cancellation, structured cleanup, synchronization, and communication. Naming
 research is technical context rather than legal advice; do not copy another
 language's model by implication.
+
+Blocked on implementation of [D-014](whole-program-ownership.md): no safe
+concurrency surface can be finalized before borrow transfer, ownership effects,
+and QZI-only composition are enforceable.
 
 ## D-008: TLS and trust policy
 
@@ -98,8 +92,9 @@ QZI compatibility; it must not restore universal implicit compatibility.
 
 Accepted 2026-09-01 and expanded with an approved first-release contract on
 2026-09-10: [child-process creation belongs to the runtime](process-runtime.md).
-The runtime boundary and public ownership/result contract are decided; the
-runtime primitives and `std.process` implementation remain unshipped.
+The narrow Linux runtime and `std.process` facade are implemented. Platform
+expansion and process features that can retain resources, callbacks, or
+asynchronous state are blocked on [D-014](whole-program-ownership.md).
 
 ## D-012: serialization
 
@@ -108,3 +103,10 @@ Resolved 2026-09-01: [serialization uses static typed derives, not runtime refle
 ## D-013: formatting result ownership
 
 Open: [choose an owned result contract for dynamic formatting](formatting-ownership.md).
+
+## D-014: whole-program ownership and escape discipline
+
+Resolved 2026-09-12: [whole-program ownership and escape discipline](whole-program-ownership.md).
+Quazi uses capability-based, whole-program escape analysis rather than source
+lifetime annotations. QZI-only dependencies require compiler-verified
+ownership summaries; implementation and artifact-versioning remain pending.
