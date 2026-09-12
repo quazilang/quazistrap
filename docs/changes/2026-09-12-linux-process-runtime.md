@@ -29,6 +29,12 @@ Object-only and native-library embeddings do not execute Quazi's Linux startup
 stub and therefore lack a captured environment vector. Spawn reports `ENOSYS`
 there instead of silently creating a child with an empty environment.
 
+The current `str` ABI is NUL-terminated, so process creation observes only the
+prefix before an embedded NUL. The initial `InteriorNul` error variant was
+removed because a library cannot reliably inspect bytes after that terminator;
+applications must not use embedded-NUL text for process inputs until a
+length-carrying API exists.
+
 ## Verification
 
 - `cargo test --offline --quiet` in `quazistrap` — 582 tests passed.

@@ -13,10 +13,13 @@ an exact executable path. It does not use a shell and does not search `PATH`.
 `args` excludes `argv[0]`; the runtime supplies `program` as the child’s first
 argument. Standard input, output, and error are inherited.
 
-Embedded NUL bytes in `program` or any argument return `InteriorNul` before an
-operating-system call. `SpawnFailed(code)` carries the native error code. On
-Linux, the parent observes an `execve` failure before `spawn` returns, so a
-successful `Child` always represents a process that crossed the exec boundary.
+`str` values cross the current runtime boundary as NUL-terminated text, so a
+NUL terminates the value observed by the operating system. Do not use text with
+embedded NUL to construct a process path or argument; preserving such data
+requires a future length-carrying process-input API. `SpawnFailed(code)` carries
+the native error code. On Linux, the parent observes an `execve` failure before
+`spawn` returns, so a successful `Child` always represents a process that
+crossed the exec boundary.
 
 ```quazi
 import std.process;
@@ -53,10 +56,9 @@ recommendation to construct a command string or rely on a shell.
 
 ## Errors and limits
 
-`ProcessError` has `InteriorNul`, `SpawnFailed(i32)`, `WaitFailed(i32)`,
+`ProcessError` has `SpawnFailed(i32)`, `WaitFailed(i32)`,
 `TerminateFailed(i32)`, and `CloseFailed(i32)`. `message()` produces a
-display-oriented summary; `native_code()` exposes the native number, or zero
-for `InteriorNul`.
+display-oriented summary; `native_code()` exposes the native number.
 
 Working-directory selection, custom environments, redirected pipes, captured
 output, timeouts, and cancellation are not implemented. Native-library and
