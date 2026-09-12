@@ -81,7 +81,7 @@ remain unproven or explicitly deferred:
 
 | Milestone | Current status | Required next evidence |
 | --- | --- | --- |
-| Process API | D-011 approves the minimal public contract and assigns platform work to compiler runtime primitives; no `std.process` module or process intrinsics are implemented yet. | Linux/Windows implementation, public `std.process` surface, and executable/argument/failure/cleanup tests. |
+| Process API | D-011 approves the minimal public contract and assigns platform work to compiler runtime primitives; no `std.process` module or process intrinsics are implemented yet. Linux executable startup already preserves `envp`, but native-library/object-only embeddings need an explicit environment initialization boundary before inheritance can be guaranteed. | Linux/Windows implementation, embedding-environment policy, public `std.process` surface, and executable/argument/failure/cleanup tests. |
 | Civil time | Only monotonic `Duration`/`Instant` are shipped. | Calendar, UTC, zone, ambiguity, and serialization contract plus deterministic tests. |
 | Concurrency | Native thread primitives remain experimental. | Structured lifetime, result/error/panic propagation, cancellation policy, synchronization contract. |
 | Serialization | Bounded scalar decode and limited `Serialize` exist; derived `Deserialize`, options, collections, and nested structs do not. | Receiverless decoding design and bounded object policy with compiler/std tests. |

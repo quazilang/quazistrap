@@ -63,6 +63,13 @@ Linux `fork`/`execve` path that reports child `execve` failures to the parent
 before reporting spawn success. New intrinsic IDs also need the matching QZI
 compatibility and validation update.
 
+Linux compiler-generated executable startup retains the kernel `envp` vector,
+which is the environment passed to `execve`. Native-library and object-only
+embeddings do not run that startup path. Before `std.process` is shipped for
+such an embedding, the runtime must either receive its environment through an
+explicit initialization hook or reject process creation with a documented
+error; it must not silently launch a child with an empty environment.
+
 ## Verification requirements
 
 The runtime implementation must test executable paths and arguments containing
