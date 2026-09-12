@@ -4567,6 +4567,37 @@ mod tests {
     }
 
     #[test]
+    fn process_handle_intrinsics_encode_for_linux_and_windows() {
+        let cases: &[(u16, u8, &[&str])] = &[
+            (38, 4, &["WaitForSingleObject", "GetExitCodeProcess", "CloseHandle"]),
+            (39, 5, &["WaitForSingleObject", "GetExitCodeProcess", "CloseHandle"]),
+            (40, 2, &["TerminateProcess"]),
+            (41, 2, &["WaitForSingleObject", "TerminateProcess", "CloseHandle"]),
+        ];
+
+        for &(id, params, expected_windows_imports) in cases {
+            let mut chunk = Chunk::with_params("process_handle", params as usize);
+            let mut intrinsic = ri16(Opcode::Intrinsic, 0, id);
+            intrinsic.flags = params;
+            chunk.emit(intrinsic);
+            chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+            let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+            assert!(linux_relocs.is_empty(), "process intrinsic {id} must be syscall-only on Linux");
+            assert!(mnemonics(&linux_bytes).contains(&Mnemonic::Syscall));
+
+            let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
+            assert!(!windows_bytes.is_empty());
+            for expected in expected_windows_imports {
+                assert!(
+                    windows_relocs.iter().any(|reloc| reloc.symbol == *expected),
+                    "process intrinsic {id} must import {expected} on Win64"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn sleep_intrinsic_is_libc_free_on_linux_and_calls_sleep_on_windows() {
         let mut chunk = Chunk::with_params("sleep", 1);
         let mut sleep = ri16(Opcode::Intrinsic, 0, 12);
