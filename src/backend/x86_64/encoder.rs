@@ -3207,6 +3207,608 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.set_label(&mut finished));
                         emit!(asm.mov(slot(dst), rax));
                     }
+                    37 => {
+                        // quazi.process.spawn(program, args_ptr, args_len, handle_out,
+                        // error_out) -> 0/-1. Linux uses a CLOEXEC error pipe so a
+                        // failed execve is never reported as a successful spawn.
+                        if is_win64 {
+                            return Err(BackendError(
+                                "process.spawn Windows lowering is not implemented".to_string(),
+                            ));
+                        }
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        emit!(asm.push(r13));
+                        emit!(asm.push(r14));
+                        emit!(asm.push(r15));
+                        emit!(asm.sub(rsp, 64i32));
+                        let mut no_environment = asm.create_label();
+                        let mut allocation_failed = asm.create_label();
+                        let mut mmap_failed = asm.create_label();
+                        let mut pipe_failed = asm.create_label();
+                        let mut fork_failed = asm.create_label();
+                        let mut child = asm.create_label();
+                        let mut child_exec_failed = asm.create_label();
+                        let mut parent_exec_failed = asm.create_label();
+                        let mut parent_read_failed = asm.create_label();
+                        let mut parent_protocol_failed = asm.create_label();
+                        let mut reap_after_exec_failure = asm.create_label();
+                        let mut cleanup_after_read_failure = asm.create_label();
+                        let mut reap_after_read_failure = asm.create_label();
+                        let mut success = asm.create_label();
+                        let mut failed = asm.create_label();
+                        let mut finished = asm.create_label();
+                        let mut unmap_done = asm.create_label();
+                        // Locals: pipe read/write at +0/+4, child errno at +8,
+                        // argv mapping byte size at +16, child pid at +24,
+                        // error pointer at +32, mapped flag at +48, result at +56.
+                        emit!(asm.mov(r12, slot(dst)));
+                        emit!(asm.mov(r13, slot(dst + 1)));
+                        emit!(asm.mov(r14, slot(dst + 2)));
+                        emit!(asm.mov(rbx, slot(dst + 3)));
+                        emit!(asm.mov(rax, slot(dst + 4)));
+                        emit!(asm.mov(qword_ptr(rsp + 32i32), rax));
+                        emit!(asm.mov(qword_ptr(rsp + 48i32), 0i32));
+                        emit!(asm.xor(r15d, r15d));
+                        emit!(asm.mov(qword_ptr(rbx), 0i32));
+                        emit!(asm.mov(dword_ptr(rax), 0i32));
+                        lea_rip!(rax, "__quazi_envp".to_string());
+                        emit!(asm.cmp(qword_ptr(rax), 0i32));
+                        emit!(asm.je(no_environment));
+                        // mmap an argv vector containing program, args, and NULL.
+                        emit!(asm.mov(rax, r14));
+                        emit!(asm.add(rax, 2i32));
+                        emit!(asm.jc(allocation_failed));
+                        emit!(asm.mov(rcx, rax));
+                        emit!(asm.shr(rcx, 61u32));
+                        emit!(asm.test(rcx, rcx));
+                        emit!(asm.jne(allocation_failed));
+                        emit!(asm.shl(rax, 3u32));
+                        emit!(asm.mov(qword_ptr(rsp + 16i32), rax));
+                        emit!(asm.xor(edi, edi));
+                        emit!(asm.mov(rsi, rax));
+                        emit!(asm.mov(edx, 3i32));
+                        emit!(asm.mov(r10d, 0x22i32));
+                        emit!(asm.mov(r8, -1i64));
+                        emit!(asm.xor(r9d, r9d));
+                        emit!(asm.mov(eax, 9i32));
+                        emit!(asm.syscall());
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.js(mmap_failed));
+                        emit!(asm.mov(r15, rax));
+                        emit!(asm.mov(qword_ptr(rsp + 48i32), 1i32));
+                        emit!(asm.mov(qword_ptr(r15), r12));
+                        emit!(asm.xor(ecx, ecx));
+                        let mut copy_args = asm.create_label();
+                        let mut copied_args = asm.create_label();
+                        emit!(asm.set_label(&mut copy_args));
+                        emit!(asm.cmp(rcx, r14));
+                        emit!(asm.jae(copied_args));
+                        emit!(asm.mov(rax, qword_ptr(r13 + rcx * 8)));
+                        emit!(asm.mov(qword_ptr(r15 + rcx * 8 + 8i32), rax));
+                        emit!(asm.inc(rcx));
+                        emit!(asm.jmp(copy_args));
+                        emit!(asm.set_label(&mut copied_args));
+                        emit!(asm.mov(qword_ptr(r15 + r14 * 8 + 8i32), 0i32));
+                        // pipe2(&fds, O_CLOEXEC)
+                        emit!(asm.mov(rdi, rsp));
+                        emit!(asm.mov(esi, 0x80000i32));
+                        emit!(asm.mov(eax, 293i32));
+                        emit!(asm.syscall());
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.js(pipe_failed));
+                        emit!(asm.mov(eax, 57i32)); // fork
+                        emit!(asm.syscall());
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.js(fork_failed));
+                        emit!(asm.jz(child));
+                        // Parent: close write end, then EOF means exec succeeded.
+                        emit!(asm.mov(qword_ptr(rsp + 24i32), rax));
+                        emit!(asm.mov(edi, dword_ptr(rsp + 4i32)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        let mut retry_read = asm.create_label();
+                        emit!(asm.set_label(&mut retry_read));
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.lea(rsi, qword_ptr(rsp + 8i32)));
+                        emit!(asm.mov(edx, 4i32));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.syscall());
+                        emit!(asm.cmp(eax, -4i32));
+                        emit!(asm.je(retry_read));
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.js(parent_read_failed));
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.jz(success));
+                        emit!(asm.cmp(eax, 4i32));
+                        emit!(asm.jne(parent_protocol_failed));
+                        emit!(asm.jmp(parent_exec_failed));
+                        emit!(asm.set_label(&mut child));
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        lea_rip!(rax, "__quazi_envp".to_string());
+                        emit!(asm.mov(rdx, qword_ptr(rax)));
+                        emit!(asm.mov(rdi, r12));
+                        emit!(asm.mov(rsi, r15));
+                        emit!(asm.mov(eax, 59i32));
+                        emit!(asm.syscall());
+                        emit!(asm.set_label(&mut child_exec_failed));
+                        emit!(asm.neg(eax));
+                        emit!(asm.mov(dword_ptr(rsp + 8i32), eax));
+                        let mut child_write_retry = asm.create_label();
+                        emit!(asm.set_label(&mut child_write_retry));
+                        emit!(asm.mov(edi, dword_ptr(rsp + 4i32)));
+                        emit!(asm.lea(rsi, qword_ptr(rsp + 8i32)));
+                        emit!(asm.mov(edx, 4i32));
+                        emit!(asm.mov(eax, 1i32));
+                        emit!(asm.syscall());
+                        emit!(asm.cmp(eax, -4i32));
+                        emit!(asm.je(child_write_retry));
+                        emit!(asm.mov(edi, 127i32));
+                        emit!(asm.mov(eax, 231i32));
+                        emit!(asm.syscall());
+                        emit!(asm.set_label(&mut success));
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        emit!(asm.mov(rax, qword_ptr(rsp + 24i32)));
+                        emit!(asm.mov(qword_ptr(rbx), rax));
+                        emit!(asm.mov(rcx, qword_ptr(rsp + 32i32)));
+                        emit!(asm.mov(dword_ptr(rcx), 0i32));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut parent_exec_failed));
+                        // Reap the child that reported its execve errno.
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        emit!(asm.mov(rdi, qword_ptr(rsp + 24i32)));
+                        emit!(asm.lea(rsi, qword_ptr(rsp + 4i32)));
+                        emit!(asm.xor(edx, edx));
+                        emit!(asm.xor(r10d, r10d));
+                        emit!(asm.mov(eax, 61i32));
+                        emit!(asm.syscall());
+                        emit!(asm.cmp(eax, -4i32));
+                        emit!(asm.je(reap_after_exec_failure));
+                        emit!(asm.mov(eax, dword_ptr(rsp + 8i32)));
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut reap_after_exec_failure));
+                        emit!(asm.mov(rdi, qword_ptr(rsp + 24i32)));
+                        emit!(asm.lea(rsi, qword_ptr(rsp + 4i32)));
+                        emit!(asm.xor(edx, edx));
+                        emit!(asm.xor(r10d, r10d));
+                        emit!(asm.mov(eax, 61i32));
+                        emit!(asm.syscall());
+                        emit!(asm.cmp(eax, -4i32));
+                        emit!(asm.je(reap_after_exec_failure));
+                        emit!(asm.mov(eax, dword_ptr(rsp + 8i32)));
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut parent_read_failed));
+                        emit!(asm.neg(eax));
+                        emit!(asm.mov(dword_ptr(rsp + 8i32), eax));
+                        emit!(asm.jmp(cleanup_after_read_failure));
+                        emit!(asm.set_label(&mut parent_protocol_failed));
+                        emit!(asm.mov(dword_ptr(rsp + 8i32), 5i32)); // EIO: broken error-pipe protocol
+                        emit!(asm.set_label(&mut cleanup_after_read_failure));
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        emit!(asm.mov(rdi, qword_ptr(rsp + 24i32)));
+                        emit!(asm.mov(esi, 9i32));
+                        emit!(asm.mov(eax, 62i32));
+                        emit!(asm.syscall());
+                        emit!(asm.set_label(&mut reap_after_read_failure));
+                        emit!(asm.mov(rdi, qword_ptr(rsp + 24i32)));
+                        emit!(asm.lea(rsi, qword_ptr(rsp + 4i32)));
+                        emit!(asm.xor(edx, edx));
+                        emit!(asm.xor(r10d, r10d));
+                        emit!(asm.mov(eax, 61i32));
+                        emit!(asm.syscall());
+                        emit!(asm.cmp(eax, -4i32));
+                        emit!(asm.je(reap_after_read_failure));
+                        emit!(asm.mov(eax, dword_ptr(rsp + 8i32)));
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut no_environment));
+                        emit!(asm.mov(eax, 38i32)); // ENOSYS until an embedder initializes envp
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut allocation_failed));
+                        emit!(asm.mov(eax, 7i32)); // E2BIG
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut mmap_failed));
+                        emit!(asm.neg(eax));
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut pipe_failed));
+                        emit!(asm.neg(eax));
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut fork_failed));
+                        emit!(asm.neg(eax));
+                        emit!(asm.mov(dword_ptr(rsp + 8i32), eax));
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        emit!(asm.mov(edi, dword_ptr(rsp + 4i32)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        emit!(asm.mov(eax, dword_ptr(rsp + 8i32)));
+                        emit!(asm.set_label(&mut failed));
+                        emit!(asm.mov(rcx, qword_ptr(rsp + 32i32)));
+                        emit!(asm.mov(dword_ptr(rcx), eax));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut finished));
+                        emit!(asm.mov(qword_ptr(rsp + 56i32), rax));
+                        // Release the argv mapping in the parent path. The child exits
+                        // above, so this does not run after fork in the child.
+                        emit!(asm.test(qword_ptr(rsp + 48i32), 1i32));
+                        emit!(asm.jz(unmap_done));
+                        emit!(asm.mov(rdi, r15));
+                        emit!(asm.mov(rsi, qword_ptr(rsp + 16i32)));
+                        emit!(asm.mov(eax, 11i32));
+                        emit!(asm.syscall());
+                        emit!(asm.set_label(&mut unmap_done));
+                        emit!(asm.mov(rax, qword_ptr(rsp + 56i32)));
+                        emit!(asm.add(rsp, 64i32));
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(r15));
+                        emit!(asm.pop(r14));
+                        emit!(asm.pop(r13));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
+                    38 => {
+                        // quazi.process.wait(handle, kind_out, value_out, error_out) -> 0/-1
+                        // kind_out is 0 for an exit code and 1 for a signal.
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        emit!(asm.push(r13));
+                        emit!(asm.push(r14));
+                        let mut no_handle = asm.create_label();
+                        let mut failed = asm.create_label();
+                        let mut signaled = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r12, slot(dst)));
+                        emit!(asm.mov(r13, slot(dst + 1)));
+                        emit!(asm.mov(r14, slot(dst + 2)));
+                        emit!(asm.mov(rbx, slot(dst + 3)));
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 48i32));
+                        } else {
+                            emit!(asm.sub(rsp, 16i32));
+                        }
+                        emit!(asm.test(r12, r12));
+                        emit!(asm.jz(no_handle));
+                        if is_win64 {
+                            // shadow space plus one DWORD result, rounded for alignment.
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.mov(edx, u32::MAX as i32));
+                            call_ext!("WaitForSingleObject".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failed));
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.lea(rdx, qword_ptr(rsp + 32i32)));
+                            call_ext!("GetExitCodeProcess".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.mov(rcx, r12));
+                            call_ext!("CloseHandle".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.mov(dword_ptr(r13), 0i32));
+                            emit!(asm.mov(eax, dword_ptr(rsp + 32i32)));
+                            emit!(asm.mov(dword_ptr(r14), eax));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                        } else {
+                            // wait4(pid, &status, 0, NULL), retrying EINTR.
+                            let mut retry = asm.create_label();
+                            emit!(asm.set_label(&mut retry));
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(rsi, rsp));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.xor(r10d, r10d));
+                            emit!(asm.mov(eax, 61i32));
+                            emit!(asm.syscall());
+                            emit!(asm.cmp(eax, -4i32));
+                            emit!(asm.je(retry));
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                            emit!(asm.mov(eax, dword_ptr(rsp)));
+                            emit!(asm.mov(ecx, eax));
+                            emit!(asm.and(ecx, 127i32));
+                            emit!(asm.test(ecx, ecx));
+                            emit!(asm.jne(signaled));
+                            emit!(asm.shr(eax, 8u32));
+                            emit!(asm.and(eax, 255i32));
+                            emit!(asm.mov(dword_ptr(r13), 0i32));
+                            emit!(asm.mov(dword_ptr(r14), eax));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut signaled));
+                            emit!(asm.mov(dword_ptr(r13), 1i32));
+                            emit!(asm.mov(dword_ptr(r14), ecx));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                        }
+                        emit!(asm.set_label(&mut no_handle));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut failed));
+                        if is_win64 {
+                            call_ext!("GetLastError".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.neg(eax));
+                        }
+                        emit!(asm.mov(dword_ptr(rbx), eax));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut finished));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 48i32));
+                        } else {
+                            emit!(asm.add(rsp, 16i32));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(r14));
+                        emit!(asm.pop(r13));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
+                    40 => {
+                        // quazi.process.terminate(handle, error_out) -> 0/-1.
+                        // This is deliberately non-consuming; wait/close own reaping.
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        let mut no_handle = asm.create_label();
+                        let mut failed = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r12, slot(dst)));
+                        emit!(asm.mov(rbx, slot(dst + 1)));
+                        emit!(asm.test(r12, r12));
+                        emit!(asm.jz(no_handle));
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 32i32));
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.mov(edx, 1i32));
+                            call_ext!("TerminateProcess".into(), RelocKind::Plt32);
+                            emit!(asm.add(rsp, 32i32));
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                        } else {
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(esi, 9i32)); // SIGKILL
+                            emit!(asm.mov(eax, 62i32)); // kill
+                            emit!(asm.syscall());
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                        }
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut no_handle));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut failed));
+                        if is_win64 {
+                            call_ext!("GetLastError".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.neg(eax));
+                        }
+                        emit!(asm.mov(dword_ptr(rbx), eax));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut finished));
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
+                    41 => {
+                        // quazi.process.close(handle, error_out) -> 0/-1.
+                        // A live child is killed and reaped before its handle is released.
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        let mut no_handle = asm.create_label();
+                        let mut terminate = asm.create_label();
+                        let mut wait = asm.create_label();
+                        let mut failed = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r12, slot(dst)));
+                        emit!(asm.mov(rbx, slot(dst + 1)));
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 32i32));
+                        } else {
+                            emit!(asm.sub(rsp, 16i32));
+                        }
+                        emit!(asm.test(r12, r12));
+                        emit!(asm.jz(no_handle));
+                        if is_win64 {
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.xor(edx, edx));
+                            call_ext!("WaitForSingleObject".into(), RelocKind::Plt32);
+                            emit!(asm.cmp(eax, 258i32));
+                            emit!(asm.je(terminate));
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failed));
+                            emit!(asm.jmp(wait));
+                            emit!(asm.set_label(&mut terminate));
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.mov(edx, 1i32));
+                            call_ext!("TerminateProcess".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.set_label(&mut wait));
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.mov(edx, u32::MAX as i32));
+                            call_ext!("WaitForSingleObject".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failed));
+                            emit!(asm.mov(rcx, r12));
+                            call_ext!("CloseHandle".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                        } else {
+                            let mut probe_retry = asm.create_label();
+                            let mut reap_retry = asm.create_label();
+                            emit!(asm.set_label(&mut probe_retry));
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(rsi, rsp));
+                            emit!(asm.mov(edx, 1i32)); // WNOHANG
+                            emit!(asm.xor(r10d, r10d));
+                            emit!(asm.mov(eax, 61i32));
+                            emit!(asm.syscall());
+                            emit!(asm.cmp(eax, -4i32));
+                            emit!(asm.je(probe_retry));
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.jz(terminate));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut terminate));
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(esi, 9i32));
+                            emit!(asm.mov(eax, 62i32));
+                            emit!(asm.syscall());
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                            emit!(asm.set_label(&mut reap_retry));
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(rsi, rsp));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.xor(r10d, r10d));
+                            emit!(asm.mov(eax, 61i32));
+                            emit!(asm.syscall());
+                            emit!(asm.cmp(eax, -4i32));
+                            emit!(asm.je(reap_retry));
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                        }
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut no_handle));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut failed));
+                        if is_win64 {
+                            call_ext!("GetLastError".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.neg(eax));
+                        }
+                        emit!(asm.mov(dword_ptr(rbx), eax));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut finished));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 32i32));
+                        } else {
+                            emit!(asm.add(rsp, 16i32));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
+                    39 => {
+                        // quazi.process.try_wait(handle, exited_out, kind_out, value_out,
+                        // error_out) -> 0/-1. A live child sets exited_out to zero.
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        emit!(asm.push(r13));
+                        emit!(asm.push(r14));
+                        emit!(asm.push(r15));
+                        let mut no_handle = asm.create_label();
+                        let mut live = asm.create_label();
+                        let mut failed = asm.create_label();
+                        let mut signaled = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r12, slot(dst)));
+                        emit!(asm.mov(r13, slot(dst + 1)));
+                        emit!(asm.mov(r14, slot(dst + 2)));
+                        emit!(asm.mov(r15, slot(dst + 3)));
+                        emit!(asm.mov(rbx, slot(dst + 4)));
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 48i32));
+                        } else {
+                            emit!(asm.sub(rsp, 16i32));
+                        }
+                        emit!(asm.test(r12, r12));
+                        emit!(asm.jz(no_handle));
+                        if is_win64 {
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.xor(edx, edx));
+                            call_ext!("WaitForSingleObject".into(), RelocKind::Plt32);
+                            emit!(asm.cmp(eax, 258i32)); // WAIT_TIMEOUT
+                            emit!(asm.je(live));
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failed));
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.lea(rdx, qword_ptr(rsp + 32i32)));
+                            call_ext!("GetExitCodeProcess".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.mov(rcx, r12));
+                            call_ext!("CloseHandle".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.mov(dword_ptr(r13), 1i32));
+                            emit!(asm.mov(dword_ptr(r14), 0i32));
+                            emit!(asm.mov(eax, dword_ptr(rsp + 32i32)));
+                            emit!(asm.mov(dword_ptr(r15), eax));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                        } else {
+                            let mut retry = asm.create_label();
+                            emit!(asm.set_label(&mut retry));
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(rsi, rsp));
+                            emit!(asm.mov(edx, 1i32)); // WNOHANG
+                            emit!(asm.xor(r10d, r10d));
+                            emit!(asm.mov(eax, 61i32));
+                            emit!(asm.syscall());
+                            emit!(asm.cmp(eax, -4i32));
+                            emit!(asm.je(retry));
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.jz(live));
+                            emit!(asm.js(failed));
+                            emit!(asm.mov(eax, dword_ptr(rsp)));
+                            emit!(asm.mov(ecx, eax));
+                            emit!(asm.and(ecx, 127i32));
+                            emit!(asm.test(ecx, ecx));
+                            emit!(asm.jne(signaled));
+                            emit!(asm.shr(eax, 8u32));
+                            emit!(asm.and(eax, 255i32));
+                            emit!(asm.mov(dword_ptr(r13), 1i32));
+                            emit!(asm.mov(dword_ptr(r14), 0i32));
+                            emit!(asm.mov(dword_ptr(r15), eax));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut signaled));
+                            emit!(asm.mov(dword_ptr(r13), 1i32));
+                            emit!(asm.mov(dword_ptr(r14), 1i32));
+                            emit!(asm.mov(dword_ptr(r15), ecx));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                        }
+                        emit!(asm.set_label(&mut no_handle));
+                        emit!(asm.set_label(&mut live));
+                        emit!(asm.mov(dword_ptr(r13), 0i32));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut failed));
+                        if is_win64 {
+                            call_ext!("GetLastError".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.neg(eax));
+                        }
+                        emit!(asm.mov(dword_ptr(rbx), eax));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut finished));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 48i32));
+                        } else {
+                            emit!(asm.add(rsp, 16i32));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(r15));
+                        emit!(asm.pop(r14));
+                        emit!(asm.pop(r13));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
                     _ => {
                         return Err(BackendError(format!("unknown intrinsic id {id}")));
                     }

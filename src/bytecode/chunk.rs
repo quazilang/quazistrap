@@ -669,7 +669,7 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
             }
             if opcode == Opcode::Intrinsic {
                 let id = instruction.ri16().1;
-                if !matches!(id, 0..=36) {
+                if !matches!(id, 0..=41) {
                     return fail("unknown intrinsic id");
                 }
             }
@@ -680,7 +680,7 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 8;
+pub const QZI_VERSION: u8 = 9;
 const QZI_LEGACY_VERSION: u8 = 5;
 const QZI_FIRST_SECTIONED_VERSION: u8 = 6;
 

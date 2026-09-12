@@ -399,6 +399,13 @@ impl Instruction {
                     32 => "quazi.os.windows_product",
                     33 => "quazi.str.cmp",
                     34 => "quazi.str.rune_len",
+                    35 => "quazi.random.system_u64",
+                    36 => "quazi.random.system_f64",
+                    37 => "quazi.process.spawn",
+                    38 => "quazi.process.wait",
+                    39 => "quazi.process.try_wait",
+                    40 => "quazi.process.terminate",
+                    41 => "quazi.process.close",
                     _ => "?",
                 };
                 format!(

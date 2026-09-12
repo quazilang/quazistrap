@@ -2,6 +2,10 @@
 
 Status: accepted 2026-09-01.
 
+Implementation status: Linux support is in progress. The public API must not
+be presented as cross-platform until the Win32 lowering and its target-native
+verification meet this decision's requirements.
+
 ## Context
 
 Quazi needs a shellless, cross-platform way to start a program and observe its
