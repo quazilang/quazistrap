@@ -28,3 +28,4 @@ Documented modules:
 - [`std.fs`](fs.md) — owned file handles, text reads, and directory operations.
 - [`std.net`](net.md) — IPv4 TCP/UDP and bounded HTTP/1.1 helpers.
 - [`std.os`](os.md) — host information and current-process boundaries.
+- [`std.process`](process.md) — Linux shell-free child-process management.

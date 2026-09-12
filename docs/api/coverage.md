@@ -13,6 +13,7 @@ prevents the API index from implying that undocumented modules are stable.
 | `std.json` | [json](json.md) | Bounded JSON validation and composition. |
 | `std.net` | [net](net.md) | IPv4 sockets and limited HTTP helpers. |
 | `std.os` | [os](os.md) | Current-process and host-information boundaries. |
+| `std.process` | [process](process.md) | Linux runtime-backed child processes; Windows pending. |
 | `std.thread` | [thread](thread.md) | Experimental native-thread ABI. |
 | `std.time` | [time](time.md) | Monotonic duration and instant foundation. |
 | `std.core` | [core](core.md) | Low-level intrinsic, allocation, and UTF-8 safety boundary; allocation-backed `str` results remain unstable under D-013. |

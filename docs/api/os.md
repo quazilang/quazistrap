@@ -2,10 +2,11 @@
 
 Audience: Quazi application developers.
 
-std.os is a small current-process and host-information module. It is not the
-planned child-process API; see the [process runtime decision](../decisions/process-runtime.md)
-for the approved contract and the compiler/runtime implementation still needed
-before process creation is public.
+std.os is a small current-process and host-information module. Shell-free
+Linux child-process management is available through
+[`std.process`](process.md); its Windows implementation remains pending. See
+the [process runtime decision](../decisions/process-runtime.md) for the
+cross-platform contract.
 
 ## Process control
 
@@ -69,6 +70,6 @@ return `u32::MAX` as an unsupported-target sentinel.
   so libraries should not modify it implicitly.
 
 The std.fs page documents the portable filesystem surface. Code that requires
-portable current directories, identities, environment mutation, arguments,
-working-directory changes, or child-process management must wait for an
-explicitly designed API rather than depending on these syscall wrappers.
+portable current directories, identities, environment mutation, arguments, or
+working-directory changes must wait for an explicitly designed API rather than
+depending on these syscall wrappers.
