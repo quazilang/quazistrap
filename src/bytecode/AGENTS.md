@@ -8,7 +8,9 @@ sources or require a host linker. Native inputs are used only for object/binary
 outputs.
 
 Operand layouts: **RRR** (dst/src1/src2), **RI16** (dst/unsigned imm16 LE), **MEM** (val/base/offset16 LE signed).
-Negative and larger integer values use `MovConst` with an `Int(i64)` constant.
+Negative and larger integer values use `MovConst` with an `Int(u64)` constant;
+signed consumers interpret the stored two's-complement bits at their selected
+width.
 
 `FieldLoad` and `FieldStore` encode their unsigned 16-bit byte offset across
 operand bytes 2 and 3. Register, constant, function, size, tag, and offset
@@ -43,7 +45,7 @@ Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_a
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x08` (readers retain compatible v2-v7 bytecode; v1 omitted
+- Version: `0x09` (readers retain compatible v2-v8 bytecode; v1 omitted
   required frame metadata and parameterized v6 trait interfaces need rebuilding)
 
 Immutable golden fixtures from real historical writers (v2-v6) live in
@@ -73,6 +75,12 @@ never persisted.
 | `5` | ForeignSymbol(symbol + target-neutral `AbiSignature`) |
 | `6` | Bytes(u32_len + exact bytes) |
 | `7` | ForeignGlobal(symbol + target-neutral `AbiType`) |
+
+### Runtime intrinsic IDs
+
+IDs `37` through `41` are the private process-runtime ABI: spawn, wait,
+try-wait, terminate, and close. They take only slot arguments and scalar
+out-pointers; QZI v9 is the compatibility boundary that admits them.
 
 ---
 
