@@ -1911,7 +1911,7 @@ impl<'a> Codegen<'a> {
         let mut chunk = Chunk::with_params(name, params.len());
         // Store name or raw number in const pool — arch-neutral QZI.
         let entry = match attr.args.first() {
-            Some(AttrArg::Positional(AttrVal::Int(n))) => ConstPoolEntry::Int(*n),
+            Some(AttrArg::Positional(AttrVal::Int(n))) => ConstPoolEntry::Int(*n as i64),
             Some(AttrArg::Positional(AttrVal::Str(s))) => ConstPoolEntry::Str(s.clone()),
             _ => ConstPoolEntry::Str(String::new()),
         };
@@ -2381,7 +2381,7 @@ enum LvalueAddr {
     IndexFixed {
         base: u8,
         idx: u8,
-        literal: Option<i64>,
+        literal: Option<u64>,
         block_length: u8,
     },
 }
@@ -3410,7 +3410,7 @@ impl<'a> FnCompiler<'a> {
                 }
                 let base = self.compile_expr(object);
                 if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                    && *n >= 0
+                    && *n <= u8::MAX as u64
                 {
                     return base + *n as u8;
                 }
@@ -3512,7 +3512,7 @@ impl<'a> FnCompiler<'a> {
                 } else {
                     let base = self.compile_expr(object);
                     if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                        && *n >= 0
+                        && *n <= u8::MAX as u64
                     {
                         let elem_reg = base + *n as u8;
                         self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
@@ -3641,7 +3641,7 @@ impl<'a> FnCompiler<'a> {
                         .unwrap_or(0);
                     let base = self.compile_expr(object);
                     if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                        && *n >= 0
+                        && *n <= u8::MAX as u64
                     {
                         LvalueAddr::IndexFixed {
                             base,
@@ -3943,10 +3943,10 @@ impl<'a> FnCompiler<'a> {
                 match lit {
                     LiteralValue::Int(n) => {
                         let tag_reg = self.alloc_reg();
-                        if *n >= 0 && *n <= u16::MAX as i64 {
+                        if *n <= u16::MAX as u64 {
                             self.chunk.emit(ri16(Opcode::MovI, tag_reg, *n as u16));
                         } else {
-                            let idx = self.chunk.add_constant(ConstPoolEntry::Int(*n));
+                            let idx = self.chunk.add_constant(ConstPoolEntry::Int(*n as i64));
                             self.chunk.emit(ri16(Opcode::MovConst, tag_reg, idx));
                         }
                         self.chunk.emit(rrr(Opcode::Cmp, 0, value_reg, tag_reg));
@@ -5910,7 +5910,7 @@ impl<'a> FnCompiler<'a> {
                         } else {
                             // Fixed-size array: store at base register or computed address.
                             if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                                && *n >= 0
+                                && *n <= u8::MAX as u64
                             {
                                 let src = self.compile_expr(value);
                                 let elem_reg = obj_reg + *n as u8;
@@ -7158,7 +7158,7 @@ impl<'a> FnCompiler<'a> {
                 };
                 let base = self.compile_expr(object);
                 if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                    && *n >= 0
+                    && *n <= u8::MAX as u64
                 {
                     return base + *n as u8;
                 }
@@ -7469,11 +7469,11 @@ impl<'a> FnCompiler<'a> {
     fn emit_literal(&mut self, lit: &Literal) -> u8 {
         let dst = self.alloc_reg();
         match lit {
-            Literal::Int(n) if *n >= 0 && *n <= 0xFFFF => {
+            Literal::Int(n) if *n <= 0xFFFF => {
                 self.chunk.emit(ri16(Opcode::MovI, dst, *n as u16));
             }
             Literal::Int(n) => {
-                let idx = self.chunk.add_constant(ConstPoolEntry::Int(*n));
+                let idx = self.chunk.add_constant(ConstPoolEntry::Int(*n as i64));
                 self.chunk.emit(ri16(Opcode::MovConst, dst, idx));
             }
             Literal::Float(f) => {
@@ -10259,6 +10259,8 @@ fn update(index: i64) i64 {
             r#"
             fn quotient() u64 { ret (-1 as u64) / 2; }
             fn high() u64 { ret -1 as u64; }
+            fn decimal_high() u64 { ret 18446744073709551615; }
+            fn decimal_min() i64 { ret -9223372036854775808; }
             fn remainder() u64 { ret (-1 as u64) % 2; }
             fn shift() u64 { ret (-1 as u64) >> 63; }
             fn ordered() bool { ret (-1 as u64) > 1; }
@@ -10289,6 +10291,8 @@ fn update(index: i64) i64 {
         };
         assert_eq!(returned_constant("quotient"), i64::MAX);
         assert_eq!(returned_constant("high"), -1);
+        assert_eq!(returned_constant("decimal_high"), -1);
+        assert_eq!(returned_constant("decimal_min"), i64::MIN);
         assert_eq!(returned_constant("remainder"), 1);
         assert_eq!(returned_constant("shift"), 1);
         assert_eq!(returned_constant("ordered"), 1);

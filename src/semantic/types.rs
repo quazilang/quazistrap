@@ -400,7 +400,7 @@ pub struct TraitMethodSignature {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeriveAttributeValue {
     String(String),
-    Integer(i64),
+    Integer(u64),
     Identifier(String),
 }
 

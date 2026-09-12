@@ -166,7 +166,7 @@ impl Parser {
                 self.advance();
                 let width = self.advance();
                 match width.kind {
-                    TokenKind::Int(value) if value > 0 && value <= u8::MAX as i64 => {
+                    TokenKind::Int(value) if value > 0 && value <= u8::MAX as u64 => {
                         Some(value as u8)
                     }
                     other => {

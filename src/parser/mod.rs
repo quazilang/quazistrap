@@ -1792,7 +1792,7 @@ impl Parser {
                         ));
                     }
                     let len = match len_tok.kind {
-                        TokenKind::Int(n) if n >= 0 => n as u64,
+                        TokenKind::Int(n) => n,
                         other => {
                             return Err(self.err_tok_with_code(
                                 len_tok.span,
@@ -2782,6 +2782,18 @@ fn main() void {
         assert!(err.contains("found i32"));
         assert!(!err.contains("Eq"));
         assert!(!err.contains("Int32"));
+    }
+
+    #[test]
+    fn preserves_full_u64_fixed_array_lengths() {
+        let program = parse_program("type Huge = [u8; 18446744073709551615];");
+        let ItemKind::TypeAlias { aliased_type, .. } = &program.items[0].node else {
+            panic!("expected type alias");
+        };
+        let TypeKind::Array { len, .. } = aliased_type.node else {
+            panic!("expected fixed array type");
+        };
+        assert_eq!(len, u64::MAX);
     }
 
     #[test]

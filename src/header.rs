@@ -498,7 +498,7 @@ fn repr_packed(attributes: &[Attribute]) -> bool {
     })
 }
 
-fn repr_alignment(attributes: &[Attribute]) -> Option<i64> {
+fn repr_alignment(attributes: &[Attribute]) -> Option<u64> {
     attributes
         .iter()
         .find(|attribute| attribute.name == "repr")

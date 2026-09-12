@@ -24,7 +24,8 @@ impl Span {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // literals
-    Int(i64),
+    /// Unsigned source magnitude. A leading `-` is parsed as a unary operator.
+    Int(u64),
     Float(f64),
     StringLit(String),
     ByteStringLit(Vec<u8>),

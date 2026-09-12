@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-09-12: Full-width decimal integer literals](2026-09-12-full-u64-literals.md)
 - [2026-09-12: Exact JSON container-depth limits](2026-09-12-json-depth-limits.md)
 - [2026-09-11: Loader-backed LSP cancellation](2026-09-11-lsp-loader-cancellation.md)
 - [2026-09-11: Array backing-pointer accessor](2026-09-11-array-backing-pointer.md)

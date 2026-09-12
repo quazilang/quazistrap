@@ -350,7 +350,10 @@ impl Lexer {
         let kind = if is_float {
             TokenKind::Float(s.parse().unwrap_or(0.0))
         } else {
-            TokenKind::Int(s.parse().unwrap_or(0))
+            match s.parse::<u64>() {
+                Ok(value) => TokenKind::Int(value),
+                Err(_) => TokenKind::Error(format!("integer literal `{s}` is outside the u64 range")),
+            }
         };
 
         let span = self.make_span(start, self.pos, line, col);
@@ -694,6 +697,18 @@ mod tests {
         assert!(matches!(tokens[8].kind, TokenKind::Float16));
         assert!(matches!(tokens[9].kind, TokenKind::Float32));
         assert!(matches!(tokens[10].kind, TokenKind::Float64));
+    }
+
+    #[test]
+    fn preserves_the_full_u64_literal_range() {
+        let tokens = Lexer::new("18446744073709551615").tokenize();
+        assert!(matches!(tokens[0].kind, TokenKind::Int(value) if value == u64::MAX));
+    }
+
+    #[test]
+    fn rejects_integer_literals_beyond_u64() {
+        let tokens = Lexer::new("18446744073709551616").tokenize();
+        assert!(matches!(tokens[0].kind, TokenKind::Error(ref message) if message.contains("u64 range")));
     }
 
     #[test]

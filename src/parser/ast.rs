@@ -50,7 +50,8 @@ impl<T> Spanned<T> {
 
 #[derive(Debug, Clone)]
 pub enum Literal {
-    Int(i64),
+    /// Unsigned source magnitude. Negative values are represented by `Neg`.
+    Int(u64),
     Float(f64),
     String(String),
     Bytes(Vec<u8>),
@@ -195,7 +196,7 @@ pub type Expr = Spanned<ExprKind>;
 
 #[derive(Debug, Clone)]
 pub enum LiteralValue {
-    Int(i64),
+    Int(u64),
     Float(f64),
     Str(String),
     Bool(bool),
@@ -392,7 +393,7 @@ pub type Type = Spanned<TypeKind>;
 #[derive(Debug, Clone)]
 pub enum AttrVal {
     Str(String),
-    Int(i64),
+    Int(u64),
     Ident(String),
 }
 

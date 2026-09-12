@@ -1336,7 +1336,7 @@ impl Analyzer {
     fn validate_syscall_attr(&mut self, attr: &Attribute) {
         let ok = match attr.args.as_slice() {
             [AttrArg::Positional(AttrVal::Str(_))] => true,
-            [AttrArg::Positional(AttrVal::Int(n))] => *n >= 0 && *n <= u16::MAX as i64,
+            [AttrArg::Positional(AttrVal::Int(n))] => *n <= u16::MAX as u64,
             _ => false,
         };
 
@@ -5621,7 +5621,7 @@ impl Analyzer {
 
     pub(super) fn const_from_literal(lit: &Literal) -> Option<ConstValue> {
         match lit {
-            Literal::Int(v) => Some(ConstValue::Int(*v)),
+            Literal::Int(v) => Some(ConstValue::Int(*v as i64)),
             Literal::Float(v) => Some(ConstValue::Float(*v)),
             Literal::String(v) => Some(ConstValue::String(v.clone())),
             Literal::Bytes(_) => None,
@@ -5631,7 +5631,7 @@ impl Analyzer {
 
     pub(super) fn const_from_unary(op: &UnaryOpKind, value: ConstValue) -> Option<ConstValue> {
         match (op, value) {
-            (UnaryOpKind::Neg, ConstValue::Int(v)) => Some(ConstValue::Int(-v)),
+            (UnaryOpKind::Neg, ConstValue::Int(v)) => Some(ConstValue::Int(v.wrapping_neg())),
             (UnaryOpKind::Neg, ConstValue::Float(v)) => Some(ConstValue::Float(-v)),
             (UnaryOpKind::Not, ConstValue::Bool(v)) => Some(ConstValue::Bool(!v)),
             _ => None,
