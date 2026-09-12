@@ -32,5 +32,6 @@ there instead of silently creating a child with an empty environment.
 ## Verification
 
 - `cargo test --offline --quiet` in `quazistrap` — 582 tests passed.
-- `qz test` in `std` — 19 tests passed, including exact-path launch and failed
-  `execve` regression coverage.
+- `qz test` in `std` — 20 tests passed, including exact-path launch and failed
+  `execve` regression coverage. The process regressions also cover `try_wait`
+  followed by `wait` and `close` consuming a child exactly once.
