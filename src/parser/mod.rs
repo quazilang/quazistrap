@@ -2797,6 +2797,18 @@ fn main() void {
     }
 
     #[test]
+    fn preserves_full_u64_attribute_values() {
+        let program = parse_program("@tag(18446744073709551615) fn main() void {}");
+        let ItemKind::Fn { attributes, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+        assert!(matches!(
+            attributes[0].args.as_slice(),
+            [AttrArg::Positional(AttrVal::Int(value))] if *value == u64::MAX
+        ));
+    }
+
+    #[test]
     fn reports_e01_identifier_error_with_snippet_and_underline() {
         let err = parse_program_err(
             r#"
