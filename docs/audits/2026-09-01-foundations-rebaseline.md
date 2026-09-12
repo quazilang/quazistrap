@@ -14,12 +14,13 @@ those reports; this page records only the current state and remaining work.
 | Monotonic time | `std` `5b043cd`; API docs `a1f940f` | `Duration` uses normalized seconds/nanoseconds and checked arithmetic; `Instant` is monotonic on Linux and Windows. |
 | Conditional imports | compiler `cb18d1a`; std `d8b8668`; grammar `6eedcd7`, `1a223cf` | Disabled imports are filtered before loading and source, standard library, and Tree-sitter agree on conditional import syntax. |
 | Editor protocol surface | `f575d6b`; focused `cargo test lsp::` 30/30 | The contained LSP supports generation-gated full-document updates and workspace-symbol search over successfully analyzed open documents. |
-| Child-process architecture | D-011, `3c551a0` | A public process API must be built on runtime primitives; a std-only fork/exec or `CreateProcess` facade is not considered support. |
+| Child-process architecture | D-011, `1d91c9c`, std `fb0bec6` | Linux `std.process` is built on compiler runtime primitives, with exact executable paths, fork/exec failure reporting, and explicit child ownership. Windows remains unimplemented. |
 
 ## Still open
 
-- The runtime process primitives, public `std.process`, and their Linux/Windows
-  test matrix are not implemented.
+- Win64 process creation, its UTF-16/quoting and inherited-handle contract, and
+  the complete Linux/Windows test matrix remain unimplemented. Linux has the
+  runtime primitives and public `std.process` surface described by D-011.
 - The LSP has an open-document symbol index only. Persistent workspace indexing,
   cross-file references/rename, incremental synchronization, cancellation, code
   actions, and inlay hints remain open.

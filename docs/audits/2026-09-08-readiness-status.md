@@ -59,11 +59,12 @@ Audience: maintainers planning the next local checkpoints.
   experimental concurrency contract remains incomplete because structured
   lifetime, result/panic propagation, cancellation, and synchronization policy
   still require a maintainer decision.
-- The process-runtime decision now approves the concrete first-release
-  contract: exact executable paths and borrowed arguments, exit-status
-  representation, forced termination, close/destruction of a running child,
-  and a multi-field spawn-result ABI. No `std.process` API is shipped until
-  matching runtime primitives and cross-target evidence exist.
+- Linux now has the D-011 runtime intrinsics and `std.process` facade. Spawn
+  accepts exact executable paths and borrowed arguments, uses a close-on-exec
+  error pipe to distinguish `execve` failure from success, and exposes
+  repeat-safe wait, try-wait, terminate, and close ownership. The test suite
+  executes an exact-path child and verifies failed `execve` is returned to the
+  parent. This does not establish Windows support.
 - Neovim and VS Code each have isolated real-client hover smoke coverage; Zed
   and Helix synchronize their copied grammar assets with the canonical
   Tree-sitter revision and verify that alignment statically. Their editor
@@ -81,7 +82,7 @@ remain unproven or explicitly deferred:
 
 | Milestone | Current status | Required next evidence |
 | --- | --- | --- |
-| Process API | D-011 approves the minimal public contract and assigns platform work to compiler runtime primitives; no `std.process` module or process intrinsics are implemented yet. Linux executable startup already preserves `envp`, but native-library/object-only embeddings need an explicit environment initialization boundary before inheritance can be guaranteed. | Linux/Windows implementation, embedding-environment policy, public `std.process` surface, and executable/argument/failure/cleanup tests. |
+| Process API | Linux runtime intrinsics and `std.process` are implemented and have executable-path and failed-`execve` regressions. Linux executable startup preserves `envp`; object-only/native-library embeddings fail with `ENOSYS` instead of silently launching with an empty environment. | Win64 `CreateProcessW` marshalling, exact quoting, inherited standard-handle list, target-native tests for arguments/status/termination/cleanup, and any future embedding initialization API. |
 | Civil time | Only monotonic `Duration`/`Instant` are shipped. | Calendar, UTC, zone, ambiguity, and serialization contract plus deterministic tests. |
 | Concurrency | Native thread primitives remain experimental. | Structured lifetime, result/error/panic propagation, cancellation policy, synchronization contract. |
 | Serialization | Bounded scalar decode and limited `Serialize` exist; derived `Deserialize`, options, collections, and nested structs do not. | Receiverless decoding design and bounded object policy with compiler/std tests. |
