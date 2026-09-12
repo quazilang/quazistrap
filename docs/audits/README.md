@@ -10,3 +10,4 @@ regression, documentation, and verification evidence all agree.
 - [2026-08-31 tooling rebaseline](2026-08-31-tooling-rebaseline.md)
 - [2026-09-01 foundations rebaseline](2026-09-01-foundations-rebaseline.md)
 - [2026-09-08 production-readiness status](2026-09-08-readiness-status.md)
+- [2026-09-12 plan-completion audit](2026-09-12-plan-completion-audit.md)
