@@ -3710,7 +3710,6 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.push(r13));
                         emit!(asm.push(r14));
                         emit!(asm.push(r15));
-                        let mut no_handle = asm.create_label();
                         let mut live = asm.create_label();
                         let mut failed = asm.create_label();
                         let mut signaled = asm.create_label();
@@ -3726,7 +3725,7 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.sub(rsp, 16i32));
                         }
                         emit!(asm.test(r12, r12));
-                        emit!(asm.jz(no_handle));
+                        emit!(asm.jz(live));
                         if is_win64 {
                             emit!(asm.mov(rcx, r12));
                             emit!(asm.xor(edx, edx));
@@ -3783,7 +3782,6 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.xor(eax, eax));
                             emit!(asm.jmp(finished));
                         }
-                        emit!(asm.set_label(&mut no_handle));
                         emit!(asm.set_label(&mut live));
                         emit!(asm.mov(dword_ptr(r13), 0i32));
                         emit!(asm.xor(eax, eax));
