@@ -78,17 +78,17 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 - `for x : iterable` **moves** the iterable (like Rust's `for x in collection`); borrow with `for x : &collection`.
 - The iterable is consumed before the loop body so it does not trigger move-in-loop.
 - Method receivers are borrowed (non-consuming).
-- Shared references use a conservative function-local lifetime checkpoint:
+- Shared references use a conservative lexical-scope lifetime checkpoint:
   address-of accepts only locals/parameters; reference bindings cannot be
   rebound or escape through returns, owned aggregates, or closures; and an
   address-taken owner cannot be mutated, moved, or used as a method receiver.
   `str`/`&str` remains the representation-identical string-view exception.
 - `&T!` is currently a local exclusive-reference foundation: it requires a
   mutable local/parameter root, permits assignment through its dereference,
-  and conservatively freezes owner reads, moves, mutation, and overlapping
-  loans for the function remainder. It is not the D-014 whole-program effect
-  solver; do not relax reference escape, indirect-call, or QZI boundaries on
-  the basis of this syntax alone.
+  and freezes owner reads, moves, mutation, and overlapping loans while its
+  lexical scope is live. It is not the D-014 whole-program effect solver; do
+  not relax reference escape, indirect-call, or QZI boundaries on the basis
+  of this syntax alone.
 - Quazi `fn` values are affine owners. Passing, returning, and assignment move
   them; calls borrow them; self-assignment is rejected. Until recursive cleanup
   and capture ownership are implemented, do not permit `fn` inside aggregates

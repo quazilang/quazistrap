@@ -124,8 +124,8 @@ assignment through `*reference`. While the conservative local borrow checker
 tracks that exclusive loan, the owner cannot be read, moved, mutated, or
 borrowed again; a shared loan and an exclusive loan cannot overlap.
 
-The current checker conservatively retains either loan for the rest of its
-function. It does not yet infer control-flow loan regions, reborrow regions,
+The current checker retains either loan through its enclosing lexical scope.
+It does not yet infer shorter use-based control-flow regions, reborrow regions,
 receiver capabilities, cross-call effects, or QZI-only ownership summaries.
 Those D-014 requirements remain incomplete; do not treat `&T!` as evidence
 that arbitrary reference escape or safe concurrent sharing is supported.

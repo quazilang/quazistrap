@@ -7,8 +7,8 @@ rejects owner reads, moves, mutation, and overlapping shared or exclusive
 loans after that exclusive loan begins.
 
 This is deliberately a conservative source-level foundation, not completion of
-D-014. Loans still last to the end of the enclosing function in the current
-checker; there are no inferred control-flow regions, reborrows, receiver
+D-014. Loans currently last through their enclosing lexical scope; there are
+no inferred use-based control-flow regions, reborrows, receiver
 capabilities, interprocedural effects, structural destruction, or QZI ownership
 summaries. Existing reference escape restrictions remain in force.
 

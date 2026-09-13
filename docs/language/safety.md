@@ -127,10 +127,10 @@ borrowed `CStr` never gain ownership automatically.
 local variable or parameter through `&value!`, and assignment through
 `*reference` is allowed.
 The conservative local checker rejects owner reads, moves, mutation, and any
-overlapping shared or exclusive borrow after an exclusive loan begins. It keeps
-the loan for the function remainder; flow-sensitive regions, reborrowing,
-receiver capabilities, cross-call effects, and QZI-only summary verification
-remain D-014 implementation work.
+overlapping shared or exclusive borrow while the loan's lexical scope is live.
+It does not yet derive shorter use-based regions, support reborrowing, model
+receiver capabilities or cross-call effects, or verify QZI-only summaries;
+those remain D-014 implementation work.
 
 These restrictions keep references sound while whole-program ownership is
 implemented. See

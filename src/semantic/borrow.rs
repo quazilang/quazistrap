@@ -20,13 +20,19 @@ struct OwnedVar {
     /// Loop depth at declaration site (used to detect move-in-loop).
     loop_depth_at_decl: usize,
     control_depth_at_decl: usize,
-    /// First shared address-of operation that keeps this stack slot borrowed
-    /// for the remainder of the conservative function-local analysis.
-    shared_borrowed_at: Option<Span>,
-    /// First exclusive address-of operation. The current local checker keeps
-    /// this conservative function-long until the D-014 loan-region solver
-    /// replaces it with control-flow liveness.
-    exclusive_borrowed_at: Option<Span>,
+    /// First live shared loan of this root.
+    shared_borrow: Option<Loan>,
+    /// First live exclusive loan of this root.
+    exclusive_borrow: Option<Loan>,
+}
+
+/// A lexical loan. Borrowed references cannot escape their declaring scope, so
+/// this is a sound lower bound on their region until call-effect analysis can
+/// derive smaller regions from uses.
+#[derive(Debug, Clone, Copy)]
+struct Loan {
+    at: Span,
+    scope_depth: usize,
 }
 
 // ── Scoped move environment ───────────────────────────────────────────────────
@@ -56,7 +62,24 @@ impl MoveEnv {
     }
 
     fn exit_scope(&mut self) {
+        let exiting_depth = self.scopes.len().saturating_sub(1);
         self.scopes.pop();
+        for scope in &mut self.scopes {
+            for variable in scope.values_mut() {
+                if variable
+                    .shared_borrow
+                    .is_some_and(|loan| loan.scope_depth >= exiting_depth)
+                {
+                    variable.shared_borrow = None;
+                }
+                if variable
+                    .exclusive_borrow
+                    .is_some_and(|loan| loan.scope_depth >= exiting_depth)
+                {
+                    variable.exclusive_borrow = None;
+                }
+            }
+        }
     }
 
     fn declare(&mut self, name: String, ty: Option<TypeKind>) {
@@ -70,8 +93,8 @@ impl MoveEnv {
                     moved_at: None,
                     loop_depth_at_decl: depth,
                     control_depth_at_decl: control_depth,
-                    shared_borrowed_at: None,
-                    exclusive_borrowed_at: None,
+                    shared_borrow: None,
+                    exclusive_borrow: None,
                 },
             );
         }
@@ -96,18 +119,22 @@ impl MoveEnv {
     }
 
     fn mark_shared_borrowed(&mut self, name: &str, at: Span) {
+        let scope_depth = self.scopes.len().saturating_sub(1);
         for scope in self.scopes.iter_mut().rev() {
             if let Some(variable) = scope.get_mut(name) {
-                variable.shared_borrowed_at.get_or_insert(at);
+                variable.shared_borrow.get_or_insert(Loan { at, scope_depth });
                 return;
             }
         }
     }
 
     fn mark_exclusive_borrowed(&mut self, name: &str, at: Span) {
+        let scope_depth = self.scopes.len().saturating_sub(1);
         for scope in self.scopes.iter_mut().rev() {
             if let Some(variable) = scope.get_mut(name) {
-                variable.exclusive_borrowed_at.get_or_insert(at);
+                variable
+                    .exclusive_borrow
+                    .get_or_insert(Loan { at, scope_depth });
                 return;
             }
         }
@@ -131,11 +158,11 @@ impl MoveEnv {
                 if let Some(at) = var.moved_at {
                     self.mark_moved(name, at);
                 }
-                if let Some(at) = var.shared_borrowed_at {
-                    self.mark_shared_borrowed(name, at);
+                if let Some(loan) = var.shared_borrow {
+                    self.mark_shared_borrowed(name, loan.at);
                 }
-                if let Some(at) = var.exclusive_borrowed_at {
-                    self.mark_exclusive_borrowed(name, at);
+                if let Some(loan) = var.exclusive_borrow {
+                    self.mark_exclusive_borrowed(name, loan.at);
                 }
             }
         }
@@ -386,7 +413,7 @@ impl Analyzer {
         match &expr.node {
             ExprKind::Ident(name) => {
                 let Some(var) = env.lookup(name) else { return };
-                if let Some(borrowed_at) = var.exclusive_borrowed_at {
+                if let Some(borrowed_at) = var.exclusive_borrow.map(|loan| loan.at) {
                     self.push_error(
                         expr.span,
                         "S10",
@@ -431,7 +458,7 @@ impl Analyzer {
                         );
                         return;
                     }
-                    if let Some(borrowed_at) = var.shared_borrowed_at {
+                    if let Some(borrowed_at) = var.shared_borrow.map(|loan| loan.at) {
                         self.push_error(
                             expr.span,
                             "S10",
@@ -442,7 +469,7 @@ impl Analyzer {
                         );
                         return;
                     }
-                    if let Some(borrowed_at) = var.exclusive_borrowed_at {
+                    if let Some(borrowed_at) = var.exclusive_borrow.map(|loan| loan.at) {
                         self.push_error(
                             expr.span,
                             "S10",
@@ -582,11 +609,12 @@ impl Analyzer {
                         UnaryOpKind::Ref
                             if existing
                                 .as_ref()
-                                .and_then(|value| value.exclusive_borrowed_at)
+                                .and_then(|value| value.exclusive_borrow)
                                 .is_some() =>
                         {
                             let borrowed_at = existing
-                                .and_then(|value| value.exclusive_borrowed_at)
+                                .and_then(|value| value.exclusive_borrow)
+                                .map(|loan| loan.at)
                                 .expect("exclusive loan was checked");
                             self.push_error(
                                 expr.span,
@@ -597,18 +625,22 @@ impl Analyzer {
                         UnaryOpKind::RefMut
                             if existing
                                 .as_ref()
-                                .and_then(|value| value.shared_borrowed_at)
+                                .and_then(|value| value.shared_borrow)
                                 .is_some()
                                 || existing
                                     .as_ref()
-                                    .and_then(|value| value.exclusive_borrowed_at)
+                                    .and_then(|value| value.exclusive_borrow)
                                     .is_some() =>
                         {
                             let borrowed_at = existing
                                 .as_ref()
-                                .and_then(|value| value.exclusive_borrowed_at)
+                                .and_then(|value| value.exclusive_borrow)
+                                .map(|loan| loan.at)
                                 .or_else(|| {
-                                    existing.as_ref().and_then(|value| value.shared_borrowed_at)
+                                    existing
+                                        .as_ref()
+                                        .and_then(|value| value.shared_borrow)
+                                        .map(|loan| loan.at)
                                 })
                                 .expect("conflicting loan was checked");
                             self.push_error(
@@ -725,7 +757,8 @@ impl Analyzer {
         };
         if let Some(borrowed_at) = env
             .lookup(name)
-            .and_then(|variable| variable.shared_borrowed_at)
+            .and_then(|variable| variable.shared_borrow)
+            .map(|loan| loan.at)
         {
             self.push_error(
                 target.span,
@@ -738,7 +771,8 @@ impl Analyzer {
         }
         if let Some(borrowed_at) = env
             .lookup(name)
-            .and_then(|variable| variable.exclusive_borrowed_at)
+            .and_then(|variable| variable.exclusive_borrow)
+            .map(|loan| loan.at)
         {
             self.push_error(
                 target.span,

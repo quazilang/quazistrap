@@ -3712,6 +3712,39 @@ fn main() void {
     }
 
     #[test]
+    fn lexical_reference_loans_end_with_their_scope() {
+        for source in [
+            r#"
+fn main() void {
+    var value: i32 = 1;
+    if true {
+        var exclusive: &i32! = &value!;
+        *exclusive = 2;
+    }
+    value = 3;
+}
+"#,
+            r#"
+fn main() void {
+    var value: i32 = 1;
+    if true {
+        var shared: &i32 = &value;
+        var observed: i32 = *shared;
+    }
+    value = 3;
+}
+"#,
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.is_empty(),
+                "a loan outlived its lexical scope: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
     fn references_are_directional_and_pointee_invariant() {
         for source in [
             "fn main() void { var from_value: &i32 = 42; }",
