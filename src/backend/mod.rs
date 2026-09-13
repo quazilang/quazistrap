@@ -20,6 +20,7 @@ pub enum ObjectFormat {
     MachO,
 }
 
+#[derive(Debug)]
 pub struct ObjectOutput {
     pub bytes: Vec<u8>,
     pub format: ObjectFormat,
