@@ -1,0 +1,11 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
+// prelude.layout — compiler-known runtime layout queries
+
+@intrinsic("quazi.size_of")
+pub fn size_of[T]() usize;
+
+@intrinsic("quazi.align_of")
+pub fn align_of[T]() usize;

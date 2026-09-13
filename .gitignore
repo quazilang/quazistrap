@@ -8,8 +8,8 @@ target/*
 *.pdb
 *.exe
 *.qzi
-*.s
-*.o
+!src/bytecode/fixtures/qzi/*/*.qzi
+*.qzc
 .idea/*
 .claude/*
 .cargo/*

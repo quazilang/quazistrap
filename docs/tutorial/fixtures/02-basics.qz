@@ -1,0 +1,7 @@
+fn main() i32 {
+    const answer: i32 = 40 + 2;
+    var total: i64 = answer as i64;
+    total += 1;
+    if (total > 42) { ret 0; }
+    ret 1;
+}

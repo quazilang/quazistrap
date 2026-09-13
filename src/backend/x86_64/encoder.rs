@@ -18,11 +18,11 @@ use std::collections::HashMap;
 use iced_x86::code_asm::*;
 
 use crate::abi::{AbiSignature, AbiType, ForeignSymbol};
-use crate::backend::{BackendError, TargetSpec, target::Abi};
-use crate::bytecode::{Chunk, ConstPoolEntry, Opcode, instruction::MemWidth};
+use crate::backend::{target::Abi, BackendError, TargetSpec};
+use crate::bytecode::{instruction::MemWidth, Chunk, ConstPoolEntry, Opcode};
 
 use super::relocations::{PendingReloc, RelocKind};
-use super::sysv_abi::{EightbyteClass, TypeClass, classify};
+use super::sysv_abi::{classify, EightbyteClass, TypeClass};
 
 // ── Calling-convention register tables ──────────────────────────────────────
 
@@ -837,7 +837,13 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.add(rsp, stack_size as i32));
                         }
                     }
-                    emit!(asm.mov(slot(dst), rax));
+                    // Multi-slot results are returned through a hidden sret
+                    // buffer passed as the first argument; the caller already
+                    // reserved that buffer and will copy from it, so do not
+                    // overwrite the destination with rax.
+                    if instr.flags <= 1 {
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     pending_args.clear();
                 }
 
@@ -876,7 +882,10 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.add(rsp, stack_size as i32));
                         }
                     }
-                    emit!(asm.mov(slot(dst), rax));
+                    // See CallIdx: multi-slot results use a hidden sret buffer.
+                    if instr.flags <= 1 {
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     pending_args.clear();
                 }
 
@@ -1593,6 +1602,10 @@ impl<'a> FnEncoder<'a> {
                 emit!(asm.nop());
             }
 
+            Some(Opcode::Trap) => {
+                emit!(asm.ud2());
+            }
+
             Some(Opcode::Mov) => {
                 let (dst, src, _) = instr.rrr();
                 emit!(asm.mov(rax, slot(src)));
@@ -1716,8 +1729,23 @@ impl<'a> FnEncoder<'a> {
                     emit!(asm.movq(slot(dst), xmm0));
                 } else {
                     emit!(asm.mov(rax, slot(s1)));
-                    emit!(asm.cqo());
-                    emit!(asm.idiv(slot(s2)));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.xor(edx, edx));
+                        emit!(asm.div(slot(s2)));
+                    } else {
+                        let mut normal_division = asm.create_label();
+                        let mut division_done = asm.create_label();
+                        emit!(asm.mov(rcx, i64::MIN));
+                        emit!(asm.cmp(rax, rcx));
+                        emit!(asm.jne(normal_division));
+                        emit!(asm.cmp(slot(s2), -1i32));
+                        emit!(asm.jne(normal_division));
+                        emit!(asm.jmp(division_done));
+                        emit!(asm.set_label(&mut normal_division));
+                        emit!(asm.cqo());
+                        emit!(asm.idiv(slot(s2)));
+                        emit!(asm.set_label(&mut division_done));
+                    }
                     emit!(asm.mov(slot(dst), rax));
                 }
             }
@@ -1725,8 +1753,24 @@ impl<'a> FnEncoder<'a> {
             Some(Opcode::Mod) => {
                 let (dst, s1, s2) = instr.rrr();
                 emit!(asm.mov(rax, slot(s1)));
-                emit!(asm.cqo());
-                emit!(asm.idiv(slot(s2)));
+                if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                    emit!(asm.xor(edx, edx));
+                    emit!(asm.div(slot(s2)));
+                } else {
+                    let mut normal_division = asm.create_label();
+                    let mut division_done = asm.create_label();
+                    emit!(asm.mov(rcx, i64::MIN));
+                    emit!(asm.cmp(rax, rcx));
+                    emit!(asm.jne(normal_division));
+                    emit!(asm.cmp(slot(s2), -1i32));
+                    emit!(asm.jne(normal_division));
+                    emit!(asm.xor(edx, edx));
+                    emit!(asm.jmp(division_done));
+                    emit!(asm.set_label(&mut normal_division));
+                    emit!(asm.cqo());
+                    emit!(asm.idiv(slot(s2)));
+                    emit!(asm.set_label(&mut division_done));
+                }
                 emit!(asm.mov(slot(dst), rdx));
             }
 
@@ -1862,7 +1906,11 @@ impl<'a> FnEncoder<'a> {
                     }
                     emit!(asm.ja(lbl));
                 } else {
-                    emit!(asm.jg(lbl));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.ja(lbl));
+                    } else {
+                        emit!(asm.jg(lbl));
+                    }
                 }
             }
             Some(Opcode::Jge) => {
@@ -1874,7 +1922,11 @@ impl<'a> FnEncoder<'a> {
                     }
                     emit!(asm.jae(lbl));
                 } else {
-                    emit!(asm.jge(lbl));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.jae(lbl));
+                    } else {
+                        emit!(asm.jge(lbl));
+                    }
                 }
             }
             Some(Opcode::Jl) => {
@@ -1891,7 +1943,11 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.set_label(&mut unordered));
                     }
                 } else {
-                    emit!(asm.jl(lbl));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.jb(lbl));
+                    } else {
+                        emit!(asm.jl(lbl));
+                    }
                 }
             }
             Some(Opcode::Jle) => {
@@ -1908,7 +1964,11 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.set_label(&mut unordered));
                     }
                 } else {
-                    emit!(asm.jle(lbl));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.jbe(lbl));
+                    } else {
+                        emit!(asm.jle(lbl));
+                    }
                 }
             }
             Some(Opcode::Ja) => {
@@ -1937,7 +1997,22 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::Ret) => {
-                emit!(asm.mov(rax, slot(instr.ops[0])));
+                let result_slots = instr.flags as usize;
+                if result_slots > 1 {
+                    // r0 holds the hidden sret pointer; r1..rN hold the result.
+                    // Caller stack slots grow downward, so slot(base+offset) lives
+                    // at address base - offset*8. Write the result block in that
+                    // order so the caller's reserved block is contiguous by register
+                    // number.
+                    let sret_ptr = instr.ops[0];
+                    emit!(asm.mov(r10, slot(sret_ptr)));
+                    for offset in 0..result_slots {
+                        emit!(asm.mov(rax, slot((1 + offset) as u8)));
+                        emit!(asm.mov(qword_ptr(r10 - (offset * 8) as i32), rax));
+                    }
+                } else {
+                    emit!(asm.mov(rax, slot(instr.ops[0])));
+                }
                 emit!(asm.mov(rsp, rbp));
                 emit!(asm.pop(rbp));
                 emit!(asm.ret());
@@ -2003,27 +2078,56 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::ArrayStore) => {
-                // RRR: ops[0]=val, ops[1]=base_ptr, ops[2]=idx — base[idx*8] = val
+                // RRR: ops[0]=val_base, ops[1]=base_ptr, ops[2]=idx
+                // flags = number of slots in the element value.
                 let (val, base, idx) = instr.rrr();
+                let slots = instr.flags as usize;
+                let slots = if slots == 0 { 1 } else { slots };
                 emit!(asm.mov(rax, slot(base)));
                 emit!(asm.mov(rcx, slot(idx)));
-                emit!(asm.mov(rdx, 8i64));
-                emit!(asm.imul_2(rcx, rdx));
+                if slots > 1 {
+                    emit!(asm.mov(rdx, (slots * 8) as i64));
+                    emit!(asm.imul_2(rcx, rdx));
+                } else {
+                    emit!(asm.shl(rcx, 3i32));
+                }
                 emit!(asm.add(rax, rcx));
-                emit!(asm.mov(rcx, slot(val)));
-                emit!(asm.mov(qword_ptr(rax), rcx));
+                for offset in 0..slots {
+                    emit!(asm.mov(rdx, slot(val + offset as u8)));
+                    emit!(asm.mov(qword_ptr(rax + (offset * 8) as i32), rdx));
+                }
             }
 
             Some(Opcode::ArrayLoad) => {
-                // RRR: ops[0]=dst, ops[1]=base_ptr, ops[2]=idx — dst = base[idx*8]
+                // RRR: ops[0]=dst_base, ops[1]=base_ptr, ops[2]=idx
+                // flags = number of slots in the element value.
+                // For multi-slot elements dst_base holds the hidden sret pointer
+                // provided by the caller; copy the element into that buffer.
                 let (dst, base, idx) = instr.rrr();
-                emit!(asm.mov(rax, slot(base)));
-                emit!(asm.mov(rcx, slot(idx)));
-                emit!(asm.mov(rdx, 8i64));
-                emit!(asm.imul_2(rcx, rdx));
-                emit!(asm.add(rax, rcx));
-                emit!(asm.mov(rax, qword_ptr(rax)));
-                emit!(asm.mov(slot(dst), rax));
+                let slots = instr.flags as usize;
+                let slots = if slots == 0 { 1 } else { slots };
+                if slots > 1 {
+                    emit!(asm.mov(rdi, slot(dst))); // sret pointer
+                    emit!(asm.mov(rax, slot(base)));
+                    emit!(asm.mov(rcx, slot(idx)));
+                    emit!(asm.mov(rdx, (slots * 8) as i64));
+                    emit!(asm.imul_2(rcx, rdx));
+                    emit!(asm.add(rax, rcx));
+                    for offset in 0..slots {
+                        emit!(asm.mov(rdx, qword_ptr(rax + (offset * 8) as i32)));
+                        // Register blocks grow downward in the stack frame.
+                        // `dst` points at the first slot, so later slots must
+                        // follow the same descending-address convention as Ret.
+                        emit!(asm.mov(qword_ptr(rdi - (offset * 8) as i32), rdx));
+                    }
+                } else {
+                    emit!(asm.mov(rax, slot(base)));
+                    emit!(asm.mov(rcx, slot(idx)));
+                    emit!(asm.shl(rcx, 3i32));
+                    emit!(asm.add(rax, rcx));
+                    emit!(asm.mov(rax, qword_ptr(rax)));
+                    emit!(asm.mov(slot(dst), rax));
+                }
             }
 
             Some(Opcode::Syscall) => {
@@ -2326,15 +2430,50 @@ impl<'a> FnEncoder<'a> {
                     12 => {
                         // quazi.sleep_ms(ms) → void
                         if is_win64 {
-                            emit!(asm.mov(rcx, slot(dst)));
+                            // Sleep takes a DWORD. Preserve the u64 public
+                            // contract by issuing bounded calls rather than
+                            // silently truncating durations above 49.7 days.
+                            // `0xffff_ffff` is INFINITE, so each chunk stays
+                            // one millisecond below that sentinel.
+                            let mut sleep_more = asm.create_label();
+                            let mut sleep_final = asm.create_label();
+                            emit!(asm.push(rbx));
+                            emit!(asm.mov(rbx, slot(dst)));
+                            emit!(asm.set_label(&mut sleep_more));
+                            emit!(asm.mov(rax, 4_294_967_294i64));
+                            emit!(asm.cmp(rbx, rax));
+                            emit!(asm.jbe(sleep_final));
+                            emit!(asm.sub(rbx, rax));
+                            emit!(asm.mov(rcx, rax));
+                            emit!(asm.sub(rsp, 40i32));
                             call_ext!("Sleep".into(), RelocKind::Plt32);
+                            emit!(asm.add(rsp, 40i32));
+                            emit!(asm.jmp(sleep_more));
+                            emit!(asm.set_label(&mut sleep_final));
+                            emit!(asm.mov(rcx, rbx));
+                            emit!(asm.sub(rsp, 40i32));
+                            call_ext!("Sleep".into(), RelocKind::Plt32);
+                            emit!(asm.add(rsp, 40i32));
+                            emit!(asm.pop(rbx));
                         } else {
-                            // usleep takes microseconds; multiply ms by 1000
+                            // Linux nanosleep(req, null), with a stack-local
+                            // timespec { seconds, nanoseconds }. Keeping this
+                            // intrinsic syscall-only lets built-in-linked
+                            // executables sleep without a libc dependency.
+                            emit!(asm.sub(rsp, 16i32));
                             emit!(asm.mov(rax, slot(dst)));
                             emit!(asm.mov(rcx, 1000i64));
-                            emit!(asm.imul_2(rax, rcx));
-                            emit!(asm.mov(rdi, rax));
-                            call_ext!("usleep".into(), RelocKind::Plt32);
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.div(rcx));
+                            emit!(asm.mov(qword_ptr(rsp), rax));
+                            emit!(asm.mov(rcx, 1_000_000i64));
+                            emit!(asm.imul_2(rdx, rcx));
+                            emit!(asm.mov(qword_ptr(rsp + 8i32), rdx));
+                            emit!(asm.mov(rdi, rsp));
+                            emit!(asm.xor(esi, esi));
+                            emit!(asm.mov(rax, 35i64));
+                            emit!(asm.syscall());
+                            emit!(asm.add(rsp, 16i32));
                         }
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
@@ -2519,7 +2658,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     18 => {
-                        // quazi.thread.spawn(f: any) → usize (thread handle)
+                        // quazi.thread.spawn(f: ThreadCallback) → usize (thread handle)
                         // slot(dst) = function pointer (address)
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // align rsp to 16
@@ -2535,17 +2674,31 @@ impl<'a> FnEncoder<'a> {
                             call_ext!("CreateThread".into(), RelocKind::Plt32);
                             emit!(asm.add(rsp, 48i32));
                         } else {
+                            let mut allocation_failed = asm.create_label();
+                            let mut create_failed = asm.create_label();
+                            let mut finished = asm.create_label();
                             // malloc(8) for pthread_t storage
                             emit!(asm.mov(rdi, 8i64));
                             call_ext!("malloc".into(), RelocKind::Plt32);
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.je(allocation_failed));
                             emit!(asm.mov(rbx, rax)); // rbx = thread_storage_ptr
-                            // pthread_create(storage, NULL, fn_ptr, NULL)
+                                                      // pthread_create(storage, NULL, fn_ptr, NULL)
                             emit!(asm.mov(rdi, rbx));
                             emit!(asm.xor(rsi, rsi));
                             emit!(asm.mov(rdx, slot(dst)));
                             emit!(asm.xor(rcx, rcx));
                             call_ext!("pthread_create".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(create_failed));
                             emit!(asm.mov(rax, rbx));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut create_failed));
+                            emit!(asm.mov(rdi, rbx));
+                            call_ext!("free".into(), RelocKind::Plt32);
+                            emit!(asm.set_label(&mut allocation_failed));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.set_label(&mut finished));
                         }
                         emit!(asm.mov(slot(dst), rax));
                         emit!(asm.pop(rax));
@@ -2556,6 +2709,9 @@ impl<'a> FnEncoder<'a> {
                         // slot(dst) = thread handle
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // align
+                        let mut finished = asm.create_label();
+                        emit!(asm.cmp(slot(dst), 0i32));
+                        emit!(asm.je(finished));
                         if is_win64 {
                             emit!(asm.sub(rsp, 32i32));
                             emit!(asm.mov(rcx, slot(dst)));
@@ -2573,6 +2729,7 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdi, rbx));
                             call_ext!("free".into(), RelocKind::Plt32);
                         }
+                        emit!(asm.set_label(&mut finished));
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
                         emit!(asm.pop(rax));
@@ -3050,6 +3207,606 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.set_label(&mut finished));
                         emit!(asm.mov(slot(dst), rax));
                     }
+                    37 => {
+                        // quazi.process.spawn(program, args_ptr, args_len, handle_out,
+                        // error_out) -> 0/-1. Linux uses a CLOEXEC error pipe so a
+                        // failed execve is never reported as a successful spawn.
+                        if is_win64 {
+                            return Err(BackendError(
+                                "process.spawn Windows lowering is not implemented".to_string(),
+                            ));
+                        }
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        emit!(asm.push(r13));
+                        emit!(asm.push(r14));
+                        emit!(asm.push(r15));
+                        emit!(asm.sub(rsp, 64i32));
+                        let mut no_environment = asm.create_label();
+                        let mut allocation_failed = asm.create_label();
+                        let mut mmap_failed = asm.create_label();
+                        let mut pipe_failed = asm.create_label();
+                        let mut fork_failed = asm.create_label();
+                        let mut child = asm.create_label();
+                        let mut child_exec_failed = asm.create_label();
+                        let mut parent_exec_failed = asm.create_label();
+                        let mut parent_read_failed = asm.create_label();
+                        let mut parent_protocol_failed = asm.create_label();
+                        let mut reap_after_exec_failure = asm.create_label();
+                        let mut cleanup_after_read_failure = asm.create_label();
+                        let mut reap_after_read_failure = asm.create_label();
+                        let mut success = asm.create_label();
+                        let mut failed = asm.create_label();
+                        let mut finished = asm.create_label();
+                        let mut unmap_done = asm.create_label();
+                        // Locals: pipe read/write at +0/+4, child errno at +8,
+                        // argv mapping byte size at +16, child pid at +24,
+                        // error pointer at +32, mapped flag at +48, result at +56.
+                        emit!(asm.mov(r12, slot(dst)));
+                        emit!(asm.mov(r13, slot(dst + 1)));
+                        emit!(asm.mov(r14, slot(dst + 2)));
+                        emit!(asm.mov(rbx, slot(dst + 3)));
+                        emit!(asm.mov(rax, slot(dst + 4)));
+                        emit!(asm.mov(qword_ptr(rsp + 32i32), rax));
+                        emit!(asm.mov(qword_ptr(rsp + 48i32), 0i32));
+                        emit!(asm.xor(r15d, r15d));
+                        emit!(asm.mov(qword_ptr(rbx), 0i32));
+                        emit!(asm.mov(dword_ptr(rax), 0i32));
+                        lea_rip!(rax, "__quazi_envp".to_string());
+                        emit!(asm.cmp(qword_ptr(rax), 0i32));
+                        emit!(asm.je(no_environment));
+                        // mmap an argv vector containing program, args, and NULL.
+                        emit!(asm.mov(rax, r14));
+                        emit!(asm.add(rax, 2i32));
+                        emit!(asm.jc(allocation_failed));
+                        emit!(asm.mov(rcx, rax));
+                        emit!(asm.shr(rcx, 61u32));
+                        emit!(asm.test(rcx, rcx));
+                        emit!(asm.jne(allocation_failed));
+                        emit!(asm.shl(rax, 3u32));
+                        emit!(asm.mov(qword_ptr(rsp + 16i32), rax));
+                        emit!(asm.xor(edi, edi));
+                        emit!(asm.mov(rsi, rax));
+                        emit!(asm.mov(edx, 3i32));
+                        emit!(asm.mov(r10d, 0x22i32));
+                        emit!(asm.mov(r8, -1i64));
+                        emit!(asm.xor(r9d, r9d));
+                        emit!(asm.mov(eax, 9i32));
+                        emit!(asm.syscall());
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.js(mmap_failed));
+                        emit!(asm.mov(r15, rax));
+                        emit!(asm.mov(qword_ptr(rsp + 48i32), 1i32));
+                        emit!(asm.mov(qword_ptr(r15), r12));
+                        emit!(asm.xor(ecx, ecx));
+                        let mut copy_args = asm.create_label();
+                        let mut copied_args = asm.create_label();
+                        emit!(asm.set_label(&mut copy_args));
+                        emit!(asm.cmp(rcx, r14));
+                        emit!(asm.jae(copied_args));
+                        emit!(asm.mov(rax, qword_ptr(r13 + rcx * 8)));
+                        emit!(asm.mov(qword_ptr(r15 + rcx * 8 + 8i32), rax));
+                        emit!(asm.inc(rcx));
+                        emit!(asm.jmp(copy_args));
+                        emit!(asm.set_label(&mut copied_args));
+                        emit!(asm.mov(qword_ptr(r15 + r14 * 8 + 8i32), 0i32));
+                        // pipe2(&fds, O_CLOEXEC)
+                        emit!(asm.mov(rdi, rsp));
+                        emit!(asm.mov(esi, 0x80000i32));
+                        emit!(asm.mov(eax, 293i32));
+                        emit!(asm.syscall());
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.js(pipe_failed));
+                        emit!(asm.mov(eax, 57i32)); // fork
+                        emit!(asm.syscall());
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.js(fork_failed));
+                        emit!(asm.jz(child));
+                        // Parent: close write end, then EOF means exec succeeded.
+                        emit!(asm.mov(qword_ptr(rsp + 24i32), rax));
+                        emit!(asm.mov(edi, dword_ptr(rsp + 4i32)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        let mut retry_read = asm.create_label();
+                        emit!(asm.set_label(&mut retry_read));
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.lea(rsi, qword_ptr(rsp + 8i32)));
+                        emit!(asm.mov(edx, 4i32));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.syscall());
+                        emit!(asm.cmp(eax, -4i32));
+                        emit!(asm.je(retry_read));
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.js(parent_read_failed));
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.jz(success));
+                        emit!(asm.cmp(eax, 4i32));
+                        emit!(asm.jne(parent_protocol_failed));
+                        emit!(asm.jmp(parent_exec_failed));
+                        emit!(asm.set_label(&mut child));
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        lea_rip!(rax, "__quazi_envp".to_string());
+                        emit!(asm.mov(rdx, qword_ptr(rax)));
+                        emit!(asm.mov(rdi, r12));
+                        emit!(asm.mov(rsi, r15));
+                        emit!(asm.mov(eax, 59i32));
+                        emit!(asm.syscall());
+                        emit!(asm.set_label(&mut child_exec_failed));
+                        emit!(asm.neg(eax));
+                        emit!(asm.mov(dword_ptr(rsp + 8i32), eax));
+                        let mut child_write_retry = asm.create_label();
+                        emit!(asm.set_label(&mut child_write_retry));
+                        emit!(asm.mov(edi, dword_ptr(rsp + 4i32)));
+                        emit!(asm.lea(rsi, qword_ptr(rsp + 8i32)));
+                        emit!(asm.mov(edx, 4i32));
+                        emit!(asm.mov(eax, 1i32));
+                        emit!(asm.syscall());
+                        emit!(asm.cmp(eax, -4i32));
+                        emit!(asm.je(child_write_retry));
+                        emit!(asm.mov(edi, 127i32));
+                        emit!(asm.mov(eax, 231i32));
+                        emit!(asm.syscall());
+                        emit!(asm.set_label(&mut success));
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        emit!(asm.mov(rax, qword_ptr(rsp + 24i32)));
+                        emit!(asm.mov(qword_ptr(rbx), rax));
+                        emit!(asm.mov(rcx, qword_ptr(rsp + 32i32)));
+                        emit!(asm.mov(dword_ptr(rcx), 0i32));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut parent_exec_failed));
+                        // Reap the child that reported its execve errno.
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        emit!(asm.mov(rdi, qword_ptr(rsp + 24i32)));
+                        emit!(asm.lea(rsi, qword_ptr(rsp + 4i32)));
+                        emit!(asm.xor(edx, edx));
+                        emit!(asm.xor(r10d, r10d));
+                        emit!(asm.mov(eax, 61i32));
+                        emit!(asm.syscall());
+                        emit!(asm.cmp(eax, -4i32));
+                        emit!(asm.je(reap_after_exec_failure));
+                        emit!(asm.mov(eax, dword_ptr(rsp + 8i32)));
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut reap_after_exec_failure));
+                        emit!(asm.mov(rdi, qword_ptr(rsp + 24i32)));
+                        emit!(asm.lea(rsi, qword_ptr(rsp + 4i32)));
+                        emit!(asm.xor(edx, edx));
+                        emit!(asm.xor(r10d, r10d));
+                        emit!(asm.mov(eax, 61i32));
+                        emit!(asm.syscall());
+                        emit!(asm.cmp(eax, -4i32));
+                        emit!(asm.je(reap_after_exec_failure));
+                        emit!(asm.mov(eax, dword_ptr(rsp + 8i32)));
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut parent_read_failed));
+                        emit!(asm.neg(eax));
+                        emit!(asm.mov(dword_ptr(rsp + 8i32), eax));
+                        emit!(asm.jmp(cleanup_after_read_failure));
+                        emit!(asm.set_label(&mut parent_protocol_failed));
+                        emit!(asm.mov(dword_ptr(rsp + 8i32), 5i32)); // EIO: broken error-pipe protocol
+                        emit!(asm.set_label(&mut cleanup_after_read_failure));
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        emit!(asm.mov(rdi, qword_ptr(rsp + 24i32)));
+                        emit!(asm.mov(esi, 9i32));
+                        emit!(asm.mov(eax, 62i32));
+                        emit!(asm.syscall());
+                        emit!(asm.set_label(&mut reap_after_read_failure));
+                        emit!(asm.mov(rdi, qword_ptr(rsp + 24i32)));
+                        emit!(asm.lea(rsi, qword_ptr(rsp + 4i32)));
+                        emit!(asm.xor(edx, edx));
+                        emit!(asm.xor(r10d, r10d));
+                        emit!(asm.mov(eax, 61i32));
+                        emit!(asm.syscall());
+                        emit!(asm.cmp(eax, -4i32));
+                        emit!(asm.je(reap_after_read_failure));
+                        emit!(asm.mov(eax, dword_ptr(rsp + 8i32)));
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut no_environment));
+                        emit!(asm.mov(eax, 38i32)); // ENOSYS until an embedder initializes envp
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut allocation_failed));
+                        emit!(asm.mov(eax, 7i32)); // E2BIG
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut mmap_failed));
+                        emit!(asm.neg(eax));
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut pipe_failed));
+                        emit!(asm.neg(eax));
+                        emit!(asm.jmp(failed));
+                        emit!(asm.set_label(&mut fork_failed));
+                        emit!(asm.neg(eax));
+                        emit!(asm.mov(dword_ptr(rsp + 8i32), eax));
+                        emit!(asm.mov(edi, dword_ptr(rsp)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        emit!(asm.mov(edi, dword_ptr(rsp + 4i32)));
+                        emit!(asm.mov(eax, 3i32));
+                        emit!(asm.syscall());
+                        emit!(asm.mov(eax, dword_ptr(rsp + 8i32)));
+                        emit!(asm.set_label(&mut failed));
+                        emit!(asm.mov(rcx, qword_ptr(rsp + 32i32)));
+                        emit!(asm.mov(dword_ptr(rcx), eax));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut finished));
+                        emit!(asm.mov(qword_ptr(rsp + 56i32), rax));
+                        // Release the argv mapping in the parent path. The child exits
+                        // above, so this does not run after fork in the child.
+                        emit!(asm.test(qword_ptr(rsp + 48i32), 1i32));
+                        emit!(asm.jz(unmap_done));
+                        emit!(asm.mov(rdi, r15));
+                        emit!(asm.mov(rsi, qword_ptr(rsp + 16i32)));
+                        emit!(asm.mov(eax, 11i32));
+                        emit!(asm.syscall());
+                        emit!(asm.set_label(&mut unmap_done));
+                        emit!(asm.mov(rax, qword_ptr(rsp + 56i32)));
+                        emit!(asm.add(rsp, 64i32));
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(r15));
+                        emit!(asm.pop(r14));
+                        emit!(asm.pop(r13));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
+                    38 => {
+                        // quazi.process.wait(handle, kind_out, value_out, error_out) -> 0/-1
+                        // kind_out is 0 for an exit code and 1 for a signal.
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        emit!(asm.push(r13));
+                        emit!(asm.push(r14));
+                        let mut no_handle = asm.create_label();
+                        let mut failed = asm.create_label();
+                        let mut signaled = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r12, slot(dst)));
+                        emit!(asm.mov(r13, slot(dst + 1)));
+                        emit!(asm.mov(r14, slot(dst + 2)));
+                        emit!(asm.mov(rbx, slot(dst + 3)));
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 48i32));
+                        } else {
+                            emit!(asm.sub(rsp, 16i32));
+                        }
+                        emit!(asm.test(r12, r12));
+                        emit!(asm.jz(no_handle));
+                        if is_win64 {
+                            // shadow space plus one DWORD result, rounded for alignment.
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.mov(edx, u32::MAX as i32));
+                            call_ext!("WaitForSingleObject".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failed));
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.lea(rdx, qword_ptr(rsp + 32i32)));
+                            call_ext!("GetExitCodeProcess".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.mov(rcx, r12));
+                            call_ext!("CloseHandle".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.mov(dword_ptr(r13), 0i32));
+                            emit!(asm.mov(eax, dword_ptr(rsp + 32i32)));
+                            emit!(asm.mov(dword_ptr(r14), eax));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                        } else {
+                            // wait4(pid, &status, 0, NULL), retrying EINTR.
+                            let mut retry = asm.create_label();
+                            emit!(asm.set_label(&mut retry));
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(rsi, rsp));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.xor(r10d, r10d));
+                            emit!(asm.mov(eax, 61i32));
+                            emit!(asm.syscall());
+                            emit!(asm.cmp(eax, -4i32));
+                            emit!(asm.je(retry));
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                            emit!(asm.mov(eax, dword_ptr(rsp)));
+                            emit!(asm.mov(ecx, eax));
+                            emit!(asm.and(ecx, 127i32));
+                            emit!(asm.test(ecx, ecx));
+                            emit!(asm.jne(signaled));
+                            emit!(asm.shr(eax, 8u32));
+                            emit!(asm.and(eax, 255i32));
+                            emit!(asm.mov(dword_ptr(r13), 0i32));
+                            emit!(asm.mov(dword_ptr(r14), eax));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut signaled));
+                            emit!(asm.mov(dword_ptr(r13), 1i32));
+                            emit!(asm.mov(dword_ptr(r14), ecx));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                        }
+                        emit!(asm.set_label(&mut no_handle));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut failed));
+                        if is_win64 {
+                            call_ext!("GetLastError".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.neg(eax));
+                        }
+                        emit!(asm.mov(dword_ptr(rbx), eax));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut finished));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 48i32));
+                        } else {
+                            emit!(asm.add(rsp, 16i32));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(r14));
+                        emit!(asm.pop(r13));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
+                    40 => {
+                        // quazi.process.terminate(handle, error_out) -> 0/-1.
+                        // This is deliberately non-consuming; wait/close own reaping.
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        let mut no_handle = asm.create_label();
+                        let mut failed = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r12, slot(dst)));
+                        emit!(asm.mov(rbx, slot(dst + 1)));
+                        emit!(asm.test(r12, r12));
+                        emit!(asm.jz(no_handle));
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 32i32));
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.mov(edx, 1i32));
+                            call_ext!("TerminateProcess".into(), RelocKind::Plt32);
+                            emit!(asm.add(rsp, 32i32));
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                        } else {
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(esi, 9i32)); // SIGKILL
+                            emit!(asm.mov(eax, 62i32)); // kill
+                            emit!(asm.syscall());
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                        }
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut no_handle));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut failed));
+                        if is_win64 {
+                            call_ext!("GetLastError".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.neg(eax));
+                        }
+                        emit!(asm.mov(dword_ptr(rbx), eax));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut finished));
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
+                    41 => {
+                        // quazi.process.close(handle, error_out) -> 0/-1.
+                        // A live child is killed and reaped before its handle is released.
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        let mut no_handle = asm.create_label();
+                        let mut terminate = asm.create_label();
+                        let mut wait = asm.create_label();
+                        let mut failed = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r12, slot(dst)));
+                        emit!(asm.mov(rbx, slot(dst + 1)));
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 32i32));
+                        } else {
+                            emit!(asm.sub(rsp, 16i32));
+                        }
+                        emit!(asm.test(r12, r12));
+                        emit!(asm.jz(no_handle));
+                        if is_win64 {
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.xor(edx, edx));
+                            call_ext!("WaitForSingleObject".into(), RelocKind::Plt32);
+                            emit!(asm.cmp(eax, 258i32));
+                            emit!(asm.je(terminate));
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failed));
+                            emit!(asm.jmp(wait));
+                            emit!(asm.set_label(&mut terminate));
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.mov(edx, 1i32));
+                            call_ext!("TerminateProcess".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.set_label(&mut wait));
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.mov(edx, u32::MAX as i32));
+                            call_ext!("WaitForSingleObject".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failed));
+                            emit!(asm.mov(rcx, r12));
+                            call_ext!("CloseHandle".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                        } else {
+                            let mut probe_retry = asm.create_label();
+                            let mut reap_retry = asm.create_label();
+                            emit!(asm.set_label(&mut probe_retry));
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(rsi, rsp));
+                            emit!(asm.mov(edx, 1i32)); // WNOHANG
+                            emit!(asm.xor(r10d, r10d));
+                            emit!(asm.mov(eax, 61i32));
+                            emit!(asm.syscall());
+                            emit!(asm.cmp(eax, -4i32));
+                            emit!(asm.je(probe_retry));
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.jz(terminate));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut terminate));
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(esi, 9i32));
+                            emit!(asm.mov(eax, 62i32));
+                            emit!(asm.syscall());
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                            emit!(asm.set_label(&mut reap_retry));
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(rsi, rsp));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.xor(r10d, r10d));
+                            emit!(asm.mov(eax, 61i32));
+                            emit!(asm.syscall());
+                            emit!(asm.cmp(eax, -4i32));
+                            emit!(asm.je(reap_retry));
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.js(failed));
+                        }
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut no_handle));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut failed));
+                        if is_win64 {
+                            call_ext!("GetLastError".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.neg(eax));
+                        }
+                        emit!(asm.mov(dword_ptr(rbx), eax));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut finished));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 32i32));
+                        } else {
+                            emit!(asm.add(rsp, 16i32));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
+                    39 => {
+                        // quazi.process.try_wait(handle, exited_out, kind_out, value_out,
+                        // error_out) -> 0/-1. A live child sets exited_out to zero.
+                        emit!(asm.push(rbx));
+                        emit!(asm.push(r12));
+                        emit!(asm.push(r13));
+                        emit!(asm.push(r14));
+                        emit!(asm.push(r15));
+                        let mut live = asm.create_label();
+                        let mut failed = asm.create_label();
+                        let mut signaled = asm.create_label();
+                        let mut finished = asm.create_label();
+                        emit!(asm.mov(r12, slot(dst)));
+                        emit!(asm.mov(r13, slot(dst + 1)));
+                        emit!(asm.mov(r14, slot(dst + 2)));
+                        emit!(asm.mov(r15, slot(dst + 3)));
+                        emit!(asm.mov(rbx, slot(dst + 4)));
+                        if is_win64 {
+                            emit!(asm.sub(rsp, 48i32));
+                        } else {
+                            emit!(asm.sub(rsp, 16i32));
+                        }
+                        emit!(asm.test(r12, r12));
+                        emit!(asm.jz(live));
+                        if is_win64 {
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.xor(edx, edx));
+                            call_ext!("WaitForSingleObject".into(), RelocKind::Plt32);
+                            emit!(asm.cmp(eax, 258i32)); // WAIT_TIMEOUT
+                            emit!(asm.je(live));
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failed));
+                            emit!(asm.mov(rcx, r12));
+                            emit!(asm.lea(rdx, qword_ptr(rsp + 32i32)));
+                            call_ext!("GetExitCodeProcess".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.mov(rcx, r12));
+                            call_ext!("CloseHandle".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jz(failed));
+                            emit!(asm.mov(dword_ptr(r13), 1i32));
+                            emit!(asm.mov(dword_ptr(r14), 0i32));
+                            emit!(asm.mov(eax, dword_ptr(rsp + 32i32)));
+                            emit!(asm.mov(dword_ptr(r15), eax));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                        } else {
+                            let mut retry = asm.create_label();
+                            emit!(asm.set_label(&mut retry));
+                            emit!(asm.mov(rdi, r12));
+                            emit!(asm.mov(rsi, rsp));
+                            emit!(asm.mov(edx, 1i32)); // WNOHANG
+                            emit!(asm.xor(r10d, r10d));
+                            emit!(asm.mov(eax, 61i32));
+                            emit!(asm.syscall());
+                            emit!(asm.cmp(eax, -4i32));
+                            emit!(asm.je(retry));
+                            emit!(asm.test(rax, rax));
+                            emit!(asm.jz(live));
+                            emit!(asm.js(failed));
+                            emit!(asm.mov(eax, dword_ptr(rsp)));
+                            emit!(asm.mov(ecx, eax));
+                            emit!(asm.and(ecx, 127i32));
+                            emit!(asm.test(ecx, ecx));
+                            emit!(asm.jne(signaled));
+                            emit!(asm.shr(eax, 8u32));
+                            emit!(asm.and(eax, 255i32));
+                            emit!(asm.mov(dword_ptr(r13), 1i32));
+                            emit!(asm.mov(dword_ptr(r14), 0i32));
+                            emit!(asm.mov(dword_ptr(r15), eax));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut signaled));
+                            emit!(asm.mov(dword_ptr(r13), 1i32));
+                            emit!(asm.mov(dword_ptr(r14), 1i32));
+                            emit!(asm.mov(dword_ptr(r15), ecx));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.jmp(finished));
+                        }
+                        emit!(asm.set_label(&mut live));
+                        emit!(asm.mov(dword_ptr(r13), 0i32));
+                        emit!(asm.xor(eax, eax));
+                        emit!(asm.jmp(finished));
+                        emit!(asm.set_label(&mut failed));
+                        if is_win64 {
+                            call_ext!("GetLastError".into(), RelocKind::Plt32);
+                        } else {
+                            emit!(asm.neg(eax));
+                        }
+                        emit!(asm.mov(dword_ptr(rbx), eax));
+                        emit!(asm.mov(rax, -1i64));
+                        emit!(asm.set_label(&mut finished));
+                        if is_win64 {
+                            emit!(asm.add(rsp, 48i32));
+                        } else {
+                            emit!(asm.add(rsp, 16i32));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                        emit!(asm.pop(r15));
+                        emit!(asm.pop(r14));
+                        emit!(asm.pop(r13));
+                        emit!(asm.pop(r12));
+                        emit!(asm.pop(rbx));
+                    }
                     _ => {
                         return Err(BackendError(format!("unknown intrinsic id {id}")));
                     }
@@ -3187,10 +3944,12 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(rax, 0x736c6166u64 as i64)); // "fals" LE
                         if is_win64 {
                             emit!(asm.mov(dword_ptr(rcx), eax));
-                            emit!(asm.mov(word_ptr(rcx + 4i32), 0x65u32 as i32)); // "e\0"
+                            emit!(asm.mov(word_ptr(rcx + 4i32), 0x65u32 as i32));
+                        // "e\0"
                         } else {
                             emit!(asm.mov(dword_ptr(rdi), eax));
-                            emit!(asm.mov(word_ptr(rdi + 4i32), 0x65u32 as i32)); // "e\0"
+                            emit!(asm.mov(word_ptr(rdi + 4i32), 0x65u32 as i32));
+                            // "e\0"
                         }
                         emit!(asm.set_label(&mut lbl_end));
                     }
@@ -3652,6 +4411,7 @@ mod tests {
     use crate::abi::{AbiField, ForeignGlobal};
     use crate::backend::target::{Arch, Os};
     use crate::bytecode::instruction::{call_c_reg, ri16, rrr};
+    use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 
     fn pair_type() -> AbiType {
         AbiType::Aggregate {
@@ -3700,6 +4460,91 @@ mod tests {
         .expect("ABI adapter should encode")
     }
 
+    fn mnemonics(bytes: &[u8]) -> Vec<Mnemonic> {
+        let mut decoder = Decoder::new(64, bytes, DecoderOptions::NONE);
+        let mut result = Vec::new();
+        while decoder.can_decode() {
+            result.push(decoder.decode().mnemonic());
+        }
+        result
+    }
+
+    #[test]
+    fn multi_slot_array_load_writes_sret_in_register_block_order() {
+        let mut chunk = Chunk::with_params("multi_slot_array_load", 3);
+        let mut load = rrr(Opcode::ArrayLoad, 0, 1, 2);
+        load.flags = 3;
+        chunk.emit(load);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let (bytes, _) = encode(&chunk, Abi::SysV);
+        let mut decoder = Decoder::new(64, &bytes, DecoderOptions::NONE);
+        let mut displacements = Vec::new();
+        while decoder.can_decode() {
+            let instruction = decoder.decode();
+            if instruction.mnemonic() == Mnemonic::Mov
+                && instruction.op0_kind() == OpKind::Memory
+                && instruction.memory_base() == Register::RDI
+                && instruction.op1_register() == Register::RDX
+            {
+                displacements.push(instruction.memory_displacement64() as i64);
+            }
+        }
+
+        assert_eq!(displacements, vec![0, -8, -16]);
+    }
+
+    #[test]
+    fn unsigned_integer_flags_select_native_instructions() {
+        use crate::bytecode::instruction::UNSIGNED_FLAG;
+
+        for abi in [Abi::SysV, Abi::Win64] {
+            let mut unsigned_div = Chunk::with_params("unsigned_div", 2);
+            let mut division = rrr(Opcode::Div, 2, 0, 1);
+            division.flags |= UNSIGNED_FLAG;
+            unsigned_div.emit(division);
+            unsigned_div.emit(rrr(Opcode::Ret, 2, 0, 0));
+            let (bytes, _) = encode(&unsigned_div, abi);
+            let decoded = mnemonics(&bytes);
+            assert!(decoded.contains(&Mnemonic::Div));
+            assert!(!decoded.contains(&Mnemonic::Idiv));
+
+            let mut signed_div = Chunk::with_params("signed_div", 2);
+            signed_div.emit(rrr(Opcode::Div, 2, 0, 1));
+            signed_div.emit(rrr(Opcode::Ret, 2, 0, 0));
+            let (bytes, _) = encode(&signed_div, abi);
+            let decoded = mnemonics(&bytes);
+            assert!(decoded.contains(&Mnemonic::Idiv));
+
+            for (opcode, expected) in [
+                (Opcode::Jg, Mnemonic::Ja),
+                (Opcode::Jge, Mnemonic::Jae),
+                (Opcode::Jl, Mnemonic::Jb),
+                (Opcode::Jle, Mnemonic::Jbe),
+            ] {
+                let mut branch = Chunk::with_params("unsigned_branch", 2);
+                branch.emit(rrr(Opcode::Cmp, 0, 0, 1));
+                let mut jump = ri16(opcode, 0, 3);
+                jump.flags |= UNSIGNED_FLAG;
+                branch.emit(jump);
+                branch.emit(ri16(Opcode::MovI, 2, 0));
+                branch.emit(rrr(Opcode::Ret, 2, 0, 0));
+                let (bytes, _) = encode(&branch, abi);
+                assert!(mnemonics(&bytes).contains(&expected));
+            }
+        }
+    }
+
+    #[test]
+    fn safety_trap_encodes_as_ud2_for_supported_abis() {
+        for abi in [Abi::SysV, Abi::Win64] {
+            let mut chunk = Chunk::new("trap");
+            chunk.emit(rrr(Opcode::Trap, 0, 0, 0));
+            let (bytes, _) = encode(&chunk, abi);
+            assert!(mnemonics(&bytes).contains(&Mnemonic::Ud2));
+        }
+    }
+
     #[test]
     fn system_random_intrinsics_encode_for_sysv_and_win64() {
         for id in [35, 36] {
@@ -3715,12 +4560,153 @@ mod tests {
 
             let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
             assert!(!windows_bytes.is_empty());
-            assert!(
-                windows_relocs
-                    .iter()
-                    .any(|reloc| reloc.symbol == "BCryptGenRandom")
-            );
+            assert!(windows_relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "BCryptGenRandom"));
         }
+    }
+
+    #[test]
+    fn process_handle_intrinsics_encode_for_linux_and_windows() {
+        let cases: &[(u16, u8, &[&str])] = &[
+            (38, 4, &["WaitForSingleObject", "GetExitCodeProcess", "CloseHandle"]),
+            (39, 5, &["WaitForSingleObject", "GetExitCodeProcess", "CloseHandle"]),
+            (40, 2, &["TerminateProcess"]),
+            (41, 2, &["WaitForSingleObject", "TerminateProcess", "CloseHandle"]),
+        ];
+
+        for &(id, params, expected_windows_imports) in cases {
+            let mut chunk = Chunk::with_params("process_handle", params as usize);
+            let mut intrinsic = ri16(Opcode::Intrinsic, 0, id);
+            intrinsic.flags = params;
+            chunk.emit(intrinsic);
+            chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+            let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+            assert!(linux_relocs.is_empty(), "process intrinsic {id} must be syscall-only on Linux");
+            assert!(mnemonics(&linux_bytes).contains(&Mnemonic::Syscall));
+
+            let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
+            assert!(!windows_bytes.is_empty());
+            for expected in expected_windows_imports {
+                assert!(
+                    windows_relocs.iter().any(|reloc| reloc.symbol == *expected),
+                    "process intrinsic {id} must import {expected} on Win64"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sleep_intrinsic_is_libc_free_on_linux_and_calls_sleep_on_windows() {
+        let mut chunk = Chunk::with_params("sleep", 1);
+        let mut sleep = ri16(Opcode::Intrinsic, 0, 12);
+        sleep.flags = 1;
+        chunk.emit(sleep);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+        assert!(!linux_bytes.is_empty());
+        assert!(linux_relocs.is_empty());
+        assert!(mnemonics(&linux_bytes).contains(&Mnemonic::Syscall));
+
+        let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
+        assert!(!windows_bytes.is_empty());
+        assert_eq!(
+            windows_relocs
+                .iter()
+                .filter(|reloc| reloc.symbol == "Sleep")
+                .count(),
+            2,
+            "large and final Windows sleep paths must each call Sleep"
+        );
+        let windows_mnemonics = mnemonics(&windows_bytes);
+        assert!(windows_mnemonics.contains(&Mnemonic::Cmp));
+        assert!(windows_mnemonics.contains(&Mnemonic::Sub));
+        assert!(windows_mnemonics.contains(&Mnemonic::Push));
+        assert!(windows_mnemonics.contains(&Mnemonic::Pop));
+        let mut decoder = Decoder::new(64, &windows_bytes, DecoderOptions::NONE);
+        let mut shadow_space_allocations = 0;
+        let mut shadow_space_restorations = 0;
+        while decoder.can_decode() {
+            let instruction = decoder.decode();
+            if instruction.op0_register() != Register::RSP || instruction.immediate64() != 40 {
+                continue;
+            }
+            match instruction.mnemonic() {
+                Mnemonic::Sub => shadow_space_allocations += 1,
+                Mnemonic::Add => shadow_space_restorations += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(shadow_space_allocations, 2);
+        assert_eq!(shadow_space_restorations, 2);
+    }
+
+    #[test]
+    fn thread_spawn_checks_linux_allocation_and_creation_failures() {
+        let mut chunk = Chunk::with_params("thread_spawn", 1);
+        let mut spawn = ri16(Opcode::Intrinsic, 0, 18);
+        spawn.flags = 1;
+        chunk.emit(spawn);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+        let linux_mnemonics = mnemonics(&linux_bytes);
+        assert!(linux_relocs.iter().any(|reloc| reloc.symbol == "malloc"));
+        assert!(linux_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "pthread_create"));
+        assert!(linux_relocs.iter().any(|reloc| reloc.symbol == "free"));
+        assert!(linux_mnemonics.contains(&Mnemonic::Je));
+        assert!(linux_mnemonics.contains(&Mnemonic::Jne));
+
+        let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
+        assert!(!windows_bytes.is_empty());
+        assert!(windows_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "CreateThread"));
+        assert!(!windows_relocs.iter().any(|reloc| reloc.symbol == "free"));
+    }
+
+    #[test]
+    fn thread_join_guards_zero_before_native_handle_use() {
+        use iced_x86::Register;
+
+        let mut chunk = Chunk::with_params("thread_join", 1);
+        let mut join = ri16(Opcode::Intrinsic, 0, 19);
+        join.flags = 1;
+        chunk.emit(join);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+        let mut decoder = Decoder::new(64, &linux_bytes, DecoderOptions::NONE);
+        let mut instructions = Vec::new();
+        while decoder.can_decode() {
+            instructions.push(decoder.decode());
+        }
+        let guard = instructions
+            .iter()
+            .position(|instruction| instruction.mnemonic() == Mnemonic::Je)
+            .expect("join must branch around native work for a zero handle");
+        let handle_deref = instructions
+            .iter()
+            .position(|instruction| instruction.memory_base() == Register::RBX)
+            .expect("Linux join must load pthread_t through its storage handle");
+        assert!(guard < handle_deref);
+        assert!(linux_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "pthread_join"));
+        assert!(linux_relocs.iter().any(|reloc| reloc.symbol == "free"));
+
+        let (windows_bytes, windows_relocs) = encode(&chunk, Abi::Win64);
+        assert!(mnemonics(&windows_bytes).contains(&Mnemonic::Je));
+        assert!(windows_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "WaitForSingleObject"));
+        assert!(windows_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "CloseHandle"));
     }
 
     #[test]
@@ -3757,11 +4743,9 @@ mod tests {
         for abi in [Abi::SysV, Abi::Win64] {
             let (bytes, relocs) = encode(&chunk, abi);
             assert!(!bytes.is_empty());
-            assert!(
-                relocs
-                    .iter()
-                    .any(|reloc| reloc.symbol == "native_transform")
-            );
+            assert!(relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "native_transform"));
             assert!(relocs.iter().any(|reloc| reloc.symbol == "malloc"));
         }
     }
@@ -3792,11 +4776,9 @@ mod tests {
         for abi in [Abi::SysV, Abi::Win64] {
             let (bytes, relocs) = encode(&chunk, abi);
             assert!(!bytes.is_empty());
-            assert!(
-                !relocs
-                    .iter()
-                    .any(|reloc| reloc.symbol == "<function-pointer>")
-            );
+            assert!(!relocs
+                .iter()
+                .any(|reloc| reloc.symbol == "<function-pointer>"));
         }
     }
 

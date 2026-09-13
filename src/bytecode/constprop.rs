@@ -235,8 +235,7 @@ fn compute_result(
 
     if op == Opcode::MovI as u8 {
         let (_, imm) = instr.ri16();
-        let signed = imm as i16 as i64;
-        return Some(ConstLattice::Const(ConstVal::Int(signed)));
+        return Some(ConstLattice::Const(ConstVal::Int(imm as i64)));
     }
 
     if op == Opcode::MovConst as u8 {
@@ -281,6 +280,7 @@ fn compute_result(
     }
 
     // Integer binary ops (only when FLOAT_FLAG is not set).
+    let is_unsigned_instr = (instr.flags & super::instruction::UNSIGNED_FLAG) != 0;
     let int_binop: Option<fn(i64, i64) -> Option<i64>> = if is_float_instr {
         None
     } else {
@@ -288,20 +288,14 @@ fn compute_result(
             Some(Opcode::Add) => Some(|a, b| Some(a.wrapping_add(b))),
             Some(Opcode::Sub) => Some(|a, b| Some(a.wrapping_sub(b))),
             Some(Opcode::Mul) => Some(|a, b| Some(a.wrapping_mul(b))),
-            Some(Opcode::Div) => Some(|a, b| {
-                if b == 0 {
-                    None
-                } else {
-                    Some(a.wrapping_div(b))
-                }
-            }),
-            Some(Opcode::Mod) => Some(|a, b| {
-                if b == 0 {
-                    None
-                } else {
-                    Some(a.wrapping_rem(b))
-                }
-            }),
+            Some(Opcode::Div) if is_unsigned_instr => {
+                Some(|a, b| (b != 0).then(|| ((a as u64) / (b as u64)) as i64))
+            }
+            Some(Opcode::Div) => Some(|a, b| (b != 0).then(|| a.wrapping_div(b))),
+            Some(Opcode::Mod) if is_unsigned_instr => {
+                Some(|a, b| (b != 0).then(|| ((a as u64) % (b as u64)) as i64))
+            }
+            Some(Opcode::Mod) => Some(|a, b| (b != 0).then(|| a.wrapping_rem(b))),
             Some(Opcode::And) => Some(|a, b| Some(a & b)),
             Some(Opcode::Or) => Some(|a, b| Some(a | b)),
             Some(Opcode::Xor) => Some(|a, b| Some(a ^ b)),
@@ -494,7 +488,7 @@ fn add_or_find_const(chunk: &mut Chunk, val: &ConstVal) -> Option<u16> {
 fn emit_const_instr(chunk: &mut Chunk, i: usize, dst: u8, val: &ConstVal) {
     match val {
         ConstVal::Int(v) => {
-            if *v >= i16::MIN as i64 && *v <= i16::MAX as i64 {
+            if (0..=u16::MAX as i64).contains(v) {
                 chunk.code[i] = ri16(Opcode::MovI, dst, *v as u16);
             } else {
                 if let Some(idx) = add_or_find_const(chunk, val) {
@@ -775,5 +769,58 @@ mod tests {
         } else {
             panic!("expected Float in const pool");
         }
+    }
+
+    #[test]
+    fn folds_unsigned_division_and_remainder_as_u64() {
+        for (opcode, expected) in [(Opcode::Div, i64::MAX), (Opcode::Mod, 1)] {
+            let mut operation = rrr(opcode, 2, 0, 1);
+            operation.flags |= super::super::instruction::UNSIGNED_FLAG;
+            let mut chunk = make_chunk(
+                "unsigned",
+                vec![
+                    ri16(Opcode::MovI, 0, u16::MAX),
+                    ri16(Opcode::MovI, 1, 2),
+                    operation,
+                    rrr(Opcode::Ret, 2, 0, 0),
+                ],
+            );
+            chunk.constants.push(ConstPoolEntry::Int(-1));
+            chunk.code[0] = ri16(Opcode::MovConst, 0, 0);
+
+            const_prop_fold(&mut chunk);
+
+            let folded = chunk.code[2];
+            let (_, encoded) = folded.ri16();
+            let actual = if folded.opcode == Opcode::MovI as u8 {
+                encoded as i64
+            } else {
+                assert_eq!(folded.opcode, Opcode::MovConst as u8);
+                match chunk.constants.get(encoded as usize) {
+                    Some(ConstPoolEntry::Int(value)) => *value,
+                    other => panic!("expected integer constant, got {other:?}"),
+                }
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn propagated_negative_constants_remain_in_the_constant_pool() {
+        let mut chunk = make_chunk(
+            "negative",
+            vec![
+                ri16(Opcode::MovConst, 0, 0),
+                rrr(Opcode::Mov, 1, 0, 0),
+                rrr(Opcode::Ret, 1, 0, 0),
+            ],
+        );
+        chunk.constants.push(ConstPoolEntry::Int(-1));
+
+        const_prop_fold(&mut chunk);
+
+        assert_eq!(chunk.code[1].opcode, Opcode::MovConst as u8);
+        let (_, index) = chunk.code[1].ri16();
+        assert_eq!(chunk.constants[index as usize], ConstPoolEntry::Int(-1));
     }
 }

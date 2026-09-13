@@ -7,7 +7,7 @@
 // ── Display ──────────────────────────────────────────────────────────────────
 // Human-readable string representation.
 // to_str()    → &str   — borrowed view (may point to a static buffer)
-// to_string() → String — owned heap allocation
+// to_string() → str — heap-backed view (ownership API is not yet stabilized)
 pub trait Display {
     fn to_str() &str;
     fn to_string() str;
@@ -37,12 +37,12 @@ pub trait Ord[T] {
 
 // ── Clone ────────────────────────────────────────────────────────────────────
 pub trait Clone {
-    fn clone() any;
+    fn clone() Self;
 }
 
 // ── Default ──────────────────────────────────────────────────────────────────
 pub trait Default {
-    fn default() any;
+    fn default() Self;
 }
 
 // ── Hash ─────────────────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ pub trait Into[T] {
 }
 
 pub trait From[T] {
-    fn from(val: T) any;
+    fn from(val: T) Self;
 }
 
 // ── Drop ─────────────────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ pub trait Sub[T] { fn sub(rhs: T) T; }
 pub trait Mul[T] { fn mul(rhs: T) T; }
 pub trait Div[T] { fn div(rhs: T) T; }
 pub trait Rem[T] { fn rem(rhs: T) T; }
-pub trait Neg    { fn neg() any; }
+pub trait Neg    { fn neg() Self; }
 pub trait BitAnd[T] { fn bit_and(rhs: T) T; }
 pub trait BitOr[T]  { fn bit_or(rhs: T) T; }
 pub trait BitXor[T] { fn bit_xor(rhs: T) T; }

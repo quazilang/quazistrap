@@ -12,6 +12,14 @@ use crate::lexer::token::{Token, TokenKind};
 use crate::parser::ast::*;
 use crate::parser::common::{merge_token_spans, to_ast_span};
 
+/// Distinguishes a source parse failure from a caller-requested interruption.
+/// A cancelled parse must not be rendered as a source diagnostic.
+#[derive(Debug, Eq, PartialEq)]
+pub enum CancellableParseError {
+    Parse(String),
+    Cancelled,
+}
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -52,11 +60,25 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Result<Program, String> {
+        self.parse_with_checkpoint(|| Ok::<(), std::convert::Infallible>(()))
+            .expect("an infallible parser checkpoint cannot fail")
+    }
+
+    /// Parse while polling before each top-level item.
+    ///
+    /// Parsing an item is intentionally still atomic: this keeps the existing
+    /// parser error-recovery contract intact while allowing large generated
+    /// files to stop between declarations.
+    pub fn parse_with_checkpoint<E>(
+        &mut self,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<Result<Program, String>, E> {
         let mut items = Vec::new();
         let start = self.current_span();
         let mut first_err: Option<String> = None;
 
         while !self.at(TokenKind::Eof) {
+            checkpoint()?;
             match self.parse_item() {
                 Ok(item) => items.push(item),
                 Err(err) => {
@@ -69,7 +91,7 @@ impl Parser {
         }
 
         if let Some(err) = first_err {
-            return Err(err);
+            return Ok(Err(err));
         }
 
         let end = self.current_span();
@@ -79,7 +101,16 @@ impl Parser {
             Some(to_ast_span(merge_token_spans(start, end)))
         };
 
-        Ok(Program { items, span })
+        Ok(Ok(Program { items, span }))
+    }
+
+    pub fn parse_cancellable(
+        &mut self,
+        cancellation: &crate::cancel::CancellationToken,
+    ) -> Result<Program, CancellableParseError> {
+        self.parse_with_checkpoint(|| cancellation.check())
+            .map_err(|_| CancellableParseError::Cancelled)?
+            .map_err(CancellableParseError::Parse)
     }
 
     fn parse_item(&mut self) -> Result<Item, String> {
@@ -94,7 +125,7 @@ impl Parser {
             TokenKind::Error(msg) => {
                 Err(self.err_here_with_code("E00", format!("lexer error: {}", msg)))
             }
-            TokenKind::Import => self.parse_import(is_pub),
+            TokenKind::Import => self.parse_import(is_pub, attributes),
             TokenKind::Unsafe => {
                 self.advance(); // consume 'unsafe'
                 self.parse_fn(attributes, true, is_pub)
@@ -1129,10 +1160,17 @@ impl Parser {
         if self.at(TokenKind::Ampersand) {
             let t = self.advance().span;
             let expr = self.parse_unary()?;
-            let span = Span::merge(to_ast_span(t), expr.span);
+            // `!` is not otherwise a postfix expression operator, so
+            // `&value!` unambiguously denotes an exclusive borrow.
+            let (op, end) = if self.at(TokenKind::Bang) {
+                (UnaryOpKind::RefMut, to_ast_span(self.advance().span))
+            } else {
+                (UnaryOpKind::Ref, expr.span)
+            };
+            let span = Span::merge(to_ast_span(t), end);
             return Ok(Spanned::new(
                 ExprKind::Unary {
-                    op: UnaryOpKind::Ref,
+                    op,
                     expr: Box::new(expr),
                 },
                 span,
@@ -1420,8 +1458,10 @@ impl Parser {
             self.expect(TokenKind::FatArrow)?;
             let arm_expr = self.parse_expr()?;
 
-            let end_span = guard.as_ref().map(|g| g.span).unwrap_or(arm_expr.span);
-            let arm_span = Span::merge(pattern.span, end_span);
+            // A guarded arm extends through its result expression, not merely
+            // its guard. Semantic diagnostics use this span for the complete
+            // `pattern [if guard] => expression` construct.
+            let arm_span = Span::merge(pattern.span, arm_expr.span);
             arms.push(MatchArm {
                 pattern,
                 guard,
@@ -1759,7 +1799,7 @@ impl Parser {
                         ));
                     }
                     let len = match len_tok.kind {
-                        TokenKind::Int(n) if n >= 0 => n as u64,
+                        TokenKind::Int(n) => n,
                         other => {
                             return Err(self.err_tok_with_code(
                                 len_tok.span,
@@ -1792,10 +1832,21 @@ impl Parser {
             TokenKind::Bang => TypeKind::Never,
             TokenKind::Ampersand => {
                 let inner = self.parse_type()?;
-                let span = Span::merge(to_ast_span(start), inner.span);
+                let (exclusive, end) = if self.at(TokenKind::Bang) {
+                    (true, to_ast_span(self.advance().span))
+                } else {
+                    (false, inner.span)
+                };
+                let span = Span::merge(to_ast_span(start), end);
                 return Ok(Spanned::new(
-                    TypeKind::Ref {
-                        inner: Box::new(inner),
+                    if exclusive {
+                        TypeKind::MutRef {
+                            inner: Box::new(inner),
+                        }
+                    } else {
+                        TypeKind::Ref {
+                            inner: Box::new(inner),
+                        }
                     },
                     span,
                 ));
@@ -1984,6 +2035,23 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new_with_source(tokens, src);
         parser.parse().expect_err("source should fail to parse")
+    }
+
+    #[test]
+    fn checkpoint_can_interrupt_between_top_level_items() {
+        let source = "fn first() void {} fn second() void {}";
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(tokens);
+        let mut polls = 0;
+
+        let result = parser.parse_with_checkpoint(|| {
+            polls += 1;
+            if polls == 2 { Err(()) } else { Ok(()) }
+        });
+
+        assert!(matches!(result, Err(())));
+        assert_eq!(polls, 2);
     }
 
     #[test]
@@ -2220,6 +2288,115 @@ fn main() void {
             panic!()
         };
         assert_eq!(attributes[0].name, "syscall");
+    }
+
+    #[test]
+    fn retains_function_and_import_identifier_spans() {
+        let source = concat!(
+            "fn sample() void {}\n",
+            "import toolkit.math.{add, sub};\n",
+            "import toolkit.value as local;\n",
+            "import direct;\n",
+            "import ./relative.value as local_relative;\n",
+            "import toolkit.*;\n",
+        );
+        let program = parse_program(source);
+
+        let ItemKind::Fn { name, name_span, .. } = &program.items[0].node else {
+            panic!("expected function");
+        };
+        assert_eq!(name, "sample");
+        assert_eq!(
+            name_span.map(|span| span.start),
+            Some(
+                source
+                    .find("sample")
+                    .map(|byte| source[..byte].chars().count())
+                    .expect("function name")
+            )
+        );
+        assert_eq!(
+            name_span.map(|span| span.end - span.start),
+            Some("sample".chars().count())
+        );
+
+        let ItemKind::Import(grouped) = &program.items[1].node else {
+            panic!("expected grouped import");
+        };
+        assert_eq!(grouped.path, ["toolkit", "math"]);
+        assert_eq!(grouped.path_spans.len(), 2);
+        assert_eq!(grouped.selector_spans.len(), 2);
+        assert!(grouped.alias_span.is_none());
+        assert_eq!(
+            grouped.selector_spans[0].start,
+            source
+                .find("add")
+                .map(|byte| source[..byte].chars().count())
+                .expect("selector")
+        );
+
+        let ItemKind::Import(aliased) = &program.items[2].node else {
+            panic!("expected aliased import");
+        };
+        assert_eq!(aliased.path, ["toolkit"]);
+        assert_eq!(aliased.selector_spans.len(), 1);
+        assert_eq!(
+            aliased.alias_span.map(|span| span.start),
+            source.find("local").map(|byte| source[..byte].chars().count())
+        );
+
+        let ItemKind::Import(bare) = &program.items[3].node else {
+            panic!("expected bare import");
+        };
+        assert!(bare.path.is_empty());
+        assert_eq!(bare.selector_spans.len(), 1);
+        assert_eq!(
+            bare.selector_spans[0].start,
+            source
+                .find("direct")
+                .map(|byte| source[..byte].chars().count())
+                .expect("bare selector")
+        );
+
+        let ItemKind::Import(relative) = &program.items[4].node else {
+            panic!("expected relative import");
+        };
+        assert!(relative.relative);
+        assert_eq!(relative.path, ["relative"]);
+        assert_eq!(relative.selector_spans.len(), 1);
+        assert_eq!(
+            relative.alias_span.map(|span| span.start),
+            source
+                .find("local_relative")
+                .map(|byte| source[..byte].chars().count())
+        );
+
+        let ItemKind::Import(wildcard) = &program.items[5].node else {
+            panic!("expected wildcard import");
+        };
+        assert!(matches!(wildcard.items, ImportItems::All));
+        assert!(wildcard.selector_spans.is_empty());
+        assert!(wildcard.alias_span.is_none());
+    }
+
+    #[test]
+    fn parses_opaque_postfix_attributes_on_aggregate_fields() {
+        let program = parse_program(
+            r#"struct User {
+    name: String @ini("username") @json(name="user_name"),
+    flags: u32 @bits(legacy, width=3):3 @wire("v1"),
+}"#,
+        );
+        let ItemKind::Struct { fields, .. } = &program.items[0].node else {
+            panic!("expected struct item");
+        };
+        assert_eq!(fields[0].name, "name");
+        assert_eq!(fields[0].attributes.len(), 2);
+        assert_eq!(fields[0].attributes[0].name, "ini");
+        assert_eq!(fields[0].attributes[1].name, "json");
+        assert_eq!(fields[1].bit_width, Some(3));
+        assert_eq!(fields[1].attributes[0].name, "bits");
+        assert_eq!(fields[1].attributes[1].name, "wire");
     }
 
     #[test]
@@ -2580,6 +2757,36 @@ fn value(c: Color) i32 {
     }
 
     #[test]
+    fn guarded_match_arm_span_includes_its_result_expression() {
+        let program = parse_program(
+            r#"
+enum Choice { First, Second, }
+fn value(choice: Choice) i32 {
+    ret match choice {
+        First => 1,
+        Second if true => 2,
+    };
+}
+"#,
+        );
+
+        let ItemKind::Fn { body, .. } = &program.items[1].node else {
+            panic!("expected function item");
+        };
+        let StmtKind::Return(Some(expr)) = &body.as_ref().unwrap().stmts[0].node else {
+            panic!("expected return with expression");
+        };
+        let ExprKind::Match { arms, .. } = &expr.node else {
+            panic!("expected match expression");
+        };
+
+        let guarded = &arms[1];
+        assert!(guarded.guard.is_some());
+        assert_eq!(guarded.span.end, guarded.expr.span.end);
+        assert!(guarded.span.end > guarded.guard.as_ref().unwrap().span.end);
+    }
+
+    #[test]
     fn reports_readable_expected_token_in_parser_error() {
         let err = parse_program_err(
             r#"
@@ -2593,6 +2800,30 @@ fn main() void {
         assert!(err.contains("found i32"));
         assert!(!err.contains("Eq"));
         assert!(!err.contains("Int32"));
+    }
+
+    #[test]
+    fn preserves_full_u64_fixed_array_lengths() {
+        let program = parse_program("type Huge = [u8; 18446744073709551615];");
+        let ItemKind::TypeAlias { aliased_type, .. } = &program.items[0].node else {
+            panic!("expected type alias");
+        };
+        let TypeKind::Array { len, .. } = aliased_type.node else {
+            panic!("expected fixed array type");
+        };
+        assert_eq!(len, u64::MAX);
+    }
+
+    #[test]
+    fn preserves_full_u64_attribute_values() {
+        let program = parse_program("@tag(18446744073709551615) fn main() void {}");
+        let ItemKind::Fn { attributes, .. } = &program.items[0].node else {
+            panic!("expected function item");
+        };
+        assert!(matches!(
+            attributes[0].args.as_slice(),
+            [AttrArg::Positional(AttrVal::Int(value))] if *value == u64::MAX
+        ));
     }
 
     #[test]

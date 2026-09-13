@@ -18,6 +18,7 @@ CLI (dep: `clap 4.6`):
 ```bash
 qz build [source.qz|program.qzi|native.o ...] [-i|-c] [-o out] [-r] [-s] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode]
 qz run [source.qz|program.qzi|native.o ...] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode] / qz check / qz fetch / qz deps / qz fmt / qz clean
+qz test [filter] [--no-color] [--no-unicode]
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz new <name> [--lib] / qz init [--lib]
 qz add <path-or-url> [--alias name] [--type git|archive|source|qzi] [--version tag|hash|latest] / qz remove <name>
@@ -75,9 +76,30 @@ Object (`-c`): backend only, no linker.
 | LSP | `src/lsp/` | [src/lsp/AGENTS.md](src/lsp/AGENTS.md) |
 | Loader | `src/loader.rs` | (inline docs) |
 | Project / manifest | `src/project.rs` | (inline docs) |
+| Internal value layout | `src/runtime_layout.rs` | target-neutral Quazi VM slot shapes |
 
 - The project is a single binary crate (`bin "qz"`) with inline `#[cfg(test)]` modules.
 - No `tests/` integration directory yet — all tests are inline.
+
+`runtime_layout.rs` is the source of truth for physical values crossing the
+internal Quazi bytecode ABI. Resolve aliases and substitute generics before
+querying it. Do not infer copyability from a one-slot layout: named aggregates,
+enums, `String`, `fn`, and `dyn` are indirect handles with separate ownership
+requirements (`MoveKind`). Concrete functions and generic specializations
+record their parameter, variadic-element, and result layouts into
+`SemanticReport::fn_value_layouts` (keyed by canonical resolved type
+arguments) during analysis, and until the multi-slot ABI lands, storage
+positions that still hold one slot per value — function signatures, enum
+payloads, struct fields outside `@repr(C)`, and fixed-array elements — reject
+multi-register shapes with `S14`. Qualified enum constructor calls
+(`Option.Some(x)`) are validated in analysis (variant, arity, payload
+representation) even though their result remains untyped until semantic
+constructor resolution exists.
+
+Generic call dependencies are closed over every concrete caller
+specialization after analysis. This records each transitive concrete callee and
+its value layout before bytecode emission, rather than falling back to a raw
+generic template at codegen time.
 
 ### Loader (`src/loader.rs`)
 
@@ -91,8 +113,8 @@ Object (`-c`): backend only, no linker.
 
 - `quazi.toml`: `[package]` including `out_dir = "build"`, `[lib]`, `[[bin]]`, `[dependencies]`, `[cc]`, `[link]`, and target link overrides. Dependencies support local projects, singular `.qz`, compiled `.qzi`, and internet `git`/`archive`/`source`/`qzi` sources. `quazi.lock` records exact revisions/checksums and is validated on build.
 - `pub import` is the only public-import/re-export syntax. Quazi module and symbol paths use `.`, never `::`.
-- QZI v6 is a sectioned executable/library bytecode container with package metadata, a public source interface, named call relocations, and legacy chunk payloads. QZI libraries work without original source; generic template bodies remain source-only for now.
-- QZC v2 (`build/quazi/<target>/<artifact>/incremental.qzc` by default) stores exact-hit linked QZI plus source-hashed pre-WPO function chunks. Partial misses restore unchanged chunks, compile changed files, then rerun full-program WPO. Signature/type/import/config changes conservatively invalidate all chunks. Downloaded dependencies live in `<out_dir>/deps`.
+- QZI v9 is a sectioned executable/library bytecode container with package metadata, a public source interface, named call relocations, signedness-correct integer instruction flags, affine function-value ownership, layout-query and process-runtime intrinsic IDs, and legacy chunk payloads. Readers retain compatible QZI v2-v8 bytecode; v1 omitted frame metadata, parameterized v6 trait interfaces lack receiver metadata, and pre-v7 public function-value contracts or synthetic closure/forwarder chunks require a source rebuild. Immutable golden fixtures from real historical writers (`src/bytecode/fixtures/qzi/`) lock the v2-v6 reading paths, including the v2 chunk-header layout without a flags byte and v3 string-based `@api` metadata. QZI libraries work without original source; generic template bodies remain source-only for now.
+- QZC v7 (`build/quazi/<target>/<artifact>/incremental.qzc` by default) stores exact-hit linked QZI plus source-hashed pre-WPO function chunks. Partial misses restore unchanged chunks, compile changed files, then rerun full-program WPO. V7 invalidates artifacts created before the process-runtime intrinsic boundary. Signature/type/import/config changes conservatively invalidate all chunks. Downloaded dependencies live in `<out_dir>/deps`.
 - `type = "lib"` → lib project; default entry `src/lib.qz`; default output `.qzi`.
 
 ---
@@ -149,7 +171,7 @@ type CCallback = fn(i32, i32) i32;          // raw C function pointer
 
 **Named arguments**: `foo(x=1, y=2)` — `name=value` pairs at call site. All positional args must precede named args.
 
-Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`, `bool`, `str`, `bytes`, `void`, `any`. `b"..."` decodes byte escapes, while `br"..."` preserves them; byte strings are immutable, length-carrying, and expose `.len()`, indexing, and `.as_ptr()`.
+Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`, `bool`, `str`, `bytes`, `void`. `any` is reserved for the compiler-erased final variadic parameter of `@format`; it is not a runtime value type. `b"..."` decodes byte escapes, while `br"..."` preserves them; byte strings are immutable, length-carrying, and expose `.len()`, indexing, and `.as_ptr()`.
 
 ### Unsafe System
 
@@ -157,6 +179,11 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 - Calling `unsafe fn` or dereferencing `*T` outside unsafe context → S11.
 - `@intrinsic` = safe (unsafety handled internally).
 - `*T` ↔ `*U`: all raw pointers mutually compatible. Integer `0` valid as any `*T` (null pointer constant).
+- `&T` is a shared safe loan; `&T!` is an exclusive safe loan. The current
+  compiler implements conservative local checking for both. D-014's
+  whole-program call effects, flow-sensitive regions, structural destruction,
+  and QZI-only ownership summaries remain required before broad resource or
+  concurrency APIs rely on the model.
 
 ### String Model
 
@@ -192,8 +219,8 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 | `@intrinsic("quazi.X")` | Safe stdlib wrapper; dispatched by encoder case number. |
 | `@derive(Trait, ...)` | Register derived traits for struct. |
 | `@panic_handler` | Validate signature; mark as panic handler. |
-| `@no_mangle` | Keep function symbol name bare (no module prefix). Useful for entry points and FFI symbols. |
-| `@no_crash` | File-level: disable crash handler in entry stub. |
+| `@test` | Mark a zero-argument `void` function for `qz test`. |
+| Field attributes | Postfix metadata on a struct/union field, e.g. `name: str @ini("user_name")`. The parser preserves every name and literal/identifier argument but the compiler assigns no built-in meaning; libraries and tools may interpret them. |
 
 ---
 
@@ -205,6 +232,9 @@ Minimal example:
 [package]
 name = "hello"
 version = "0.1.0"
+std = true
+crash_handler = true
+mangling = true
 
 [build]
 entry = "src/main.qz"   # optional, defaults to src/main.qz
@@ -273,6 +303,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | Index assignment | ✅ Done |
 | Human-readable move errors | ✅ Done |
 | **Module function namespacing/mangling** | ✅ **Done** |
+| Mandatory safe indexing checks | ✅ Done — fixed arrays, slices, and bytes; unsafe C flexible arrays remain unchecked |
 
 ### P1 — High Impact
 
@@ -284,7 +315,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **`unsafe` block sugar** | ✅ Done |
 | **AOT `@cfg` stripping** | ✅ Done |
 | **Built-in linker** | Experimental x86-64 ELF and PE32+ linking, cross-object symbols, checked relocations, generated Windows imports, and no implicit libc; archives pending |
-| **`qz test` runner** | Pending |
+| **`qz test` runner** | ✅ Done — discovers `@test` in `src/` and `tests/`, gives nested source files path-qualified module names and `tests/` a distinct `tests.*` root, compiles once, runs each test in an isolated process, reports infrastructure failures, and supports name filtering |
 | **`pub` on types** | ✅ Done |
 | **Unified formatting for `print`/`println`/`err`/`errln`/`format`** | In progress — support shared placeholder behavior, escaped braces, and format specifications; begin with `{:X}` and `{name:X}` uppercase hexadecimal |
 | **Raw backtick string literals** | ✅ Done — contents are preserved exactly with no backslash escape decoding |
@@ -330,6 +361,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Date | Change |
 |------|--------|
+| 2026-08-14 | Added `qz test [filter]` with `@test fn name() void`, project-wide source discovery, one shared compilation, isolated native runners, and readable summaries. Replaced source-level `@no_std`, `@no_crash`, and `@no_mangle`/`@no_mangling` controls with default-true `[package]` fields `std`, `crash_handler`, and `mangling`. |
 | 2026-08-13 | Replaced exact-only QZC v1 with QZC v2: partial misses restore unchanged pre-WPO function chunks, compile changed-file functions, and rerun complete global WPO over the combined program; declaration/config fingerprints conservatively invalidate reusable units. |
 | 2026-08-13 | Added first-class exclusive/inclusive `Range` expressions and OS-CSPRNG-backed `std.random` lowering with explicit availability failure and unbiased range selection. |
 | 2026-08-13 | Added `[package].out_dir` with `build/` default, moved dependency materialization to `<out_dir>/deps`, added Git tag/hash/`latest` selectors, simplified `qz add` to one positional path/URL form, and made Git progress percentage-driven after the build header. |

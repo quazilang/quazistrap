@@ -77,7 +77,7 @@ pub fn materialize_qzi_interface(
 ) -> Result<MaterializedInterface, String> {
     if interface.is_empty() {
         return Err(format!(
-            "QZI dependency '{}' has no public interface; rebuild it with QZI v6",
+            "QZI dependency '{}' has no public interface; rebuild it with QZI v7",
             qzi_path.display()
         ));
     }
@@ -108,6 +108,12 @@ pub fn materialize_qzi_interface(
             fs::write(src_dir.join(format!("{}.qz", module.name)), module.source)
                 .map_err(|error| format!("cannot write cached QZI interface module: {error}"))?;
             if module.exports.is_empty() {
+                // An impl-only module has no symbol to re-export, but it still
+                // must be loaded so its inherent methods and trait impls are
+                // registered during semantic analysis.
+                gateway.push_str("import ./");
+                gateway.push_str(&module.name);
+                gateway.push_str(";\n");
                 continue;
             }
             gateway.push_str("pub import ./");
@@ -700,7 +706,10 @@ pub fn sha256_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::git_progress_percent;
+    use super::{git_progress_percent, materialize_qzi_interface};
+    use crate::bytecode::interface::{QziInterfaceBundle, QziInterfaceModule};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_real_git_progress_percentages() {
@@ -713,5 +722,44 @@ mod tests {
             Some(100)
         );
         assert_eq!(git_progress_percent("Cloning into 'dep'..."), None);
+    }
+
+    #[test]
+    fn materialized_qzi_gateway_loads_impl_only_modules() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "quazi-qzi-impl-interface-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create test directory");
+        let qzi_path = root.join("library.qzi");
+        fs::write(&qzi_path, b"interface fixture").expect("write QZI fixture");
+        let interface = toml::to_string(&QziInterfaceBundle {
+            modules: vec![
+                QziInterfaceModule {
+                    name: "types".to_string(),
+                    exports: vec!["Api".to_string()],
+                    source: "pub struct Api {}\n".to_string(),
+                },
+                QziInterfaceModule {
+                    name: "methods".to_string(),
+                    exports: Vec::new(),
+                    source: "impl Api { pub fn value(self: Api) i32; }\n".to_string(),
+                },
+            ],
+        })
+        .expect("serialize QZI interface");
+
+        let materialized =
+            materialize_qzi_interface(&root.join("cache"), "library", &qzi_path, &interface)
+                .expect("materialize QZI interface");
+        let gateway = fs::read_to_string(materialized.entry).expect("read gateway");
+        assert!(gateway.contains("pub import ./types.Api;"));
+        assert!(gateway.contains("import ./methods;"));
+
+        fs::remove_dir_all(root).expect("remove test directory");
     }
 }

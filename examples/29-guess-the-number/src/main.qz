@@ -1,0 +1,25 @@
+import std.io;
+import std.random;
+
+fn main() i32 {
+    io.println("-- Guess the number game --");
+    io.println("You'll have to guess the number 0-100");
+    var attempts: usize = 1;
+    var number: u8 = random.range(0..=100)?;
+    var guessed = false;
+    for !guessed {
+      io.print("> ");
+      const guess = io.readln()?.parse[isize]()?;
+      if guess > number {
+        io.println("{guess} is more than ? ; {attempts} attempts");
+      } else if guess < number {
+        io.println("{guess} is less than ? ; {attempts} attempts");
+      } else {
+        io.println("{guess} is equal to ? ; {attempts} attempts");
+        guessed = !guessed;
+      }
+      attempts++;
+    }
+    io.println("you win!");
+    ret 0;
+}

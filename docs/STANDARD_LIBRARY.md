@@ -1,8 +1,8 @@
 # Standard Library Guide
 
 The prelude supplies `String`, `Array`, `Box`, `Option`, `Result`, common
-traits, formatting, parsing errors, and panic support. Other modules are
-explicit imports.
+traits, formatting, parsing errors, compile-time layout queries, and panic
+support. Other modules are explicit imports.
 
 - `std.io`: UTF-8-safe console output; owned fallible `read`, `readln`, `readkey`.
 - `std.fmt`: `{}` formatting and format specifications used by I/O functions.
@@ -16,6 +16,8 @@ explicit imports.
 - `std.os`: environment, hostname, OS/version, CPU, memory, shell, terminal.
 - `std.net`: TCP, HTTP/1.1 client requests, and local one-request servers.
 - `std.thread`: spawn/join primitives.
+- `std.time`: monotonic durations and elapsed-time instants; wall-clock and
+  civil-time APIs are intentionally not yet provided.
 - `std.ffi`: C scalar aliases, `CStr`, `CString`, callbacks, null pointers.
 - `std.unix` / `std.windows`: platform-specific low-level operations; portable
   application code should prefer `std.fs`, `std.os`, `std.io`, and `std.net`.

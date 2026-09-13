@@ -1,0 +1,11 @@
+[package]
+name = "ini_parser_example"
+version = "0.1.0"
+out_dir = "build"
+
+[[bin]]
+name = "ini_parser_example"
+path = "src/main.qz"
+
+[dependencies]
+parse_ini = { path = "../33-ini-library", version = "0.1.0" }

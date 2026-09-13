@@ -3,14 +3,21 @@
 // SPDX-License-Identifier: 0BSD
 
 mod analysis;
+mod code_actions;
 mod completion;
 pub(crate) mod diagnostics;
 mod document;
 mod formatting;
 mod goto_def;
 mod hover;
+mod inlay_hints;
+mod references;
+mod semantic_tokens;
 mod server;
+mod signature;
 mod span;
+mod symbols;
+mod workspace;
 
 use server::VoidLanguageServer;
 use tokio::io::{stdin, stdout};

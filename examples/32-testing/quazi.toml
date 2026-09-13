@@ -1,0 +1,11 @@
+[package]
+name = "testing"
+version = "0.1.0"
+out_dir = "build"
+std = true
+crash_handler = true
+mangling = true
+
+[[bin]]
+name = "testing"
+path = "src/main.qz"

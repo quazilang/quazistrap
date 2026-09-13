@@ -2,14 +2,33 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
 use crate::lexer::Lexer;
 use crate::lexer::token::TokenKind;
 use crate::parser::Parser;
 use crate::parser::ast::{ImportItems, ItemKind, Program, Span};
 use crate::semantic::{Analyzer, SemanticReport, Symbol, SymbolKind};
 
-use std::collections::HashSet;
-use std::path::PathBuf;
+use crate::semantic::SourceFile;
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum CancellableAnalysisError {
+    Parse(String),
+    Load(String),
+    Cancelled,
+}
+
+/// Compiler-backed snapshot for one document and every file reached through
+/// its configured import graph. Spans in `report` are coordinates in
+/// `merged_source`; `source_files` and `effective_sources` rebase them to
+/// individual LSP documents without rereading potentially stale disk text.
+pub struct LoadedSnapshot {
+    pub report: SemanticReport,
+    pub source_files: Vec<SourceFile>,
+    pub effective_sources: HashMap<PathBuf, String>,
+}
 
 pub fn analyze_source(source: &str) -> Result<SemanticReport, String> {
     let mut lexer = Lexer::new(source);
@@ -23,6 +42,140 @@ pub fn analyze_source(source: &str) -> Result<SemanticReport, String> {
     Ok(analyzer.analyze_program(&program))
 }
 
+/// Analyze one open document while honoring a request/document cancellation
+/// token during lexing, parsing, and semantic-analysis pass boundaries.
+pub fn analyze_source_cancellable(
+    source: &str,
+    cancellation: &crate::cancel::CancellationToken,
+) -> Result<SemanticReport, CancellableAnalysisError> {
+    let mut lexer = Lexer::new(source);
+    let tokens = lexer
+        .tokenize_with_checkpoint(|| cancellation.check())
+        .map_err(|_| CancellableAnalysisError::Cancelled)?;
+    let mut parser = Parser::new_with_source(tokens, source);
+    let program = parser
+        .parse_cancellable(cancellation)
+        .map_err(|error| match error {
+            crate::parser::CancellableParseError::Parse(error) => {
+                CancellableAnalysisError::Parse(error)
+            }
+            crate::parser::CancellableParseError::Cancelled => CancellableAnalysisError::Cancelled,
+        })?;
+    cancellation
+        .check()
+        .map_err(|_| CancellableAnalysisError::Cancelled)?;
+    let mut analyzer = Analyzer::new();
+    let (library_fn_names, library_symbols) = std_symbols_for_source(source, &program);
+    analyzer.set_library_fns(library_fn_names);
+    analyzer.set_library_symbols(library_symbols);
+    analyzer
+        .analyze_program_cancellable(&program, cancellation)
+        .map_err(|_| CancellableAnalysisError::Cancelled)
+}
+
+pub fn analyze_loaded_document(
+    path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> Result<LoadedSnapshot, String> {
+    let path = path
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve LSP document '{}': {error}", path.display()))?;
+    let context = crate::project::ProjectContext::discover(&path)?;
+    let settings = context
+        .as_ref()
+        .map(|context| context.config.package)
+        .unwrap_or_default();
+    let target = crate::apply_package_settings(crate::backend::TargetSpec::host(), settings);
+    let loaded = crate::loader::load_programs_configured_with_overlays_for_target(
+        std::slice::from_ref(&path),
+        context.as_ref().map(|context| &context.resolver),
+        settings.std,
+        &[],
+        crate::cfg_target_for_spec(&target),
+        overlays,
+    )?;
+    if let Some(error) = loaded.parse_error {
+        return Err(error);
+    }
+    let namespaced_paths = loaded
+        .namespaced_paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    let report = crate::analysis::analyze_program_with_source_files(
+        &loaded.merged_source,
+        &loaded.program,
+        loaded.library_fn_names,
+        loaded.library_char_ranges,
+        loaded.source_files.clone(),
+        namespaced_paths,
+    );
+    Ok(LoadedSnapshot {
+        report,
+        source_files: loaded.source_files,
+        effective_sources: loaded.effective_sources,
+    })
+}
+
+/// Analyze a loader-backed document while preserving cancellation as an
+/// operational outcome across import traversal and semantic analysis.
+pub fn analyze_loaded_document_cancellable(
+    path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+    cancellation: &crate::cancel::CancellationToken,
+) -> Result<LoadedSnapshot, CancellableAnalysisError> {
+    cancellation
+        .check()
+        .map_err(|_| CancellableAnalysisError::Cancelled)?;
+    let path = path.canonicalize().map_err(|error| {
+        CancellableAnalysisError::Load(format!(
+            "cannot resolve LSP document '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let context =
+        crate::project::ProjectContext::discover(&path).map_err(CancellableAnalysisError::Load)?;
+    let settings = context
+        .as_ref()
+        .map(|context| context.config.package)
+        .unwrap_or_default();
+    let target = crate::apply_package_settings(crate::backend::TargetSpec::host(), settings);
+    let loaded = crate::loader::load_programs_configured_with_overlays_for_target_cancellable(
+        std::slice::from_ref(&path),
+        context.as_ref().map(|context| &context.resolver),
+        settings.std,
+        &[],
+        crate::cfg_target_for_spec(&target),
+        overlays,
+        cancellation,
+    )
+    .map_err(|error| match error {
+        crate::loader::CancellableLoadError::Load(error) => CancellableAnalysisError::Load(error),
+        crate::loader::CancellableLoadError::Cancelled => CancellableAnalysisError::Cancelled,
+    })?;
+    if let Some(error) = loaded.parse_error {
+        return Err(CancellableAnalysisError::Parse(error));
+    }
+    let namespaced_paths = loaded
+        .namespaced_paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    let mut analyzer = Analyzer::new();
+    analyzer.set_library_fns(loaded.library_fn_names);
+    analyzer.set_library_char_ranges(loaded.library_char_ranges);
+    analyzer.set_source_files(loaded.source_files.clone());
+    analyzer.set_namespaced_paths(namespaced_paths);
+    let report = analyzer
+        .analyze_program_cancellable(&loaded.program, cancellation)
+        .map_err(|_| CancellableAnalysisError::Cancelled)?;
+    Ok(LoadedSnapshot {
+        report,
+        source_files: loaded.source_files,
+        effective_sources: loaded.effective_sources,
+    })
+}
+
 fn std_symbols_for_source(
     source: &str,
     program: &Program,
@@ -30,10 +183,6 @@ fn std_symbols_for_source(
     let Some(std_src_dir) = find_std_src_dir() else {
         return (HashSet::new(), Vec::new());
     };
-
-    if source_contains_no_std(source) {
-        return (HashSet::new(), Vec::new());
-    }
 
     let user_fn_names = user_function_names(program);
     let explicitly_imported = explicitly_imported_std_leaf_names(program);
@@ -158,15 +307,6 @@ fn explicitly_imported_std_leaf_names(program: &Program) -> HashSet<String> {
     names
 }
 
-fn source_contains_no_std(source: &str) -> bool {
-    let mut lexer = Lexer::new(source);
-    let tokens = lexer.tokenize();
-    tokens.windows(2).any(|pair| {
-        matches!(pair[0].kind, TokenKind::At)
-            && matches!(&pair[1].kind, TokenKind::Ident(name) if name == "no_std")
-    })
-}
-
 fn used_std_modules(source: &str) -> HashSet<String> {
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize();
@@ -228,6 +368,40 @@ fn zero_span() -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn cancelled_analysis_does_not_create_a_parse_diagnostic() {
+        let cancellation = crate::cancel::CancellationToken::new();
+        cancellation.cancel();
+
+        assert!(matches!(
+            analyze_source_cancellable("const value: i32 = 1;", &cancellation),
+            Err(CancellableAnalysisError::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn cancelled_loaded_analysis_stops_before_loader_io() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "quazi_lsp_cancelled_loader_{}_{}.qz",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::write(&path, "fn main() void { ret; }").expect("write source");
+        let cancellation = crate::cancel::CancellationToken::new();
+        cancellation.cancel();
+
+        let result = analyze_loaded_document_cancellable(&path, &HashMap::new(), &cancellation);
+
+        assert!(matches!(result, Err(CancellableAnalysisError::Cancelled)));
+        let _ = fs::remove_file(path);
+    }
 
     #[test]
     fn resolves_explicit_std_function_import() {

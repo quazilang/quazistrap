@@ -96,17 +96,18 @@ fn compute_use_set(code: &[Instruction]) -> HashSet<u8> {
             continue;
         }
         let base = code[i].ops[1];
-        let n_after = if code[i + 1].opcode == Opcode::MovI as u8 {
+        let n_explicit = code[i].flags as u16;
+        let n_after = if n_explicit == 0 && code[i + 1].opcode == Opcode::MovI as u8 {
             u16::from_le_bytes([code[i + 1].ops[1], code[i + 1].ops[2]])
         } else {
             0
         };
-        let n_before = if i > 0 && code[i - 1].opcode == Opcode::MovI as u8 {
+        let n_before = if n_explicit == 0 && i > 0 && code[i - 1].opcode == Opcode::MovI as u8 {
             u16::from_le_bytes([code[i - 1].ops[1], code[i - 1].ops[2]])
         } else {
             0
         };
-        let n = n_after.max(n_before);
+        let n = n_explicit.max(n_after).max(n_before);
         for j in 0..n {
             set.insert(base.wrapping_add(j as u8));
         }
@@ -133,33 +134,42 @@ fn find_dead_defs(code: &[Instruction], use_set: &HashSet<u8>) -> Vec<usize> {
 fn compact_regs(chunk: &mut Chunk) {
     let mut all_regs: BTreeSet<u8> = BTreeSet::new();
     for instr in &chunk.code {
-        if let Some(d) = instr_def(instr) {
-            all_regs.insert(d);
-        }
-        for r in instr_uses(instr) {
+        for r in instruction_registers(instr) {
             all_regs.insert(r);
         }
     }
 
-    // Param regs 0..param_count are pinned by calling convention.
-    let param_count = chunk.param_count as u8;
+    // Preserve calling-convention slots and every explicitly contiguous block.
+    // Remapping these before linear scan would irreversibly destroy adjacency.
+    let pinned = compute_pinned(chunk);
     let mut remap: HashMap<u8, u8> = HashMap::new();
-    for p in 0..param_count {
-        remap.insert(p, p);
+    for &register in &pinned {
+        remap.insert(register, register);
     }
-    let mut next = param_count;
+    let mut next = 0u16;
     for r in all_regs {
         if remap.contains_key(&r) {
             continue;
         }
-        remap.insert(r, next);
+        while next <= u8::MAX as u16 && pinned.contains(&(next as u8)) {
+            next += 1;
+        }
+        assert!(
+            next <= u8::MAX as u16,
+            "register compaction exhausted the bytecode register space"
+        );
+        remap.insert(r, next as u8);
         next += 1;
     }
 
     for instr in &mut chunk.code {
         super::codegen::remap_instr_regs(instr, |r| *remap.get(&r).unwrap_or(&r));
     }
-    chunk.reg_count = next;
+    chunk.reg_count = remap
+        .values()
+        .copied()
+        .max()
+        .map_or(0, |register| register.saturating_add(1));
 }
 
 pub fn linear_scan_alloc(chunk: &mut Chunk) {
@@ -241,8 +251,9 @@ pub fn linear_scan_alloc(chunk: &mut Chunk) {
 }
 
 // Registers that must keep their current slot numbers.
-// Params obey the calling convention. Consecutive groups (Lea/Intrinsic/Syscall)
-// must stay consecutive because the encoder infers adjacent slots by arithmetic.
+// Params obey the calling convention. Consecutive groups and the multi-slot
+// return ABI must stay consecutive because the encoder infers adjacent slots by
+// arithmetic.
 fn compute_pinned(chunk: &Chunk) -> HashSet<u8> {
     let mut pinned = HashSet::new();
 
@@ -259,6 +270,18 @@ fn compute_pinned(chunk: &Chunk) -> HashSet<u8> {
                 pinned.insert(instr.ops[0].wrapping_add(i));
             }
         }
+        if op == Opcode::ArrayStore as u8 && instr.flags > 1 {
+            for i in 0..instr.flags {
+                pinned.insert(instr.ops[0].wrapping_add(i));
+            }
+        }
+        if op == Opcode::Ret as u8 && instr.flags > 1 {
+            // Multi-slot returns use r0 as the hidden sret pointer and write
+            // the value block from the fixed ABI registers r1..rN.
+            for i in 0..=instr.flags {
+                pinned.insert(i);
+            }
+        }
     }
 
     // Lea(dst, base, 0) adjacent to MovI(_, N): base..base+N-1 must stay consecutive
@@ -273,18 +296,22 @@ fn compute_pinned(chunk: &Chunk) -> HashSet<u8> {
             continue;
         }
         let base = instr.ops[1];
-        let n_after = if i + 1 < chunk.code.len() && chunk.code[i + 1].opcode == Opcode::MovI as u8
+        let n_explicit = instr.flags as u16;
+        let n_after = if n_explicit == 0
+            && i + 1 < chunk.code.len()
+            && chunk.code[i + 1].opcode == Opcode::MovI as u8
         {
             u16::from_le_bytes([chunk.code[i + 1].ops[1], chunk.code[i + 1].ops[2]])
         } else {
             0
         };
-        let n_before = if i > 0 && chunk.code[i - 1].opcode == Opcode::MovI as u8 {
+        let n_before = if n_explicit == 0 && i > 0 && chunk.code[i - 1].opcode == Opcode::MovI as u8
+        {
             u16::from_le_bytes([chunk.code[i - 1].ops[1], chunk.code[i - 1].ops[2]])
         } else {
             0
         };
-        let n = n_after.max(n_before);
+        let n = n_explicit.max(n_after).max(n_before);
         for j in 0..n {
             pinned.insert(base.wrapping_add(j as u8));
         }
@@ -318,6 +345,13 @@ fn compute_intervals(chunk: &Chunk) -> HashMap<u8, (usize, usize)> {
             }
             if i > e.1 {
                 e.1 = i;
+            }
+        }
+        if instr.opcode() == Some(Opcode::Lea) && instr.flags != 0 {
+            let base = instr.ops[1];
+            for register in (0..instr.flags).filter_map(|offset| base.checked_add(offset)) {
+                let interval = intervals.entry(register).or_insert((i, i));
+                interval.1 = interval.1.max(i);
             }
         }
     }
@@ -372,6 +406,7 @@ fn instr_def(instr: &Instruction) -> Option<u8> {
         Opcode::Nop
         | Opcode::Ret
         | Opcode::MemFence
+        | Opcode::Trap
         | Opcode::Jmp
         | Opcode::Je
         | Opcode::Jne
@@ -389,6 +424,9 @@ fn instr_def(instr: &Instruction) -> Option<u8> {
         | Opcode::Store
         | Opcode::FieldStore
         | Opcode::ArrayStore => None,
+        // Multi-slot ArrayLoad writes through ops[0], which is a hidden sret
+        // pointer rather than a destination register.
+        Opcode::ArrayLoad if instr.flags > 1 => None,
         _ => Some(instr.ops[0]),
     }
 }
@@ -398,10 +436,15 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
         return vec![];
     };
     match op {
+        // A multi-slot return writes r1..rN through the hidden sret pointer
+        // in ops[0]. The regular form returns only ops[0] in the native result
+        // register.
+        Opcode::Ret if instr.flags > 1 => (0..=instr.flags).collect(),
         Opcode::Ret => vec![instr.ops[0]],
 
         Opcode::Nop
         | Opcode::MemFence
+        | Opcode::Trap
         | Opcode::Jmp
         | Opcode::Je
         | Opcode::Jne
@@ -469,9 +512,21 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
         Opcode::Cmp => vec![instr.ops[1], instr.ops[2]],
 
         // ArrayStore: ops[0]=val, ops[1]=base, ops[2]=idx — all sources.
+        // The multi-slot form reads a contiguous value block from ops[0].
+        Opcode::ArrayStore if instr.flags > 1 => {
+            let mut uses: Vec<_> = (0..instr.flags)
+                .map(|offset| instr.ops[0].wrapping_add(offset))
+                .collect();
+            uses.extend([instr.ops[1], instr.ops[2]]);
+            uses
+        }
         Opcode::ArrayStore => vec![instr.ops[0], instr.ops[1], instr.ops[2]],
 
-        // ArrayLoad: ops[0]=dst, ops[1]=base, ops[2]=idx.
+        // A single-slot ArrayLoad defines ops[0]. The multi-slot form writes
+        // through its ops[0] sret pointer, so all three operands are sources.
+        Opcode::ArrayLoad if instr.flags > 1 => {
+            vec![instr.ops[0], instr.ops[1], instr.ops[2]]
+        }
         Opcode::ArrayLoad => vec![instr.ops[1], instr.ops[2]],
 
         // Two-source RRR: ops[0]=dst, ops[1]=src1, ops[2]=src2.
@@ -504,6 +559,10 @@ pub(crate) fn instruction_registers(instr: &Instruction) -> Vec<u8> {
     let mut registers = instr_uses(instr);
     if let Some(register) = instr_def(instr) {
         registers.push(register);
+    }
+    if instr.opcode() == Some(Opcode::Lea) && instr.flags != 0 {
+        let base = instr.ops[1];
+        registers.extend((0..instr.flags).filter_map(|offset| base.checked_add(offset)));
     }
     registers.sort_unstable();
     registers.dedup();
@@ -558,4 +617,148 @@ fn is_side_effect_free(op: Opcode) -> bool {
             | Opcode::FloatMin
             | Opcode::FloatMax
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bytecode::instruction::{mem_lea_block, mem_load, ri16, rrr};
+
+    #[test]
+    fn scalar_address_taken_slot_is_never_reused() {
+        let mut chunk = Chunk::new("address_taken");
+        chunk.reg_count = 5;
+        chunk.emit(ri16(Opcode::MovI, 0, 7));
+        chunk.emit(mem_lea_block(0, 1, 0, 1));
+        chunk.emit(ri16(Opcode::MovI, 2, 11));
+        chunk.emit(rrr(Opcode::Add, 3, 2, 2));
+        chunk.emit(mem_load(1, 4, 0));
+        chunk.emit(rrr(Opcode::Ret, 4, 0, 0));
+
+        linear_scan_alloc(&mut chunk);
+
+        let address = chunk
+            .code
+            .iter()
+            .find(|instruction| instruction.opcode() == Some(Opcode::Lea))
+            .expect("Lea must remain");
+        let pointee_slot = address.ops[1];
+        let later_value_slot = chunk.code[2].ops[0];
+        assert_ne!(
+            later_value_slot, pointee_slot,
+            "a later value reused the address-taken stack slot"
+        );
+    }
+
+    #[test]
+    fn compaction_fills_holes_below_a_high_pinned_slot_without_aliasing() {
+        let mut chunk = Chunk::new("high_address_taken");
+        chunk.reg_count = 202;
+        for register in 0..=200 {
+            chunk.emit(ri16(Opcode::MovI, register, register as u16));
+        }
+        chunk.emit(mem_lea_block(200, 201, 0, 1));
+
+        compact_regs(&mut chunk);
+
+        let mapped: HashSet<u8> = chunk.code[..=200]
+            .iter()
+            .map(|instruction| instruction.ops[0])
+            .collect();
+        assert_eq!(mapped.len(), 201, "distinct registers must not alias");
+        assert_eq!(chunk.code[200].ops[0], 200, "pinned slot must stay fixed");
+        assert_eq!(chunk.code[201].ops[0], 201, "next free slot is preserved");
+        assert_eq!(chunk.reg_count, 202);
+    }
+
+    #[test]
+    fn multi_slot_array_load_is_not_eliminated_as_a_dead_register_definition() {
+        let mut chunk = Chunk::with_params("array_load_sret", 4);
+        chunk.emit(mem_lea_block(0, 1, 0, 3));
+        let mut load = rrr(Opcode::ArrayLoad, 1, 2, 3);
+        load.flags = 3;
+        chunk.emit(load);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        elim_dead_regs(&mut chunk);
+
+        assert!(
+            chunk
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode() == Some(Opcode::ArrayLoad)),
+            "a multi-slot ArrayLoad writes through its sret pointer and must survive DCE"
+        );
+    }
+
+    #[test]
+    fn multi_slot_array_store_keeps_every_value_register_live() {
+        let mut chunk = Chunk::with_params("array_store_block", 2);
+        chunk.emit(ri16(Opcode::MovI, 3, 4));
+        chunk.emit(ri16(Opcode::MovI, 4, 5));
+        chunk.emit(ri16(Opcode::MovI, 5, 6));
+        let mut store = rrr(Opcode::ArrayStore, 3, 0, 1);
+        store.flags = 3;
+        chunk.emit(store);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        elim_dead_regs(&mut chunk);
+
+        assert_eq!(
+            chunk
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode() == Some(Opcode::MovI))
+                .count(),
+            3,
+            "a multi-slot ArrayStore must retain every source slot"
+        );
+    }
+
+    #[test]
+    fn multi_slot_return_keeps_every_result_register_live() {
+        let mut chunk = Chunk::with_params("return_sret", 4);
+        chunk.emit(ri16(Opcode::MovI, 1, 4));
+        chunk.emit(ri16(Opcode::MovI, 2, 5));
+        chunk.emit(ri16(Opcode::MovI, 3, 6));
+        let mut ret = rrr(Opcode::Ret, 0, 0, 0);
+        ret.flags = 3;
+        chunk.emit(ret);
+
+        elim_dead_regs(&mut chunk);
+
+        assert_eq!(
+            chunk
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode() == Some(Opcode::MovI))
+                .count(),
+            3,
+            "a multi-slot return must retain every result register"
+        );
+    }
+
+    #[test]
+    fn multi_slot_return_keeps_result_slots_in_abi_order() {
+        let mut chunk = Chunk::with_params("return_sret", 1);
+        chunk.emit(ri16(Opcode::MovI, 4, 4));
+        chunk.emit(ri16(Opcode::MovI, 5, 5));
+        chunk.emit(ri16(Opcode::MovI, 6, 6));
+        chunk.emit(rrr(Opcode::Mov, 1, 4, 0));
+        chunk.emit(rrr(Opcode::Mov, 2, 5, 0));
+        chunk.emit(rrr(Opcode::Mov, 3, 6, 0));
+        let mut ret = rrr(Opcode::Ret, 0, 0, 0);
+        ret.flags = 3;
+        chunk.emit(ret);
+
+        linear_scan_alloc(&mut chunk);
+
+        let result_copies: Vec<_> = chunk
+            .code
+            .iter()
+            .filter(|instr| instr.opcode == Opcode::Mov as u8)
+            .map(|instr| (instr.ops[0], instr.ops[1]))
+            .collect();
+        assert_eq!(result_copies, vec![(1, 4), (2, 5), (3, 6)]);
+    }
 }

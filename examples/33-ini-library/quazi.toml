@@ -1,0 +1,8 @@
+[package]
+name = "parse_ini"
+version = "0.1.0"
+out_dir = "build"
+
+[lib]
+name = "parse_ini"
+path = "src/lib.qz"

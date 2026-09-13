@@ -57,7 +57,8 @@ a minimal 15-byte entry that calls `main` and exits with the Linux syscall. This
 minimal path does not construct command-line arguments or install the full
 compiler-generated crash handler.
 
-The experimental linker rejects unsupported allocated sections, relocations,
+The experimental linker omits `.note.gnu.property` and `.eh_frame` metadata,
+then rejects unsupported allocated sections, relocations,
 native flags, duplicate strong symbols, and unresolved external symbols with
 actionable errors. Non-loaded metadata/debug sections are omitted. Its current
 targets are x86-64 Linux and Windows; Mach-O, archives, shared objects, TLS, COMDAT,

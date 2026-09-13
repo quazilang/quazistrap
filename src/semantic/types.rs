@@ -216,9 +216,43 @@ pub struct SemanticSuggestion {
     pub span: Option<Span>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBinding {
+    /// Canonical semantic symbol name, which distinguishes bindings that share
+    /// an enclosing declaration span (such as a function and its parameters).
+    pub name: String,
+    pub span: Span,
+    pub kind: SymbolKind,
+}
+
+/// A source-backed declaration spelling for a resolved binding. Unlike a
+/// symbol's declaration span, `name_span` is limited to the identifier token
+/// and is therefore suitable for editor navigation and rename edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingDeclaration {
+    pub binding: ResolvedBinding,
+    pub name_span: Span,
+}
+
+/// A source-backed import selector that resolves to a specific binding. The
+/// selector and alias are distinct: renaming the imported declaration updates
+/// `selector_span`, while a local alias keeps its spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingImport {
+    pub binding: ResolvedBinding,
+    pub selector_span: Span,
+    pub alias_span: Option<Span>,
+    pub local_name: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExprAnnotation {
     pub span: Span,
+    /// Exact source span of the identifier through which this expression
+    /// resolves a binding. This differs from `span` for calls and other
+    /// compound expressions, whose full span includes arguments or operators.
+    /// Tooling uses it for precise navigation and edits.
+    pub binding_span: Option<Span>,
     pub ty: Option<TypeKind>,
     pub const_value: Option<ConstValue>,
     pub reachable: bool,
@@ -227,6 +261,9 @@ pub struct ExprAnnotation {
     pub resolved_fn: Option<String>,
     /// Canonical binding name for an imported C data symbol.
     pub resolved_global: Option<String>,
+    /// Declaration span of the binding referenced by this expression. This is
+    /// stable across shadowed names and is used by tooling navigation.
+    pub resolved_binding: Option<ResolvedBinding>,
     /// If true, codegen should load the value pointed to by this reference expression.
     /// Set when a `&T` expression is used in a context that expects the value `T`.
     pub auto_deref: bool,
@@ -346,6 +383,70 @@ pub struct ForeignGlobalInfo {
     pub ty: TypeKind,
 }
 
+/// Source-level signature for one trait method. Dynamic dispatch uses this to
+/// retain concrete result types instead of fabricating an untagged `any` value.
+#[derive(Debug, Clone)]
+pub struct TraitMethodSignature {
+    pub has_explicit_receiver: bool,
+    pub generic_params: Vec<String>,
+    pub params: Vec<TypeKind>,
+    pub return_ty: TypeKind,
+}
+
+/// An attribute value retained in compiler-owned derive metadata.
+///
+/// This deliberately mirrors source-level attribute shapes without exposing the
+/// parser AST as a public semantic contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeriveAttributeValue {
+    String(String),
+    Integer(u64),
+    Identifier(String),
+}
+
+/// One positional or named attribute argument retained for a derived field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeriveAttributeArgument {
+    Positional(DeriveAttributeValue),
+    KeyValue {
+        key: String,
+        value: DeriveAttributeValue,
+    },
+}
+
+/// An opaque source attribute attached to an aggregate field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeriveFieldAttribute {
+    pub name: String,
+    pub args: Vec<DeriveAttributeArgument>,
+}
+
+/// Ordered field information made available to compiler-backed derives.
+#[derive(Debug, Clone)]
+pub struct SerializationFieldMetadata {
+    pub name: String,
+    pub ty: TypeKind,
+    /// Field type location, retained for derived-code diagnostics.
+    pub span: Span,
+    /// Explicit wire key requested by `@json(name="...")`, if any.
+    pub json_name: Option<String>,
+    /// All field attributes, including attributes unknown to the compiler.
+    pub attributes: Vec<DeriveFieldAttribute>,
+}
+
+/// Stable, compiler-owned input for the JSON serialization derives.
+///
+/// Metadata records source declaration order and declared source types, but it
+/// does not grant runtime reflection or synthesize an implementation by itself.
+#[derive(Debug, Clone)]
+pub struct SerializationDeriveMetadata {
+    pub type_name: String,
+    pub requested_traits: Vec<String>,
+    pub generic_params: Vec<String>,
+    pub is_union: bool,
+    pub fields: Vec<SerializationFieldMetadata>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SemanticReport {
     pub errors: Vec<SemanticError>,
@@ -355,6 +456,10 @@ pub struct SemanticReport {
     pub used_imports_map: HashMap<String, ImportInfo>,
     pub unused_imports: Vec<String>,
     pub annotated_exprs: Vec<ExprAnnotation>,
+    /// Exact source spellings of declarations that have a resolved binding.
+    pub binding_declarations: Vec<BindingDeclaration>,
+    /// Exact import selectors resolved during declaration analysis.
+    pub binding_imports: Vec<BindingImport>,
     pub annotated_program: AnnotatedProgram,
     pub symbol_table: SymbolTable,
     pub constant_evaluations: Vec<ConstantEvaluation>,
@@ -380,12 +485,20 @@ pub struct SemanticReport {
     pub trait_impls: HashMap<String, std::collections::HashSet<String>>,
     /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
     pub trait_method_slots: HashMap<String, Vec<String>>,
+    /// Declared method signatures per trait and method name.
+    pub trait_method_signatures: HashMap<String, HashMap<String, TraitMethodSignature>>,
     /// Enum variant tags: enum name → variant name → discriminant index.
     pub enum_defs: HashMap<String, HashMap<String, usize>>,
     /// Generic param names per struct: struct name → ordered generic param names.
     pub struct_generic_params: HashMap<String, Vec<String>>,
     /// Monomorphization requests: function name → list of concrete type args used at call sites.
     pub monomorphizations: Vec<MonomorphizationInfo>,
+    /// Recorded internal-ABI value layouts per function, keyed by the internal
+    /// function name and, for generic specializations, the canonical resolved
+    /// type arguments (`name` or `name<arg1,arg2>`). Recorded during analysis
+    /// so code generation can stop assuming one slot per value; the phase-1
+    /// gates still reject non-single-slot signatures.
+    pub fn_value_layouts: HashMap<String, crate::runtime_layout::FnValueLayout>,
     /// Type aliases: alias name → (generic_params, aliased TypeKind).
     pub type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
     /// Ordered parameter names per function (mangled or plain): used for named-arg resolution.
@@ -400,10 +513,17 @@ pub struct SemanticReport {
     pub repr_c_unions: std::collections::HashSet<String>,
     /// Aggregates whose final field is a C flexible array member.
     pub flexible_array_structs: std::collections::HashSet<String>,
+    /// Ordered field metadata for structs requesting `Serialize` and/or
+    /// `Deserialize`. Code generation consumes this in the serialization stage.
+    pub serialization_derives: HashMap<String, SerializationDeriveMetadata>,
     /// Files whose top-level definitions were mangled with their module name.
     pub namespaced_paths: std::collections::HashSet<String>,
     /// Whether the entry point is `fn main(args: Array[str])`.
     pub main_takes_args: bool,
+    /// Module-qualified functions declared with `@test`.
+    pub test_functions: Vec<String>,
+    /// Character ranges belonging to dependencies, used by package-scoped code generation.
+    pub library_char_ranges: Vec<std::ops::Range<usize>>,
 }
 
 /// Records a call to a generic function with concrete type arguments.

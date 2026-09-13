@@ -1,0 +1,6 @@
+import std.io;
+
+fn main() i32 {
+    io.println("Run this project's tests with `qz test`.");
+    ret 0;
+}

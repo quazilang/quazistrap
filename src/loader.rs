@@ -11,7 +11,27 @@ use crate::lexer::Lexer;
 use crate::lexer::token::TokenKind;
 use crate::parser::Parser;
 use crate::parser::ast::{ItemKind, Program};
-use crate::semantic::SourceFile;
+use crate::semantic::{SourceFile, item_should_include_for};
+
+/// Compilation target used while resolving conditional imports.
+#[derive(Debug, Clone, Copy)]
+pub struct CfgTarget<'a> {
+    pub os: &'a str,
+    pub arch: &'a str,
+    pub abi: &'a str,
+}
+
+fn host_cfg_target() -> CfgTarget<'static> {
+    #[cfg(target_os = "windows")]
+    let abi = "win64";
+    #[cfg(not(target_os = "windows"))]
+    let abi = "sysv";
+    CfgTarget {
+        os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        abi,
+    }
+}
 
 pub struct LoadResult {
     pub merged_source: String,
@@ -19,6 +39,10 @@ pub struct LoadResult {
     pub loaded_files: Vec<PathBuf>,
     /// SHA-256 of the exact source text parsed for each canonical file path.
     pub source_hashes: HashMap<String, [u8; 32]>,
+    /// Effective source text used for every canonical loaded path. Callers
+    /// supplying in-memory overlays receive those exact texts after loader
+    /// compatibility filtering, rather than needing to reread stale disk files.
+    pub effective_sources: HashMap<PathBuf, String>,
     /// Function names declared in dependency (library) files.
     pub library_fn_names: HashSet<String>,
     /// Paths of files that were loaded from external modules (not user source).
@@ -39,6 +63,32 @@ pub struct LoadResult {
     /// definitions are namespaced/mangled. This is every loaded file except the
     /// original entry files passed to the loader.
     pub namespaced_paths: HashSet<PathBuf>,
+}
+
+/// Operational outcome of a loader invocation that may be cancelled.
+///
+/// Cancellation is deliberately distinct from source, filesystem, and import
+/// errors so editor callers can discard obsolete work without presenting an
+/// invented diagnostic to the user.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum CancellableLoadError {
+    Load(String),
+    Cancelled,
+}
+
+impl From<String> for CancellableLoadError {
+    fn from(error: String) -> Self {
+        Self::Load(error)
+    }
+}
+
+impl CancellableLoadError {
+    fn into_load_error(self) -> String {
+        match self {
+            Self::Load(error) => error,
+            Self::Cancelled => unreachable!("the infallible loader checkpoint cannot cancel"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -87,17 +137,111 @@ pub fn load_programs_with_resolver(
     entries: &[PathBuf],
     resolver: Option<&ModuleResolver>,
 ) -> Result<LoadResult, String> {
-    // First pass: lenient — only checks for @no_std, skips import errors.
-    let _initial = collect_sources(entries, resolver, false)?;
+    load_programs_configured(entries, resolver, true, &[])
+}
 
-    // Build resolver that always includes both prelude and std.
-    // @no_std does not disable prelude or std; both are always available.
-    let effective_resolver = resolver_with_builtin_modules(resolver, true);
+pub fn load_programs_configured(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    additional_roots: &[PathBuf],
+) -> Result<LoadResult, String> {
+    load_programs_configured_for_target(
+        entries,
+        resolver,
+        include_std,
+        additional_roots,
+        host_cfg_target(),
+    )
+}
+
+/// Load sources after excluding imports disabled for `target`.
+pub fn load_programs_configured_for_target(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    additional_roots: &[PathBuf],
+    target: CfgTarget<'_>,
+) -> Result<LoadResult, String> {
+    load_programs_configured_with_overlays_for_target(
+        entries,
+        resolver,
+        include_std,
+        additional_roots,
+        target,
+        &HashMap::new(),
+    )
+}
+
+/// Load sources with canonical-path source overrides, used by editor clients
+/// to analyze unsaved buffers using the same import graph as a normal build.
+pub fn load_programs_configured_with_overlays_for_target(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    additional_roots: &[PathBuf],
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+) -> Result<LoadResult, String> {
+    load_programs_configured_with_overlays_for_target_with_checkpoint(
+        entries,
+        resolver,
+        include_std,
+        additional_roots,
+        target,
+        overrides,
+        &mut || Ok(()),
+    )
+    .map_err(CancellableLoadError::into_load_error)
+}
+
+/// Cancellable counterpart to
+/// [`load_programs_configured_with_overlays_for_target`], used by editor
+/// requests whose result becomes irrelevant when the request is cancelled.
+pub fn load_programs_configured_with_overlays_for_target_cancellable(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    additional_roots: &[PathBuf],
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    cancellation: &crate::cancel::CancellationToken,
+) -> Result<LoadResult, CancellableLoadError> {
+    load_programs_configured_with_overlays_for_target_with_checkpoint(
+        entries,
+        resolver,
+        include_std,
+        additional_roots,
+        target,
+        overrides,
+        &mut || {
+            cancellation
+                .check()
+                .map_err(|_| CancellableLoadError::Cancelled)
+        },
+    )
+}
+
+fn load_programs_configured_with_overlays_for_target_with_checkpoint(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    additional_roots: &[PathBuf],
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<LoadResult, CancellableLoadError> {
+    checkpoint()?;
+    let effective_resolver = resolver_with_builtin_modules(resolver, include_std);
 
     // Auto-inject prelude before user entries (as a library file).
-    let prelude_path: Option<PathBuf> = effective_resolver
-        .as_ref()
-        .and_then(|r| r.modules.get("prelude"))
+    let prelude_path: Option<PathBuf> = include_std
+        .then_some(())
+        .and(
+            effective_resolver
+                .as_ref()
+                .and_then(|r| r.modules.get("prelude")),
+        )
         .and_then(|spec| {
             let mod_entry = spec.src_dir.join("mod.qz");
             if mod_entry.exists() {
@@ -111,9 +255,13 @@ pub fn load_programs_with_resolver(
         entries,
         effective_resolver.as_ref(),
         prelude_path.as_deref(),
+        additional_roots,
         true,
+        target,
+        overrides,
+        checkpoint,
     )
-    .and_then(finalize_sources)
+    .and_then(|collection| finalize_sources(collection, checkpoint))
 }
 
 struct SourceCollection {
@@ -132,8 +280,13 @@ fn collect_sources_with_prelude(
     entries: &[PathBuf],
     resolver: Option<&ModuleResolver>,
     prelude: Option<&Path>,
+    additional_roots: &[PathBuf],
     strict: bool,
-) -> Result<SourceCollection, String> {
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<SourceCollection, CancellableLoadError> {
+    checkpoint()?;
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut sources: Vec<(PathBuf, String)> = Vec::new();
     let mut library_paths: HashSet<PathBuf> = HashSet::new();
@@ -165,10 +318,14 @@ fn collect_sources_with_prelude(
             resolver,
             strict,
             &mut dep_edges,
+            target,
+            overrides,
+            checkpoint,
         )?;
     }
 
     for entry in entries {
+        checkpoint()?;
         let canonical = entry
             .canonicalize()
             .map_err(|e| format!("cannot resolve '{}': {}", entry.display(), e))?;
@@ -182,6 +339,26 @@ fn collect_sources_with_prelude(
             resolver,
             strict,
             &mut dep_edges,
+            target,
+            overrides,
+            checkpoint,
+        )?;
+    }
+
+    for root in additional_roots {
+        checkpoint()?;
+        collect(
+            root,
+            false,
+            &mut visited,
+            &mut sources,
+            &mut library_paths,
+            resolver,
+            strict,
+            &mut dep_edges,
+            target,
+            overrides,
+            checkpoint,
         )?;
     }
 
@@ -195,15 +372,11 @@ fn collect_sources_with_prelude(
     })
 }
 
-fn collect_sources(
-    entries: &[PathBuf],
-    resolver: Option<&ModuleResolver>,
-    strict: bool,
-) -> Result<SourceCollection, String> {
-    collect_sources_with_prelude(entries, resolver, None, strict)
-}
-
-fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> {
+fn finalize_sources(
+    collection: SourceCollection,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<LoadResult, CancellableLoadError> {
+    checkpoint()?;
     let SourceCollection {
         mut sources,
         library_paths,
@@ -215,32 +388,31 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
 
     // Capture exactly what was read from disk before compatibility filtering
     // rewrites the in-memory source used by the merged parser.
-    let source_hashes = sources
-        .iter()
-        .map(|(path, source)| {
-            (
-                path.to_string_lossy().into_owned(),
-                Sha256::digest(source.as_bytes()).into(),
-            )
-        })
-        .collect();
+    let mut source_hashes = HashMap::with_capacity(sources.len());
+    for (path, source) in &sources {
+        checkpoint()?;
+        source_hashes.insert(
+            path.to_string_lossy().into_owned(),
+            Sha256::digest(source.as_bytes()).into(),
+        );
+    }
 
-    let namespaced_paths: HashSet<PathBuf> = sources
-        .iter()
-        .map(|(p, _)| p)
-        .filter(|p| !entry_paths.contains(*p))
-        .cloned()
-        .collect();
-    let display_names = sources
-        .iter()
-        .filter(|(path, _)| !entry_paths.contains(path))
-        .filter_map(|(path, _)| {
-            logical_module_name(path, &module_specs).map(|name| (path.clone(), name))
-        })
-        .collect();
+    let mut namespaced_paths = HashSet::with_capacity(sources.len());
+    let mut display_names = HashMap::new();
+    for (path, _) in &sources {
+        checkpoint()?;
+        if !entry_paths.contains(path) {
+            namespaced_paths.insert(path.clone());
+            if let Some(name) = logical_module_name(path, &module_specs) {
+                display_names.insert(path.clone(), name);
+            }
+        }
+    }
 
-    let user_fn_names = collect_user_function_names(&sources, &library_paths, &entry_paths);
-    let explicitly_imported_names = collect_explicit_library_import_names(&sources, &library_paths);
+    let user_fn_names =
+        collect_user_function_names(&sources, &library_paths, &entry_paths, checkpoint)?;
+    let explicitly_imported_names =
+        collect_explicit_library_import_names(&sources, &library_paths, checkpoint)?;
     let shadowed_library_fn_names: HashSet<String> = user_fn_names
         .difference(&explicitly_imported_names)
         .cloned()
@@ -248,15 +420,18 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
 
     if !shadowed_library_fn_names.is_empty() {
         for (path, src) in &mut sources {
+            checkpoint()?;
             // Namespaced (library) files use module-qualified function names,
             // so bare-name shadowing is no longer a concern there.
             if library_paths.contains(path) && !namespaced_paths.contains(path) {
-                *src = remove_shadowed_library_functions(src, &shadowed_library_fn_names);
+                *src =
+                    remove_shadowed_library_functions(src, &shadowed_library_fn_names, checkpoint)?;
             }
         }
     }
 
     let loaded_files: Vec<PathBuf> = sources.iter().map(|(p, _)| p.clone()).collect();
+    let effective_sources: HashMap<PathBuf, String> = sources.iter().cloned().collect();
     let library_file_paths: Vec<PathBuf> = sources
         .iter()
         .filter(|(p, _)| library_paths.contains(p))
@@ -270,6 +445,7 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
     let mut line_pos: usize = 1;
 
     for (path, src) in &sources {
+        checkpoint()?;
         if !merged.is_empty() {
             merged.push('\n');
             char_pos += 1;
@@ -292,22 +468,27 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
     }
 
     // Count tokens before parsing so the count is available even on parse failure.
-    let token_count: usize = sources
-        .iter()
-        .filter(|(p, _)| !library_paths.contains(p))
-        .map(|(_, src)| {
+    let mut token_count = 0;
+    for (path, src) in &sources {
+        checkpoint()?;
+        if !library_paths.contains(path) {
             let mut lx = Lexer::new(src);
-            lx.tokenize()
+            token_count += lx
+                .tokenize_with_checkpoint(|| checkpoint().map_err(|_| crate::cancel::Cancelled))
+                .map_err(|_| CancellableLoadError::Cancelled)?
                 .into_iter()
                 .filter(|t| !matches!(t.kind, TokenKind::Eof))
-                .count()
-        })
-        .sum();
+                .count();
+        }
+    }
 
     let mut lexer = Lexer::new(&merged);
-    let tokens = lexer.tokenize();
+    let tokens = lexer
+        .tokenize_with_checkpoint(|| checkpoint().map_err(|_| crate::cancel::Cancelled))
+        .map_err(|_| CancellableLoadError::Cancelled)?;
     let mut parser = Parser::new_with_source_files(tokens, &merged, source_files.clone());
-    let (program, parse_error) = match parser.parse() {
+    checkpoint()?;
+    let (program, parse_error) = match parser.parse_with_checkpoint(|| checkpoint())? {
         Ok(p) => (p, None),
         Err(e) => (
             crate::parser::ast::Program {
@@ -323,6 +504,7 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
     // times: import discovery, name collection, and the merged program.
     let mut library_fn_names: HashSet<String> = HashSet::new();
     for item in &program.items {
+        checkpoint()?;
         let Some(source_file) = source_files.iter().find(|file| file.contains(item.span)) else {
             continue;
         };
@@ -355,11 +537,6 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
             });
         let entry_name = if let Some(symbol) = exported {
             symbol
-        } else if attributes
-            .iter()
-            .any(|attribute| attribute.name == "no_mangle")
-        {
-            name.clone()
         } else {
             let module_name = source_file
                 .module_name
@@ -376,6 +553,7 @@ fn finalize_sources(collection: SourceCollection) -> Result<LoadResult, String> 
         program,
         loaded_files,
         source_hashes,
+        effective_sources,
         library_fn_names,
         library_file_paths,
         library_char_ranges,
@@ -423,9 +601,11 @@ fn collect_user_function_names(
     sources: &[(PathBuf, String)],
     library_paths: &HashSet<PathBuf>,
     entry_paths: &HashSet<PathBuf>,
-) -> HashSet<String> {
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<HashSet<String>, CancellableLoadError> {
     let mut names = HashSet::new();
     for (path, src) in sources {
+        checkpoint()?;
         if library_paths.contains(path) {
             continue;
         }
@@ -434,26 +614,29 @@ fn collect_user_function_names(
         if !entry_paths.contains(path) {
             continue;
         }
-        for name in function_names_in_source(src) {
+        for name in function_names_in_source_with_checkpoint(src, checkpoint)? {
             names.insert(name);
         }
     }
-    names
+    Ok(names)
 }
 
 fn collect_explicit_library_import_names(
     sources: &[(PathBuf, String)],
     library_paths: &HashSet<PathBuf>,
-) -> HashSet<String> {
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<HashSet<String>, CancellableLoadError> {
     let mut names = HashSet::new();
     for (path, src) in sources {
+        checkpoint()?;
         if library_paths.contains(path) {
             continue;
         }
-        let Ok(program) = parse_source(src) else {
+        let Ok(program) = parse_source_with_checkpoint(src, checkpoint)? else {
             continue;
         };
         for item in &program.items {
+            checkpoint()?;
             let ItemKind::Import(ip) = &item.node else {
                 continue;
             };
@@ -475,21 +658,24 @@ fn collect_explicit_library_import_names(
             }
         }
     }
-    names
+    Ok(names)
 }
 
-fn function_names_in_source(src: &str) -> Vec<String> {
-    let Ok(program) = parse_source(src) else {
-        return Vec::new();
+fn function_names_in_source_with_checkpoint(
+    src: &str,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<Vec<String>, CancellableLoadError> {
+    let Ok(program) = parse_source_with_checkpoint(src, checkpoint)? else {
+        return Ok(Vec::new());
     };
-    program
+    Ok(program
         .items
         .into_iter()
         .filter_map(|item| match item.node {
             ItemKind::Fn { name, .. } => Some(name),
             _ => None,
         })
-        .collect()
+        .collect())
 }
 
 fn parse_source(src: &str) -> Result<Program, String> {
@@ -499,12 +685,29 @@ fn parse_source(src: &str) -> Result<Program, String> {
     parser.parse()
 }
 
-fn remove_shadowed_library_functions(src: &str, shadowed_names: &HashSet<String>) -> String {
-    let Ok(program) = parse_source(src) else {
-        return src.to_string();
+/// Parse a source fragment used while resolving imports, preserving a loader
+/// cancellation separately from ordinary source parse failures.
+fn parse_source_with_checkpoint(
+    src: &str,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<Result<Program, String>, CancellableLoadError> {
+    let mut lexer = Lexer::new(src);
+    let tokens = lexer.tokenize_with_checkpoint(|| checkpoint())?;
+    let mut parser = Parser::new_with_source(tokens, src);
+    parser.parse_with_checkpoint(|| checkpoint())
+}
+
+fn remove_shadowed_library_functions(
+    src: &str,
+    shadowed_names: &HashSet<String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<String, CancellableLoadError> {
+    let Ok(program) = parse_source_with_checkpoint(src, checkpoint)? else {
+        return Ok(src.to_string());
     };
     let mut ranges = Vec::new();
     for item in &program.items {
+        checkpoint()?;
         let ItemKind::Fn { name, .. } = &item.node else {
             continue;
         };
@@ -516,13 +719,14 @@ fn remove_shadowed_library_functions(src: &str, shadowed_names: &HashSet<String>
     }
 
     if ranges.is_empty() {
-        return src.to_string();
+        return Ok(src.to_string());
     }
 
     ranges.sort_by_key(|range| range.start);
     let mut out = String::with_capacity(src.len());
     let mut cursor = 0usize;
     for range in ranges {
+        checkpoint()?;
         if cursor < range.start {
             out.push_str(&src[cursor..range.start]);
         }
@@ -531,7 +735,7 @@ fn remove_shadowed_library_functions(src: &str, shadowed_names: &HashSet<String>
     if cursor < src.len() {
         out.push_str(&src[cursor..]);
     }
-    out
+    Ok(out)
 }
 
 fn expand_removal_start_to_attributes(src: &str, item_start: usize) -> usize {
@@ -588,7 +792,7 @@ fn resolver_with_builtin_modules(
 ) -> Option<ModuleResolver> {
     let mut combined = resolver.cloned().unwrap_or_default();
 
-    if let Some(prelude_spec) = builtin_prelude_module_spec() {
+    if include_std && let Some(prelude_spec) = builtin_prelude_module_spec() {
         combined
             .modules
             .entry("prelude".to_string())
@@ -707,25 +911,36 @@ fn find_builtin_prelude_root() -> Option<PathBuf> {
     None
 }
 
-fn sources_contain_no_std(sources: &[(PathBuf, String)]) -> bool {
-    sources.iter().any(|(_, src)| source_contains_no_std(src))
+fn used_std_modules(src: &str, target: CfgTarget<'_>) -> HashSet<String> {
+    used_std_modules_with_checkpoint(src, target, &mut || Ok(()))
+        .expect("an infallible loader checkpoint cannot cancel")
 }
 
-fn source_contains_no_std(src: &str) -> bool {
+fn used_std_modules_with_checkpoint(
+    src: &str,
+    target: CfgTarget<'_>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<HashSet<String>, CancellableLoadError> {
+    checkpoint()?;
     let mut lexer = Lexer::new(src);
-    let tokens = lexer.tokenize();
-    tokens.windows(2).any(|pair| {
-        matches!(pair[0].kind, TokenKind::At)
-            && matches!(&pair[1].kind, TokenKind::Ident(name) if name == "no_std")
-    })
-}
-
-fn used_std_modules(src: &str) -> HashSet<String> {
-    let mut lexer = Lexer::new(src);
-    let tokens = lexer.tokenize();
+    let tokens = lexer.tokenize_with_checkpoint(|| checkpoint())?;
     let mut modules = HashSet::new();
+    let disabled_ranges: Vec<_> = parse_source_with_checkpoint(src, checkpoint)?
+        .ok()
+        .into_iter()
+        .flat_map(|program| program.items)
+        .filter(|item| !item_is_enabled(item, target))
+        .map(|item| item.span.start..item.span.end)
+        .collect();
 
     for window in tokens.windows(4) {
+        checkpoint()?;
+        if disabled_ranges
+            .iter()
+            .any(|range| range.contains(&window[0].span.start))
+        {
+            continue;
+        }
         if matches!(&window[0].kind, TokenKind::Ident(name) if name == "std")
             && matches!(window[1].kind, TokenKind::Dot)
             && matches!(&window[2].kind, TokenKind::Ident(_))
@@ -736,7 +951,7 @@ fn used_std_modules(src: &str) -> HashSet<String> {
         }
     }
 
-    modules
+    Ok(modules)
 }
 
 fn collect(
@@ -748,7 +963,11 @@ fn collect(
     resolver: Option<&ModuleResolver>,
     strict: bool,
     dep_edges: &mut Vec<(PathBuf, PathBuf)>,
-) -> Result<(), String> {
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<(), CancellableLoadError> {
+    checkpoint()?;
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("cannot resolve '{}': {}", path.display(), e))?;
@@ -757,10 +976,12 @@ fn collect(
         return Ok(());
     }
 
-    let src = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
+    let src = source_for_path_with_checkpoint(&canonical, overrides, checkpoint)?;
 
-    for (dep, dep_is_lib) in local_import_paths(&canonical, &src, resolver, strict)? {
+    for (dep, dep_is_lib) in local_import_paths(
+        &canonical, &src, resolver, strict, target, overrides, checkpoint,
+    )? {
+        checkpoint()?;
         dep_edges.push((canonical.clone(), dep.clone()));
         collect(
             &dep,
@@ -771,14 +992,40 @@ fn collect(
             resolver,
             strict,
             dep_edges,
+            target,
+            overrides,
+            checkpoint,
         )?;
     }
 
+    checkpoint()?;
     if is_library {
         library_paths.insert(canonical.clone());
     }
     sources.push((canonical, src));
     Ok(())
+}
+
+fn source_for_path(path: &Path, overrides: &HashMap<PathBuf, String>) -> Result<String, String> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve '{}': {error}", path.display()))?;
+    match overrides.get(&canonical) {
+        Some(source) => Ok(source.clone()),
+        None => std::fs::read_to_string(&canonical)
+            .map_err(|error| format!("cannot read '{}': {error}", canonical.display())),
+    }
+}
+
+fn source_for_path_with_checkpoint(
+    path: &Path,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<String, CancellableLoadError> {
+    checkpoint()?;
+    let source = source_for_path(path, overrides)?;
+    checkpoint()?;
+    Ok(source)
 }
 
 /// Parse `src` just enough to find imports that resolve to local `.qz` files.
@@ -788,13 +1035,19 @@ fn local_import_paths(
     src: &str,
     resolver: Option<&ModuleResolver>,
     strict: bool,
-) -> Result<Vec<(PathBuf, bool)>, String> {
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<Vec<(PathBuf, bool)>, CancellableLoadError> {
+    checkpoint()?;
     let dir = file.parent().unwrap_or(Path::new("."));
 
     let mut lexer = Lexer::new(src);
-    let tokens = lexer.tokenize();
+    let tokens = lexer
+        .tokenize_with_checkpoint(|| checkpoint().map_err(|_| crate::cancel::Cancelled))
+        .map_err(|_| CancellableLoadError::Cancelled)?;
     let mut parser = Parser::new(tokens);
-    let Ok(program) = parser.parse() else {
+    let Ok(program) = parser.parse_with_checkpoint(|| checkpoint())? else {
         return Ok(vec![]);
     };
 
@@ -802,9 +1055,13 @@ fn local_import_paths(
     let mut paths = Vec::new();
 
     for item in &program.items {
+        checkpoint()?;
         let ItemKind::Import(ip) = &item.node else {
             continue;
         };
+        if !item_should_include_for(&ip.attributes, target.os, target.arch, target.abi) {
+            continue;
+        }
 
         let Some((base, remainder)) = import_base_and_remainder(ip) else {
             continue;
@@ -816,11 +1073,12 @@ fn local_import_paths(
         {
             if remainder.is_empty() && base == "std" {
                 // import std; — only load sub-modules actually used in source
-                for module in used_std_modules(src) {
-                    if let Some(target) = resolve_module_file(spec, &module)
-                        && seen.insert(target.clone())
+                for module in used_std_modules_with_checkpoint(src, target, checkpoint)? {
+                    if let Some(module_path) =
+                        resolve_module_file(spec, &module, target, overrides, checkpoint)?
+                        && seen.insert(module_path.clone())
                     {
-                        paths.push((target, true));
+                        paths.push((module_path, true));
                     }
                 }
                 continue;
@@ -830,7 +1088,13 @@ fn local_import_paths(
                 spec.entry.clone()
             } else if spec.entry_is_package_root
                 && remainder.len() == 1
-                && is_public_item_in_entry(&spec.entry, &remainder[0])?
+                && is_public_item_in_entry_with_checkpoint(
+                    &spec.entry,
+                    &remainder[0],
+                    target,
+                    overrides,
+                    checkpoint,
+                )?
             {
                 // A library entry is its package root. Public declarations in
                 // that file are exported directly; mod.qz is not required to
@@ -840,13 +1104,28 @@ fn local_import_paths(
                 let root_mod_entry = spec.src_dir.join("mod.qz");
                 if root_mod_entry.exists() {
                     let exported = &remainder[0];
-                    if strict && !is_pub_exported_from_mod(&root_mod_entry, exported)? {
+                    if strict
+                        && !is_pub_exported_from_mod_with_checkpoint(
+                            &root_mod_entry,
+                            exported,
+                            target,
+                            overrides,
+                            checkpoint,
+                        )?
+                    {
                         return Err(format!(
                             "cannot access '{}' from '{}': '{}' is not pub-imported in mod.qz",
                             exported, base, exported
-                        ));
+                        )
+                        .into());
                     }
-                    if let Some(specific) = find_pub_exported_file(&root_mod_entry, exported) {
+                    if let Some(specific) = find_pub_exported_file(
+                        &root_mod_entry,
+                        exported,
+                        target,
+                        overrides,
+                        checkpoint,
+                    )? {
                         if seen.insert(specific.clone()) {
                             paths.push((specific, true));
                         }
@@ -861,14 +1140,28 @@ fn local_import_paths(
                     if mod_entry_path.exists() {
                         if remainder.len() > 1 {
                             let sub = &remainder[1];
-                            if strict && !is_pub_exported_from_mod(&mod_entry_path, sub)? {
+                            if strict
+                                && !is_pub_exported_from_mod_with_checkpoint(
+                                    &mod_entry_path,
+                                    sub,
+                                    target,
+                                    overrides,
+                                    checkpoint,
+                                )?
+                            {
                                 return Err(format!(
                                     "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.qz'",
                                     sub, first, sub, first
-                                ));
+                            ).into());
                             }
                             // Targeted: load only the specific file, skip mod.qz
-                            if let Some(specific) = find_pub_exported_file(&mod_entry_path, sub) {
+                            if let Some(specific) = find_pub_exported_file(
+                                &mod_entry_path,
+                                sub,
+                                target,
+                                overrides,
+                                checkpoint,
+                            )? {
                                 if seen.insert(specific.clone()) {
                                     paths.push((specific, true));
                                 }
@@ -883,6 +1176,7 @@ fn local_import_paths(
                         // then core.qz (where `write` is the imported symbol name).
                         let mut found: Option<PathBuf> = None;
                         for len in (1..=remainder.len()).rev() {
+                            checkpoint()?;
                             let mut candidate = spec.src_dir.clone();
                             for seg in &remainder[..len] {
                                 candidate.push(seg);
@@ -894,7 +1188,13 @@ fn local_import_paths(
                             }
                         }
                         if found.is_none() {
-                            found = resolve_module_file(spec, &remainder[0]);
+                            found = resolve_module_file(
+                                spec,
+                                &remainder[0],
+                                target,
+                                overrides,
+                                checkpoint,
+                            )?;
                         }
                         if found.is_none() && spec.entry.exists() {
                             // A package may expose its API directly from its entry
@@ -919,7 +1219,8 @@ fn local_import_paths(
                     "cannot resolve module import '{}' (expected {})",
                     base,
                     target.to_string_lossy()
-                ));
+                )
+                .into());
             }
             if seen.insert(target.clone()) {
                 paths.push((target, true)); // from module resolver → library
@@ -938,14 +1239,21 @@ fn local_import_paths(
             let mod_entry = base_dir.join("mod.qz");
             if mod_entry.exists() {
                 let sub = &remainder[0];
-                if strict && !is_pub_exported_from_mod(&mod_entry, sub)? {
+                if strict
+                    && !is_pub_exported_from_mod_with_checkpoint(
+                        &mod_entry, sub, target, overrides, checkpoint,
+                    )?
+                {
                     return Err(format!(
                         "cannot access '{}' from '{}': '{}' is not pub-imported in '{}/mod.qz'",
                         sub, base, sub, base
-                    ));
+                    )
+                    .into());
                 }
                 // Targeted: load only the specific file, skip mod.qz
-                if let Some(specific) = find_pub_exported_file(&mod_entry, sub) {
+                if let Some(specific) =
+                    find_pub_exported_file(&mod_entry, sub, target, overrides, checkpoint)?
+                {
                     if seen.insert(specific.clone()) {
                         paths.push((specific, true));
                     }
@@ -957,6 +1265,7 @@ fn local_import_paths(
                 // e.g. `import a.y` → try `a/y.qz`, `import a.y.method` → `a/y/method.qz` then `a/y.qz`
                 let mut found = false;
                 for len in (1..=remainder.len()).rev() {
+                    checkpoint()?;
                     let mut sub = dir.join(&base);
                     for seg in &remainder[..len] {
                         sub.push(seg);
@@ -975,7 +1284,8 @@ fn local_import_paths(
                         "cannot resolve import '{}.{}': no such file",
                         base,
                         remainder.join(".")
-                    ));
+                    )
+                    .into());
                 }
             } // close else { progressive subfile }
         }
@@ -1001,6 +1311,7 @@ fn local_import_paths(
                         .collect();
                     entries.sort();
                     for f in entries {
+                        checkpoint()?;
                         if seen.insert(f.clone()) {
                             paths.push((f, true)); // library = true
                         }
@@ -1010,7 +1321,8 @@ fn local_import_paths(
                 return Err(format!(
                     "cannot resolve import '{}': no such file or directory",
                     base
-                ));
+                )
+                .into());
             }
         }
     }
@@ -1018,77 +1330,171 @@ fn local_import_paths(
     Ok(paths)
 }
 
-fn resolve_module_file(spec: &ModuleSpec, module: &str) -> Option<PathBuf> {
+fn resolve_module_file(
+    spec: &ModuleSpec,
+    module: &str,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<Option<PathBuf>, CancellableLoadError> {
+    checkpoint()?;
     let root_mod_entry = spec.src_dir.join("mod.qz");
     if root_mod_entry.exists() {
-        return find_pub_exported_file(&root_mod_entry, module);
+        return find_pub_exported_file(&root_mod_entry, module, target, overrides, checkpoint);
     }
 
     let target = spec.src_dir.join(module);
     let mod_entry = target.join("mod.qz");
     if mod_entry.exists() {
-        return Some(mod_entry);
+        return Ok(Some(mod_entry));
     }
 
     let file = spec.src_dir.join(format!("{module}.qz"));
     if file.exists() {
-        return Some(file);
+        return Ok(Some(file));
     }
 
-    None
+    Ok(None)
 }
 
-fn is_public_item_in_entry(entry: &Path, name: &str) -> Result<bool, String> {
-    let source = std::fs::read_to_string(entry)
-        .map_err(|error| format!("cannot read '{}': {error}", entry.display()))?;
+fn item_is_enabled(item: &crate::parser::ast::Item, target: CfgTarget<'_>) -> bool {
+    let attributes = match &item.node {
+        ItemKind::Fn { attributes, .. }
+        | ItemKind::Struct { attributes, .. }
+        | ItemKind::Trait { attributes, .. }
+        | ItemKind::Enum { attributes, .. }
+        | ItemKind::TypeAlias { attributes, .. }
+        | ItemKind::ForeignGlobal { attributes, .. } => attributes,
+        ItemKind::Import(import_path) => &import_path.attributes,
+        _ => return true,
+    };
+    item_should_include_for(attributes, target.os, target.arch, target.abi)
+}
+
+fn is_public_item_in_entry(
+    entry: &Path,
+    name: &str,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+) -> Result<bool, String> {
+    let source = source_for_path(entry, overrides)?;
     let program = parse_source(&source)
         .map_err(|error| format!("cannot parse library entry '{}': {error}", entry.display()))?;
-    Ok(program.items.iter().any(|item| match &item.node {
-        ItemKind::Fn {
-            name: item_name,
-            pub_fn,
-            ..
-        } => item_name == name && *pub_fn,
-        ItemKind::Struct {
-            name: item_name,
-            public,
-            ..
-        }
-        | ItemKind::Trait {
-            name: item_name,
-            public,
-            ..
-        }
-        | ItemKind::Enum {
-            name: item_name,
-            public,
-            ..
-        }
-        | ItemKind::TypeAlias {
-            name: item_name,
-            public,
-            ..
-        }
-        | ItemKind::ForeignGlobal {
-            name: item_name,
-            public,
-            ..
-        } => item_name == name && *public,
-        _ => false,
+    Ok(program.items.iter().any(|item| {
+        item_is_enabled(item, target)
+            && match &item.node {
+                ItemKind::Fn {
+                    name: item_name,
+                    pub_fn,
+                    ..
+                } => item_name == name && *pub_fn,
+                ItemKind::Struct {
+                    name: item_name,
+                    public,
+                    ..
+                }
+                | ItemKind::Trait {
+                    name: item_name,
+                    public,
+                    ..
+                }
+                | ItemKind::Enum {
+                    name: item_name,
+                    public,
+                    ..
+                }
+                | ItemKind::TypeAlias {
+                    name: item_name,
+                    public,
+                    ..
+                }
+                | ItemKind::ForeignGlobal {
+                    name: item_name,
+                    public,
+                    ..
+                } => item_name == name && *public,
+                _ => false,
+            }
     }))
+}
+
+fn is_public_item_in_entry_with_checkpoint(
+    entry: &Path,
+    name: &str,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<bool, CancellableLoadError> {
+    let source = source_for_path_with_checkpoint(entry, overrides, checkpoint)?;
+    let program = parse_source_with_checkpoint(&source, checkpoint)?
+        .map_err(|error| format!("cannot parse library entry '{}': {error}", entry.display()))?;
+    for item in &program.items {
+        checkpoint()?;
+        let public = match &item.node {
+            ItemKind::Fn {
+                name: item_name,
+                pub_fn,
+                ..
+            } => item_name == name && *pub_fn,
+            ItemKind::Struct {
+                name: item_name,
+                public,
+                ..
+            }
+            | ItemKind::Trait {
+                name: item_name,
+                public,
+                ..
+            }
+            | ItemKind::Enum {
+                name: item_name,
+                public,
+                ..
+            }
+            | ItemKind::TypeAlias {
+                name: item_name,
+                public,
+                ..
+            }
+            | ItemKind::ForeignGlobal {
+                name: item_name,
+                public,
+                ..
+            } => item_name == name && *public,
+            _ => false,
+        };
+        if item_is_enabled(item, target) && public {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Find the file that a `mod.qz` pub-exports `name` from.
 /// e.g. `pub import map.Map` → returns `mod_entry_dir/map.qz`
-fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
-    let src = std::fs::read_to_string(mod_entry).ok()?;
-    let prog = parse_source(&src).ok()?;
-    let mod_dir = mod_entry.parent()?;
+fn find_pub_exported_file(
+    mod_entry: &Path,
+    name: &str,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<Option<PathBuf>, CancellableLoadError> {
+    let src = source_for_path_with_checkpoint(mod_entry, overrides, checkpoint)?;
+    let Ok(prog) = parse_source_with_checkpoint(&src, checkpoint)? else {
+        return Ok(None);
+    };
+    let Some(mod_dir) = mod_entry.parent() else {
+        return Ok(None);
+    };
 
     for item in &prog.items {
+        checkpoint()?;
         let ItemKind::Import(ip) = &item.node else {
             continue;
         };
+        if !item_should_include_for(&ip.attributes, target.os, target.arch, target.abi) {
+            continue;
+        }
         if !ip.pub_import {
             continue;
         }
@@ -1135,15 +1541,21 @@ fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
                     }
                     let sub_mod_entry = sub_mod.join("mod.qz");
                     if sub_mod_entry.exists()
-                        && let Some(found) = find_pub_exported_file(&sub_mod_entry, name)
+                        && let Some(found) = find_pub_exported_file(
+                            &sub_mod_entry,
+                            name,
+                            target,
+                            overrides,
+                            checkpoint,
+                        )?
                     {
-                        return Some(found);
+                        return Ok(Some(found));
                     }
                     // Also try direct file: path/name.qz
                     sub_mod.push(name);
                     sub_mod.set_extension("qz");
                     if sub_mod.exists() {
-                        return Some(sub_mod);
+                        return Ok(Some(sub_mod));
                     }
                 }
             }
@@ -1159,30 +1571,40 @@ fn find_pub_exported_file(mod_entry: &Path, name: &str) -> Option<PathBuf> {
         }
 
         for file_path in candidates {
+            checkpoint()?;
             if file_path.exists() {
-                return Some(file_path);
+                return Ok(Some(file_path));
             }
             // A public import can name a module directory rather than a flat
             // source file. Resolve its gateway just as `resolve_module_file` does.
             let directory_entry = file_path.with_extension("").join("mod.qz");
             if directory_entry.exists() {
-                return Some(directory_entry);
+                return Ok(Some(directory_entry));
             }
         }
     }
-    None
+    Ok(None)
 }
 
-fn is_pub_exported_from_mod(mod_entry: &Path, name: &str) -> Result<bool, String> {
-    let src = std::fs::read_to_string(mod_entry)
-        .map_err(|e| format!("cannot read '{}': {}", mod_entry.display(), e))?;
-    let Ok(prog) = parse_source(&src) else {
+fn is_pub_exported_from_mod_with_checkpoint(
+    mod_entry: &Path,
+    name: &str,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<bool, CancellableLoadError> {
+    let src = source_for_path_with_checkpoint(mod_entry, overrides, checkpoint)?;
+    let Ok(prog) = parse_source_with_checkpoint(&src, checkpoint)? else {
         return Ok(false);
     };
     for item in &prog.items {
+        checkpoint()?;
         let ItemKind::Import(ip) = &item.node else {
             continue;
         };
+        if !item_should_include_for(&ip.attributes, target.os, target.arch, target.abi) {
+            continue;
+        }
         if !ip.pub_import {
             continue;
         }
@@ -1241,6 +1663,116 @@ mod tests {
         dir.push(format!("{}_{}_{}", prefix, std::process::id(), nanos));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[test]
+    fn cancellable_loader_returns_operational_cancellation_before_io() {
+        let cancellation = crate::cancel::CancellationToken::new();
+        cancellation.cancel();
+        let missing = PathBuf::from("this-path-is-never-opened-when-cancelled.qz");
+
+        let result = load_programs_configured_with_overlays_for_target_cancellable(
+            std::slice::from_ref(&missing),
+            None,
+            false,
+            &[],
+            host_cfg_target(),
+            &HashMap::new(),
+            &cancellation,
+        );
+
+        assert!(matches!(result, Err(CancellableLoadError::Cancelled)));
+    }
+
+    #[test]
+    fn loader_checkpoint_stops_after_entry_read_before_import_traversal() {
+        let root = temp_dir("quazi_loader_checkpoint_traversal");
+        let entry = root.join("main.qz");
+        fs::write(&entry, "import dependency.value; fn main() void { ret; }").expect("write entry");
+
+        let mut checks = 0usize;
+        let result = load_programs_configured_with_overlays_for_target_with_checkpoint(
+            std::slice::from_ref(&entry),
+            None,
+            false,
+            &[],
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut || {
+                checks += 1;
+                (checks < 6)
+                    .then_some(())
+                    .ok_or(CancellableLoadError::Cancelled)
+            },
+        );
+
+        assert!(matches!(result, Err(CancellableLoadError::Cancelled)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn import_discovery_parser_propagates_checkpoint_cancellation() {
+        let mut checks = 0usize;
+        let result = local_import_paths(
+            Path::new("entry.qz"),
+            "import ;",
+            None,
+            true,
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut || {
+                checks += 1;
+                (checks < 5)
+                    .then_some(())
+                    .ok_or(CancellableLoadError::Cancelled)
+            },
+        );
+
+        // Without the parser checkpoint, this malformed import is treated as
+        // an ordinary import-discovery parse failure and returns an empty list.
+        assert!(matches!(result, Err(CancellableLoadError::Cancelled)));
+    }
+
+    #[test]
+    fn finalization_reparse_propagates_checkpoint_cancellation() {
+        let mut checks = 0usize;
+        let result = function_names_in_source_with_checkpoint("fn", &mut || {
+            checks += 1;
+            (checks < 3)
+                .then_some(())
+                .ok_or(CancellableLoadError::Cancelled)
+        });
+
+        // A non-cancellable reparse would hide this malformed source as an
+        // empty function-name list instead of returning the operational stop.
+        assert!(matches!(result, Err(CancellableLoadError::Cancelled)));
+    }
+
+    #[test]
+    fn export_resolution_propagates_checkpoint_cancellation() {
+        let root = temp_dir("quazi_loader_checkpoint_exports");
+        let gateway = root.join("mod.qz");
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).expect("create nested module");
+        fs::write(&gateway, "pub import nested.*;").expect("write gateway");
+        fs::write(nested.join("mod.qz"), "pub import value.answer;").expect("write nested gateway");
+
+        let mut checks = 0usize;
+        let result = find_pub_exported_file(
+            &gateway,
+            "answer",
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut || {
+                checks += 1;
+                (checks < 12)
+                    .then_some(())
+                    .ok_or(CancellableLoadError::Cancelled)
+            },
+        );
+
+        assert!(matches!(result, Err(CancellableLoadError::Cancelled)));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1410,6 +1942,39 @@ mod tests {
     }
 
     #[test]
+    fn prelude_array_as_ptr_typechecks_as_an_unsafe_element_pointer() {
+        let root = temp_dir("quazi_loader_prelude_array_as_ptr");
+        let main_path = root.join("main.qz");
+        fs::write(
+            &main_path,
+            "fn main() void { var args: Array[str] = Array.from(\"one\", \"two\"); unsafe { const raw: *str = args.as_ptr(); if (*raw != \"one\") { panic(\"wrong first argument\"); } } args.free(); }",
+        )
+        .expect("write main source");
+
+        let result = load_programs(&[main_path]).expect("load program with prelude Array");
+        let namespaced_paths = result
+            .namespaced_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let report = crate::analysis::analyze_program_with_source_files(
+            &result.merged_source,
+            &result.program,
+            result.library_fn_names,
+            result.library_char_ranges,
+            result.source_files,
+            namespaced_paths,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "Array[str].as_ptr() must type-check as *str inside unsafe: {:?}",
+            report.errors
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mod_entry_exports_flatten_child_imports() {
         let root = temp_dir("quazi_loader_mod_exports");
         let foo_dir = root.join("foo");
@@ -1485,31 +2050,155 @@ mod tests {
     }
 
     #[test]
-    fn no_std_keeps_prelude_and_std_resolver() {
-        let root = temp_dir("quazi_loader_no_std");
+    fn configured_std_false_omits_prelude_and_std() {
+        let root = temp_dir("quazi_loader_without_std");
         let main_path = root.join("main.qz");
-        fs::write(&main_path, "@no_std\nfn main() void { ret; }").expect("write main.qz");
+        fs::write(&main_path, "fn main() void { ret; }").expect("write main.qz");
 
-        let result = load_programs(&[main_path]).expect("load programs");
+        let result = load_programs_configured(&[main_path], None, false, &[])
+            .expect("load freestanding program");
         assert!(
-            !result.library_file_paths.is_empty(),
-            "expected prelude library files, got {:?}",
+            result.library_file_paths.is_empty(),
+            "freestanding program loaded libraries: {:?}",
             result.library_file_paths
         );
-        assert!(
-            result
-                .library_file_paths
-                .iter()
-                .any(|p| p.ends_with(Path::new("prelude").join("src").join("mod.qz"))),
-            "expected prelude/src/mod.qz to be loaded, got {:?}",
-            result.library_file_paths
-        );
-        // The prelude is now fully self-contained (uses @intrinsic, no import std),
-        // so std/src/core.qz is not a transitive dependency of the prelude.
-        // std is still available for explicit imports even with @no_std
-        // (the resolver registers it), but it won't appear in library_file_paths
-        // unless the user program imports it.
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn skips_cfg_disabled_imports_before_loading_dependencies() {
+        let root = temp_dir("quazi_loader_cfg_imports");
+        let package_root = root.join("pkg");
+        let src_dir = package_root.join("src");
+        fs::create_dir_all(&src_dir).expect("create package source directory");
+        let module_entry = src_dir.join("mod.qz");
+        let windows = src_dir.join("windows.qz");
+        fs::write(
+            &module_entry,
+            "@cfg(target_os=\"windows\") pub import windows;",
+        )
+        .expect("write module entry");
+        fs::write(&windows, "pub fn only_windows() void { ret; }").expect("write windows module");
+        let main_path = root.join("main.qz");
+        fs::write(
+            &main_path,
+            "@cfg(target_os=\"windows\") import pkg.windows.only_windows;",
+        )
+        .expect("write entry");
+        parse_source(&fs::read_to_string(&main_path).expect("read entry"))
+            .expect("conditional import must parse");
+
+        let mut resolver = ModuleResolver::default();
+        resolver
+            .insert(ModuleSpec {
+                name: "pkg".to_string(),
+                root: package_root.clone(),
+                src_dir: src_dir.clone(),
+                entry: module_entry.clone(),
+                entry_is_package_root: false,
+                version: None,
+            })
+            .expect("insert module");
+
+        let linux = load_programs_configured_for_target(
+            &[main_path.clone()],
+            Some(&resolver),
+            false,
+            &[],
+            CfgTarget {
+                os: "linux",
+                arch: "x86_64",
+                abi: "sysv",
+            },
+        )
+        .expect("load linux target");
+        assert!(!linux.loaded_files.contains(&windows));
+
+        let windows_target = load_programs_configured_for_target(
+            &[main_path],
+            Some(&resolver),
+            false,
+            &[],
+            CfgTarget {
+                os: "windows",
+                arch: "x86_64",
+                abi: "win64",
+            },
+        )
+        .expect("load windows target");
+        assert!(
+            windows_target.loaded_files.contains(&windows),
+            "windows target loaded {:?}, expected {}",
+            windows_target.loaded_files,
+            windows.display()
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ignores_std_modules_referenced_only_in_disabled_items() {
+        let source = r#"
+import std;
+@cfg(target_os="windows")
+fn hidden() void { std.windows.sleep(1); }
+"#;
+        let linux = used_std_modules(
+            source,
+            CfgTarget {
+                os: "linux",
+                arch: "x86_64",
+                abi: "sysv",
+            },
+        );
+        assert!(!linux.contains("windows"));
+        let windows = used_std_modules(
+            source,
+            CfgTarget {
+                os: "windows",
+                arch: "x86_64",
+                abi: "win64",
+            },
+        );
+        assert!(windows.contains("windows"));
+    }
+
+    #[test]
+    fn direct_package_exports_respect_cfg_target() {
+        let root = temp_dir("quazi_loader_cfg_direct_export");
+        let entry = root.join("lib.qz");
+        fs::write(
+            &entry,
+            "@cfg(target_os=\"windows\") pub fn only_windows() void { ret; }",
+        )
+        .expect("write package entry");
+        assert!(
+            !is_public_item_in_entry(
+                &entry,
+                "only_windows",
+                CfgTarget {
+                    os: "linux",
+                    arch: "x86_64",
+                    abi: "sysv"
+                },
+                &HashMap::new(),
+            )
+            .expect("inspect linux export")
+        );
+        assert!(
+            is_public_item_in_entry(
+                &entry,
+                "only_windows",
+                CfgTarget {
+                    os: "windows",
+                    arch: "x86_64",
+                    abi: "win64"
+                },
+                &HashMap::new(),
+            )
+            .expect("inspect windows export")
+        );
         let _ = fs::remove_dir_all(root);
     }
 

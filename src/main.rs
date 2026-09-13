@@ -6,7 +6,10 @@ mod abi;
 pub mod analysis;
 mod backend;
 pub mod bytecode;
+pub mod cancel;
 pub mod cli;
+#[cfg(test)]
+mod docs;
 mod header;
 mod incremental;
 pub mod lexer;
@@ -16,7 +19,9 @@ mod package;
 pub mod parser;
 mod progress;
 mod project;
+mod runtime_layout;
 pub mod semantic;
+mod test_runner;
 
 use analysis::{analyze_program_with_source_files, format_quazi_source};
 use backend::linker::{LinkerInvocation, link_object, remove_temp, write_temp_object};
@@ -103,6 +108,7 @@ fn run_pipeline(
     }
 
     let mut cg = Codegen::new(&sema_report);
+    cg.set_native_mangling(true);
     let chunks = cg
         .compile_program(program, &source_files)
         .unwrap_or_else(|error| {
@@ -143,11 +149,10 @@ fn run_pipeline(
         }
 
         EmitType::Object => {
-            let no_crash = source_contains_no_crash(src);
             let obj_bytes = compile_to_object(
                 &chunks,
                 false,
-                no_crash,
+                false,
                 Some(&sema_report),
                 sema_report.main_takes_args,
                 &TargetSpec::host(),
@@ -170,11 +175,10 @@ fn run_pipeline(
         }
 
         EmitType::Binary => {
-            let no_crash = source_contains_no_crash(src);
             let obj_bytes = compile_to_object(
                 &chunks,
                 true,
-                no_crash,
+                false,
                 Some(&sema_report),
                 sema_report.main_takes_args,
                 &TargetSpec::host(),
@@ -314,15 +318,6 @@ fn strip_binary(path: &Path) {
     }
 }
 
-fn source_contains_no_crash(src: &str) -> bool {
-    let mut lexer = Lexer::new(src);
-    let tokens = lexer.tokenize();
-    tokens.windows(2).any(|pair| {
-        matches!(pair[0].kind, lexer::token::TokenKind::At)
-            && matches!(&pair[1].kind, lexer::token::TokenKind::Ident(name) if name == "no_crash")
-    })
-}
-
 fn compile_to_object(
     chunks: &[crate::bytecode::Chunk],
     emit_start: bool,
@@ -331,6 +326,28 @@ fn compile_to_object(
     main_takes_args: bool,
     target: &TargetSpec,
 ) -> Vec<u8> {
+    try_compile_to_object(
+        chunks,
+        emit_start,
+        no_crash,
+        report,
+        main_takes_args,
+        target,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("\x1b[31;1merror:\x1b[0m codegen failed: {}", e);
+        std::process::exit(1);
+    })
+}
+
+fn try_compile_to_object(
+    chunks: &[crate::bytecode::Chunk],
+    emit_start: bool,
+    no_crash: bool,
+    report: Option<&crate::semantic::SemanticReport>,
+    main_takes_args: bool,
+    target: &TargetSpec,
+) -> Result<Vec<u8>, String> {
     let mut target = target.clone();
     if !emit_start {
         target = target.without_start();
@@ -341,11 +358,8 @@ fn compile_to_object(
     let backend = select_backend(&target);
     backend
         .compile(chunks, &target, report, main_takes_args)
-        .unwrap_or_else(|e| {
-            eprintln!("\x1b[31;1merror:\x1b[0m codegen failed: {}", e);
-            std::process::exit(1);
-        })
-        .bytes
+        .map(|output| output.bytes)
+        .map_err(|error| format!("codegen failed: {error}"))
 }
 
 /// Emit chunks to bytecode, object, or binary (same as run_pipeline but skips analysis/codegen).
@@ -505,10 +519,53 @@ fn external_tool_path(path: &std::path::Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn load_with_optional_project(files: &[PathBuf]) -> Result<loader::LoadResult, String> {
+fn load_with_optional_project_for_target(
+    files: &[PathBuf],
+    target: TargetSpec,
+) -> Result<loader::LoadResult, String> {
     let ctx = ProjectContext::discover(&files[0])?;
-    let resolver_owned: Option<loader::ModuleResolver> = ctx.map(|c| c.resolver);
-    loader::load_programs_with_resolver(files, resolver_owned.as_ref())
+    let settings = ctx
+        .as_ref()
+        .map(|context| context.config.package)
+        .unwrap_or_default();
+    let resolver_owned = ctx.map(|context| context.resolver);
+    loader::load_programs_configured_for_target(
+        files,
+        resolver_owned.as_ref(),
+        settings.std,
+        &[],
+        cfg_target_for_spec(&target),
+    )
+}
+
+fn cfg_target_for_spec(target: &TargetSpec) -> loader::CfgTarget<'static> {
+    match target.os {
+        backend::target::Os::Windows => loader::CfgTarget {
+            os: "windows",
+            arch: "x86_64",
+            abi: "win64",
+        },
+        backend::target::Os::Linux => loader::CfgTarget {
+            os: "linux",
+            arch: "x86_64",
+            abi: "sysv",
+        },
+        backend::target::Os::MacOs => loader::CfgTarget {
+            os: "macos",
+            arch: "x86_64",
+            abi: "sysv",
+        },
+    }
+}
+
+fn apply_package_settings(
+    mut target: TargetSpec,
+    settings: project::PackageSettings,
+) -> TargetSpec {
+    if !settings.crash_handler {
+        target = target.with_no_crash();
+    }
+    target
 }
 
 fn load_project_context() -> ProjectContext {
@@ -680,7 +737,7 @@ fn scaffold_project(root: &Path, pkg_name: &str, lib: bool) {
     if lib {
         let library_name = scaffold_library_name(pkg_name);
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nout_dir = \"build\"\n\n[lib]\nname = \"{}\"\npath = \"src/lib.qz\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nout_dir = \"build\"\nstd = true\ncrash_handler = true\nmangling = true\n\n[lib]\nname = \"{}\"\npath = \"src/lib.qz\"\n",
             library_name, library_name
         );
         write_file(&root.join("quazi.toml"), &toml);
@@ -692,7 +749,7 @@ fn scaffold_project(root: &Path, pkg_name: &str, lib: bool) {
         write_file(&src_dir.join("lib.qz"), &lib_src);
     } else {
         let toml = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nout_dir = \"build\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.qz\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nout_dir = \"build\"\nstd = true\ncrash_handler = true\nmangling = true\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.qz\"\n",
             pkg_name, pkg_name
         );
         write_file(&root.join("quazi.toml"), &toml);
@@ -867,6 +924,7 @@ fn build_with_progress(
     no_progress: bool,
     initial_progress: Option<progress::BuildProgress>,
     project_resolver: Option<&loader::ModuleResolver>,
+    package_settings: project::PackageSettings,
 ) {
     use progress::{
         BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count,
@@ -956,8 +1014,16 @@ fn build_with_progress(
     // ── Step 1: Lexing (file I/O + tokenize) ─────────────────────────────────
     prog.begin("frontend");
     let result = match project_resolver
-        .map(|resolver| loader::load_programs_with_resolver(files, Some(resolver)))
-        .unwrap_or_else(|| load_with_optional_project(files))
+        .map(|resolver| {
+            loader::load_programs_configured_for_target(
+                files,
+                Some(resolver),
+                package_settings.std,
+                &[],
+                cfg_target_for_spec(&target),
+            )
+        })
+        .unwrap_or_else(|| load_with_optional_project_for_target(files, target.clone()))
     {
         Ok(r) => r,
         Err(e) => {
@@ -1087,6 +1153,7 @@ fn build_with_progress(
 
     prog.begin("bytecode");
     let mut cg = bytecode::Codegen::new(&sema);
+    cg.set_native_mangling(package_settings.mangling);
     cg.set_incremental_codegen(cached_codegen_units, source_hashes);
     if qzi_metadata
         .as_ref()
@@ -1162,7 +1229,7 @@ fn build_with_progress(
             eprint!("{}", chunk);
         }
     }
-    let no_crash = source_contains_no_crash(&result.merged_source);
+    let no_crash = !package_settings.crash_handler;
     let project_qzi = qzi_metadata.clone().map(|mut metadata| {
         metadata.main_takes_args = sema.main_takes_args;
         let interface = if metadata.kind == bytecode::QziModuleKind::Library {
@@ -1248,7 +1315,7 @@ fn build_with_progress(
 
         EmitType::Object => {
             // ── Step 3: Native ────────────────────────────────────────────────
-            let arch = arch_label();
+            let arch = arch_label(target);
             prog.begin(&format!("native  {}", arch));
             let obj_bytes = compile_to_object(
                 &chunks,
@@ -1272,7 +1339,7 @@ fn build_with_progress(
 
         EmitType::Binary => {
             // ── Step 3: Native ────────────────────────────────────────────────
-            let arch = arch_label();
+            let arch = arch_label(target);
             prog.begin(&format!("native  {}", arch));
             let obj_bytes = compile_to_object(
                 &chunks,
@@ -1335,7 +1402,9 @@ fn main() {
     let args = Args::parse();
     let no_color_output = matches!(
         &args.command,
-        CliCmd::Build { no_color: true, .. } | CliCmd::Run { no_color: true, .. }
+        CliCmd::Build { no_color: true, .. }
+            | CliCmd::Run { no_color: true, .. }
+            | CliCmd::Test { no_color: true, .. }
     );
     NO_COLOR_OUTPUT.store(no_color_output, Ordering::Relaxed);
 
@@ -1473,6 +1542,7 @@ fn main() {
                         eprintln!("\x1b[31;1merror:\x1b[0m {e}");
                         std::process::exit(1);
                     });
+                let target = apply_package_settings(target, ctx.config.package);
                 let manifest_link = ctx.link_for_target(target.triple());
                 let manifest_linker = manifest_link
                     .linker
@@ -1567,6 +1637,7 @@ fn main() {
                     no_progress,
                     Some(preview_progress),
                     Some(&ctx.resolver),
+                    ctx.config.package,
                 );
                 let _ = (emit, do_strip);
 
@@ -1652,12 +1723,18 @@ fn main() {
                     })
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let qzi_context = ProjectContext::discover(&cwd).unwrap_or_else(|e| {
+                    eprintln!("\x1b[31;1merror:\x1b[0m {e}");
+                    std::process::exit(1);
+                });
+                let package_settings = qzi_context
+                    .as_ref()
+                    .map(|context| context.config.package)
+                    .unwrap_or_default();
+                let target = apply_package_settings(target, package_settings);
                 if matches!(emit, EmitType::Binary) {
-                    let cwd = std::env::current_dir().unwrap_or_default();
-                    if let Some(ctx) = ProjectContext::discover(&cwd).unwrap_or_else(|e| {
-                        eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                        std::process::exit(1);
-                    }) {
+                    if let Some(ctx) = qzi_context {
                         qzi_link_flags.extend(native_link_flags(&ctx).unwrap_or_else(|e| {
                             eprintln!("\x1b[31;1merror:\x1b[0m {e}");
                             std::process::exit(1);
@@ -1686,7 +1763,7 @@ fn main() {
                     Some(&qzi_link_flags),
                     explicit_linker,
                     debug,
-                    false,
+                    !package_settings.crash_handler,
                     main_takes_args,
                     true,
                     &target,
@@ -1853,6 +1930,14 @@ fn main() {
                         .map(|path| format!("-L{}", path.display())),
                 );
                 link_flags.extend(libraries.iter().map(|name| format!("-l{name}")));
+                let package_settings = ProjectContext::discover(&source_files[0])
+                    .unwrap_or_else(|error| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                        std::process::exit(1);
+                    })
+                    .map(|context| context.config.package)
+                    .unwrap_or_default();
+                let target = apply_package_settings(target, package_settings);
                 build_with_progress(
                     &source_files,
                     &out,
@@ -1872,6 +1957,7 @@ fn main() {
                     no_progress,
                     None,
                     None,
+                    package_settings,
                 );
                 for object in &compiled_c_objects {
                     remove_temp(object);
@@ -1898,11 +1984,21 @@ fn main() {
             output,
             target,
         } => {
+            let loader_target = match target {
+                cli::HeaderTarget::X86_64Linux => TargetSpec::x86_64_linux(),
+                cli::HeaderTarget::X86_64Windows => TargetSpec::x86_64_windows(),
+            };
             let result = if files.is_empty() {
                 let ctx = load_project_context();
-                loader::load_programs_with_resolver(&[ctx.config.entry], Some(&ctx.resolver))
+                loader::load_programs_configured_for_target(
+                    &[ctx.config.entry],
+                    Some(&ctx.resolver),
+                    ctx.config.package.std,
+                    &[],
+                    cfg_target_for_spec(&loader_target),
+                )
             } else {
-                load_with_optional_project(&files)
+                load_with_optional_project_for_target(&files, loader_target.clone())
             }
             .unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {error}");
@@ -1967,7 +2063,18 @@ fn main() {
                     std::process::exit(1);
                 });
             let entry = ctx.config.entry.clone();
-            let result = loader::load_programs_with_resolver(&[entry], Some(&ctx.resolver))
+            let target = match target {
+                Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
+                Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
+                None => TargetSpec::host(),
+            };
+            let result = loader::load_programs_configured_for_target(
+                &[entry],
+                Some(&ctx.resolver),
+                ctx.config.package.std,
+                &[],
+                cfg_target_for_spec(&target),
+            )
                 .unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                     std::process::exit(1);
@@ -1981,11 +2088,6 @@ fn main() {
                 .iter()
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
-            let target = match target {
-                Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
-                Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
-                None => TargetSpec::host(),
-            };
             let (target_os, target_abi) = match target.os {
                 backend::target::Os::Windows => ("windows", "win64"),
                 backend::target::Os::Linux => ("linux", "sysv"),
@@ -2001,6 +2103,21 @@ fn main() {
                 result.source_files,
                 namespaced_paths,
             );
+        }
+
+        CliCmd::Test {
+            filter,
+            no_color,
+            no_unicode,
+        } => {
+            let success = test_runner::run(filter.as_deref(), no_color, no_unicode)
+                .unwrap_or_else(|error| {
+                    eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                    std::process::exit(1);
+                });
+            if !success {
+                std::process::exit(1);
+            }
         }
 
         CliCmd::Fetch => {

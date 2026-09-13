@@ -50,7 +50,8 @@ impl<T> Spanned<T> {
 
 #[derive(Debug, Clone)]
 pub enum Literal {
-    Int(i64),
+    /// Unsigned source magnitude. Negative values are represented by `Neg`.
+    Int(u64),
     Float(f64),
     String(String),
     Bytes(Vec<u8>),
@@ -59,10 +60,11 @@ pub enum Literal {
 
 #[derive(Debug, Clone)]
 pub enum UnaryOpKind {
-    Neg,   // -x
-    Not,   // !x
-    Ref,   // &x  (take address)
-    Deref, // *x (dereference)
+    Neg,    // -x
+    Not,    // !x
+    Ref,    // &x  (take shared address)
+    RefMut, // &x! (take exclusive address)
+    Deref,  // *x (dereference)
 }
 
 #[derive(Debug, Clone)]
@@ -195,7 +197,7 @@ pub type Expr = Spanned<ExprKind>;
 
 #[derive(Debug, Clone)]
 pub enum LiteralValue {
-    Int(i64),
+    Int(u64),
     Float(f64),
     Str(String),
     Bool(bool),
@@ -270,6 +272,10 @@ pub enum TypeKind {
     /// Immutable length-carrying byte string produced by `b"..."`/`br"..."`.
     Bytes,
     Void,
+    /// Internal semantic error sentinel. The parser never produces this type.
+    /// It suppresses follow-on diagnostics after an earlier error and must not
+    /// survive into executable code or a public interface.
+    Error,
     Any,
     Named {
         name: String,
@@ -290,6 +296,10 @@ pub enum TypeKind {
     },
     /// `&T` — shared reference.
     Ref {
+        inner: Box<Type>,
+    },
+    /// `&T!` — exclusive reference.
+    MutRef {
         inner: Box<Type>,
     },
     /// `*T` — raw pointer (unsafe to dereference).
@@ -334,6 +344,7 @@ impl std::fmt::Display for TypeKind {
             TypeKind::Str => write!(f, "str"),
             TypeKind::Bytes => write!(f, "bytes"),
             TypeKind::Void => write!(f, "void"),
+            TypeKind::Error => write!(f, "<error>"),
             TypeKind::Any => write!(f, "any"),
             TypeKind::Named { name, type_args } => {
                 if type_args.is_empty() {
@@ -353,6 +364,7 @@ impl std::fmt::Display for TypeKind {
             TypeKind::FlexibleArray { elem_ty } => write!(f, "[{}; ..]", elem_ty.node),
             TypeKind::Slice { elem_ty } => write!(f, "[{}]", elem_ty.node),
             TypeKind::Ref { inner } => write!(f, "&{}", inner.node),
+            TypeKind::MutRef { inner } => write!(f, "&{}!", inner.node),
             TypeKind::RawPtr { inner } => write!(f, "*{}", inner.node),
             TypeKind::Never => write!(f, "!"),
             TypeKind::Fn { params, return_ty } => {
@@ -387,7 +399,7 @@ pub type Type = Spanned<TypeKind>;
 #[derive(Debug, Clone)]
 pub enum AttrVal {
     Str(String),
-    Int(i64),
+    Int(u64),
     Ident(String),
 }
 
@@ -429,8 +441,24 @@ pub enum ForLoop {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
+    pub name_span: Span,
     pub ty: Type,
     pub variadic: bool,
+    pub attributes: Vec<Attribute>,
+}
+
+/// A named member of a struct or union.
+///
+/// Attributes are intentionally preserved without language-level interpretation.
+/// Libraries and source tools may assign meaning to them while every parser can
+/// still represent attributes it does not recognize.
+#[derive(Debug, Clone)]
+pub struct AggregateField {
+    pub name: String,
+    pub ty: Type,
+    pub is_const: bool,
+    /// Optional C bit width, meaningful only for `@repr(C)` aggregates.
+    pub bit_width: Option<u8>,
     pub attributes: Vec<Attribute>,
 }
 
@@ -485,7 +513,17 @@ pub struct Block {
 #[derive(Debug, Clone)]
 pub struct ImportPath {
     pub path: Vec<String>,
+    /// Source spans for `path`, in the same order as its segments.
+    pub path_spans: Vec<Span>,
     pub items: ImportItems,
+    /// Exact source spans of imported identifier selectors. A single or
+    /// aliased import has one entry; a braced import has one per listed
+    /// selector. Wildcard imports have no identifier selector and are empty.
+    pub selector_spans: Vec<Span>,
+    /// Exact source span of the local alias, when the import has one.
+    pub alias_span: Option<Span>,
+    /// Attributes attached to this import, including target-selection `@cfg`.
+    pub attributes: Vec<Attribute>,
     pub span: Span,
     pub pub_import: bool,
     /// True when the import starts with `./` — forces local-only file resolution,
@@ -505,6 +543,9 @@ pub enum ImportItems {
 pub struct TraitMethod {
     pub name: String,
     pub generic_params: Vec<String>,
+    /// Parameter names are preserved so `self` remains distinguishable from
+    /// ordinary arguments in QZI interfaces and dynamic-call checking.
+    pub param_names: Vec<String>,
     pub params: Vec<Type>,
     pub return_ty: Type,
     pub span: Span,
@@ -521,6 +562,9 @@ pub struct EnumVariant {
 pub enum ItemKind {
     Fn {
         name: String,
+        /// Exact source span of the declared name. Synthetic compiler-generated
+        /// functions have no source spelling and use `None`.
+        name_span: Option<Span>,
         generic_params: Vec<String>,
         params: Vec<Param>,
         return_ty: Type,
@@ -535,9 +579,7 @@ pub enum ItemKind {
     Struct {
         name: String,
         generic_params: Vec<String>,
-        fields: Vec<(String, Type, bool)>, // (name, type, const?)
-        /// Optional C bit width for each field, parallel to `fields`.
-        bit_widths: Vec<Option<u8>>,
+        fields: Vec<AggregateField>,
         is_union: bool,
         attributes: Vec<Attribute>,
         public: bool,

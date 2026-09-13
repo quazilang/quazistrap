@@ -233,7 +233,10 @@ impl Lexer {
         }
 
         let span = self.make_span(start, self.pos, line, col);
-        Token::new(TokenKind::Error("unterminated raw string".to_string()), span)
+        Token::new(
+            TokenKind::Error("unterminated raw string".to_string()),
+            span,
+        )
     }
 
     fn read_byte_string(&mut self, start: usize, line: usize, col: usize, raw: bool) -> Token {
@@ -347,7 +350,10 @@ impl Lexer {
         let kind = if is_float {
             TokenKind::Float(s.parse().unwrap_or(0.0))
         } else {
-            TokenKind::Int(s.parse().unwrap_or(0))
+            match s.parse::<u64>() {
+                Ok(value) => TokenKind::Int(value),
+                Err(_) => TokenKind::Error(format!("integer literal `{s}` is outside the u64 range")),
+            }
         };
 
         let span = self.make_span(start, self.pos, line, col);
@@ -599,9 +605,21 @@ impl Lexer {
     }
 
     pub fn tokenize(&mut self) -> Vec<Token> {
+        self.tokenize_with_checkpoint(|| Ok::<(), std::convert::Infallible>(()))
+            .expect("an infallible lexer checkpoint cannot fail")
+    }
+
+    /// Tokenize while polling a caller-owned cooperative cancellation point
+    /// before each token. The lexer does not retain the callback, so callers
+    /// can use request-scoped state without changing ordinary compiler paths.
+    pub fn tokenize_with_checkpoint<E>(
+        &mut self,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<Vec<Token>, E> {
         let mut tokens = Vec::new();
 
         loop {
+            checkpoint()?;
             let tok = self.next_token();
             let is_eof = tok.kind == TokenKind::Eof;
             tokens.push(tok);
@@ -610,7 +628,7 @@ impl Lexer {
             }
         }
 
-        tokens
+        Ok(tokens)
     }
 }
 
@@ -643,6 +661,20 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_can_interrupt_tokenization_between_tokens() {
+        let mut lexer = Lexer::new("alpha beta gamma");
+        let mut polls = 0;
+
+        let result = lexer.tokenize_with_checkpoint(|| {
+            polls += 1;
+            if polls == 3 { Err(()) } else { Ok(()) }
+        });
+
+        assert_eq!(result, Err(()));
+        assert_eq!(polls, 3);
+    }
+
+    #[test]
     fn isize_usize_are_keywords() {
         let mut lexer = Lexer::new("isize usize");
         let tokens = lexer.tokenize();
@@ -665,6 +697,18 @@ mod tests {
         assert!(matches!(tokens[8].kind, TokenKind::Float16));
         assert!(matches!(tokens[9].kind, TokenKind::Float32));
         assert!(matches!(tokens[10].kind, TokenKind::Float64));
+    }
+
+    #[test]
+    fn preserves_the_full_u64_literal_range() {
+        let tokens = Lexer::new("18446744073709551615").tokenize();
+        assert!(matches!(tokens[0].kind, TokenKind::Int(value) if value == u64::MAX));
+    }
+
+    #[test]
+    fn rejects_integer_literals_beyond_u64() {
+        let tokens = Lexer::new("18446744073709551616").tokenize();
+        assert!(matches!(tokens[0].kind, TokenKind::Error(ref message) if message.contains("u64 range")));
     }
 
     #[test]
@@ -765,5 +809,4 @@ mod string_tests {
     fn unterminated_multiline_raw_strings_are_errors() {
         assert!(escape_error("`first\nsecond").contains("unterminated raw string"));
     }
-
 }

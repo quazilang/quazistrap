@@ -1,0 +1,13 @@
+fn main() i32 {
+    var total = 0;
+    for number : 0..10 {
+        if (number % 2 == 0) {
+            total += number;
+        }
+    }
+    const status = match total {
+        20 => 0,
+        _ => 1,
+    };
+    ret status;
+}

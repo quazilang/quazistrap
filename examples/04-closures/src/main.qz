@@ -1,9 +1,9 @@
 import std.io.println;
 
 fn main() i32 {
-    var double = |x| x * 2;
-    var square = |x| x * x;
-    var negate = |x| x * -1;
+    var double: fn(i32) i32 = |x| x * 2;
+    var square: fn(i32) i32 = |x| x * x;
+    var negate: fn(i32) i32 = |x| x * -1;
 
     println("double(7)       = {}", double(7));
     println("square(7)       = {}", square(7));
