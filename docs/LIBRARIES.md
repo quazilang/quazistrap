@@ -83,15 +83,33 @@ Build dependency trees show logical import names such as `std.io` and
 Git's reported percentage as an accurate progress bar followed by the same green
 status diamond as build stages; failures use a red diamond.
 
-## QZI v6
+## QZI v8
 
 QZI is both the portable bytecode container and compiled-library format. It is
-not a package-manager archive. A v6 file contains:
+not a package-manager archive. A v8 file contains:
 
 1. package name, version, `executable`/`library` kind, and entry signature;
 2. a source-visible public interface;
 3. symbolic call relocations;
 4. bytecode chunks and constant pools.
+
+V7 recorded unsigned integer division, remainder, and relational semantics in
+instruction flags. This prevents high-bit `u64` and `usize` values from being
+miscompiled as signed integers. Every `Lea` also carries an explicit nonzero
+address-taken block length so register allocation cannot recycle referenced
+slots. V8 adds the phase-2 layout-query intrinsic boundary:
+`quazi.size_of[T]()` and `quazi.align_of[T]()` are assigned stable intrinsic IDs,
+and current codegen resolves them to constants in each monomorphized wrapper.
+The current reader remains compatible with compatible v2-v7 files; v1
+requires a source rebuild because it omitted frame metadata, and legacy files
+with implicit `Lea` metadata, parameterized v6 trait interfaces, or v6 public
+runtime-`any` interfaces require rebuilding. Older compilers must reject v8
+rather than silently ignore the new semantics.
+
+QZI v7 is also the affine function-value ownership boundary. Compatible older
+artifacts remain readable only when they expose no owned `fn` contract and
+contain no legacy closure or named-function-forwarder chunks. Those artifacts
+must be rebuilt from source so callers and callees agree on environment cleanup.
 
 The frontend checks a QZI dependency against its embedded interface. The QZI
 linker resolves symbolic calls by dotted name and combines bytecode. A
@@ -110,7 +128,7 @@ Generic bodies are not yet a stable binary-library ABI. The compiler rejects a
 QZI library with public generic declarations and tells the author to distribute
 source until generic templates gain a portable representation.
 
-## QZC v2
+## QZC v6
 
 QZC means **Quazi Compilation Cache**. A project uses one cache file:
 
@@ -121,6 +139,8 @@ build/quazi/<architecture>-<os>/default/incremental.qzc
 After a successful build it stores compiler/target identity, canonical input
 paths and SHA-256 hashes, validated linked QZI, backend metadata, and reusable
 pre-WPO function chunks keyed by source hash and semantic-context fingerprint.
+V6 invalidates cache entries produced before phase-2 layout intrinsic lowering
+and the current layout ABI boundary.
 
 An exact hit skips frontend and WPO and reuses linked QZI. On a partial hit the
 compiler parses and analyzes the complete program for sound WPO, restores

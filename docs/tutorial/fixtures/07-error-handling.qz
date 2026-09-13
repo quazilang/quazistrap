@@ -1,0 +1,12 @@
+fn divide(numerator: i32, denominator: i32) Result[i32, str] {
+    if (denominator == 0) { ret Err("division by zero"); }
+    ret Ok(numerator / denominator);
+}
+
+fn main() i32 {
+    const status = match divide(8, 2) {
+        Ok(value) => value - 4,
+        Err(_) => 1,
+    };
+    ret status;
+}

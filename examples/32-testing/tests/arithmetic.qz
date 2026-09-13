@@ -1,0 +1,13 @@
+@test
+fn addition_works() void {
+    if (20 + 22 != 42) {
+        panic("addition produced the wrong value");
+    }
+}
+
+@test
+fn multiplication_works() void {
+    if (6 * 7 != 42) {
+        panic("multiplication produced the wrong value");
+    }
+}

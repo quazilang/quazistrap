@@ -44,7 +44,7 @@ escapes, and escaped newlines. Backtick strings preserve contents exactly.
 - Signed integers: `i8`, `i16`, `i32`, `i64`, `isize`.
 - Unsigned integers: `u8`, `u16`, `u32`, `u64`, `usize`.
 - Floating point: `f16`, `f32`, `f64`.
-- Other primitives: `bool`, `str`, `bytes`, `void`, `any`, `!`.
+- Other primitives: `bool`, `str`, `bytes`, `void`, `!`.
 - Containers/references: `[T; N]`, `[T]`, `&T`, `*T`.
 - Named/generic types: `Name`, `Name[T, U]`.
 - Functions: `fn(T, U) V`; trait objects: `dyn Trait`.
@@ -53,12 +53,23 @@ escapes, and escaped newlines. Backtick strings preserve contents exactly.
 
 ```quazi
 const wide: i64 = 42 as i64;
-const ratio: f64 = 3 as f64 / 2.0;
 ```
+
+The current compiler supports `as` within the integer family; integer-to-float
+and float-to-integer casts are not implemented yet.
 
 `str` is immutable UTF-8. Indexes count Unicode scalars, negative indexes count
 from the end, and slices follow Python spelling: `text[start:end:step]`.
 `String` is the owned growable string from the prelude.
+
+`any` is reserved syntax, not a runtime value type. Quazi currently has no
+tagged dynamic-value representation, so `any` is rejected in variables,
+fields, parameters, returns, casts, and generic arguments. The sole supported
+use is the final `...args: any` pseudo-parameter of an `@format` function; the
+compiler converts each argument at the call site and the function body cannot
+access that pseudo-parameter. Use a generic parameter for static polymorphism,
+`dyn Trait` for trait-object dispatch, or an exact `@repr(C)` callback at a
+foreign boundary.
 
 ## Operators
 
@@ -91,6 +102,33 @@ greet(punctuation="!", name="Quazi");
 var double: fn(i32) i32 = |value| value * 2;
 ```
 
+Closure parameters are inferred from an expected `fn(...) Return` type. That
+context may come from a typed binding, assignment, return, or an argument to a
+function value, module function, inherent method, or dynamic trait method. A
+standalone closure binding therefore needs an explicit function type, as in
+`double` above.
+
+Quazi `fn` values are affine owners of their closure environment. Assigning,
+passing, or returning one transfers ownership; using the previous binding after
+the move is an error. Replacing a binding destroys its previous environment,
+and the last owner is destroyed at scope exit. Calling a function value only
+borrows it, so it may be called repeatedly.
+
+The current safe closure checkpoint permits immutable captures and closure
+parameters/results only when their runtime value is a plain scalar (`bool`, a
+number, raw pointer, or C function pointer). Owned values, strings, references,
+mutable captures, and `fn` values nested inside arrays or named aggregates are
+rejected until recursive environment and aggregate destruction is available.
+Callable parameter and return types must match exactly; numeric conversions do
+not adapt a function signature. See [Migrating function values and
+closures](migrations/closures.md).
+
+Until cleanup state becomes path-sensitive, an outer `fn` owner cannot be moved
+from only one branch, loop iteration, short-circuit operand, or match arm. Move
+it before control flow or create and consume the owner entirely inside that
+path. A function-valued assignment is not itself transferable: assign first,
+then move the binding. Match expressions cannot currently produce `fn` values.
+
 Positional arguments precede named arguments. Quazi variadics declare a typed
 final parameter as `...values: T`; bare `...` is reserved for C variadic
 `@api` declarations.
@@ -105,7 +143,8 @@ else { ... }
 for i : 0..10 { ... }              // exclusive upper bound
 for value : values { ... }
 for index, value : values { ... }
-for (var i = 0; i < 10; i++) { ... }
+for var i = 0; i < 10; i++ { ... }
+for ; condition; update { ... }
 for (condition) { ... }
 for { ... }
 ```
@@ -197,6 +236,28 @@ unsafe fn read_raw(pointer: *u8) u8 { ret *pointer; }
 unsafe { const byte = read_raw(pointer); }
 ```
 
+Shared references currently use a conservative lexical model:
+
+- `&value` accepts only a local variable or parameter (parentheses are fine).
+- A value never converts into a reference, and reference pointee types are
+  invariant: `&i32` is not `&u64`.
+- A shared-reference binding cannot be rebound, returned, stored in an owned
+  aggregate, or captured by a closure. The referenced owner cannot be mutated,
+  moved, or passed to a method while that borrow remains in the function.
+- Fields, indexes, dereferences, calls, and temporary expressions are not yet
+  valid address-of operands. These need real place-address lowering.
+- Dereferencing a shared reference materializes only scalar/value-like
+  pointees. Aggregate pointees require immutable receiver/view semantics; a
+  shallow aggregate load would otherwise create a mutable alias.
+- `str`/`&str` retain their existing representation-identical string-view rule.
+
+These restrictions keep shared references sound while the broader lifetime and
+whole-program ownership model is implemented. `&T!` / `&value!` provide the
+currently conservative exclusive-reference notation. A direct `&local` may be stored or passed as an
+exact raw pointer, but dereferencing that pointer or calling an unsafe function
+still requires an unsafe context. Raw pointers never convert back into safe
+references.
+
 Owned values such as `String`, `Array[T]`, `Box[T]`, and OS handles are cleaned
 at lexical scope exit, including early returns. Returning or moving an owned
 value transfers ownership; use-after-move is rejected. Borrowed method receivers
@@ -204,15 +265,52 @@ do not consume their owner. See [TYPES_AND_MEMORY.md](TYPES_AND_MEMORY.md).
 
 ## Attributes
 
+Attributes have a universal syntactic form: `@name(arguments...)`. Their
+arguments are string or integer literals, identifiers, or named values such as
+`name="value"`. The parser preserves attributes it does not recognize; it never
+maintains a whitelist for third-party metadata.
+
+Struct and union fields accept postfix attributes after their type (and, for C
+bitfields, before or after the width):
+
+```quazi
+struct User {
+    name: String @ini("username") @json(name="user_name"),
+    age: u32 @ini("age"),
+}
+```
+
+These field attributes are opaque language metadata. Quazi itself does not
+make `@ini`, `@json`, or any other field attribute imply serialization,
+validation, or layout behavior. A library, derive implementation, or external
+tool chooses its meaning. Metadata is retained in the parsed AST and public QZI
+interfaces so tooling can handle future community attributes without a parser
+upgrade. Runtime reflection is not implied by this mechanism.
+
+### Custom attribute API
+
+There is no attribute-registration declaration: an attribute author creates a
+custom field attribute by choosing an identifier and documenting its arguments
+and meaning. For example, a serialization package may define
+`@my_serializer(name="wire_name")`; users can apply it immediately to an
+appropriate field. This deliberately prevents a new community attribute from
+requiring a compiler or parser update. A consuming library or tool is
+responsible for reporting an unknown, misplaced, or invalid attribute in its
+own domain.
+
 - `@cfg(target_os="linux")`, `target_arch`, `target_abi`: conditional compile.
 - `@inline`: request inlining; recursive functions remain excluded.
 - `@derive(...)`: register derived traits.
 - `@ignore`, `@ignore(unused_vars)`, `@ignore(dead_code)`: warning control.
-- `@no_mangle`: retain a bare native symbol.
-- `@no_crash`: file-level omission of executable crash registration.
-- `@panic_handler`: declare the validated panic handler.
+- `@test`: declare a zero-argument `void` test run by `qz test`.
+- `@panic_handler`: declare a terminal `fn(PanicInfo) !` handler; see
+  [panic handling](language/panic.md).
 - `@repr(C)`, `@opaque`, `@api`, `@export`: C interoperability.
 - `@intrinsic`, `@syscall`: compiler/standard-library implementation tools.
+
+Standard-library inclusion, crash registration, and native symbol mangling are
+package settings in `quazi.toml`, not source attributes. See
+[PROJECTS.md](PROJECTS.md) and [TESTING.md](TESTING.md).
 
 ## Platform code
 

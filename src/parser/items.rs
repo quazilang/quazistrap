@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: 0BSD
 
 use crate::lexer::token::TokenKind;
-use crate::parser::Parser;
 use crate::parser::ast::*;
 use crate::parser::common::{merge_token_spans, to_ast_span};
+use crate::parser::Parser;
 
 impl Parser {
     pub fn parse_fn(
@@ -16,7 +16,7 @@ impl Parser {
     ) -> Result<Item, String> {
         let start = self.expect(TokenKind::Fn)?.span;
 
-        let name = self.parse_ident()?;
+        let (name, name_span) = self.parse_ident_with_span()?;
         let generic_params = self.parse_optional_generic_params()?;
         self.expect(TokenKind::LParen)?;
 
@@ -42,7 +42,12 @@ impl Parser {
                 } else {
                     false
                 };
-                let param_name = self.parse_ident()?;
+                let param_name_token = self.expect_ident_token()?;
+                let param_name = match param_name_token.kind {
+                    TokenKind::Ident(name) => name,
+                    _ => unreachable!("expect_ident_token returned a non-identifier"),
+                };
+                let param_name_span = to_ast_span(param_name_token.span);
                 self.expect(TokenKind::Colon)?;
                 let param_ty = self.parse_type()?;
                 let is_last = self.at(TokenKind::RParen);
@@ -53,6 +58,7 @@ impl Parser {
                 }
                 params.push(Param {
                     name: param_name,
+                    name_span: param_name_span,
                     ty: param_ty,
                     variadic,
                     attributes: param_attributes,
@@ -86,6 +92,7 @@ impl Parser {
         Ok(Spanned::new(
             ItemKind::Fn {
                 name,
+                name_span: Some(name_span),
                 generic_params,
                 params,
                 return_ty,
@@ -132,8 +139,7 @@ impl Parser {
         let generic_params = self.parse_optional_generic_params()?;
 
         self.expect(TokenKind::LBrace)?;
-        let mut fields: Vec<(String, Type, bool)> = Vec::new();
-        let mut bit_widths = Vec::new();
+        let mut fields = Vec::new();
 
         while !self.at(TokenKind::RBrace) {
             if self.at(TokenKind::Eof) {
@@ -151,11 +157,16 @@ impl Parser {
             self.expect(TokenKind::Colon)?;
             let field_ty = self.parse_type()?;
 
+            // Field attributes are source-level metadata.  Their names and
+            // arguments remain opaque to the compiler so libraries and tools
+            // can evolve independently of the language parser.
+            let mut field_attributes = self.parse_attributes()?;
+
             let bit_width = if self.at(TokenKind::Colon) {
                 self.advance();
                 let width = self.advance();
                 match width.kind {
-                    TokenKind::Int(value) if value > 0 && value <= u8::MAX as i64 => {
+                    TokenKind::Int(value) if value > 0 && value <= u8::MAX as u64 => {
                         Some(value as u8)
                     }
                     other => {
@@ -170,8 +181,17 @@ impl Parser {
                 None
             };
 
-            fields.push((field_name, field_ty, is_const));
-            bit_widths.push(bit_width);
+            // Also accept attributes after a C bitfield width. This keeps the
+            // metadata position ergonomic for both ordinary and C aggregates.
+            field_attributes.extend(self.parse_attributes()?);
+
+            fields.push(AggregateField {
+                name: field_name,
+                ty: field_ty,
+                is_const,
+                bit_width,
+                attributes: field_attributes,
+            });
 
             if self.at(TokenKind::Comma) || self.at(TokenKind::Semicolon) {
                 self.advance();
@@ -186,7 +206,6 @@ impl Parser {
                 name,
                 generic_params,
                 fields,
-                bit_widths,
                 is_union,
                 attributes,
                 public: is_pub,
@@ -219,10 +238,12 @@ impl Parser {
 
             self.expect(TokenKind::LParen)?;
             let mut params = Vec::new();
+            let mut param_names = Vec::new();
             if !self.at(TokenKind::RParen) {
                 loop {
-                    let _param_name = self.parse_ident()?;
+                    let param_name = self.parse_ident()?;
                     self.expect(TokenKind::Colon)?;
+                    param_names.push(param_name);
                     params.push(self.parse_type()?);
 
                     if self.at(TokenKind::Comma) {
@@ -246,6 +267,7 @@ impl Parser {
             methods.push(TraitMethod {
                 name: method_name,
                 generic_params: method_generic_params,
+                param_names,
                 params,
                 return_ty,
                 span,
@@ -429,7 +451,11 @@ impl Parser {
         ))
     }
 
-    pub fn parse_import(&mut self, pub_import: bool) -> Result<Item, String> {
+    pub fn parse_import(
+        &mut self,
+        pub_import: bool,
+        attributes: Vec<Attribute>,
+    ) -> Result<Item, String> {
         let start = self.expect(TokenKind::Import)?.span;
 
         // Detect `./` prefix: Dot + Slash → relative import (local-only, skips module resolver).
@@ -443,10 +469,12 @@ impl Parser {
         };
 
         let mut path: Vec<String> = Vec::new();
+        let mut path_spans: Vec<Span> = Vec::new();
 
         // base path: a.b.c
-        let first = self.parse_ident()?;
+        let (first, first_span) = self.parse_ident_with_span()?;
         path.push(first);
+        path_spans.push(first_span);
 
         while self.at(TokenKind::Dot) {
             let save = self.pos;
@@ -461,7 +489,9 @@ impl Parser {
 
             match self.peek_kind() {
                 TokenKind::Ident(_) => {
-                    path.push(self.parse_ident()?);
+                    let (segment, span) = self.parse_ident_with_span()?;
+                    path.push(segment);
+                    path_spans.push(span);
                 }
                 _ => {
                     self.pos = save;
@@ -470,6 +500,8 @@ impl Parser {
             }
         }
 
+        let mut selector_spans = Vec::new();
+        let mut alias_span = None;
         let items = if self.at(TokenKind::Dot) {
             self.advance();
 
@@ -479,7 +511,9 @@ impl Parser {
 
                 if !self.at(TokenKind::RBrace) {
                     loop {
-                        names.push(self.parse_ident()?);
+                        let (name, span) = self.parse_ident_with_span()?;
+                        names.push(name);
+                        selector_spans.push(span);
 
                         if self.at(TokenKind::Comma) {
                             self.advance();
@@ -495,10 +529,12 @@ impl Parser {
                 self.advance();
                 ImportItems::All
             } else {
-                let name = self.parse_ident()?;
+                let (name, name_span) = self.parse_ident_with_span()?;
+                selector_spans.push(name_span);
                 if self.at(TokenKind::As) {
                     self.advance();
-                    let alias = self.parse_ident()?;
+                    let (alias, span) = self.parse_ident_with_span()?;
+                    alias_span = Some(span);
                     ImportItems::Aliased(name, alias)
                 } else {
                     ImportItems::Single(name)
@@ -508,9 +544,14 @@ impl Parser {
             let last = path
                 .pop()
                 .ok_or_else(|| self.err_here("invalid import path".to_string()))?;
+            let last_span = path_spans
+                .pop()
+                .expect("import path segments and spans stay aligned");
+            selector_spans.push(last_span);
             if self.at(TokenKind::As) {
                 self.advance();
-                let alias = self.parse_ident()?;
+                let (alias, span) = self.parse_ident_with_span()?;
+                alias_span = Some(span);
                 ImportItems::Aliased(last, alias)
             } else {
                 ImportItems::Single(last)
@@ -523,7 +564,11 @@ impl Parser {
         Ok(Spanned::new(
             ItemKind::Import(ImportPath {
                 path,
+                path_spans,
                 items,
+                selector_spans,
+                alias_span,
+                attributes,
                 pub_import,
                 relative,
                 span: to_ast_span(span_tok),

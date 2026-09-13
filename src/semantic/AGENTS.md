@@ -10,18 +10,58 @@ Five sequential passes:
 
 ## `types_compatible` Rules
 
-- `Any` ↔ everything.
-- `Named` ↔ everything (generic monomorphization).
+- Internal `Error` is the recovery wildcard and must not survive successful
+  analysis. Source `any` is only compatible with itself and is rejected in
+  value-bearing positions; final `@format ...args: any` is compiler-erased.
+- Named types must have the same name and invariant generic arguments.
 - Integer → float (implicit widening for literals).
 - `*T` ↔ `*U` (all raw pointers mutually compatible — C void* semantics).
 - Integer ↔ `*T` (null pointer constant support: `0` is valid `*T`).
 - `Str` ↔ `Ref { inner: Str }` always compatible.
+- Shared-reference compatibility is directional and invariant. An actual `&T`
+  may auto-read into an expected representation-identical `T`; a value never
+  becomes `&T`, and `&T` only matches the same resolved pointee shape.
 - `Named { name }` ↔ `Dyn { trait_name }` — compatible if `trait_impls[name]` contains `trait_name`.
 - `Dyn { a }` ↔ `Dyn { b }` — compatible if `a == b`.
+
+`Some`, `None`, `Ok`, and `Err` inherit a surrounding `Option`/`Result` type.
+An unconstrained partial `Result` constructor is rejected instead of reaching
+code generation with an unknown payload. Pattern bindings recover builtin
+generic payload types from the scrutinee. Qualified constructor calls
+(`Option.Some(x)`, `Enum.Variant(x)`) are validated for variant existence,
+arity, and one-slot payload representation, but their result stays untyped
+until semantic constructor resolution exists; codegen lowers them
+structurally.
+
+## Value-Shape Gates
+
+One slot per value is the current internal storage contract outside register
+blocks. While the multi-slot ABI is unimplemented, analysis rejects
+multi-register shapes with `S14` in every storage position: function
+parameters and results (concrete and specialized), enum payload declarations
+and constructor payloads (bare, contextual, and qualified paths), struct
+fields outside `@repr(C)` (which has a real layout solver), generic struct
+instantiations, and fixed-array literals with multi-slot elements. Ordinary
+functions and specializations record their resolved parameter, variadic
+element, result, and plain-copy/owner kinds into
+`SemanticReport::fn_value_layouts` for the phase-2 ABI work, keyed by
+canonical resolved type arguments (mangling is not injective).
+
+After all semantic passes, generic template call edges are instantiated for
+each concrete caller specialization. The closure must add both the concrete
+callee monomorphization and its layout record before bytecode codegen.
 
 ## Warning Suppression
 
 `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)` suppress W01/W02/W03/W07.
+
+## Cooperative cancellation
+
+The cancellable analyzer returns `Cancelled` as an operational result. It
+polls at pass, top-level-item, and reachable-statement boundaries; an
+individual expression remains atomic. A cancellation may leave scopes and
+other semantic state partially populated, so callers must discard that
+`Analyzer` rather than publish a partial report.
 
 ## `@cfg` Evaluation
 
@@ -37,8 +77,35 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 - `reassign_targets` set suppresses move-in-loop for `x = x.method()` patterns (value immediately re-owned).
 - `for x : iterable` **moves** the iterable (like Rust's `for x in collection`); borrow with `for x : &collection`.
 - The iterable is consumed before the loop body so it does not trigger move-in-loop.
-- Method receivers are borrowed (non-consuming).
-- No explicit reference lifetimes yet.
+- Legacy method receivers remain borrowed and non-consuming. An explicit
+  `self: &T` receiver is read-only: it may run while shared loans exist and
+  creates a shared loan for its call. The implementation validates that an
+  explicit receiver's pointee is the enclosing `impl` target. An explicit
+  `self: &T!` receiver permits writes and takes an exclusive loan for its call;
+  consuming `self: T` still needs its D-014 effect implementation.
+- Shared references use a conservative lexical-scope lifetime checkpoint:
+  address-of accepts only locals/parameters; reference bindings cannot be
+  rebound or escape through returns, owned aggregates, or closures; and an
+  address-taken owner cannot be mutated or moved. Explicit `self: &T` methods
+  are the read-only receiver exception.
+  `str`/`&str` remains the representation-identical string-view exception.
+- `&T!` is currently a local exclusive-reference foundation: it requires a
+  mutable local/parameter root, permits assignment through its dereference,
+  and freezes owner reads, moves, mutation, and overlapping loans while its
+  lexical scope is live. A temporary `&value`/`&value!` passed to a resolved
+  direct Quazi call ends after that call because current safe references cannot
+  escape it. This is not the D-014 whole-program effect solver; do not relax
+  reference escape, indirect-call, or QZI boundaries on the basis of this
+  syntax alone.
+- Quazi `fn` values are affine owners. Passing, returning, and assignment move
+  them; calls borrow them; self-assignment is rejected. Until recursive cleanup
+  and capture ownership are implemented, do not permit `fn` inside aggregates
+  or generic arguments, and restrict closure captures, parameters, and results
+  to immutable plain-copy scalar shapes. `fn`/`cfn` signature compatibility is
+  exact at runtime boundaries rather than numeric-coercion compatible.
+  Reject moves of outer `fn` owners from conditional paths until drop state is
+  path-sensitive, consuming assignment expressions, and function-valued match
+  results. Same-signature casts remain transparent ownership wrappers.
 
 ## Generic Receiver Methods
 

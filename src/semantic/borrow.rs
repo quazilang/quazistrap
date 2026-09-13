@@ -19,6 +19,20 @@ struct OwnedVar {
     moved_at: Option<Span>,
     /// Loop depth at declaration site (used to detect move-in-loop).
     loop_depth_at_decl: usize,
+    control_depth_at_decl: usize,
+    /// First live shared loan of this root.
+    shared_borrow: Option<Loan>,
+    /// First live exclusive loan of this root.
+    exclusive_borrow: Option<Loan>,
+}
+
+/// A lexical loan. Borrowed references cannot escape their declaring scope, so
+/// this is a sound lower bound on their region until call-effect analysis can
+/// derive smaller regions from uses.
+#[derive(Debug, Clone, Copy)]
+struct Loan {
+    at: Span,
+    scope_depth: usize,
 }
 
 // ── Scoped move environment ───────────────────────────────────────────────────
@@ -27,6 +41,7 @@ struct OwnedVar {
 struct MoveEnv {
     scopes: Vec<HashMap<String, OwnedVar>>,
     loop_depth: usize,
+    control_depth: usize,
     /// Variables currently being re-assigned (`x = f(x)`). Move-in-loop is
     /// suppressed for these because the assignment immediately re-owns the value.
     reassign_targets: std::collections::HashSet<String>,
@@ -37,6 +52,7 @@ impl MoveEnv {
         Self {
             scopes: vec![HashMap::new()],
             loop_depth: 0,
+            control_depth: 0,
             reassign_targets: std::collections::HashSet::new(),
         }
     }
@@ -46,11 +62,29 @@ impl MoveEnv {
     }
 
     fn exit_scope(&mut self) {
+        let exiting_depth = self.scopes.len().saturating_sub(1);
         self.scopes.pop();
+        for scope in &mut self.scopes {
+            for variable in scope.values_mut() {
+                if variable
+                    .shared_borrow
+                    .is_some_and(|loan| loan.scope_depth >= exiting_depth)
+                {
+                    variable.shared_borrow = None;
+                }
+                if variable
+                    .exclusive_borrow
+                    .is_some_and(|loan| loan.scope_depth >= exiting_depth)
+                {
+                    variable.exclusive_borrow = None;
+                }
+            }
+        }
     }
 
     fn declare(&mut self, name: String, ty: Option<TypeKind>) {
         let depth = self.loop_depth;
+        let control_depth = self.control_depth;
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
                 name,
@@ -58,6 +92,9 @@ impl MoveEnv {
                     ty,
                     moved_at: None,
                     loop_depth_at_decl: depth,
+                    control_depth_at_decl: control_depth,
+                    shared_borrow: None,
+                    exclusive_borrow: None,
                 },
             );
         }
@@ -81,6 +118,28 @@ impl MoveEnv {
         }
     }
 
+    fn mark_shared_borrowed(&mut self, name: &str, at: Span) {
+        let scope_depth = self.scopes.len().saturating_sub(1);
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(variable) = scope.get_mut(name) {
+                variable.shared_borrow.get_or_insert(Loan { at, scope_depth });
+                return;
+            }
+        }
+    }
+
+    fn mark_exclusive_borrowed(&mut self, name: &str, at: Span) {
+        let scope_depth = self.scopes.len().saturating_sub(1);
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(variable) = scope.get_mut(name) {
+                variable
+                    .exclusive_borrow
+                    .get_or_insert(Loan { at, scope_depth });
+                return;
+            }
+        }
+    }
+
     /// Clear the moved state — called when a variable is re-assigned a new value.
     fn reinit(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
@@ -99,8 +158,22 @@ impl MoveEnv {
                 if let Some(at) = var.moved_at {
                     self.mark_moved(name, at);
                 }
+                if let Some(loan) = var.shared_borrow {
+                    self.mark_shared_borrowed(name, loan.at);
+                }
+                if let Some(loan) = var.exclusive_borrow {
+                    self.mark_exclusive_borrowed(name, loan.at);
+                }
             }
         }
+    }
+}
+
+fn assignment_target_ident(expr: &Expr) -> Option<&str> {
+    match &expr.node {
+        ExprKind::Ident(name) => Some(name),
+        ExprKind::Group(inner) => assignment_target_ident(inner),
+        _ => None,
     }
 }
 
@@ -165,7 +238,11 @@ impl Analyzer {
             StmtKind::Var {
                 name, ty, value, ..
             } => {
-                let var_ty = ty.as_ref().map(|t| t.node.clone());
+                let var_ty = ty.as_ref().map(|t| t.node.clone()).or_else(|| {
+                    value
+                        .as_ref()
+                        .and_then(|value| self.bc_annotated_type(value))
+                });
                 if let Some(v) = value {
                     self.bc_expr(v, env, true);
                 }
@@ -174,7 +251,10 @@ impl Analyzer {
             StmtKind::Const {
                 name, ty, value, ..
             } => {
-                let var_ty = ty.as_ref().map(|t| t.node.clone());
+                let var_ty = ty
+                    .as_ref()
+                    .map(|t| t.node.clone())
+                    .or_else(|| self.bc_annotated_type(value));
                 self.bc_expr(value, env, true);
                 env.declare(name.clone(), var_ty);
             }
@@ -198,16 +278,19 @@ impl Analyzer {
             } => {
                 self.bc_expr(condition, env, false);
                 let mut then_env = env.clone();
+                then_env.control_depth += 1;
                 self.bc_block(then_block, &mut then_env);
                 let mut all_envs = vec![then_env];
                 for (else_if_cond, else_if_block) in else_if {
-                    self.bc_expr(else_if_cond, env, false);
                     let mut ei_env = env.clone();
+                    ei_env.control_depth += 1;
+                    self.bc_expr(else_if_cond, &mut ei_env, false);
                     self.bc_block(else_if_block, &mut ei_env);
                     all_envs.push(ei_env);
                 }
                 if let Some(eb) = else_block {
                     let mut else_env = env.clone();
+                    else_env.control_depth += 1;
                     self.bc_block(eb, &mut else_env);
                     all_envs.push(else_env);
                 }
@@ -235,6 +318,7 @@ impl Analyzer {
                 }
                 env.loop_depth += 1;
                 let mut loop_env = env.clone();
+                loop_env.control_depth += 1;
                 match kind {
                     ForLoop::Each { vars, .. } => {
                         loop_env.enter_scope();
@@ -291,7 +375,8 @@ impl Analyzer {
     /// Generic type params (K, V, T, etc.) and unknown names are treated as Copy.
     fn bc_is_move_type(&self, ty: &TypeKind) -> bool {
         match ty {
-            // Primitives and references are Copy — no move tracking needed.
+            // Primitives and shared references are Copy. Exclusive references are
+            // affine capabilities, so assigning one transfers it instead.
             TypeKind::Bool
             | TypeKind::Int8
             | TypeKind::Int16
@@ -328,6 +413,17 @@ impl Analyzer {
         match &expr.node {
             ExprKind::Ident(name) => {
                 let Some(var) = env.lookup(name) else { return };
+                if let Some(borrowed_at) = var.exclusive_borrow.map(|loan| loan.at) {
+                    self.push_error(
+                        expr.span,
+                        "S10",
+                        format!(
+                            "cannot use `{name}` while it is exclusively borrowed (borrowed at {})",
+                            self.span_label(borrowed_at)
+                        ),
+                    );
+                    return;
+                }
                 let is_move = var.ty.as_ref().is_some_and(|t| self.bc_is_move_type(t));
                 if !is_move {
                     return;
@@ -348,6 +444,42 @@ impl Analyzer {
                 }
 
                 if consumed {
+                    if matches!(
+                        var.ty.as_ref().map(|ty| self.resolve_type_aliases(ty)),
+                        Some(TypeKind::Fn { .. })
+                    ) && env.control_depth > var.control_depth_at_decl
+                    {
+                        self.push_error(
+                            expr.span,
+                            "S10",
+                            format!(
+                                "cannot move function owner `{name}` on only one control-flow path before path-sensitive cleanup is implemented"
+                            ),
+                        );
+                        return;
+                    }
+                    if let Some(borrowed_at) = var.shared_borrow.map(|loan| loan.at) {
+                        self.push_error(
+                            expr.span,
+                            "S10",
+                            format!(
+                                "cannot move `{name}` while it is shared-borrowed (borrowed at {})",
+                                self.span_label(borrowed_at)
+                            ),
+                        );
+                        return;
+                    }
+                    if let Some(borrowed_at) = var.exclusive_borrow.map(|loan| loan.at) {
+                        self.push_error(
+                            expr.span,
+                            "S10",
+                            format!(
+                                "cannot move `{name}` while it is exclusively borrowed (borrowed at {})",
+                                self.span_label(borrowed_at)
+                            ),
+                        );
+                        return;
+                    }
                     // Moving inside a loop when the var was declared at a lower loop depth.
                     // Suppressed when the variable is the target of the enclosing assignment
                     // (x = f(x) pattern) — the reassignment immediately re-owns the value.
@@ -370,14 +502,30 @@ impl Analyzer {
             }
 
             ExprKind::Assign { target, value } => {
+                if consumed
+                    && let Some(name) = assignment_target_ident(target)
+                    && env.lookup(name).is_some_and(|variable| {
+                        variable.ty.as_ref().is_some_and(|ty| {
+                            matches!(self.resolve_type_aliases(ty), TypeKind::Fn { .. })
+                        })
+                    })
+                {
+                    self.push_error(
+                        expr.span,
+                        "S10",
+                        "a function-valued assignment cannot itself transfer ownership; assign first, then move the binding"
+                            .to_string(),
+                    );
+                }
+                self.bc_reject_borrowed_write(target, env);
                 // Mark target as being re-assigned so move-in-loop is suppressed
                 // for `x = f(x)` patterns (value is immediately re-owned).
-                if let ExprKind::Ident(name) = &target.node {
-                    env.reassign_targets.insert(name.clone());
+                if let Some(name) = assignment_target_ident(target) {
+                    env.reassign_targets.insert(name.to_string());
                 }
                 self.bc_expr(value, env, true);
-                if let ExprKind::Ident(name) = &target.node {
-                    env.reassign_targets.remove(name.as_str());
+                if let Some(name) = assignment_target_ident(target) {
+                    env.reassign_targets.remove(name);
                     env.reinit(name);
                 } else {
                     self.bc_expr(target, env, false);
@@ -386,12 +534,14 @@ impl Analyzer {
 
             ExprKind::CompoundAssign { target, value, .. } => {
                 // Read-modify-write: no ownership transfer.
+                self.bc_reject_borrowed_write(target, env);
                 self.bc_expr(target, env, false);
                 self.bc_expr(value, env, false);
             }
 
             ExprKind::IncDec { expr: inner, .. } => {
                 // In-place mutation: not a move.
+                self.bc_reject_borrowed_write(inner, env);
                 self.bc_expr(inner, env, false);
             }
 
@@ -402,11 +552,23 @@ impl Analyzer {
                 ..
             } => {
                 self.bc_expr(callee, env, false);
+                // A resolved Quazi function cannot currently return, store, or
+                // capture a non-string reference. Give direct-call arguments a
+                // synthetic lexical scope so an address taken only for that
+                // call ends when the call returns. Function values and foreign
+                // calls remain opaque and retain the surrounding scope's loan.
+                let direct_call = self.bc_resolved_direct_call(expr);
+                if direct_call {
+                    env.enter_scope();
+                }
                 for arg in args {
                     self.bc_expr(arg, env, true);
                 }
                 for (_, arg) in named_args {
                     self.bc_expr(arg, env, true);
+                }
+                if direct_call {
+                    env.exit_scope();
                 }
             }
 
@@ -416,19 +578,110 @@ impl Analyzer {
                 named_args,
                 ..
             } => {
+                let shared_receiver = self.bc_has_explicit_shared_receiver(expr);
+                let exclusive_receiver = self.bc_has_explicit_exclusive_receiver(expr);
+                // Legacy by-value receivers remain conservatively mutating.
+                // A resolved `self: &T` method instead creates a shared loan
+                // for just this call; its body is prevented from writing
+                // through that reference by type checking.
+                if !shared_receiver {
+                    self.bc_reject_borrowed_write(object, env);
+                }
                 self.bc_expr(object, env, false);
+                if shared_receiver || exclusive_receiver {
+                    env.enter_scope();
+                    if shared_receiver {
+                        self.bc_mark_shared_receiver_loan(object, env, expr.span);
+                    } else {
+                        self.bc_mark_exclusive_receiver_loan(object, env, expr.span);
+                    }
+                }
                 for arg in args {
                     self.bc_expr(arg, env, true);
                 }
                 for (_, arg) in named_args {
                     self.bc_expr(arg, env, true);
                 }
+                if shared_receiver || exclusive_receiver {
+                    env.exit_scope();
+                }
             }
 
-            ExprKind::Binary { left, right, .. } => {
+            ExprKind::Binary { left, op, right } => {
                 // Arithmetic / comparison: reads both operands, no move.
                 self.bc_expr(left, env, false);
-                self.bc_expr(right, env, false);
+                if matches!(op, BinOpKind::AndAnd | BinOpKind::OrOr) {
+                    let mut right_env = env.clone();
+                    right_env.control_depth += 1;
+                    self.bc_expr(right, &mut right_env, false);
+                    env.apply_branch_moves(&right_env);
+                } else {
+                    self.bc_expr(right, env, false);
+                }
+            }
+
+            ExprKind::Unary {
+                expr: inner,
+                op: op @ (UnaryOpKind::Ref | UnaryOpKind::RefMut),
+            } => {
+                // Evaluate the place before recording the new loan so taking
+                // an exclusive reference does not conflict with its own read.
+                self.bc_expr(inner, env, false);
+                let mut place = inner;
+                while let ExprKind::Group(grouped) = &place.node {
+                    place = grouped;
+                }
+                if let ExprKind::Ident(name) = &place.node {
+                    let existing = env.lookup(name).cloned();
+                    match op {
+                        UnaryOpKind::Ref
+                            if existing
+                                .as_ref()
+                                .and_then(|value| value.exclusive_borrow)
+                                .is_some() =>
+                        {
+                            let borrowed_at = existing
+                                .and_then(|value| value.exclusive_borrow)
+                                .map(|loan| loan.at)
+                                .expect("exclusive loan was checked");
+                            self.push_error(
+                                expr.span,
+                                "S10",
+                                format!("cannot shared-borrow `{name}` while it is exclusively borrowed (borrowed at {})", self.span_label(borrowed_at)),
+                            );
+                        }
+                        UnaryOpKind::RefMut
+                            if existing
+                                .as_ref()
+                                .and_then(|value| value.shared_borrow)
+                                .is_some()
+                                || existing
+                                    .as_ref()
+                                    .and_then(|value| value.exclusive_borrow)
+                                    .is_some() =>
+                        {
+                            let borrowed_at = existing
+                                .as_ref()
+                                .and_then(|value| value.exclusive_borrow)
+                                .map(|loan| loan.at)
+                                .or_else(|| {
+                                    existing
+                                        .as_ref()
+                                        .and_then(|value| value.shared_borrow)
+                                        .map(|loan| loan.at)
+                                })
+                                .expect("conflicting loan was checked");
+                            self.push_error(
+                                expr.span,
+                                "S10",
+                                format!("cannot exclusively borrow `{name}` while it is already borrowed (borrowed at {})", self.span_label(borrowed_at)),
+                            );
+                        }
+                        UnaryOpKind::Ref => env.mark_shared_borrowed(name, expr.span),
+                        UnaryOpKind::RefMut => env.mark_exclusive_borrowed(name, expr.span),
+                        _ => unreachable!("borrow expression has a reference operator"),
+                    }
+                }
             }
 
             ExprKind::Unary { expr: inner, .. } => {
@@ -471,8 +724,9 @@ impl Analyzer {
                 let base_env = env.clone();
                 for arm in arms {
                     let mut arm_env = base_env.clone();
+                    arm_env.control_depth += 1;
                     for b in crate::parser::ast::pattern_all_bindings(&arm.pattern) {
-                        arm_env.declare(b, Some(TypeKind::Any));
+                        arm_env.declare(b, Some(TypeKind::Error));
                     }
                     // Guard expression is checked in the arm's scope (bindings available).
                     if let Some(guard) = &arm.guard {
@@ -496,9 +750,123 @@ impl Analyzer {
                 self.bc_expr(inner, env, consumed);
             }
 
-            ExprKind::Closure { body, .. } => {
-                self.bc_expr(body, env, consumed);
+            ExprKind::Closure { params, body } => {
+                let parameter_types = match self.bc_annotated_type(expr) {
+                    Some(TypeKind::Fn { params, .. }) => params,
+                    _ => Vec::new(),
+                };
+                let mut closure_env = env.clone();
+                closure_env.enter_scope();
+                for (index, name) in params.iter().enumerate() {
+                    closure_env.declare(
+                        name.clone(),
+                        parameter_types.get(index).map(|ty| ty.node.clone()),
+                    );
+                }
+                self.bc_expr(body, &mut closure_env, true);
+                closure_env.exit_scope();
             }
         }
+    }
+
+    fn bc_annotated_type(&self, expr: &Expr) -> Option<TypeKind> {
+        self.annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
+            })
+            .and_then(|annotation| annotation.ty.clone())
+    }
+
+    fn bc_resolved_direct_call(&self, expr: &Expr) -> bool {
+        self.annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
+            })
+            .is_some_and(|annotation| annotation.resolved_fn.is_some())
+    }
+
+    fn bc_has_explicit_shared_receiver(&self, expr: &Expr) -> bool {
+        let resolved = self
+            .annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
+            })
+            .and_then(|annotation| annotation.resolved_fn.as_deref());
+        resolved.is_some_and(|name| self.explicit_shared_receiver_methods.contains(name))
+    }
+
+    fn bc_has_explicit_exclusive_receiver(&self, expr: &Expr) -> bool {
+        let resolved = self
+            .annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
+            })
+            .and_then(|annotation| annotation.resolved_fn.as_deref());
+        resolved.is_some_and(|name| self.explicit_exclusive_receiver_methods.contains(name))
+    }
+
+    fn bc_mark_shared_receiver_loan(&mut self, object: &Expr, env: &mut MoveEnv, at: Span) {
+        if let Some(name) = assignment_root_ident(object) {
+            env.mark_shared_borrowed(name, at);
+        }
+    }
+
+    fn bc_mark_exclusive_receiver_loan(&mut self, object: &Expr, env: &mut MoveEnv, at: Span) {
+        if let Some(name) = assignment_root_ident(object) {
+            env.mark_exclusive_borrowed(name, at);
+        }
+    }
+
+    fn bc_reject_borrowed_write(&mut self, target: &Expr, env: &MoveEnv) {
+        let Some(name) = assignment_root_ident(target) else {
+            return;
+        };
+        if let Some(borrowed_at) = env
+            .lookup(name)
+            .and_then(|variable| variable.shared_borrow)
+            .map(|loan| loan.at)
+        {
+            self.push_error(
+                target.span,
+                "S10",
+                format!(
+                    "cannot mutate `{name}` while it is shared-borrowed (borrowed at {})",
+                    self.span_label(borrowed_at)
+                ),
+            );
+        }
+        if let Some(borrowed_at) = env
+            .lookup(name)
+            .and_then(|variable| variable.exclusive_borrow)
+            .map(|loan| loan.at)
+        {
+            self.push_error(
+                target.span,
+                "S10",
+                format!(
+                    "cannot mutate `{name}` while it is exclusively borrowed (borrowed at {})",
+                    self.span_label(borrowed_at)
+                ),
+            );
+        }
+    }
+}
+
+fn assignment_root_ident(expr: &Expr) -> Option<&str> {
+    match &expr.node {
+        ExprKind::Ident(name) => Some(name),
+        ExprKind::Group(inner) => assignment_root_ident(inner),
+        ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
+            assignment_root_ident(object)
+        }
+        _ => None,
     }
 }

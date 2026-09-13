@@ -12,7 +12,7 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-const QZC_VERSION: u8 = 2;
+const QZC_VERSION: u8 = 7;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {
@@ -412,7 +412,6 @@ pub fn semantic_context_hash(
                 name,
                 generic_params,
                 fields,
-                bit_widths,
                 is_union,
                 attributes,
                 public,
@@ -420,12 +419,13 @@ pub fn semantic_context_hash(
                 hasher.update(b"struct");
                 hasher.update(name.as_bytes());
                 hasher.update(format!("{:?}", generic_params).as_bytes());
-                for (field, ty, constant) in fields {
-                    hasher.update(field.as_bytes());
-                    hasher.update(ty.node.to_string().as_bytes());
-                    hasher.update([u8::from(*constant)]);
+                for field in fields {
+                    hasher.update(field.name.as_bytes());
+                    hasher.update(field.ty.node.to_string().as_bytes());
+                    hasher.update([u8::from(field.is_const)]);
+                    hasher.update(format!("{:?}", field.bit_width).as_bytes());
+                    hash_attributes(&mut hasher, &field.attributes);
                 }
-                hasher.update(format!("{:?}", bit_widths).as_bytes());
                 hasher.update([u8::from(*is_union), u8::from(*public)]);
                 hash_attributes(&mut hasher, attributes);
             }
@@ -442,7 +442,8 @@ pub fn semantic_context_hash(
                 for method in methods {
                     hasher.update(method.name.as_bytes());
                     hasher.update(format!("{:?}", method.generic_params).as_bytes());
-                    for ty in &method.params {
+                    for (param_name, ty) in method.param_names.iter().zip(&method.params) {
+                        hasher.update(param_name.as_bytes());
                         hasher.update(ty.node.to_string().as_bytes());
                     }
                     hasher.update(method.return_ty.node.to_string().as_bytes());
@@ -587,6 +588,46 @@ mod tests {
         .unwrap();
         assert!(load(&cache).unwrap().is_some());
         fs::write(&input, "fn main() void { ret; }").unwrap();
+        assert!(load(&cache).unwrap().is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn qzc_v4_is_rejected_after_generic_abi_validation_changed() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("qzc_version_{}_{}", std::process::id(), suffix));
+        fs::create_dir_all(&root).unwrap();
+        let input = root.join("main.qz");
+        fs::write(&input, "fn main() void {}").unwrap();
+        let mut chunk = crate::bytecode::Chunk::new("main");
+        chunk.code.push(crate::bytecode::instruction::rrr(
+            crate::bytecode::Opcode::Ret,
+            0,
+            0,
+            0,
+        ));
+        let qzi = crate::bytecode::serialize_qzi(&[chunk]).unwrap();
+        let cache = root.join("incremental.qzc");
+        let hashes = source_hashes(std::slice::from_ref(&input)).unwrap();
+        store(
+            &cache,
+            std::slice::from_ref(&input),
+            &hashes,
+            &qzi,
+            false,
+            [0; 32],
+            &[],
+        )
+        .unwrap();
+
+        let mut legacy = fs::read(&cache).unwrap();
+        assert_eq!(&legacy[..4], QZC_MAGIC);
+        legacy[4] = 4;
+        fs::write(&cache, legacy).unwrap();
         assert!(load(&cache).unwrap().is_none());
         let _ = fs::remove_dir_all(root);
     }

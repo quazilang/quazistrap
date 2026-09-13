@@ -1,0 +1,8 @@
+[package]
+name = "guess-the-number"
+version = "0.1.0"
+out_dir = "build"
+
+[[bin]]
+name = "gtn"
+path = "src/main.qz"

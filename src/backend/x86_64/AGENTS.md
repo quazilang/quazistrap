@@ -20,6 +20,15 @@ Linux objects embed only the allocation/memory runtime routines they reference:
 syscalls with a private
 16-byte size header; no libc allocator is required.
 
+The `quazi.sleep_ms` intrinsic is also self-contained on Linux: it lowers to
+the `nanosleep` syscall with a stack-local `timespec`, not an external
+`usleep` call. Built-in-linked executables therefore require no libc merely to
+use `std.os.sleep`.
+
+On Windows, `quazi.sleep_ms` preserves its `u64` input by splitting delays
+longer than the largest finite Win32 `Sleep` DWORD into finite chunks. Never
+pass `0xffff_ffff` to `Sleep`: it is the `INFINITE` sentinel, not a duration.
+
 - `ForeignSymbol` QZI constants describe source widths and aggregate fields;
   the encoder performs target-specific classification.
 - SysV supports GP/SSE bank allocation, stack fallback, variadic `AL`, register
@@ -57,9 +66,12 @@ Identical output format on Linux & Windows:
 
 ---
 
-## `@no_crash`
+## Package startup and symbol settings
 
-File-level directive (like `@no_std`). When present, the entry stub omits crash-handler registration (Linux `sigaction`, Windows `AddVectoredExceptionHandler`). `__quazi_print_backtrace` is still emitted so panic backtraces work. Produces a smaller binary (~1 KB smaller).
+`[package].crash_handler = false` omits crash-handler registration while keeping
+the platform process entry. `[package].mangling = false` emits bare native
+function names and rejects collisions. Both settings default to `true`; removed
+source attributes must not be reintroduced.
 
 ---
 

@@ -28,6 +28,7 @@ impl Analyzer {
         match &item.node {
             ItemKind::Fn {
                 name,
+                name_span,
                 return_ty,
                 params,
                 attributes,
@@ -51,14 +52,15 @@ impl Analyzer {
                 }
                 // Exported functions are roots invoked by native consumers, so they are
                 // never dead merely because no Quazi call site references them.
-                if attr_names.iter().any(|a| a == "export")
+                if attr_names
+                    .iter()
+                    .any(|a| matches!(a.as_str(), "export" | "test"))
                     && !attr_names.contains(&"ignore".to_string())
                 {
                     attr_names.push("ignore".to_string());
                 }
-                // Str-variadic fns: codegen coerces variadic args to str at call sites.
-                // Detected by: ...args: str/ref, OR ...args: any with a preceding str param
-                // (the any+str convention is how format-style fns like println are written).
+                // `any` is only the erased call-site convention of an explicit
+                // `@format` function; it is never a runtime parameter type.
                 let has_str_variadic_param = params
                     .last()
                     .map(|p| {
@@ -73,13 +75,9 @@ impl Analyzer {
                             return true;
                         }
                         matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
-                            && params.iter().filter(|q| !q.variadic).any(|q| {
-                                matches!(
-                                    &q.ty.node,
-                                    crate::parser::ast::TypeKind::Str
-                                        | crate::parser::ast::TypeKind::Ref { .. }
-                                )
-                            })
+                            && attributes
+                                .iter()
+                                .any(|attribute| attribute.name == "format")
                     })
                     .unwrap_or(false);
                 if has_str_variadic_param {
@@ -90,12 +88,9 @@ impl Analyzer {
                 let is_syscall_or_api = attr_names
                     .iter()
                     .any(|a| matches!(a.as_str(), "syscall" | "api"));
-                let is_no_mangle = attr_names
-                    .iter()
-                    .any(|a| matches!(a.as_str(), "no_mangle" | "export"));
+                let has_export = attr_names.iter().any(|a| a == "export");
                 // Internal runtime symbols (e.g. __quazi_panic_handler) keep their bare
                 // names so the runtime stub can find them.
-                // @no_mangle functions keep their bare name to allow stable symbol references.
                 let export_name = attributes
                     .iter()
                     .find(|a| a.name == "export")
@@ -105,13 +100,18 @@ impl Analyzer {
                             _ => None,
                         })
                     });
-                let register_name = if name.starts_with("__quazi_") || is_no_mangle {
+                let register_name = if name.starts_with("__quazi_") || has_export {
                     name.clone()
                 } else if let Some(module) = self.module_path_for_span(item.span) {
                     format!("{}.{}", module, name)
                 } else {
                     name.clone()
                 };
+                if attr_names.iter().any(|attribute| attribute == "test")
+                    && !self.is_library_span(item.span)
+                {
+                    self.test_functions.push(register_name.clone());
+                }
                 if attr_names.iter().any(|a| a == "export") {
                     self.exported_symbols.insert(
                         register_name.clone(),
@@ -126,8 +126,8 @@ impl Analyzer {
                         .map(|p| p.name.clone())
                         .collect(),
                 );
-                self.declare(
-                    register_name,
+                let declared = self.declare(
+                    register_name.clone(),
                     Symbol {
                         kind: SymbolKind::Function,
                         span: item.span,
@@ -145,46 +145,62 @@ impl Analyzer {
                         generic_params: generic_params.clone(),
                     },
                 );
-                // @panic_handler validation: must take exactly one PanicInfo or str param,
-                // return ! or void.
+                if declared && let Some(name_span) = name_span {
+                    self.binding_declarations.push(BindingDeclaration {
+                        binding: ResolvedBinding {
+                            name: register_name,
+                            span: item.span,
+                            kind: SymbolKind::Function,
+                        },
+                        name_span: *name_span,
+                    });
+                }
+                // The panic runtime constructs exactly one PanicInfo value and
+                // never resumes the handler. Accepting another named type,
+                // str, or a returning signature would give the replacement
+                // handler an incompatible Quazi ABI.
                 if attr_names.iter().any(|a| a == "panic_handler") {
-                    let non_variadic: Vec<_> = params.iter().filter(|p| !p.variadic).collect();
-                    if non_variadic.len() != 1 {
+                    if params.len() != 1 || params.first().is_some_and(|param| param.variadic) {
                         self.push_error(
                             item.span,
                             "S13",
                             format!(
-                                "@panic_handler '{}' must take exactly one parameter (PanicInfo or str), found {}",
+                                "@panic_handler '{}' must take exactly one PanicInfo parameter, found {}",
                                 name,
-                                non_variadic.len()
+                                params.len()
                             ),
                         );
                     } else {
-                        let param_ty = unwrap_type(&non_variadic[0].ty);
+                        let param_ty = unwrap_type(&params[0].ty);
                         let ok = matches!(
                             &param_ty,
-                            TypeKind::Str | TypeKind::Ref { .. } | TypeKind::Named { .. }
+                            TypeKind::Named { name, type_args }
+                                if name == "PanicInfo" && type_args.is_empty()
                         );
                         if !ok {
                             self.push_error(
                                 item.span,
                                 "S13",
                                 format!(
-                                    "@panic_handler '{}' parameter must be PanicInfo or str, found {}",
+                                    "@panic_handler '{}' parameter must be PanicInfo, found {}",
                                     name, param_ty
                                 ),
                             );
                         }
                     }
                     let ret = unwrap_type(return_ty);
-                    if !matches!(ret, TypeKind::Never | TypeKind::Void) {
+                    if !matches!(ret, TypeKind::Never) {
                         self.push_error(
                             item.span,
                             "S13",
-                            format!(
-                                "@panic_handler '{}' must return ! or void, found {}",
-                                name, ret
-                            ),
+                            format!("@panic_handler '{}' must return !, found {}", name, ret),
+                        );
+                    }
+                    if !generic_params.is_empty() {
+                        self.push_error(
+                            item.span,
+                            "S13",
+                            format!("@panic_handler '{}' cannot be generic", name),
                         );
                     }
                 }
@@ -192,7 +208,6 @@ impl Analyzer {
             ItemKind::Struct {
                 name,
                 fields,
-                bit_widths,
                 is_union,
                 generic_params,
                 attributes,
@@ -220,15 +235,14 @@ impl Analyzer {
                 // Register field layout for codegen
                 let field_defs: Vec<(String, TypeKind)> = fields
                     .iter()
-                    .map(|(fname, ftype, _)| (fname.clone(), ftype.node.clone()))
+                    .map(|field| (field.name.clone(), field.ty.node.clone()))
                     .collect();
                 self.struct_defs.insert(name.clone(), field_defs);
                 self.struct_field_bit_widths.insert(
                     name.clone(),
                     fields
                         .iter()
-                        .zip(bit_widths)
-                        .map(|((field_name, _, _), width)| (field_name.clone(), *width))
+                        .map(|field| (field.name.clone(), field.bit_width))
                         .collect(),
                 );
                 if attributes.iter().any(|attr| {
@@ -260,10 +274,9 @@ impl Analyzer {
                             _ => {}
                         }
                     }
-                    if fields
-                        .last()
-                        .is_some_and(|(_, ty, _)| matches!(ty.node, TypeKind::FlexibleArray { .. }))
-                    {
+                    if fields.last().is_some_and(|field| {
+                        matches!(field.ty.node, TypeKind::FlexibleArray { .. })
+                    }) {
                         self.flexible_array_structs.insert(name.clone());
                     }
                 }
@@ -292,9 +305,144 @@ impl Analyzer {
                 if !derives.is_empty() {
                     self.derived_traits.insert(name.clone(), derives);
                 }
+                let mut serialization_traits: Vec<String> = Vec::new();
+                for attribute in attributes
+                    .iter()
+                    .filter(|attribute| attribute.name == "derive")
+                {
+                    for argument in &attribute.args {
+                        let AttrArg::Positional(AttrVal::Ident(trait_name)) = argument else {
+                            continue;
+                        };
+                        if trait_name != "Serialize" && trait_name != "Deserialize" {
+                            continue;
+                        }
+                        if serialization_traits.contains(trait_name) {
+                            self.push_error(
+                                attribute.span,
+                                "S06",
+                                format!("duplicate serialization derive '{trait_name}'"),
+                            );
+                        } else {
+                            serialization_traits.push(trait_name.clone());
+                            if trait_name == "Deserialize" {
+                                // This name is reserved and its source metadata is retained for
+                                // the planned derive, but accepting it today falsely suggests a
+                                // decoder exists. The language has no receiverless trait methods
+                                // and D-012 has not yet defined bounded struct-decoding policy.
+                                self.push_error(
+                                    attribute.span,
+                                    "S14",
+                                    "Deserialize derive is not implemented; use explicit codec.decode_* functions"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+                }
+                let has_serialization_derive = !serialization_traits.is_empty();
+                if has_serialization_derive && *is_union {
+                    self.push_error(
+                        item.span,
+                        "S14",
+                        "Serialize and Deserialize currently support structs, not unions"
+                            .to_string(),
+                    );
+                }
+                if has_serialization_derive && !generic_params.is_empty() {
+                    self.push_error(
+                        item.span,
+                        "S14",
+                        "Serialize and Deserialize currently do not support generic structs"
+                            .to_string(),
+                    );
+                }
+                let mut json_names: HashMap<String, String> = HashMap::new();
+                let serialization_fields = fields
+                    .iter()
+                    .map(|field| {
+                        let json_attributes: Vec<&Attribute> = field
+                            .attributes
+                            .iter()
+                            .filter(|attribute| attribute.name == "json")
+                            .collect();
+                        let json_name = json_attributes.iter().find_map(|attribute| match attribute.args.as_slice() {
+                            [AttrArg::KeyValue(key, AttrVal::Str(value))]
+                                if key == "name" && !value.is_empty() => Some(value.clone()),
+                            _ => None,
+                        });
+
+                        if !json_attributes.is_empty() && !has_serialization_derive {
+                            self.push_error(
+                                json_attributes[0].span,
+                                "S06",
+                                "@json is only valid on a field of a struct deriving Serialize or Deserialize"
+                                    .to_string(),
+                            );
+                        }
+                        if json_attributes.len() > 1 {
+                            self.push_error(
+                                json_attributes[1].span,
+                                "S06",
+                                format!("field '{}' has more than one @json attribute", field.name),
+                            );
+                        }
+                        for attribute in &json_attributes {
+                            if !matches!(
+                                attribute.args.as_slice(),
+                                [AttrArg::KeyValue(key, AttrVal::Str(value))]
+                                    if key == "name" && !value.is_empty()
+                            ) {
+                                self.push_error(
+                                    attribute.span,
+                                    "S06",
+                                    "@json must be exactly @json(name=\"non-empty JSON key\")"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        let wire_name = json_name.clone().unwrap_or_else(|| field.name.clone());
+                        if let Some(previous_field) = json_names.insert(wire_name.clone(), field.name.clone())
+                        {
+                            self.push_error(
+                                json_attributes.first().map_or(field.ty.span, |attribute| attribute.span),
+                                "S06",
+                                format!(
+                                    "JSON key '{}' is used by both '{}' and '{}'",
+                                    wire_name, previous_field, field.name
+                                ),
+                            );
+                        }
+
+                        SerializationFieldMetadata {
+                            name: field.name.clone(),
+                            ty: field.ty.node.clone(),
+                            span: field.ty.span,
+                            json_name,
+                            attributes: field
+                                .attributes
+                                .iter()
+                                .map(derive_field_attribute)
+                                .collect(),
+                        }
+                    })
+                    .collect();
+                if has_serialization_derive {
+                    self.serialization_derives.insert(
+                        name.clone(),
+                        SerializationDeriveMetadata {
+                            type_name: name.clone(),
+                            requested_traits: serialization_traits,
+                            generic_params: generic_params.clone(),
+                            is_union: *is_union,
+                            fields: serialization_fields,
+                        },
+                    );
+                }
             }
             ItemKind::Trait {
                 name,
+                generic_params,
                 methods,
                 attributes,
                 public,
@@ -316,7 +464,7 @@ impl Analyzer {
                         attributes: extract_attribute_names(attributes),
                         public: *public,
                         unsafe_fn: false,
-                        generic_params: vec![],
+                        generic_params: generic_params.clone(),
                     },
                 );
                 // Record vtable slot order: method declaration order = slot index.
@@ -324,6 +472,29 @@ impl Analyzer {
                 if !slots.is_empty() {
                     self.trait_method_slots.insert(name.clone(), slots);
                 }
+                let signatures = methods
+                    .iter()
+                    .map(|method| {
+                        (
+                            method.name.clone(),
+                            TraitMethodSignature {
+                                has_explicit_receiver: method
+                                    .param_names
+                                    .first()
+                                    .is_some_and(|name| name == "self"),
+                                generic_params: method.generic_params.clone(),
+                                params: method
+                                    .params
+                                    .iter()
+                                    .map(|param| param.node.clone())
+                                    .collect(),
+                                return_ty: method.return_ty.node.clone(),
+                            },
+                        )
+                    })
+                    .collect();
+                self.trait_method_signatures
+                    .insert(name.clone(), signatures);
             }
             ItemKind::Enum {
                 name,
@@ -503,13 +674,9 @@ impl Analyzer {
                                     return true;
                                 }
                                 matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
-                                    && params.iter().filter(|q| !q.variadic).any(|q| {
-                                        matches!(
-                                            &q.ty.node,
-                                            crate::parser::ast::TypeKind::Str
-                                                | crate::parser::ast::TypeKind::Ref { .. }
-                                        )
-                                    })
+                                    && attributes
+                                        .iter()
+                                        .any(|attribute| attribute.name == "format")
                             })
                             .unwrap_or(false);
                         if has_str_variadic_param2 {
@@ -526,6 +693,19 @@ impl Analyzer {
                                 .map(|p| p.name.clone())
                                 .collect(),
                         );
+                        if params.first().is_some_and(|param| {
+                            param.name == "self"
+                                && matches!(param.ty.node, TypeKind::Ref { .. })
+                        }) {
+                            self.explicit_shared_receiver_methods.insert(mangled.clone());
+                        }
+                        if params.first().is_some_and(|param| {
+                            param.name == "self"
+                                && matches!(param.ty.node, TypeKind::MutRef { .. })
+                        }) {
+                            self.explicit_exclusive_receiver_methods
+                                .insert(mangled.clone());
+                        }
                         self.declare(
                             mangled,
                             Symbol {
@@ -599,18 +779,39 @@ impl Analyzer {
             ImportItems::Single(name) => {
                 let full = build_import_path(&import_path.path, name);
                 let mangled = mangle_import_path(&full);
-                self.declare_import_binding(name.clone(), full, mangled, span);
+                self.declare_import_binding(
+                    name.clone(),
+                    full,
+                    mangled,
+                    import_path.selector_spans.first().copied(),
+                    None,
+                    span,
+                );
             }
             ImportItems::Aliased(name, alias) => {
                 let full = build_import_path(&import_path.path, name);
                 let mangled = mangle_import_path(&full);
-                self.declare_import_binding(alias.clone(), full, mangled, span);
+                self.declare_import_binding(
+                    alias.clone(),
+                    full,
+                    mangled,
+                    import_path.selector_spans.first().copied(),
+                    import_path.alias_span,
+                    span,
+                );
             }
             ImportItems::Multiple(names) => {
-                for name in names {
+                for (name, selector_span) in names.iter().zip(&import_path.selector_spans) {
                     let full = build_import_path(&import_path.path, name);
                     let mangled = mangle_import_path(&full);
-                    self.declare_import_binding(name.clone(), full, mangled, span);
+                    self.declare_import_binding(
+                        name.clone(),
+                        full,
+                        mangled,
+                        Some(*selector_span),
+                        None,
+                        span,
+                    );
                 }
             }
             ImportItems::All => {
@@ -660,6 +861,8 @@ impl Analyzer {
         local_name: String,
         full_path: String,
         mangled: Option<String>,
+        selector_span: Option<Span>,
+        alias_span: Option<Span>,
         span: Span,
     ) {
         self.add_dependency_edge(DependencyKind::Import, "__program__", &full_path);
@@ -695,6 +898,34 @@ impl Analyzer {
             }
             self.explicitly_imported_fns
                 .insert(local_name.clone(), full_path.clone());
+            if let (Some(mangled_target), Some(selector_span)) = (mangled.as_ref(), selector_span) {
+                let leaf = mangled_target
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(mangled_target)
+                    .to_string();
+                let resolved = self
+                    .resolve_symbol(mangled_target)
+                    .filter(|symbol| !symbol.is_import)
+                    .map(|symbol| (symbol, mangled_target.clone()))
+                    .or_else(|| {
+                        self.resolve_symbol(&leaf)
+                            .filter(|symbol| !symbol.is_import)
+                            .map(|symbol| (symbol, leaf))
+                    });
+                if let Some((target, target_name)) = resolved {
+                    self.binding_imports.push(BindingImport {
+                        binding: ResolvedBinding {
+                            name: target_name,
+                            span: target.span,
+                            kind: SymbolKind::Function,
+                        },
+                        selector_span,
+                        alias_span,
+                        local_name,
+                    });
+                }
+            }
             return;
         }
 
@@ -730,33 +961,35 @@ impl Analyzer {
             .next()
             .unwrap_or(&mangled_target)
             .to_string();
-        let original = self
-            .resolve_symbol(&mangled_target)
-            .or_else(|| self.resolve_symbol(&leaf));
-        let Some(original) = original else {
-            // Target doesn't exist yet — possibly a type/constant import or the file
-            // hasn't been loaded. Fall back to a namespace variable.
-            self.declare(
-                local_name,
-                Symbol {
-                    kind: SymbolKind::Variable { mutable: false },
-                    ty: None,
-                    span,
-                    params: vec![],
-                    used: false,
-                    initialized: true,
-                    is_import: true,
-                    import_path: Some(full_path),
-                    const_value: None,
-                    variadic: false,
-                    attributes: Vec::new(),
-                    public: false,
-                    unsafe_fn: false,
-                    generic_params: vec![],
-                },
-            );
-            return;
-        };
+        let (original, resolved_target) =
+            if let Some(original) = self.resolve_symbol(&mangled_target) {
+                (original, mangled_target.clone())
+            } else if let Some(original) = self.resolve_symbol(&leaf) {
+                (original, leaf.clone())
+            } else {
+                // Target doesn't exist yet — possibly a type/constant import or the file
+                // hasn't been loaded. Fall back to a namespace variable.
+                self.declare(
+                    local_name,
+                    Symbol {
+                        kind: SymbolKind::Variable { mutable: false },
+                        ty: None,
+                        span,
+                        params: vec![],
+                        used: false,
+                        initialized: true,
+                        is_import: true,
+                        import_path: Some(full_path),
+                        const_value: None,
+                        variadic: false,
+                        attributes: Vec::new(),
+                        public: false,
+                        unsafe_fn: false,
+                        generic_params: vec![],
+                    },
+                );
+                return;
+            };
 
         if !matches!(original.kind, SymbolKind::Function) {
             if original
@@ -877,8 +1110,8 @@ impl Analyzer {
 
         self.explicitly_imported_fns
             .insert(local_name.clone(), full_path.clone());
-        self.declare(
-            local_name,
+        let declared = self.declare(
+            local_name.clone(),
             Symbol {
                 kind: SymbolKind::Function,
                 ty: original.ty,
@@ -896,6 +1129,45 @@ impl Analyzer {
                 generic_params: original.generic_params.clone(),
             },
         );
+        if declared && let Some(selector_span) = selector_span {
+            self.binding_imports.push(BindingImport {
+                binding: ResolvedBinding {
+                    name: resolved_target,
+                    span: original.span,
+                    kind: SymbolKind::Function,
+                },
+                selector_span,
+                alias_span,
+                local_name,
+            });
+        }
+    }
+}
+
+fn derive_field_attribute(attribute: &Attribute) -> DeriveFieldAttribute {
+    DeriveFieldAttribute {
+        name: attribute.name.clone(),
+        args: attribute
+            .args
+            .iter()
+            .map(|argument| match argument {
+                AttrArg::Positional(value) => {
+                    DeriveAttributeArgument::Positional(derive_attribute_value(value))
+                }
+                AttrArg::KeyValue(key, value) => DeriveAttributeArgument::KeyValue {
+                    key: key.clone(),
+                    value: derive_attribute_value(value),
+                },
+            })
+            .collect(),
+    }
+}
+
+fn derive_attribute_value(value: &AttrVal) -> DeriveAttributeValue {
+    match value {
+        AttrVal::Str(value) => DeriveAttributeValue::String(value.clone()),
+        AttrVal::Int(value) => DeriveAttributeValue::Integer(*value),
+        AttrVal::Ident(value) => DeriveAttributeValue::Identifier(value.clone()),
     }
 }
 
@@ -939,7 +1211,7 @@ pub(super) fn type_kind_base_name(ty: &TypeKind) -> String {
         TypeKind::Float64 => "f64".to_string(),
         TypeKind::Bool => "bool".to_string(),
         TypeKind::Str => "str".to_string(),
-        TypeKind::Ref { inner } => type_kind_base_name(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => type_kind_base_name(&inner.node),
         TypeKind::RawPtr { inner } => type_kind_base_name(&inner.node),
         other => format!("{}", other),
     }

@@ -6,16 +6,17 @@ use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Posi
 
 use crate::semantic::{SemanticReport, SymbolKind};
 
-use super::span::{position_to_byte_offset, span_to_range};
+use super::span::{position_to_byte_offset, position_to_char_offset, span_to_range};
 
 pub fn hover_at(report: &SemanticReport, source: &str, pos: Position) -> Option<Hover> {
-    let offset = position_to_byte_offset(pos, source)?;
+    let byte_offset = position_to_byte_offset(pos, source)?;
+    let char_offset = position_to_char_offset(pos, source)?;
 
     // Tightest ExprAnnotation containing the cursor
     let best = report
         .annotated_exprs
         .iter()
-        .filter(|a| a.span.start <= offset && offset < a.span.end)
+        .filter(|a| a.span.start <= char_offset && char_offset < a.span.end)
         .min_by_key(|a| a.span.end - a.span.start);
 
     if let Some(ann) = best
@@ -36,7 +37,7 @@ pub fn hover_at(report: &SemanticReport, source: &str, pos: Position) -> Option<
     }
 
     // Fallback: identifier word → symbol table
-    let word = word_at_offset(source, offset)?;
+    let word = word_at_offset(source, byte_offset)?;
     let entry = report
         .symbol_table
         .entries
@@ -67,12 +68,16 @@ pub fn hover_at(report: &SemanticReport, source: &str, pos: Position) -> Option<
 
     let value = format!("```quazi\n{kind_str} {word}: {params_str}{ty_str}\n```");
 
+    let word_start = word.as_ptr() as usize - source.as_ptr() as usize;
     let range = Range {
-        start: pos,
-        end: Position {
-            line: pos.line,
-            character: pos.character + word.len() as u32,
-        },
+        start: super::span::char_offset_to_position(
+            super::span::byte_offset_to_char_offset(word_start, source)?,
+            source,
+        ),
+        end: super::span::char_offset_to_position(
+            super::span::byte_offset_to_char_offset(word_start + word.len(), source)?,
+            source,
+        ),
     };
 
     Some(Hover {

@@ -1,0 +1,20 @@
+import std.io;
+
+fn main() i32 {
+    // Round-trip a multi-slot element through Array[T].
+    var triples: Array[[i32; 3]] = Array.new();
+    triples.push([1, 2, 3]);
+    triples.push([4, 5, 6]);
+
+    var first = triples.get(0);
+    var second = triples[1];
+
+    io.println("first: {} {} {}", first[0], first[1], first[2]);
+    io.println("second: {} {} {}", second[0], second[1], second[2]);
+
+    triples.set(0, [7, 8, 9]);
+    var updated = triples.get(0);
+    io.println("updated: {} {} {}", updated[0], updated[1], updated[2]);
+
+    ret 0;
+}

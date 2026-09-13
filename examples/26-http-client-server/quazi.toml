@@ -15,5 +15,9 @@ path = "src/server.qz"
 name = "http-client"
 path = "src/client.qz"
 
+[[bin]]
+name = "http-url-client"
+path = "src/url_client.qz"
+
 [target.x86_64-linux.link]
 libc = true

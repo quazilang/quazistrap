@@ -1,0 +1,5 @@
+import math;
+
+fn main() i32 {
+    ret math.double(21) - 42;
+}

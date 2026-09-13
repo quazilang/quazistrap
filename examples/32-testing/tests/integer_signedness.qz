@@ -1,0 +1,58 @@
+fn unsigned_div(left: u64, right: u64) u64 { ret left / right; }
+fn unsigned_mod(left: u64, right: u64) u64 { ret left % right; }
+fn unsigned_shift(left: u64, right: u64) u64 { ret left >> right; }
+fn signed_div(left: i64, right: i64) i64 { ret left / right; }
+fn signed_mod(left: i64, right: i64) i64 { ret left % right; }
+fn signed_shift(left: i64, right: i64) i64 { ret left >> right; }
+
+@test
+fn high_bit_unsigned_values_keep_unsigned_semantics() void {
+    var high: u64 = -1 as u64;
+    var low: u64 = 1 as u64;
+    var two: u64 = 2 as u64;
+
+    if (high <= low || high < low || !(high >= low) || !(high > low)) {
+        panic("high-bit u64 comparison used signed semantics");
+    }
+    if (unsigned_div(high, two) != 9223372036854775807 as u64) {
+        panic("u64 division used signed semantics");
+    }
+    if (unsigned_mod(high, two) != low) {
+        panic("u64 remainder used signed semantics");
+    }
+    if (unsigned_shift(high, 63 as u64) != low) {
+        panic("u64 right shift was not logical");
+    }
+
+    var quotient: u64 = high;
+    quotient /= two;
+    if (quotient != 9223372036854775807 as u64) {
+        panic("compound u64 division used signed semantics");
+    }
+    var remainder: u64 = high;
+    remainder %= two;
+    if (remainder != low) {
+        panic("compound u64 remainder used signed semantics");
+    }
+}
+
+@test
+fn signed_overflow_and_shift_match_constant_folding() void {
+    var minimum: i64 = -9223372036854775807 - 1;
+    var minus_one: i64 = -1;
+    if (signed_div(minimum, minus_one) != minimum) {
+        panic("signed division overflow did not wrap");
+    }
+    if (signed_mod(minimum, minus_one) != 0) {
+        panic("signed remainder overflow did not wrap to zero");
+    }
+    if (signed_shift(-8, 1) != -4) {
+        panic("signed right shift was not arithmetic");
+    }
+    if (signed_shift(1, 64) != 1) {
+        panic("runtime shift count did not use the low six bits");
+    }
+    if ((1 >> 64) != signed_shift(1, 64)) {
+        panic("constant and runtime shifts disagree");
+    }
+}

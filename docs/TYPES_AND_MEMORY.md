@@ -12,9 +12,11 @@ width. Signedness affects comparisons, shifts, extension, parsing, and C ABI
 classification. `f16`, `f32`, and `f64` are distinct source types; Quazi's
 internal slots preserve required target conversion at C boundaries.
 
-Conversions that may change representation are explicit with `as`. Integer
-overflow checking is not a substitute for input validation; parsing returns
-`Result` and rejects malformed/out-of-range values.
+Supported representation-changing conversions are explicit with `as`.
+Integer-family casts are supported; integer-to-float and float-to-integer casts
+are not implemented yet. Integer overflow checking is not a substitute for
+input validation; parsing returns `Result` and rejects malformed/out-of-range
+values.
 
 Fallible public APIs use typed error enums. Match variants for recovery logic;
 use each enum's `message()` method for display. Raw numeric error codes remain
@@ -43,12 +45,34 @@ dangling, misaligned, or point to invalid storage. Dereferencing it is unsafe.
 Integer zero is the raw null-pointer constant. Raw pointer types interoperate at
 FFI boundaries, but typed wrappers remain preferred.
 
+Until lifetime parameters and mutable references are designed, safe references
+are deliberately lexical and restrictive. Address-of accepts a named local or
+parameter, pointee types are invariant, and a reference binding cannot be
+rebound. Shared aggregate references cannot be dereferenced into owned-looking
+values because current aggregate storage is address-based and that would create
+a mutable alias. Scalar and representation-identical string reads remain
+available.
+Non-string references cannot be returned, stored in owned aggregates,
+or captured by closures. Once a local is address-taken, safe code cannot mutate,
+move, or invoke methods on it for the rest of that function. `str`/`&str` is the
+representation-identical string-view exception. See the
+[reference migration guide](migrations/references.md).
+
 ## Scope cleanup and moves
 
 Owned locals are destroyed in reverse lexical order on fallthrough and early
 return. Assignment only destroys a previously initialized value. Returning an
 owner transfers it to the caller. Passing by value may move; ordinary method
 receivers borrow unless the API explicitly consumes ownership.
+
+A Quazi `fn` value owns a heap-allocated environment. Passing, returning, or
+assigning it moves that ownership. Calling it borrows the environment; replacing
+the binding, discarding a temporary, or leaving the owning scope frees it.
+Function values cannot currently be placed inside arrays, structs, enums, or
+generic type arguments because those containers do not yet perform recursive
+destruction. Closure captures are limited to immutable plain scalars for the
+same reason. A function-pointer alias declared with `@repr(C)` is a non-owning
+native code pointer and does not use this cleanup rule.
 
 `free()` methods are idempotent resource operations for APIs needing early
 release. Normal application code should rely on scope cleanup where possible.

@@ -2,6 +2,9 @@
 name = "no-standard-library"
 version = "0.1.0"
 out_dir = "build"
+std = false
+crash_handler = false
+mangling = false
 
 [build]
 entry = "src/main.qz"

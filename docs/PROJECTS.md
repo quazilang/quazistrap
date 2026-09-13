@@ -8,6 +8,9 @@ expose one library and several binaries.
 name = "acme"
 version = "0.1.0"
 out_dir = "build"
+std = true
+crash_handler = true
+mangling = true
 
 [lib]
 name = "acme"
@@ -39,6 +42,13 @@ are output names. `qz build --lib` selects the library;
 several artifacts, the binary matching `package.name` is default; otherwise
 selection is required. Libraries emit target-neutral QZI by default.
 
+Package runtime/codegen switches default to `true`. `std = false` omits both
+automatic prelude injection and `std` resolution. `crash_handler = false`
+keeps process startup but omits crash-handler registration. `mangling = false`
+uses bare native function names; duplicate bare names are compile errors.
+These fields replace removed `@no_std`, `@no_crash`, and
+`@no_mangle`/`@no_mangling` source attributes.
+
 Legacy `package.type` plus `[build].entry` remains accepted only when artifact
 tables are absent. New manifests use `[lib]` and `[[bin]]`. `qz new --lib` and
 `qz init --lib` generate this form.
@@ -49,9 +59,11 @@ cache namespace, and linker. CLI linker wins over target `[link]`, then base
 objects. Native libraries or custom linker flags select an external linker.
 `libc = true` is explicit opt-in; no C runtime is inferred.
 
-QZC means Quazi Compilation Cache. Each artifact/target QZC v2 snapshot lives at
+QZC means Quazi Compilation Cache. Each artifact/target QZC v6 snapshot lives at
 `build/quazi/<target>/<artifact>/incremental.qzc` by default. It stores exact-hit
 linked QZI plus source-hashed pre-WPO function chunks for partial rebuilds. The
 compiler still reruns complete-program analysis and WPO after restoring chunks.
+V6 rejects caches created before phase-2 layout intrinsic lowering and the
+current layout ABI boundary.
 `quazi.lock` alone stores dependency resolution. QZC is always safe to delete.
 `[package].out_dir` changes the `build` root; it must remain inside the project.

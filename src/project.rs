@@ -31,6 +31,7 @@ pub struct ProjectConfig {
     pub out_dir: PathBuf,
     pub name: String,
     pub version: Option<String>,
+    pub package: PackageSettings,
     pub kind: ProjectKind,
     pub entry: PathBuf,
     pub src_dir: PathBuf,
@@ -41,6 +42,23 @@ pub struct ProjectConfig {
     pub link: LinkConfig,
     pub artifacts: Vec<ProjectArtifact>,
     pub target_links: BTreeMap<String, LinkConfigOverride>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackageSettings {
+    pub std: bool,
+    pub crash_handler: bool,
+    pub mangling: bool,
+}
+
+impl Default for PackageSettings {
+    fn default() -> Self {
+        Self {
+            std: true,
+            crash_handler: true,
+            mangling: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -364,6 +382,9 @@ struct RawPackage {
     out_dir: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
+    std: Option<bool>,
+    crash_handler: Option<bool>,
+    mangling: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -392,6 +413,7 @@ enum RawDependency {
 struct ProjectMeta {
     name: String,
     version: Option<String>,
+    package: PackageSettings,
     out_dir: PathBuf,
     kind: ProjectKind,
     entry: PathBuf,
@@ -564,6 +586,7 @@ impl ProjectContext {
             out_dir: meta.out_dir.clone(),
             name: meta.name.clone(),
             version: meta.version.clone(),
+            package: meta.package,
             kind: meta.kind.clone(),
             entry: meta.entry.clone(),
             src_dir: meta.src_dir.clone(),
@@ -668,6 +691,11 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         return Err("package.out_dir must stay inside the project".to_string());
     }
     let out_dir = root.join(out_dir_setting);
+    let package_settings = PackageSettings {
+        std: package.std.unwrap_or(true),
+        crash_handler: package.crash_handler.unwrap_or(true),
+        mangling: package.mangling.unwrap_or(true),
+    };
 
     let legacy_kind = match package.kind.as_deref() {
         Some("lib") => ProjectKind::Lib,
@@ -859,6 +887,7 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
     Ok(ProjectMeta {
         name: package.name,
         version: package.version,
+        package: package_settings,
         out_dir,
         kind,
         entry,
@@ -1333,6 +1362,22 @@ path = "src/tool.qz"
         assert_eq!(
             context.config.out_dir,
             root.canonicalize().unwrap().join("output")
+        );
+        assert_eq!(context.config.package, PackageSettings::default());
+
+        fs::write(
+            root.join("quazi.toml"),
+            "[package]\nname = \"app\"\nstd = false\ncrash_handler = false\nmangling = false\n",
+        )
+        .unwrap();
+        let context = ProjectContext::load(&root).expect("explicit package settings");
+        assert_eq!(
+            context.config.package,
+            PackageSettings {
+                std: false,
+                crash_handler: false,
+                mangling: false,
+            }
         );
 
         fs::write(

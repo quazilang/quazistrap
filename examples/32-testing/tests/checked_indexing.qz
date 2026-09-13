@@ -1,0 +1,54 @@
+fn fixed_read(index: i64) i64 {
+    var values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    ret values[index];
+}
+
+fn fixed_write(index: i64, value: i64) i64 {
+    var values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    values[index] = value;
+    values[index] += 1;
+    ret values[index];
+}
+
+fn byte_read(index: i64) u8 {
+    var value = b"abc";
+    ret value[index];
+}
+
+fn copied_fixed_read(index: i64) i64 {
+    var source = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    var copy = source;
+    ret copy[index];
+}
+
+fn variadic_read(index: i64, ...values: i64) i64 {
+    ret values[index];
+}
+
+fn reassigned_fixed_read(index: i64) i64 {
+    var values = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    values = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    ret values[index];
+}
+
+@test
+fn dynamic_boundary_indices_are_safe_and_preserve_values() void {
+    if (fixed_read(9) != 9) {
+        panic("dynamic fixed-array read corrupted the final element");
+    }
+    if (fixed_write(8, 40) != 41) {
+        panic("dynamic fixed-array write corrupted the register block");
+    }
+    if (byte_read(2) != 99 as u8) {
+        panic("dynamic byte indexing returned the wrong byte");
+    }
+    if (copied_fixed_read(9) != 9) {
+        panic("fixed-array binding did not copy the full register block");
+    }
+    if (variadic_read(2, 10, 20, 30) != 30) {
+        panic("checked slice indexing returned the wrong variadic element");
+    }
+    if (reassigned_fixed_read(8) != 9) {
+        panic("fixed-array assignment did not copy the full register block");
+    }
+}
