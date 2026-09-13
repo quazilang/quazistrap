@@ -251,8 +251,9 @@ Shared references currently use a conservative lexical model:
   shallow aggregate load would otherwise create a mutable alias.
 - `str`/`&str` retain their existing representation-identical string-view rule.
 
-These restrictions keep references sound before lifetime parameters and
-mutable-reference syntax exist. A direct `&local` may be stored or passed as an
+These restrictions keep shared references sound while the broader lifetime and
+whole-program ownership model is implemented. `&T!` / `&value!` provide the
+currently conservative exclusive-reference notation. A direct `&local` may be stored or passed as an
 exact raw pointer, but dereferencing that pointer or calling an unsafe function
 still requires an unsafe context. Raw pointers never convert back into safe
 references.

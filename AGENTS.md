@@ -179,6 +179,11 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 - Calling `unsafe fn` or dereferencing `*T` outside unsafe context → S11.
 - `@intrinsic` = safe (unsafety handled internally).
 - `*T` ↔ `*U`: all raw pointers mutually compatible. Integer `0` valid as any `*T` (null pointer constant).
+- `&T` is a shared safe loan; `&T!` is an exclusive safe loan. The current
+  compiler implements conservative local checking for both. D-014's
+  whole-program call effects, flow-sensitive regions, structural destruction,
+  and QZI-only ownership summaries remain required before broad resource or
+  concurrency APIs rely on the model.
 
 ### String Model
 

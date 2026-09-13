@@ -60,10 +60,11 @@ pub enum Literal {
 
 #[derive(Debug, Clone)]
 pub enum UnaryOpKind {
-    Neg,   // -x
-    Not,   // !x
-    Ref,   // &x  (take address)
-    Deref, // *x (dereference)
+    Neg,    // -x
+    Not,    // !x
+    Ref,    // &x  (take shared address)
+    RefMut, // &x! (take exclusive address)
+    Deref,  // *x (dereference)
 }
 
 #[derive(Debug, Clone)]
@@ -297,6 +298,10 @@ pub enum TypeKind {
     Ref {
         inner: Box<Type>,
     },
+    /// `&T!` — exclusive reference.
+    MutRef {
+        inner: Box<Type>,
+    },
     /// `*T` — raw pointer (unsafe to dereference).
     RawPtr {
         inner: Box<Type>,
@@ -359,6 +364,7 @@ impl std::fmt::Display for TypeKind {
             TypeKind::FlexibleArray { elem_ty } => write!(f, "[{}; ..]", elem_ty.node),
             TypeKind::Slice { elem_ty } => write!(f, "[{}]", elem_ty.node),
             TypeKind::Ref { inner } => write!(f, "&{}", inner.node),
+            TypeKind::MutRef { inner } => write!(f, "&{}!", inner.node),
             TypeKind::RawPtr { inner } => write!(f, "*{}", inner.node),
             TypeKind::Never => write!(f, "!"),
             TypeKind::Fn { params, return_ty } => {

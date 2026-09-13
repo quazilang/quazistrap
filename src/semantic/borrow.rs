@@ -20,9 +20,13 @@ struct OwnedVar {
     /// Loop depth at declaration site (used to detect move-in-loop).
     loop_depth_at_decl: usize,
     control_depth_at_decl: usize,
-    /// First address-of operation that keeps this stack slot borrowed for the
-    /// remainder of the conservative function-local analysis.
-    borrowed_at: Option<Span>,
+    /// First shared address-of operation that keeps this stack slot borrowed
+    /// for the remainder of the conservative function-local analysis.
+    shared_borrowed_at: Option<Span>,
+    /// First exclusive address-of operation. The current local checker keeps
+    /// this conservative function-long until the D-014 loan-region solver
+    /// replaces it with control-flow liveness.
+    exclusive_borrowed_at: Option<Span>,
 }
 
 // ── Scoped move environment ───────────────────────────────────────────────────
@@ -66,7 +70,8 @@ impl MoveEnv {
                     moved_at: None,
                     loop_depth_at_decl: depth,
                     control_depth_at_decl: control_depth,
-                    borrowed_at: None,
+                    shared_borrowed_at: None,
+                    exclusive_borrowed_at: None,
                 },
             );
         }
@@ -90,10 +95,19 @@ impl MoveEnv {
         }
     }
 
-    fn mark_borrowed(&mut self, name: &str, at: Span) {
+    fn mark_shared_borrowed(&mut self, name: &str, at: Span) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(variable) = scope.get_mut(name) {
-                variable.borrowed_at.get_or_insert(at);
+                variable.shared_borrowed_at.get_or_insert(at);
+                return;
+            }
+        }
+    }
+
+    fn mark_exclusive_borrowed(&mut self, name: &str, at: Span) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(variable) = scope.get_mut(name) {
+                variable.exclusive_borrowed_at.get_or_insert(at);
                 return;
             }
         }
@@ -117,8 +131,11 @@ impl MoveEnv {
                 if let Some(at) = var.moved_at {
                     self.mark_moved(name, at);
                 }
-                if let Some(at) = var.borrowed_at {
-                    self.mark_borrowed(name, at);
+                if let Some(at) = var.shared_borrowed_at {
+                    self.mark_shared_borrowed(name, at);
+                }
+                if let Some(at) = var.exclusive_borrowed_at {
+                    self.mark_exclusive_borrowed(name, at);
                 }
             }
         }
@@ -331,7 +348,8 @@ impl Analyzer {
     /// Generic type params (K, V, T, etc.) and unknown names are treated as Copy.
     fn bc_is_move_type(&self, ty: &TypeKind) -> bool {
         match ty {
-            // Primitives and references are Copy — no move tracking needed.
+            // Primitives and shared references are Copy. Exclusive references are
+            // affine capabilities, so assigning one transfers it instead.
             TypeKind::Bool
             | TypeKind::Int8
             | TypeKind::Int16
@@ -368,6 +386,17 @@ impl Analyzer {
         match &expr.node {
             ExprKind::Ident(name) => {
                 let Some(var) = env.lookup(name) else { return };
+                if let Some(borrowed_at) = var.exclusive_borrowed_at {
+                    self.push_error(
+                        expr.span,
+                        "S10",
+                        format!(
+                            "cannot use `{name}` while it is exclusively borrowed (borrowed at {})",
+                            self.span_label(borrowed_at)
+                        ),
+                    );
+                    return;
+                }
                 let is_move = var.ty.as_ref().is_some_and(|t| self.bc_is_move_type(t));
                 if !is_move {
                     return;
@@ -402,12 +431,23 @@ impl Analyzer {
                         );
                         return;
                     }
-                    if let Some(borrowed_at) = var.borrowed_at {
+                    if let Some(borrowed_at) = var.shared_borrowed_at {
                         self.push_error(
                             expr.span,
                             "S10",
                             format!(
                                 "cannot move `{name}` while it is shared-borrowed (borrowed at {})",
+                                self.span_label(borrowed_at)
+                            ),
+                        );
+                        return;
+                    }
+                    if let Some(borrowed_at) = var.exclusive_borrowed_at {
+                        self.push_error(
+                            expr.span,
+                            "S10",
+                            format!(
+                                "cannot move `{name}` while it is exclusively borrowed (borrowed at {})",
                                 self.span_label(borrowed_at)
                             ),
                         );
@@ -527,16 +567,61 @@ impl Analyzer {
 
             ExprKind::Unary {
                 expr: inner,
-                op: UnaryOpKind::Ref,
+                op: op @ (UnaryOpKind::Ref | UnaryOpKind::RefMut),
             } => {
+                // Evaluate the place before recording the new loan so taking
+                // an exclusive reference does not conflict with its own read.
+                self.bc_expr(inner, env, false);
                 let mut place = inner;
                 while let ExprKind::Group(grouped) = &place.node {
                     place = grouped;
                 }
                 if let ExprKind::Ident(name) = &place.node {
-                    env.mark_borrowed(name, expr.span);
+                    let existing = env.lookup(name).cloned();
+                    match op {
+                        UnaryOpKind::Ref
+                            if existing
+                                .as_ref()
+                                .and_then(|value| value.exclusive_borrowed_at)
+                                .is_some() =>
+                        {
+                            let borrowed_at = existing
+                                .and_then(|value| value.exclusive_borrowed_at)
+                                .expect("exclusive loan was checked");
+                            self.push_error(
+                                expr.span,
+                                "S10",
+                                format!("cannot shared-borrow `{name}` while it is exclusively borrowed (borrowed at {})", self.span_label(borrowed_at)),
+                            );
+                        }
+                        UnaryOpKind::RefMut
+                            if existing
+                                .as_ref()
+                                .and_then(|value| value.shared_borrowed_at)
+                                .is_some()
+                                || existing
+                                    .as_ref()
+                                    .and_then(|value| value.exclusive_borrowed_at)
+                                    .is_some() =>
+                        {
+                            let borrowed_at = existing
+                                .as_ref()
+                                .and_then(|value| value.exclusive_borrowed_at)
+                                .or_else(|| {
+                                    existing.as_ref().and_then(|value| value.shared_borrowed_at)
+                                })
+                                .expect("conflicting loan was checked");
+                            self.push_error(
+                                expr.span,
+                                "S10",
+                                format!("cannot exclusively borrow `{name}` while it is already borrowed (borrowed at {})", self.span_label(borrowed_at)),
+                            );
+                        }
+                        UnaryOpKind::Ref => env.mark_shared_borrowed(name, expr.span),
+                        UnaryOpKind::RefMut => env.mark_exclusive_borrowed(name, expr.span),
+                        _ => unreachable!("borrow expression has a reference operator"),
+                    }
                 }
-                self.bc_expr(inner, env, false);
             }
 
             ExprKind::Unary { expr: inner, .. } => {
@@ -638,12 +723,28 @@ impl Analyzer {
         let Some(name) = assignment_root_ident(target) else {
             return;
         };
-        if let Some(borrowed_at) = env.lookup(name).and_then(|variable| variable.borrowed_at) {
+        if let Some(borrowed_at) = env
+            .lookup(name)
+            .and_then(|variable| variable.shared_borrowed_at)
+        {
             self.push_error(
                 target.span,
                 "S10",
                 format!(
                     "cannot mutate `{name}` while it is shared-borrowed (borrowed at {})",
+                    self.span_label(borrowed_at)
+                ),
+            );
+        }
+        if let Some(borrowed_at) = env
+            .lookup(name)
+            .and_then(|variable| variable.exclusive_borrowed_at)
+        {
+            self.push_error(
+                target.span,
+                "S10",
+                format!(
+                    "cannot mutate `{name}` while it is exclusively borrowed (borrowed at {})",
                     self.span_label(borrowed_at)
                 ),
             );

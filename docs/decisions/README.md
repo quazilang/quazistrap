@@ -27,7 +27,7 @@ source-breaking for owned-element uses in the standard library.
 ## D-002: receiver ownership
 
 Resolved 2026-09-12 by [D-014](whole-program-ownership.md): receivers are
-explicit shared (`self: &T`), exclusive (`self: &mut T`), or consuming
+explicit shared (`self: &T`), exclusive (`self: &T!`), or consuming
 (`self: T`) capabilities. The current compiler still treats ordinary receivers
 as borrowed; grammar, call-site moves, and legacy API migration remain
 implementation work.

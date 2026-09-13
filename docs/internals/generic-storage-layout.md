@@ -62,7 +62,7 @@ Generic storage today is one machine word per element:
    and reassignment keep exactly-once semantics; explicit `free()` is a
    move-out that suppresses automatic destruction. Panic terminates without
    unwinding; destructor guarantees cover normal control flow only.
-4. Method receivers become explicit: `self: &T` shared borrow, `self: &mut T`
+4. Method receivers become explicit: `self: &T` shared borrow, `self: &T!`
    exclusive, `self: T` consuming. Container element APIs become
    ownership-correct: `get` borrows, `set` destroys the replaced element
    (legal only under an exclusive receiver), and `remove` moves an element
@@ -165,12 +165,12 @@ result layouts and stores them in `SemanticReport`. Details that matter:
   4. Distinguish shared from mutating methods in the borrowed-owner rules
      using the D-002 markers, so `arr.len()` stays legal while a shared
      borrow is live.
-  5. Add `&mut T` to the type system (`TypeKind::Ref` has no mutability) and
+  5. Add `&T!` to the type system (with a distinct exclusive-reference type) and
      to generic parameter lists, which are bare identifiers today.
   6. Element deref loads: aggregate dereference is rejected today, so reading
      a `&[i32; 3]` element needs the typed-load helpers.
 - Reallocation invalidation: an outstanding shared borrow **freezes the
-  container** — `push`, `set`, and `remove` take `&mut self` and are rejected
+  container** — `push`, `set`, and `remove` take an exclusive `&T!` receiver and are rejected
   while any borrow derived from the container is live. This is the only sound
   rule within the lexical model and it is stated as user-visible semantics,
   not an implementation detail.
@@ -181,7 +181,7 @@ result layouts and stores them in `SemanticReport`. Details that matter:
   swap-remove — either fails for inline multi-slot elements or changes
   observable order.)
 - `set(i, v)` destroys the replaced element before installing the new one; it
-  is sound only because its `&mut self` receiver guarantees no outstanding
+  is sound only because its exclusive `&T!` receiver guarantees no outstanding
   element borrows.
 - `get` is borrow-only in this milestone. A `cloned` convenience for `Clone`
   types is deferred: the language has no trait bounds (generic parameters are
@@ -264,7 +264,7 @@ result layouts and stores them in `SemanticReport`. Details that matter:
   derived from *parameters*, not only receivers — piece 1 of the §4
   machinery); `shuffle` uses borrowed swaps instead of alias-then-overwrite.
 - `Map`/`Set` already mutate their current borrowed receiver in place and
-  return insertion/removal booleans. If D-002 introduces `&mut self`, migrate
+  return insertion/removal booleans. When D-002 adds exclusive `&T!` receivers, migrate
   those signatures without reintroducing a returned owner alias.
 - Every signature change gets a migration note in `docs/migrations/`. The
   phases also falsify statements in existing docs, which must be updated in

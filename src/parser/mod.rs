@@ -1160,10 +1160,17 @@ impl Parser {
         if self.at(TokenKind::Ampersand) {
             let t = self.advance().span;
             let expr = self.parse_unary()?;
-            let span = Span::merge(to_ast_span(t), expr.span);
+            // `!` is not otherwise a postfix expression operator, so
+            // `&value!` unambiguously denotes an exclusive borrow.
+            let (op, end) = if self.at(TokenKind::Bang) {
+                (UnaryOpKind::RefMut, to_ast_span(self.advance().span))
+            } else {
+                (UnaryOpKind::Ref, expr.span)
+            };
+            let span = Span::merge(to_ast_span(t), end);
             return Ok(Spanned::new(
                 ExprKind::Unary {
-                    op: UnaryOpKind::Ref,
+                    op,
                     expr: Box::new(expr),
                 },
                 span,
@@ -1825,10 +1832,21 @@ impl Parser {
             TokenKind::Bang => TypeKind::Never,
             TokenKind::Ampersand => {
                 let inner = self.parse_type()?;
-                let span = Span::merge(to_ast_span(start), inner.span);
+                let (exclusive, end) = if self.at(TokenKind::Bang) {
+                    (true, to_ast_span(self.advance().span))
+                } else {
+                    (false, inner.span)
+                };
+                let span = Span::merge(to_ast_span(start), end);
                 return Ok(Spanned::new(
-                    TypeKind::Ref {
-                        inner: Box::new(inner),
+                    if exclusive {
+                        TypeKind::MutRef {
+                            inner: Box::new(inner),
+                        }
+                    } else {
+                        TypeKind::Ref {
+                            inner: Box::new(inner),
+                        }
                     },
                     span,
                 ));

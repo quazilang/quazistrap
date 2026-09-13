@@ -598,6 +598,7 @@ impl<'a> Codegen<'a> {
                                 &p.ty.node,
                                 crate::parser::ast::TypeKind::Str
                                     | crate::parser::ast::TypeKind::Ref { .. }
+                                    | crate::parser::ast::TypeKind::MutRef { .. }
                             ) {
                                 return true;
                             }
@@ -642,6 +643,7 @@ impl<'a> Codegen<'a> {
                                         &p.ty.node,
                                         crate::parser::ast::TypeKind::Str
                                             | crate::parser::ast::TypeKind::Ref { .. }
+                                            | crate::parser::ast::TypeKind::MutRef { .. }
                                     ) {
                                         return true;
                                     }
@@ -2136,6 +2138,12 @@ impl<'a> Codegen<'a> {
                     inner.span,
                 )),
             },
+            TypeKind::MutRef { inner } => TypeKind::MutRef {
+                inner: Box::new(Spanned::new(
+                    self.resolve_type_for_layout(&inner.node, type_subst),
+                    inner.span,
+                )),
+            },
             TypeKind::RawPtr { inner } => TypeKind::RawPtr {
                 inner: Box::new(Spanned::new(
                     self.resolve_type_for_layout(&inner.node, type_subst),
@@ -2204,6 +2212,7 @@ impl<'a> Codegen<'a> {
                         .any(|arg| Self::has_unresolved_layout_param(&arg.node, type_subst))
             }
             TypeKind::Ref { inner }
+            | TypeKind::MutRef { inner }
             | TypeKind::RawPtr { inner }
             | TypeKind::FlexibleArray { elem_ty: inner }
             | TypeKind::Slice { elem_ty: inner } => {
@@ -2537,6 +2546,9 @@ impl<'a> FnCompiler<'a> {
                 }
             }
             TypeKind::Ref { inner } => TypeKind::Ref {
+                inner: Box::new(Spanned::new(self.resolve_type(&inner.node), inner.span)),
+            },
+            TypeKind::MutRef { inner } => TypeKind::MutRef {
                 inner: Box::new(Spanned::new(self.resolve_type(&inner.node), inner.span)),
             },
             TypeKind::RawPtr { inner } => TypeKind::RawPtr {
@@ -2985,6 +2997,7 @@ impl<'a> FnCompiler<'a> {
                         .any(|arg| self.has_unresolved_layout_param(&arg.node))
             }
             TypeKind::Ref { inner }
+            | TypeKind::MutRef { inner }
             | TypeKind::RawPtr { inner }
             | TypeKind::FlexibleArray { elem_ty: inner }
             | TypeKind::Slice { elem_ty: inner } => self.has_unresolved_layout_param(&inner.node),
@@ -4664,9 +4677,9 @@ impl<'a> FnCompiler<'a> {
                             let mut iter_ty = self.type_of_span(iter_key);
                             let original_expr = expr.clone();
                             let mut expr = expr;
-                            let is_borrow = if let Some(TypeKind::Ref { inner }) = &iter_ty {
+                            let is_borrow = if let Some(TypeKind::Ref { inner } | TypeKind::MutRef { inner }) = &iter_ty {
                                 if let ExprKind::Unary {
-                                    op: UnaryOpKind::Ref,
+                                    op: UnaryOpKind::Ref | UnaryOpKind::RefMut,
                                     expr: inner_expr,
                                 } = &expr.node
                                 {
@@ -5400,7 +5413,7 @@ impl<'a> FnCompiler<'a> {
             ) => Some(0), // int
             Some(TypeKind::Float32 | TypeKind::Float64) => Some(1), // float
             Some(TypeKind::Bool) => Some(2),                        // bool
-            Some(TypeKind::Str) | Some(TypeKind::Ref { .. }) => None, // str/&str — already a pointer
+            Some(TypeKind::Str) | Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. }) => None, // str/&str — already a pointer
             // Known struct/enum Named types: pass as-is (pointer to heap object).
             // Unresolved generic type params (T, U, etc.) not in struct/enum defs: default to int.
             Some(TypeKind::Named { name, .. }) => {
@@ -5603,7 +5616,7 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::Unary { op, expr: inner } => match op {
-                UnaryOpKind::Ref => {
+                UnaryOpKind::Ref | UnaryOpKind::RefMut => {
                     let src = self.compile_expr(inner);
                     let dst = self.alloc_reg();
                     if let Some(TypeKind::Array { len, .. }) =
@@ -7655,7 +7668,7 @@ enum PrimitiveMethod {
 fn type_contains_unrepresentable_runtime_type(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Any | TypeKind::Error => true,
-        TypeKind::Ref { inner } | TypeKind::RawPtr { inner } => {
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
             type_contains_unrepresentable_runtime_type(&inner.node)
         }
         TypeKind::Array { elem_ty, .. }
@@ -7693,6 +7706,7 @@ fn type_kind_mentions_unresolved_param(ty: &TypeKind) -> bool {
                     .any(|arg| type_kind_mentions_unresolved_param(&arg.node))
         }
         TypeKind::Ref { inner }
+        | TypeKind::MutRef { inner }
         | TypeKind::RawPtr { inner }
         | TypeKind::FlexibleArray { elem_ty: inner }
         | TypeKind::Slice { elem_ty: inner } => type_kind_mentions_unresolved_param(&inner.node),
@@ -7748,13 +7762,13 @@ fn resolve_primitive_method(
             Some(PrimitiveMethod::Len)
         }
         "to_str" if args.is_empty() => match receiver_ty {
-            Some(TypeKind::Str) | Some(TypeKind::Ref { .. }) => Some(PrimitiveMethod::AsStr),
+            Some(TypeKind::Str) | Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. }) => Some(PrimitiveMethod::AsStr),
             _ => Some(PrimitiveMethod::PrimToStr {
                 tag: prim_to_str_tag(receiver_ty),
             }),
         },
         "to_string" if args.is_empty() => match receiver_ty {
-            Some(TypeKind::Str) | Some(TypeKind::Ref { .. }) | None => {
+            Some(TypeKind::Str) | Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. }) | None => {
                 Some(PrimitiveMethod::StrToString)
             }
             Some(TypeKind::Bool) => Some(PrimitiveMethod::BoolToString),
@@ -8079,7 +8093,7 @@ fn type_kind_base_name(ty: &TypeKind) -> String {
         TypeKind::Str => "str".to_string(),
         TypeKind::Bytes => "bytes".to_string(),
         TypeKind::CFn { .. } => "C fn".to_string(),
-        TypeKind::Ref { inner } => type_kind_base_name(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => type_kind_base_name(&inner.node),
         TypeKind::RawPtr { inner } => type_kind_base_name(&inner.node),
         other => format!("{}", other),
     }
@@ -8088,7 +8102,7 @@ fn type_kind_base_name(ty: &TypeKind) -> String {
 fn is_string_view_type(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Str => true,
-        TypeKind::Ref { inner } => is_string_view_type(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => is_string_view_type(&inner.node),
         _ => false,
     }
 }

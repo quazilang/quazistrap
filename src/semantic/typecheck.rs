@@ -319,7 +319,10 @@ impl Analyzer {
                 self.enter_scope();
                 let fn_is_str_variadic = params.last().is_some_and(|p| {
                     p.variadic
-                        && (matches!(&p.ty.node, TypeKind::Str | TypeKind::Ref { .. })
+                        && (matches!(
+                            &p.ty.node,
+                            TypeKind::Str | TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+                        )
                             || erased_format_variadic)
                 });
                 for p in params {
@@ -399,7 +402,7 @@ impl Analyzer {
                                     && type_args.len() == 1
                                     && matches!(
                                         type_args[0].node,
-                                        TypeKind::Str | TypeKind::Ref { .. }
+                                        TypeKind::Str | TypeKind::Ref { .. } | TypeKind::MutRef { .. }
                                     )
                             )
                         }
@@ -1110,6 +1113,8 @@ impl Analyzer {
                         })
             }
             (TypeKind::Ref { inner: expected }, TypeKind::Ref { inner: actual })
+            | (TypeKind::Ref { inner: expected }, TypeKind::MutRef { inner: actual })
+            | (TypeKind::MutRef { inner: expected }, TypeKind::MutRef { inner: actual })
             | (TypeKind::RawPtr { inner: expected }, TypeKind::RawPtr { inner: actual })
             | (TypeKind::Slice { elem_ty: expected }, TypeKind::Slice { elem_ty: actual })
             | (
@@ -1495,7 +1500,7 @@ impl Analyzer {
                 if value_eval.ty.as_ref().is_some_and(|value_ty| {
                     matches!(
                         self.resolve_type_aliases(value_ty),
-                        TypeKind::Ref { ref inner }
+                        TypeKind::Ref { ref inner } | TypeKind::MutRef { ref inner }
                             if !matches!(inner.node, TypeKind::Str)
                     )
                 }) && value
@@ -1599,7 +1604,7 @@ impl Analyzer {
                 if value_eval.ty.as_ref().is_some_and(|value_ty| {
                     matches!(
                         self.resolve_type_aliases(value_ty),
-                        TypeKind::Ref { ref inner }
+                        TypeKind::Ref { ref inner } | TypeKind::MutRef { ref inner }
                             if !matches!(inner.node, TypeKind::Str)
                     )
                 }) && !is_lexical_reference_expr(value)
@@ -1864,7 +1869,7 @@ impl Analyzer {
                             ForIter::Iter(expr) => {
                                 let iter_eval = self.type_check_expr(expr, true);
                                 let iter_ty = iter_eval.ty.as_ref().map(|t| {
-                                    if let TypeKind::Ref { inner } = t {
+                                    if let TypeKind::Ref { inner } | TypeKind::MutRef { inner } = t {
                                         &inner.node
                                     } else {
                                         t
@@ -2546,7 +2551,7 @@ impl Analyzer {
                 let inner_eval = self.type_check_expr(inner, reachable);
 
                 match op {
-                    UnaryOpKind::Ref => {
+                    UnaryOpKind::Ref | UnaryOpKind::RefMut => {
                         let addressable = addressable_ident(inner).and_then(|name| {
                             self.resolve_symbol(name).filter(|symbol| {
                                 matches!(
@@ -2563,9 +2568,28 @@ impl Analyzer {
                                     .to_string(),
                             );
                         }
+                        if matches!(op, UnaryOpKind::RefMut)
+                            && !addressable.is_some_and(|symbol| {
+                                matches!(
+                                    symbol.kind,
+                                    SymbolKind::Variable { mutable: true } | SymbolKind::Parameter
+                                )
+                            })
+                        {
+                            self.push_error(
+                                inner.span,
+                                "S07",
+                                "exclusive address-of requires a mutable local variable or parameter".to_string(),
+                            );
+                        }
                         // &expr → type is Ref<inner_type>
-                        let ref_ty = inner_eval.ty.map(|t| TypeKind::Ref {
-                            inner: Box::new(Spanned::new(t, inner.span)),
+                        let ref_ty = inner_eval.ty.map(|t| {
+                            let inner = Box::new(Spanned::new(t, inner.span));
+                            if matches!(op, UnaryOpKind::RefMut) {
+                                TypeKind::MutRef { inner }
+                            } else {
+                                TypeKind::Ref { inner }
+                            }
                         });
                         let result = ExprEval {
                             ty: ref_ty,
@@ -2577,7 +2601,8 @@ impl Analyzer {
                     UnaryOpKind::Deref => {
                         // *expr → unwrap Ref<T> or RawPtr<T>
                         let result = match &inner_eval.ty {
-                            Some(TypeKind::Ref { inner: t }) => {
+                            Some(TypeKind::Ref { inner: t })
+                            | Some(TypeKind::MutRef { inner: t }) => {
                                 let pointee = self.resolve_type_aliases(&t.node);
                                 if !Self::is_autoderef_value(&pointee) {
                                     self.push_error(
@@ -2639,6 +2664,7 @@ impl Analyzer {
                                 TypeKind::Str
                                     | TypeKind::Bool
                                     | TypeKind::Ref { .. }
+                                    | TypeKind::MutRef { .. }
                                     | TypeKind::RawPtr { .. }
                             )
                         {
@@ -2685,8 +2711,8 @@ impl Analyzer {
                     {
                         true
                     }
-                    Some(src @ TypeKind::Ref { .. })
-                        if matches!(target_ty, TypeKind::Ref { .. }) =>
+                    Some(src @ (TypeKind::Ref { .. } | TypeKind::MutRef { .. }))
+                        if matches!(target_ty, TypeKind::Ref { .. } | TypeKind::MutRef { .. }) =>
                     {
                         self.types_have_same_runtime_shape(
                             &self.resolve_type_aliases(src),
@@ -2710,7 +2736,10 @@ impl Analyzer {
                     Some(src)
                         if !matches!(
                             src,
-                            TypeKind::Ref { .. } | TypeKind::Fn { .. } | TypeKind::CFn { .. }
+                            TypeKind::Ref { .. }
+                                | TypeKind::MutRef { .. }
+                                | TypeKind::Fn { .. }
+                                | TypeKind::CFn { .. }
                         ) && std::mem::discriminant(src)
                             == std::mem::discriminant(&target_ty) =>
                     {
@@ -5966,7 +5995,7 @@ impl Analyzer {
             }
             return false;
         }
-        if let TypeKind::Ref { inner } = &actual_resolved
+        if let TypeKind::Ref { inner } | TypeKind::MutRef { inner } = &actual_resolved
             && !matches!(
                 expected_resolved,
                 TypeKind::Ref { .. } | TypeKind::RawPtr { .. }
@@ -5978,18 +6007,14 @@ impl Analyzer {
             return true;
         }
         if let (
-            TypeKind::Ref {
-                inner: expected_inner,
-            },
-            TypeKind::Ref {
-                inner: actual_inner,
-            },
+            TypeKind::Ref { inner: expected_inner },
+            TypeKind::Ref { inner: actual_inner } | TypeKind::MutRef { inner: actual_inner },
         ) = (&expected_resolved, &actual_resolved)
         {
             return self.types_have_same_runtime_shape(&expected_inner.node, &actual_inner.node);
         }
-        if matches!(expected_resolved, TypeKind::Ref { .. })
-            && !matches!(actual_resolved, TypeKind::Ref { .. } | TypeKind::Str)
+        if matches!(expected_resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+            && !matches!(actual_resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. } | TypeKind::Str)
         {
             return false;
         }
@@ -6011,13 +6036,13 @@ impl Analyzer {
         };
         let dl = Self::autoderef_type(l.clone());
         let dr = Self::autoderef_type(r.clone());
-        if matches!(l, TypeKind::Ref { .. })
+        if matches!(l, TypeKind::Ref { .. } | TypeKind::MutRef { .. })
             && Self::is_autoderef_value(&dr)
             && self.types_compatible(&dr, &dl)
         {
             self.mark_auto_deref(left);
         }
-        if matches!(r, TypeKind::Ref { .. })
+        if matches!(r, TypeKind::Ref { .. } | TypeKind::MutRef { .. })
             && Self::is_autoderef_value(&dl)
             && self.types_compatible(&dl, &dr)
         {
@@ -6224,6 +6249,7 @@ impl Analyzer {
                         "S07",
                         "cannot assign through a shared reference".to_string(),
                     ),
+                    Some(TypeKind::MutRef { .. }) => {}
                     None => {}
                     Some(other) => {
                         self.push_error(
@@ -6430,7 +6456,9 @@ impl Analyzer {
                 let _ = (elem_ty, s_e);
                 false
             }
-            (TypeKind::Ref { inner: a }, TypeKind::Ref { inner: b }) => {
+            (TypeKind::Ref { inner: a }, TypeKind::Ref { inner: b })
+            | (TypeKind::MutRef { inner: a }, TypeKind::MutRef { inner: b })
+            | (TypeKind::Ref { inner: a }, TypeKind::MutRef { inner: b }) => {
                 self.types_have_same_runtime_shape(&a.node, &b.node)
             }
             // All raw pointers are mutually compatible in unsafe code — C-style void* semantics.
@@ -6443,8 +6471,8 @@ impl Analyzer {
                 true
             }
             (a, TypeKind::CFn { .. }) | (TypeKind::CFn { .. }, a) if Self::is_integer(a) => true,
-            (TypeKind::RawPtr { .. }, TypeKind::Ref { .. })
-            | (TypeKind::Ref { .. }, TypeKind::RawPtr { .. }) => false,
+            (TypeKind::RawPtr { .. }, TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+            | (TypeKind::Ref { .. } | TypeKind::MutRef { .. }, TypeKind::RawPtr { .. }) => false,
             // str and &str are interchangeable — both are UTF-8 string views
             (TypeKind::Str, TypeKind::Ref { inner }) | (TypeKind::Ref { inner }, TypeKind::Str)
                 if matches!(inner.node, TypeKind::Str) =>
@@ -6531,6 +6559,7 @@ impl Analyzer {
                         .all(|(a, b)| self.generic_type_args_compatible(&a.node, &b.node))
             }
             (TypeKind::Ref { inner: a }, TypeKind::Ref { inner: b })
+            | (TypeKind::MutRef { inner: a }, TypeKind::MutRef { inner: b })
             | (TypeKind::RawPtr { inner: a }, TypeKind::RawPtr { inner: b })
             | (TypeKind::Slice { elem_ty: a }, TypeKind::Slice { elem_ty: b })
             | (TypeKind::FlexibleArray { elem_ty: a }, TypeKind::FlexibleArray { elem_ty: b }) => {
@@ -6612,13 +6641,14 @@ impl Analyzer {
                     | TypeKind::RawPtr { .. }
                     | TypeKind::CFn { .. }
                     | TypeKind::Ref { .. }
+                    | TypeKind::MutRef { .. }
                     | TypeKind::Any
             )
     }
 
     /// If `t` is `&U` where `U` is a value-like type, return `U`; otherwise return `t`.
     pub(super) fn autoderef_type(t: TypeKind) -> TypeKind {
-        if let TypeKind::Ref { ref inner } = t {
+        if let TypeKind::Ref { ref inner } | TypeKind::MutRef { ref inner } = t {
             if Self::is_autoderef_value(&inner.node) {
                 return inner.node.clone();
             }
@@ -6644,7 +6674,7 @@ fn binding_occurrence_span(expr: &Expr, binding: Option<&ResolvedBinding>) -> Op
 fn type_contains_rawptr(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::RawPtr { .. } => true,
-        TypeKind::Ref { inner } => type_contains_rawptr(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => type_contains_rawptr(&inner.node),
         TypeKind::Array { elem_ty, .. } => type_contains_rawptr(&elem_ty.node),
         TypeKind::FlexibleArray { elem_ty } => type_contains_rawptr(&elem_ty.node),
         TypeKind::Slice { elem_ty } => type_contains_rawptr(&elem_ty.node),
@@ -6721,7 +6751,7 @@ fn ffi_integer_bits(ty: &TypeKind) -> Option<usize> {
 fn type_contains_any(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Any => true,
-        TypeKind::Ref { inner } => type_contains_any(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => type_contains_any(&inner.node),
         TypeKind::RawPtr { inner } => type_contains_any(&inner.node),
         TypeKind::Array { elem_ty, .. } => type_contains_any(&elem_ty.node),
         TypeKind::FlexibleArray { elem_ty } => type_contains_any(&elem_ty.node),
@@ -6751,7 +6781,7 @@ fn builtin_constructor_kind(name: &str, symbol: &Symbol) -> Option<&'static str>
 pub(super) fn type_contains_error(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Error => true,
-        TypeKind::Ref { inner } | TypeKind::RawPtr { inner } => type_contains_error(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => type_contains_error(&inner.node),
         TypeKind::Array { elem_ty, .. }
         | TypeKind::FlexibleArray { elem_ty }
         | TypeKind::Slice { elem_ty } => type_contains_error(&elem_ty.node),
@@ -6772,7 +6802,9 @@ fn type_contains_self(ty: &TypeKind) -> bool {
             (name == "Self" && type_args.is_empty())
                 || type_args.iter().any(|arg| type_contains_self(&arg.node))
         }
-        TypeKind::Ref { inner } | TypeKind::RawPtr { inner } => type_contains_self(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
+            type_contains_self(&inner.node)
+        }
         TypeKind::Array { elem_ty, .. }
         | TypeKind::FlexibleArray { elem_ty }
         | TypeKind::Slice { elem_ty } => type_contains_self(&elem_ty.node),
@@ -6797,6 +6829,12 @@ fn substitute_self_type(ty: &TypeKind, concrete: &TypeKind) -> TypeKind {
                 .collect(),
         },
         TypeKind::Ref { inner } => TypeKind::Ref {
+            inner: Box::new(Spanned::new(
+                substitute_self_type(&inner.node, concrete),
+                inner.span,
+            )),
+        },
+        TypeKind::MutRef { inner } => TypeKind::MutRef {
             inner: Box::new(Spanned::new(
                 substitute_self_type(&inner.node, concrete),
                 inner.span,
@@ -6884,6 +6922,12 @@ pub(super) fn substitute_type_kind(
                 inner.span,
             )),
         },
+        TypeKind::MutRef { inner } => TypeKind::MutRef {
+            inner: Box::new(Spanned::new(
+                substitute_type_kind(&inner.node, subst),
+                inner.span,
+            )),
+        },
         TypeKind::RawPtr { inner } => TypeKind::RawPtr {
             inner: Box::new(Spanned::new(
                 substitute_type_kind(&inner.node, subst),
@@ -6938,7 +6982,7 @@ pub(super) fn substitute_type_kind(
 fn is_string_view_type(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Str => true,
-        TypeKind::Ref { inner } => is_string_view_type(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => is_string_view_type(&inner.node),
         _ => false,
     }
 }
@@ -7023,6 +7067,8 @@ fn infer_struct_type_subst(
             },
         ) => infer_struct_type_subst(&field_elem.node, &value_elem.node, generic_params, subst),
         (TypeKind::Ref { inner: field }, TypeKind::Ref { inner: value })
+        | (TypeKind::Ref { inner: field }, TypeKind::MutRef { inner: value })
+        | (TypeKind::MutRef { inner: field }, TypeKind::MutRef { inner: value })
         | (TypeKind::RawPtr { inner: field }, TypeKind::RawPtr { inner: value }) => {
             infer_struct_type_subst(&field.node, &value.node, generic_params, subst);
         }
@@ -7042,7 +7088,7 @@ fn address_of_ident(expr: &Expr) -> Option<&str> {
     match &expr.node {
         ExprKind::Group(inner) => address_of_ident(inner),
         ExprKind::Unary {
-            op: UnaryOpKind::Ref,
+            op: UnaryOpKind::Ref | UnaryOpKind::RefMut,
             expr: inner,
         } => addressable_ident(inner),
         _ => None,
@@ -7051,7 +7097,9 @@ fn address_of_ident(expr: &Expr) -> Option<&str> {
 
 fn contains_non_string_reference(ty: &TypeKind) -> bool {
     match ty {
-        TypeKind::Ref { inner } => !matches!(inner.node, TypeKind::Str),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+            !matches!(inner.node, TypeKind::Str)
+        }
         TypeKind::Named { type_args, .. } => type_args
             .iter()
             .any(|argument| contains_non_string_reference(&argument.node)),
@@ -7067,7 +7115,7 @@ fn contains_non_string_reference(ty: &TypeKind) -> bool {
 
 fn contains_nested_non_string_reference(ty: &TypeKind) -> bool {
     match ty {
-        TypeKind::Ref { .. } => false,
+        TypeKind::Ref { .. } | TypeKind::MutRef { .. } => false,
         TypeKind::Named { type_args, .. } => type_args
             .iter()
             .any(|argument| contains_non_string_reference(&argument.node)),
@@ -7091,6 +7139,7 @@ fn contains_owned_function_value(ty: &TypeKind) -> bool {
         | TypeKind::Slice { elem_ty }
         | TypeKind::FlexibleArray { elem_ty }
         | TypeKind::Ref { inner: elem_ty }
+        | TypeKind::MutRef { inner: elem_ty }
         | TypeKind::RawPtr { inner: elem_ty } => contains_owned_function_value(&elem_ty.node),
         TypeKind::CFn { params, return_ty } => {
             params
@@ -7342,7 +7391,7 @@ fn is_lexical_reference_expr(expr: &Expr) -> bool {
         ExprKind::Ident(_) => true,
         ExprKind::Group(inner) => is_lexical_reference_expr(inner),
         ExprKind::Unary {
-            op: UnaryOpKind::Ref,
+            op: UnaryOpKind::Ref | UnaryOpKind::RefMut,
             expr: inner,
         } => addressable_ident(inner).is_some(),
         _ => false,
@@ -7384,7 +7433,12 @@ fn infer_type_subst(
             infer_type_subst(&elem_ty.node, arg_ty, generic_params, subst);
         }
         TypeKind::Ref { inner } => {
-            if let TypeKind::Ref { inner: arg_inner } = arg_ty {
+            if let TypeKind::Ref { inner: arg_inner } | TypeKind::MutRef { inner: arg_inner } = arg_ty {
+                infer_type_subst(&inner.node, &arg_inner.node, generic_params, subst);
+            }
+        }
+        TypeKind::MutRef { inner } => {
+            if let TypeKind::MutRef { inner: arg_inner } = arg_ty {
                 infer_type_subst(&inner.node, &arg_inner.node, generic_params, subst);
             }
         }

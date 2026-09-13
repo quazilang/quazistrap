@@ -1780,6 +1780,12 @@ impl Analyzer {
                     inner.span,
                 )),
             },
+            TypeKind::MutRef { inner } => TypeKind::MutRef {
+                inner: Box::new(Spanned::new(
+                    self.resolve_type_aliases(&inner.node),
+                    inner.span,
+                )),
+            },
             TypeKind::RawPtr { inner } => TypeKind::RawPtr {
                 inner: Box::new(Spanned::new(
                     self.resolve_type_aliases(&inner.node),
@@ -1946,6 +1952,7 @@ fn type_mentions_params(ty: &TypeKind, params: &[String]) -> bool {
                     .any(|argument| type_mentions_params(&argument.node, params))
         }
         TypeKind::Ref { inner }
+        | TypeKind::MutRef { inner }
         | TypeKind::RawPtr { inner }
         | TypeKind::FlexibleArray { elem_ty: inner }
         | TypeKind::Slice { elem_ty: inner } => type_mentions_params(&inner.node, params),
@@ -3648,6 +3655,60 @@ fn main() void {
                 .iter()
                 .any(|error| { error.code == "S07" && error.message.contains("shared reference") })
         );
+    }
+
+    #[test]
+    fn exclusive_references_require_mutable_places_and_preserve_exclusivity() {
+        let valid = analyze(
+            r#"
+fn main() void {
+    var mut: i32 = 0;
+    var value: i32 = 1;
+    var reference: &i32! = &value!;
+    *reference = 2;
+}
+"#,
+        );
+        assert!(
+            valid.errors.is_empty(),
+            "valid exclusive reference was rejected: {:?}",
+            valid.errors
+        );
+
+        let generic = analyze(
+            "fn inspect[T](value: &T!) void {} fn accept(value: &i32) void {} fn main() void { var value: i32 = 1; inspect[i32](&value!); }",
+        );
+        assert!(
+            generic.errors.is_empty(),
+            "exclusive generic argument was not specialized: {:?}",
+            generic.errors
+        );
+
+        let shared_coercion = analyze(
+            "fn accept(value: &i32) void {} fn main() void { var value: i32 = 1; accept(&value!); }",
+        );
+        assert!(
+            shared_coercion.errors.is_empty(),
+            "exclusive reference did not coerce to a shared reference: {:?}",
+            shared_coercion.errors
+        );
+
+        for source in [
+            "fn main() void { const value: i32 = 1; var reference: &i32! = &value!; }",
+            "fn main() void { var value: i32 = 1; var reference: &i32! = &value!; value = 2; }",
+            "fn main() void { var value: i32 = 1; var shared: &i32 = &value; var exclusive: &i32! = &value!; }",
+            "fn main() void { var value: i32 = 1; var exclusive: &i32! = &value!; var shared: &i32 = &value; }",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.code == "S07" || error.code == "S10"),
+                "exclusive-reference violation was accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
     }
 
     #[test]

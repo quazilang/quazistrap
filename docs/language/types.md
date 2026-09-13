@@ -116,8 +116,22 @@ model:
   pointees require immutable receiver semantics.
 - `str`/`&str` are the representation-identical string-view exception.
 
-These restrictions keep references sound before lifetime parameters and
-mutable-reference syntax exist.
+### Exclusive references
+
+`&T!` is an exclusive safe reference. This first implementation accepts
+`&value!` only for a mutable local variable or parameter, and permits
+assignment through `*reference`. While the conservative local borrow checker
+tracks that exclusive loan, the owner cannot be read, moved, mutated, or
+borrowed again; a shared loan and an exclusive loan cannot overlap.
+
+The current checker conservatively retains either loan for the rest of its
+function. It does not yet infer control-flow loan regions, reborrow regions,
+receiver capabilities, cross-call effects, or QZI-only ownership summaries.
+Those D-014 requirements remain incomplete; do not treat `&T!` as evidence
+that arbitrary reference escape or safe concurrent sharing is supported.
+
+These restrictions keep references sound while the whole-program ownership
+analysis is implemented.
 
 ### Raw pointers
 

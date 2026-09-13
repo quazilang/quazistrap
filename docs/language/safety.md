@@ -123,8 +123,17 @@ borrowed `CStr` never gain ownership automatically.
   pointees require immutable receiver semantics.
 - `str`/`&str` are the representation-identical string-view exception.
 
-These restrictions keep references sound before lifetime parameters and
-mutable-reference syntax exist. See
+`&T!` is an exclusive safe reference. It may currently target only a mutable
+local variable or parameter through `&value!`, and assignment through
+`*reference` is allowed.
+The conservative local checker rejects owner reads, moves, mutation, and any
+overlapping shared or exclusive borrow after an exclusive loan begins. It keeps
+the loan for the function remainder; flow-sensitive regions, reborrowing,
+receiver capabilities, cross-call effects, and QZI-only summary verification
+remain D-014 implementation work.
+
+These restrictions keep references sound while whole-program ownership is
+implemented. See
 [reference migration](../migrations/references.md).
 
 ## Raw pointers

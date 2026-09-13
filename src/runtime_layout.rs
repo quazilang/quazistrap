@@ -141,6 +141,7 @@ pub fn runtime_value_layout(ty: &TypeKind) -> RuntimeValueLayout {
         | TypeKind::Bytes
         | TypeKind::Named { .. }
         | TypeKind::Ref { .. }
+        | TypeKind::MutRef { .. }
         | TypeKind::RawPtr { .. }
         | TypeKind::Fn { .. }
         | TypeKind::CFn { .. }

@@ -20,13 +20,13 @@ Safe code uses capabilities rooted at a concrete storage place:
   handle or aggregate is never shallow-copied.
 - `&T` is a shared loan. Any number may coexist, but while any is live its
   root and all aliases cannot be moved, destroyed, mutated, or reallocated.
-- `&mut T` is an exclusive loan. It is the only access to its root for its
+- `&T!` is an exclusive loan. It is the only access to its root for its
   region: no other shared or exclusive loan, owner use, mutation, move, or
   destruction may overlap it. It may be temporarily reborrowed, freezing the
   parent exclusive loan until that child loan ends.
 
 Method receivers are therefore explicit: `self: &T` borrows shared,
-`self: &mut T` borrows exclusively, and `self: T` consumes. This resolves the
+`self: &T!` borrows exclusively, and `self: T` consumes. This resolves the
 policy question in D-002; implementing its grammar and migrating legacy
 receivers remains work. Ordinary current receivers do not acquire these
 capabilities merely because this decision exists.

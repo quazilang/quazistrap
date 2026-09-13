@@ -4,7 +4,7 @@ Quazi has resolved D-014 before implementing the next ownership layer.
 
 ## Decision
 
-Safe code will use affine owners, shared `&T` loans, and exclusive `&mut T`
+Safe code will use affine owners, shared `&T` loans, and exclusive `&T!`
 loans. Whole-program analysis derives their regions from the concrete resolved
 call graph, so source does not need lifetime parameters. It is a precision
 mechanism, not permission to alias mutable state or let a reference outlive
