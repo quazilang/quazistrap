@@ -3745,6 +3745,31 @@ fn main() void {
     }
 
     #[test]
+    fn direct_calls_end_temporary_reference_loans() {
+        let report = analyze(
+            r#"
+fn update(value: &i32!) void {
+    *value = 2;
+}
+
+fn inspect(value: &i32) void {}
+
+fn main() void {
+    var value: i32 = 1;
+    update(&value!);
+    inspect(&value);
+    value = 3;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "temporary direct-call loans survived the call: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn references_are_directional_and_pointee_invariant() {
         for source in [
             "fn main() void { var from_value: &i32 = 42; }",

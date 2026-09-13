@@ -86,9 +86,11 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 - `&T!` is currently a local exclusive-reference foundation: it requires a
   mutable local/parameter root, permits assignment through its dereference,
   and freezes owner reads, moves, mutation, and overlapping loans while its
-  lexical scope is live. It is not the D-014 whole-program effect solver; do
-  not relax reference escape, indirect-call, or QZI boundaries on the basis
-  of this syntax alone.
+  lexical scope is live. A temporary `&value`/`&value!` passed to a resolved
+  direct Quazi call ends after that call because current safe references cannot
+  escape it. This is not the D-014 whole-program effect solver; do not relax
+  reference escape, indirect-call, or QZI boundaries on the basis of this
+  syntax alone.
 - Quazi `fn` values are affine owners. Passing, returning, and assignment move
   them; calls borrow them; self-assignment is rejected. Until recursive cleanup
   and capture ownership are implemented, do not permit `fn` inside aggregates

@@ -125,6 +125,9 @@ tracks that exclusive loan, the owner cannot be read, moved, mutated, or
 borrowed again; a shared loan and an exclusive loan cannot overlap.
 
 The current checker retains either loan through its enclosing lexical scope.
+An address-of expression used only as an argument of a resolved direct Quazi
+call instead has a call-length loan, because current safe references cannot
+escape that call.
 It does not yet infer shorter use-based control-flow regions, reborrow regions,
 receiver capabilities, cross-call effects, or QZI-only ownership summaries.
 Those D-014 requirements remain incomplete; do not treat `&T!` as evidence

@@ -12,6 +12,11 @@ no inferred use-based control-flow regions, reborrows, receiver
 capabilities, interprocedural effects, structural destruction, or QZI ownership
 summaries. Existing reference escape restrictions remain in force.
 
+A temporary exclusive or shared address-of passed to a resolved direct Quazi
+call ends with that call. This is valid only because current safe references
+cannot return, store, or capture such a parameter; indirect and foreign calls
+remain conservative boundaries.
+
 The exclusive marker is part of the reference notation; `mut` remains an
 ordinary identifier. `!` is not otherwise a postfix expression operator, so
 `&value!` is unambiguous.

@@ -552,11 +552,23 @@ impl Analyzer {
                 ..
             } => {
                 self.bc_expr(callee, env, false);
+                // A resolved Quazi function cannot currently return, store, or
+                // capture a non-string reference. Give direct-call arguments a
+                // synthetic lexical scope so an address taken only for that
+                // call ends when the call returns. Function values and foreign
+                // calls remain opaque and retain the surrounding scope's loan.
+                let direct_call = self.bc_resolved_direct_call(expr);
+                if direct_call {
+                    env.enter_scope();
+                }
                 for arg in args {
                     self.bc_expr(arg, env, true);
                 }
                 for (_, arg) in named_args {
                     self.bc_expr(arg, env, true);
+                }
+                if direct_call {
+                    env.exit_scope();
                 }
             }
 
@@ -749,6 +761,16 @@ impl Analyzer {
                 annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
             })
             .and_then(|annotation| annotation.ty.clone())
+    }
+
+    fn bc_resolved_direct_call(&self, expr: &Expr) -> bool {
+        self.annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
+            })
+            .is_some_and(|annotation| annotation.resolved_fn.is_some())
     }
 
     fn bc_reject_borrowed_write(&mut self, target: &Expr, env: &MoveEnv) {

@@ -128,6 +128,9 @@ local variable or parameter through `&value!`, and assignment through
 `*reference` is allowed.
 The conservative local checker rejects owner reads, moves, mutation, and any
 overlapping shared or exclusive borrow while the loan's lexical scope is live.
+For a temporary `&value` or `&value!` argument to a resolved direct Quazi call,
+the checker ends the loan after that call; current safe references cannot
+escape such a callee.
 It does not yet derive shorter use-based regions, support reborrowing, model
 receiver capabilities or cross-call effects, or verify QZI-only summaries;
 those remain D-014 implementation work.
