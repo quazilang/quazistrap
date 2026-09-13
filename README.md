@@ -321,7 +321,7 @@ See [project and manifest documentation](docs/PROJECTS.md) and
 | [`19-c-interop`](examples/19-c-interop/) | Calling C and exporting Quazi functions |
 | [`20-c-variadic-functions`](examples/20-c-variadic-functions/) | C-style variadic `@api` with `printf` |
 | [`21-c-abi-aggregates`](examples/21-c-abi-aggregates/) | Aggregates, callbacks, globals, exports |
-| [`22-system-information`](examples/22-system-information/) | Portable OS/CPU/memory information |
+| [`22-quazifetch`](examples/22-quazifetch/) | Portable OS/CPU/memory information |
 | [`23-standard-library-tour`](examples/23-standard-library-tour/) | Unicode strings, parsing, results, math |
 | [`24-local-library`](examples/24-local-library/) | Source/QZI library artifact |
 | [`25-local-dependency`](examples/25-local-dependency/) | Relative dependency and QZC cache |
