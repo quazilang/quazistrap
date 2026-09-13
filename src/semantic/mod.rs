@@ -3999,6 +3999,26 @@ fn main() void {
             "exclusive reference could not call an exclusive receiver: {:?}",
             exclusive_reference_can_call_exclusive_receiver.errors
         );
+
+        let generic_exclusive_receiver = analyze(
+            r#"
+struct Box[T] { value: T, }
+
+impl Box[T] {
+    fn touch(self: &Box[T]!) void {}
+}
+
+fn main() void {
+    var boxed: Box[i32] = Box { value: 1 };
+    boxed.touch();
+}
+"#,
+        );
+        assert!(
+            generic_exclusive_receiver.errors.is_empty(),
+            "generic exclusive receiver did not resolve: {:?}",
+            generic_exclusive_receiver.errors
+        );
     }
 
     #[test]
