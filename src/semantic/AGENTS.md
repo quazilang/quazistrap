@@ -80,9 +80,9 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 - Legacy method receivers remain borrowed and non-consuming. An explicit
   `self: &T` receiver is read-only: it may run while shared loans exist and
   creates a shared loan for its call. The implementation validates that an
-  explicit receiver's pointee is the enclosing `impl` target. `self: &T!` is
-  rejected until its D-014 exclusive-receiver effects exist; consuming `self: T`
-  also still needs its D-014 effect implementation.
+  explicit receiver's pointee is the enclosing `impl` target. An explicit
+  `self: &T!` receiver permits writes and takes an exclusive loan for its call;
+  consuming `self: T` still needs its D-014 effect implementation.
 - Shared references use a conservative lexical-scope lifetime checkpoint:
   address-of accepts only locals/parameters; reference bindings cannot be
   rebound or escape through returns, owned aggregates, or closures; and an

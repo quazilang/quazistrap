@@ -153,6 +153,10 @@ pub struct Analyzer {
     /// receiver. Kept separately because `fn_param_names` intentionally omits
     /// `self` for named-argument indexing.
     pub(super) explicit_shared_receiver_methods: std::collections::HashSet<String>,
+    /// Impl methods whose first parameter is explicitly an exclusive `self: &T!`
+    /// receiver. This is separate from shared receivers so call-site loans use
+    /// the capability declared by the method.
+    pub(super) explicit_exclusive_receiver_methods: std::collections::HashSet<String>,
     /// Internal function name → stable native symbol requested by @export.
     pub(super) exported_symbols: HashMap<String, String>,
     /// Resolved Quazi binding name → imported C data symbol metadata.
@@ -870,6 +874,7 @@ impl Analyzer {
             type_aliases: std::collections::HashMap::new(),
             fn_param_names: HashMap::new(),
             explicit_shared_receiver_methods: std::collections::HashSet::new(),
+            explicit_exclusive_receiver_methods: std::collections::HashSet::new(),
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
         }
@@ -1303,6 +1308,7 @@ impl Analyzer {
         self.type_aliases.clear();
         self.fn_param_names.clear();
         self.explicit_shared_receiver_methods.clear();
+        self.explicit_exclusive_receiver_methods.clear();
         self.exported_symbols.clear();
         self.foreign_globals.clear();
         self.repr_c_structs.clear();
@@ -3833,22 +3839,26 @@ impl Counter {
             wrong_receiver.errors
         );
 
-        let unsupported_exclusive_receiver = analyze(
+        let exclusive_receiver = analyze(
             r#"
 struct Counter { value: i32, }
 
 impl Counter {
-    fn write(self: &Counter!) void {}
+    fn write(self: &Counter!) void {
+        self.value = 2;
+    }
+}
+
+fn main() void {
+    var counter = Counter { value: 1 };
+    counter.write();
 }
 "#,
         );
         assert!(
-            unsupported_exclusive_receiver
-                .errors
-                .iter()
-                .any(|error| error.code == "S14"),
-            "exclusive receiver was accepted before its effects exist: {:?}",
-            unsupported_exclusive_receiver.errors
+            exclusive_receiver.errors.is_empty(),
+            "exclusive receiver could not mutate its owner: {:?}",
+            exclusive_receiver.errors
         );
 
         let non_receiver_reference = analyze(
@@ -3896,6 +3906,98 @@ fn main() void {
                 .any(|error| error.code == "S10"),
             "exclusive argument overlapped a shared receiver loan: {:?}",
             receiver_argument_conflict.errors
+        );
+
+        let exclusive_receiver_conflicts_with_shared_loan = analyze(
+            r#"
+struct Counter { value: i32, }
+
+impl Counter {
+    fn write(self: &Counter!) void { self.value = 2; }
+}
+
+fn main() void {
+    var counter = Counter { value: 1 };
+    var view = &counter;
+    counter.write();
+}
+"#,
+        );
+        assert!(
+            exclusive_receiver_conflicts_with_shared_loan
+                .errors
+                .iter()
+                .any(|error| error.code == "S10"),
+            "exclusive receiver ignored an outstanding shared loan: {:?}",
+            exclusive_receiver_conflicts_with_shared_loan.errors
+        );
+
+        let exclusive_receiver_rejects_shared_reference = analyze(
+            r#"
+struct Counter { value: i32, }
+
+impl Counter {
+    fn write(self: &Counter!) void { self.value = 2; }
+}
+
+fn main() void {
+    var counter = Counter { value: 1 };
+    var view = &counter;
+    view.write();
+}
+"#,
+        );
+        assert!(
+            exclusive_receiver_rejects_shared_reference
+                .errors
+                .iter()
+                .any(|error| error.code == "S07"),
+            "exclusive receiver accepted a shared reference: {:?}",
+            exclusive_receiver_rejects_shared_reference.errors
+        );
+
+        let exclusive_receiver_rejects_const_owner = analyze(
+            r#"
+struct Counter { value: i32, }
+
+impl Counter {
+    fn write(self: &Counter!) void { self.value = 2; }
+}
+
+fn main() void {
+    const counter = Counter { value: 1 };
+    counter.write();
+}
+"#,
+        );
+        assert!(
+            exclusive_receiver_rejects_const_owner
+                .errors
+                .iter()
+                .any(|error| error.code == "S07"),
+            "exclusive receiver accepted a const owner: {:?}",
+            exclusive_receiver_rejects_const_owner.errors
+        );
+
+        let exclusive_reference_can_call_exclusive_receiver = analyze(
+            r#"
+struct Counter { value: i32, }
+
+impl Counter {
+    fn write(self: &Counter!) void { self.value = 2; }
+}
+
+fn main() void {
+    var counter = Counter { value: 1 };
+    var exclusive: &Counter! = &counter!;
+    exclusive.write();
+}
+"#,
+        );
+        assert!(
+            exclusive_reference_can_call_exclusive_receiver.errors.is_empty(),
+            "exclusive reference could not call an exclusive receiver: {:?}",
+            exclusive_reference_can_call_exclusive_receiver.errors
         );
     }
 

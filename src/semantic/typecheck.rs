@@ -1095,18 +1095,7 @@ impl Analyzer {
             return;
         };
         let receiver_ty = match &receiver.ty.node {
-            TypeKind::MutRef { .. } => {
-                self.push_error(
-                    receiver.ty.span,
-                    "S14",
-                    format!(
-                        "exclusive receiver `self: &{}!` of method `{method_name}` is not implemented yet; use `self: &{}` for a read-only receiver",
-                        for_ty.node, for_ty.node
-                    ),
-                );
-                return;
-            }
-            TypeKind::Ref { inner } => &inner.node,
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => &inner.node,
             ty => ty,
         };
         if !self.types_compatible(&for_ty.node, receiver_ty) {
@@ -1114,11 +1103,40 @@ impl Analyzer {
                 receiver.ty.span,
                 "S14",
                 format!(
-                    "receiver `self` of method `{method_name}` must be `{}` or `&{}`, got {}",
-                    for_ty.node, for_ty.node, receiver.ty.node
+                    "receiver `self` of method `{method_name}` must be `{}`, `&{}`, or `&{}!`, got {}",
+                    for_ty.node, for_ty.node, for_ty.node, receiver.ty.node
                 ),
             );
         }
+    }
+
+    /// Returns the explicit receiver capabilities of an inherent method for a
+    /// concrete receiver type. Imports can retain a qualified display name
+    /// while impl symbols use the declaring leaf name, so both canonical keys
+    /// are considered here rather than in each method-call check.
+    fn explicit_method_receiver_capabilities(
+        &self,
+        receiver_ty: &TypeKind,
+        method: &str,
+    ) -> (bool, bool) {
+        let resolved = self.resolve_type_aliases(receiver_ty);
+        let type_name = super::declare::type_kind_base_name(&resolved);
+        let declared_type_name = type_name
+            .rsplit('.')
+            .next()
+            .unwrap_or(type_name.as_str());
+        let method_names = [
+            format!("{}.{}", type_name, method),
+            format!("{}.{}", declared_type_name, method),
+        ];
+        (
+            method_names
+                .iter()
+                .any(|name| self.explicit_shared_receiver_methods.contains(name)),
+            method_names
+                .iter()
+                .any(|name| self.explicit_exclusive_receiver_methods.contains(name)),
+        )
     }
 
     fn types_have_same_runtime_shape(&self, expected: &TypeKind, actual: &TypeKind) -> bool {
@@ -3600,18 +3618,42 @@ impl Analyzer {
                     }
 
                     let object_eval = self.type_check_expr(object, reachable);
-                    let shared_receiver_is_explicit = object_eval.ty.as_ref().is_some_and(|ty| {
-                        let resolved = self.resolve_type_aliases(ty);
-                        if !contains_non_string_reference(&resolved) {
-                            return false;
-                        }
-                        let type_name = super::declare::type_kind_base_name(&resolved);
-                        let method_name = format!("{}.{}", type_name, method);
-                        self.explicit_shared_receiver_methods.contains(&method_name)
+                    let (shared_receiver_is_explicit, exclusive_receiver_is_explicit) = object_eval
+                        .ty
+                        .as_ref()
+                        .map(|ty| self.explicit_method_receiver_capabilities(ty, method))
+                        .unwrap_or((false, false));
+                    let object_is_exclusive_reference = object_eval.ty.as_ref().is_some_and(|ty| {
+                        matches!(self.resolve_type_aliases(ty), TypeKind::MutRef { .. })
                     });
-                    if (object_eval.ty.as_ref().is_some_and(|ty| {
-                        contains_non_string_reference(&self.resolve_type_aliases(ty))
-                    }) && !shared_receiver_is_explicit)
+                    if exclusive_receiver_is_explicit
+                        && !object_is_exclusive_reference
+                        && !addressable_ident(object).and_then(|name| {
+                            self.resolve_symbol(name).filter(|symbol| {
+                                matches!(
+                                    symbol.kind,
+                                    SymbolKind::Variable { mutable: true } | SymbolKind::Parameter
+                                )
+                            })
+                        }).is_some()
+                    {
+                        self.push_error(
+                            object.span,
+                            "S07",
+                            "exclusive receiver requires a mutable local variable or parameter"
+                                .to_string(),
+                        );
+                    }
+                    let reference_receiver_is_compatible = object_eval.ty.as_ref().is_some_and(|ty| {
+                        match self.resolve_type_aliases(ty) {
+                            TypeKind::Ref { .. } => shared_receiver_is_explicit,
+                            TypeKind::MutRef { .. } => {
+                                shared_receiver_is_explicit || exclusive_receiver_is_explicit
+                            }
+                            other => !contains_non_string_reference(&other),
+                        }
+                    });
+                    if !reference_receiver_is_compatible
                         || self.expr_dereferences_shared_reference(object)
                     {
                         self.push_error(

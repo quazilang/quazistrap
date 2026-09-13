@@ -4,8 +4,8 @@ Audience: Quazi maintainers.
 
 Status: resolved 2026-09-12. This is a language-design decision, not an
 implementation-completion claim. The compiler has lexical local loans and
-read-only `self: &T` receiver checking, but lacks the effect solver,
-exclusive/consuming receiver behavior, structural destruction, and QZI
+read-only `self: &T` and call-local exclusive `self: &T!` receiver checking,
+but lacks the effect solver, consuming receiver behavior, structural destruction, and QZI
 ownership-summary format required by this decision.
 
 ## Decision

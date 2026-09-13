@@ -9668,6 +9668,32 @@ fn main() i32 {
     }
 
     #[test]
+    fn explicit_exclusive_receiver_method_compiles_as_static_dispatch() {
+        let chunks = compile(
+            r#"struct Counter { value: i32, }
+               impl Counter {
+                   fn write(self: &Counter!) void { self.value = 2; }
+               }
+               fn main() void {
+                   var counter = Counter { value: 1 };
+                   counter.write();
+               }"#,
+        );
+        let main_chunk = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(
+            !main_chunk
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::CallReg as u8),
+            "explicit exclusive receiver should use static dispatch"
+        );
+        assert!(
+            chunks.iter().any(|chunk| chunk.name == "Counter.write"),
+            "explicit exclusive receiver method was not compiled"
+        );
+    }
+
+    #[test]
     fn trait_impl_method_is_compiled_with_mangled_name() {
         let chunks = compile(
             r#"trait Display { fn to_str(self: Num) str; }

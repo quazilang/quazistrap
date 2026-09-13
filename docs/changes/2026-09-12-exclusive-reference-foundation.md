@@ -8,8 +8,8 @@ loans after that exclusive loan begins.
 
 This is deliberately a conservative source-level foundation, not completion of
 D-014. Loans currently last through their enclosing lexical scope; there are
-no inferred use-based control-flow regions, reborrows, receiver
-capabilities, interprocedural effects, structural destruction, or QZI ownership
+no inferred use-based control-flow regions, reborrows, flow-sensitive or
+interprocedural receiver effects, structural destruction, or QZI ownership
 summaries. Existing reference escape restrictions remain in force.
 
 A temporary exclusive or shared address-of passed to a resolved direct Quazi
@@ -20,8 +20,9 @@ remain conservative boundaries.
 Inherent methods may now state a read-only receiver as `self: &T`. The
 compiler validates that `T` is the enclosing implementation target, permits
 the method through shared references, and rejects mutation through that
-receiver. `self: &T!` is rejected until exclusive receiver effects are
-implemented; consuming receiver effects are also not yet implemented.
+receiver. An explicit `self: &T!` receiver may write through its receiver and
+takes an exclusive call-length loan. Consuming receiver effects are not yet
+implemented.
 
 The exclusive marker is part of the reference notation; `mut` remains an
 ordinary identifier. `!` is not otherwise a postfix expression operator, so

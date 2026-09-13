@@ -579,6 +579,7 @@ impl Analyzer {
                 ..
             } => {
                 let shared_receiver = self.bc_has_explicit_shared_receiver(expr);
+                let exclusive_receiver = self.bc_has_explicit_exclusive_receiver(expr);
                 // Legacy by-value receivers remain conservatively mutating.
                 // A resolved `self: &T` method instead creates a shared loan
                 // for just this call; its body is prevented from writing
@@ -587,9 +588,13 @@ impl Analyzer {
                     self.bc_reject_borrowed_write(object, env);
                 }
                 self.bc_expr(object, env, false);
-                if shared_receiver {
+                if shared_receiver || exclusive_receiver {
                     env.enter_scope();
-                    self.bc_mark_shared_receiver_loan(object, env, expr.span);
+                    if shared_receiver {
+                        self.bc_mark_shared_receiver_loan(object, env, expr.span);
+                    } else {
+                        self.bc_mark_exclusive_receiver_loan(object, env, expr.span);
+                    }
                 }
                 for arg in args {
                     self.bc_expr(arg, env, true);
@@ -597,7 +602,7 @@ impl Analyzer {
                 for (_, arg) in named_args {
                     self.bc_expr(arg, env, true);
                 }
-                if shared_receiver {
+                if shared_receiver || exclusive_receiver {
                     env.exit_scope();
                 }
             }
@@ -796,9 +801,27 @@ impl Analyzer {
         resolved.is_some_and(|name| self.explicit_shared_receiver_methods.contains(name))
     }
 
+    fn bc_has_explicit_exclusive_receiver(&self, expr: &Expr) -> bool {
+        let resolved = self
+            .annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
+            })
+            .and_then(|annotation| annotation.resolved_fn.as_deref());
+        resolved.is_some_and(|name| self.explicit_exclusive_receiver_methods.contains(name))
+    }
+
     fn bc_mark_shared_receiver_loan(&mut self, object: &Expr, env: &mut MoveEnv, at: Span) {
         if let Some(name) = assignment_root_ident(object) {
             env.mark_shared_borrowed(name, at);
+        }
+    }
+
+    fn bc_mark_exclusive_receiver_loan(&mut self, object: &Expr, env: &mut MoveEnv, at: Span) {
+        if let Some(name) = assignment_root_ident(object) {
+            env.mark_exclusive_borrowed(name, at);
         }
     }
 

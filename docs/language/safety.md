@@ -78,8 +78,9 @@ An implementation may declare a read-only receiver explicitly as
 `self: &T`. Such a method is permitted through a shared reference and while
 other shared loans of the same value are live. The compiler rejects writes
 through that receiver. The receiver pointee must match the enclosing `impl`
-target. `self: &T!` is rejected until its exclusive receiver effects are
-implemented, and consuming receiver effects remain planned D-014 work; legacy `self: T` methods retain their existing non-consuming
+target. An explicit `self: &T!` receiver may write through its receiver and
+exclusively borrows the owner for the call. Consuming receiver effects remain
+planned D-014 work; legacy `self: T` methods retain their existing non-consuming
 behavior for compatibility.
 
 ## Scope cleanup (RAII)

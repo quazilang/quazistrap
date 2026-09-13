@@ -698,6 +698,13 @@ impl Analyzer {
                         }) {
                             self.explicit_shared_receiver_methods.insert(mangled.clone());
                         }
+                        if params.first().is_some_and(|param| {
+                            param.name == "self"
+                                && matches!(param.ty.node, TypeKind::MutRef { .. })
+                        }) {
+                            self.explicit_exclusive_receiver_methods
+                                .insert(mangled.clone());
+                        }
                         self.declare(
                             mangled,
                             Symbol {
@@ -1205,7 +1212,7 @@ pub(super) fn type_kind_base_name(ty: &TypeKind) -> String {
         TypeKind::Float64 => "f64".to_string(),
         TypeKind::Bool => "bool".to_string(),
         TypeKind::Str => "str".to_string(),
-        TypeKind::Ref { inner } => type_kind_base_name(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => type_kind_base_name(&inner.node),
         TypeKind::RawPtr { inner } => type_kind_base_name(&inner.node),
         other => format!("{}", other),
     }
