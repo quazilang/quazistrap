@@ -182,7 +182,7 @@ impl Analyzer {
                                 item.span,
                                 "S13",
                                 format!(
-                                "@panic_handler '{}' parameter must be PanicInfo, found {}",
+                                    "@panic_handler '{}' parameter must be PanicInfo, found {}",
                                     name, param_ty
                                 ),
                             );
@@ -193,10 +193,7 @@ impl Analyzer {
                         self.push_error(
                             item.span,
                             "S13",
-                            format!(
-                                "@panic_handler '{}' must return !, found {}",
-                                name, ret
-                            ),
+                            format!("@panic_handler '{}' must return !, found {}", name, ret),
                         );
                     }
                     if !generic_params.is_empty() {
@@ -309,7 +306,10 @@ impl Analyzer {
                     self.derived_traits.insert(name.clone(), derives);
                 }
                 let mut serialization_traits: Vec<String> = Vec::new();
-                for attribute in attributes.iter().filter(|attribute| attribute.name == "derive") {
+                for attribute in attributes
+                    .iter()
+                    .filter(|attribute| attribute.name == "derive")
+                {
                     for argument in &attribute.args {
                         let AttrArg::Positional(AttrVal::Ident(trait_name)) = argument else {
                             continue;
@@ -345,7 +345,8 @@ impl Analyzer {
                     self.push_error(
                         item.span,
                         "S14",
-                        "Serialize and Deserialize currently support structs, not unions".to_string(),
+                        "Serialize and Deserialize currently support structs, not unions"
+                            .to_string(),
                     );
                 }
                 if has_serialization_derive && !generic_params.is_empty() {
@@ -897,9 +898,7 @@ impl Analyzer {
             }
             self.explicitly_imported_fns
                 .insert(local_name.clone(), full_path.clone());
-            if let (Some(mangled_target), Some(selector_span)) =
-                (mangled.as_ref(), selector_span)
-            {
+            if let (Some(mangled_target), Some(selector_span)) = (mangled.as_ref(), selector_span) {
                 let leaf = mangled_target
                     .rsplit('.')
                     .next()
@@ -962,35 +961,35 @@ impl Analyzer {
             .next()
             .unwrap_or(&mangled_target)
             .to_string();
-        let (original, resolved_target) = if let Some(original) = self.resolve_symbol(&mangled_target)
-        {
-            (original, mangled_target.clone())
-        } else if let Some(original) = self.resolve_symbol(&leaf) {
-            (original, leaf.clone())
-        } else {
-            // Target doesn't exist yet — possibly a type/constant import or the file
-            // hasn't been loaded. Fall back to a namespace variable.
-            self.declare(
-                local_name,
-                Symbol {
-                    kind: SymbolKind::Variable { mutable: false },
-                    ty: None,
-                    span,
-                    params: vec![],
-                    used: false,
-                    initialized: true,
-                    is_import: true,
-                    import_path: Some(full_path),
-                    const_value: None,
-                    variadic: false,
-                    attributes: Vec::new(),
-                    public: false,
-                    unsafe_fn: false,
-                    generic_params: vec![],
-                },
-            );
-            return;
-        };
+        let (original, resolved_target) =
+            if let Some(original) = self.resolve_symbol(&mangled_target) {
+                (original, mangled_target.clone())
+            } else if let Some(original) = self.resolve_symbol(&leaf) {
+                (original, leaf.clone())
+            } else {
+                // Target doesn't exist yet — possibly a type/constant import or the file
+                // hasn't been loaded. Fall back to a namespace variable.
+                self.declare(
+                    local_name,
+                    Symbol {
+                        kind: SymbolKind::Variable { mutable: false },
+                        ty: None,
+                        span,
+                        params: vec![],
+                        used: false,
+                        initialized: true,
+                        is_import: true,
+                        import_path: Some(full_path),
+                        const_value: None,
+                        variadic: false,
+                        attributes: Vec::new(),
+                        public: false,
+                        unsafe_fn: false,
+                        generic_params: vec![],
+                    },
+                );
+                return;
+            };
 
         if !matches!(original.kind, SymbolKind::Function) {
             if original
