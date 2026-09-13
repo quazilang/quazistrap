@@ -17,6 +17,12 @@ call ends with that call. This is valid only because current safe references
 cannot return, store, or capture such a parameter; indirect and foreign calls
 remain conservative boundaries.
 
+Inherent methods may now state a read-only receiver as `self: &T`. The
+compiler validates that `T` is the enclosing implementation target, permits
+the method through shared references, and rejects mutation through that
+receiver. `self: &T!` is rejected until exclusive receiver effects are
+implemented; consuming receiver effects are also not yet implemented.
+
 The exclusive marker is part of the reference notation; `mut` remains an
 ordinary identifier. `!` is not otherwise a postfix expression operator, so
 `&value!` is unambiguous.

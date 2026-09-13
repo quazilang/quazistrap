@@ -692,6 +692,12 @@ impl Analyzer {
                                 .map(|p| p.name.clone())
                                 .collect(),
                         );
+                        if params.first().is_some_and(|param| {
+                            param.name == "self"
+                                && matches!(param.ty.node, TypeKind::Ref { .. })
+                        }) {
+                            self.explicit_shared_receiver_methods.insert(mangled.clone());
+                        }
                         self.declare(
                             mangled,
                             Symbol {

@@ -149,6 +149,10 @@ pub struct Analyzer {
     pub(super) type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
     /// Ordered parameter names per function: fn name (or mangled) → param names (excl. self).
     pub(super) fn_param_names: HashMap<String, Vec<String>>,
+    /// Impl methods whose first parameter is explicitly a shared `self: &T`
+    /// receiver. Kept separately because `fn_param_names` intentionally omits
+    /// `self` for named-argument indexing.
+    pub(super) explicit_shared_receiver_methods: std::collections::HashSet<String>,
     /// Internal function name → stable native symbol requested by @export.
     pub(super) exported_symbols: HashMap<String, String>,
     /// Resolved Quazi binding name → imported C data symbol metadata.
@@ -865,6 +869,7 @@ impl Analyzer {
             contextual_expected_types: Vec::new(),
             type_aliases: std::collections::HashMap::new(),
             fn_param_names: HashMap::new(),
+            explicit_shared_receiver_methods: std::collections::HashSet::new(),
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
         }
@@ -1297,6 +1302,7 @@ impl Analyzer {
         self.contextual_expected_types.clear();
         self.type_aliases.clear();
         self.fn_param_names.clear();
+        self.explicit_shared_receiver_methods.clear();
         self.exported_symbols.clear();
         self.foreign_globals.clear();
         self.repr_c_structs.clear();
@@ -3766,6 +3772,130 @@ fn main() void {
             report.errors.is_empty(),
             "temporary direct-call loans survived the call: {:?}",
             report.errors
+        );
+    }
+
+    #[test]
+    fn explicit_shared_receivers_allow_read_only_methods() {
+        let valid = analyze(
+            r#"
+struct Counter { value: i32, }
+
+impl Counter {
+    fn read(self: &Counter) i32 {
+        ret self.value;
+    }
+}
+
+fn main() void {
+    var counter = Counter { value: 1 };
+    var view = &counter;
+    var observed: i32 = counter.read();
+    var observed_through_view: i32 = view.read();
+}
+"#,
+        );
+        assert!(
+            valid.errors.is_empty(),
+            "shared receiver rejected a read-only method: {:?}",
+            valid.errors
+        );
+
+        let invalid = analyze(
+            r#"
+struct Counter { value: i32, }
+
+impl Counter {
+    fn write(self: &Counter) void {
+        self.value = 2;
+    }
+}
+"#,
+        );
+        assert!(
+            invalid.errors.iter().any(|error| error.code == "S07"),
+            "shared receiver was allowed to mutate: {:?}",
+            invalid.errors
+        );
+
+        let wrong_receiver = analyze(
+            r#"
+struct Counter { value: i32, }
+
+impl Counter {
+    fn invalid(self: &i32) void {}
+}
+"#,
+        );
+        assert!(
+            wrong_receiver.errors.iter().any(|error| error.code == "S14"),
+            "implementation accepted a receiver for the wrong type: {:?}",
+            wrong_receiver.errors
+        );
+
+        let unsupported_exclusive_receiver = analyze(
+            r#"
+struct Counter { value: i32, }
+
+impl Counter {
+    fn write(self: &Counter!) void {}
+}
+"#,
+        );
+        assert!(
+            unsupported_exclusive_receiver
+                .errors
+                .iter()
+                .any(|error| error.code == "S14"),
+            "exclusive receiver was accepted before its effects exist: {:?}",
+            unsupported_exclusive_receiver.errors
+        );
+
+        let non_receiver_reference = analyze(
+            r#"
+struct Counter { value: i32, }
+
+impl Counter {
+    fn inspect(other: &Counter) i32 { ret other.value; }
+}
+
+fn main() void {
+    var counter = Counter { value: 1 };
+    var view = &counter;
+    var observed: i32 = view.inspect();
+}
+"#,
+        );
+        assert!(
+            non_receiver_reference
+                .errors
+                .iter()
+                .any(|error| error.code == "S07"),
+            "a non-`self` reference parameter became a shared receiver: {:?}",
+            non_receiver_reference.errors
+        );
+
+        let receiver_argument_conflict = analyze(
+            r#"
+struct Counter { value: i32, }
+
+impl Counter {
+    fn inspect(self: &Counter, blocked: &Counter!) void {}
+}
+
+fn main() void {
+    var counter = Counter { value: 1 };
+    counter.inspect(&counter!);
+}
+"#,
+        );
+        assert!(
+            receiver_argument_conflict
+                .errors
+                .iter()
+                .any(|error| error.code == "S10"),
+            "exclusive argument overlapped a shared receiver loan: {:?}",
+            receiver_argument_conflict.errors
         );
     }
 

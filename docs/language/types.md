@@ -107,8 +107,8 @@ model:
 - `&value` accepts only a local variable or parameter.
 - Reference bindings cannot be rebound, returned, stored in aggregates, or
   captured by closures.
-- The referenced owner cannot be mutated, moved, or passed to a method while
-  the borrow exists.
+- The referenced owner cannot be mutated or moved while the borrow exists.
+  A method declared with a read-only `self: &T` receiver is permitted.
 - Fields, indexes, dereferences, and temporaries are not valid address-of
   operands.
 - Pointee types are invariant: `&i32` is not `&u64`.
@@ -129,7 +129,10 @@ An address-of expression used only as an argument of a resolved direct Quazi
 call instead has a call-length loan, because current safe references cannot
 escape that call.
 It does not yet infer shorter use-based control-flow regions, reborrow regions,
-receiver capabilities, cross-call effects, or QZI-only ownership summaries.
+exclusive/consuming receiver effects, cross-call effects, or QZI-only ownership
+summaries. A read-only method may explicitly declare `self: &T`; it can be
+called through a shared reference and may not write through that receiver.
+`self: &T!` is rejected until exclusive receiver effects are implemented.
 Those D-014 requirements remain incomplete; do not treat `&T!` as evidence
 that arbitrary reference escape or safe concurrent sharing is supported.
 

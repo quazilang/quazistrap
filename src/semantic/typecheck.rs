@@ -827,7 +827,8 @@ impl Analyzer {
                 };
                 self.current_generic_params.push(impl_generic_params);
                 for method in methods {
-                    if let ItemKind::Fn { name, .. } = &method.node {
+                    if let ItemKind::Fn { name, params, .. } = &method.node {
+                        self.validate_impl_receiver(for_ty, name, params);
                         self.current_fn_name_override = Some(format!("{}.{}", type_name, name));
                     }
                     self.type_check_item(method, checkpoint)?;
@@ -1081,6 +1082,42 @@ impl Analyzer {
                     ),
                 );
             }
+        }
+    }
+
+    fn validate_impl_receiver(
+        &mut self,
+        for_ty: &Type,
+        method_name: &str,
+        params: &[Param],
+    ) {
+        let Some(receiver) = params.first().filter(|param| param.name == "self") else {
+            return;
+        };
+        let receiver_ty = match &receiver.ty.node {
+            TypeKind::MutRef { .. } => {
+                self.push_error(
+                    receiver.ty.span,
+                    "S14",
+                    format!(
+                        "exclusive receiver `self: &{}!` of method `{method_name}` is not implemented yet; use `self: &{}` for a read-only receiver",
+                        for_ty.node, for_ty.node
+                    ),
+                );
+                return;
+            }
+            TypeKind::Ref { inner } => &inner.node,
+            ty => ty,
+        };
+        if !self.types_compatible(&for_ty.node, receiver_ty) {
+            self.push_error(
+                receiver.ty.span,
+                "S14",
+                format!(
+                    "receiver `self` of method `{method_name}` must be `{}` or `&{}`, got {}",
+                    for_ty.node, for_ty.node, receiver.ty.node
+                ),
+            );
         }
     }
 
@@ -3563,9 +3600,19 @@ impl Analyzer {
                     }
 
                     let object_eval = self.type_check_expr(object, reachable);
-                    if object_eval.ty.as_ref().is_some_and(|ty| {
+                    let shared_receiver_is_explicit = object_eval.ty.as_ref().is_some_and(|ty| {
+                        let resolved = self.resolve_type_aliases(ty);
+                        if !contains_non_string_reference(&resolved) {
+                            return false;
+                        }
+                        let type_name = super::declare::type_kind_base_name(&resolved);
+                        let method_name = format!("{}.{}", type_name, method);
+                        self.explicit_shared_receiver_methods.contains(&method_name)
+                    });
+                    if (object_eval.ty.as_ref().is_some_and(|ty| {
                         contains_non_string_reference(&self.resolve_type_aliases(ty))
-                    }) || self.expr_dereferences_shared_reference(object)
+                    }) && !shared_receiver_is_explicit)
+                        || self.expr_dereferences_shared_reference(object)
                     {
                         self.push_error(
                             object.span,
@@ -6348,7 +6395,10 @@ impl Analyzer {
         match &target.node {
             ExprKind::Group(inner) => self.lvalue_contains_shared_deref(inner),
             ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
-                self.lvalue_contains_shared_deref(object)
+                matches!(
+                    self.type_check_expr(object, true).ty,
+                    Some(TypeKind::Ref { .. })
+                ) || self.lvalue_contains_shared_deref(object)
             }
             ExprKind::Unary {
                 op: UnaryOpKind::Deref,

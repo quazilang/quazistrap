@@ -74,6 +74,14 @@ ownership unless the API explicitly documents it:
 const length: usize = text.len();  // text is borrowed, not consumed
 ```
 
+An implementation may declare a read-only receiver explicitly as
+`self: &T`. Such a method is permitted through a shared reference and while
+other shared loans of the same value are live. The compiler rejects writes
+through that receiver. The receiver pointee must match the enclosing `impl`
+target. `self: &T!` is rejected until its exclusive receiver effects are
+implemented, and consuming receiver effects remain planned D-014 work; legacy `self: T` methods retain their existing non-consuming
+behavior for compatibility.
+
 ## Scope cleanup (RAII)
 
 Owned locals are destroyed in reverse lexical order when they go out of scope.
@@ -115,8 +123,8 @@ borrowed `CStr` never gain ownership automatically.
   `&i32` is not `&u64`.
 - A shared-reference binding cannot be rebound, returned, stored in an owned
   aggregate, or captured by a closure.
-- The referenced owner cannot be mutated, moved, or passed to a method while
-  the borrow exists.
+- The referenced owner cannot be mutated or moved while the borrow exists.
+  A read-only method declared with `self: &T` is permitted.
 - Fields, indexes, dereferences, calls, and temporaries are not valid
   address-of operands.
 - Dereferencing a shared reference works for scalar pointees. Aggregate
@@ -132,7 +140,7 @@ For a temporary `&value` or `&value!` argument to a resolved direct Quazi call,
 the checker ends the loan after that call; current safe references cannot
 escape such a callee.
 It does not yet derive shorter use-based regions, support reborrowing, model
-receiver capabilities or cross-call effects, or verify QZI-only summaries;
+exclusive or consuming receiver effects or cross-call effects, or verify QZI-only summaries;
 those remain D-014 implementation work.
 
 These restrictions keep references sound while whole-program ownership is

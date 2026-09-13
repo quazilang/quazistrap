@@ -9641,6 +9641,33 @@ fn main() i32 {
     }
 
     #[test]
+    fn explicit_shared_receiver_method_compiles_as_static_dispatch() {
+        let chunks = compile(
+            r#"struct Counter { value: i32, }
+               impl Counter {
+                   fn read(self: &Counter) i32 { ret self.value; }
+               }
+               fn main() void {
+                   var counter = Counter { value: 1 };
+                   var view = &counter;
+                   var observed: i32 = view.read();
+               }"#,
+        );
+        let main_chunk = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(
+            !main_chunk
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::CallReg as u8),
+            "explicit shared receiver should use static dispatch"
+        );
+        assert!(
+            chunks.iter().any(|chunk| chunk.name == "Counter.read"),
+            "explicit shared receiver method was not compiled"
+        );
+    }
+
+    #[test]
     fn trait_impl_method_is_compiled_with_mangled_name() {
         let chunks = compile(
             r#"trait Display { fn to_str(self: Num) str; }

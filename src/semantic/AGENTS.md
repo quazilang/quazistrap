@@ -77,11 +77,17 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 - `reassign_targets` set suppresses move-in-loop for `x = x.method()` patterns (value immediately re-owned).
 - `for x : iterable` **moves** the iterable (like Rust's `for x in collection`); borrow with `for x : &collection`.
 - The iterable is consumed before the loop body so it does not trigger move-in-loop.
-- Method receivers are borrowed (non-consuming).
+- Legacy method receivers remain borrowed and non-consuming. An explicit
+  `self: &T` receiver is read-only: it may run while shared loans exist and
+  creates a shared loan for its call. The implementation validates that an
+  explicit receiver's pointee is the enclosing `impl` target. `self: &T!` is
+  rejected until its D-014 exclusive-receiver effects exist; consuming `self: T`
+  also still needs its D-014 effect implementation.
 - Shared references use a conservative lexical-scope lifetime checkpoint:
   address-of accepts only locals/parameters; reference bindings cannot be
   rebound or escape through returns, owned aggregates, or closures; and an
-  address-taken owner cannot be mutated, moved, or used as a method receiver.
+  address-taken owner cannot be mutated or moved. Explicit `self: &T` methods
+  are the read-only receiver exception.
   `str`/`&str` remains the representation-identical string-view exception.
 - `&T!` is currently a local exclusive-reference foundation: it requires a
   mutable local/parameter root, permits assignment through its dereference,
