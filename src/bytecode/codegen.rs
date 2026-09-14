@@ -2594,6 +2594,19 @@ impl<'a> FnCompiler<'a> {
         self.type_map.get(&key).map(|ty| self.resolve_type(ty))
     }
 
+    /// Resolve an aggregate receiver for field layout lookup. Explicit method
+    /// receivers keep their `&T` / `&T!` type for ownership analysis, but the
+    /// runtime field address is the referenced aggregate itself.
+    fn aggregate_type_of_span(&self, key: (usize, usize)) -> Option<TypeKind> {
+        let ty = self.type_of_span(key)?;
+        match ty {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                Some(self.resolve_type(&inner.node))
+            }
+            _ => Some(ty),
+        }
+    }
+
     fn type_of_expr(&self, expr: &Expr) -> Option<TypeKind> {
         if let ExprKind::Group(inner) = &expr.node {
             return self.type_of_expr(inner);
@@ -3111,7 +3124,7 @@ impl<'a> FnCompiler<'a> {
 
     fn ffi_field_access(&self, object: &Expr, field_name: &str) -> (MemWidth, bool, bool) {
         let key = (object.span.start, object.span.end);
-        if let Some(TypeKind::Named { name, .. }) = self.type_of_span(key) {
+        if let Some(TypeKind::Named { name, .. }) = self.aggregate_type_of_span(key) {
             self.ffi_field_access_by_name(&name, field_name)
         } else {
             (MemWidth::Qword, false, false)
@@ -3135,7 +3148,7 @@ impl<'a> FnCompiler<'a> {
         field_name: &str,
     ) -> Option<crate::semantic::BitFieldLayout> {
         let key = (object.span.start, object.span.end);
-        let TypeKind::Named { name, .. } = self.type_of_span(key)? else {
+        let TypeKind::Named { name, .. } = self.aggregate_type_of_span(key)? else {
             return None;
         };
         self.bit_field_layout_by_name(&name, field_name)
@@ -3325,7 +3338,7 @@ impl<'a> FnCompiler<'a> {
         let key = (object.span.start, object.span.end);
         if let Some(TypeKind::Named {
             name: struct_name, ..
-        }) = self.type_of_span(key)
+        }) = self.aggregate_type_of_span(key)
             && let Some(offsets) = self.struct_field_offsets.get(&struct_name)
         {
             for (fname, offset) in offsets {
@@ -9169,6 +9182,35 @@ fn read(record: Record) i32 { ret record.value; }
         assert_eq!(offset, 4);
         assert_eq!(load.mem_width(), MemWidth::Dword);
         assert!(load.mem_signed());
+    }
+
+    #[test]
+    fn explicit_reference_receiver_uses_aggregate_field_offset() {
+        let chunks = compile(
+            r#"
+struct Record { padding: i64, value: isize, }
+
+impl Record {
+    fn read(self: &Record) i32 { ret self.value as i32; }
+}
+
+fn main() i32 {
+    var record = Record { padding: 0, value: 7 };
+    ret record.read();
+}
+"#,
+        );
+        let method = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Record.read")
+            .expect("explicit receiver method should be compiled");
+        let load = method
+            .code
+            .iter()
+            .find(|instruction| instruction.opcode == Opcode::FieldLoad as u8)
+            .expect("field access through &Record should emit FieldLoad");
+        let (_, _, offset) = load.rrr();
+        assert_eq!(offset, 8, "value must not fall back to field offset zero");
     }
 
     #[test]

@@ -42,7 +42,7 @@ import std.fs;
 fn write_note(path: str) Result[bool, fs.FsError] {
     const opened = fs.File.create(path);
     if (opened.is_err()) { ret Err(opened.unwrap_err()); }
-    const file = opened.unwrap();
+    var file = opened.unwrap();
     const written = file.write_str("hello\n");
     if (written.is_err()) { ret Err(written.unwrap_err()); }
     ret file.sync();
@@ -55,14 +55,14 @@ fn write_note(path: str) Result[bool, fs.FsError] {
 | `File.create(path)` | Creates or truncates a file for writing. On Linux the creation mode is `0o644` before process `umask`; Windows ignores that mode. |
 | `File.open_rw(path)` | Opens read/write and creates the file when absent. It does not truncate an existing file. |
 | `File.open_append(path)` | Opens for append and creates when absent. Linux uses append mode; Windows seeks to the current end at open time, so concurrent writers have platform-dependent append behavior. |
-| `file.read(buf, n)` | Unsafe raw read into a caller-owned writable buffer. It returns a byte count, zero at EOF, or a negative failure sentinel. The caller supplies valid storage and handles partial reads. |
-| `file.write(bytes)` | Performs one binary write and returns the number of bytes written. A successful short write is possible; callers needing complete output must retry the remainder. |
-| `file.write_raw(buf, n)` | Unsafe counterpart for an arbitrary readable byte buffer. It can perform a partial write. |
-| `file.write_str(text)` | Performs one UTF-8 text write and returns bytes written. It does not append a terminator or retry a partial write. |
-| `file.seek(offset, whence)` | Changes the current position and returns the resulting byte offset. Use `seek_set()`, `seek_cur()`, or `seek_end()` for `whence`; invalid offsets and non-seekable files return `FsError`. |
-| `file.sync()` | Requests that file contents reach the platform’s persistent-storage boundary. It does not promise hardware durability beyond the operating system’s API. |
-| `file.truncate(len)` | Changes a file length on Linux. It currently returns `Unsupported` on Windows. |
-| `file.fd()` / `file.raw_handle()` | Expose native handles for tightly scoped interoperation. `fd()` truncates Windows handles and is therefore not a portable handle API; prefer `raw_handle()` only with target-specific FFI. |
+| `file.read(buf, n)` | Unsafe raw read through an exclusive receiver into caller-owned writable storage. It returns a byte count, zero at EOF, or a negative failure sentinel. The caller supplies valid storage and handles partial reads. |
+| `file.write(bytes)` | Performs one binary write through an exclusive receiver and returns the number of bytes written. A successful short write is possible; callers needing complete output must retry the remainder. |
+| `file.write_raw(buf, n)` | Unsafe exclusive-receiver counterpart for an arbitrary readable byte buffer. It can perform a partial write. |
+| `file.write_str(text)` | Performs one UTF-8 text write through an exclusive receiver and returns bytes written. It does not append a terminator or retry a partial write. |
+| `file.seek(offset, whence)` | Changes the current position through an exclusive receiver and returns the resulting byte offset. Use `seek_set()`, `seek_cur()`, or `seek_end()` for `whence`; invalid offsets and non-seekable files return `FsError`. |
+| `file.sync()` | Requests through an exclusive receiver that file contents reach the platform’s persistent-storage boundary. It does not promise hardware durability beyond the operating system’s API. |
+| `file.truncate(len)` | Changes a file length through an exclusive receiver on Linux. It currently returns `Unsupported` on Windows. |
+| `file.fd()` / `file.raw_handle()` | Read the native handle through a shared receiver for tightly scoped interoperation. `fd()` truncates Windows handles and is therefore not a portable handle API; prefer `raw_handle()` only with target-specific FFI. |
 | `file.close()` / `file.free()` | Releases the native handle as described above. |
 
 `File` is an owning resource, not a thread-safe shared handle abstraction. Do

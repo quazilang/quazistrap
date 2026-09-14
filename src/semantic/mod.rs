@@ -4022,6 +4022,31 @@ fn main() void {
     }
 
     #[test]
+    fn explicit_reference_receivers_preserve_field_types() {
+        let report = analyze(
+            r#"
+struct Handle { padding: i64, value: isize, }
+
+impl Handle {
+    fn fd(self: &Handle) i32 { ret self.value as i32; }
+    fn reset(self: &Handle!) void { self.value = -1; }
+}
+
+fn main() void {
+    var handle = Handle { padding: 0, value: 7 };
+    var fd: i32 = handle.fd();
+    handle.reset();
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "reference receiver field access lost its type: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn references_are_directional_and_pointee_invariant() {
         for source in [
             "fn main() void { var from_value: &i32 = 42; }",

@@ -4242,10 +4242,19 @@ impl Analyzer {
                 }
 
                 let obj_eval = self.type_check_expr(object, reachable);
+                let aggregate_ty = obj_eval.ty.as_ref().map(|ty| {
+                    let resolved = self.resolve_type_aliases(ty);
+                    match resolved {
+                        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                            self.resolve_type_aliases(&inner.node)
+                        }
+                        _ => resolved,
+                    }
+                });
                 if let Some(TypeKind::Named {
                     name: aggregate_name,
                     ..
-                }) = &obj_eval.ty
+                }) = aggregate_ty.as_ref()
                     && self.repr_c_unions.contains(aggregate_name)
                     && self.unsafe_depth == 0
                 {
@@ -4256,20 +4265,20 @@ impl Analyzer {
                     );
                 }
                 // Resolve field type from struct_defs, substituting generic params when present.
-                let field_ty = match &obj_eval.ty {
+                let field_ty = match aggregate_ty {
                     Some(TypeKind::Named {
                         name: struct_name,
                         type_args,
                     }) => {
                         let raw = self
                             .struct_defs
-                            .get(struct_name)
+                            .get(&struct_name)
                             .and_then(|fields| fields.iter().find(|(fn_, _)| fn_ == name))
                             .map(|(_, ty)| ty.clone());
                         if let Some(raw_ty) = raw {
                             let gp = self
                                 .struct_generic_params
-                                .get(struct_name)
+                                .get(&struct_name)
                                 .cloned()
                                 .unwrap_or_default();
                             if !gp.is_empty() && !type_args.is_empty() {
