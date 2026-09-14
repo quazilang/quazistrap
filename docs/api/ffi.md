@@ -34,6 +34,8 @@ the foreign API's contract and Quazi's unsafe rules.
 copying or freeing it. The caller must prove that `ptr` remains readable and
 NUL-terminated for every use of the `CStr`. `unsafe as_ptr()` exposes the same
 borrowed raw pointer; it neither extends lifetime nor transfers ownership.
+It uses a shared receiver, so obtaining the pointer cannot overlap a mutable
+operation on the `CStr` owner.
 
 ## Owned `CString`
 
@@ -51,7 +53,8 @@ ownership of the pointer.
 - `len()` is the stored byte length, excluding the terminating NUL.
 - `as_c_str()` creates a borrowed `CStr` valid only while the owning `CString`
   remains alive. `unsafe as_ptr()` exposes its raw pointer under the same
-  lifetime restriction.
+  lifetime restriction. These accessors and `len()` use shared receivers;
+  `free()` cannot overlap one of their loans.
 
 Normal local scope cleanup invokes `CString.free()` when no earlier explicit
 release occurs. An explicit `free()` invalidates the owner, clears its length,
