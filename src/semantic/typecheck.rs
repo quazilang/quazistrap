@@ -1139,6 +1139,107 @@ impl Analyzer {
         )
     }
 
+    fn require_exclusive_receiver(
+        &mut self,
+        object: &Expr,
+        object_ty: Option<&TypeKind>,
+        method: &str,
+    ) {
+        let Some(object_ty) = object_ty else {
+            return;
+        };
+        let (_, exclusive_receiver_is_explicit) =
+            self.explicit_method_receiver_capabilities(object_ty, method);
+        let object_is_exclusive_reference = matches!(
+            self.resolve_type_aliases(object_ty),
+            TypeKind::MutRef { .. }
+        );
+        if exclusive_receiver_is_explicit
+            && !object_is_exclusive_reference
+            && !self.is_exclusive_receiver_place(object)
+        {
+            self.push_error(
+                object.span,
+                "S07",
+                "exclusive receiver requires a mutable local variable or parameter".to_string(),
+            );
+        }
+    }
+
+    fn is_exclusive_receiver_place(&self, expr: &Expr) -> bool {
+        match &expr.node {
+            ExprKind::Group(inner) => self.is_exclusive_receiver_place(inner),
+            ExprKind::Field { object, name } => {
+                self.is_exclusive_receiver_place(object)
+                    && !self.receiver_field_is_const(object, name)
+            }
+            ExprKind::Ident(name) => self.resolve_symbol(name).is_some_and(|symbol| {
+                matches!(
+                    symbol.kind,
+                    SymbolKind::Variable { mutable: true } | SymbolKind::Parameter
+                )
+            }),
+            _ => false,
+        }
+    }
+
+    fn receiver_field_is_const(&self, object: &Expr, field: &str) -> bool {
+        let Some(object_ty) = self.receiver_place_type(object) else {
+            return false;
+        };
+        let resolved = self.resolve_type_aliases(&object_ty);
+        let type_name = super::declare::type_kind_base_name(&resolved);
+        self.struct_const_fields
+            .get(&type_name)
+            .is_some_and(|fields| fields.contains(field))
+    }
+
+    fn receiver_place_type(&self, expr: &Expr) -> Option<TypeKind> {
+        match &expr.node {
+            ExprKind::Ident(name) => self.resolve_symbol(name).and_then(|symbol| symbol.ty),
+            ExprKind::Group(inner) => self.receiver_place_type(inner),
+            ExprKind::Field { object, name } => {
+                let object_ty = self.receiver_place_type(object)?;
+                let resolved = self.resolve_type_aliases(&object_ty);
+                let aggregate_ty = match resolved {
+                    TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                        self.resolve_type_aliases(&inner.node)
+                    }
+                    other => other,
+                };
+                let TypeKind::Named {
+                    name: struct_name,
+                    type_args,
+                } = aggregate_ty
+                else {
+                    return None;
+                };
+                let field_ty = self
+                    .struct_defs
+                    .get(&struct_name)?
+                    .iter()
+                    .find(|(field_name, _)| field_name == name)
+                    .map(|(_, field_ty)| field_ty.clone())?;
+                let generic_params = self
+                    .struct_generic_params
+                    .get(&struct_name)
+                    .cloned()
+                    .unwrap_or_default();
+                if generic_params.is_empty() || type_args.is_empty() {
+                    Some(field_ty)
+                } else {
+                    let substitution = generic_params
+                        .iter()
+                        .zip(type_args.iter())
+                        .map(|(parameter, argument)| (parameter.clone(), argument.node.clone()))
+                        .collect();
+                    Some(substitute_type_kind(&field_ty, &substitution))
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn types_have_same_runtime_shape(&self, expected: &TypeKind, actual: &TypeKind) -> bool {
         let expected = self.resolve_type_aliases(expected);
         let actual = self.resolve_type_aliases(actual);
@@ -3623,27 +3724,7 @@ impl Analyzer {
                         .as_ref()
                         .map(|ty| self.explicit_method_receiver_capabilities(ty, method))
                         .unwrap_or((false, false));
-                    let object_is_exclusive_reference = object_eval.ty.as_ref().is_some_and(|ty| {
-                        matches!(self.resolve_type_aliases(ty), TypeKind::MutRef { .. })
-                    });
-                    if exclusive_receiver_is_explicit
-                        && !object_is_exclusive_reference
-                        && !addressable_ident(object).and_then(|name| {
-                            self.resolve_symbol(name).filter(|symbol| {
-                                matches!(
-                                    symbol.kind,
-                                    SymbolKind::Variable { mutable: true } | SymbolKind::Parameter
-                                )
-                            })
-                        }).is_some()
-                    {
-                        self.push_error(
-                            object.span,
-                            "S07",
-                            "exclusive receiver requires a mutable local variable or parameter"
-                                .to_string(),
-                        );
-                    }
+                    self.require_exclusive_receiver(object, object_eval.ty.as_ref(), method);
                     let reference_receiver_is_compatible = object_eval.ty.as_ref().is_some_and(|ty| {
                         match self.resolve_type_aliases(ty) {
                             TypeKind::Ref { .. } => shared_receiver_is_explicit,
@@ -3678,12 +3759,13 @@ impl Analyzer {
                                         }
                                     });
                             }
-                            let type_name = super::declare::type_kind_base_name(object_ty);
+                            let resolved_object_ty = self.resolve_type_aliases(object_ty);
+                            let type_name = super::declare::type_kind_base_name(&resolved_object_ty);
                             let mangled = format!("{}.{}", type_name, method);
                             let symbol = self.resolve_symbol(&mangled)?;
                             let substitution: std::collections::HashMap<String, TypeKind> =
-                                match object_ty {
-                                    TypeKind::Named { type_args, .. } if !type_args.is_empty() => {
+                                match receiver_named_type_args(&resolved_object_ty).as_slice() {
+                                    type_args if !type_args.is_empty() => {
                                         self.struct_generic_params
                                             .get(type_name.as_str())
                                             .map(|params| {
@@ -3745,12 +3827,13 @@ impl Analyzer {
                     let impl_resolved: Option<(Option<TypeKind>, String)> = if let Some(object_ty) =
                         &object_eval.ty.clone()
                     {
+                        let resolved_object_ty = self.resolve_type_aliases(object_ty);
                         // These operations are representation-level compiler builtins on
                         // primitive receivers. Prelude Display impls intentionally express
                         // their defaults in terms of them (for example i32.to_str calls
                         // i32.to_string), so resolving that inner call back to the impl
                         // would recurse forever. Named types still get normal impl lookup.
-                        let prefer_primitive_builtin = !matches!(object_ty, TypeKind::Named { .. })
+                        let prefer_primitive_builtin = !receiver_is_named_type(&resolved_object_ty)
                             && matches!(
                                 method.as_str(),
                                 "len"
@@ -3764,11 +3847,9 @@ impl Analyzer {
                         if prefer_primitive_builtin {
                             None
                         } else {
-                            let type_name = super::declare::type_kind_base_name(object_ty);
-                            let type_args = match object_ty {
-                                TypeKind::Named { type_args, .. } => type_args.clone(),
-                                _ => Vec::new(),
-                            };
+                            let type_name =
+                                super::declare::type_kind_base_name(&resolved_object_ty);
+                            let type_args = receiver_named_type_args(&resolved_object_ty);
                             let mangled = format!("{}.{}", type_name, method);
                             // Impl chunks are indexed by their declared type name. An
                             // imported type may carry a module-qualified display name
@@ -6360,6 +6441,7 @@ impl Analyzer {
             }
             ExprKind::Index { object, indices } => {
                 let object_eval = self.type_check_expr(object, true);
+                self.require_exclusive_receiver(object, object_eval.ty.as_ref(), "set");
                 if matches!(&object_eval.ty, Some(TypeKind::Bytes)) {
                     self.push_error(target.span, "S07", "byte strings are immutable".to_string());
                 }
@@ -7174,6 +7256,27 @@ fn infer_struct_type_subst(
             infer_struct_type_subst(&field.node, &value.node, generic_params, subst);
         }
         _ => {}
+    }
+}
+
+/// Returns the concrete arguments of a named receiver after peeling its
+/// reference layers. Inherent methods are declared on the owner type, while
+/// calls may use an `&Owner[T]` or `&Owner[T]!` view of that same owner.
+fn receiver_named_type_args(ty: &TypeKind) -> Vec<crate::parser::ast::Spanned<TypeKind>> {
+    match ty {
+        TypeKind::Named { type_args, .. } => type_args.clone(),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+            receiver_named_type_args(&inner.node)
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn receiver_is_named_type(ty: &TypeKind) -> bool {
+    match ty {
+        TypeKind::Named { .. } => true,
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => receiver_is_named_type(&inner.node),
+        _ => false,
     }
 }
 

@@ -238,6 +238,14 @@ impl Analyzer {
                     .map(|field| (field.name.clone(), field.ty.node.clone()))
                     .collect();
                 self.struct_defs.insert(name.clone(), field_defs);
+                self.struct_const_fields.insert(
+                    name.clone(),
+                    fields
+                        .iter()
+                        .filter(|field| field.is_const)
+                        .map(|field| field.name.clone())
+                        .collect(),
+                );
                 self.struct_field_bit_widths.insert(
                     name.clone(),
                     fields

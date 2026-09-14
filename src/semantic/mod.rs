@@ -111,6 +111,10 @@ pub struct Analyzer {
     pub(super) explicitly_imported_fns: std::collections::HashMap<String, String>,
     /// Struct field layouts: struct name → ordered list of (field_name, field_type).
     pub(super) struct_defs: HashMap<String, Vec<(String, TypeKind)>>,
+    /// Fields declared immutable in their aggregate definition. This is kept
+    /// separately from layout because type-directed projection checks need the
+    /// declaration capability without changing code-generation field records.
+    pub(super) struct_const_fields: HashMap<String, std::collections::HashSet<String>>,
     pub(super) struct_field_bit_widths: HashMap<String, Vec<(String, Option<u8>)>>,
     /// Generic params per struct: struct name → ordered generic param names.
     pub(super) struct_generic_params: HashMap<String, Vec<String>>,
@@ -854,6 +858,7 @@ impl Analyzer {
             library_symbols: Vec::new(),
             explicitly_imported_fns: std::collections::HashMap::new(),
             struct_defs: HashMap::new(),
+            struct_const_fields: HashMap::new(),
             struct_field_bit_widths: HashMap::new(),
             struct_generic_params: HashMap::new(),
             repr_c_structs: std::collections::HashSet::new(),
@@ -1295,6 +1300,7 @@ impl Analyzer {
         self.trait_depth = 0;
         self.explicitly_imported_fns.clear(); // HashMap::clear
         self.struct_defs.clear();
+        self.struct_const_fields.clear();
         self.struct_field_bit_widths.clear();
         self.struct_generic_params.clear();
         self.derived_traits.clear();
@@ -4962,7 +4968,7 @@ struct Array[T] { marker: usize, }
 impl Array[T] {
     fn new() Array[T] { ret Array { marker: 0 }; }
 
-    fn set(self: Array[T], idx: usize, val: T) void { ret; }
+    fn set(self: &Array[T]!, idx: usize, val: T) void { ret; }
 }
 
 fn main() void {
@@ -5008,7 +5014,7 @@ struct Array[T] { marker: usize, }
 impl Array[T] {
     fn new() Array[T] { ret Array { marker: 0 }; }
 
-    fn set(self: Array[T], idx: usize, val: T) void { ret; }
+    fn set(self: &Array[T]!, idx: usize, val: T) void { ret; }
 }
 
 fn main() void {
@@ -7309,7 +7315,7 @@ impl Index[usize, T] for Array[T] {
     fn index(self: Array[T], i: usize) T { ret self.value; }
 }
 impl Array[T] {
-    fn set(self: Array[T], i: usize, value: T) void { ret; }
+    fn set(self: &Array[T]!, i: usize, value: T) void { ret; }
 }
 fn main() void {
     var values: Array[i32] = Array { value: 1 };
@@ -7325,6 +7331,101 @@ fn main() void {
         assert!(report.monomorphizations.iter().any(|mono| {
             mono.fn_name == "Array.set" && mono.mangled_name.contains("Array.set")
         }));
+    }
+
+    #[test]
+    fn array_receivers_distinguish_shared_queries_from_exclusive_updates() {
+        let valid = analyze(
+            r#"
+trait Index[I, O] { fn index(i: I) O; }
+struct Array[T] { value: T, ptr: *u8, }
+
+impl Array[T] {
+    fn get(self: &Array[T], i: usize) T { ret self.value; }
+    fn len(self: &Array[T]) usize { ret 1; }
+    fn is_empty(self: &Array[T]) bool { ret false; }
+    unsafe fn as_ptr(self: &Array[T]) *T { ret self.ptr as *T; }
+    fn push(self: &Array[T]!, value: T) void {}
+    fn set(self: &Array[T]!, i: usize, value: T) void {}
+}
+
+impl Index[usize, T] for Array[T] {
+    fn index(self: Array[T], i: usize) T { ret self.get(i); }
+}
+
+fn main() void {
+    const view: Array[i32] = Array { value: 1, ptr: 0 };
+    const first: i32 = view.get(0);
+    const count: usize = view.len();
+    const empty: bool = view.is_empty();
+    unsafe { const data: *i32 = view.as_ptr(); }
+
+    var values: Array[i32] = Array { value: 1, ptr: 0 };
+    values.push(2);
+    values.set(0, 3);
+    values[0] = 4;
+
+    var shared: &Array[i32] = &values;
+    const shared_first: i32 = shared.get(0);
+    const shared_count: usize = shared.len();
+    const shared_empty: bool = shared.is_empty();
+    unsafe { const shared_data: *i32 = shared.as_ptr(); }
+}
+"#,
+        );
+        assert!(valid.errors.is_empty(), "valid array receivers: {:?}", valid.errors);
+
+        for source in [
+            "const values: Array[i32] = Array { value: 1 }; values.push(2);",
+            "const values: Array[i32] = Array { value: 1 }; values.set(0, 2);",
+            "const values: Array[i32] = Array { value: 1 }; values[0] = 2;",
+            "var values: Array[i32] = Array { value: 1 }; var shared: &Array[i32] = &values; shared.push(2);",
+        ] {
+            let report = analyze(&format!(
+            "trait Index[I, O] {{ fn index(i: I) O; }} struct Array[T] {{ value: T, }} impl Array[T] {{ fn set(self: &Array[T]!, i: usize, value: T) void {{}} fn push(self: &Array[T]!, value: T) void {{}} }} impl Index[usize, T] for Array[T] {{ fn index(self: Array[T], i: usize) T {{ ret self.value; }} }} fn main() void {{ {source} }}"
+            ));
+            assert!(
+                report.errors.iter().any(|error| error.code == "S07"),
+                "exclusive Array update accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+
+        for operation in [
+            "holder.items.push(2);",
+            "holder.items.set(0, 2);",
+            "holder.items[0] = 2;",
+        ] {
+            let report = analyze(&format!(
+                "trait Index[I, O] {{ fn index(i: I) O; }} struct Array[T] {{ value: T, }} struct Holder {{ const items: Array[i32], }} impl Array[T] {{ fn set(self: &Array[T]!, i: usize, value: T) void {{}} fn push(self: &Array[T]!, value: T) void {{}} }} impl Index[usize, T] for Array[T] {{ fn index(self: Array[T], i: usize) T {{ ret self.value; }} }} fn main() void {{ var holder: Holder = Holder {{ items: Array {{ value: 1 }} }}; {operation} }}"
+            ));
+            assert!(
+                report.errors.iter().any(|error| error.code == "S07"),
+                "exclusive Array update through a const field was accepted: {operation}\n{:?}",
+                report.errors
+            );
+        }
+
+        let exclusive_view = analyze(
+            r#"
+trait Index[I, O] { fn index(i: I) O; }
+struct Array[T] { value: T, }
+struct Holder { const items: Array[i32], }
+impl Array[T] {
+    fn push(self: &Array[T]!, value: T) void {}
+}
+fn main() void {
+    var holder: Holder = Holder { items: Array { value: 1 } };
+    var exclusive: &Holder! = &holder!;
+    exclusive.items.push(2);
+}
+"#,
+        );
+        assert!(
+            exclusive_view.errors.iter().any(|error| error.code == "S07"),
+            "exclusive aggregate view allowed a const field update: {:?}",
+            exclusive_view.errors
+        );
     }
 
     #[test]

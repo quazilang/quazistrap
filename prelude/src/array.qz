@@ -46,7 +46,7 @@ impl Array[T] {
         ret result;
     }
 
-    pub fn push(self: Array[T], val: T) void {
+    pub fn push(self: &Array[T]!, val: T) void {
         if (self.len >= self.cap) {
             self.cap = self.cap * 2;
             unsafe { self.ptr = __array_realloc(self.ptr, self.cap * size_of[T]()); }
@@ -55,25 +55,25 @@ impl Array[T] {
         self.len = self.len + 1;
     }
 
-    pub fn get(self: Array[T], idx: usize) T {
+    pub fn get(self: &Array[T], idx: usize) T {
         if (idx >= self.len) {
             panic("index out of bounds");
         }
         ret __ptr_load(self.ptr, idx);
     }
 
-    pub fn set(self: Array[T], idx: usize, val: T) void {
+    pub fn set(self: &Array[T]!, idx: usize, val: T) void {
         if (idx >= self.len) {
             panic("index out of bounds");
         }
         __ptr_store(self.ptr, idx, val);
     }
 
-    pub fn len(self: Array[T]) usize {
+    pub fn len(self: &Array[T]) usize {
         ret self.len;
     }
 
-    pub fn is_empty(self: Array[T]) bool {
+    pub fn is_empty(self: &Array[T]) bool {
         ret self.len == 0;
     }
 
@@ -81,7 +81,7 @@ impl Array[T] {
     // The pointer is invalidated by any operation that can reallocate or free
     // this array. Callers must stay within len elements and preserve valid
     // initialized values and ownership invariants when writing through it.
-    pub unsafe fn as_ptr(self: Array[T]) *T {
+    pub unsafe fn as_ptr(self: &Array[T]) *T {
         ret self.ptr as *T;
     }
 

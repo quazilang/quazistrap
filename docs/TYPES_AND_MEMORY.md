@@ -38,6 +38,16 @@ allocation failure must be handled.
 is an owned growable collection from the prelude. Indexing is checked by safe
 APIs; raw pointer access moves responsibility to an unsafe block.
 
+`get`, `len`, `is_empty`, and `unsafe as_ptr` borrow an array through
+`&Array[T]`, so they can be called on an immutable owner. `push`, `set`, and
+indexed assignment require an exclusive `&Array[T]!` receiver and therefore a
+mutable owner, not a `const` aggregate field. The `Index` trait's current
+by-value contract keeps read
+indexing legacy until that trait is redesigned. `free` also remains a legacy
+by-value API until consuming receivers are implemented. Reading an owned
+element is not yet an ownership transfer primitive; its move-or-borrow
+contract is tracked separately by D-014.
+
 ## References and pointers
 
 `&T` is a safe shared reference. `*T` is a raw native pointer: it may be null,
