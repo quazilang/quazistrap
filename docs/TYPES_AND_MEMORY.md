@@ -25,8 +25,10 @@ inside low-level unsafe/platform modules or an explicit `Native(code)` fallback.
 ## Text and bytes
 
 `str` is borrowed immutable UTF-8. `String` owns writable UTF-8 storage with
-pointer, byte length, and capacity. `String.as_str()` borrows it. Rune indexing
-never splits UTF-8; `bytes_len()` exposes encoded length when protocols need it.
+pointer, byte length, and capacity. Its inspection, parsing, and
+transformation methods borrow through `&String`, so they work on immutable
+owners and shared views. `String.as_str()` borrows it. Rune indexing never
+splits UTF-8; `bytes_len()` exposes encoded length when protocols need it.
 
 `bytes` is immutable arbitrary data. Unlike `str`, it carries no UTF-8 promise.
 FFI conversion to `CString` is explicit and fallible because embedded NUL and

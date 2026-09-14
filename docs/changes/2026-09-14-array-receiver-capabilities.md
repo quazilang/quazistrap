@@ -18,8 +18,7 @@ Read-only calls now work with immutable owners and shared views. Mutation
 calls require a mutable owner, which makes an invalid update through an
 immutable owner or a `const` aggregate field a compile-time error. Existing
 mutable `Array` call sites need no source changes. `free` remains a legacy
-by-value operation until the
-language implements consuming receivers.
+by-value operation until the language implements consuming receivers.
 
 This receiver change does not define ownership transfer for a returned owned
 element: `get` and indexing retain their existing raw-load behavior. That

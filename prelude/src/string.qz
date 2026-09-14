@@ -554,47 +554,47 @@ impl String {
         ret String { data: text, len: len, cap: cap };
     }
 
-    pub fn len(self: String) usize { ret self.data.rune_len(); }
-    pub fn rune_len(self: String) usize { ret self.data.rune_len(); }
-    pub fn bytes_len(self: String) usize { ret self.len; }
-    pub fn is_empty(self: String) bool { ret self.len == 0; }
-    pub fn as_str(self: String) str { ret self.data; }
+    pub fn len(self: &String) usize { ret self.data.rune_len(); }
+    pub fn rune_len(self: &String) usize { ret self.data.rune_len(); }
+    pub fn bytes_len(self: &String) usize { ret self.len; }
+    pub fn is_empty(self: &String) bool { ret self.len == 0; }
+    pub fn as_str(self: &String) str { ret self.data; }
 
-    pub fn push_str(self: String, s: str) String {
+    pub fn push_str(self: &String, s: str) String {
         const combined: str = __string_str_concat(self.data, s);
         const new_len: usize = self.len + __string_strlen(s);
         ret String { data: combined, len: new_len, cap: new_len + 1 };
     }
 
     pub fn concat(a: String, b: String) String { ret a.push_str(b.data); }
-    pub fn get(self: String, index: isize) Option[Rune] { ret self.data.get(index); }
-    pub fn __slice(self: String, start: isize, end: isize, step: isize,
+    pub fn get(self: &String, index: isize) Option[Rune] { ret self.data.get(index); }
+    pub fn __slice(self: &String, start: isize, end: isize, step: isize,
         start_omitted: bool, end_omitted: bool) String {
         ret self.data.__slice(start, end, step, start_omitted, end_omitted);
     }
-    pub fn reverse(self: String) String { ret self.data.reverse(); }
-    pub fn to_lowercase(self: String) String { ret self.data.to_lowercase(); }
-    pub fn to_uppercase(self: String) String { ret self.data.to_uppercase(); }
-    pub fn lowercase(self: String) String { ret self.data.to_lowercase(); }
-    pub fn uppercase(self: String) String { ret self.data.to_uppercase(); }
-    pub fn capitalize(self: String) String { ret self.data.capitalize(); }
-    pub fn trim(self: String) String { ret self.data.trim(); }
-    pub fn starts_with(self: String, prefix: str) bool { ret self.data.starts_with(prefix); }
-    pub fn ends_with(self: String, suffix: str) bool { ret self.data.ends_with(suffix); }
-    pub fn find(self: String, needle: str) Option[usize] { ret self.data.find(needle); }
-    pub fn contains(self: String, needle: str) bool { ret self.data.contains(needle); }
-    pub fn parse_i64(self: String) Result[i64, ParseError] { ret self.data.parse_i64(); }
-    pub fn parse_i8(self: String) Result[i8, ParseError] { ret self.data.parse_i8(); }
-    pub fn parse_i16(self: String) Result[i16, ParseError] { ret self.data.parse_i16(); }
-    pub fn parse_i32(self: String) Result[i32, ParseError] { ret self.data.parse_i32(); }
-    pub fn parse_isize(self: String) Result[isize, ParseError] { ret self.data.parse_isize(); }
-    pub fn parse_u8(self: String) Result[u8, ParseError] { ret self.data.parse_u8(); }
-    pub fn parse_u16(self: String) Result[u16, ParseError] { ret self.data.parse_u16(); }
-    pub fn parse_u32(self: String) Result[u32, ParseError] { ret self.data.parse_u32(); }
-    pub fn parse_u64(self: String) Result[u64, ParseError] { ret self.data.parse_u64(); }
-    pub fn parse_usize(self: String) Result[usize, ParseError] { ret self.data.parse_usize(); }
-    pub fn parse_f32(self: String) Result[f32, ParseError] { ret self.data.parse_f32(); }
-    pub fn parse_f64(self: String) Result[f64, ParseError] { ret self.data.parse_f64(); }
+    pub fn reverse(self: &String) String { ret self.data.reverse(); }
+    pub fn to_lowercase(self: &String) String { ret self.data.to_lowercase(); }
+    pub fn to_uppercase(self: &String) String { ret self.data.to_uppercase(); }
+    pub fn lowercase(self: &String) String { ret self.data.to_lowercase(); }
+    pub fn uppercase(self: &String) String { ret self.data.to_uppercase(); }
+    pub fn capitalize(self: &String) String { ret self.data.capitalize(); }
+    pub fn trim(self: &String) String { ret self.data.trim(); }
+    pub fn starts_with(self: &String, prefix: str) bool { ret self.data.starts_with(prefix); }
+    pub fn ends_with(self: &String, suffix: str) bool { ret self.data.ends_with(suffix); }
+    pub fn find(self: &String, needle: str) Option[usize] { ret self.data.find(needle); }
+    pub fn contains(self: &String, needle: str) bool { ret self.data.contains(needle); }
+    pub fn parse_i64(self: &String) Result[i64, ParseError] { ret self.data.parse_i64(); }
+    pub fn parse_i8(self: &String) Result[i8, ParseError] { ret self.data.parse_i8(); }
+    pub fn parse_i16(self: &String) Result[i16, ParseError] { ret self.data.parse_i16(); }
+    pub fn parse_i32(self: &String) Result[i32, ParseError] { ret self.data.parse_i32(); }
+    pub fn parse_isize(self: &String) Result[isize, ParseError] { ret self.data.parse_isize(); }
+    pub fn parse_u8(self: &String) Result[u8, ParseError] { ret self.data.parse_u8(); }
+    pub fn parse_u16(self: &String) Result[u16, ParseError] { ret self.data.parse_u16(); }
+    pub fn parse_u32(self: &String) Result[u32, ParseError] { ret self.data.parse_u32(); }
+    pub fn parse_u64(self: &String) Result[u64, ParseError] { ret self.data.parse_u64(); }
+    pub fn parse_usize(self: &String) Result[usize, ParseError] { ret self.data.parse_usize(); }
+    pub fn parse_f32(self: &String) Result[f32, ParseError] { ret self.data.parse_f32(); }
+    pub fn parse_f64(self: &String) Result[f64, ParseError] { ret self.data.parse_f64(); }
 
     pub fn free(self: String) void {
         if (self.cap > 0) {

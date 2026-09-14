@@ -1975,6 +1975,39 @@ mod tests {
     }
 
     #[test]
+    fn prelude_string_shared_view_supports_observers_and_transformations() {
+        let root = temp_dir("quazi_loader_prelude_string_shared_view");
+        let main_path = root.join("main.qz");
+        fs::write(
+            &main_path,
+            "fn main() void { var value: String = String.from(\"42\"); var view: &String = &value; const text: str = view.as_str(); const length: usize = view.len(); const appended: String = view.push_str(\"!\"); const first: Option[Rune] = view.get(0); const slice: String = view[0:1]; const parsed: Result[i32, ParseError] = view.parse_i32(); }",
+        )
+        .expect("write main source");
+
+        let result = load_programs(&[main_path]).expect("load program with prelude String");
+        let namespaced_paths = result
+            .namespaced_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let report = crate::analysis::analyze_program_with_source_files(
+            &result.merged_source,
+            &result.program,
+            result.library_fn_names,
+            result.library_char_ranges,
+            result.source_files,
+            namespaced_paths,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "shared String prelude calls must type-check: {:?}",
+            report.errors
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mod_entry_exports_flatten_child_imports() {
         let root = temp_dir("quazi_loader_mod_exports");
         let foo_dir = root.join("foo");

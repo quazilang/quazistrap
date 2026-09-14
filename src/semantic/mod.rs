@@ -7429,6 +7429,36 @@ fn main() void {
     }
 
     #[test]
+    fn string_observers_and_transformations_accept_shared_views() {
+        let report = analyze(
+            r#"
+struct String { data: str, len: usize, }
+
+impl String {
+    fn len(self: &String) usize { ret self.len; }
+    fn as_str(self: &String) str { ret self.data; }
+    fn reverse(self: &String) String { ret String { data: self.data, len: self.len }; }
+    fn parse_i32(self: &String) Result[i32, ParseError] { ret self.data.parse_i32(); }
+}
+
+fn main() void {
+    var value: String = String { data: "42", len: 2 };
+    var view: &String = &value;
+    const count: usize = view.len();
+    const text: str = view.as_str();
+    const reversed: String = view.reverse();
+    const parsed: Result[i32, ParseError] = view.parse_i32();
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "shared String view rejected observers: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn generic_specialization_inherits_ordinary_call_dependencies() {
         let report = analyze(
             r#"
