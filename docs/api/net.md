@@ -28,7 +28,8 @@ the requested limit. `receive_all` requires EOF before the limit and returns
 `host()` and `port()` expose its fields. `resolve()` returns a numeric IPv4
 literal unchanged or performs a platform DNS lookup for a name; it does not
 provide a multi-address result, IPv6, DNS timeout, caching, or a configurable
-resolver policy.
+resolver policy. These operations use shared receivers, because they inspect
+an address and return borrowed text, a scalar, or a fresh resolved address.
 
 ## TCP
 
@@ -81,7 +82,8 @@ path (default `/`). It is intentionally a small parser, not a general URL
 implementation: no IPv6 literals, authority userinfo, query normalization, or
 percent-decoding contract is supplied. A raw query without an explicit path is
 preserved as a `/?query` request target. `scheme()`, `host()`, `port()`, and
-`path()` return the parsed components as borrowed text or the numeric port.
+`path()` return the parsed components as borrowed text or the numeric port;
+they use shared receivers.
 
 `Headers.new`, `append`, `set`, `get`, `contains`, `len`, `get_at`, and `encode`
 manage ordered headers. Lookup and replacement are case-insensitive; encoding
