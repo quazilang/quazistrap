@@ -14,12 +14,12 @@ remain experimental and limited to `usize` keys and values.
 ## `Map`
 
 `Map.new()` returns `Result[Map, MapError]`; `MapError` is either
-`AllocationFailed` or `CapacityOverflow`. `insert(self, key, value)` mutates
-the map and returns `Result[bool, MapError]`: `true` means a new key was added,
-and `false` means an existing value was replaced. `get(self, key)` returns
-`Option[usize]`, `contains(self, key)` reports membership, `remove(self, key)`
-returns whether a key was removed, and `len(self)` returns the number of
-entries.
+`AllocationFailed` or `CapacityOverflow`. `insert(self: &Map!, key, value)`
+mutates the map and returns `Result[bool, MapError]`: `true` means a new key
+was added, and `false` means an existing value was replaced. `get(self: &Map,
+key)` returns `Option[usize]`, `contains(self: &Map, key)` reports membership,
+`remove(self: &Map!, key)` returns whether a key was removed, and
+`len(self: &Map)` returns the number of entries.
 
 The implementation is open-addressed linear probing with tombstones, initial
 capacity 16, and a resize threshold of 75%. Insertion replaces an existing
@@ -29,20 +29,23 @@ from storage behavior.
 ## `Set`
 
 `Set.new()` returns `Result[Set, SetError]`, with the same allocation and
-capacity errors. `insert(self, key)` mutates the set and returns
+capacity errors. `insert(self: &Set!, key)` mutates the set and returns
 `Result[bool, SetError]`; `true` means a new key was added and duplicates return
-`false`. `contains`, `remove`, and `len` mirror the matching map operations.
-Set storage uses the same probing, tombstone, initial capacity, and resize
-policy.
+`false`. `contains(self: &Set)`, `remove(self: &Set!, key)`, and
+`len(self: &Set)` mirror the matching map operations. Set storage uses the
+same probing, tombstone, initial capacity, and resize policy.
 
 ## Ownership and limitations
 
-Method receivers are borrowed by the language, so `insert` and `remove` mutate
-the one owning container rather than returning an alias. Normal scope cleanup
-releases the backing allocations once. `free(self)` is available only when an
-earlier release is necessary. It invalidates the container and is repeat-safe;
-after the first call `len()` returns zero, while lookup and mutation remain
-invalid use.
+Read-only collection methods use shared receivers (`self: &Map` or
+`self: &Set`). Methods that mutate or release storage use exclusive receivers
+(`self: &Map!` or `self: &Set!`), so a call cannot overlap another loan of that
+container. They still mutate the one owning container rather than returning an
+alias. Normal scope cleanup releases the backing allocations once.
+`free(self: &Map!)` / `free(self: &Set!)` is available only when an earlier
+release is necessary. It invalidates the container and is repeat-safe; after
+the first call `len()` returns zero, while lookup and mutation remain invalid
+use.
 
 The current surface remains limited until generic element bounds and fully
 audited drop-aware storage exist; do not treat it as a substitute for a general
