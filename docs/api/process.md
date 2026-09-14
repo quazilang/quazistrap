@@ -47,9 +47,9 @@ recommendation to construct a command string or rely on a shell.
 | --- | --- |
 | `wait()` | Blocks for completion, returns `Ok(Some(status))`, and consumes the child. A consumed child returns `Ok(None)`. |
 | `try_wait()` | Returns `Ok(None)` while live. Once exited, returns its status and consumes the child. |
-| `terminate()` | Forcefully requests termination without consuming the child. Returns `Ok(false)` for a consumed child. |
+| `terminate()` | Forcefully requests termination through an exclusive receiver without consuming the child. Returns `Ok(false)` for a consumed child. |
 | `close()` | Consumes the child. On Linux, a live child is killed and reaped; it can block. |
-| `handle()` | Exposes the raw platform handle for narrowly scoped target-specific interoperation. Do not close or wait on it outside `Child`. |
+| `handle()` | Exposes the raw platform handle through a shared receiver for narrowly scoped target-specific interoperation. Do not close or wait on it outside `Child`. |
 
 `ExitStatus.Code(i32)` is a normal exit code. Linux also reports
 `ExitStatus.Signal(i32)` for signal termination. Windows will report only

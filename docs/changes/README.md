@@ -6,6 +6,7 @@
 - [2026-09-14: Dynamic-library receiver capabilities](2026-09-14-dynamic-library-receiver-capabilities.md)
 - [2026-09-14: C-string receiver capabilities](2026-09-14-c-string-receiver-capabilities.md)
 - [2026-09-14: Duration receiver capabilities](2026-09-14-duration-receiver-capabilities.md)
+- [2026-09-14: Child receiver capabilities](2026-09-14-child-receiver-capabilities.md)
 - [2026-09-12: Full-width decimal integer literals](2026-09-12-full-u64-literals.md)
 - [2026-09-12: Exact JSON container-depth limits](2026-09-12-json-depth-limits.md)
 - [2026-09-12: Linux runtime-backed process support](2026-09-12-linux-process-runtime.md)
