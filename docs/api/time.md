@@ -18,6 +18,9 @@ Its nanosecond component is always less than one billion.
 - `checked_add` and `checked_sub` return `Option[Duration]`; overflow and a
   negative result return `None` rather than wrapping.
 
+These instance operations use shared receivers: they inspect a duration and
+return a fresh value without changing the original duration.
+
 ## `Instant`
 
 `Instant.now()` returns `Result[Instant, TimeError]`. It reads a monotonic
