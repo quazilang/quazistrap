@@ -17,6 +17,10 @@ validated content. `stringify()` returns a fresh owned `String` containing the
 exact validated source; it does not normalize whitespace or line endings.
 Call `free()` when the document is no longer needed.
 
+`parse_string` requires exclusive access to the document. Lookups,
+`stringify`, and the `require_*` helpers use shared access, so they cannot run
+while an exclusive parse is in progress.
+
 ```quazi
 import std.ini;
 
