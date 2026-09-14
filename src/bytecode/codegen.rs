@@ -713,11 +713,10 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
-            // @panic_handler: the user's function is compiled under __quazi_panic_handler but
-            // its own body's Call edges are indexed by the original function name. Seed BFS
-            // from the original name so its dependencies are included.
-            if set.contains("__quazi_panic_handler")
-                && let Some(ph_name) = &user_panic_handler
+            // @panic_handler functions are compiled under __quazi_panic_handler, while their
+            // call edges retain the declared function name. Seed reachability with that
+            // declaration so inherent methods and helpers used only by the handler are kept.
+            if let Some(ph_name) = &user_panic_handler
                 && set.insert(ph_name.clone())
             {
                 let mut q2 = vec![ph_name.clone()];
@@ -9706,6 +9705,28 @@ fn main() i32 {
         assert!(
             chunks.iter().any(|chunk| chunk.name == "Counter.read"),
             "explicit shared receiver method was not compiled"
+        );
+    }
+
+    #[test]
+    fn panic_handler_keeps_shared_receiver_method_dependencies() {
+        let chunks = compile(
+            r#"struct PanicInfo { message: str, }
+               impl PanicInfo {
+                   fn message(self: &PanicInfo) str { ret self.message; }
+               }
+               @panic_handler
+               fn handle(info: PanicInfo) ! {
+                   var view: &PanicInfo = &info;
+                   const message: str = view.message();
+                   halt();
+               }
+               fn halt() ! { halt(); }
+               fn main() void {}"#,
+        );
+        assert!(
+            chunks.iter().any(|chunk| chunk.name == "PanicInfo.message"),
+            "a method used only by a panic handler must remain reachable"
         );
     }
 

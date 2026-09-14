@@ -34,15 +34,15 @@ pub struct PanicInfo {
 }
 
 impl PanicInfo {
-    pub fn message(self: PanicInfo) str {
+    pub fn message(self: &PanicInfo) str {
         ret self.message;
     }
 
-    pub fn file(self: PanicInfo) str {
+    pub fn file(self: &PanicInfo) str {
         ret self.file;
     }
 
-    pub fn line(self: PanicInfo) usize {
+    pub fn line(self: &PanicInfo) usize {
         ret self.line;
     }
 }

@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-09-14: PanicInfo receiver capabilities](2026-09-14-panic-info-receiver-capabilities.md)
 - [2026-09-14: String receiver capabilities](2026-09-14-string-receiver-capabilities.md)
 - [2026-09-14: Array receiver capabilities](2026-09-14-array-receiver-capabilities.md)
 - [2026-09-14: Collection receiver capabilities](2026-09-14-collection-receiver-capabilities.md)

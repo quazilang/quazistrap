@@ -9,8 +9,10 @@ failures.
 ## Custom handlers
 
 The prelude supplies `PanicInfo`, containing the panic message, source file,
-and source line. A program may replace the default process-terminating
-formatter with exactly one handler:
+and source line. Its `message()`, `file()`, and `line()` accessors take a
+shared `&PanicInfo` receiver, so a handler can inspect one borrowed view more
+than once. A program may replace the default process-terminating formatter
+with exactly one handler:
 
 ```quazi
 import std.core;

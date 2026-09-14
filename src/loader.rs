@@ -2008,6 +2008,39 @@ mod tests {
     }
 
     #[test]
+    fn prelude_panic_info_shared_view_supports_accessors() {
+        let root = temp_dir("quazi_loader_prelude_panic_info_shared_view");
+        let main_path = root.join("main.qz");
+        fs::write(
+            &main_path,
+            "@panic_handler fn handle(info: PanicInfo) ! { var view: &PanicInfo = &info; const message: str = view.message(); const file: str = view.file(); const line: usize = view.line(); panic(message); } fn main() void {}",
+        )
+        .expect("write main source");
+
+        let result = load_programs(&[main_path]).expect("load program with prelude PanicInfo");
+        let namespaced_paths = result
+            .namespaced_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let report = crate::analysis::analyze_program_with_source_files(
+            &result.merged_source,
+            &result.program,
+            result.library_fn_names,
+            result.library_char_ranges,
+            result.source_files,
+            namespaced_paths,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "shared PanicInfo prelude calls must type-check: {:?}",
+            report.errors
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mod_entry_exports_flatten_child_imports() {
         let root = temp_dir("quazi_loader_mod_exports");
         let foo_dir = root.join("foo");
