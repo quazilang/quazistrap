@@ -1221,6 +1221,7 @@ impl Analyzer {
                     (k.clone(), disc_map)
                 })
                 .collect(),
+            explicit_shared_receiver_methods: self.explicit_shared_receiver_methods.clone(),
             struct_generic_params: self.struct_generic_params.clone(),
             monomorphizations: std::mem::take(&mut self.monomorphizations),
             fn_value_layouts: std::mem::take(&mut self.fn_value_layouts),
@@ -4183,6 +4184,71 @@ fn main() void {
             }),
             "fixed-array reference used a scalar load: {:?}",
             fixed_array.errors
+        );
+    }
+
+    #[test]
+    fn borrowed_enum_matches_can_inspect_tags_but_not_bind_payloads() {
+        let tag_only = analyze(
+            r#"
+enum Maybe { Some(i32), None, }
+
+fn is_some(value: &Maybe) bool {
+    ret match value { Some(_) => true, None => false, };
+}
+
+fn main() void {}
+"#,
+        );
+        assert!(
+            tag_only.errors.is_empty(),
+            "borrowed enum tag inspection was rejected: {:?}",
+            tag_only.errors
+        );
+
+        for source in [
+            r#"
+enum Maybe { Some(i32), None, }
+
+fn read(value: &Maybe) i32 {
+    ret match value { Some(payload) => payload, None => 0, };
+}
+
+fn main() void {}
+"#,
+            r#"
+enum Maybe { Some(i32), None, }
+
+fn is_one(value: &Maybe) bool {
+    ret match value { Some(1) => true, Some(_) => false, None => false, };
+}
+
+fn main() void {}
+"#,
+        ] {
+            let payload_pattern = analyze(source);
+            assert!(
+                payload_pattern.errors.iter().any(|error| {
+                error.code == "S10"
+                    && error
+                        .message
+                        .contains("matching a borrowed enum may inspect only its discriminant")
+                }),
+                "borrowed enum payload pattern was accepted: {:?}",
+                payload_pattern.errors
+            );
+        }
+
+        let scalar_binding = analyze(
+            r#"
+fn observe(value: &i32) i32 { ret match value { observed => 1, }; }
+fn main() void {}
+"#,
+        );
+        assert!(
+            scalar_binding.errors.is_empty(),
+            "the borrowed-enum restriction affected a scalar match: {:?}",
+            scalar_binding.errors
         );
     }
 

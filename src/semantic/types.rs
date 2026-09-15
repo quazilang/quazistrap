@@ -489,6 +489,8 @@ pub struct SemanticReport {
     pub trait_method_signatures: HashMap<String, HashMap<String, TraitMethodSignature>>,
     /// Enum variant tags: enum name → variant name → discriminant index.
     pub enum_defs: HashMap<String, HashMap<String, usize>>,
+    /// Methods whose explicit `self` receiver is a shared reference.
+    pub explicit_shared_receiver_methods: std::collections::HashSet<String>,
     /// Generic param names per struct: struct name → ordered generic param names.
     pub struct_generic_params: HashMap<String, Vec<String>>,
     /// Monomorphization requests: function name → list of concrete type args used at call sites.

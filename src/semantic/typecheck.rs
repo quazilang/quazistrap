@@ -4531,6 +4531,26 @@ impl Analyzer {
             }
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee_eval = self.type_check_expr(scrutinee, reachable);
+                // Enum discriminants are readable through either kind of safe
+                // reference. Payload projection remains unavailable: a payload
+                // binding would require materializing an aggregate or taking a
+                // reference to inline scalar storage, neither of which has a
+                // stable ownership/provenance model yet.
+                let match_scrutinee_ty = match &scrutinee_eval.ty {
+                    Some(TypeKind::Ref { inner }) | Some(TypeKind::MutRef { inner }) => {
+                        Some(inner.node.clone())
+                    }
+                    ty => ty.clone(),
+                };
+                let borrowed_enum_scrutinee = matches!(
+                    &scrutinee_eval.ty,
+                    Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+                ) && match_scrutinee_ty.as_ref().is_some_and(|ty| {
+                    let TypeKind::Named { name, .. } = self.resolve_type_aliases(ty) else {
+                        return false;
+                    };
+                    self.enums.contains_key(&name)
+                });
                 let mut arm_infos = Vec::new();
                 let mut result_ty: Option<TypeKind> = None;
 
@@ -4540,9 +4560,20 @@ impl Analyzer {
 
                 for arm in arms {
                     let (mut arm_info, bindings) =
-                        self.validate_match_pattern(&arm.pattern, &scrutinee_eval.ty);
+                        self.validate_match_pattern(&arm.pattern, &match_scrutinee_ty);
                     arm_info.span = arm.span;
                     arm_info.has_guard = arm.guard.is_some();
+
+                    if borrowed_enum_scrutinee
+                        && !Self::is_borrowed_enum_discriminant_pattern(&arm.pattern)
+                    {
+                        self.push_error(
+                            arm.pattern.span,
+                            "S10",
+                            "matching a borrowed enum may inspect only its discriminant before aggregate projection semantics are implemented"
+                                .to_string(),
+                        );
+                    }
 
                     self.enter_scope();
                     // Build a map: binding_name → field type for Variant patterns.
@@ -4554,7 +4585,7 @@ impl Analyzer {
                         } = &arm.pattern.node
                         {
                             let resolved_enum = enum_name.clone().or_else(|| {
-                                if let Some(TypeKind::Named { name, .. }) = &scrutinee_eval.ty {
+                                if let Some(TypeKind::Named { name, .. }) = &match_scrutinee_ty {
                                     Some(name.clone())
                                 } else {
                                     None
@@ -4562,7 +4593,7 @@ impl Analyzer {
                             });
                             if let Some(ename) = resolved_enum {
                                 let builtin_payload =
-                                    match (&scrutinee_eval.ty, ename.as_str(), variant.as_str()) {
+                                    match (&match_scrutinee_ty, ename.as_str(), variant.as_str()) {
                                         (
                                             Some(TypeKind::Named { name, type_args }),
                                             "Option",
@@ -4690,7 +4721,7 @@ impl Analyzer {
 
                 self.match_candidates.push(MatchCandidate {
                     span: expr.span,
-                    scrutinee_ty: scrutinee_eval.ty.clone(),
+                    scrutinee_ty: match_scrutinee_ty,
                     arms: arm_infos,
                 });
 
@@ -6323,6 +6354,19 @@ impl Analyzer {
                     bindings,
                 )
             }
+        }
+    }
+
+    /// A borrowed enum can expose its discriminant, but no payload storage. In
+    /// particular, a direct wildcard is safe while bindings, literals, and
+    /// nested patterns could observe or materialize a payload.
+    fn is_borrowed_enum_discriminant_pattern(pattern: &Pattern) -> bool {
+        match &pattern.node {
+            PatternKind::Wildcard => true,
+            PatternKind::Variant { sub_patterns, .. } => sub_patterns
+                .iter()
+                .all(|sub_pattern| matches!(sub_pattern.node, PatternKind::Wildcard)),
+            PatternKind::Bind(_) | PatternKind::Literal(_) => false,
         }
     }
 

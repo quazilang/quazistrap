@@ -200,6 +200,11 @@ Match supports:
 Enum matches must be exhaustive: every variant must be covered, or a `_`
 wildcard must be present.
 
+A borrowed enum may be matched to inspect its variant, for example
+`match view { Some(_) => true, None => false }` where `view: &Option[T]`.
+Payload bindings such as `Some(value)` remain unavailable through a borrowed
+enum because they would require aggregate projection semantics.
+
 ## Range expressions
 
 `start..end` creates an exclusive-upper-bound `Range`. `start..=end` creates

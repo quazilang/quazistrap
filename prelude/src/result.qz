@@ -6,14 +6,14 @@
 // Result[T, E] is a builtin enum: Ok(T) = tag 1, Err(E) = tag 0.
 
 impl Result[T, E] {
-    pub fn is_ok(self: Result[T, E]) bool {
+    pub fn is_ok(self: &Result[T, E]) bool {
         ret match self {
             Ok(_) => true,
             Err(_) => false,
         };
     }
 
-    pub fn is_err(self: Result[T, E]) bool {
+    pub fn is_err(self: &Result[T, E]) bool {
         ret match self {
             Ok(_) => false,
             Err(_) => true,
@@ -21,7 +21,7 @@ impl Result[T, E] {
     }
 
     // Returns true if Ok, false if Err.
-    pub fn ok(self: Result[T, E]) bool {
+    pub fn ok(self: &Result[T, E]) bool {
         ret match self {
             Ok(_) => true,
             Err(_) => false,

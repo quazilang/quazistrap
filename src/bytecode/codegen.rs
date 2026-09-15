@@ -1838,6 +1838,7 @@ impl<'a> Codegen<'a> {
             &self.report.trait_impls,
             &self.variadic_fn_info,
             &self.report.enum_defs,
+            &self.report.explicit_shared_receiver_methods,
             &self.str_variadic_fns,
             &self.variadic_intrinsic_fns,
             &self.report.monomorphizations,
@@ -2303,6 +2304,8 @@ struct FnCompiler<'a> {
     variadic_fn_info: &'a HashMap<String, usize>,
     /// Enum variant tags: enum name → variant name → discriminant.
     enum_defs: &'a HashMap<String, HashMap<String, usize>>,
+    /// Methods whose explicit `self` receiver is a shared reference.
+    explicit_shared_receiver_methods: &'a HashSet<String>,
     /// Variadic-str functions: auto-coerce args to str at call sites.
     str_variadic_fns: &'a HashSet<String>,
     /// Variadic @intrinsic functions: coerce args and call directly.
@@ -2424,6 +2427,7 @@ impl<'a> FnCompiler<'a> {
         trait_impls: &'a HashMap<String, std::collections::HashSet<String>>,
         variadic_fn_info: &'a HashMap<String, usize>,
         enum_defs: &'a HashMap<String, HashMap<String, usize>>,
+        explicit_shared_receiver_methods: &'a HashSet<String>,
         str_variadic_fns: &'a HashSet<String>,
         variadic_intrinsic_fns: &'a HashSet<String>,
         monomorphizations: &'a [crate::semantic::MonomorphizationInfo],
@@ -2460,6 +2464,7 @@ impl<'a> FnCompiler<'a> {
             trait_impls,
             variadic_fn_info,
             enum_defs,
+            explicit_shared_receiver_methods,
             str_variadic_fns,
             variadic_intrinsic_fns,
             monomorphizations,
@@ -3947,6 +3952,59 @@ impl<'a> FnCompiler<'a> {
             }
             _ => false,
         }
+    }
+
+    /// Shared enum parameters are pointers to a register holding an enum
+    /// handle. Materialize that representation for owned method receivers so
+    /// direct calls and explicit shared views use one coherent ABI.
+    fn prepare_shared_enum_receiver(
+        &mut self,
+        receiver: u8,
+        object: &Expr,
+        declared_target: &str,
+    ) -> u8 {
+        let declared_target = declared_target.split('<').next().unwrap_or(declared_target);
+        if !self
+            .explicit_shared_receiver_methods
+            .contains(declared_target)
+        {
+            return receiver;
+        }
+        let object_ty = self.type_of_expr(object);
+        let is_shared_view = matches!(
+            &object_ty,
+            Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+        );
+        let enum_ty = match object_ty {
+            Some(TypeKind::Ref { inner } | TypeKind::MutRef { inner }) => inner.node,
+            Some(TypeKind::Named { name, type_args }) => TypeKind::Named { name, type_args },
+            _ => return receiver,
+        };
+        let TypeKind::Named { name, .. } = self.resolve_type(&enum_ty) else {
+            return receiver;
+        };
+        if !self.enum_defs.contains_key(&name) {
+            return receiver;
+        }
+        if is_shared_view {
+            receiver
+        } else {
+            let reference = self.alloc_reg();
+            self.chunk.emit(mem_lea_block(receiver, reference, 0, 1));
+            reference
+        }
+    }
+
+    fn match_scrutinee_is_borrowed_enum(&self, scrutinee: &Expr) -> bool {
+        let Some(TypeKind::Ref { inner } | TypeKind::MutRef { inner }) =
+            self.type_of_expr(scrutinee)
+        else {
+            return false;
+        };
+        let TypeKind::Named { name, .. } = self.resolve_type(&inner.node) else {
+            return false;
+        };
+        self.enum_defs.contains_key(&name)
     }
 
     /// Recursively compile a pattern match against `value_reg`.
@@ -6640,6 +6698,11 @@ impl<'a> FnCompiler<'a> {
                 // chained through generic helpers such as `Result.unwrap()` can
                 // lose enough surface type information for reconstruction.
                 if let Some(resolved_target) = self.resolved_fn_for_span(expr.span) {
+                    let receiver = self.prepare_shared_enum_receiver(
+                        obj,
+                        object,
+                        &resolved_target,
+                    );
                     let call_target = match self.type_of_expr(object) {
                         Some(TypeKind::Named { type_args, .. }) if !type_args.is_empty() => {
                             let Some(target) =
@@ -6660,7 +6723,7 @@ impl<'a> FnCompiler<'a> {
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&call_target);
-                        let mut all_args = vec![obj];
+                        let mut all_args = vec![receiver];
                         all_args.extend_from_slice(&arg_regs);
                         self.emit_call_by_name(&call_target, &all_args, result_dst);
                         if method == "free"
@@ -6769,6 +6832,11 @@ impl<'a> FnCompiler<'a> {
                         None
                     };
                     if let Some(call_target) = lookup {
+                        let receiver = self.prepare_shared_enum_receiver(
+                            obj,
+                            object,
+                            &call_target,
+                        );
                         let arg_regs: Vec<u8> = args
                             .iter()
                             .map(|a| {
@@ -6777,7 +6845,7 @@ impl<'a> FnCompiler<'a> {
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&call_target);
-                        let mut all_args = vec![obj];
+                        let mut all_args = vec![receiver];
                         all_args.extend_from_slice(&arg_regs);
                         self.emit_call_by_name(&call_target, &all_args, result_dst);
                         if method == "free"
@@ -7211,7 +7279,12 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::Match { scrutinee, arms } => {
-                let scr = self.compile_expr(scrutinee);
+                let mut scr = self.compile_expr(scrutinee);
+                if self.match_scrutinee_is_borrowed_enum(scrutinee) {
+                    let handle = self.alloc_reg();
+                    self.chunk.emit(mem_load(scr, handle, 0));
+                    scr = handle;
+                }
                 let dst = self.alloc_reg();
                 let mut end_jumps: Vec<usize> = Vec::new();
                 let mut guard_fail_jumps: Vec<usize> = Vec::new();
@@ -7393,6 +7466,7 @@ impl<'a> FnCompiler<'a> {
                     self.trait_impls,
                     self.variadic_fn_info,
                     self.enum_defs,
+                    self.explicit_shared_receiver_methods,
                     self.str_variadic_fns,
                     self.variadic_intrinsic_fns,
                     self.monomorphizations,
@@ -9705,6 +9779,63 @@ fn main() i32 {
         assert!(
             chunks.iter().any(|chunk| chunk.name == "Counter.read"),
             "explicit shared receiver method was not compiled"
+        );
+    }
+
+    #[test]
+    fn borrowed_enum_discriminant_method_uses_shared_reference_abi() {
+        let chunks = compile(
+            r#"enum Maybe { Some(i32), None, }
+               impl Maybe {
+                   fn is_some(self: &Maybe) bool {
+                       ret match self { Some(_) => true, None => false, };
+                   }
+               }
+               fn inspect(value: &Maybe) bool {
+                   ret match value { Some(_) => true, None => false, };
+               }
+               fn main() void {
+                   var value: Maybe = Maybe.Some(1);
+                   var view: &Maybe = &value;
+                   var direct: bool = value.is_some();
+                   var observed: bool = view.is_some();
+                   var inspected: bool = inspect(&value);
+               }"#,
+        );
+        let method = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Maybe.is_some")
+            .expect("borrowed enum discriminant method was not compiled");
+        assert_eq!(
+            method
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::Load as u8)
+                .count(),
+            1,
+            "a borrowed enum match must load its handle from the shared reference slot"
+        );
+        let inspect = chunks
+            .iter()
+            .find(|chunk| chunk.name == "inspect")
+            .expect("ordinary borrowed enum inspector was not compiled");
+        assert_eq!(
+            inspect
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::Load as u8)
+                .count(),
+            1,
+            "ordinary &Enum parameters must use the same borrowed-match ABI"
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert_eq!(
+            main.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::Load as u8)
+                .count(),
+            0,
+            "callers pass shared views directly and materialize one for owned receivers"
         );
     }
 

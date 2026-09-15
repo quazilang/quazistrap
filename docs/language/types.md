@@ -115,6 +115,9 @@ model:
 - Dereferencing a shared reference works for scalar pointees. Aggregate
   pointees require immutable receiver semantics.
 - `str`/`&str` are the representation-identical string-view exception.
+- A match on `&Enum` or `&Enum!` may inspect variant discriminants with unit
+  and wildcard payload patterns such as `Some(_)`. It cannot bind a payload
+  until aggregate-projection ownership and provenance are implemented.
 
 ### Exclusive references
 

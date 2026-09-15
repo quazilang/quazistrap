@@ -44,14 +44,12 @@ QZI/QZC ownership summaries.
 
 ## D-014 boundary verified during this re-audit
 
-`Option` and `Result` predicates cannot yet use shared receivers. Their
-implementations pattern-match the aggregate. Matching `&Option[T]` or
-`&Result[T, E]` currently either rejects enum patterns or requires dereferencing
-the shared reference, which the compiler correctly rejects as aggregate
-materialization. A tag-only special case would be an unsound, API-specific
-workaround. Shared enum inspection belongs with D-014's borrow-aware pattern
-and aggregate-projection implementation; leave these legacy value receivers
-unchanged until that work exists.
+`Option` and `Result` predicates now use shared receivers through the first
+generic aggregate-projection slice: a match on `&Enum` may inspect a variant
+discriminant with unit or wildcard payload patterns, but may not bind a
+payload. This makes tag-only status queries sound without an API-specific
+special case. Borrowed payload binding, aggregate materialization, and
+general aggregate projection remain D-014 work.
 
 ## Required sequence
 

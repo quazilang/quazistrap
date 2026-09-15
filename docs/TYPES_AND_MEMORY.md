@@ -64,6 +64,10 @@ rebound. Shared aggregate references cannot be dereferenced into owned-looking
 values because current aggregate storage is address-based and that would create
 a mutable alias. Scalar and representation-identical string reads remain
 available.
+Borrowed enums are the narrow aggregate exception: a match may read a variant
+tag using unit or wildcard payload patterns (for example `Some(_)`), but it
+cannot bind a payload. This supports read-only status queries without creating
+an aggregate alias or a payload reference with unknown provenance.
 Non-string references cannot be returned, stored in owned aggregates,
 or captured by closures. Once a local is address-taken, safe code cannot mutate,
 move, or invoke methods on it for the rest of that function. `str`/`&str` is the

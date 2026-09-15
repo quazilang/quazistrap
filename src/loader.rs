@@ -2041,6 +2041,39 @@ mod tests {
     }
 
     #[test]
+    fn prelude_enum_predicates_support_shared_views() {
+        let root = temp_dir("quazi_loader_prelude_enum_predicates_shared_view");
+        let main_path = root.join("main.qz");
+        fs::write(
+            &main_path,
+            "fn main() void { var option: Option[i32] = Some(1); var option_view: &Option[i32] = &option; const some: bool = option_view.is_some(); const none: bool = option_view.is_none(); const option_ok: bool = option_view.ok(); var result: Result[i32, str] = Ok(1); var result_view: &Result[i32, str] = &result; const result_ok: bool = result_view.is_ok(); const result_err: bool = result_view.is_err(); const result_status: bool = result_view.ok(); }",
+        )
+        .expect("write main source");
+
+        let result = load_programs(&[main_path]).expect("load program with prelude enum predicates");
+        let namespaced_paths = result
+            .namespaced_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let report = crate::analysis::analyze_program_with_source_files(
+            &result.merged_source,
+            &result.program,
+            result.library_fn_names,
+            result.library_char_ranges,
+            result.source_files,
+            namespaced_paths,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "shared enum predicate prelude calls must type-check: {:?}",
+            report.errors
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mod_entry_exports_flatten_child_imports() {
         let root = temp_dir("quazi_loader_mod_exports");
         let foo_dir = root.join("foo");

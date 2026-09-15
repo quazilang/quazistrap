@@ -6,14 +6,14 @@
 // Option[T] is a builtin enum: Some(T) = tag 1, None = tag 0.
 
 impl Option[T] {
-    pub fn is_some(self: Option[T]) bool {
+    pub fn is_some(self: &Option[T]) bool {
         ret match self {
             Some(_) => true,
             None => false,
         };
     }
 
-    pub fn is_none(self: Option[T]) bool {
+    pub fn is_none(self: &Option[T]) bool {
         ret match self {
             Some(_) => false,
             None => true,
@@ -21,7 +21,7 @@ impl Option[T] {
     }
 
     // Returns true if Some, false if None.
-    pub fn ok(self: Option[T]) bool {
+    pub fn ok(self: &Option[T]) bool {
         ret match self {
             Some(_) => true,
             None => false,
