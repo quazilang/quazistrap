@@ -4,7 +4,9 @@ The compiler now rejects a move-only value selected from a field, indexed
 element, or safe-reference dereference whenever that expression is consumed.
 This applies uniformly to function arguments, returns, assignment values,
 aggregate construction, consuming method receivers, and other consuming
-expression positions.
+expression positions. A consuming `free(self: T)` destructor is the narrow
+exception: it owns its complete receiver and may consume projections rooted in
+that receiver while releasing resources.
 
 ## Motivation
 

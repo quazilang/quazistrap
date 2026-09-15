@@ -85,6 +85,9 @@ or value reached through a safe dereference cannot be moved in any consuming
 position yet, including as a function argument or return value. Scalar
 projections and whole-owner moves remain valid. Place-level moves, structural
 destruction, whole-program, and cross-call effects remain D-014 work.
+A consuming `free(self: T)` hook may consume projections rooted in that
+receiver while performing its own cleanup, because the complete receiver was
+already transferred to the hook.
 
 ## Scope cleanup (RAII)
 

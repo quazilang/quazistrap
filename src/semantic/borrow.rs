@@ -45,6 +45,10 @@ struct MoveEnv {
     /// Variables currently being re-assigned (`x = f(x)`). Move-in-loop is
     /// suppressed for these because the assignment immediately re-owns the value.
     reassign_targets: std::collections::HashSet<String>,
+    /// A consuming destructor owns this whole receiver while it tears down its
+    /// fields. Its projections are the single pre-structural-drop exception to
+    /// the ordinary partial-move rule.
+    destructor_receiver: Option<String>,
 }
 
 impl MoveEnv {
@@ -54,7 +58,21 @@ impl MoveEnv {
             loop_depth: 0,
             control_depth: 0,
             reassign_targets: std::collections::HashSet::new(),
+            destructor_receiver: None,
         }
+    }
+
+    fn for_consuming_destructor(receiver: String) -> Self {
+        Self {
+            destructor_receiver: Some(receiver),
+            ..Self::new()
+        }
+    }
+
+    fn allows_destructor_projection_move(&self, expr: &Expr) -> bool {
+        self.destructor_receiver.as_deref().is_some_and(|receiver| {
+            projection_root_ident(expr) == Some(receiver)
+        })
     }
 
     fn enter_scope(&mut self) {
@@ -177,6 +195,20 @@ fn assignment_target_ident(expr: &Expr) -> Option<&str> {
     }
 }
 
+fn projection_root_ident(expr: &Expr) -> Option<&str> {
+    match &expr.node {
+        ExprKind::Ident(name) => Some(name),
+        ExprKind::Group(inner)
+        | ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Cast { expr: inner, .. }
+        | ExprKind::Try { expr: inner } => projection_root_ident(inner),
+        ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
+            projection_root_ident(object)
+        }
+        _ => None,
+    }
+}
+
 // ── Borrow-check pass ─────────────────────────────────────────────────────────
 
 impl Analyzer {
@@ -207,12 +239,25 @@ impl Analyzer {
                 ItemKind::Impl { methods, .. } => {
                     for m in methods {
                         if let ItemKind::Fn {
+                            name,
                             params,
                             body: Some(body),
                             ..
                         } = &m.node
                         {
-                            let mut env = MoveEnv::new();
+                            let is_consuming_destructor = name.rsplit('.').next() == Some("free")
+                                && params.first().is_some_and(|param| {
+                                    param.name == "self"
+                                        && !matches!(
+                                            self.resolve_type_aliases(&param.ty.node),
+                                            TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+                                        )
+                                });
+                            let mut env = if is_consuming_destructor {
+                                MoveEnv::for_consuming_destructor("self".to_string())
+                            } else {
+                                MoveEnv::new()
+                            };
                             for p in params {
                                 env.declare(p.name.clone(), Some(p.ty.node.clone()));
                             }
@@ -687,7 +732,11 @@ impl Analyzer {
             }
 
             ExprKind::Unary { op: UnaryOpKind::Deref, expr: inner } => {
-                if consumed && self.bc_receiver_is_move_type(expr) && self.bc_is_safe_reference_expr(inner) {
+                if consumed
+                    && self.bc_receiver_is_move_type(expr)
+                    && self.bc_is_safe_reference_expr(inner)
+                    && !env.allows_destructor_projection_move(expr)
+                {
                     self.bc_reject_partial_move(expr);
                 }
                 self.bc_expr(inner, env, false);
@@ -707,14 +756,21 @@ impl Analyzer {
             }
 
             ExprKind::Field { object, .. } => {
-                if consumed && self.bc_receiver_is_move_type(expr) {
+                if consumed
+                    && self.bc_receiver_is_move_type(expr)
+                    && !env.allows_destructor_projection_move(expr)
+                {
                     self.bc_reject_partial_move(expr);
                 }
                 self.bc_expr(object, env, false);
             }
 
             ExprKind::Index { object, indices } => {
-                if consumed && self.bc_receiver_is_move_type(expr) && self.bc_is_builtin_index_projection(object) {
+                if consumed
+                    && self.bc_receiver_is_move_type(expr)
+                    && self.bc_is_builtin_index_projection(object)
+                    && !env.allows_destructor_projection_move(expr)
+                {
                     self.bc_reject_partial_move(expr);
                 }
                 self.bc_expr(object, env, false);

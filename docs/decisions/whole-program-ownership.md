@@ -70,6 +70,10 @@ consuming operation. This resolves D-003's policy question; drop glue and
 place-level implementation remain prerequisites to claiming the guarantee.
 Until those prerequisites land, the compiler rejects move-only field, indexed
 element, and safe-dereference moves at every consuming expression position.
+The sole local exception is a recognized consuming `free(self: T)` hook moving
+a projection rooted in its own receiver while it tears that receiver down; the
+receiver as a whole was already transferred to the hook, and code generation
+does not schedule a second cleanup for it.
 This guard prevents an unsupported partial move from leaving the aggregate's
 later cleanup unsound; it is not place-level move tracking or structural drop
 glue.

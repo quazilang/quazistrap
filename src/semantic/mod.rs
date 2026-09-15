@@ -3734,6 +3734,21 @@ fn main() void {
                 report.errors
             );
         }
+
+        let consuming_destructor = analyze(
+            r#"
+struct Inner { value: i32, }
+struct Outer { inner: Inner, }
+impl Inner { fn free(self: Inner) void {} }
+impl Outer { fn free(self: Outer) void { self.inner.free(); } }
+fn main() void { var value = Outer { inner: Inner { value: 1 } }; value.free(); }
+"#,
+        );
+        assert!(
+            consuming_destructor.errors.is_empty(),
+            "a consuming destructor must be able to dispose its owned fields: {:?}",
+            consuming_destructor.errors
+        );
     }
 
     #[test]
