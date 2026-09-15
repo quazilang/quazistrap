@@ -212,7 +212,7 @@ out-pointers; QZI v9 is the compatibility boundary that admits them.
 
 ### Local RAII Cleanup
 
-- Codegen tracks local variables whose resolved `Named` type has a `free(self)` method and emits destructor calls at block exits and before returns.
+- Codegen tracks local variables with a consuming `free(self)` hook and emits destructor calls at block exits and before returns. It also has a constrained structural fallback for acyclic, non-generic, non-C-layout structs without a source hook: eligible fields are cleaned in reverse declaration order. Arrays, enums, recursive/generic layouts, and aggregate-storage release remain deferred.
 - Destructor roots are forced reachable so tree-shaking keeps `Type.free` and its dependencies.
 - Values moved into returns/call args are deactivated to avoid double-free; method receivers remain non-consuming to match existing `self: Array[T]` APIs.
 - `Array[T]` and `String` locals are auto-cleaned at scope exit.

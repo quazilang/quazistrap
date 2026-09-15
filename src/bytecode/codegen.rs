@@ -2357,7 +2357,20 @@ struct DropLocal {
 #[derive(Clone)]
 enum DropAction {
     Call(String),
+    Structural(Vec<StructuralFieldDrop>),
     FreeClosureEnv,
+}
+
+/// A compiler-generated cleanup step for a field of an eligible aggregate.
+///
+/// This initial structural-drop slice intentionally covers only acyclic,
+/// non-generic, non-C-layout structs without a source destructor hook. Keeping
+/// the field action explicit makes it impossible to silently recurse through a
+/// manual `free(self)` implementation or an unsupported container/enum shape.
+#[derive(Clone)]
+struct StructuralFieldDrop {
+    offset: u16,
+    action: Box<DropAction>,
 }
 
 struct LoopFrame {
@@ -4177,13 +4190,118 @@ impl<'a> FnCompiler<'a> {
         if !type_args.is_empty() {
             let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
             let mangled = crate::semantic::typecheck::mangle_monomorphized(&base, &type_kinds);
-            if self.fn_index.contains_key(&mangled) {
+            if self.has_consuming_drop_hook(&base, &mangled) && self.fn_index.contains_key(&mangled) {
                 return Some(DropAction::Call(mangled));
             }
+            if self.has_consuming_drop_hook(&base, &mangled) && self.fn_index.contains_key(&base) {
+                return Some(DropAction::Call(base));
+            }
         }
-        self.fn_index
-            .contains_key(&base)
-            .then_some(DropAction::Call(base))
+        if type_args.is_empty()
+            && self.consuming_receiver_methods.contains(&base)
+            && self.fn_index.contains_key(&base)
+        {
+            return Some(DropAction::Call(base));
+        }
+        self.structural_drop_action_for_named(&name, &type_args, &mut HashSet::new())
+    }
+
+    fn has_consuming_drop_hook(&self, base: &str, resolved_name: &str) -> bool {
+        self.consuming_receiver_methods.contains(resolved_name)
+            || self.consuming_receiver_methods.contains(base)
+            || self
+                .consuming_receiver_methods
+                .iter()
+                .any(|registered| registered.starts_with(&format!("{base}<")))
+    }
+
+    fn structural_drop_action_for_named(
+        &self,
+        name: &str,
+        type_args: &[Type],
+        visiting: &mut HashSet<String>,
+    ) -> Option<DropAction> {
+        // Generic containers, C-layout values, and recursive aggregates need
+        // dedicated layout/ownership machinery. This first slice is only for
+        // ordinary acyclic source structs whose fields can already be dropped
+        // through a terminal consuming hook or the same structural rule.
+        if !type_args.is_empty()
+            || self.repr_c_structs.contains(name)
+            || !visiting.insert(name.to_string())
+        {
+            return None;
+        }
+        let Some(fields) = self.struct_defs.get(name) else {
+            visiting.remove(name);
+            return None;
+        };
+        let Some(offsets) = self.struct_field_offsets.get(name) else {
+            visiting.remove(name);
+            return None;
+        };
+
+        let mut drops = Vec::new();
+        for (field_name, field_ty) in fields.iter().rev() {
+            let resolved = self.resolve_type(field_ty);
+            match self.structural_field_drop_action(&resolved, visiting) {
+                Some(action) => {
+                    let offset = offsets
+                        .iter()
+                        .find_map(|(candidate, offset)| {
+                            (candidate == field_name).then_some(*offset)
+                        })
+                        .and_then(|offset| u16::try_from(offset).ok())?;
+                    drops.push(StructuralFieldDrop {
+                        offset,
+                        action: Box::new(action),
+                    });
+                }
+                None if self.type_requires_structural_drop(&resolved) => {
+                    visiting.remove(name);
+                    return None;
+                }
+                None => {}
+            }
+        }
+        visiting.remove(name);
+        (!drops.is_empty()).then_some(DropAction::Structural(drops))
+    }
+
+    fn structural_field_drop_action(
+        &self,
+        ty: &TypeKind,
+        visiting: &mut HashSet<String>,
+    ) -> Option<DropAction> {
+        let resolved = self.resolve_type(ty);
+        if matches!(resolved, TypeKind::Fn { .. }) {
+            return None;
+        }
+        let TypeKind::Named { name, type_args } = resolved else {
+            return None;
+        };
+        if self.repr_c_structs.contains(&name) {
+            return None;
+        }
+        let base = format!("{}.free", name);
+        if type_args.is_empty()
+            && self.consuming_receiver_methods.contains(&base)
+            && self.fn_index.contains_key(&base)
+        {
+            return Some(DropAction::Call(base));
+        }
+        self.structural_drop_action_for_named(&name, &type_args, visiting)
+    }
+
+    fn type_requires_structural_drop(&self, ty: &TypeKind) -> bool {
+        matches!(
+            self.resolve_type(ty),
+            TypeKind::Named { .. }
+                | TypeKind::Fn { .. }
+                | TypeKind::Dyn { .. }
+                | TypeKind::Array { .. }
+                | TypeKind::Slice { .. }
+                | TypeKind::FlexibleArray { .. }
+        )
     }
 
     fn register_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
@@ -4258,6 +4376,13 @@ impl<'a> FnCompiler<'a> {
             DropAction::Call(drop_fn) => {
                 let dst = self.alloc_reg();
                 self.emit_call_by_name(&drop_fn, &[reg], dst);
+            }
+            DropAction::Structural(fields) => {
+                for field in fields {
+                    let field_reg = self.alloc_reg();
+                    self.chunk.emit(field_load(field_reg, reg, field.offset));
+                    self.emit_drop_action(field_reg, *field.action);
+                }
             }
             DropAction::FreeClosureEnv => {
                 let mut instruction = ri16(Opcode::Intrinsic, reg, 4);
@@ -8727,6 +8852,193 @@ fn main() i32 {
                 .count(),
             1,
             "a by-value parameter must be destroyed at function fallthrough"
+        );
+    }
+
+    #[test]
+    fn structural_drop_cleans_acyclic_fields_in_reverse_declaration_order() {
+        let chunks = compile(
+            r#"
+struct First { value: i32 }
+struct Second { value: i32 }
+struct Outer { first: First, second: Second }
+impl First { fn free(self: First) void {} }
+impl Second { fn free(self: Second) void {} }
+fn take(value: Outer) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        let field_offsets = take
+            .code
+            .iter()
+            .filter(|instruction| instruction.opcode == Opcode::FieldLoad as u8)
+            .map(|instruction| u16::from_le_bytes([instruction.ops[2], instruction.ops[3]]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            field_offsets,
+            vec![8, 0],
+            "structural cleanup must load owned fields in reverse declaration order: {:?}",
+            take.code
+        );
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            2,
+            "each owned field must receive exactly one terminal destructor call: {:?}",
+            take.code
+        );
+    }
+
+    #[test]
+    fn structural_drop_does_not_traverse_manual_destructor_fields() {
+        let chunks = compile(
+            r#"
+struct Inner { value: i32 }
+struct Outer { inner: Inner }
+impl Inner { fn free(self: Inner) void {} }
+impl Outer { fn free(self: Outer) void { self.inner.free(); } }
+fn take(value: Outer) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "manual Outer.free must remain the sole cleanup route for its fields: {:?}",
+            take.code
+        );
+        assert!(
+            take.code
+                .iter()
+                .all(|instruction| instruction.opcode != Opcode::FieldLoad as u8),
+            "automatic field traversal must be excluded when a manual hook exists: {:?}",
+            take.code
+        );
+    }
+
+    #[test]
+    fn structural_drop_defers_generic_fields_until_specialized_glue_exists() {
+        let chunks = compile(
+            r#"
+struct Holder[T] { value: T }
+fn take(value: Holder[i32]) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert!(
+            take.code
+                .iter()
+                .all(|instruction| instruction.opcode != Opcode::FieldLoad as u8
+                    && instruction.opcode != Opcode::CallIdx as u8),
+            "generic fields require later specialization-aware drop glue: {:?}",
+            take.code
+        );
+    }
+
+    #[test]
+    fn structural_drop_traverses_nested_fields_in_postorder() {
+        let chunks = compile(
+            r#"
+struct Leaf { value: i32 }
+struct Middle { leaf: Leaf }
+struct Outer { middle: Middle }
+impl Leaf { fn free(self: Leaf) void {} }
+fn take(value: Outer) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::FieldLoad as u8)
+                .count(),
+            2,
+            "nested structural cleanup must load the outer field then its owned child: {:?}",
+            take.code
+        );
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "nested structural cleanup must call the terminal hook exactly once: {:?}",
+            take.code
+        );
+    }
+
+    #[test]
+    fn structural_drop_defers_c_layout_children_even_with_manual_hooks() {
+        let chunks = compile(
+            r#"
+@repr(C) struct Child { first: i32, second: i32 }
+struct Outer { child: Child }
+impl Child { fn free(self: Child) void {} }
+fn take(value: Outer) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert!(
+            take.code
+                .iter()
+                .all(|instruction| instruction.opcode != Opcode::FieldLoad as u8
+                    && instruction.opcode != Opcode::CallIdx as u8),
+            "C-layout fields must stay outside structural cleanup: {:?}",
+            take.code
+        );
+    }
+
+    #[test]
+    fn structural_drop_keeps_manual_c_layout_destructors() {
+        let chunks = compile(
+            r#"
+@repr(C) struct Handle { raw: *u8 }
+impl Handle { fn free(self: Handle) void {} }
+fn take(value: Handle) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "a direct C-layout owner must retain its source destructor: {:?}",
+            take.code
+        );
+        assert!(
+            take.code
+                .iter()
+                .all(|instruction| instruction.opcode != Opcode::FieldLoad as u8),
+            "a source C-layout destructor must not receive automatic field traversal: {:?}",
+            take.code
+        );
+    }
+
+    #[test]
+    fn structural_drop_ignores_non_consuming_free_methods() {
+        let chunks = compile(
+            r#"
+struct Child { value: i32 }
+struct Outer { child: Child }
+impl Child { fn free(self: &Child!) void {} }
+fn take(value: Outer) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert!(
+            take.code
+                .iter()
+                .all(|instruction| instruction.opcode != Opcode::FieldLoad as u8
+                    && instruction.opcode != Opcode::CallIdx as u8),
+            "a reusable free(&T!) method is not a structural destructor: {:?}",
+            take.code
         );
     }
 

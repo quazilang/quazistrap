@@ -202,6 +202,14 @@ result layouts and stores them in `SemanticReport`. Details that matter:
   order. The unwired `Drop` trait in `prelude/src/traits.qz` is removed in
   the coordinated prelude change; `free(self)` remains the recognized hook
   and never runs through trait dispatch.
+- The implemented first slice is smaller than that target: for acyclic,
+  non-generic, non-`repr(C)` structs with no source consuming `free(self)`
+  hook, code generation traverses eligible fields in reverse declaration
+  order. It deliberately does not release the aggregate's outer storage,
+  traverse a manual-hook type, or cover arrays, enums, `dyn`, generic
+  specializations, or recursive layouts. Receiver capability metadata gates
+  terminal hooks, so a reusable `free(&T!)` method is never treated as a
+  destructor.
 - Enums destroy the active payload by discriminant, and enum payload layout
   becomes layout-driven like container elements (phase 1 gates multi-slot
   payloads with `S14` until then).

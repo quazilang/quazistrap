@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-09-15: Constrained structural field cleanup](2026-09-15-structural-field-cleanup.md)
+- [2026-09-15: In-place collection cleanup](2026-09-15-collection-clear.md)
 - [2026-09-15: Socket receiver capabilities](2026-09-15-socket-receiver-capabilities.md)
 - [2026-09-15: In-place CString cleanup](2026-09-15-cstring-clear.md)
 - [2026-09-15: In-place String cleanup](2026-09-15-string-clear.md)

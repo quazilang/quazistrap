@@ -5,8 +5,9 @@ Audience: maintainers continuing the local production-readiness plan.
 ## Conclusion
 
 The production-readiness plan remains incomplete. The compiler now has a
-conservative partial-move safety boundary, but this is not structural
-destruction or D-014 whole-program ownership analysis.
+conservative partial-move safety boundary and a constrained field-cleanup
+pilot, but this is not complete structural destruction or D-014 whole-program
+ownership analysis.
 
 ## Current evidence
 
@@ -19,13 +20,19 @@ destruction or D-014 whole-program ownership analysis.
   across calls, recursion, indirect dispatch, or QZI-only dependencies.
 - QZI v9 and QZC v7 contain no compiler-verifiable ownership summaries.
   They cannot prove a safe borrowed-call boundary for a source-unavailable
-  dependency.
+dependency.
+- The constrained codegen pilot cleans eligible fields of acyclic,
+  non-generic, non-`repr(C)` source structs in reverse declaration order when
+  the enclosing type has no consuming source `free(self)` hook. It excludes
+  manual hooks, recursive layouts, arrays, enums, generic specializations,
+  `dyn`, and outer aggregate-storage release. Focused regressions cover order,
+  manual-hook exclusion, and generic deferral.
 
 ## Structural-destruction readiness
 
-Phase 3 of the generic-storage design cannot safely be reduced to adding
-compiler-generated recursive field cleanup alone. The current code generator
-recognizes a named type's `free(self)` hook as its entire local cleanup action,
+Phase 3 of the generic-storage design cannot safely be reduced to broad
+compiler-generated recursive field cleanup alone. The constrained pilot keeps
+a named type's consuming `free(self)` hook as its entire local cleanup action,
 while existing standard-library hooks already dispose owned fields manually.
 For example, `std.ini.IniDocument.free` frees `content` and replaces it with an
 empty `String`. Calling that hook and then mechanically destroying fields would

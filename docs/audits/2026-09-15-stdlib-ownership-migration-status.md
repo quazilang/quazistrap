@@ -4,7 +4,7 @@ Audience: maintainers continuing the D-014 ownership rollout.
 
 ## Scope and conclusion
 
-The standard library has progressed through three safe, non-structural
+The standard library has progressed through four safe, non-structural
 migration slices: reusable `String` and `CString` cleanup, source-backed INI
 replacement, and single-handle socket operations. This does **not** complete
 the standard-library or D-014 plan. Full `std` test compilation remains blocked
@@ -27,6 +27,9 @@ destruction and place-level move tracking.
   before later control-flow decisions.
 - Source regressions now use `String.clear()` when they inspect a released
   string and no longer use an owner after consuming `free()`.
+- `Map` and `Set` now use exclusive `clear()` for reusable backing-storage
+  release and consuming `free(self)` for final destruction. Their scalar-only
+  storage avoids claiming generic element destruction.
 
 ## Remaining boundary
 
@@ -43,10 +46,11 @@ not socket or string-receiver failures. They concentrate in:
    `wait`/`try_wait` paths as reusable. Their contract must be reconciled with
    D-011 rather than weakened ad hoc.
 
-Generic `Array`, `Box`, `Map`, and `Set` do not gain an in-place `clear()` in
-this phase: a generic operation that merely frees backing storage would leak
-or bypass destruction of owned elements. That operation belongs to the
-coordinated structural-destruction implementation, not a receiver-name
+Generic `Array` and `Box` do not gain an in-place `clear()` in this phase: a
+generic operation that merely frees backing storage would leak or bypass
+destruction of owned elements. `Map` and `Set` are the narrow scalar-slot
+exception documented by their API; broad generic element cleanup belongs to
+the coordinated structural-destruction implementation, not a receiver-name
 exception.
 
 ## Verification evidence
@@ -62,8 +66,9 @@ exception.
 
 ## Required next sequence
 
-1. Implement D-003 structural destruction and place-level move state with
-   compiler-generated destruction ordering and migrated manual hooks.
+1. Expand the constrained D-003 field-cleanup pilot into complete structural
+   destruction with place-level move state, enum/array/generic glue, outer
+   storage release, and migrated manual hooks.
 2. Add borrowed collection-element and aggregate-projection support only with
    the matching loan/provenance checks.
 3. Migrate `Headers`, HTTP values, and `UdpDatagram` against that mechanism.

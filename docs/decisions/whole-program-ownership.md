@@ -78,6 +78,14 @@ This guard prevents an unsupported partial move from leaving the aggregate's
 later cleanup unsound; it is not place-level move tracking or structural drop
 glue.
 
+The current implementation has a deliberately narrower bridge toward that
+design: an acyclic, non-generic, non-`repr(C)` struct with no source
+`free(self)` hook may clean eligible owned fields in reverse declaration order.
+It never combines this traversal with a manual hook, and excludes recursive
+structs, arrays, enums, dynamic values, generic specializations, and physical
+aggregate-storage release. The partial-move guard remains in force until the
+full rule above is implemented.
+
 ## QZI-only libraries
 
 Source availability is **not** required for safe library consumption. A

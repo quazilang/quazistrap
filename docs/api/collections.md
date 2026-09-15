@@ -38,14 +38,11 @@ same probing, tombstone, initial capacity, and resize policy.
 ## Ownership and limitations
 
 Read-only collection methods use shared receivers (`self: &Map` or
-`self: &Set`). Methods that mutate or release storage use exclusive receivers
-(`self: &Map!` or `self: &Set!`), so a call cannot overlap another loan of that
-container. They still mutate the one owning container rather than returning an
-alias. Normal scope cleanup releases the backing allocations once.
-`free(self: &Map!)` / `free(self: &Set!)` is available only when an earlier
-release is necessary. It invalidates the container and is repeat-safe; after
-the first call `len()` returns zero, while lookup and mutation remain invalid
-use.
+`self: &Set`). Mutation and `clear()` use exclusive receivers (`self: &Map!`
+or `self: &Set!`), so a call cannot overlap another loan of that container.
+`clear()` releases backing storage while retaining an empty reusable container.
+Normal scope cleanup calls consuming `free(self)` once; direct `free()` also
+consumes the owner and must be its final use.
 
 The current surface remains limited until generic element bounds and fully
 audited drop-aware storage exist; do not treat it as a substitute for a general
