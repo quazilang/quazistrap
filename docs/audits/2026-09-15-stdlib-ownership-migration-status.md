@@ -53,6 +53,13 @@ exception documented by their API; broad generic element cleanup belongs to
 the coordinated structural-destruction implementation, not a receiver-name
 exception.
 
+In particular, `Array.get(&Array[T]) -> T` is presently a raw load: it cannot
+be used to inspect an owned `Header` as though it were a borrowed element.
+That would materialize a second owner, while `Array.set` cannot yet destroy a
+replaced owned element. Do not work around the HTTP diagnostics by changing
+receiver spelling or by cloning from `Array.get`; the required solution is a
+borrowed-element/provenance mechanism plus exact-once generic element cleanup.
+
 ## Verification evidence
 
 - `cargo test --offline docs::` in `quazistrap` passes all 13 documentation
