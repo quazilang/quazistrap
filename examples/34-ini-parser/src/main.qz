@@ -20,12 +20,11 @@ fn main(args: Array[str]) i32 {
             IniError.MissingSeparator(line) => io.errln("{}:{}: expected '=' in key/value pair", input_path, line),
             IniError.EmptyKey(line) => io.errln("{}:{}: empty key", input_path, line),
         };
-        config.free();
         ret 1;
     }
 
     const serialized: String = config.stringify();
-    const output: File = File.create(output_path).unwrap();
+    var output: File = File.create(output_path).unwrap();
     const written: usize = output.write_str(serialized.as_str()).unwrap();
     if written != serialized.bytes_len() { panic("output file was only partially written"); }
 

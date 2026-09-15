@@ -596,6 +596,17 @@ impl String {
     pub fn parse_f32(self: &String) Result[f32, ParseError] { ret self.data.parse_f32(); }
     pub fn parse_f64(self: &String) Result[f64, ParseError] { ret self.data.parse_f64(); }
 
+    // Release the owned allocation while retaining a valid, reusable String.
+    // This is the in-place counterpart to consuming free(self).
+    pub fn clear(self: &String!) void {
+        if (self.cap > 0) {
+            __string_free(self.data);
+            self.data = "";
+            self.len = 0;
+            self.cap = 0;
+        }
+    }
+
     pub fn free(self: String) void {
         if (self.cap > 0) {
             __string_free(self.data);

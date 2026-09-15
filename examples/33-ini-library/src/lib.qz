@@ -61,7 +61,7 @@ fn lookup(content: str, wanted_section: str, wanted_key: str) Option[String] {
             if !ignored(line.as_str()) {
                 const next_section = section_name(line.as_str());
                 if !next_section.is_empty() {
-                    section.free();
+                    section.clear();
                     section = next_section;
                 } else if section.as_str() == wanted_section {
                     const equal = line.as_str().find("=");
@@ -70,7 +70,7 @@ fn lookup(content: str, wanted_section: str, wanted_key: str) Option[String] {
                         const key = line.as_str()[0:at as isize].trim();
                         if key.as_str() == wanted_key {
                             const value = line.as_str()[at as isize + 1:].trim();
-                            result.free();
+                            result.clear();
                             result = value;
                             found = true;
                         }
@@ -81,9 +81,9 @@ fn lookup(content: str, wanted_section: str, wanted_key: str) Option[String] {
         }
         index++;
     }
-    section.free();
+    section.clear();
     if found { ret Some(result); }
-    result.free();
+    result.clear();
     ret None;
 }
 
@@ -98,13 +98,13 @@ fn has_key_in(content: str, wanted_section: str, wanted_key: str) bool {
             if !ignored(line.as_str()) {
                 const next_section = section_name(line.as_str());
                 if !next_section.is_empty() {
-                    section.free();
+                    section.clear();
                     section = next_section;
                 } else if section.as_str() == wanted_section {
                     const equal = line.as_str().find("=");
                     if equal.is_some() {
                         const key = line.as_str()[0:equal.unwrap() as isize].trim();
-                        if key.as_str() == wanted_key { section.free(); ret true; }
+                        if key.as_str() == wanted_key { section.clear(); ret true; }
                     }
                 }
             }
@@ -112,7 +112,7 @@ fn has_key_in(content: str, wanted_section: str, wanted_key: str) bool {
         }
         index++;
     }
-    section.free();
+    section.clear();
     ret false;
 }
 
@@ -135,18 +135,18 @@ fn has_section_in(content: str, wanted: str) bool {
 
 impl IniDocument {
     pub fn new() IniDocument { ret IniDocument { content: String.new() }; }
-    pub fn get(self: IniDocument, section: str, key: str) Option[String] { ret lookup(self.content.as_str(), section, key); }
-    pub fn contains(self: IniDocument, section: str, key: str) bool { ret has_key_in(self.content.as_str(), section, key); }
-    pub fn has_section(self: IniDocument, section: str) bool { ret has_section_in(self.content.as_str(), section); }
+    pub fn get(self: &IniDocument, section: str, key: str) Option[String] { ret lookup(self.content.as_str(), section, key); }
+    pub fn contains(self: &IniDocument, section: str, key: str) bool { ret has_key_in(self.content.as_str(), section, key); }
+    pub fn has_section(self: &IniDocument, section: str) bool { ret has_section_in(self.content.as_str(), section); }
     pub fn free(self: IniDocument) void { self.content.free(); self.content = String.new(); }
-    pub fn parse_string(self: IniDocument, content: str) Result[bool, IniError] {
+    pub fn parse_string(self: &IniDocument!, content: str) Result[bool, IniError] {
         const checked = validate(content);
         if checked.is_err() { ret Err(checked.unwrap_err()); }
-        self.content.free();
+        self.content.clear();
         self.content = String.from(content);
         ret Ok(true);
     }
-    pub fn stringify(self: IniDocument) String { ret String.from(self.content.as_str()); }
+    pub fn stringify(self: &IniDocument) String { ret String.from(self.content.as_str()); }
 }
 
 @test
