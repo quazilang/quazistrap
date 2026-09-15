@@ -13,3 +13,4 @@ regression, documentation, and verification evidence all agree.
 - [2026-09-12 plan-completion audit](2026-09-12-plan-completion-audit.md)
 - [2026-09-14 plan-completion re-audit](2026-09-14-plan-completion-reaudit.md)
 - [2026-09-15 ownership implementation boundary audit](2026-09-15-ownership-implementation-boundary.md)
+- [2026-09-15 standard-library ownership migration status](2026-09-15-stdlib-ownership-migration-status.md)
