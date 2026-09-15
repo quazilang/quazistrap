@@ -153,6 +153,10 @@ pub struct Analyzer {
     pub(super) type_aliases: std::collections::HashMap<String, (Vec<String>, TypeKind)>,
     /// Ordered parameter names per function: fn name (or mangled) → param names (excl. self).
     pub(super) fn_param_names: HashMap<String, Vec<String>>,
+    /// Canonical functions with a real source body. Only these may use the
+    /// signature-directed direct-call capability slice; QZI declarations stay
+    /// opaque until ownership summaries are verified.
+    pub(super) source_function_symbols: std::collections::HashSet<String>,
     /// Impl methods whose first parameter is explicitly a shared `self: &T`
     /// receiver. Kept separately because `fn_param_names` intentionally omits
     /// `self` for named-argument indexing.
@@ -880,6 +884,7 @@ impl Analyzer {
             contextual_expected_types: Vec::new(),
             type_aliases: std::collections::HashMap::new(),
             fn_param_names: HashMap::new(),
+            source_function_symbols: std::collections::HashSet::new(),
             explicit_shared_receiver_methods: std::collections::HashSet::new(),
             explicit_exclusive_receiver_methods: std::collections::HashSet::new(),
             consuming_receiver_methods: std::collections::HashSet::new(),
@@ -1319,6 +1324,7 @@ impl Analyzer {
         self.contextual_expected_types.clear();
         self.type_aliases.clear();
         self.fn_param_names.clear();
+        self.source_function_symbols.clear();
         self.explicit_shared_receiver_methods.clear();
         self.explicit_exclusive_receiver_methods.clear();
         self.consuming_receiver_methods.clear();
@@ -3805,6 +3811,52 @@ fn main() void {
         assert!(
             report.errors.is_empty(),
             "temporary direct-call loans survived the call: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn resolved_source_calls_reborrow_reference_capabilities() {
+        let report = analyze(
+            r#"
+fn update(value: &i32!) void { *value = 2; }
+fn generic_update[T](value: &T!) void {}
+
+fn main() void {
+    var value: i32 = 1;
+    var capability: &i32! = &value!;
+    update(value = capability);
+    *capability = 4;
+    generic_update[i32](capability);
+    *capability = 5;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "resolved source reference parameters must reborrow rather than consume their capability: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn resolved_source_call_owned_parameters_still_consume() {
+        let report = analyze(
+            r#"
+struct Token { value: i32, }
+fn take(value: Token) void {}
+fn main() void {
+    var token = Token { value: 1 };
+    take(token);
+    var again = token;
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.code == "S10" && error.message.contains("moved value 'token'")
+            }),
+            "an owned direct-call parameter must remain consuming: {:?}",
             report.errors
         );
     }

@@ -15,9 +15,11 @@ ownership analysis.
   built-in indexed elements, and values reached through safe dereferences.
   It retains valid scalar, `f16`, unconstrained-generic, and overloaded-index
   result paths. The pinned offline compiler suite passes 603 tests.
-- The existing lexical borrow checker implements local shared/exclusive loans
-  and resolved direct inherent consuming receivers. It does not solve effects
-  across calls, recursion, indirect dispatch, or QZI-only dependencies.
+- The existing lexical borrow checker implements local shared/exclusive loans,
+  resolved direct inherent consuming receivers, and parameter-directed
+  reborrows for resolved non-variadic safe unqualified source free-function
+  calls. It does not solve effects across calls, recursion, indirect dispatch,
+  module-qualified or method calls beyond their receiver, or QZI-only dependencies.
 - QZI v9 and QZC v7 contain no compiler-verifiable ownership summaries.
   They cannot prove a safe borrowed-call boundary for a source-unavailable
 dependency.

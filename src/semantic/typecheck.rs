@@ -3166,6 +3166,7 @@ impl Analyzer {
                             resolved,
                             callee.span,
                             args,
+                            named_args,
                             &arg_evals,
                             &sym,
                             type_args,
@@ -3446,7 +3447,13 @@ impl Analyzer {
                                     );
                                 }
                                 let eval = self.check_function_call(
-                                    resolved, expr.span, args, &arg_evals, &sym, type_args,
+                                    resolved,
+                                    expr.span,
+                                    args,
+                                    named_args,
+                                    &arg_evals,
+                                    &sym,
+                                    type_args,
                                 );
                                 self.annotate_expr(expr, &eval, reachable, Some(resolved.clone()));
                                 eval
@@ -5298,6 +5305,7 @@ impl Analyzer {
         name: &str,
         callee_span: Span,
         args: &[Expr],
+        named_args: &[(String, Expr)],
         arg_evals: &[ExprEval],
         sym: &Symbol,
         type_args: &[Type],
@@ -5541,53 +5549,80 @@ impl Analyzer {
             } else {
                 non_variadic_count
             };
-            for (i, (param_ty, arg_ty)) in substituted_params[..check_count]
-                .iter()
-                .zip(arg_evals.iter().map(|e| &e.ty))
-                .enumerate()
-            {
-                if let Some(at) = arg_ty {
-                    if let Some(arg_expr) = args.get(i) {
-                        if matches!(param_ty, TypeKind::Slice { .. })
-                            && matches!(at, TypeKind::Array { .. })
-                        {
-                            self.push_error(
-                                arg_expr.span,
-                                "S08",
-                                format!(
-                                    "arg {}: passing fixed-size array {} to slice parameter {} is not yet supported",
-                                    i + 1, at, param_ty
-                                ),
-                            );
-                            continue;
-                        }
-                        if matches!(param_ty, TypeKind::Array { .. })
-                            && matches!(at, TypeKind::Slice { .. })
-                        {
-                            self.push_error(
-                                arg_expr.span,
-                                "S08",
-                                format!(
-                                    "arg {}: passing slice {} to fixed-size array parameter {} is not yet supported",
-                                    i + 1, at, param_ty
-                                ),
-                            );
-                            continue;
-                        }
-                        if !self.check_expr_compat(arg_expr, param_ty, at) {
-                            self.push_error(
-                                arg_expr.span,
-                                "S08",
-                                format!("arg {}: expected {}, got {}", i + 1, param_ty, at),
-                            );
-                        }
-                    } else {
-                        self.push_error(
-                            callee_span,
-                            "S08",
-                            format!("arg {}: expected {}, got {}", i + 1, param_ty, at),
-                        );
-                    }
+            for (i, (arg_expr, arg_eval)) in args.iter().zip(arg_evals.iter()).enumerate() {
+                let Some(param_ty) = substituted_params.get(i).filter(|_| i < check_count) else {
+                    continue;
+                };
+                let Some(at) = &arg_eval.ty else {
+                    continue;
+                };
+                if matches!(param_ty, TypeKind::Slice { .. })
+                    && matches!(at, TypeKind::Array { .. })
+                {
+                    self.push_error(
+                        arg_expr.span,
+                        "S08",
+                        format!(
+                            "arg {}: passing fixed-size array {} to slice parameter {} is not yet supported",
+                            i + 1, at, param_ty
+                        ),
+                    );
+                    continue;
+                }
+                if matches!(param_ty, TypeKind::Array { .. })
+                    && matches!(at, TypeKind::Slice { .. })
+                {
+                    self.push_error(
+                        arg_expr.span,
+                        "S08",
+                        format!(
+                            "arg {}: passing slice {} to fixed-size array parameter {} is not yet supported",
+                            i + 1, at, param_ty
+                        ),
+                    );
+                    continue;
+                }
+                if !self.check_expr_compat(arg_expr, param_ty, at) {
+                    self.push_error(
+                        arg_expr.span,
+                        "S08",
+                        format!("arg {}: expected {}, got {}", i + 1, param_ty, at),
+                    );
+                }
+            }
+            // `arg_evals` stores positional evaluations first and named
+            // evaluations afterwards. Validate each named argument against
+            // its declared parameter rather than treating it as a missing
+            // positional slot.
+            let parameter_names = self.fn_param_names.get(name).cloned().unwrap_or_default();
+            let receiver_offset = substituted_params
+                .len()
+                .saturating_sub(parameter_names.len());
+            for (named_index, (argument_name, argument)) in named_args.iter().enumerate() {
+                let Some(parameter_index) = parameter_names
+                    .iter()
+                    .position(|parameter| parameter == argument_name)
+                else {
+                    continue;
+                };
+                let Some(param_ty) = substituted_params.get(parameter_index + receiver_offset)
+                else {
+                    continue;
+                };
+                let Some(Some(actual_ty)) = arg_evals
+                    .get(args.len().saturating_add(named_index))
+                    .map(|eval| eval.ty.as_ref())
+                else {
+                    continue;
+                };
+                if !self.check_expr_compat(argument, param_ty, actual_ty) {
+                    self.push_error(
+                        argument.span,
+                        "S08",
+                        format!(
+                            "named argument `{argument_name}`: expected {param_ty}, got {actual_ty}"
+                        ),
+                    );
                 }
             }
             // Variadic args checked against the element type.
@@ -6216,12 +6251,33 @@ impl Analyzer {
             self.mark_auto_deref(expr);
             return true;
         }
-        if let (
-            TypeKind::Ref { inner: expected_inner },
-            TypeKind::Ref { inner: actual_inner } | TypeKind::MutRef { inner: actual_inner },
-        ) = (&expected_resolved, &actual_resolved)
-        {
-            return self.types_have_same_runtime_shape(&expected_inner.node, &actual_inner.node);
+        match (&expected_resolved, &actual_resolved) {
+            (
+                TypeKind::Ref {
+                    inner: expected_inner,
+                },
+                TypeKind::Ref {
+                    inner: actual_inner,
+                }
+                | TypeKind::MutRef {
+                    inner: actual_inner,
+                },
+            ) => {
+                return self
+                    .types_have_same_runtime_shape(&expected_inner.node, &actual_inner.node);
+            }
+            (
+                TypeKind::MutRef {
+                    inner: expected_inner,
+                },
+                TypeKind::MutRef {
+                    inner: actual_inner,
+                },
+            ) => {
+                return self
+                    .types_have_same_runtime_shape(&expected_inner.node, &actual_inner.node);
+            }
+            _ => {}
         }
         if matches!(expected_resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. })
             && !matches!(actual_resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. } | TypeKind::Str)

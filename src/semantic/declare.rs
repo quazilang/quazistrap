@@ -31,6 +31,7 @@ impl Analyzer {
                 name_span,
                 return_ty,
                 params,
+                body,
                 attributes,
                 pub_fn,
                 unsafe_fn,
@@ -126,6 +127,9 @@ impl Analyzer {
                         .map(|p| p.name.clone())
                         .collect(),
                 );
+                if body.is_some() {
+                    self.source_function_symbols.insert(register_name.clone());
+                }
                 let declared = self.declare(
                     register_name.clone(),
                     Symbol {
@@ -650,6 +654,7 @@ impl Analyzer {
                         name,
                         return_ty,
                         params,
+                        body,
                         attributes,
                         unsafe_fn,
                         pub_fn,
@@ -661,6 +666,9 @@ impl Analyzer {
                             continue;
                         }
                         let mangled = format!("{}.{}", type_name, name);
+                        if body.is_some() {
+                            self.source_function_symbols.insert(mangled.clone());
+                        }
                         let mut attr_names = extract_attribute_names(attributes);
                         let is_foreign = attr_names
                             .iter()

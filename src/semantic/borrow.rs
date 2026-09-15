@@ -35,6 +35,19 @@ struct Loan {
     scope_depth: usize,
 }
 
+/// The capability a resolved direct call requires for one explicit argument.
+///
+/// This is deliberately derived from the declared parameter type, rather than
+/// an API name or an assumption that every argument is consumed. Calls whose
+/// target is opaque keep the conservative `Consume` behavior until D-014 has
+/// composed effects for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallArgumentEffect {
+    Consume,
+    SharedBorrow,
+    ExclusiveBorrow,
+}
+
 // ── Scoped move environment ───────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -601,20 +614,29 @@ impl Analyzer {
                 ..
             } => {
                 self.bc_expr(callee, env, false);
-                // A resolved Quazi function cannot currently return, store, or
-                // capture a non-string reference. Give direct-call arguments a
-                // synthetic lexical scope so an address taken only for that
-                // call ends when the call returns. Function values and foreign
-                // calls remain opaque and retain the surrounding scope's loan.
+                // A resolved safe source function cannot currently return,
+                // store, or capture a non-string reference. Give its
+                // direct-call arguments a synthetic lexical scope so an
+                // address taken only for that call ends when the call returns.
+                // Function values, foreign/unsafe calls, variadics, and QZI
+                // interfaces remain opaque and retain the surrounding loan.
                 let direct_call = self.bc_resolved_direct_call(expr);
                 if direct_call {
                     env.enter_scope();
                 }
-                for arg in args {
-                    self.bc_expr(arg, env, true);
+                for (index, arg) in args.iter().enumerate() {
+                    self.bc_call_argument(
+                        arg,
+                        self.bc_call_argument_effect(expr, index, None),
+                        env,
+                    );
                 }
-                for (_, arg) in named_args {
-                    self.bc_expr(arg, env, true);
+                for (name, arg) in named_args {
+                    self.bc_call_argument(
+                        arg,
+                        self.bc_call_argument_effect(expr, args.len(), Some(name)),
+                        env,
+                    );
                 }
                 if direct_call {
                     env.exit_scope();
@@ -849,13 +871,86 @@ impl Analyzer {
     }
 
     fn bc_resolved_direct_call(&self, expr: &Expr) -> bool {
+        self.bc_resolved_call_name(expr).is_some_and(|name| {
+            self.source_function_symbols.contains(name)
+                && self
+                    .resolve_symbol(name)
+                    .is_some_and(|symbol| {
+                        !symbol.unsafe_fn
+                            && !symbol.variadic
+                            && !symbol.attributes.iter().any(|attribute| attribute == "intrinsic")
+                    })
+        })
+    }
+
+    fn bc_call_argument(&mut self, argument: &Expr, effect: CallArgumentEffect, env: &mut MoveEnv) {
+        match effect {
+            CallArgumentEffect::Consume => self.bc_expr(argument, env, true),
+            // Explicit `&value` / `&value!` expressions already create the
+            // call-scoped loan while they are evaluated. Existing reference
+            // capabilities are reborrowed for this call, never moved or made
+            // into a second independent loan here.
+            CallArgumentEffect::SharedBorrow | CallArgumentEffect::ExclusiveBorrow => {
+                self.bc_expr(argument, env, false);
+            }
+        }
+    }
+
+    fn bc_call_argument_effect(
+        &self,
+        call: &Expr,
+        positional_index: usize,
+        named_argument: Option<&str>,
+    ) -> CallArgumentEffect {
+        let Some(resolved) = self.bc_resolved_call_name(call) else {
+            return CallArgumentEffect::Consume;
+        };
+        let Some(symbol) = self.resolve_symbol(resolved) else {
+            return CallArgumentEffect::Consume;
+        };
+        // Foreign and unsafe targets have no safe reference-bearing ABI
+        // contract. Their argument effects stay opaque until QZI/FFI effect
+        // verification exists.
+        if symbol.unsafe_fn
+            || symbol.variadic
+            || symbol.attributes.iter().any(|attribute| attribute == "intrinsic")
+            || !self.source_function_symbols.contains(resolved)
+        {
+            return CallArgumentEffect::Consume;
+        }
+        let parameter_names = self.fn_param_names.get(resolved);
+        let parameter_index = match named_argument {
+            Some(name) => parameter_names
+                .and_then(|names| names.iter().position(|candidate| candidate == name)),
+            None => Some(positional_index),
+        };
+        let Some(parameter_index) = parameter_index else {
+            return CallArgumentEffect::Consume;
+        };
+        // `fn_param_names` omits an inherent method's receiver. The parameter
+        // vector retains it, so its difference is the required stable offset.
+        let receiver_offset = parameter_names
+            .map(|names| symbol.params.len().saturating_sub(names.len()))
+            .unwrap_or(0);
+        let declared = symbol
+            .params
+            .get(parameter_index.saturating_add(receiver_offset))
+            .or_else(|| symbol.variadic.then(|| symbol.params.last()).flatten());
+        match declared.map(|ty| self.resolve_type_aliases(ty)) {
+            Some(TypeKind::Ref { .. }) => CallArgumentEffect::SharedBorrow,
+            Some(TypeKind::MutRef { .. }) => CallArgumentEffect::ExclusiveBorrow,
+            _ => CallArgumentEffect::Consume,
+        }
+    }
+
+    fn bc_resolved_call_name(&self, expr: &Expr) -> Option<&str> {
         self.annotated_exprs
             .iter()
             .rev()
             .find(|annotation| {
                 annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
             })
-            .is_some_and(|annotation| annotation.resolved_fn.is_some())
+            .and_then(|annotation| annotation.resolved_fn.as_deref())
     }
 
     fn bc_has_explicit_shared_receiver(&self, expr: &Expr) -> bool {

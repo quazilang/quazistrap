@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-09-16: Source-call reference capabilities](2026-09-16-source-call-reference-capabilities.md)
 - [2026-09-15: Constrained structural field cleanup](2026-09-15-structural-field-cleanup.md)
 - [2026-09-15: In-place collection cleanup](2026-09-15-collection-clear.md)
 - [2026-09-15: Socket receiver capabilities](2026-09-15-socket-receiver-capabilities.md)
