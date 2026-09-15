@@ -80,9 +80,11 @@ other shared loans of the same value are live. The compiler rejects writes
 through that receiver. The receiver pointee must match the enclosing `impl`
 target. An explicit `self: &T!` receiver may write through its receiver and
 exclusively borrows the owner for the call. A bare move-only receiver transfers
-its cleanup responsibility to the callee. Fields, indexed elements, and
-dereferences remain unavailable as consuming receivers until place-level moves
-are implemented; whole-program and cross-call effects remain D-014 work.
+its cleanup responsibility to the callee. A move-only field, indexed element,
+or value reached through a safe dereference cannot be moved in any consuming
+position yet, including as a function argument or return value. Scalar
+projections and whole-owner moves remain valid. Place-level moves, structural
+destruction, whole-program, and cross-call effects remain D-014 work.
 
 ## Scope cleanup (RAII)
 

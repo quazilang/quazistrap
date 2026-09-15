@@ -388,6 +388,7 @@ impl Analyzer {
             | TypeKind::Uint64
             | TypeKind::Isize
             | TypeKind::Usize
+            | TypeKind::Float16
             | TypeKind::Float32
             | TypeKind::Float64
             | TypeKind::Str
@@ -395,6 +396,9 @@ impl Analyzer {
             | TypeKind::RawPtr { .. }
             | TypeKind::CFn { .. }
             | TypeKind::Ref { .. } => false,
+            TypeKind::Named { name, type_args } if type_args.is_empty() => {
+                self.struct_defs.contains_key(name) || self.enums.contains_key(name)
+            }
             // All other types (structs, enums, arrays, slices, dyn Trait, etc.) are move types.
             _ => true,
         }
@@ -582,20 +586,6 @@ impl Analyzer {
                 let exclusive_receiver = self.bc_has_explicit_exclusive_receiver(expr);
                 let consuming_receiver = self.bc_has_consuming_receiver(expr)
                     && !self.bc_is_dynamic_receiver(object);
-                // A bare `self: T` receiver consumes its whole local owner.
-                // Place-level moves are not implemented yet, so fields and
-                // indexed elements cannot be used as consuming receivers.
-                if consuming_receiver
-                    && self.bc_receiver_is_move_type(object)
-                    && self.bc_is_unsupported_consuming_receiver_place(object)
-                {
-                    self.push_error(
-                        object.span,
-                        "S10",
-                        "a consuming receiver cannot take ownership of a field, indexed element, or dereference before place moves are implemented"
-                            .to_string(),
-                    );
-                }
                 if exclusive_receiver {
                     self.bc_reject_borrowed_write(object, env);
                 }
@@ -696,6 +686,13 @@ impl Analyzer {
                 }
             }
 
+            ExprKind::Unary { op: UnaryOpKind::Deref, expr: inner } => {
+                if consumed && self.bc_receiver_is_move_type(expr) && self.bc_is_safe_reference_expr(inner) {
+                    self.bc_reject_partial_move(expr);
+                }
+                self.bc_expr(inner, env, false);
+            }
+
             ExprKind::Unary { expr: inner, .. } => {
                 self.bc_expr(inner, env, false);
             }
@@ -710,12 +707,16 @@ impl Analyzer {
             }
 
             ExprKind::Field { object, .. } => {
-                // Field access borrows the object — no whole-struct move.
-                // (Partial moves not tracked until reference types are added.)
+                if consumed && self.bc_receiver_is_move_type(expr) {
+                    self.bc_reject_partial_move(expr);
+                }
                 self.bc_expr(object, env, false);
             }
 
             ExprKind::Index { object, indices } => {
+                if consumed && self.bc_receiver_is_move_type(expr) && self.bc_is_builtin_index_projection(object) {
+                    self.bc_reject_partial_move(expr);
+                }
                 self.bc_expr(object, env, false);
                 for idx in indices {
                     self.bc_expr(idx, env, false);
@@ -843,18 +844,6 @@ impl Analyzer {
         }
     }
 
-    fn bc_is_unsupported_consuming_receiver_place(&self, expr: &Expr) -> bool {
-        match &expr.node {
-            ExprKind::Field { .. } | ExprKind::Index { .. } => true,
-            ExprKind::Unary {
-                op: UnaryOpKind::Deref,
-                ..
-            } => true,
-            ExprKind::Group(inner) => self.bc_is_unsupported_consuming_receiver_place(inner),
-            _ => false,
-        }
-    }
-
     fn bc_receiver_is_move_type(&self, expr: &Expr) -> bool {
         self.bc_annotated_type(expr)
             .as_ref()
@@ -865,6 +854,23 @@ impl Analyzer {
         self.bc_annotated_type(expr)
             .as_ref()
             .is_some_and(|ty| matches!(self.resolve_type_aliases(ty), TypeKind::Dyn { .. }))
+    }
+
+    fn bc_is_safe_reference_expr(&self, expr: &Expr) -> bool {
+        self.bc_annotated_type(expr).as_ref().is_some_and(|ty| matches!(
+            self.resolve_type_aliases(ty), TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+        ))
+    }
+
+    fn bc_is_builtin_index_projection(&self, object: &Expr) -> bool {
+        self.bc_annotated_type(object).as_ref().is_some_and(|ty| matches!(
+            self.resolve_type_aliases(ty),
+            TypeKind::Array { .. } | TypeKind::Slice { .. } | TypeKind::FlexibleArray { .. } | TypeKind::Bytes
+        ))
+    }
+
+    fn bc_reject_partial_move(&mut self, expr: &Expr) {
+        self.push_error(expr.span, "S10", "cannot move out of a field, indexed element, or safe dereference before place-level moves and structural destruction are implemented".to_string());
     }
 
     fn bc_mark_exclusive_receiver_loan(&mut self, object: &Expr, env: &mut MoveEnv, at: Span) {

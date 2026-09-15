@@ -68,6 +68,11 @@ aggregate field/payload after that place was moved, and it may not move a
 field/payload out of a still-owned aggregate except through a defined
 consuming operation. This resolves D-003's policy question; drop glue and
 place-level implementation remain prerequisites to claiming the guarantee.
+Until those prerequisites land, the compiler rejects move-only field, indexed
+element, and safe-dereference moves at every consuming expression position.
+This guard prevents an unsupported partial move from leaving the aggregate's
+later cleanup unsound; it is not place-level move tracking or structural drop
+glue.
 
 ## QZI-only libraries
 

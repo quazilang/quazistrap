@@ -4118,11 +4118,32 @@ fn main() void {
         assert!(
             field.errors.iter().any(|error| {
                 error.code == "S10"
-                    && error.message.contains("consuming receiver cannot take ownership")
+                    && error.message.contains("cannot move out of a field")
             }),
             "consuming receiver accepted a field move before place moves exist: {:?}",
             field.errors
         );
+    }
+
+    #[test]
+    fn rejects_partial_moves_of_owned_places_until_structural_destruction_exists() {
+        for source in [
+            r#"struct Token { value: i32, } struct Holder { token: Token, } fn take(token: Token) void {} fn main() void { var holder = Holder { token: Token { value: 1 } }; take(holder.token); }"#,
+            r#"struct Token { value: i32, } fn take(token: Token) void {} fn main() void { var tokens = [Token { value: 1 }]; take(tokens[0]); }"#,
+            r#"struct Token { value: i32, } fn take(token: Token) void {} fn main() void { var token = Token { value: 1 }; var view: &Token = &token; take(*view); }"#,
+        ] {
+            let report = analyze(source);
+            assert!(report.errors.iter().any(|error| error.code == "S10" && error.message.contains("cannot move out of a field, indexed element, or safe dereference")), "partial move was accepted: {:?}", report.errors);
+        }
+
+        for source in [
+            r#"struct Token { value: i32, } struct Holder { token: Token, } fn take(value: i32) void {} fn main() void { var holder = Holder { token: Token { value: 1 } }; take(holder.token.value); }"#,
+            r#"struct Holder { value: f16, } fn take(value: f16) void {} fn main() void { var holder = Holder { value: 1.0 as f16 }; take(holder.value); }"#,
+            r#"struct Holder[T] { value: T, } fn take[T](holder: Holder[T]) T { ret holder.value; }"#,
+        ] {
+            let report = analyze(source);
+            assert!(report.errors.is_empty(), "copyable or unconstrained generic projection was rejected: {:?}", report.errors);
+        }
     }
 
     #[test]
