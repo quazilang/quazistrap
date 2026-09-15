@@ -54,9 +54,12 @@ Approved 2026-09-10. The first surface is intentionally narrow:
   `waitpid` bits.
 - `terminate` is forced (`SIGKILL` / `TerminateProcess`) and does not consume
   the child.
-- `wait` and an exited `try_wait` consume the child. `close` terminates a live
-  child then waits/reaps it, so it may block but cannot leave a Linux zombie.
-  Repeated operations and handle `0` are no-ops.
+- `wait` and `close` consume the child. `try_wait` borrows exclusively: when
+  it observes exit, it clears the handle before returning the status, so later
+  operations on that local are no-ops. This avoids an impossible
+  runtime-conditional move while retaining the single native-owner invariant.
+  `close` terminates a live child then waits/reaps it, so it may block but
+  cannot leave a Linux zombie. Repeated operations and handle `0` are no-ops.
 - Runtime intrinsics return only `0` or `-1` and write handle, status, and
   native error through separate scalar out-pointers. They receive a borrowed
   `(args_ptr, args_len)` slice, never an implementation-defined `Array` object.

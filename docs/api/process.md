@@ -46,7 +46,7 @@ recommendation to construct a command string or rely on a shell.
 | Method | Behavior |
 | --- | --- |
 | `wait()` | Blocks for completion, returns `Ok(Some(status))`, and consumes the child. A consumed child returns `Ok(None)`. |
-| `try_wait()` | Returns `Ok(None)` while live. Once exited, returns its status and consumes the child. |
+| `try_wait()` | Borrows the child exclusively. It returns `Ok(None)` while live; once exited, it returns the status and clears the handle. The local remains valid and later `wait()`/`close()` calls return their documented no-op result. |
 | `terminate()` | Forcefully requests termination through an exclusive receiver without consuming the child. Returns `Ok(false)` for a consumed child. |
 | `close()` | Consumes the child. On Linux, a live child is killed and reaped; it can block. |
 | `handle()` | Exposes the raw platform handle through a shared receiver for narrowly scoped target-specific interoperation. Do not close or wait on it outside `Child`. |
