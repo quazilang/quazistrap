@@ -491,6 +491,10 @@ pub struct SemanticReport {
     pub enum_defs: HashMap<String, HashMap<String, usize>>,
     /// Methods whose explicit `self` receiver is a shared reference.
     pub explicit_shared_receiver_methods: std::collections::HashSet<String>,
+    /// Methods whose explicit `self` receiver is an exclusive reference.
+    pub explicit_exclusive_receiver_methods: std::collections::HashSet<String>,
+    /// Methods whose explicit `self` receiver consumes an owned value.
+    pub consuming_receiver_methods: std::collections::HashSet<String>,
     /// Generic param names per struct: struct name → ordered generic param names.
     pub struct_generic_params: HashMap<String, Vec<String>>,
     /// Monomorphization requests: function name → list of concrete type args used at call sites.

@@ -45,8 +45,8 @@ APIs; raw pointer access moves responsibility to an unsafe block.
 indexed assignment require an exclusive `&Array[T]!` receiver and therefore a
 mutable owner, not a `const` aggregate field. The `Index` trait's current
 by-value contract keeps read
-indexing legacy until that trait is redesigned. `free` also remains a legacy
-by-value API until consuming receivers are implemented. Reading an owned
+indexing legacy until that trait is redesigned. `free` is a consuming by-value
+API at a direct inherent call. Reading an owned
 element is not yet an ownership transfer primitive; its move-or-borrow
 contract is tracked separately by D-014.
 

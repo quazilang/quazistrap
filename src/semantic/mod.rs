@@ -161,6 +161,8 @@ pub struct Analyzer {
     /// receiver. This is separate from shared receivers so call-site loans use
     /// the capability declared by the method.
     pub(super) explicit_exclusive_receiver_methods: std::collections::HashSet<String>,
+    /// Impl methods whose first parameter is an explicit owned `self: T` receiver.
+    pub(super) consuming_receiver_methods: std::collections::HashSet<String>,
     /// Internal function name → stable native symbol requested by @export.
     pub(super) exported_symbols: HashMap<String, String>,
     /// Resolved Quazi binding name → imported C data symbol metadata.
@@ -880,6 +882,7 @@ impl Analyzer {
             fn_param_names: HashMap::new(),
             explicit_shared_receiver_methods: std::collections::HashSet::new(),
             explicit_exclusive_receiver_methods: std::collections::HashSet::new(),
+            consuming_receiver_methods: std::collections::HashSet::new(),
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
         }
@@ -1222,6 +1225,8 @@ impl Analyzer {
                 })
                 .collect(),
             explicit_shared_receiver_methods: self.explicit_shared_receiver_methods.clone(),
+            explicit_exclusive_receiver_methods: self.explicit_exclusive_receiver_methods.clone(),
+            consuming_receiver_methods: self.consuming_receiver_methods.clone(),
             struct_generic_params: self.struct_generic_params.clone(),
             monomorphizations: std::mem::take(&mut self.monomorphizations),
             fn_value_layouts: std::mem::take(&mut self.fn_value_layouts),
@@ -1316,6 +1321,7 @@ impl Analyzer {
         self.fn_param_names.clear();
         self.explicit_shared_receiver_methods.clear();
         self.explicit_exclusive_receiver_methods.clear();
+        self.consuming_receiver_methods.clear();
         self.exported_symbols.clear();
         self.foreign_globals.clear();
         self.repr_c_structs.clear();
@@ -4054,6 +4060,72 @@ fn main() void {
     }
 
     #[test]
+    fn bare_receivers_consume_whole_owners_but_reference_receivers_do_not() {
+        let consumed = analyze(
+            r#"
+struct Token { value: i32, }
+impl Token {
+    fn consume(self: Token) i32 { ret self.value; }
+    fn observe(self: &Token) i32 { ret self.value; }
+}
+fn main() void {
+    var token = Token { value: 1 };
+    var value: i32 = token.consume();
+    token.observe();
+}
+"#,
+        );
+        assert!(
+            consumed
+                .errors
+                .iter()
+                .any(|error| error.code == "S10" && error.message.contains("moved value 'token'")),
+            "bare receiver did not consume its owner: {:?}",
+            consumed.errors
+        );
+
+        let borrowed = analyze(
+            r#"
+struct Token { value: i32, }
+impl Token { fn consume(self: Token) i32 { ret self.value; } }
+fn main() void {
+    var token = Token { value: 1 };
+    var view: &Token = &token;
+    token.consume();
+}
+"#,
+        );
+        assert!(
+            borrowed.errors.iter().any(|error| {
+                error.code == "S10"
+                    && error.message.contains("cannot move `token` while it is shared-borrowed")
+            }),
+            "consuming receiver ignored the active shared loan: {:?}",
+            borrowed.errors
+        );
+
+        let field = analyze(
+            r#"
+struct Token { value: i32, }
+struct Holder { token: Token, }
+impl Token { fn consume(self: Token) i32 { ret self.value; } }
+fn main() void {
+    var holder = Holder { token: Token { value: 1 } };
+    holder.token.consume();
+}
+"#,
+        );
+        assert!(
+            field.errors.iter().any(|error| {
+                error.code == "S10"
+                    && error.message.contains("consuming receiver cannot take ownership")
+            }),
+            "consuming receiver accepted a field move before place moves exist: {:?}",
+            field.errors
+        );
+    }
+
+    #[test]
     fn references_are_directional_and_pointee_invariant() {
         for source in [
             "fn main() void { var from_value: &i32 = 42; }",
@@ -5441,8 +5513,8 @@ fn main() i32 {
 struct Counter { val: i32, }
 
 impl Counter {
-    fn get(self: Counter) i32 { ret self.val; }
-    fn inc(self: Counter, n: i32) Counter { ret Counter { val: self.val + n }; }
+    fn get(self: &Counter) i32 { ret self.val; }
+    fn inc(self: &Counter, n: i32) Counter { ret Counter { val: self.val + n }; }
 }
 
 fn main() void {

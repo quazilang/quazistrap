@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-09-15: Direct consuming receiver effects](2026-09-15-direct-consuming-receiver-effects.md)
 - [2026-09-14: Borrowed enum discriminant matching](2026-09-14-borrowed-enum-discriminant-matching.md)
 - [2026-09-14: PanicInfo receiver capabilities](2026-09-14-panic-info-receiver-capabilities.md)
 - [2026-09-14: String receiver capabilities](2026-09-14-string-receiver-capabilities.md)

@@ -28,8 +28,9 @@ source-breaking for owned-element uses in the standard library.
 
 Resolved 2026-09-12 by [D-014](whole-program-ownership.md): receivers are
 explicit shared (`self: &T`), exclusive (`self: &T!`), or consuming
-(`self: T`) capabilities. The current compiler still treats ordinary receivers
-as borrowed; grammar, call-site moves, and legacy API migration remain
+(`self: T`) capabilities. Resolved direct inherent calls now implement the
+bare-receiver move and cleanup transfer. Legacy API migration, associated
+Index dispatch, indirect/dynamic calls, and interprocedural effects remain
 implementation work.
 
 ## D-003: destruction and explicit close

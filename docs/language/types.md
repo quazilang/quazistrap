@@ -132,11 +132,14 @@ An address-of expression used only as an argument of a resolved direct Quazi
 call instead has a call-length loan, because current safe references cannot
 escape that call.
 It does not yet infer shorter use-based control-flow regions, reborrow regions,
-flow-sensitive exclusive/consuming receiver effects, cross-call effects, or QZI-only ownership
+flow-sensitive receiver effects, cross-call effects, or QZI-only ownership
 summaries. A read-only method may explicitly declare `self: &T`; it can be
 called through a shared reference and may not write through that receiver. An
 exclusive method may declare `self: &T!`; it borrows the owner exclusively for
-the call and may write through that receiver.
+the call and may write through that receiver. A direct inherent call to a bare
+move-only `self: T` receiver consumes a local or temporary owner; fields,
+indexed elements, and dereferences remain unavailable until place-level moves
+exist.
 Those D-014 requirements remain incomplete; do not treat `&T!` as evidence
 that arbitrary reference escape or safe concurrent sharing is supported.
 

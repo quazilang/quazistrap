@@ -7,9 +7,9 @@ Audience: maintainers continuing the local production-readiness plan.
 The production-readiness plan is **not complete**. This re-audit updates the
 2026-09-12 evidence after the receiver-capability checkpoints, but it does not
 turn the D-014 design decision into an implementation claim. The compiler has
-local shared/exclusive receiver checks; it does not yet have consuming receiver
-effects, flow-sensitive interprocedural loans, structural destruction, or
-QZI/QZC ownership summaries.
+local shared/exclusive receiver checks and direct inherent-call consuming
+effects; it does not yet have flow-sensitive interprocedural loans, place-level
+moves, structural destruction, or QZI/QZC ownership summaries.
 
 ## New evidence since the prior audit
 

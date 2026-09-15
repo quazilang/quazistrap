@@ -714,6 +714,12 @@ impl Analyzer {
                             self.explicit_exclusive_receiver_methods
                                 .insert(mangled.clone());
                         }
+                        if params.first().is_some_and(|param| {
+                            param.name == "self"
+                                && !matches!(param.ty.node, TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+                        }) {
+                            self.consuming_receiver_methods.insert(mangled.clone());
+                        }
                         self.declare(
                             mangled,
                             Symbol {

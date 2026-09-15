@@ -1839,6 +1839,8 @@ impl<'a> Codegen<'a> {
             &self.variadic_fn_info,
             &self.report.enum_defs,
             &self.report.explicit_shared_receiver_methods,
+            &self.report.explicit_exclusive_receiver_methods,
+            &self.report.consuming_receiver_methods,
             &self.str_variadic_fns,
             &self.variadic_intrinsic_fns,
             &self.report.monomorphizations,
@@ -1851,10 +1853,10 @@ impl<'a> Codegen<'a> {
             &self.source_files,
             &self.report.annotated_exprs,
         );
-        // The function owns ordinary by-value parameters. Keep a function-wide
-        // cleanup scope outside the body scope so parameters are destroyed on
-        // every return and on fallthrough. Method `self` remains borrowed,
-        // matching the language's receiver semantics.
+        // The function owns ordinary by-value parameters. A bare inherent
+        // receiver is likewise owned, except in its `.free` destructor: that
+        // hook performs the destruction itself and must not recursively invoke
+        // its own cleanup action.
         fc.drop_scopes.push(Vec::new());
         if needs_sret {
             let sret_reg = fc.alloc_reg();
@@ -1880,7 +1882,14 @@ impl<'a> Codegen<'a> {
                 };
                 let param_ty = fc.resolve_type(&p.ty.node);
                 fc.local_types.insert(p.name.clone(), param_ty.clone());
-                if p.name != "self" {
+                let declared_name = name.split('<').next().unwrap_or(name);
+                let is_bare_self = p.name == "self"
+                    && self
+                        .report
+                        .consuming_receiver_methods
+                        .contains(declared_name);
+                let is_destructor = declared_name.ends_with(".free");
+                if p.name != "self" || (is_bare_self && !is_destructor) {
                     fc.register_drop_local(&p.name, reg, Some(param_ty));
                 }
             }
@@ -2306,6 +2315,10 @@ struct FnCompiler<'a> {
     enum_defs: &'a HashMap<String, HashMap<String, usize>>,
     /// Methods whose explicit `self` receiver is a shared reference.
     explicit_shared_receiver_methods: &'a HashSet<String>,
+    /// Methods whose explicit `self` receiver is an exclusive reference.
+    explicit_exclusive_receiver_methods: &'a HashSet<String>,
+    /// Methods whose explicit `self` receiver consumes its owner.
+    consuming_receiver_methods: &'a HashSet<String>,
     /// Variadic-str functions: auto-coerce args to str at call sites.
     str_variadic_fns: &'a HashSet<String>,
     /// Variadic @intrinsic functions: coerce args and call directly.
@@ -2428,6 +2441,8 @@ impl<'a> FnCompiler<'a> {
         variadic_fn_info: &'a HashMap<String, usize>,
         enum_defs: &'a HashMap<String, HashMap<String, usize>>,
         explicit_shared_receiver_methods: &'a HashSet<String>,
+        explicit_exclusive_receiver_methods: &'a HashSet<String>,
+        consuming_receiver_methods: &'a HashSet<String>,
         str_variadic_fns: &'a HashSet<String>,
         variadic_intrinsic_fns: &'a HashSet<String>,
         monomorphizations: &'a [crate::semantic::MonomorphizationInfo],
@@ -2465,6 +2480,8 @@ impl<'a> FnCompiler<'a> {
             variadic_fn_info,
             enum_defs,
             explicit_shared_receiver_methods,
+            explicit_exclusive_receiver_methods,
+            consuming_receiver_methods,
             str_variadic_fns,
             variadic_intrinsic_fns,
             monomorphizations,
@@ -3993,6 +4010,13 @@ impl<'a> FnCompiler<'a> {
             self.chunk.emit(mem_lea_block(receiver, reference, 0, 1));
             reference
         }
+    }
+
+    /// A declaration-derived consuming receiver transfers ownership of `self`.
+    /// This avoids inferring ownership from API names such as `free` or `close`.
+    fn has_consuming_receiver(&self, declared_target: &str) -> bool {
+        let declared_target = declared_target.split('<').next().unwrap_or(declared_target);
+        self.consuming_receiver_methods.contains(declared_target)
     }
 
     fn match_scrutinee_is_borrowed_enum(&self, scrutinee: &Expr) -> bool {
@@ -6698,6 +6722,7 @@ impl<'a> FnCompiler<'a> {
                 // chained through generic helpers such as `Result.unwrap()` can
                 // lose enough surface type information for reconstruction.
                 if let Some(resolved_target) = self.resolved_fn_for_span(expr.span) {
+                    let consuming_receiver = self.has_consuming_receiver(&resolved_target);
                     let receiver = self.prepare_shared_enum_receiver(
                         obj,
                         object,
@@ -6723,14 +6748,12 @@ impl<'a> FnCompiler<'a> {
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&call_target);
+                        if consuming_receiver {
+                            self.mark_consumed_expr(object);
+                        }
                         let mut all_args = vec![receiver];
                         all_args.extend_from_slice(&arg_regs);
                         self.emit_call_by_name(&call_target, &all_args, result_dst);
-                        if method == "free"
-                            && let ExprKind::Ident(name) = &object.node
-                        {
-                            self.deactivate_drop_local(name);
-                        }
                         return result_dst;
                     }
                 }
@@ -6845,14 +6868,12 @@ impl<'a> FnCompiler<'a> {
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&call_target);
+                        if self.has_consuming_receiver(&call_target) {
+                            self.mark_consumed_expr(object);
+                        }
                         let mut all_args = vec![receiver];
                         all_args.extend_from_slice(&arg_regs);
                         self.emit_call_by_name(&call_target, &all_args, result_dst);
-                        if method == "free"
-                            && let ExprKind::Ident(name) = &object.node
-                        {
-                            self.deactivate_drop_local(name);
-                        }
                         return result_dst;
                     }
                 }
@@ -7467,6 +7488,8 @@ impl<'a> FnCompiler<'a> {
                     self.variadic_fn_info,
                     self.enum_defs,
                     self.explicit_shared_receiver_methods,
+                    self.explicit_exclusive_receiver_methods,
+                    self.consuming_receiver_methods,
                     self.str_variadic_fns,
                     self.variadic_intrinsic_fns,
                     self.monomorphizations,
@@ -9836,6 +9859,71 @@ fn main() i32 {
                 .count(),
             0,
             "callers pass shared views directly and materialize one for owned receivers"
+        );
+    }
+
+    #[test]
+    fn consuming_receiver_transfers_cleanup_without_a_method_name_exception() {
+        let chunks = compile(
+            r#"struct Token { value: i32, }
+               impl Token {
+                   fn consume(self: Token) void {}
+                   fn free(self: Token) void {}
+               }
+               fn main() void {
+                   var token = Token { value: 1 };
+                   token.consume();
+               }"#,
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert_eq!(
+            main.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "a consuming receiver must transfer the owner before scope cleanup"
+        );
+        let consume = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Token.consume")
+            .unwrap();
+        assert_eq!(
+            consume
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "the consuming callee must clean up its transferred receiver"
+        );
+    }
+
+    #[test]
+    fn generic_consuming_receiver_transfers_cleanup_to_its_specialization() {
+        let chunks = compile(
+            r#"struct Holder[T] { value: T, }
+               impl Holder[T] {
+                   fn consume(self: Holder[T]) void {}
+                   fn free(self: Holder[T]) void {}
+               }
+               fn main() void {
+                   var holder: Holder[i32] = Holder { value: 1 };
+                   holder.consume();
+               }"#,
+        );
+        let consume = chunks
+            .iter()
+            .find(|chunk| chunk.name.starts_with("Holder.consume<"))
+            .expect("generic consuming specialization was not compiled");
+        assert_eq!(
+            consume
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "generic consuming callee must clean up its transferred receiver"
         );
     }
 

@@ -3,10 +3,11 @@
 Audience: Quazi maintainers.
 
 Status: resolved 2026-09-12. This is a language-design decision, not an
-implementation-completion claim. The compiler has lexical local loans and
-read-only `self: &T` and call-local exclusive `self: &T!` receiver checking,
-but lacks the effect solver, consuming receiver behavior, structural destruction, and QZI
-ownership-summary format required by this decision.
+implementation-completion claim. The compiler has lexical local loans,
+read-only `self: &T`, call-local exclusive `self: &T!` receiver checking, and
+direct inherent-call consuming effects for bare `self: T`. It still lacks the
+effect solver, place-level moves, structural destruction, and QZI ownership
+summary format required by this decision.
 
 ## Decision
 
@@ -29,9 +30,9 @@ Safe code uses capabilities rooted at a concrete storage place:
 
 Method receivers are therefore explicit: `self: &T` borrows shared,
 `self: &T!` borrows exclusively, and `self: T` consumes. This resolves the
-policy question in D-002; implementing exclusive/consuming receiver effects
-and migrating legacy receivers remains work. Ordinary current receivers do
-not acquire those capabilities merely because this decision exists.
+policy question in D-002. The direct receiver-effect checkpoint is implemented
+for resolved inherent calls; migrating legacy APIs, interprocedural effects,
+and all other call forms remains work.
 
 The analysis derives loan regions from real control flow and real call edges.
 It tracks each loan's root, projections, and escape path flow-sensitively. A

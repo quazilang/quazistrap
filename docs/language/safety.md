@@ -67,11 +67,11 @@ Use-after-move is a compile-time error.
 
 ### Borrowed method receivers
 
-Ordinary method calls borrow the receiver. The method does not consume
-ownership unless the API explicitly documents it:
+An explicit reference receiver borrows the owner. A bare move-only `self: T`
+receiver consumes it at a resolved direct inherent call:
 
 ```quazi
-const length: usize = text.len();  // text is borrowed, not consumed
+const length: usize = text.len();  // `len` declares a shared receiver
 ```
 
 An implementation may declare a read-only receiver explicitly as
@@ -79,9 +79,10 @@ An implementation may declare a read-only receiver explicitly as
 other shared loans of the same value are live. The compiler rejects writes
 through that receiver. The receiver pointee must match the enclosing `impl`
 target. An explicit `self: &T!` receiver may write through its receiver and
-exclusively borrows the owner for the call. Consuming receiver effects remain
-planned D-014 work; legacy `self: T` methods retain their existing non-consuming
-behavior for compatibility.
+exclusively borrows the owner for the call. A bare move-only receiver transfers
+its cleanup responsibility to the callee. Fields, indexed elements, and
+dereferences remain unavailable as consuming receivers until place-level moves
+are implemented; whole-program and cross-call effects remain D-014 work.
 
 ## Scope cleanup (RAII)
 
@@ -141,8 +142,8 @@ For a temporary `&value` or `&value!` argument to a resolved direct Quazi call,
 the checker ends the loan after that call; current safe references cannot
 escape such a callee.
 It does not yet derive shorter use-based regions, support reborrowing, model
-exclusive or consuming receiver effects or cross-call effects, or verify QZI-only summaries;
-those remain D-014 implementation work.
+flow-sensitive or cross-call effects, or verify QZI-only summaries; those
+remain D-014 implementation work.
 
 These restrictions keep references sound while whole-program ownership is
 implemented. See
