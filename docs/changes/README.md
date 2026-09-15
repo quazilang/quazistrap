@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-09-15: In-place CString cleanup](2026-09-15-cstring-clear.md)
 - [2026-09-15: In-place String cleanup](2026-09-15-string-clear.md)
 - [2026-09-15: Partial-move safety guard](2026-09-15-partial-move-safety.md)
 - [2026-09-15: Direct consuming receiver effects](2026-09-15-direct-consuming-receiver-effects.md)

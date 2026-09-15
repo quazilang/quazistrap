@@ -117,9 +117,11 @@ fn example() void {
 
 ### `free()` methods
 
-`free()` is an idempotent early-release operation on resource-owning types.
-Normal application code should rely on scope cleanup. Foreign pointers and
-borrowed `CStr` never gain ownership automatically.
+`free(self: T)` is a consuming destructor on resource-owning types. Normal
+application code should rely on scope cleanup. Types that support reusable
+in-place release expose a distinct exclusive operation such as `clear()` or
+`close()`; its exact postcondition belongs to that type's API. Foreign pointers
+and borrowed `CStr` never gain ownership automatically.
 
 ## Safe references
 

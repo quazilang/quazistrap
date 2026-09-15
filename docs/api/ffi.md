@@ -56,11 +56,13 @@ ownership of the pointer.
   lifetime restriction. These accessors and `len()` use shared receivers;
   `free()` cannot overlap one of their loans.
 
-Normal local scope cleanup invokes `CString.free()` when no earlier explicit
-release occurs. An explicit `free()` invalidates the owner, clears its length,
-and is repeat-safe when called again. Do not use its `CStr` or raw pointer
-after the first release. Do not call `core.free` on a pointer borrowed from
-`CStr`; only the matching `CString` owner may release its allocation.
+Normal local scope cleanup invokes consuming `CString.free()` when no earlier
+explicit release occurs. `CString.clear()` takes an exclusive receiver and
+releases the allocation while retaining an empty, reusable owner; it is
+repeat-safe. A direct `free()` transfers the owner, so it cannot be used again.
+Do not use its `CStr` or raw pointer after either operation. Do not call
+`core.free` on a pointer borrowed from `CStr`; only the matching `CString`
+owner may release its allocation.
 
 ```quazi
 import std.ffi;
