@@ -42,20 +42,22 @@ instead of terminating the process.
 
 `receive(limit)` returns one available UTF-8 text read; `receive_all(limit)`
 reads until peer EOF. `recv(ptr, len)` is unsafe and returns the native count
-or failure sentinel. `shutdown(Shutdown.Read|Write|Both)` requests a half- or
-full shutdown. `close()` invalidates the socket and is idempotent: calls after
-the first, including automatic `free()` after an explicit close, are no-ops and
+or failure sentinel. `send`, receive, shutdown, and `close()` take exclusive
+receivers, so the stream remains a single mutable owner across each operation.
+`close()` invalidates the socket and is idempotent: calls after the first,
+including automatic consuming `free()` after an explicit close, are no-ops and
 do not call the native socket-close operation. `free()` is its automatic
-destructor; `handle()` is target-specific interop only. On Windows its `isize`
-bit pattern may be negative for a valid Winsock handle; only `-1` denotes an
-invalidated wrapper, so application code must not use a sign check to test
-validity.
+destructor; `handle()` uses a shared receiver and is target-specific interop
+only. On Windows its `isize` bit pattern may be negative for a valid Winsock
+handle; only `-1` denotes an invalidated wrapper, so application code must not
+use a sign check to test validity.
 
 `TcpListener.bind(port)` listens with backlog 128;
 `bind_with_backlog(port, backlog)` selects the backlog. `accept()` returns an
-owning `TcpStream`. Listeners have the same idempotent `close`, `free`, and
-`handle` semantics as streams. These owners are not a shared, thread-safe
-socket API.
+owning `TcpStream`. `accept()` and `close()` use exclusive receivers;
+`handle()` uses a shared receiver. Listeners otherwise have the same idempotent
+`close` and consuming `free` semantics as streams. These owners are not a
+shared, thread-safe socket API.
 
 ## UDP
 
@@ -70,8 +72,9 @@ returns a `UdpDatagram`, whose `text()` borrows the payload and `address()`
 returns the source address. A zero `receive_from` limit returns
 `MessageTooLarge`. A too-small nonzero buffer follows platform datagram
 semantics; callers should choose a limit large enough for the protocol’s maximum
-payload. `UdpSocket` provides idempotent `close`, automatic `free`, and
-`handle` like TCP.
+payload. UDP send/receive operations and `close()` use exclusive receivers,
+while `handle()` is shared. `UdpSocket` otherwise provides the same idempotent
+close and automatic consuming `free` behavior as TCP.
 
 ## HTTP/1.1 helpers
 
