@@ -4481,6 +4481,103 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// Emit the normal return cleanup while preserving one field that is being
+    /// returned from a consumed receiver.  This is intentionally a one-shot
+    /// view of the cleanup action: mutating `DropLocal` would make a later
+    /// return branch leak that field.
+    fn emit_all_cleanup_except_structural_field(&mut self, local_name: &str, offset: u16) {
+        for depth in (0..self.drop_scopes.len()).rev() {
+            let drops = self.drop_scopes[depth]
+                .iter()
+                .rev()
+                .filter_map(|local| {
+                    if !local.active {
+                        return None;
+                    }
+                    if local.name != local_name {
+                        return Some((local.reg, local.action.clone()));
+                    }
+                    let DropAction::Structural(fields) = &local.action else {
+                        self.codegen_error.get_or_insert_with(|| {
+                            format!(
+                                "returning `{local_name}` field requires structural receiver cleanup"
+                            )
+                        });
+                        return Some((local.reg, local.action.clone()));
+                    };
+                    let mut remaining = fields.clone();
+                    let before = remaining.len();
+                    remaining.retain(|field| field.offset != offset);
+                    if remaining.len() == before {
+                        self.codegen_error.get_or_insert_with(|| {
+                            format!(
+                                "returned field of `{local_name}` is absent from its structural cleanup"
+                            )
+                        });
+                    }
+                    (!remaining.is_empty())
+                        .then_some((local.reg, DropAction::Structural(remaining)))
+                })
+                .collect::<Vec<_>>();
+            for (reg, action) in drops {
+                self.emit_drop_action(reg, action);
+            }
+        }
+    }
+
+    fn returned_structural_field(&mut self, expr: &Expr) -> Option<(String, u16)> {
+        let ExprKind::Field { object, name } = &expr.node else {
+            return None;
+        };
+        let ExprKind::Ident(local_name) = &object.node else {
+            return None;
+        };
+        if !self
+            .drop_scopes
+            .iter()
+            .flatten()
+            .any(|local| local.active && local.name == *local_name)
+        {
+            return None;
+        }
+        let key = (object.span.start, object.span.end);
+        let Some(TypeKind::Named {
+            name: struct_name, ..
+        }) = self.aggregate_type_of_span(key)
+        else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("cannot resolve aggregate type for returned `{local_name}.{name}` field")
+            });
+            return None;
+        };
+        let Some(offset) = self
+            .struct_field_offsets
+            .get(&struct_name)
+            .and_then(|offsets| offsets.iter().find(|(field, _)| field == name))
+            .and_then(|(_, offset)| u16::try_from(*offset).ok())
+        else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("cannot resolve layout for returned `{struct_name}.{name}` field")
+            });
+            return None;
+        };
+        self.drop_scopes
+            .iter()
+            .rev()
+            .flatten()
+            .rev()
+            .find(|local| {
+                local.active
+                    && local.name == *local_name
+                    && matches!(
+                        &local.action,
+                        DropAction::Structural(fields)
+                            if fields.iter().any(|field| field.offset == offset)
+                    )
+            })
+            .map(|_| (local_name.clone(), offset))
+    }
+
     fn has_active_drops(&self) -> bool {
         self.drop_scopes
             .iter()
@@ -4705,13 +4802,18 @@ impl<'a> FnCompiler<'a> {
                 let result_slots = self.result_slot_count();
                 let result_base = self.result_base_reg();
                 if let Some(expr) = expr {
+                    let returned_field = self.returned_structural_field(expr);
                     self.mark_consumed_expr(expr);
                     let src = self.compile_expr(expr);
                     if result_slots > 1 {
                         if self.has_active_drops() {
                             let tmp_base = self.reserve_reg_block(result_slots);
                             self.emit_block_copy(tmp_base, src, result_slots);
-                            self.emit_all_cleanup();
+                            if let Some((local_name, offset)) = returned_field.as_ref() {
+                                self.emit_all_cleanup_except_structural_field(local_name, *offset);
+                            } else {
+                                self.emit_all_cleanup();
+                            }
                             self.emit_block_copy(result_base, tmp_base, result_slots);
                         } else if src != result_base {
                             self.emit_block_copy(result_base, src, result_slots);
@@ -4719,7 +4821,11 @@ impl<'a> FnCompiler<'a> {
                     } else if self.has_active_drops() {
                         let tmp = self.alloc_reg();
                         self.chunk.emit(rrr(Opcode::Mov, tmp, src, 0));
-                        self.emit_all_cleanup();
+                        if let Some((local_name, offset)) = returned_field.as_ref() {
+                            self.emit_all_cleanup_except_structural_field(local_name, *offset);
+                        } else {
+                            self.emit_all_cleanup();
+                        }
                         if tmp != 0 {
                             self.chunk.emit(rrr(Opcode::Mov, 0, tmp, 0));
                         }
@@ -8887,6 +8993,109 @@ fn take(value: Outer) void {}
                 .count(),
             2,
             "each owned field must receive exactly one terminal destructor call: {:?}",
+            take.code
+        );
+    }
+
+    #[test]
+    fn consumed_receiver_return_preserves_only_the_returned_structural_field() {
+        let chunks = compile(
+            r#"
+struct First { value: i32 }
+struct Second { value: i32 }
+struct Outer { first: First, second: Second }
+impl First { fn free(self: First) void {} }
+impl Second { fn free(self: Second) void {} }
+impl Outer {
+    fn take_second(self: Outer) Second { ret self.second; }
+}
+"#,
+        );
+        let take_second = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Outer.take_second")
+            .unwrap();
+        let field_offsets = take_second
+            .code
+            .iter()
+            .filter(|instruction| instruction.opcode == Opcode::FieldLoad as u8)
+            .map(|instruction| u16::from_le_bytes([instruction.ops[2], instruction.ops[3]]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            field_offsets,
+            vec![8, 0],
+            "the returned second field must not also be destroyed: {:?}",
+            take_second.code
+        );
+        assert_eq!(
+            take_second
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "only the retained first field should receive cleanup: {:?}",
+            take_second.code
+        );
+    }
+
+    #[test]
+    fn consumed_receiver_return_filter_is_local_to_each_return_branch() {
+        let chunks = compile(
+            r#"
+struct Item { value: i32 }
+struct Outer { first: Item, second: Item }
+impl Item { fn free(self: Item) void {} }
+impl Outer {
+    fn choose(self: Outer, first: bool) Item {
+        if first { ret self.first; }
+        ret self.second;
+    }
+}
+"#,
+        );
+        let choose = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Outer.choose")
+            .unwrap();
+        assert_eq!(
+            choose
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            2,
+            "each return must preserve only its own field: {:?}",
+            choose.code
+        );
+    }
+
+    #[test]
+    fn receiver_field_return_keeps_generated_destructor_hooks_reachable() {
+        let chunks = compile(
+            r#"
+struct Item { value: i32 }
+struct Outer { item: Item, other: Item }
+impl Item { fn free(self: Item) void {} }
+impl Outer { fn take(self: Outer) Item { ret self.item; } }
+fn main() void {
+    var outer = Outer { item: Item { value: 1 }, other: Item { value: 2 } };
+    const item = outer.take();
+}
+"#,
+        );
+        assert!(
+            chunks.iter().any(|chunk| chunk.name == "Item.free"),
+            "the structural cleanup hook must survive tree shaking"
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "Outer.take").unwrap();
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "receiver cleanup must retain the non-returned Item field: {:?}",
             take.code
         );
     }

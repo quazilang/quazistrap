@@ -84,7 +84,14 @@ design: an acyclic, non-generic, non-`repr(C)` struct with no source
 It never combines this traversal with a manual hook, and excludes recursive
 structs, arrays, enums, dynamic values, generic specializations, and physical
 aggregate-storage release. The partial-move guard remains in force until the
-full rule above is implemented.
+full rule above is implemented, except for an exact `ret self.field` from a
+by-value inherent receiver when that direct field has compiler-generated
+structural cleanup. At that return only, generated cleanup excludes the
+returned field and retains cleanup for every sibling; it does not mutate the
+receiver's cleanup state, so independent return branches remain correct. The
+exception excludes casts, groups, aliases, nested projections, generic or
+`repr(C)` parents, scalar fields, and any parent with a manual `free(self)`
+hook.
 
 ## QZI-only libraries
 

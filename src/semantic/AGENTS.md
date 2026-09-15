@@ -82,7 +82,8 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
   creates a shared loan for its call. The implementation validates that an
   explicit receiver's pointee is the enclosing `impl` target. An explicit
   `self: &T!` receiver permits writes and takes an exclusive loan for its call;
-  consuming `self: T` still needs its D-014 effect implementation.
+  direct inherent calls to consuming `self: T` transfer the receiver, while
+  broader interprocedural effects still need D-014 implementation.
 - Shared references use a conservative lexical-scope lifetime checkpoint:
   address-of accepts only locals/parameters; reference bindings cannot be
   rebound or escape through returns, owned aggregates, or closures; and an
@@ -101,6 +102,12 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
   calls, unsafe/foreign calls, variadics, and QZI interfaces remain opaque.
   This is not the D-014 whole-program effect solver; do not relax reference escape, indirect-call,
   or QZI boundaries on the basis of this syntax alone.
+- Move-only projections remain rejected. The sole non-destructor exception is
+  an exact `ret self.field` from a by-value inherent receiver whose non-generic,
+  non-`repr(C)` source struct has no manual `free(self)` hook and whose direct
+  field has compiler-generated structural cleanup. Do not extend this to
+  aliases, nested projections, wrappers, call arguments, or source destructors
+  without place-level move state and path-sensitive destruction.
 - Quazi `fn` values are affine owners. Passing, returning, and assignment move
   them; calls borrow them; self-assignment is rejected. Until recursive cleanup
   and capture ownership are implemented, do not permit `fn` inside aggregates

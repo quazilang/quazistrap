@@ -1,6 +1,7 @@
 # Change records
 
 - [2026-09-16: Stateful child-process polling](2026-09-16-http-process-receivers.md)
+- [2026-09-16: Constrained receiver-field returns](2026-09-16-constrained-receiver-field-returns.md)
 - [2026-09-16: Source-call reference capabilities](2026-09-16-source-call-reference-capabilities.md)
 - [2026-09-15: Constrained structural field cleanup](2026-09-15-structural-field-cleanup.md)
 - [2026-09-15: In-place collection cleanup](2026-09-15-collection-clear.md)

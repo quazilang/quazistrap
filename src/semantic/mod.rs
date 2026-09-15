@@ -4214,6 +4214,39 @@ fn main() void {
     }
 
     #[test]
+    fn allows_only_direct_structural_receiver_field_returns() {
+        let accepted = analyze(
+            r#"
+struct Item { value: i32 }
+struct Outer { item: Item, other: Item }
+impl Item { fn free(self: Item) void {} }
+impl Outer { fn take(self: Outer) Item { ret self.item; } }
+"#,
+        );
+        assert!(
+            accepted.errors.is_empty(),
+            "direct receiver-field return should use structural cleanup: {:?}",
+            accepted.errors
+        );
+
+        for source in [
+            r#"struct Item { value: i32 } struct Outer { item: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn take(self: Outer) Item { const saved = self.item; ret saved; } }"#,
+            r#"struct Item { value: i32 } struct Inner { item: Item } struct Outer { inner: Inner } impl Item { fn free(self: Item) void {} } impl Outer { fn take(self: Outer) Item { ret self.inner.item; } }"#,
+            r#"struct Item { value: i32 } struct Outer { item: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn free(self: Outer) void {} fn take(self: Outer) Item { ret self.item; } }"#,
+            r#"struct Item { value: i32 } struct Outer[T] { item: Item, marker: T } impl Item { fn free(self: Item) void {} } impl Outer[T] { fn take(self: Outer[T]) Item { ret self.item; } }"#,
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.code == "S10" && error.message.contains("cannot move out of a field")
+                }),
+                "unsupported receiver projection was accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
     fn references_are_directional_and_pointee_invariant() {
         for source in [
             "fn main() void { var from_value: &i32 = 42; }",

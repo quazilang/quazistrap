@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::parser::ast::*;
 
@@ -62,6 +62,14 @@ struct MoveEnv {
     /// fields. Its projections are the single pre-structural-drop exception to
     /// the ordinary partial-move rule.
     destructor_receiver: Option<String>,
+    /// A bare receiver owned by the current inherent method.  A narrow return
+    /// rule may transfer one of its fields only when code generation can leave
+    /// the remaining structural cleanup intact.
+    consuming_receiver: Option<String>,
+    /// A `return self.field` checkpoint may transfer one direct field from a
+    /// consumed receiver when compiler-generated structural cleanup can prove
+    /// the remaining fields are still destructible.
+    returning_receiver_field: Option<String>,
 }
 
 impl MoveEnv {
@@ -72,12 +80,22 @@ impl MoveEnv {
             control_depth: 0,
             reassign_targets: std::collections::HashSet::new(),
             destructor_receiver: None,
+            consuming_receiver: None,
+            returning_receiver_field: None,
         }
     }
 
     fn for_consuming_destructor(receiver: String) -> Self {
         Self {
             destructor_receiver: Some(receiver),
+            consuming_receiver: Some("self".to_string()),
+            ..Self::new()
+        }
+    }
+
+    fn for_consuming_receiver(receiver: String) -> Self {
+        Self {
+            consuming_receiver: Some(receiver),
             ..Self::new()
         }
     }
@@ -85,6 +103,13 @@ impl MoveEnv {
     fn allows_destructor_projection_move(&self, expr: &Expr) -> bool {
         self.destructor_receiver.as_deref().is_some_and(|receiver| {
             projection_root_ident(expr) == Some(receiver)
+        })
+    }
+
+    fn allows_returned_receiver_field_move(&self, expr: &Expr) -> bool {
+        self.returning_receiver_field.as_deref().is_some_and(|receiver| {
+            matches!(&expr.node, ExprKind::Field { object, .. }
+                if matches!(&object.node, ExprKind::Ident(name) if name == receiver))
         })
     }
 
@@ -258,16 +283,19 @@ impl Analyzer {
                             ..
                         } = &m.node
                         {
-                            let is_consuming_destructor = name.rsplit('.').next() == Some("free")
-                                && params.first().is_some_and(|param| {
-                                    param.name == "self"
-                                        && !matches!(
-                                            self.resolve_type_aliases(&param.ty.node),
-                                            TypeKind::Ref { .. } | TypeKind::MutRef { .. }
-                                        )
-                                });
+                            let has_consuming_receiver = params.first().is_some_and(|param| {
+                                param.name == "self"
+                                    && !matches!(
+                                        self.resolve_type_aliases(&param.ty.node),
+                                        TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+                                    )
+                            });
+                            let is_consuming_destructor = has_consuming_receiver
+                                && name.rsplit('.').next() == Some("free");
                             let mut env = if is_consuming_destructor {
                                 MoveEnv::for_consuming_destructor("self".to_string())
+                            } else if has_consuming_receiver {
+                                MoveEnv::for_consuming_receiver("self".to_string())
                             } else {
                                 MoveEnv::new()
                             };
@@ -322,6 +350,9 @@ impl Analyzer {
                 // (the loop never runs again after a return) and don't apply back.
                 let mut ret_env = env.clone();
                 ret_env.loop_depth = 0;
+                if self.bc_can_return_receiver_field(expr, &ret_env) {
+                    ret_env.returning_receiver_field = ret_env.consuming_receiver.clone();
+                }
                 self.bc_expr(expr, &mut ret_env, true);
             }
             StmtKind::Return(None) => {}
@@ -781,6 +812,7 @@ impl Analyzer {
                 if consumed
                     && self.bc_receiver_is_move_type(expr)
                     && !env.allows_destructor_projection_move(expr)
+                    && !env.allows_returned_receiver_field_move(expr)
                 {
                     self.bc_reject_partial_move(expr);
                 }
@@ -1022,6 +1054,115 @@ impl Analyzer {
 
     fn bc_reject_partial_move(&mut self, expr: &Expr) {
         self.push_error(expr.span, "S10", "cannot move out of a field, indexed element, or safe dereference before place-level moves and structural destruction are implemented".to_string());
+    }
+
+    /// The first place-level move exception is deliberately confined to a
+    /// terminal `return self.field` from a by-value inherent receiver.  The
+    /// code generator independently requires a structural drop plan with an
+    /// action for this exact field, and filters that action for this return
+    /// only.  Keeping this predicate syntactic avoids accidentally admitting
+    /// aliases, nested projections, casts, or ordinary call arguments.
+    fn bc_can_return_receiver_field(&self, expr: &Expr, env: &MoveEnv) -> bool {
+        let Some(receiver) = env.consuming_receiver.as_deref() else {
+            return false;
+        };
+        let ExprKind::Field { object, name: field } = &expr.node else {
+            return false;
+        };
+        let ExprKind::Ident(object_name) = &object.node else {
+            return false;
+        };
+        if object_name != receiver {
+            return false;
+        }
+        let Some(TypeKind::Named { name, type_args }) = env
+            .lookup(receiver)
+            .and_then(|variable| variable.ty.as_ref())
+            .map(|ty| self.resolve_type_aliases(ty))
+        else {
+            return false;
+        };
+        if !type_args.is_empty()
+            || self.repr_c_structs.contains(&name)
+            || self
+                .consuming_receiver_methods
+                .contains(&format!("{name}.free"))
+        {
+            return false;
+        }
+        let Some((_, field_ty)) = self
+            .struct_defs
+            .get(&name)
+            .and_then(|fields| fields.iter().find(|(candidate, _)| candidate == field))
+        else {
+            return false;
+        };
+        let TypeKind::Named {
+            name: field_name,
+            type_args: field_type_args,
+        } = self.resolve_type_aliases(field_ty)
+        else {
+            return false;
+        };
+        field_type_args.is_empty()
+            && self.bc_structural_drop_action_for_named(&name, &mut HashSet::new())
+            && (self
+                .consuming_receiver_methods
+                .contains(&format!("{field_name}.free"))
+                || self.bc_structural_drop_action_for_named(&field_name, &mut HashSet::new()))
+    }
+
+    /// Mirrors the deliberately small structural-drop domain in codegen.  This
+    /// makes the borrow-check exception conditional on an actual field action,
+    /// rather than merely on a field having a named type.
+    fn bc_structural_drop_action_for_named(
+        &self,
+        name: &str,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        if self.repr_c_structs.contains(name) || !visiting.insert(name.to_string()) {
+            return false;
+        }
+        let Some(fields) = self.struct_defs.get(name) else {
+            visiting.remove(name);
+            return false;
+        };
+        let mut has_action = false;
+        for (_, field_ty) in fields {
+            let TypeKind::Named {
+                name: field_name,
+                type_args,
+            } = self.resolve_type_aliases(field_ty)
+            else {
+                if matches!(
+                    self.resolve_type_aliases(field_ty),
+                    TypeKind::Fn { .. }
+                        | TypeKind::Dyn { .. }
+                        | TypeKind::Array { .. }
+                        | TypeKind::Slice { .. }
+                        | TypeKind::FlexibleArray { .. }
+                ) {
+                    visiting.remove(name);
+                    return false;
+                }
+                continue;
+            };
+            if !type_args.is_empty() {
+                visiting.remove(name);
+                return false;
+            }
+            let drop_hook = format!("{field_name}.free");
+            if self.consuming_receiver_methods.contains(&drop_hook) {
+                has_action = true;
+            } else if self.bc_structural_drop_action_for_named(&field_name, visiting) {
+                has_action = true;
+            } else {
+                visiting.remove(name);
+                return false;
+            }
+        }
+        visiting.remove(name);
+        has_action
     }
 
     fn bc_mark_exclusive_receiver_loan(&mut self, object: &Expr, env: &mut MoveEnv, at: Span) {
