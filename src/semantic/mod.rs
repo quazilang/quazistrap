@@ -4483,6 +4483,27 @@ fn main() void {}
             "Plain Array.get should remain usable: {:?}",
             plain.errors
         );
+
+        let forwarded = analyze(
+            r#"
+struct Token { value: i32 }
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[Marker, T] { storage: *u8, count: usize }
+impl Buffer[Marker, T] {
+    fn free(self: Buffer[Marker, T]) void {}
+    fn forward(self: &Buffer[Marker, T], value: T) T { ret value; }
+}
+fn inspect(items: Buffer[i32, Token]) void {
+    const token: Token = items.forward(Token { value: 1 });
+}
+fn main() void {}
+"#,
+        );
+        assert!(
+            forwarded.errors.is_empty(),
+            "an unmarked shared method returning a fresh owner is not an element read: {:?}",
+            forwarded.errors
+        );
     }
 
     #[test]
