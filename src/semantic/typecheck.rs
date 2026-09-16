@@ -835,8 +835,50 @@ impl Analyzer {
                 };
                 self.current_generic_params.push(impl_generic_params);
                 for method in methods {
-                    if let ItemKind::Fn { name, params, .. } = &method.node {
+                    if let ItemKind::Fn {
+                        name,
+                        params,
+                        return_ty,
+                        attributes,
+                        unsafe_fn,
+                        c_variadic,
+                        ..
+                    } = &method.node {
                         self.validate_impl_receiver(for_ty, name, params);
+                        let replacement_attrs = attributes
+                            .iter()
+                            .filter(|attribute| attribute.name == "contiguous_element_replace")
+                            .collect::<Vec<_>>();
+                        if !replacement_attrs.is_empty() {
+                            let element = match (
+                                &for_ty.node,
+                                self.contiguous_element_containers.get(&type_name),
+                            ) {
+                                (TypeKind::Named { type_args, .. }, Some(index)) => {
+                                    type_args.get(*index)
+                                }
+                                _ => None,
+                            };
+                            let valid = replacement_attrs.len() == 1
+                                && replacement_attrs[0].args.is_empty()
+                                && !unsafe_fn
+                                && !c_variadic
+                                && matches!(return_ty.node, TypeKind::Void)
+                                && params.len() == 3
+                                && matches!(params.first().map(|param| &param.ty.node), Some(TypeKind::MutRef { inner }) if self.resolve_type_aliases(&inner.node).to_string() == self.resolve_type_aliases(&for_ty.node).to_string())
+                                && matches!(params.get(1).map(|param| &param.ty.node), Some(TypeKind::Usize))
+                                && element.is_some_and(|element| {
+                                    self.resolve_type_aliases(&params[2].ty.node).to_string()
+                                        == self.resolve_type_aliases(&element.node).to_string()
+                                });
+                            if !valid {
+                                self.push_error(
+                                    method.span,
+                                    "S14",
+                                    "@contiguous_element_replace requires one safe, non-variadic method with `self: &Container[...]!`, usize index, declared element value, and void result".to_string(),
+                                );
+                            }
+                        }
                         self.current_fn_name_override = Some(format!("{}.{}", type_name, name));
                     }
                     self.type_check_item(method, checkpoint)?;

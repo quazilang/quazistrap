@@ -2055,7 +2055,14 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
-        fc.compile_block(body);
+        if attributes
+            .iter()
+            .any(|attribute| attribute.name == "contiguous_element_replace")
+        {
+            fc.emit_contiguous_element_replacement(params);
+        } else {
+            fc.compile_block(body);
+        }
         // Guarantee every path ends with Ret.
         if fc.chunk.code.last().map(|i| i.opcode) != Some(Opcode::Ret as u8) {
             fc.emit_scope_cleanup();
@@ -4692,6 +4699,87 @@ impl<'a> FnCompiler<'a> {
                 self.chunk.emit(instruction);
             }
         }
+    }
+
+    /// Lower a compiler-validated contiguous replacement method. The contract
+    /// selects its container and element through `@contiguous_elements`; no
+    /// collection or method name participates in the lowering decision.
+    fn emit_contiguous_element_replacement(&mut self, params: &[crate::parser::ast::Param]) {
+        let Some([receiver, index, value]) = params.get(..3) else {
+            self.codegen_error
+                .get_or_insert_with(|| "invalid contiguous replacement signature".to_string());
+            return;
+        };
+        let receiver_ty = self
+            .local_types
+            .get(&receiver.name)
+            .map(|ty| self.resolve_type(ty));
+        let Some(TypeKind::MutRef { inner }) = receiver_ty else {
+            self.codegen_error.get_or_insert_with(|| {
+                "contiguous replacement requires an exclusive container receiver".to_string()
+            });
+            return;
+        };
+        let Some(TypeKind::Named { name, type_args }) = Some(self.resolve_type(&inner.node)) else {
+            self.codegen_error
+                .get_or_insert_with(|| "contiguous replacement receiver is not a container".to_string());
+            return;
+        };
+        let Some(metadata) = self.contiguous_element_containers.get(&name) else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("`{name}` has no contiguous-element replacement contract")
+            });
+            return;
+        };
+        let Some(element_ty) = type_args.get(metadata.element_param_index) else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("`{name}` is missing its contiguous element type argument")
+            });
+            return;
+        };
+        let element_ty = self.resolve_type(&element_ty.node);
+        let Some(element_slots) = crate::runtime_layout::runtime_value_layout(&element_ty)
+            .slot_count()
+            .and_then(|slots| u8::try_from(slots).ok())
+        else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("`{element_ty}` has no runtime layout for contiguous replacement")
+            });
+            return;
+        };
+        let receiver_reg = self.reg_of(&receiver.name);
+        let index_reg = self.reg_of(&index.name);
+        let value_reg = self.reg_of(&value.name);
+        let pointer = self.alloc_reg();
+        let length = self.alloc_reg();
+        self.chunk
+            .emit(field_load(pointer, receiver_reg, metadata.pointer_offset));
+        self.chunk
+            .emit(field_load(length, receiver_reg, metadata.length_offset));
+        self.emit_bounds_guard(index_reg, length, index.ty.span);
+        if let Some(action) = self.drop_action_for_type(&element_ty) {
+            let old = self.reserve_reg_block(element_slots as usize);
+            let destination = if element_slots > 1 {
+                let old_ptr = self.alloc_reg();
+                self.chunk
+                    .emit(mem_lea_block(old, old_ptr, 0, element_slots));
+                old_ptr
+            } else {
+                old
+            };
+            let mut load = rrr(Opcode::ArrayLoad, destination, pointer, index_reg);
+            load.flags = element_slots;
+            self.chunk.emit(load);
+            self.emit_drop_action(old, action);
+        }
+        let mut store = rrr(Opcode::ArrayStore, value_reg, pointer, index_reg);
+        store.flags = element_slots;
+        self.chunk.emit(store);
+        // The new element owner now lives in the initialized container slot;
+        // its incoming parameter must not be cleaned up again on return.
+        self.deactivate_drop_local(&value.name);
+        self.chunk.emit(ri16(Opcode::MovI, 0, 0));
+        self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
     }
 
     fn expr_is_local_value(&self, expr: &Expr) -> bool {
@@ -9545,6 +9633,49 @@ fn take(value: Buffer[i32, Token]) void {}
             2,
             "cleanup must call the Token hook and Buffer release exactly once: {:?}",
             take.code
+        );
+    }
+
+    #[test]
+    fn contiguous_replacement_drops_the_previous_owned_element_before_store() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] {
+    fn free(self: Buffer[T]) void {}
+    @contiguous_element_replace fn set(self: &Buffer[T]!, index: usize, value: T) void {}
+}
+fn update(buffer: &Buffer[Token]!, token: Token) void { buffer.set(0, token); }
+"#,
+        );
+        let set = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Buffer.set<Token>")
+            .unwrap();
+        let load = set
+            .code
+            .iter()
+            .position(|instruction| instruction.opcode == Opcode::ArrayLoad as u8)
+            .unwrap();
+        let store = set
+            .code
+            .iter()
+            .position(|instruction| instruction.opcode == Opcode::ArrayStore as u8)
+            .unwrap();
+        let drop = set
+            .code
+            .iter()
+            .position(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+            .unwrap();
+        assert!(load < drop && drop < store, "replacement must load, destroy, then store: {:?}", set.code);
+        assert!(
+            set.code.iter().any(|instruction| instruction.opcode == Opcode::Jb as u8),
+            "replacement must bounds-check before touching storage: {:?}",
+            set.code
         );
     }
 

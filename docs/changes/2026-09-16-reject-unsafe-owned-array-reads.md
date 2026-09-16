@@ -19,7 +19,9 @@ Existing APIs that depend on owned contiguous-container element reads,
 including HTTP headers, remain unavailable until that coordinated
 implementation lands.
 
-Likewise, `Array.set` is currently `unsafe`: replacing an initialized slot
-would otherwise overwrite an owned element without its exact-once destructor.
-The eventual generic replacement operation will restore a safe exclusive
-receiver API after it can destroy the prior element before storing the new one.
+`Array.set` is safe again through the compiler-validated generic replacement
+contract: it bounds-checks, loads and recursively destroys the prior owned
+element, then stores the incoming owner and transfers its cleanup obligation
+to the initialized slot. The same lowering is available to any valid
+`@contiguous_elements` container method with the replacement contract; it is
+not an `Array`-specific compiler exception.
