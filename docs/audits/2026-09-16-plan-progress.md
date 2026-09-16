@@ -56,8 +56,10 @@ work.
    container elements. Its compiler-validated contract rejects an
    `Array`-specific escape hatch and requires an artifact-compatible address
    operation; owned values may not be copied from an `Array` read.
-2. Implement exact-once generic element replacement, removal, and destruction
-   before re-enabling resource-owning collection APIs such as HTTP headers.
+2. Implement exact-once generic element removal before re-enabling
+   resource-owning collection APIs such as HTTP headers. Compiler-validated
+   replacement and final recursive destruction are now implemented; removal
+   still needs its transfer/shift ownership proof.
 3. Extend the capability/effect model through direct and indirect calls, then
    design and verify the matching QZI/QZC ownership-summary format.
 
