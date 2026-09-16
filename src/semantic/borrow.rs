@@ -680,6 +680,13 @@ impl Analyzer {
                 named_args,
                 ..
             } => {
+                if self.bc_is_owned_array_value_read(expr, object) {
+                    self.push_error(
+                        expr.span,
+                        "S10",
+                        "cannot read an owned Array element by value before borrowed-element access and element destruction are implemented".to_string(),
+                    );
+                }
                 let shared_receiver = self.bc_has_explicit_shared_receiver(expr);
                 let exclusive_receiver = self.bc_has_explicit_exclusive_receiver(expr);
                 let consuming_receiver = self.bc_has_consuming_receiver(expr)
@@ -1019,6 +1026,43 @@ impl Analyzer {
             })
             .and_then(|annotation| annotation.resolved_fn.as_deref());
         resolved.is_some_and(|name| self.consuming_receiver_methods.contains(name))
+    }
+
+    /// `Array.get` currently lowers to a raw load, which would duplicate an
+    /// owned element's handle.  Keep Plain element reads available while
+    /// rejecting the generic owned case until the container has provenance-
+    /// tracked borrowed elements and exact-once element destruction.
+    fn bc_is_owned_array_value_read(&self, expr: &Expr, object: &Expr) -> bool {
+        let resolved = self
+            .annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
+            })
+            .and_then(|annotation| annotation.resolved_fn.as_deref());
+        let is_array_get = resolved.is_some_and(|name| {
+            name.rsplit('.').next().is_some_and(|method| {
+                method.split('<').next() == Some("get")
+                    && name
+                        .split('<')
+                        .next()
+                        .is_some_and(|base| base.ends_with("Array.get"))
+            })
+        });
+        if !is_array_get {
+            return false;
+        }
+        matches!(
+            self.bc_annotated_type(object)
+                .as_ref()
+                .map(|ty| self.resolve_type_aliases(ty)),
+            Some(TypeKind::Named { name, type_args })
+                if name.rsplit('.').next() == Some("Array")
+                    && type_args.first().is_some_and(|element| {
+                        self.bc_is_move_type(&self.resolve_type_aliases(&element.node))
+                    })
+        )
     }
 
     fn bc_mark_shared_receiver_loan(&mut self, object: &Expr, env: &mut MoveEnv, at: Span) {

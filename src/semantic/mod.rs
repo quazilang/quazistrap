@@ -4214,6 +4214,47 @@ fn main() void {
     }
 
     #[test]
+    fn rejects_owned_array_get_until_element_borrows_exist() {
+        let owned = analyze(
+            r#"
+struct Token { value: i32 }
+struct Array[T] { value: T }
+impl Array[T] { fn get(self: &Array[T]) T { ret self.value; } }
+fn main() void {
+    var items = Array { value: Token { value: 1 } };
+    const token: Token = items.get();
+}
+"#,
+        );
+        assert!(
+            owned.errors.iter().any(|error| {
+                error.code == "S10"
+                    && error
+                        .message
+                        .contains("cannot read an owned Array element by value")
+            }),
+            "owned Array.get must not create a shallow second owner: {:?}",
+            owned.errors
+        );
+
+        let plain = analyze(
+            r#"
+struct Array[T] { value: T }
+impl Array[T] { fn get(self: &Array[T]) T { ret self.value; } }
+fn main() void {
+    var items = Array { value: 1 };
+    const value: i32 = items.get();
+}
+"#,
+        );
+        assert!(
+            plain.errors.is_empty(),
+            "Plain Array.get should remain usable: {:?}",
+            plain.errors
+        );
+    }
+
+    #[test]
     fn allows_only_direct_structural_receiver_field_returns() {
         let accepted = analyze(
             r#"

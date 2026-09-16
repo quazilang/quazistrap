@@ -108,6 +108,10 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
   field has compiler-generated structural cleanup. Do not extend this to
   aliases, nested projections, wrappers, call arguments, or source destructors
   without place-level move state and path-sensitive destruction.
+- `Array.get` may return Plain elements by value, but an owned element is now
+  rejected with S10 instead of materializing a shallow second owner. Do not
+  weaken this gate by changing a receiver spelling: safe owned collection
+  reads require a provenance-tracked borrowed-element API and element cleanup.
 - Quazi `fn` values are affine owners. Passing, returning, and assignment move
   them; calls borrow them; self-assignment is rejected. Until recursive cleanup
   and capture ownership are implemented, do not permit `fn` inside aggregates
