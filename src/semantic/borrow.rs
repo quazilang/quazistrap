@@ -484,7 +484,7 @@ impl Analyzer {
     /// move and checks for move-in-loop and use-after-move.
     /// Returns true only for Named types that are concrete user-defined structs/enums.
     /// Generic type params (K, V, T, etc.) and unknown names are treated as Copy.
-    fn bc_is_move_type(&self, ty: &TypeKind) -> bool {
+    pub(super) fn bc_is_move_type(&self, ty: &TypeKind) -> bool {
         match ty {
             // Primitives and shared references are Copy. Exclusive references are
             // affine capabilities, so assigning one transfers it instead.

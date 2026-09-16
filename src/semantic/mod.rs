@@ -1071,6 +1071,8 @@ impl Analyzer {
         }
 
         let symbol_table = self.build_symbol_table();
+        let callable_ownership_summaries =
+            self.derive_callable_ownership_summaries(&symbol_table);
         let used_imports_vec: Vec<String> = self.used_import_paths.iter().cloned().collect();
         let used_imports_map = self.build_import_usage_map(&symbol_table, true);
         let unused_imports_vec: Vec<String> = self.unused_import_paths.iter().cloned().collect();
@@ -1122,6 +1124,7 @@ impl Analyzer {
             binding_imports,
             annotated_program,
             symbol_table,
+            callable_ownership_summaries,
             constant_evaluations,
             inline_candidates,
             optimization_hints,
@@ -1635,6 +1638,94 @@ impl Analyzer {
         SymbolTable { entries }
     }
 
+    fn derive_callable_ownership_summaries(
+        &self,
+        symbol_table: &SymbolTable,
+    ) -> Vec<CallableOwnershipSummary> {
+        let mut summaries = symbol_table
+            .entries
+            .iter()
+            .filter(|entry| entry.scope_depth == 0 && entry.symbol.kind == SymbolKind::Function)
+            .filter_map(|entry| {
+                let resolved_params = entry
+                    .symbol
+                    .params
+                    .iter()
+                    .map(|ty| self.resolve_type_aliases(ty))
+                    .collect::<Vec<_>>();
+                let result = self.ownership_result_for_type(
+                    entry
+                        .symbol
+                        .ty
+                        .as_ref()
+                        .map(|ty| self.resolve_type_aliases(ty))
+                        .as_ref(),
+                )?;
+                let receiver_count = usize::from(
+                    self.explicit_shared_receiver_methods.contains(&entry.name)
+                        || self.explicit_exclusive_receiver_methods.contains(&entry.name)
+                        || self.consuming_receiver_methods.contains(&entry.name),
+                );
+                let receiver = if receiver_count == 1 {
+                    Some(self.ownership_capability_for_type(resolved_params.first()?)?)
+                } else {
+                    None
+                };
+                let fixed_count = resolved_params
+                    .len()
+                    .saturating_sub(usize::from(entry.symbol.variadic));
+                let parameters = resolved_params[receiver_count..fixed_count]
+                    .iter()
+                    .map(|ty| self.ownership_capability_for_type(ty))
+                    .collect::<Option<Vec<_>>>()?;
+                let variadic = if entry.symbol.variadic {
+                    let element = resolved_params.last()?;
+                    if matches!(element, TypeKind::Any) {
+                        Some(VariadicOwnership::Erased)
+                    } else {
+                        Some(VariadicOwnership::Elements(
+                            self.ownership_capability_for_type(element)?,
+                        ))
+                    }
+                } else {
+                    None
+                };
+                Some(CallableOwnershipSummary {
+                    callable: entry.name.clone(),
+                    receiver,
+                    parameters,
+                    variadic,
+                    result,
+                    has_body: self.source_function_symbols.contains(&entry.name),
+                    generic_template: !entry.symbol.generic_params.is_empty(),
+                    transitive_effects_verified: false,
+                })
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| left.callable.cmp(&right.callable));
+        summaries
+    }
+
+    fn ownership_capability_for_type(&self, ty: &TypeKind) -> Option<OwnershipCapability> {
+        match ty {
+            TypeKind::Error | TypeKind::Any | TypeKind::FlexibleArray { .. } => None,
+            TypeKind::Ref { .. } => Some(OwnershipCapability::SharedBorrow),
+            TypeKind::MutRef { .. } => Some(OwnershipCapability::ExclusiveBorrow),
+            _ if self.bc_is_move_type(ty) => Some(OwnershipCapability::Move),
+            _ => Some(OwnershipCapability::Copy),
+        }
+    }
+
+    fn ownership_result_for_type(&self, ty: Option<&TypeKind>) -> Option<OwnershipResult> {
+        match ty {
+            Some(TypeKind::Void) | None => Some(OwnershipResult::NoValue),
+            Some(TypeKind::Never) => Some(OwnershipResult::Never),
+            Some(ty) => self
+                .ownership_capability_for_type(ty)
+                .map(OwnershipResult::Value),
+        }
+    }
+
     fn build_import_usage_map(
         &self,
         symbol_table: &SymbolTable,
@@ -2026,7 +2117,8 @@ mod tests {
 
     use super::{
         Analyzer, ConstValue, DependencyKind, EnumInfo, MatchArmInfo, MatchArmKindInfo,
-        MatchCandidate, SemanticReport, strip_cfg_for,
+        MatchCandidate, OwnershipCapability, OwnershipResult, SemanticReport, VariadicOwnership,
+        strip_cfg_for,
     };
 
     fn parse_program(src: &str) -> crate::parser::ast::Program {
@@ -2298,6 +2390,121 @@ fn main() void {}
         assert!(report.errors.iter().any(|error| {
             error.code == "S14" && error.message.contains("@contiguous_element_remove")
         }));
+    }
+
+    #[test]
+    fn records_deterministic_callable_ownership_signatures() {
+        let report = analyze(
+            r#"
+struct Token { value: i32 }
+@repr(C) type Callback = fn(i32) i32;
+impl Token { fn observe(self: &Token) void {} }
+fn copy(value: i32, view: &Token, edit: &Token!) bool { ret true; }
+fn plain_bytes(value: bytes, callback: Callback) bytes { ret value; }
+fn move_array(value: [i32; 2]) void {}
+fn transfer(value: Token) Token { ret value; }
+fn generic[T](value: T) T { ret value; }
+@format fn format_like(...parts: str) void {}
+@api("foreign") fn opaque(pointer: *Token) void;
+"#,
+        );
+        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        let copy = report
+            .callable_ownership_summaries
+            .iter()
+            .find(|summary| summary.callable == "copy")
+            .unwrap();
+        assert_eq!(
+            copy.parameters,
+            vec![
+                OwnershipCapability::Copy,
+                OwnershipCapability::SharedBorrow,
+                OwnershipCapability::ExclusiveBorrow,
+            ]
+        );
+        assert_eq!(
+            copy.result,
+            OwnershipResult::Value(OwnershipCapability::Copy)
+        );
+        assert!(copy.has_body);
+        assert_eq!(copy.receiver, None);
+        assert_eq!(copy.variadic, None);
+        assert!(!copy.transitive_effects_verified);
+
+        let plain_bytes = report
+            .callable_ownership_summaries
+            .iter()
+            .find(|summary| summary.callable == "plain_bytes")
+            .unwrap();
+        assert_eq!(
+            plain_bytes.parameters,
+            vec![OwnershipCapability::Copy, OwnershipCapability::Copy]
+        );
+        assert_eq!(
+            plain_bytes.result,
+            OwnershipResult::Value(OwnershipCapability::Copy)
+        );
+
+        let move_array = report
+            .callable_ownership_summaries
+            .iter()
+            .find(|summary| summary.callable == "move_array")
+            .unwrap();
+        assert_eq!(move_array.parameters, vec![OwnershipCapability::Move]);
+
+        let transfer = report
+            .callable_ownership_summaries
+            .iter()
+            .find(|summary| summary.callable == "transfer")
+            .unwrap();
+        assert_eq!(transfer.parameters, vec![OwnershipCapability::Move]);
+        assert_eq!(
+            transfer.result,
+            OwnershipResult::Value(OwnershipCapability::Move)
+        );
+
+        let generic = report
+            .callable_ownership_summaries
+            .iter()
+            .find(|summary| summary.callable == "generic")
+            .unwrap();
+        assert!(generic.generic_template);
+        assert_eq!(generic.parameters, vec![OwnershipCapability::Copy]);
+
+        let format_like = report
+            .callable_ownership_summaries
+            .iter()
+            .find(|summary| summary.callable == "format_like")
+            .unwrap();
+        assert_eq!(
+            format_like.variadic,
+            Some(VariadicOwnership::Elements(OwnershipCapability::Copy))
+        );
+
+        let observe = report
+            .callable_ownership_summaries
+            .iter()
+            .find(|summary| summary.callable == "Token.observe")
+            .unwrap();
+        assert_eq!(observe.receiver, Some(OwnershipCapability::SharedBorrow));
+        assert!(observe.parameters.is_empty());
+
+        let opaque = report
+            .callable_ownership_summaries
+            .iter()
+            .find(|summary| summary.callable == "opaque")
+            .unwrap();
+        assert!(!opaque.has_body);
+        assert!(!opaque.transitive_effects_verified);
+        let names = report
+            .callable_ownership_summaries
+            .iter()
+            .map(|summary| summary.callable.as_str())
+            .collect::<Vec<_>>();
+        let mut sorted_names = names.clone();
+        sorted_names.sort_unstable();
+        assert_eq!(names, sorted_names, "summaries must have stable ordering");
+        assert!(names.windows(3).any(|window| window == ["copy", "format_like", "generic"]));
     }
 
     #[test]

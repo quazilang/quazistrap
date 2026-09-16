@@ -327,6 +327,47 @@ pub struct SymbolTable {
     pub entries: Vec<SymbolTableEntry>,
 }
 
+/// Ownership capability exposed by a callable signature.
+///
+/// This is compiler-derived signature metadata, not a lifetime annotation and
+/// not yet a transitive effect proof. D-014 will compose these facts with
+/// proven body effects before any QZI-only safe-reference boundary is allowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipCapability {
+    Copy,
+    Move,
+    SharedBorrow,
+    ExclusiveBorrow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnershipResult {
+    NoValue,
+    Never,
+    Value(OwnershipCapability),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VariadicOwnership {
+    Erased,
+    Elements(OwnershipCapability),
+}
+
+/// A deterministic, compiler-derived ownership signature for one declared
+/// callable. `transitive_effects_verified` deliberately remains false until
+/// D-014's call-graph effect solver and QZI certificate verifier exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableOwnershipSummary {
+    pub callable: String,
+    pub receiver: Option<OwnershipCapability>,
+    pub parameters: Vec<OwnershipCapability>,
+    pub variadic: Option<VariadicOwnership>,
+    pub result: OwnershipResult,
+    pub has_body: bool,
+    pub generic_template: bool,
+    pub transitive_effects_verified: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct OptimizationHints {
     pub constant_evaluations: Vec<ConstantEvaluation>,
@@ -462,6 +503,9 @@ pub struct SemanticReport {
     pub binding_imports: Vec<BindingImport>,
     pub annotated_program: AnnotatedProgram,
     pub symbol_table: SymbolTable,
+    /// Compiler-derived callable signature ownership facts. These are the
+    /// schema foundation for D-014; they are not QZI summaries yet.
+    pub callable_ownership_summaries: Vec<CallableOwnershipSummary>,
     pub constant_evaluations: Vec<ConstantEvaluation>,
     pub inline_candidates: Vec<InlineCandidate>,
     pub optimization_hints: OptimizationHints,

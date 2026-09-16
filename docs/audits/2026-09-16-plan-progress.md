@@ -30,8 +30,10 @@ work.
   `Array[Header]` operations need scoped borrowed elements and exact-once
   replacement/removal/freeing. It is intentionally not treated as a passing
   standard-library suite while those diagnostics remain.
-- The contained compiler's `cargo test --offline` passes 633 tests at the
-  generic-removal checkpoint. Canonical
+- The contained compiler's `cargo test --offline` passes 634 tests. The
+  compiler now records deterministic callable ownership signatures as the
+  input schema for D-014's future effect solver; those signatures are not yet
+  transitive ownership proofs or QZI summaries. Canonical
   Markdown checks pass 13 tests.
 - The separate Tree-sitter corpus passes 28/28 and its workspace conformance
   command passes. This supersedes the obsolete resume warning about example 33.
