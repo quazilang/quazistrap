@@ -129,6 +129,37 @@ Requests inlining. Recursive functions remain excluded:
 fn fast_add(a: i32, b: i32) i32 { ret a + b; }
 ```
 
+### `@contiguous_elements(element=T, pointer=ptr, length=len)`
+
+Declares the physical storage contract for a generic, contiguous container.
+It is for standard-library and runtime container implementers, not ordinary
+application structs. `T` names the generic element parameter; `ptr` names a
+raw-pointer field; and `len` names a `usize` field. The initialized elements
+must occupy exactly the half-open range `[0, len)`.
+
+```quazi
+@contiguous_elements(element=T, pointer=ptr, length=len)
+pub struct Array[T] {
+    ptr: *u8,
+    len: usize,
+    cap: usize,
+}
+```
+
+The type must be a non-`@repr(C)` struct and provide a consuming
+`free(self: Type[T])` method. For an owned element type, the compiler destroys
+elements from the final index down to zero before calling that source `free`
+method to release the backing storage. Compiler-inserted cleanup and a direct
+`.free()` call use the same sequence. If the compiler has no recursive
+destruction action for a concrete owned element type, compilation fails rather
+than releasing its storage without cleanup.
+
+The declaration does not make element reads or replacement operations safe.
+In particular, `Array.get()` still rejects owned element types until
+provenance-tracked borrowed-element access, replacement cleanup, and removal
+semantics are implemented. Container `free` implementations must release only
+their allocation and must not independently destroy those elements.
+
 ## Trait derivation
 
 ### `@derive(Trait, ...)`

@@ -24,6 +24,7 @@ fn __ptr_store[T](base: *u8, idx: usize, val: T) void;
 @intrinsic("quazi.array.load")
 fn __ptr_load[T](base: *u8, idx: usize) T;
 
+@contiguous_elements(element=T, pointer=ptr, length=len)
 pub struct Array[T] {
     ptr: *u8,
     len: usize,

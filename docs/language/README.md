@@ -24,7 +24,8 @@ implementation-defined are clearly marked.
 - [Safety and ownership](safety.md) — unsafe system, ownership model, scope
   cleanup, references, raw pointers, function value ownership.
 - [Attributes](attributes.md) — `@cfg`, `@api`, `@export`, `@repr(C)`,
-  `@opaque`, `@syscall`, `@intrinsic`, `@derive`, `@inline`, `@ignore`,
+  `@opaque`, `@syscall`, `@intrinsic`, `@derive`, `@contiguous_elements`,
+  `@inline`, `@ignore`,
   `@test`, `@panic_handler`, field attributes.
 - [Panic handling](panic.md) — process termination and the custom-handler
   ABI.

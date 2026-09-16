@@ -2234,6 +2234,47 @@ fn main() void {}
     }
 
     #[test]
+    fn validates_contiguous_element_container_contracts() {
+        let report = analyze(
+            r#"
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+fn main() void {}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "valid contiguous-element contract should analyze: {:?}",
+            report.errors
+        );
+
+        let report = analyze(
+            r#"
+@contiguous_elements(element=U, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+fn main() void {}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("not a generic parameter")
+        }));
+
+        let report = analyze(
+            r#"
+@contiguous_elements(element=T, pointer=count, length=storage)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+fn main() void {}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("pointer field `Buffer.count`")
+        }));
+    }
+
+    #[test]
     fn records_ordered_serialization_derive_metadata() {
         let source = r#"
 type UserName = str;

@@ -453,6 +453,14 @@ impl Analyzer {
                 attributes,
                 ..
             } => {
+                self.validate_contiguous_elements_attribute(
+                    name,
+                    generic_params,
+                    fields,
+                    *is_union,
+                    attributes,
+                    item.span,
+                );
                 for field in fields {
                     let field_name = &field.name;
                     let field_ty = &field.ty;
@@ -929,6 +937,149 @@ impl Analyzer {
             }
         }
         Ok(())
+    }
+
+    fn validate_contiguous_elements_attribute(
+        &mut self,
+        name: &str,
+        generic_params: &[String],
+        fields: &[AggregateField],
+        is_union: bool,
+        attributes: &[Attribute],
+        item_span: Span,
+    ) {
+        let attrs = attributes
+            .iter()
+            .filter(|attribute| attribute.name == "contiguous_elements")
+            .collect::<Vec<_>>();
+        if attrs.is_empty() {
+            return;
+        }
+        if attrs.len() != 1 {
+            self.push_error(
+                attrs[1].span,
+                "S14",
+                format!("@contiguous_elements may appear at most once on `{name}`"),
+            );
+            return;
+        }
+        let attr = attrs[0];
+        if is_union || self.repr_c_structs.contains(name) {
+            self.push_error(
+                attr.span,
+                "S14",
+                format!("@contiguous_elements requires an ordinary non-C struct, not `{name}`"),
+            );
+            return;
+        }
+
+        let mut element = None;
+        let mut pointer = None;
+        let mut length = None;
+        for argument in &attr.args {
+            let AttrArg::KeyValue(key, AttrVal::Ident(value)) = argument else {
+                self.push_error(
+                    attr.span,
+                    "S14",
+                    format!("@contiguous_elements on `{name}` requires named identifier arguments"),
+                );
+                return;
+            };
+            let slot = match key.as_str() {
+                "element" => &mut element,
+                "pointer" => &mut pointer,
+                "length" => &mut length,
+                _ => {
+                    self.push_error(
+                        attr.span,
+                        "S14",
+                        format!("@contiguous_elements on `{name}` has unknown argument `{key}`"),
+                    );
+                    return;
+                }
+            };
+            if slot.replace(value.as_str()).is_some() {
+                self.push_error(
+                    attr.span,
+                    "S14",
+                    format!("@contiguous_elements on `{name}` repeats `{key}`"),
+                );
+                return;
+            }
+        }
+        let Some(element) = element else {
+            self.push_error(
+                attr.span,
+                "S14",
+                format!("@contiguous_elements on `{name}` requires `element=...`"),
+            );
+            return;
+        };
+        let Some(pointer) = pointer else {
+            self.push_error(
+                attr.span,
+                "S14",
+                format!("@contiguous_elements on `{name}` requires `pointer=...`"),
+            );
+            return;
+        };
+        let Some(length) = length else {
+            self.push_error(
+                attr.span,
+                "S14",
+                format!("@contiguous_elements on `{name}` requires `length=...`"),
+            );
+            return;
+        };
+        if !generic_params.iter().any(|parameter| parameter == element) {
+            self.push_error(
+                attr.span,
+                "S14",
+                format!(
+                    "@contiguous_elements on `{name}` names `{element}`, which is not a generic parameter"
+                ),
+            );
+        }
+        match fields.iter().find(|field| field.name == pointer) {
+            Some(field) if matches!(field.ty.node, TypeKind::RawPtr { .. }) => {}
+            Some(_) => self.push_error(
+                attr.span,
+                "S14",
+                format!(
+                    "@contiguous_elements pointer field `{name}.{pointer}` must have a raw-pointer type"
+                ),
+            ),
+            None => self.push_error(
+                attr.span,
+                "S14",
+                format!(
+                    "@contiguous_elements on `{name}` names missing pointer field `{pointer}`"
+                ),
+            ),
+        }
+        match fields.iter().find(|field| field.name == length) {
+            Some(field) if matches!(field.ty.node, TypeKind::Usize) => {}
+            Some(_) => self.push_error(
+                attr.span,
+                "S14",
+                format!("@contiguous_elements length field `{name}.{length}` must have type usize"),
+            ),
+            None => self.push_error(
+                attr.span,
+                "S14",
+                format!("@contiguous_elements on `{name}` names missing length field `{length}`"),
+            ),
+        }
+        let destructor = format!("{name}.free");
+        if !self.consuming_receiver_methods.contains(&destructor) {
+            self.push_error(
+                item_span,
+                "S14",
+                format!(
+                    "@contiguous_elements on `{name}` requires consuming `fn free(self: {name}[...])`"
+                ),
+            );
+        }
     }
 
     fn validate_trait_impl_conformance(

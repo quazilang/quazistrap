@@ -209,6 +209,9 @@ pub struct Codegen<'a> {
     /// the latter never falls back to the historical one-slot ABI.
     fn_value_layouts: HashMap<String, crate::runtime_layout::FnValueLayout>,
     fn_index: HashMap<String, u16>,
+    /// Compiler-validated layout contracts for generic contiguous containers.
+    /// These are declarations of physical storage, not API-name special cases.
+    contiguous_element_containers: HashMap<String, ContiguousElementContainer>,
     const_map: HashMap<(usize, usize), ConstValue>,
     type_map: HashMap<(usize, usize), TypeKind>,
     /// Spans marked for auto-deref by semantic analysis.
@@ -234,6 +237,17 @@ pub struct Codegen<'a> {
     incremental_snapshot: Vec<CachedCodegenUnit>,
     incremental_hits: usize,
     incremental_misses: usize,
+}
+
+/// Physical layout contract for a generic container whose initialized elements
+/// occupy a contiguous `[0, len)` range. The source `free(self)` method remains
+/// responsible for releasing the backing allocation after generated element
+/// cleanup has run.
+#[derive(Debug, Clone)]
+struct ContiguousElementContainer {
+    element_param_index: usize,
+    pointer_offset: u16,
+    length_offset: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -303,6 +317,7 @@ impl<'a> Codegen<'a> {
             report,
             fn_value_layouts,
             fn_index: HashMap::new(),
+            contiguous_element_containers: HashMap::new(),
             const_map,
             type_map,
             autoderef_map,
@@ -363,6 +378,150 @@ impl<'a> Codegen<'a> {
             restored: self.incremental_hits,
             compiled: self.incremental_misses,
         }
+    }
+
+    fn collect_contiguous_element_containers(
+        &self,
+        program: &Program,
+    ) -> Result<HashMap<String, ContiguousElementContainer>, String> {
+        let mut containers = HashMap::new();
+        for item in &program.items {
+            let ItemKind::Struct {
+                name,
+                generic_params,
+                fields,
+                is_union,
+                attributes,
+                ..
+            } = &item.node
+            else {
+                continue;
+            };
+            let attrs = attributes
+                .iter()
+                .filter(|attribute| attribute.name == "contiguous_elements")
+                .collect::<Vec<_>>();
+            if attrs.is_empty() {
+                continue;
+            }
+            if attrs.len() != 1 {
+                return Err(format!(
+                    "@contiguous_elements may appear at most once on `{name}`"
+                ));
+            }
+            if *is_union || self.report.repr_c_structs.contains(name) {
+                return Err(format!(
+                    "@contiguous_elements requires an ordinary non-C struct, not `{name}`"
+                ));
+            }
+
+            let attr = attrs[0];
+            let mut element = None;
+            let mut pointer = None;
+            let mut length = None;
+            for argument in &attr.args {
+                let AttrArg::KeyValue(key, AttrVal::Ident(value)) = argument else {
+                    return Err(format!(
+                        "@contiguous_elements on `{name}` requires named identifier arguments"
+                    ));
+                };
+                let slot = match key.as_str() {
+                    "element" => &mut element,
+                    "pointer" => &mut pointer,
+                    "length" => &mut length,
+                    _ => {
+                        return Err(format!(
+                            "@contiguous_elements on `{name}` has unknown argument `{key}`"
+                        ));
+                    }
+                };
+                if slot.replace(value.as_str()).is_some() {
+                    return Err(format!("@contiguous_elements on `{name}` repeats `{key}`"));
+                }
+            }
+            let element = element.ok_or_else(|| {
+                format!("@contiguous_elements on `{name}` requires `element=...`")
+            })?;
+            let pointer = pointer.ok_or_else(|| {
+                format!("@contiguous_elements on `{name}` requires `pointer=...`")
+            })?;
+            let length = length
+                .ok_or_else(|| format!("@contiguous_elements on `{name}` requires `length=...`"))?;
+            let element_param_index = generic_params
+                .iter()
+                .position(|parameter| parameter == element)
+                .ok_or_else(|| {
+                    format!(
+                        "@contiguous_elements on `{name}` names `{element}`, which is not a generic parameter"
+                    )
+                })?;
+            let pointer_field = fields
+                .iter()
+                .find(|field| field.name == pointer)
+                .ok_or_else(|| {
+                    format!(
+                        "@contiguous_elements on `{name}` names missing pointer field `{pointer}`"
+                    )
+                })?;
+            if !matches!(pointer_field.ty.node, TypeKind::RawPtr { .. }) {
+                return Err(format!(
+                    "@contiguous_elements pointer field `{name}.{pointer}` must have a raw-pointer type"
+                ));
+            }
+            let length_field = fields
+                .iter()
+                .find(|field| field.name == length)
+                .ok_or_else(|| {
+                    format!(
+                        "@contiguous_elements on `{name}` names missing length field `{length}`"
+                    )
+                })?;
+            if !matches!(length_field.ty.node, TypeKind::Usize) {
+                return Err(format!(
+                    "@contiguous_elements length field `{name}.{length}` must have type usize"
+                ));
+            }
+            let offsets = self.report.struct_field_offsets.get(name).ok_or_else(|| {
+                format!("missing field layout while registering `{name}` container contract")
+            })?;
+            let field_offset = |field_name: &str| -> Result<u16, String> {
+                offsets
+                    .iter()
+                    .find_map(|(candidate, offset)| (candidate == field_name).then_some(*offset))
+                    .ok_or_else(|| {
+                        format!(
+                            "missing `{field_name}` field layout while registering `{name}` container contract"
+                        )
+                    })
+                    .and_then(|offset| {
+                        u16::try_from(offset).map_err(|_| {
+                            format!(
+                                "`{name}.{field_name}` offset exceeds the QZI field-offset limit"
+                            )
+                        })
+                    })
+            };
+            let destructor = format!("{name}.free");
+            if !self.report.consuming_receiver_methods.contains(&destructor) {
+                return Err(format!(
+                    "@contiguous_elements on `{name}` requires consuming `fn free(self: {name}[...])`"
+                ));
+            }
+            if containers
+                .insert(
+                    name.clone(),
+                    ContiguousElementContainer {
+                        element_param_index,
+                        pointer_offset: field_offset(pointer)?,
+                        length_offset: field_offset(length)?,
+                    },
+                )
+                .is_some()
+            {
+                return Err(format!("duplicate container contract for `{name}`"));
+            }
+        }
+        Ok(containers)
     }
 
     pub fn external_call_relocations(&self) -> &[QziCallRelocation] {
@@ -518,6 +677,7 @@ impl<'a> Codegen<'a> {
             ));
         }
         self.source_files = source_files.to_vec();
+        self.contiguous_element_containers = self.collect_contiguous_element_containers(program)?;
         self.external_call_relocations.clear();
         self.incremental_snapshot.clear();
         self.incremental_hits = 0;
@@ -1822,6 +1982,7 @@ impl<'a> Codegen<'a> {
             name,
             effective_param_count,
             &self.fn_index,
+            &self.contiguous_element_containers,
             &self.const_map,
             &self.type_map,
             &self.autoderef_map,
@@ -2294,6 +2455,7 @@ struct FnCompiler<'a> {
     codegen_error: Option<String>,
     drop_scopes: Vec<Vec<DropLocal>>,
     fn_index: &'a HashMap<String, u16>,
+    contiguous_element_containers: &'a HashMap<String, ContiguousElementContainer>,
     const_map: &'a HashMap<(usize, usize), ConstValue>,
     type_map: &'a HashMap<(usize, usize), TypeKind>,
     /// Spans marked for auto-deref by semantic analysis.
@@ -2358,6 +2520,19 @@ struct DropLocal {
 enum DropAction {
     Call(String),
     Structural(Vec<StructuralFieldDrop>),
+    /// A container declaration cannot make an element copyable. This sentinel
+    /// keeps unsupported recursive destruction from degrading to raw storage
+    /// release while preserving the originating container type for diagnostics.
+    UnsupportedContiguousElement { container: String, element: TypeKind },
+    /// Destroy each initialized contiguous element, then invoke the container's
+    /// ordinary consuming release hook for its backing allocation.
+    ContiguousElements {
+        pointer_offset: u16,
+        length_offset: u16,
+        element_slots: u8,
+        element_action: Option<Box<DropAction>>,
+        release: String,
+    },
     FreeClosureEnv,
 }
 
@@ -2437,6 +2612,7 @@ impl<'a> FnCompiler<'a> {
         name: &str,
         param_count: usize,
         fn_index: &'a HashMap<String, u16>,
+        contiguous_element_containers: &'a HashMap<String, ContiguousElementContainer>,
         const_map: &'a HashMap<(usize, usize), ConstValue>,
         type_map: &'a HashMap<(usize, usize), TypeKind>,
         autoderef_map: &'a HashMap<(usize, usize), bool>,
@@ -2476,6 +2652,7 @@ impl<'a> FnCompiler<'a> {
             codegen_error: None,
             drop_scopes: Vec::new(),
             fn_index,
+            contiguous_element_containers,
             const_map,
             type_map,
             autoderef_map,
@@ -4186,6 +4363,9 @@ impl<'a> FnCompiler<'a> {
         let TypeKind::Named { name, type_args } = resolved else {
             return None;
         };
+        if let Some(action) = self.contiguous_element_drop_action(&name, &type_args) {
+            return Some(action);
+        }
         let base = format!("{}.free", name);
         if !type_args.is_empty() {
             let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
@@ -4204,6 +4384,53 @@ impl<'a> FnCompiler<'a> {
             return Some(DropAction::Call(base));
         }
         self.structural_drop_action_for_named(&name, &type_args, &mut HashSet::new())
+    }
+
+    fn contiguous_element_drop_action(&self, name: &str, type_args: &[Type]) -> Option<DropAction> {
+        let metadata = self.contiguous_element_containers.get(name)?;
+        let element_ty = type_args.get(metadata.element_param_index)?;
+        let concrete_element = self.resolve_type(&element_ty.node);
+        let element_slots = crate::runtime_layout::runtime_value_layout(&concrete_element)
+            .slot_count()
+            .and_then(|slots| u8::try_from(slots).ok())?;
+        let base_release = format!("{name}.free");
+        if !self.consuming_receiver_methods.contains(&base_release)
+        {
+            return None;
+        }
+        let release = if type_args.is_empty() {
+            base_release
+        } else {
+            let args = type_args.iter().map(|arg| arg.node.clone()).collect::<Vec<_>>();
+            let specialized = crate::semantic::typecheck::mangle_monomorphized(&base_release, &args);
+            if self.fn_index.contains_key(&specialized) {
+                specialized
+            } else if self.fn_index.contains_key(&base_release) {
+                base_release
+            } else {
+                return None;
+            }
+        };
+        let element_action = self.drop_action_for_type(&concrete_element);
+        // Generic template chunks are emitted before a concrete element is
+        // known and are never a valid fallback for a concrete cleanup call.
+        // Their specialized copies resolve `T` and revisit this action.
+        if element_action.is_none()
+            && !type_kind_mentions_unresolved_param(&concrete_element)
+            && self.type_requires_structural_drop(&concrete_element)
+        {
+            return Some(DropAction::UnsupportedContiguousElement {
+                container: name.to_string(),
+                element: concrete_element,
+            });
+        }
+        Some(DropAction::ContiguousElements {
+            pointer_offset: metadata.pointer_offset,
+            length_offset: metadata.length_offset,
+            element_slots,
+            element_action: element_action.map(Box::new),
+            release,
+        })
     }
 
     fn has_consuming_drop_hook(&self, base: &str, resolved_name: &str) -> bool {
@@ -4281,6 +4508,9 @@ impl<'a> FnCompiler<'a> {
         };
         if self.repr_c_structs.contains(&name) {
             return None;
+        }
+        if let Some(action) = self.contiguous_element_drop_action(&name, &type_args) {
+            return Some(action);
         }
         let base = format!("{}.free", name);
         if type_args.is_empty()
@@ -4383,6 +4613,53 @@ impl<'a> FnCompiler<'a> {
                     self.chunk.emit(field_load(field_reg, reg, field.offset));
                     self.emit_drop_action(field_reg, *field.action);
                 }
+            }
+            DropAction::UnsupportedContiguousElement { container, element } => {
+                self.codegen_error.get_or_insert_with(|| {
+                    format!(
+                        "cannot destroy `{container}[{element}]`: its element type has no supported recursive destruction action"
+                    )
+                });
+            }
+            DropAction::ContiguousElements {
+                pointer_offset,
+                length_offset,
+                element_slots,
+                element_action,
+                release,
+            } => {
+                let pointer = self.alloc_reg();
+                self.chunk.emit(field_load(pointer, reg, pointer_offset));
+                if let Some(element_action) = element_action {
+                    let length = self.alloc_reg();
+                    self.chunk.emit(field_load(length, reg, length_offset));
+                    let index = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Mov, index, length, 0));
+                    let zero = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+                    let loop_top = self.chunk.len() as u16;
+                    self.chunk.emit(rrr(Opcode::Cmp, 0, index, zero));
+                    let loop_exit = self.chunk.emit(ri16(Opcode::Jle, 0, 0));
+                    self.chunk.emit(rrr(Opcode::Dec, index, index, 0));
+                    let element = self.reserve_reg_block(element_slots as usize);
+                    let load_destination = if element_slots > 1 {
+                        let element_ptr = self.alloc_reg();
+                        self.chunk
+                            .emit(mem_lea_block(element, element_ptr, 0, element_slots));
+                        element_ptr
+                    } else {
+                        element
+                    };
+                    let mut load = rrr(Opcode::ArrayLoad, load_destination, pointer, index);
+                    load.flags = element_slots;
+                    self.chunk.emit(load);
+                    self.emit_drop_action(element, *element_action);
+                    self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
+                    let exit = self.chunk.len() as u16;
+                    self.chunk.patch_jump(loop_exit, exit);
+                }
+                let dst = self.alloc_reg();
+                self.emit_call_by_name(&release, &[reg], dst);
             }
             DropAction::FreeClosureEnv => {
                 let mut instruction = ri16(Opcode::Intrinsic, reg, 4);
@@ -6947,6 +7224,24 @@ impl<'a> FnCompiler<'a> {
                 let obj = self.compile_expr(object);
                 let key = (object.span.start, object.span.end);
 
+                // A declared contiguous-element container has one destruction
+                // path: direct `free()` and compiler-inserted cleanup both run
+                // the generated element loop before the source release hook.
+                if method == "free"
+                    && args.is_empty()
+                    && let Some(receiver_ty) = self.type_of_expr(object)
+                    && let Some(action) = self.drop_action_for_type(&receiver_ty)
+                    && matches!(
+                        &action,
+                        DropAction::ContiguousElements { .. }
+                            | DropAction::UnsupportedContiguousElement { .. }
+                    )
+                {
+                    self.mark_consumed_expr(object);
+                    self.emit_drop_action(obj, action);
+                    return self.alloc_reg();
+                }
+
                 // Semantic analysis records the exact target for imported and
                 // otherwise disambiguated inherent methods. Prefer that target
                 // before reconstructing it from the receiver annotation: calls
@@ -7702,6 +7997,7 @@ impl<'a> FnCompiler<'a> {
                     &anon_name,
                     anon_param_count,
                     self.fn_index,
+                    self.contiguous_element_containers,
                     self.const_map,
                     self.type_map,
                     self.autoderef_map,
@@ -9145,6 +9441,135 @@ fn take(value: Holder[i32]) void {}
                 .all(|instruction| instruction.opcode != Opcode::FieldLoad as u8
                     && instruction.opcode != Opcode::CallIdx as u8),
             "generic fields require later specialization-aware drop glue: {:?}",
+            take.code
+        );
+    }
+
+    #[test]
+    fn contiguous_element_contract_drops_owned_elements_before_releasing_storage() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+
+fn take(value: Buffer[Token]) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert!(
+            take.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::ArrayLoad as u8),
+            "owned elements must be loaded only into generated destruction glue: {:?}",
+            take.code
+        );
+        assert!(
+            take.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::Jle as u8),
+            "generated glue must guard the reverse element loop: {:?}",
+            take.code
+        );
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            2,
+            "each cleanup must call the element hook and the storage release hook: {:?}",
+            take.code
+        );
+    }
+
+    #[test]
+    fn contiguous_element_contract_routes_direct_free_through_the_same_cleanup() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+
+fn dispose(value: Buffer[Token]) void { value.free(); }
+"#,
+        );
+        let dispose = chunks.iter().find(|chunk| chunk.name == "dispose").unwrap();
+        assert!(
+            dispose
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::ArrayLoad as u8),
+            "direct free must not bypass generated element cleanup: {:?}",
+            dispose.code
+        );
+        assert_eq!(
+            dispose
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            2,
+            "direct free must call each stage exactly once: {:?}",
+            dispose.code
+        );
+    }
+
+    #[test]
+    fn contiguous_element_contract_rejects_owned_shapes_without_destruction_glue() {
+        let source = r#"
+enum State { Ready, Closed }
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+
+fn take(value: Buffer[State]) void {}
+"#;
+        let tokens = Lexer::new(source).tokenize();
+        let program = Parser::new(tokens).parse().expect("parse failed");
+        let report = Analyzer::new().analyze_program(&program);
+        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        let error = Codegen::new(&report)
+            .compile_program(&program, &[])
+            .expect_err("a non-droppable owned element must fail closed");
+        assert!(
+            error.contains("no supported recursive destruction action"),
+            "unexpected codegen error: {error}"
+        );
+    }
+
+    #[test]
+    fn contiguous_element_contract_skips_plain_element_loop() {
+        let chunks = compile(
+            r#"
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+
+fn take(value: Buffer[i32]) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert!(
+            take.code
+                .iter()
+                .all(|instruction| instruction.opcode != Opcode::ArrayLoad as u8),
+            "plain elements need no generated load loop: {:?}",
+            take.code
+        );
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "plain elements still release the storage exactly once: {:?}",
             take.code
         );
     }

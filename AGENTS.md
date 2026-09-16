@@ -218,6 +218,7 @@ Primitives: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `isize`, `usize`, `f16/f32/f64`,
 | `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)` | Suppress W01/W02/W03/W07. |
 | `@intrinsic("quazi.X")` | Safe stdlib wrapper; dispatched by encoder case number. |
 | `@derive(Trait, ...)` | Register derived traits for struct. |
+| `@contiguous_elements(element=T, pointer=ptr, length=len)` | Compiler-validated physical contract for a dense generic container. Generated cleanup destroys owned `[0, len)` elements before the consuming source `free(self)` storage-release hook. It is not an element-borrow or replacement API. |
 | `@panic_handler` | Validate signature; mark as panic handler. |
 | `@test` | Mark a zero-argument `void` function for `qz test`. |
 | Field attributes | Postfix metadata on a struct/union field, e.g. `name: str @ini("user_name")`. The parser preserves every name and literal/identifier argument but the compiler assigns no built-in meaning; libraries and tools may interpret them. |
