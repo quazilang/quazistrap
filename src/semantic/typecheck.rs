@@ -857,7 +857,7 @@ impl Analyzer {
                                 _ => None,
                             };
                             let valid = element.is_some_and(|element| {
-                                matches!(params.first().map(|param| &param.ty.node), Some(TypeKind::Ref { .. }))
+                                matches!(params.first().map(|param| &param.ty.node), Some(TypeKind::Ref { inner }) if self.resolve_type_aliases(&inner.node).to_string() == self.resolve_type_aliases(&for_ty.node).to_string())
                                     && params.len() == 2
                                     && matches!(params[1].ty.node, TypeKind::Usize)
                                     && self.resolve_type_aliases(&return_ty.node).to_string()
