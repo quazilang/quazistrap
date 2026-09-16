@@ -264,17 +264,26 @@ impl Analyzer {
             }
             match &item.node {
                 ItemKind::Fn {
+                    name,
                     params,
                     body: Some(body),
                     ..
                 } => {
+                    self.current_function.push(
+                        self.module_path_for_span(item.span)
+                            .map(|module| format!("{module}.{name}"))
+                            .unwrap_or_else(|| name.clone()),
+                    );
                     let mut env = MoveEnv::new();
                     for p in params {
+                        self.bc_record_contiguous_destructor_root(&p.ty.node);
                         env.declare(p.name.clone(), Some(p.ty.node.clone()));
                     }
                     self.bc_block(body, &mut env);
+                    let _ = self.current_function.pop();
                 }
-                ItemKind::Impl { methods, .. } => {
+                ItemKind::Impl { for_ty, methods, .. } => {
+                    let type_name = crate::semantic::declare::type_kind_base_name(&for_ty.node);
                     for m in methods {
                         if let ItemKind::Fn {
                             name,
@@ -283,6 +292,7 @@ impl Analyzer {
                             ..
                         } = &m.node
                         {
+                            self.current_function.push(format!("{type_name}.{name}"));
                             let has_consuming_receiver = params.first().is_some_and(|param| {
                                 param.name == "self"
                                     && !matches!(
@@ -300,9 +310,11 @@ impl Analyzer {
                                 MoveEnv::new()
                             };
                             for p in params {
+                                self.bc_record_contiguous_destructor_root(&p.ty.node);
                                 env.declare(p.name.clone(), Some(p.ty.node.clone()));
                             }
                             self.bc_block(body, &mut env);
+                            let _ = self.current_function.pop();
                         }
                     }
                 }
@@ -332,6 +344,9 @@ impl Analyzer {
                 if let Some(v) = value {
                     self.bc_expr(v, env, true);
                 }
+                if let Some(var_ty) = &var_ty {
+                    self.bc_record_contiguous_destructor_root(var_ty);
+                }
                 env.declare(name.clone(), var_ty);
             }
             StmtKind::Const {
@@ -342,6 +357,9 @@ impl Analyzer {
                     .map(|t| t.node.clone())
                     .or_else(|| self.bc_annotated_type(value));
                 self.bc_expr(value, env, true);
+                if let Some(var_ty) = &var_ty {
+                    self.bc_record_contiguous_destructor_root(var_ty);
+                }
                 env.declare(name.clone(), var_ty);
             }
             StmtKind::Return(Some(expr)) => {
@@ -1063,6 +1081,72 @@ impl Analyzer {
                         self.bc_is_move_type(&self.resolve_type_aliases(&element.node))
                     })
         )
+    }
+
+    /// Implicit scope cleanup is an ownership use just like an explicit
+    /// `value.free()`. Record every reachable contiguous container release
+    /// hook now so tree shaking and monomorphization retain the chunks that
+    /// generated structural cleanup must call.
+    fn bc_record_contiguous_destructor_root(&mut self, ty: &TypeKind) {
+        let Some(owner) = self.current_function.last().cloned() else {
+            return;
+        };
+        self.bc_record_contiguous_destructor_roots(ty, &owner, &mut HashSet::new());
+    }
+
+    fn bc_record_contiguous_destructor_roots(
+        &mut self,
+        ty: &TypeKind,
+        owner: &str,
+        visiting: &mut HashSet<String>,
+    ) {
+        let TypeKind::Named { name, type_args } = self.resolve_type_aliases(ty) else {
+            return;
+        };
+        let visit_key = format!("{name}[{}]", type_args.iter().map(|arg| arg.node.to_string()).collect::<Vec<_>>().join(","));
+        if !visiting.insert(visit_key) {
+            return;
+        }
+        if !type_args.is_empty() && self.contiguous_element_containers.contains(&name) {
+            let release = format!("{name}.free");
+            let type_args = type_args
+            .iter()
+            .map(|argument| argument.node.clone())
+            .collect::<Vec<_>>();
+            let mangled_name = crate::semantic::typecheck::mangle_monomorphized(&release, &type_args);
+            if !self
+                .monomorphizations
+                .iter()
+                .any(|mono| mono.mangled_name == mangled_name)
+            {
+                self.monomorphizations.push(MonomorphizationInfo {
+                    fn_name: release,
+                    type_args,
+                    mangled_name: mangled_name.clone(),
+                });
+            }
+            self.add_dependency_edge(DependencyKind::Call, owner, &mangled_name);
+            return;
+        }
+        if self
+            .consuming_receiver_methods
+            .contains(&format!("{name}.free"))
+            || self.repr_c_structs.contains(&name)
+        {
+            return;
+        }
+        let Some(fields) = self.struct_defs.get(&name).cloned() else {
+            return;
+        };
+        let params = self.struct_generic_params.get(&name).cloned().unwrap_or_default();
+        let substitutions = params
+            .into_iter()
+            .zip(type_args.into_iter().map(|argument| argument.node))
+            .collect::<HashMap<_, _>>();
+        for (_, field_ty) in fields {
+            let field_ty = crate::semantic::typecheck::substitute_type_kind(&field_ty, &substitutions);
+            self.bc_record_contiguous_destructor_roots(&field_ty, owner, visiting);
+        }
     }
 
     fn bc_mark_shared_receiver_loan(&mut self, object: &Expr, env: &mut MoveEnv, at: Span) {

@@ -955,6 +955,7 @@ impl Analyzer {
         if attrs.is_empty() {
             return;
         }
+        self.contiguous_element_containers.insert(name.to_string());
         if attrs.len() != 1 {
             self.push_error(
                 attrs[1].span,

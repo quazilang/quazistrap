@@ -162,7 +162,9 @@ length, loads each concrete element with its resolved slot stride, applies the
 existing recursive drop action, and then invokes the type's ordinary consuming
 `free(self)` method to release storage. The same action is used for explicit
 `.free()` and scope cleanup. A plain-copy element skips the loop and only
-invokes `free`.
+invokes `free`. Implicit concrete cleanup records the exact `Type.free<T>`
+monomorphization root and its dependencies; it never dispatches a concrete
+value to the unresolved generic template.
 
 This is intentionally limited to fully initialized dense buffers. It does not
 apply to sparse containers, maps with independent key/value storage, or
@@ -175,8 +177,9 @@ establishes destruction only, not a `Headers` migration.
   `ArrayLoad`/`ArrayStore` carry their concrete element-slot count as stride
   metadata. The encoder copies the full element block. Typed copy/drop helpers
   are still required for owned element semantics.
-- `get` returns a borrow `&T`. This is the largest semantic work item in the
-  design and is itemized honestly — each piece is new machinery:
+- The target `get` API returns a borrow `&T`; today's shipped API still returns
+  `T` and rejects owned-element calls. Converting it is the largest semantic
+  work item in the design and is itemized honestly — each piece is new machinery:
   1. Lift the ban on returning non-string references for references derived
      from a borrowed receiver or parameter (`typecheck.rs` currently rejects
      all of them).

@@ -167,6 +167,9 @@ pub struct Analyzer {
     pub(super) explicit_exclusive_receiver_methods: std::collections::HashSet<String>,
     /// Impl methods whose first parameter is an explicit owned `self: T` receiver.
     pub(super) consuming_receiver_methods: std::collections::HashSet<String>,
+    /// Generic aggregates whose source destructor is a storage-release hook
+    /// and whose element cleanup is synthesized by code generation.
+    pub(super) contiguous_element_containers: std::collections::HashSet<String>,
     /// Internal function name → stable native symbol requested by @export.
     pub(super) exported_symbols: HashMap<String, String>,
     /// Resolved Quazi binding name → imported C data symbol metadata.
@@ -888,6 +891,7 @@ impl Analyzer {
             explicit_shared_receiver_methods: std::collections::HashSet::new(),
             explicit_exclusive_receiver_methods: std::collections::HashSet::new(),
             consuming_receiver_methods: std::collections::HashSet::new(),
+            contiguous_element_containers: std::collections::HashSet::new(),
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
         }
@@ -1328,6 +1332,7 @@ impl Analyzer {
         self.explicit_shared_receiver_methods.clear();
         self.explicit_exclusive_receiver_methods.clear();
         self.consuming_receiver_methods.clear();
+        self.contiguous_element_containers.clear();
         self.exported_symbols.clear();
         self.foreign_globals.clear();
         self.repr_c_structs.clear();
@@ -2271,6 +2276,39 @@ fn main() void {}
         );
         assert!(report.errors.iter().any(|error| {
             error.code == "S14" && error.message.contains("pointer field `Buffer.count`")
+        }));
+    }
+
+    #[test]
+    fn implicit_contiguous_cleanup_records_specialized_release_dependencies() {
+        let report = analyze(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+fn release_for[T](count: usize) void {}
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] {
+    fn free(self: Buffer[T]) void { release_for[T](self.count); }
+}
+
+fn take(value: Buffer[Token]) void {}
+"#,
+        );
+        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        assert!(report.monomorphizations.iter().any(|mono| {
+            mono.fn_name == "Buffer.free" && mono.mangled_name.contains("Token")
+        }));
+        assert!(report.monomorphizations.iter().any(|mono| {
+            mono.fn_name == "release_for" && mono.mangled_name.contains("Token")
+        }));
+        assert!(report.dependency_graph.edges.iter().any(|edge| {
+            edge.kind == DependencyKind::Call
+                && edge.from == "take"
+                && edge.to.contains("Buffer.free")
+                && edge.to.contains("Token")
         }));
     }
 

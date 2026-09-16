@@ -1,6 +1,6 @@
 [package]
 name = "quazilang"
-version = "26.0.1"
+version = "0.26.0"
 edition = "2024"
 license = "0BSD"
 description = "Quazi programming language bootstrap"

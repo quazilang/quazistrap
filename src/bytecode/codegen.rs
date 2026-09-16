@@ -2524,6 +2524,10 @@ enum DropAction {
     /// keeps unsupported recursive destruction from degrading to raw storage
     /// release while preserving the originating container type for diagnostics.
     UnsupportedContiguousElement { container: String, element: TypeKind },
+    /// A concrete container cleanup must never dispatch to its unresolved
+    /// generic source hook. Semantic ownership planning records this
+    /// specialization as a root before code generation.
+    UnsupportedContiguousRelease { container: String, release: String },
     /// Destroy each initialized contiguous element, then invoke the container's
     /// ordinary consuming release hook for its backing allocation.
     ContiguousElements {
@@ -4398,17 +4402,21 @@ impl<'a> FnCompiler<'a> {
         {
             return None;
         }
-        let release = if type_args.is_empty() {
+        let has_unresolved_type_arg = type_args
+            .iter()
+            .any(|argument| type_kind_mentions_unresolved_param(&argument.node));
+        let release = if type_args.is_empty() || has_unresolved_type_arg {
             base_release
         } else {
             let args = type_args.iter().map(|arg| arg.node.clone()).collect::<Vec<_>>();
             let specialized = crate::semantic::typecheck::mangle_monomorphized(&base_release, &args);
             if self.fn_index.contains_key(&specialized) {
                 specialized
-            } else if self.fn_index.contains_key(&base_release) {
-                base_release
             } else {
-                return None;
+                return Some(DropAction::UnsupportedContiguousRelease {
+                    container: name.to_string(),
+                    release: specialized,
+                });
             }
         };
         let element_action = self.drop_action_for_type(&concrete_element);
@@ -4618,6 +4626,13 @@ impl<'a> FnCompiler<'a> {
                 self.codegen_error.get_or_insert_with(|| {
                     format!(
                         "cannot destroy `{container}[{element}]`: its element type has no supported recursive destruction action"
+                    )
+                });
+            }
+            DropAction::UnsupportedContiguousRelease { container, release } => {
+                self.codegen_error.get_or_insert_with(|| {
+                    format!(
+                        "cannot destroy `{container}`: required specialized storage-release hook `{release}` is unavailable"
                     )
                 });
             }
@@ -7235,6 +7250,7 @@ impl<'a> FnCompiler<'a> {
                         &action,
                         DropAction::ContiguousElements { .. }
                             | DropAction::UnsupportedContiguousElement { .. }
+                            | DropAction::UnsupportedContiguousRelease { .. }
                     )
                 {
                     self.mark_consumed_expr(object);
