@@ -5563,6 +5563,26 @@ fn main() void {
     }
 
     #[test]
+    fn index_assignment_preserves_an_unsafe_array_set_boundary() {
+        let report = analyze(
+            r#"
+struct Array[T] { marker: usize }
+impl Array[T] {
+    fn new() Array[T] { ret Array { marker: 0 }; }
+    unsafe fn set(self: &Array[T]!, idx: usize, value: T) void {}
+}
+fn main() void {
+    var values: Array[i32] = Array.new();
+    values[0] = 1;
+}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S11" && error.message.contains("index assignment requires unsafe")
+        }));
+    }
+
+    #[test]
     fn array_set_layout_marks_owned_elements() {
         let report = analyze(
             r#"

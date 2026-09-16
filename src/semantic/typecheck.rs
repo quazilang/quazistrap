@@ -6717,6 +6717,18 @@ impl Analyzer {
                 if let Some(TypeKind::Named { name, type_args }) = &object_eval.ty
                     && name == "Array"
                 {
+                    if self
+                        .resolve_symbol("Array.set")
+                        .is_some_and(|symbol| symbol.unsafe_fn)
+                        && self.unsafe_depth == 0
+                    {
+                        self.push_error(
+                            target.span,
+                            "S11",
+                            "Array index assignment requires unsafe context while Array.set is unsafe"
+                                .to_string(),
+                        );
+                    }
                     let from = self
                         .current_function
                         .last()
