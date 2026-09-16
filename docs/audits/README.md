@@ -1,5 +1,7 @@
 # Audits
 
+- [2026-09-16: Plan-progress audit](2026-09-16-plan-progress.md)
+
 Audience: language and tooling developers.
 
 This directory contains dated, evidence-based audits of Quazi behavior and its
