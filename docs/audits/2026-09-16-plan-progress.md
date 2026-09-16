@@ -20,11 +20,17 @@ work.
 - Compiler commit `1553568` rejects `Array.get` for owned elements with S10.
   The old raw-load implementation would otherwise create a shallow second
   owner. Plain element reads remain valid.
+- Compiler commit `10d5853` makes contiguous-container cleanup roots recursive.
+  A `Buffer[Buffer[Token]]` now retains both concrete `Buffer.free`
+  specializations, including when the outer cleanup is reached through a
+  generic caller. Symbolic template edges remain available for normal
+  monomorphization; the compiler never falls back to an unresolved generic
+  storage-release hook.
 - The standard-library harness reaches the HTTP `Headers` boundary: its
   `Array[Header]` operations need scoped borrowed elements and exact-once
   replacement/removal/freeing. It is intentionally not treated as a passing
   standard-library suite while those diagnostics remain.
-- The contained compiler's `cargo test --offline` passes 617 tests. Canonical
+- The contained compiler's `cargo test --offline` passes 627 tests. Canonical
   Markdown checks pass 13 tests.
 - The separate Tree-sitter corpus passes 28/28 and its workspace conformance
   command passes. This supersedes the obsolete resume warning about example 33.
