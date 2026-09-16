@@ -133,7 +133,8 @@ fn fast_add(a: i32, b: i32) i32 { ret a + b; }
 
 Declares the physical storage contract for a generic, contiguous container.
 It is for standard-library and runtime container implementers, not ordinary
-application structs. `T` names the generic element parameter; `ptr` names a
+application structs. `element` names the generic element parameter (at any
+position in the container's generic parameter list); `ptr` names a
 raw-pointer field; and `len` names a `usize` field. The initialized elements
 must occupy exactly the half-open range `[0, len)`.
 
@@ -147,7 +148,7 @@ pub struct Array[T] {
 ```
 
 The type must be a non-`@repr(C)` struct and provide a consuming
-`free(self: Type[T])` method. For an owned element type, the compiler destroys
+`free(self: Type[...])` method. For an owned element type, the compiler destroys
 elements from the final index down to zero before calling that source `free`
 method to release the backing storage. Compiler-inserted cleanup and a direct
 `.free()` call use the same sequence. If the compiler has no recursive
