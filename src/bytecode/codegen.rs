@@ -9516,6 +9516,39 @@ fn take(value: Buffer[Token]) void {}
     }
 
     #[test]
+    fn contiguous_element_contract_uses_the_declared_element_parameter() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[Marker, T] { storage: *u8, count: usize }
+impl Buffer[Marker, T] { fn free(self: Buffer[Marker, T]) void {} }
+
+fn take(value: Buffer[i32, Token]) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert!(
+            take.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::ArrayLoad as u8),
+            "the declared second type parameter must drive element cleanup: {:?}",
+            take.code
+        );
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .count(),
+            2,
+            "cleanup must call the Token hook and Buffer release exactly once: {:?}",
+            take.code
+        );
+    }
+
+    #[test]
     fn contiguous_element_cleanup_keeps_nested_release_specializations_reachable() {
         let chunks = compile(
             r#"
