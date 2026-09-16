@@ -111,3 +111,10 @@ Resolved 2026-09-12: [whole-program ownership and escape discipline](whole-progr
 Quazi uses capability-based, whole-program escape analysis rather than source
 lifetime annotations. QZI-only dependencies require compiler-verified
 ownership summaries; implementation and artifact-versioning remain pending.
+
+## D-015: borrowed dense-container elements
+
+Accepted 2026-09-16: [generic dense-container element borrows use a
+compiler-validated provenance contract](borrowed-elements.md). The required
+address operation and QZI/QZC compatibility update land together with D-014
+ownership summaries; no `Array`-specific compiler exception is permitted.

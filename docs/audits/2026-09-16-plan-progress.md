@@ -52,8 +52,10 @@ work.
 
 ## Required next ownership sequence
 
-1. Add provenance-tracked scoped borrowing for generic container elements;
-   owned values may not be copied from an `Array` read.
+1. Implement D-015's provenance-tracked scoped borrowing for generic
+   container elements. Its compiler-validated contract rejects an
+   `Array`-specific escape hatch and requires an artifact-compatible address
+   operation; owned values may not be copied from an `Array` read.
 2. Implement exact-once generic element replacement, removal, and destruction
    before re-enabling resource-owning collection APIs such as HTTP headers.
 3. Extend the capability/effect model through direct and indirect calls, then
