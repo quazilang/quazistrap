@@ -5578,7 +5578,7 @@ fn main() void {
 "#,
         );
         assert!(report.errors.iter().any(|error| {
-            error.code == "S11" && error.message.contains("index assignment requires unsafe")
+            error.code == "S11" && error.message.contains("indexed assignment requires unsafe")
         }));
     }
 

@@ -6717,15 +6717,16 @@ impl Analyzer {
                 if let Some(TypeKind::Named { name, type_args }) = &object_eval.ty
                     && name == "Array"
                 {
+                    let setter_name = format!("{name}.set");
                     if self
-                        .resolve_symbol("Array.set")
+                        .resolve_symbol(&setter_name)
                         .is_some_and(|symbol| symbol.unsafe_fn)
                         && self.unsafe_depth == 0
                     {
                         self.push_error(
                             target.span,
                             "S11",
-                            "Array index assignment requires unsafe context while Array.set is unsafe"
+                            "indexed assignment requires unsafe context while its setter is unsafe"
                                 .to_string(),
                         );
                     }
