@@ -18,3 +18,8 @@ operation, and replacement/removal/freeing require exact-once element cleanup.
 Existing APIs that depend on owned contiguous-container element reads,
 including HTTP headers, remain unavailable until that coordinated
 implementation lands.
+
+Likewise, `Array.set` is currently `unsafe`: replacing an initialized slot
+would otherwise overwrite an owned element without its exact-once destructor.
+The eventual generic replacement operation will restore a safe exclusive
+receiver API after it can destroy the prior element before storing the new one.

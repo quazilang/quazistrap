@@ -63,7 +63,9 @@ impl Array[T] {
         ret __ptr_load(self.ptr, idx);
     }
 
-    pub fn set(self: &Array[T]!, idx: usize, val: T) void {
+    // Replacing an initialized slot is unsafe until compiler-generated
+    // exact-once destruction can dispose of the previous owned element.
+    pub unsafe fn set(self: &Array[T]!, idx: usize, val: T) void {
         if (idx >= self.len) {
             panic("index out of bounds");
         }
