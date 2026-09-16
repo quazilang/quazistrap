@@ -835,8 +835,45 @@ impl Analyzer {
                 };
                 self.current_generic_params.push(impl_generic_params);
                 for method in methods {
-                    if let ItemKind::Fn { name, params, .. } = &method.node {
+                    if let ItemKind::Fn {
+                        name,
+                        params,
+                        return_ty,
+                        attributes,
+                        ..
+                    } = &method.node {
                         self.validate_impl_receiver(for_ty, name, params);
+                        if attributes
+                            .iter()
+                            .any(|attribute| attribute.name == "contiguous_element_value_read")
+                        {
+                            let element = match (
+                                &for_ty.node,
+                                self.contiguous_element_containers.get(&type_name),
+                            ) {
+                                (TypeKind::Named { type_args, .. }, Some(index)) => {
+                                    type_args.get(*index)
+                                }
+                                _ => None,
+                            };
+                            let valid = element.is_some_and(|element| {
+                                matches!(params.first().map(|param| &param.ty.node), Some(TypeKind::Ref { .. }))
+                                    && params.len() == 2
+                                    && matches!(params[1].ty.node, TypeKind::Usize)
+                                    && self.resolve_type_aliases(&return_ty.node).to_string()
+                                        == self.resolve_type_aliases(&element.node).to_string()
+                            });
+                            if valid {
+                                self.contiguous_element_value_accessors
+                                    .insert(format!("{}.{}", type_name, name));
+                            } else {
+                                self.push_error(
+                                    method.span,
+                                    "S14",
+                                    "@contiguous_element_value_read requires a shared container receiver, one usize index, and the declared element result type".to_string(),
+                                );
+                            }
+                        }
                         self.current_fn_name_override = Some(format!("{}.{}", type_name, name));
                     }
                     self.type_check_item(method, checkpoint)?;
@@ -955,7 +992,6 @@ impl Analyzer {
         if attrs.is_empty() {
             return;
         }
-        self.contiguous_element_containers.insert(name.to_string());
         if attrs.len() != 1 {
             self.push_error(
                 attrs[1].span,
@@ -1032,7 +1068,8 @@ impl Analyzer {
             );
             return;
         };
-        if !generic_params.iter().any(|parameter| parameter == element) {
+        let element_param_index = generic_params.iter().position(|parameter| parameter == element);
+        if element_param_index.is_none() {
             self.push_error(
                 attr.span,
                 "S14",
@@ -1040,6 +1077,10 @@ impl Analyzer {
                     "@contiguous_elements on `{name}` names `{element}`, which is not a generic parameter"
                 ),
             );
+        }
+        if let Some(element_param_index) = element_param_index {
+            self.contiguous_element_containers
+                .insert(name.to_string(), element_param_index);
         }
         match fields.iter().find(|field| field.name == pointer) {
             Some(field) if matches!(field.ty.node, TypeKind::RawPtr { .. }) => {}

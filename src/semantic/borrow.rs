@@ -702,11 +702,11 @@ impl Analyzer {
                 named_args,
                 ..
             } => {
-                if self.bc_is_owned_array_value_read(expr, object) {
+                if self.bc_is_owned_contiguous_element_value_read(expr, object) {
                     self.push_error(
                         expr.span,
                         "S10",
-                        "cannot read an owned Array element by value before borrowed-element access and element destruction are implemented".to_string(),
+                        "cannot read an owned contiguous-container element by value before borrowed-element access and element destruction are implemented".to_string(),
                     );
                 }
                 let shared_receiver = self.bc_has_explicit_shared_receiver(expr);
@@ -1057,41 +1057,42 @@ impl Analyzer {
         resolved.is_some_and(|name| self.consuming_receiver_methods.contains(name))
     }
 
-    /// `Array.get` currently lowers to a raw load, which would duplicate an
-    /// owned element's handle.  Keep Plain element reads available while
-    /// rejecting the generic owned case until the container has provenance-
-    /// tracked borrowed elements and exact-once element destruction.
-    fn bc_is_owned_array_value_read(&self, expr: &Expr, object: &Expr) -> bool {
-        let resolved = self
-            .annotated_exprs
-            .iter()
-            .rev()
-            .find(|annotation| {
-                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
-            })
-            .and_then(|annotation| annotation.resolved_fn.as_deref());
-        let is_array_get = resolved.is_some_and(|name| {
-            name.rsplit('.').next().is_some_and(|method| {
-                method.split('<').next() == Some("get")
-                    && name
-                        .split('<')
-                        .next()
-                        .is_some_and(|base| base.ends_with("Array.get"))
-            })
-        });
-        if !is_array_get {
+    /// A contiguous-container accessor that returns its owned element by
+    /// value currently lowers to a raw load, which would duplicate the
+    /// element's owner. The rule is derived from the storage declaration and
+    /// resolved types, rather than a container or accessor spelling. Plain
+    /// elements remain readable until D-015 supplies provenance-tracked
+    /// borrowed element references and exact-once element destruction.
+    fn bc_is_owned_contiguous_element_value_read(&self, expr: &Expr, object: &Expr) -> bool {
+        if !self.bc_has_explicit_shared_receiver(expr) {
             return false;
         }
-        matches!(
-            self.bc_annotated_type(object)
+        let Some(accessor) = self.bc_resolved_call_name(expr) else {
+            return false;
+        };
+        if !self.contiguous_element_value_accessors.contains(accessor) {
+            return false;
+        }
+        let Some(TypeKind::Named { name, type_args }) = self
+            .bc_annotated_type(object)
+            .as_ref()
+            .map(|ty| self.resolve_type_aliases(ty))
+        else {
+            return false;
+        };
+        let Some(&element_param_index) = self.contiguous_element_containers.get(&name) else {
+            return false;
+        };
+        let Some(element) = type_args.get(element_param_index) else {
+            return false;
+        };
+        let element = self.resolve_type_aliases(&element.node);
+        self.bc_is_move_type(&element)
+            && self
+                .bc_annotated_type(expr)
                 .as_ref()
-                .map(|ty| self.resolve_type_aliases(ty)),
-            Some(TypeKind::Named { name, type_args })
-                if name.rsplit('.').next() == Some("Array")
-                    && type_args.first().is_some_and(|element| {
-                        self.bc_is_move_type(&self.resolve_type_aliases(&element.node))
-                    })
-        )
+                .map(|result| self.resolve_type_aliases(result).to_string() == element.to_string())
+                .unwrap_or(false)
     }
 
     /// Implicit scope cleanup is an ownership use just like an explicit
@@ -1125,7 +1126,7 @@ impl Analyzer {
         if !visiting.insert(visit_key) {
             return;
         }
-        if !type_args.is_empty() && self.contiguous_element_containers.contains(&name) {
+        if !type_args.is_empty() && self.contiguous_element_containers.contains_key(&name) {
             let release = format!("{name}.free");
             let type_args = type_args
                 .iter()

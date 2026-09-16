@@ -168,8 +168,11 @@ pub struct Analyzer {
     /// Impl methods whose first parameter is an explicit owned `self: T` receiver.
     pub(super) consuming_receiver_methods: std::collections::HashSet<String>,
     /// Generic aggregates whose source destructor is a storage-release hook
-    /// and whose element cleanup is synthesized by code generation.
-    pub(super) contiguous_element_containers: std::collections::HashSet<String>,
+    /// and whose element cleanup is synthesized by code generation. The value
+    /// is the position of the declared element parameter, so ownership rules
+    /// do not assume a particular generic-parameter order.
+    pub(super) contiguous_element_containers: HashMap<String, usize>,
+    pub(super) contiguous_element_value_accessors: std::collections::HashSet<String>,
     /// Internal function name → stable native symbol requested by @export.
     pub(super) exported_symbols: HashMap<String, String>,
     /// Resolved Quazi binding name → imported C data symbol metadata.
@@ -895,7 +898,8 @@ impl Analyzer {
             explicit_shared_receiver_methods: std::collections::HashSet::new(),
             explicit_exclusive_receiver_methods: std::collections::HashSet::new(),
             consuming_receiver_methods: std::collections::HashSet::new(),
-            contiguous_element_containers: std::collections::HashSet::new(),
+            contiguous_element_containers: HashMap::new(),
+            contiguous_element_value_accessors: std::collections::HashSet::new(),
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
         }
@@ -1337,6 +1341,7 @@ impl Analyzer {
         self.explicit_exclusive_receiver_methods.clear();
         self.consuming_receiver_methods.clear();
         self.contiguous_element_containers.clear();
+        self.contiguous_element_value_accessors.clear();
         self.exported_symbols.clear();
         self.foreign_globals.clear();
         self.repr_c_structs.clear();
@@ -4434,16 +4439,19 @@ fn main() void {
     }
 
     #[test]
-    fn rejects_owned_array_get_until_element_borrows_exist() {
+    fn rejects_owned_contiguous_element_reads_until_borrows_exist() {
         let owned = analyze(
             r#"
 struct Token { value: i32 }
-struct Array[T] { value: T }
-impl Array[T] { fn get(self: &Array[T]) T { ret self.value; } }
-fn main() void {
-    var items = Array { value: Token { value: 1 } };
-    const token: Token = items.get();
+@intrinsic("quazi.array.load") fn load[T](base: *u8, index: usize) T;
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[Marker, T] { storage: *u8, count: usize }
+impl Buffer[Marker, T] {
+    fn free(self: Buffer[Marker, T]) void {}
+    @contiguous_element_value_read fn element(self: &Buffer[Marker, T], index: usize) T { ret load(self.storage, index); }
 }
+fn inspect(items: Buffer[i32, Token]) void { const token: Token = items.element(0); }
+fn main() void {}
 "#,
         );
         assert!(
@@ -4451,20 +4459,23 @@ fn main() void {
                 error.code == "S10"
                     && error
                         .message
-                        .contains("cannot read an owned Array element by value")
+                        .contains("cannot read an owned contiguous-container element by value")
             }),
-            "owned Array.get must not create a shallow second owner: {:?}",
+            "owned contiguous-element reads must not create a shallow second owner: {:?}",
             owned.errors
         );
 
         let plain = analyze(
             r#"
-struct Array[T] { value: T }
-impl Array[T] { fn get(self: &Array[T]) T { ret self.value; } }
-fn main() void {
-    var items = Array { value: 1 };
-    const value: i32 = items.get();
+@intrinsic("quazi.array.load") fn load[T](base: *u8, index: usize) T;
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[Marker, T] { storage: *u8, count: usize }
+impl Buffer[Marker, T] {
+    fn free(self: Buffer[Marker, T]) void {}
+    @contiguous_element_value_read fn element(self: &Buffer[Marker, T], index: usize) T { ret load(self.storage, index); }
 }
+fn inspect(items: Buffer[i32, i32]) void { const value: i32 = items.element(0); }
+fn main() void {}
 "#,
         );
         assert!(
