@@ -172,7 +172,6 @@ pub struct Analyzer {
     /// is the position of the declared element parameter, so ownership rules
     /// do not assume a particular generic-parameter order.
     pub(super) contiguous_element_containers: HashMap<String, usize>,
-    pub(super) contiguous_element_value_accessors: std::collections::HashSet<String>,
     /// Internal function name → stable native symbol requested by @export.
     pub(super) exported_symbols: HashMap<String, String>,
     /// Resolved Quazi binding name → imported C data symbol metadata.
@@ -899,7 +898,6 @@ impl Analyzer {
             explicit_exclusive_receiver_methods: std::collections::HashSet::new(),
             consuming_receiver_methods: std::collections::HashSet::new(),
             contiguous_element_containers: HashMap::new(),
-            contiguous_element_value_accessors: std::collections::HashSet::new(),
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
         }
@@ -1341,7 +1339,6 @@ impl Analyzer {
         self.explicit_exclusive_receiver_methods.clear();
         self.consuming_receiver_methods.clear();
         self.contiguous_element_containers.clear();
-        self.contiguous_element_value_accessors.clear();
         self.exported_symbols.clear();
         self.foreign_globals.clear();
         self.repr_c_structs.clear();
@@ -4448,7 +4445,7 @@ struct Token { value: i32 }
 struct Buffer[Marker, T] { storage: *u8, count: usize }
 impl Buffer[Marker, T] {
     fn free(self: Buffer[Marker, T]) void {}
-    @contiguous_element_value_read fn element(self: &Buffer[Marker, T], index: usize) T { ret load(self.storage, index); }
+    fn element(self: &Buffer[Marker, T], index: usize) T { ret load(self.storage, index); }
 }
 fn inspect(items: Buffer[i32, Token]) void { const token: Token = items.element(0); }
 fn main() void {}
@@ -4472,7 +4469,7 @@ fn main() void {}
 struct Buffer[Marker, T] { storage: *u8, count: usize }
 impl Buffer[Marker, T] {
     fn free(self: Buffer[Marker, T]) void {}
-    @contiguous_element_value_read fn element(self: &Buffer[Marker, T], index: usize) T { ret load(self.storage, index); }
+    fn element(self: &Buffer[Marker, T], index: usize) T { ret load(self.storage, index); }
 }
 fn inspect(items: Buffer[i32, i32]) void { const value: i32 = items.element(0); }
 fn main() void {}
