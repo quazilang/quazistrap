@@ -1078,10 +1078,10 @@ impl Analyzer {
                 ),
             );
         }
-        if let Some(element_param_index) = element_param_index {
-            self.contiguous_element_containers
-                .insert(name.to_string(), element_param_index);
-        }
+        let pointer_valid = matches!(
+            fields.iter().find(|field| field.name == pointer),
+            Some(field) if matches!(field.ty.node, TypeKind::RawPtr { .. })
+        );
         match fields.iter().find(|field| field.name == pointer) {
             Some(field) if matches!(field.ty.node, TypeKind::RawPtr { .. }) => {}
             Some(_) => self.push_error(
@@ -1099,6 +1099,10 @@ impl Analyzer {
                 ),
             ),
         }
+        let length_valid = matches!(
+            fields.iter().find(|field| field.name == length),
+            Some(field) if matches!(field.ty.node, TypeKind::Usize)
+        );
         match fields.iter().find(|field| field.name == length) {
             Some(field) if matches!(field.ty.node, TypeKind::Usize) => {}
             Some(_) => self.push_error(
@@ -1113,7 +1117,8 @@ impl Analyzer {
             ),
         }
         let destructor = format!("{name}.free");
-        if !self.consuming_receiver_methods.contains(&destructor) {
+        let destructor_valid = self.consuming_receiver_methods.contains(&destructor);
+        if !destructor_valid {
             self.push_error(
                 item_span,
                 "S14",
@@ -1121,6 +1126,14 @@ impl Analyzer {
                     "@contiguous_elements on `{name}` requires consuming `fn free(self: {name}[...])`"
                 ),
             );
+        }
+        if let Some(element_param_index) = element_param_index
+            && pointer_valid
+            && length_valid
+            && destructor_valid
+        {
+            self.contiguous_element_containers
+                .insert(name.to_string(), element_param_index);
         }
     }
 
