@@ -2368,6 +2368,37 @@ fn take(value: Buffer[Buffer[Token]]) void {}
     }
 
     #[test]
+    fn contiguous_cleanup_uses_the_declared_element_parameter_position() {
+        let report = analyze(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[Marker, T] { storage: *u8, count: usize }
+impl Buffer[Marker, T] { fn free(self: Buffer[Marker, T]) void {} }
+
+fn take(value: Buffer[i32, Buffer[i32, Token]]) void {}
+"#,
+        );
+        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        let releases = report
+            .monomorphizations
+            .iter()
+            .filter(|mono| mono.fn_name == "Buffer.free")
+            .map(|mono| mono.mangled_name.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            releases.iter().any(|name| name.contains("Token")),
+            "the nested element release must be retained: {releases:?}"
+        );
+        assert!(
+            releases.len() >= 2,
+            "outer and nested container releases must both be retained: {releases:?}"
+        );
+    }
+
+    #[test]
     fn generic_contiguous_cleanup_specializes_for_reachable_calls() {
         let report = analyze(
             r#"

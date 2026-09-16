@@ -1120,13 +1120,15 @@ impl Analyzer {
         if !visiting.insert(visit_key) {
             return;
         }
-        if !type_args.is_empty() && self.contiguous_element_containers.contains_key(&name) {
+        if !type_args.is_empty()
+            && let Some(&element_param_index) = self.contiguous_element_containers.get(&name)
+        {
             let release = format!("{name}.free");
             let type_args = type_args
                 .iter()
                 .map(|argument| argument.node.clone())
                 .collect::<Vec<_>>();
-            let element_type = type_args.first().cloned();
+            let element_type = type_args.get(element_param_index).cloned();
             let mangled_name =
                 crate::semantic::typecheck::mangle_monomorphized(&release, &type_args);
             if !self
