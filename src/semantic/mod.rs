@@ -2283,6 +2283,21 @@ fn main() void {}
         assert!(report.errors.iter().any(|error| {
             error.code == "S14" && error.message.contains("pointer field `Buffer.count`")
         }));
+
+        let report = analyze(
+            r#"
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] {
+    fn free(self: Buffer[T]) void {}
+    @contiguous_element_remove fn remove(self: &Buffer[T]!, index: usize) void {}
+}
+fn main() void {}
+"#,
+        );
+        assert!(report.errors.iter().any(|error| {
+            error.code == "S14" && error.message.contains("@contiguous_element_remove")
+        }));
     }
 
     #[test]

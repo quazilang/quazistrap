@@ -879,6 +879,39 @@ impl Analyzer {
                                 );
                             }
                         }
+                        let removal_attrs = attributes
+                            .iter()
+                            .filter(|attribute| attribute.name == "contiguous_element_remove")
+                            .collect::<Vec<_>>();
+                        if !removal_attrs.is_empty() {
+                            let element = match (
+                                &for_ty.node,
+                                self.contiguous_element_containers.get(&type_name),
+                            ) {
+                                (TypeKind::Named { type_args, .. }, Some(index)) => {
+                                    type_args.get(*index)
+                                }
+                                _ => None,
+                            };
+                            let valid = removal_attrs.len() == 1
+                                && removal_attrs[0].args.is_empty()
+                                && !unsafe_fn
+                                && !c_variadic
+                                && params.len() == 2
+                                && matches!(params.first().map(|param| &param.ty.node), Some(TypeKind::MutRef { inner }) if self.resolve_type_aliases(&inner.node).to_string() == self.resolve_type_aliases(&for_ty.node).to_string())
+                                && matches!(params.get(1).map(|param| &param.ty.node), Some(TypeKind::Usize))
+                                && element.is_some_and(|element| {
+                                    self.resolve_type_aliases(&return_ty.node).to_string()
+                                        == self.resolve_type_aliases(&element.node).to_string()
+                                });
+                            if !valid {
+                                self.push_error(
+                                    method.span,
+                                    "S14",
+                                    "@contiguous_element_remove requires one safe, non-variadic method with `self: &Container[...]!`, usize index, and the declared element result".to_string(),
+                                );
+                            }
+                        }
                         self.current_fn_name_override = Some(format!("{}.{}", type_name, name));
                     }
                     self.type_check_item(method, checkpoint)?;

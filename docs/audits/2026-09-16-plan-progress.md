@@ -30,7 +30,8 @@ work.
   `Array[Header]` operations need scoped borrowed elements and exact-once
   replacement/removal/freeing. It is intentionally not treated as a passing
   standard-library suite while those diagnostics remain.
-- The contained compiler's `cargo test --offline` passes 627 tests. Canonical
+- The contained compiler's `cargo test --offline` passes 633 tests at the
+  generic-removal checkpoint. Canonical
   Markdown checks pass 13 tests.
 - The separate Tree-sitter corpus passes 28/28 and its workspace conformance
   command passes. This supersedes the obsolete resume warning about example 33.
@@ -56,10 +57,11 @@ work.
    container elements. Its compiler-validated contract rejects an
    `Array`-specific escape hatch and requires an artifact-compatible address
    operation; owned values may not be copied from an `Array` read.
-2. Implement exact-once generic element removal before re-enabling
-   resource-owning collection APIs such as HTTP headers. Compiler-validated
-   replacement and final recursive destruction are now implemented; removal
-   still needs its transfer/shift ownership proof.
+2. Prove the new compiler-validated generic removal lowering against runtime
+   ownership cases (including nested containers and out-of-bounds execution),
+   then re-evaluate resource-owning collection APIs such as HTTP headers.
+   Replacement, removal, and final recursive destruction are now implemented
+   at the bytecode-contract level.
 3. Extend the capability/effect model through direct and indirect calls, then
    design and verify the matching QZI/QZC ownership-summary format.
 

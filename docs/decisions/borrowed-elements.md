@@ -51,11 +51,16 @@ state.
 ## Mutation and destruction follow-up
 
 Mutating APIs require an exclusive or consuming container capability. A
-replacement destroys the prior owned element exactly once after a successful
-replacement; removal transfers the removed owner exactly once and destroys
-every remaining owner exactly once; container destruction recursively destroys
-all remaining elements exactly once. These rules apply to every concrete
-specialization, including nested containers and multi-slot elements.
+compiler-lowered `@contiguous_element_replace` method destroys the prior owned
+element exactly once after its bounds check, then transfers the incoming owner
+to the initialized slot. A compiler-lowered `@contiguous_element_remove`
+method transfers the removed owner exactly once to its result, shifts the
+remaining raw slots, and shortens the initialized range without dropping the
+now-out-of-range physical tail. Container destruction recursively destroys all
+remaining elements exactly once. These contracts are selected from container
+metadata and exact method signatures, never collection or method names; they
+apply to every concrete specialization, including nested containers and
+multi-slot elements.
 
 ## Required evidence
 

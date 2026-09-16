@@ -72,6 +72,15 @@ impl Array[T] {
         __ptr_store(self.ptr, idx, val);
     }
 
+    // The compiler recognizes this generic container contract and transfers
+    // one initialized slot to the caller while compacting the live range.
+    @contiguous_element_remove pub fn remove(self: &Array[T]!, idx: usize) T {
+        if (idx >= self.len) {
+            panic("index out of bounds");
+        }
+        ret __ptr_load(self.ptr, idx);
+    }
+
     pub fn len(self: &Array[T]) usize {
         ret self.len;
     }

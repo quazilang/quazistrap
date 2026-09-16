@@ -2060,6 +2060,11 @@ impl<'a> Codegen<'a> {
             .any(|attribute| attribute.name == "contiguous_element_replace")
         {
             fc.emit_contiguous_element_replacement(params);
+        } else if attributes
+            .iter()
+            .any(|attribute| attribute.name == "contiguous_element_remove")
+        {
+            fc.emit_contiguous_element_removal(params);
         } else {
             fc.compile_block(body);
         }
@@ -4780,6 +4785,131 @@ impl<'a> FnCompiler<'a> {
         self.deactivate_drop_local(&value.name);
         self.chunk.emit(ri16(Opcode::MovI, 0, 0));
         self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+    }
+
+    /// Remove one initialized contiguous element by transferring its owner to
+    /// the result, shifting the remaining raw slots left, and shortening the
+    /// live range. The shifted tail is deliberately not dropped: its old final
+    /// physical slot is outside the new `[0, len)` ownership range.
+    fn emit_contiguous_element_removal(&mut self, params: &[crate::parser::ast::Param]) {
+        if params.len() != 2 {
+            self.codegen_error
+                .get_or_insert_with(|| "invalid contiguous removal signature".to_string());
+            return;
+        }
+        let Some([receiver, index]) = params.get(..2) else {
+            self.codegen_error
+                .get_or_insert_with(|| "invalid contiguous removal signature".to_string());
+            return;
+        };
+        let receiver_ty = self
+            .local_types
+            .get(&receiver.name)
+            .map(|ty| self.resolve_type(ty));
+        let Some(TypeKind::MutRef { inner }) = receiver_ty else {
+            self.codegen_error.get_or_insert_with(|| {
+                "contiguous removal requires an exclusive container receiver".to_string()
+            });
+            return;
+        };
+        let Some(TypeKind::Named { name, type_args }) = Some(self.resolve_type(&inner.node)) else {
+            self.codegen_error
+                .get_or_insert_with(|| "contiguous removal receiver is not a container".to_string());
+            return;
+        };
+        let Some(metadata) = self.contiguous_element_containers.get(&name) else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("`{name}` has no contiguous-element removal contract")
+            });
+            return;
+        };
+        let Some(element_ty) = type_args.get(metadata.element_param_index) else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("`{name}` is missing its contiguous element type argument")
+            });
+            return;
+        };
+        let element_ty = self.resolve_type(&element_ty.node);
+        let Some(element_slots) = crate::runtime_layout::runtime_value_layout(&element_ty)
+            .slot_count()
+            .and_then(|slots| u8::try_from(slots).ok())
+        else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("`{element_ty}` has no runtime layout for contiguous removal")
+            });
+            return;
+        };
+        let receiver_reg = self.reg_of(&receiver.name);
+        let index_reg = self.reg_of(&index.name);
+        let pointer = self.alloc_reg();
+        let length = self.alloc_reg();
+        self.chunk
+            .emit(field_load(pointer, receiver_reg, metadata.pointer_offset));
+        self.chunk
+            .emit(field_load(length, receiver_reg, metadata.length_offset));
+        self.emit_bounds_guard(index_reg, length, index.ty.span);
+
+        let result_slots = self.result_slot_count();
+        if result_slots != element_slots as usize {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("contiguous removal result layout for `{element_ty}` is inconsistent")
+            });
+            return;
+        }
+        // Keep the removed owner out of ABI registers until after mutation:
+        // r0/r1 still hold the hidden result pointer or receiver respectively.
+        let removed = self.reserve_reg_block(element_slots as usize);
+        let removed_destination = if element_slots > 1 {
+            let removed_ptr = self.alloc_reg();
+            self.chunk
+                .emit(mem_lea_block(removed, removed_ptr, 0, element_slots));
+            removed_ptr
+        } else {
+            removed
+        };
+        let mut load = rrr(Opcode::ArrayLoad, removed_destination, pointer, index_reg);
+        load.flags = element_slots;
+        self.chunk.emit(load);
+
+        let one = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, one, 1));
+        let new_length = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Sub, new_length, length, one));
+        let cursor = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mov, cursor, index_reg, 0));
+        let loop_top = self.chunk.len() as u16;
+        self.chunk.emit(rrr(Opcode::Cmp, 0, cursor, new_length));
+        let body_jump = self.chunk.emit(ri16(Opcode::Jb, 0, 0));
+        let exit_jump = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
+        let body = self.chunk.len() as u16;
+        self.chunk.patch_jump(body_jump, body);
+        let source_index = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Add, source_index, cursor, one));
+        let shifted = self.reserve_reg_block(element_slots as usize);
+        let destination = if element_slots > 1 {
+            let shifted_ptr = self.alloc_reg();
+            self.chunk
+                .emit(mem_lea_block(shifted, shifted_ptr, 0, element_slots));
+            shifted_ptr
+        } else {
+            shifted
+        };
+        let mut load = rrr(Opcode::ArrayLoad, destination, pointer, source_index);
+        load.flags = element_slots;
+        self.chunk.emit(load);
+        let mut store = rrr(Opcode::ArrayStore, shifted, pointer, cursor);
+        store.flags = element_slots;
+        self.chunk.emit(store);
+        self.chunk.emit(rrr(Opcode::Inc, cursor, cursor, 0));
+        self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
+        let exit = self.chunk.len() as u16;
+        self.chunk.patch_jump(exit_jump, exit);
+        self.chunk
+            .emit(field_store(new_length, receiver_reg, metadata.length_offset));
+        self.emit_block_copy(self.result_base_reg(), removed, element_slots as usize);
+        let mut ret = rrr(Opcode::Ret, 0, 0, 0);
+        ret.flags = element_slots;
+        self.chunk.emit(ret);
     }
 
     fn expr_is_local_value(&self, expr: &Expr) -> bool {
@@ -9676,6 +9806,141 @@ fn update(buffer: &Buffer[Token]!, token: Token) void { buffer.set(0, token); }
             set.code.iter().any(|instruction| instruction.opcode == Opcode::Jb as u8),
             "replacement must bounds-check before touching storage: {:?}",
             set.code
+        );
+    }
+
+    #[test]
+    fn contiguous_removal_transfers_the_element_and_shifts_without_destroying() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+@intrinsic("quazi.array.load")
+fn raw_load[T](base: *u8, index: usize) T;
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] {
+    fn free(self: Buffer[T]) void {}
+    @contiguous_element_remove fn remove(self: &Buffer[T]!, index: usize) T { ret raw_load(self.storage, index); }
+}
+fn update(buffer: &Buffer[Token]!) Token { ret buffer.remove(0); }
+"#,
+        );
+        let remove = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Buffer.remove<Token>")
+            .unwrap();
+        let load = remove
+            .code
+            .iter()
+            .position(|instruction| instruction.opcode == Opcode::ArrayLoad as u8)
+            .unwrap();
+        let store = remove
+            .code
+            .iter()
+            .position(|instruction| instruction.opcode == Opcode::ArrayStore as u8)
+            .unwrap();
+        let length_store = remove
+            .code
+            .iter()
+            .position(|instruction| instruction.opcode == Opcode::FieldStore as u8)
+            .unwrap();
+        assert!(load < store && store < length_store, "removal must load, shift, then shorten: {:?}", remove.code);
+        assert!(
+            remove.code.iter().any(|instruction| instruction.opcode == Opcode::Jb as u8),
+            "removal must bounds-check before touching storage: {:?}",
+            remove.code
+        );
+        assert!(
+            !remove.code.iter().any(|instruction| instruction.opcode == Opcode::CallIdx as u8),
+            "removal transfers the returned owner and must not destroy shifted slots: {:?}",
+            remove.code
+        );
+        assert_ne!(
+            remove.code[load].ops[0],
+            0,
+            "the removed value must not overwrite the single-slot receiver before the length update: {:?}",
+            remove.code
+        );
+        assert!(
+            remove.code[length_store + 1..].iter().any(|instruction| {
+                instruction.opcode == Opcode::Mov as u8
+                    && instruction.ops[0] == 0
+                    && instruction.ops[1] == remove.code[load].ops[0]
+            }),
+            "the removed value must enter r0 only after the length update: {:?}",
+            remove.code
+        );
+    }
+
+    #[test]
+    fn contiguous_removal_preserves_multi_slot_element_layout() {
+        let chunks = compile(
+            r#"
+@intrinsic("quazi.array.load")
+fn raw_load[T](base: *u8, index: usize) T;
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] {
+    fn free(self: Buffer[T]) void {}
+    @contiguous_element_remove fn remove(self: &Buffer[T]!, index: usize) T { ret raw_load(self.storage, index); }
+}
+fn update(buffer: &Buffer[[i32; 3]]!) [i32; 3] { ret buffer.remove(0); }
+"#,
+        );
+        let remove = chunks
+            .iter()
+            .find(|chunk| chunk.name.starts_with("Buffer.remove<"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing multi-slot removal specialization: {:?}",
+                    chunks.iter().map(|chunk| &chunk.name).collect::<Vec<_>>()
+                )
+            });
+        let loads = remove
+            .code
+            .iter()
+            .filter(|instruction| instruction.opcode == Opcode::ArrayLoad as u8)
+            .collect::<Vec<_>>();
+        assert!(
+            loads.iter().all(|instruction| instruction.flags == 3),
+            "every load must preserve the three-slot element layout: {:?}",
+            remove.code
+        );
+        assert!(
+            remove
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::ArrayStore as u8)
+                .all(|instruction| instruction.flags == 3),
+            "every shift store must preserve the three-slot element layout: {:?}",
+            remove.code
+        );
+        let length_store = remove
+            .code
+            .iter()
+            .position(|instruction| instruction.opcode == Opcode::FieldStore as u8)
+            .unwrap();
+        let moves_after_length = remove.code[length_store + 1..]
+            .iter()
+            .filter(|instruction| instruction.opcode == Opcode::Mov as u8)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            moves_after_length.len(),
+            3,
+            "the three-slot result must be copied into r1..r3 after mutation: {:?}",
+            remove.code
+        );
+        assert!(
+            moves_after_length
+                .iter()
+                .enumerate()
+                .all(|(offset, instruction)| instruction.ops[0] == offset as u8 + 1),
+            "multi-slot removal must populate the ABI result block r1..r3: {:?}",
+            remove.code
         );
     }
 
