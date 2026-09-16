@@ -936,15 +936,9 @@ impl Analyzer {
 
     fn bc_resolved_direct_call(&self, expr: &Expr) -> bool {
         self.bc_resolved_call_name(expr).is_some_and(|name| {
-            self.source_function_symbols.contains(name)
-                && self.resolve_symbol(name).is_some_and(|symbol| {
-                    !symbol.unsafe_fn
-                        && !symbol.variadic
-                        && !symbol
-                            .attributes
-                            .iter()
-                            .any(|attribute| attribute == "intrinsic")
-                })
+            self.ownership_signature_index
+                .get(name)
+                .is_some_and(|summary| summary.direct_call_eligible)
         })
     }
 
@@ -970,20 +964,10 @@ impl Analyzer {
         let Some(resolved) = self.bc_resolved_call_name(call) else {
             return CallArgumentEffect::Consume;
         };
-        let Some(symbol) = self.resolve_symbol(resolved) else {
+        let Some(summary) = self.ownership_signature_index.get(resolved) else {
             return CallArgumentEffect::Consume;
         };
-        // Foreign and unsafe targets have no safe reference-bearing ABI
-        // contract. Their argument effects stay opaque until QZI/FFI effect
-        // verification exists.
-        if symbol.unsafe_fn
-            || symbol.variadic
-            || symbol
-                .attributes
-                .iter()
-                .any(|attribute| attribute == "intrinsic")
-            || !self.source_function_symbols.contains(resolved)
-        {
+        if !summary.direct_call_eligible {
             return CallArgumentEffect::Consume;
         }
         let parameter_names = self.fn_param_names.get(resolved);
@@ -995,18 +979,9 @@ impl Analyzer {
         let Some(parameter_index) = parameter_index else {
             return CallArgumentEffect::Consume;
         };
-        // `fn_param_names` omits an inherent method's receiver. The parameter
-        // vector retains it, so its difference is the required stable offset.
-        let receiver_offset = parameter_names
-            .map(|names| symbol.params.len().saturating_sub(names.len()))
-            .unwrap_or(0);
-        let declared = symbol
-            .params
-            .get(parameter_index.saturating_add(receiver_offset))
-            .or_else(|| symbol.variadic.then(|| symbol.params.last()).flatten());
-        match declared.map(|ty| self.resolve_type_aliases(ty)) {
-            Some(TypeKind::Ref { .. }) => CallArgumentEffect::SharedBorrow,
-            Some(TypeKind::MutRef { .. }) => CallArgumentEffect::ExclusiveBorrow,
+        match summary.parameters.get(parameter_index) {
+            Some(OwnershipCapability::SharedBorrow) => CallArgumentEffect::SharedBorrow,
+            Some(OwnershipCapability::ExclusiveBorrow) => CallArgumentEffect::ExclusiveBorrow,
             _ => CallArgumentEffect::Consume,
         }
     }

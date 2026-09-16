@@ -30,7 +30,7 @@ work.
   `Array[Header]` operations need scoped borrowed elements and exact-once
   replacement/removal/freeing. It is intentionally not treated as a passing
   standard-library suite while those diagnostics remain.
-- The contained compiler's `cargo test --offline` passes 634 tests. The
+- The contained compiler's `cargo test --offline` passes 635 tests. The
   compiler now records deterministic callable ownership signatures as the
   input schema for D-014's future effect solver; those signatures are not yet
   transitive ownership proofs or QZI summaries. Canonical

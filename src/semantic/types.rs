@@ -365,6 +365,9 @@ pub struct CallableOwnershipSummary {
     pub result: OwnershipResult,
     pub has_body: bool,
     pub generic_template: bool,
+    /// Whether the existing lexical direct-call rule may use this signature
+    /// for call-local borrow capabilities. This is not a transitive proof.
+    pub direct_call_eligible: bool,
     pub transitive_effects_verified: bool,
 }
 

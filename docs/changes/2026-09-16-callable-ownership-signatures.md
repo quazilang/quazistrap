@@ -15,6 +15,11 @@ This metadata is derived from resolved compiler signatures; users cannot write
 or override it. It is not a public language feature and does not change source
 syntax or safe-reference behavior.
 
+The existing source-only direct-call borrow rule now reads this compiler-owned
+metadata rather than separately reinterpreting every callee signature. Calls
+without an eligible local body, including unsafe, variadic, and intrinsic
+targets, remain opaque and consuming exactly as before.
+
 ## Why
 
 D-014 requires compiler-generated ownership summaries before a QZI-only
@@ -36,3 +41,6 @@ rules remain in force.
 `semantic::tests::records_deterministic_callable_ownership_signatures` covers
 copy, move, shared/exclusive borrow, receiver classification, variadics,
 generic templates, body availability, and stable ordering.
+`semantic::tests::direct_call_signatures_preserve_named_borrow_capabilities`
+also verifies that positional and named source-call borrows continue to use
+their distinct signature capabilities and end when the call returns.

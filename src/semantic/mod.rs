@@ -157,6 +157,9 @@ pub struct Analyzer {
     /// signature-directed direct-call capability slice; QZI declarations stay
     /// opaque until ownership summaries are verified.
     pub(super) source_function_symbols: std::collections::HashSet<String>,
+    /// Internal lookup of compiler-derived signatures used by the existing
+    /// source-only direct-call borrow rule.
+    pub(super) ownership_signature_index: HashMap<String, CallableOwnershipSummary>,
     /// Impl methods whose first parameter is explicitly a shared `self: &T`
     /// receiver. Kept separately because `fn_param_names` intentionally omits
     /// `self` for named-argument indexing.
@@ -894,6 +897,7 @@ impl Analyzer {
             type_aliases: std::collections::HashMap::new(),
             fn_param_names: HashMap::new(),
             source_function_symbols: std::collections::HashSet::new(),
+            ownership_signature_index: HashMap::new(),
             explicit_shared_receiver_methods: std::collections::HashSet::new(),
             explicit_exclusive_receiver_methods: std::collections::HashSet::new(),
             consuming_receiver_methods: std::collections::HashSet::new(),
@@ -1009,6 +1013,11 @@ impl Analyzer {
             self.declare_top_level_item(item);
         }
         self.validate_initial_serialize_fields();
+        self.ownership_signature_index = self
+            .derive_callable_ownership_summaries(&self.build_symbol_table())
+            .into_iter()
+            .map(|summary| (summary.callable.clone(), summary))
+            .collect();
         checkpoint()?;
 
         // Pass 2: type checking + usage tracking + initialization checks + annotations.
@@ -1338,6 +1347,7 @@ impl Analyzer {
         self.type_aliases.clear();
         self.fn_param_names.clear();
         self.source_function_symbols.clear();
+        self.ownership_signature_index.clear();
         self.explicit_shared_receiver_methods.clear();
         self.explicit_exclusive_receiver_methods.clear();
         self.consuming_receiver_methods.clear();
@@ -1698,6 +1708,14 @@ impl Analyzer {
                     result,
                     has_body: self.source_function_symbols.contains(&entry.name),
                     generic_template: !entry.symbol.generic_params.is_empty(),
+                    direct_call_eligible: self.source_function_symbols.contains(&entry.name)
+                        && !entry.symbol.unsafe_fn
+                        && !entry.symbol.variadic
+                        && !entry
+                            .symbol
+                            .attributes
+                            .iter()
+                            .any(|attribute| attribute == "intrinsic"),
                     transitive_effects_verified: false,
                 })
             })
@@ -2427,6 +2445,7 @@ fn generic[T](value: T) T { ret value; }
             OwnershipResult::Value(OwnershipCapability::Copy)
         );
         assert!(copy.has_body);
+        assert!(copy.direct_call_eligible);
         assert_eq!(copy.receiver, None);
         assert_eq!(copy.variadic, None);
         assert!(!copy.transitive_effects_verified);
@@ -2495,6 +2514,7 @@ fn generic[T](value: T) T { ret value; }
             .find(|summary| summary.callable == "opaque")
             .unwrap();
         assert!(!opaque.has_body);
+        assert!(!opaque.direct_call_eligible);
         assert!(!opaque.transitive_effects_verified);
         let names = report
             .callable_ownership_summaries
@@ -2505,6 +2525,28 @@ fn generic[T](value: T) T { ret value; }
         sorted_names.sort_unstable();
         assert_eq!(names, sorted_names, "summaries must have stable ordering");
         assert!(names.windows(3).any(|window| window == ["copy", "format_like", "generic"]));
+    }
+
+    #[test]
+    fn direct_call_signatures_preserve_named_borrow_capabilities() {
+        let report = analyze(
+            r#"
+struct Token { value: i32 }
+fn inspect(view: &Token, edit: &Token!) void { edit.value = view.value; }
+fn main() void {
+    var inspected = Token { value: 1 };
+    var edited = Token { value: 0 };
+    inspect(&inspected, edit = &edited!);
+    inspected.value = 2;
+    edited.value = 3;
+}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "named source-call borrow capabilities regressed: {:?}",
+            report.errors
+        );
     }
 
     #[test]
