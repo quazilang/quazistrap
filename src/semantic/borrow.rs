@@ -1067,12 +1067,6 @@ impl Analyzer {
         if !self.bc_has_explicit_shared_receiver(expr) {
             return false;
         }
-        let Some(accessor) = self.bc_resolved_call_name(expr) else {
-            return false;
-        };
-        if !self.contiguous_element_value_accessors.contains(accessor) {
-            return false;
-        }
         let Some(TypeKind::Named { name, type_args }) = self
             .bc_annotated_type(object)
             .as_ref()
