@@ -562,6 +562,28 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn prelude_array_remove_executes_and_compacts_values() {
+        let root = temp_dir("prelude-array-remove");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(
+            root.join("quazi.toml"),
+            "[package]\nname = \"prelude_array_remove\"\ncrash_handler = false\n\n\
+             [[bin]]\nname = \"prelude_array_remove\"\npath = \"src/main.qz\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/main.qz"), "").unwrap();
+        std::fs::write(
+            root.join("tests/remove.qz"),
+            "@test\nfn removes_and_compacts() void {\n    var values: Array[i32] = Array.new();\n    values.push(10);\n    values.push(20);\n    values.push(30);\n    const removed: i32 = values.remove(1);\n    if removed != 20 { panic(\"wrong removed value\"); }\n    if values.len() != 2 { panic(\"wrong length after removal\"); }\n    if values.get(0) != 10 || values.get(1) != 30 { panic(\"remaining values were not compacted\"); }\n    ret;\n}\n",
+        )
+        .unwrap();
+
+        assert!(run_project(&root, None, true, true).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn target_gated_modules_are_not_loaded_as_independent_test_roots() {

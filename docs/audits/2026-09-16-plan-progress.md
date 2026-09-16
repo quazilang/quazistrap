@@ -30,11 +30,15 @@ work.
   `Array[Header]` operations need scoped borrowed elements and exact-once
   replacement/removal/freeing. It is intentionally not treated as a passing
   standard-library suite while those diagnostics remain.
-- The contained compiler's `cargo test --offline` passes 635 tests. The
-  compiler now records deterministic callable ownership signatures as the
-  input schema for D-014's future effect solver; those signatures are not yet
-  transitive ownership proofs or QZI summaries. Canonical
-  Markdown checks pass 13 tests.
+- The contained compiler's `cargo test --offline` passes 636 tests. A native
+  `qz test` regression exercises the prelude's generic `Array[i32].remove`:
+  it checks the returned element, shortened length, and compacted remaining
+  values after removing the middle slot. This is runtime evidence for the
+  plain-element lowering only; owned, nested, and out-of-bounds cases remain
+  required. The compiler now records deterministic callable ownership
+  signatures as the input schema for D-014's future effect solver; those
+  signatures are not yet transitive ownership proofs or QZI summaries.
+  Canonical Markdown checks pass 13 tests.
 - The separate Tree-sitter corpus passes 28/28 and its workspace conformance
   command passes. This supersedes the obsolete resume warning about example 33.
 
