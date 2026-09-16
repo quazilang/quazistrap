@@ -164,7 +164,12 @@ existing recursive drop action, and then invokes the type's ordinary consuming
 `.free()` and scope cleanup. A plain-copy element skips the loop and only
 invokes `free`. Implicit concrete cleanup records the exact `Type.free<T>`
 monomorphization root and its dependencies; it never dispatches a concrete
-value to the unresolved generic template.
+value to the unresolved generic template. This collection is recursive: a
+`Buffer[Buffer[Token]]` cleanup records both `Buffer.free<Buffer[Token]>` and
+`Buffer.free<Token>`, because generated outer cleanup invokes the inner
+concrete release while dropping each element. Generic templates do not create
+an executable placeholder release; their symbolic dependencies are substituted
+when a concrete instantiation makes the release chunk reachable.
 
 This is intentionally limited to fully initialized dense buffers. It does not
 apply to sparse containers, maps with independent key/value storage, or

@@ -2523,11 +2523,17 @@ enum DropAction {
     /// A container declaration cannot make an element copyable. This sentinel
     /// keeps unsupported recursive destruction from degrading to raw storage
     /// release while preserving the originating container type for diagnostics.
-    UnsupportedContiguousElement { container: String, element: TypeKind },
+    UnsupportedContiguousElement {
+        container: String,
+        element: TypeKind,
+    },
     /// A concrete container cleanup must never dispatch to its unresolved
     /// generic source hook. Semantic ownership planning records this
     /// specialization as a root before code generation.
-    UnsupportedContiguousRelease { container: String, release: String },
+    UnsupportedContiguousRelease {
+        container: String,
+        release: String,
+    },
     /// Destroy each initialized contiguous element, then invoke the container's
     /// ordinary consuming release hook for its backing allocation.
     ContiguousElements {
@@ -4374,7 +4380,8 @@ impl<'a> FnCompiler<'a> {
         if !type_args.is_empty() {
             let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
             let mangled = crate::semantic::typecheck::mangle_monomorphized(&base, &type_kinds);
-            if self.has_consuming_drop_hook(&base, &mangled) && self.fn_index.contains_key(&mangled) {
+            if self.has_consuming_drop_hook(&base, &mangled) && self.fn_index.contains_key(&mangled)
+            {
                 return Some(DropAction::Call(mangled));
             }
             if self.has_consuming_drop_hook(&base, &mangled) && self.fn_index.contains_key(&base) {
@@ -4398,8 +4405,7 @@ impl<'a> FnCompiler<'a> {
             .slot_count()
             .and_then(|slots| u8::try_from(slots).ok())?;
         let base_release = format!("{name}.free");
-        if !self.consuming_receiver_methods.contains(&base_release)
-        {
+        if !self.consuming_receiver_methods.contains(&base_release) {
             return None;
         }
         let has_unresolved_type_arg = type_args
@@ -4408,8 +4414,12 @@ impl<'a> FnCompiler<'a> {
         let release = if type_args.is_empty() || has_unresolved_type_arg {
             base_release
         } else {
-            let args = type_args.iter().map(|arg| arg.node.clone()).collect::<Vec<_>>();
-            let specialized = crate::semantic::typecheck::mangle_monomorphized(&base_release, &args);
+            let args = type_args
+                .iter()
+                .map(|arg| arg.node.clone())
+                .collect::<Vec<_>>();
+            let specialized =
+                crate::semantic::typecheck::mangle_monomorphized(&base_release, &args);
             if self.fn_index.contains_key(&specialized) {
                 specialized
             } else {
@@ -5294,21 +5304,24 @@ impl<'a> FnCompiler<'a> {
                             let mut iter_ty = self.type_of_span(iter_key);
                             let original_expr = expr.clone();
                             let mut expr = expr;
-                            let is_borrow = if let Some(TypeKind::Ref { inner } | TypeKind::MutRef { inner }) = &iter_ty {
-                                if let ExprKind::Unary {
-                                    op: UnaryOpKind::Ref | UnaryOpKind::RefMut,
-                                    expr: inner_expr,
-                                } = &expr.node
+                            let is_borrow =
+                                if let Some(TypeKind::Ref { inner } | TypeKind::MutRef { inner }) =
+                                    &iter_ty
                                 {
-                                    expr = inner_expr;
-                                    iter_ty = Some(inner.node.clone());
-                                    true
+                                    if let ExprKind::Unary {
+                                        op: UnaryOpKind::Ref | UnaryOpKind::RefMut,
+                                        expr: inner_expr,
+                                    } = &expr.node
+                                    {
+                                        expr = inner_expr;
+                                        iter_ty = Some(inner.node.clone());
+                                        true
+                                    } else {
+                                        false
+                                    }
                                 } else {
                                     false
-                                }
-                            } else {
-                                false
-                            };
+                                };
                             if !is_borrow {
                                 self.mark_consumed_expr(&original_expr);
                             }
@@ -7265,11 +7278,7 @@ impl<'a> FnCompiler<'a> {
                 // lose enough surface type information for reconstruction.
                 if let Some(resolved_target) = self.resolved_fn_for_span(expr.span) {
                     let consuming_receiver = self.has_consuming_receiver(&resolved_target);
-                    let receiver = self.prepare_shared_enum_receiver(
-                        obj,
-                        object,
-                        &resolved_target,
-                    );
+                    let receiver = self.prepare_shared_enum_receiver(obj, object, &resolved_target);
                     let call_target = match self.type_of_expr(object) {
                         Some(TypeKind::Named { type_args, .. }) if !type_args.is_empty() => {
                             let Some(target) =
@@ -7397,11 +7406,7 @@ impl<'a> FnCompiler<'a> {
                         None
                     };
                     if let Some(call_target) = lookup {
-                        let receiver = self.prepare_shared_enum_receiver(
-                            obj,
-                            object,
-                            &call_target,
-                        );
+                        let receiver = self.prepare_shared_enum_receiver(obj, object, &call_target);
                         let arg_regs: Vec<u8> = args
                             .iter()
                             .map(|a| {
@@ -8414,7 +8419,9 @@ fn resolve_primitive_method(
             Some(PrimitiveMethod::Len)
         }
         "to_str" if args.is_empty() => match receiver_ty {
-            Some(TypeKind::Str) | Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. }) => Some(PrimitiveMethod::AsStr),
+            Some(TypeKind::Str) | Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. }) => {
+                Some(PrimitiveMethod::AsStr)
+            }
             _ => Some(PrimitiveMethod::PrimToStr {
                 tag: prim_to_str_tag(receiver_ty),
             }),
@@ -8911,7 +8918,11 @@ mod tests {
         analyzer.set_source_files(source_files.clone());
         analyzer.set_namespaced_paths(std::collections::HashSet::from(["helpers.qz".to_string()]));
         let report = analyzer.analyze_program(&program);
-        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
         Codegen::new(&report)
             .compile_program(&program, &source_files)
             .expect("code generation should succeed")
@@ -9400,7 +9411,10 @@ fn main() void {
             chunks.iter().any(|chunk| chunk.name == "Item.free"),
             "the structural cleanup hook must survive tree shaking"
         );
-        let take = chunks.iter().find(|chunk| chunk.name == "Outer.take").unwrap();
+        let take = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Outer.take")
+            .unwrap();
         assert_eq!(
             take.code
                 .iter()
@@ -9502,6 +9516,61 @@ fn take(value: Buffer[Token]) void {}
     }
 
     #[test]
+    fn contiguous_element_cleanup_keeps_nested_release_specializations_reachable() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+
+fn take(value: Buffer[Buffer[Token]]) void {}
+"#,
+        );
+        let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        assert!(
+            take.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::ArrayLoad as u8),
+            "nested owned elements must enter generated destruction glue: {:?}",
+            take.code
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.name == "Buffer.free<Token>"),
+            "the nested storage release specialization must survive tree shaking: {:?}",
+            chunks.iter().map(|chunk| &chunk.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generic_contiguous_cleanup_specializes_the_release_root() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+
+fn pass_through[T](value: Buffer[T]) void {}
+fn call(value: Buffer[Token]) void { pass_through[Token](value); }
+"#,
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.name == "Buffer.free<Token>"),
+            "a reachable generic cleanup must retain its concrete release: {:?}",
+            chunks.iter().map(|chunk| &chunk.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn contiguous_element_contract_routes_direct_free_through_the_same_cleanup() {
         let chunks = compile(
             r#"
@@ -9550,7 +9619,11 @@ fn take(value: Buffer[State]) void {}
         let tokens = Lexer::new(source).tokenize();
         let program = Parser::new(tokens).parse().expect("parse failed");
         let report = Analyzer::new().analyze_program(&program);
-        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
         let error = Codegen::new(&report)
             .compile_program(&program, &[])
             .expect_err("a non-droppable owned element must fail closed");

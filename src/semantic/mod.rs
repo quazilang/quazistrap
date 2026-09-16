@@ -806,7 +806,11 @@ impl Analyzer {
     fn validate_initial_serialize_fields(&mut self) {
         let derives: Vec<_> = self.serialization_derives.values().cloned().collect();
         for derive in derives {
-            if !derive.requested_traits.iter().any(|trait_name| trait_name == "Serialize") {
+            if !derive
+                .requested_traits
+                .iter()
+                .any(|trait_name| trait_name == "Serialize")
+            {
                 continue;
             }
             for field in derive.fields {
@@ -2297,19 +2301,98 @@ impl Buffer[T] {
 fn take(value: Buffer[Token]) void {}
 "#,
         );
-        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
-        assert!(report.monomorphizations.iter().any(|mono| {
-            mono.fn_name == "Buffer.free" && mono.mangled_name.contains("Token")
-        }));
-        assert!(report.monomorphizations.iter().any(|mono| {
-            mono.fn_name == "release_for" && mono.mangled_name.contains("Token")
-        }));
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
+        assert!(
+            report.monomorphizations.iter().any(|mono| {
+                mono.fn_name == "Buffer.free" && mono.mangled_name.contains("Token")
+            })
+        );
+        assert!(
+            report.monomorphizations.iter().any(|mono| {
+                mono.fn_name == "release_for" && mono.mangled_name.contains("Token")
+            })
+        );
         assert!(report.dependency_graph.edges.iter().any(|edge| {
             edge.kind == DependencyKind::Call
                 && edge.from == "take"
                 && edge.to.contains("Buffer.free")
                 && edge.to.contains("Token")
         }));
+    }
+
+    #[test]
+    fn nested_contiguous_cleanup_records_every_concrete_release() {
+        let report = analyze(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+
+fn take(value: Buffer[Buffer[Token]]) void {}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
+        for expected in ["Buffer_Token_", "Token"] {
+            assert!(
+                report
+                    .monomorphizations
+                    .iter()
+                    .any(|mono| mono.fn_name == "Buffer.free"
+                        && mono.mangled_name.contains(expected)),
+                "missing nested cleanup specialization `{expected}`: {:?}",
+                report.monomorphizations
+            );
+            assert!(
+                report.dependency_graph.edges.iter().any(|edge| {
+                    edge.kind == DependencyKind::Call
+                        && edge.from == "take"
+                        && edge.to.contains(expected)
+                }),
+                "missing cleanup dependency for `{expected}`: {:?}",
+                report.dependency_graph.edges
+            );
+        }
+    }
+
+    #[test]
+    fn generic_contiguous_cleanup_specializes_for_reachable_calls() {
+        let report = analyze(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] { fn free(self: Buffer[T]) void {} }
+
+fn pass_through[T](value: Buffer[T]) void {}
+fn call(value: Buffer[Token]) void { pass_through[Token](value); }
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .monomorphizations
+                .iter()
+                .any(|mono| mono.mangled_name == "Buffer.free<Token>"),
+            "reachable generic cleanup must retain its concrete release: {:?}",
+            report.monomorphizations
+        );
     }
 
     #[test]
@@ -2343,7 +2426,10 @@ fn main() void {}
         assert_eq!(metadata.requested_traits, ["Deserialize"]);
         assert_eq!(metadata.fields.len(), 2);
         assert_eq!(metadata.fields[0].name, "name");
-        assert_eq!(metadata.fields[0].json_name.as_deref(), Some("display_name"));
+        assert_eq!(
+            metadata.fields[0].json_name.as_deref(),
+            Some("display_name")
+        );
         assert!(matches!(metadata.fields[0].ty, TypeKind::Str));
         assert_eq!(metadata.fields[0].attributes[1].name, "community_format");
         assert_eq!(metadata.fields[1].name, "active");
@@ -2395,7 +2481,11 @@ fn main() void {}
         let error = report
             .errors
             .iter()
-            .find(|error| error.message.contains("duplicate declaration 'Request.to_json'"))
+            .find(|error| {
+                error
+                    .message
+                    .contains("duplicate declaration 'Request.to_json'")
+            })
             .expect("derive and explicit Serialize impl must conflict");
         assert_eq!(error.span.start, source.find("@derive").unwrap());
     }
@@ -2503,13 +2593,41 @@ union Value { integer: i32, }
 fn main() void {}
 "#,
         );
-        let messages: Vec<&str> = report.errors.iter().map(|error| error.message.as_str()).collect();
-        assert!(messages.iter().any(|message| message.contains("only valid")));
-        assert!(messages.iter().any(|message| message.contains("must be exactly")));
-        assert!(messages.iter().any(|message| message.contains("JSON key 'first'")));
-        assert!(messages.iter().any(|message| message.contains("duplicate serialization derive")));
-        assert!(messages.iter().any(|message| message.contains("generic structs")));
-        assert!(messages.iter().any(|message| message.contains("not unions")));
+        let messages: Vec<&str> = report
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("only valid"))
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("must be exactly"))
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("JSON key 'first'"))
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("duplicate serialization derive"))
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("generic structs"))
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("not unions"))
+        );
     }
 
     fn analyze_module_pair(module_src: &str, main_src: &str) -> SemanticReport {
@@ -2565,10 +2683,12 @@ fn main() void {}
             })
             .collect();
         assert_eq!(names, ["platform_word", "linux_only"]);
-        assert!(linux
-            .items
-            .iter()
-            .all(|item| !matches!(item.node, ItemKind::Import(_))));
+        assert!(
+            linux
+                .items
+                .iter()
+                .all(|item| !matches!(item.node, ItemKind::Import(_)))
+        );
         assert!(linux.items.iter().all(|item| match &item.node {
             ItemKind::TypeAlias { attributes, .. } | ItemKind::Fn { attributes, .. } =>
                 attributes.iter().all(|attribute| attribute.name != "cfg"),
@@ -3047,10 +3167,12 @@ fn duplicate() void {}
 "#,
         );
 
-        assert!(report
-            .errors
-            .iter()
-            .any(|error| error.message.contains("duplicate declaration 'duplicate'")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.message.contains("duplicate declaration 'duplicate'"))
+        );
         assert_eq!(
             report
                 .binding_declarations
@@ -3128,9 +3250,11 @@ fn duplicate() void {}
             .iter()
             .find(|declaration| declaration.binding.name == "helpers.apply")
             .expect("function declaration");
-        assert!(imports
-            .iter()
-            .all(|import| import.binding.span == declaration.binding.span));
+        assert!(
+            imports
+                .iter()
+                .all(|import| import.binding.span == declaration.binding.span)
+        );
     }
 
     #[test]
@@ -3993,7 +4117,10 @@ impl Counter {
 "#,
         );
         assert!(
-            wrong_receiver.errors.iter().any(|error| error.code == "S14"),
+            wrong_receiver
+                .errors
+                .iter()
+                .any(|error| error.code == "S14"),
             "implementation accepted a receiver for the wrong type: {:?}",
             wrong_receiver.errors
         );
@@ -4154,7 +4281,9 @@ fn main() void {
 "#,
         );
         assert!(
-            exclusive_reference_can_call_exclusive_receiver.errors.is_empty(),
+            exclusive_reference_can_call_exclusive_receiver
+                .errors
+                .is_empty(),
             "exclusive reference could not call an exclusive receiver: {:?}",
             exclusive_reference_can_call_exclusive_receiver.errors
         );
@@ -4244,7 +4373,9 @@ fn main() void {
         assert!(
             borrowed.errors.iter().any(|error| {
                 error.code == "S10"
-                    && error.message.contains("cannot move `token` while it is shared-borrowed")
+                    && error
+                        .message
+                        .contains("cannot move `token` while it is shared-borrowed")
             }),
             "consuming receiver ignored the active shared loan: {:?}",
             borrowed.errors
@@ -4263,8 +4394,7 @@ fn main() void {
         );
         assert!(
             field.errors.iter().any(|error| {
-                error.code == "S10"
-                    && error.message.contains("cannot move out of a field")
+                error.code == "S10" && error.message.contains("cannot move out of a field")
             }),
             "consuming receiver accepted a field move before place moves exist: {:?}",
             field.errors
@@ -4279,7 +4409,14 @@ fn main() void {
             r#"struct Token { value: i32, } fn take(token: Token) void {} fn main() void { var token = Token { value: 1 }; var view: &Token = &token; take(*view); }"#,
         ] {
             let report = analyze(source);
-            assert!(report.errors.iter().any(|error| error.code == "S10" && error.message.contains("cannot move out of a field, indexed element, or safe dereference")), "partial move was accepted: {:?}", report.errors);
+            assert!(
+                report.errors.iter().any(|error| error.code == "S10"
+                    && error.message.contains(
+                        "cannot move out of a field, indexed element, or safe dereference"
+                    )),
+                "partial move was accepted: {:?}",
+                report.errors
+            );
         }
 
         for source in [
@@ -4288,7 +4425,11 @@ fn main() void {
             r#"struct Holder[T] { value: T, } fn take[T](holder: Holder[T]) T { ret holder.value; }"#,
         ] {
             let report = analyze(source);
-            assert!(report.errors.is_empty(), "copyable or unconstrained generic projection was rejected: {:?}", report.errors);
+            assert!(
+                report.errors.is_empty(),
+                "copyable or unconstrained generic projection was rejected: {:?}",
+                report.errors
+            );
         }
     }
 
@@ -4542,10 +4683,10 @@ fn main() void {}
             let payload_pattern = analyze(source);
             assert!(
                 payload_pattern.errors.iter().any(|error| {
-                error.code == "S10"
-                    && error
-                        .message
-                        .contains("matching a borrowed enum may inspect only its discriminant")
+                    error.code == "S10"
+                        && error
+                            .message
+                            .contains("matching a borrowed enum may inspect only its discriminant")
                 }),
                 "borrowed enum payload pattern was accepted: {:?}",
                 payload_pattern.errors
@@ -7752,7 +7893,11 @@ fn main() void {
 }
 "#,
         );
-        assert!(valid.errors.is_empty(), "valid array receivers: {:?}", valid.errors);
+        assert!(
+            valid.errors.is_empty(),
+            "valid array receivers: {:?}",
+            valid.errors
+        );
 
         for source in [
             "const values: Array[i32] = Array { value: 1 }; values.push(2);",
@@ -7761,7 +7906,7 @@ fn main() void {
             "var values: Array[i32] = Array { value: 1 }; var shared: &Array[i32] = &values; shared.push(2);",
         ] {
             let report = analyze(&format!(
-            "trait Index[I, O] {{ fn index(i: I) O; }} struct Array[T] {{ value: T, }} impl Array[T] {{ fn set(self: &Array[T]!, i: usize, value: T) void {{}} fn push(self: &Array[T]!, value: T) void {{}} }} impl Index[usize, T] for Array[T] {{ fn index(self: Array[T], i: usize) T {{ ret self.value; }} }} fn main() void {{ {source} }}"
+                "trait Index[I, O] {{ fn index(i: I) O; }} struct Array[T] {{ value: T, }} impl Array[T] {{ fn set(self: &Array[T]!, i: usize, value: T) void {{}} fn push(self: &Array[T]!, value: T) void {{}} }} impl Index[usize, T] for Array[T] {{ fn index(self: Array[T], i: usize) T {{ ret self.value; }} }} fn main() void {{ {source} }}"
             ));
             assert!(
                 report.errors.iter().any(|error| error.code == "S07"),
@@ -7801,7 +7946,10 @@ fn main() void {
 "#,
         );
         assert!(
-            exclusive_view.errors.iter().any(|error| error.code == "S07"),
+            exclusive_view
+                .errors
+                .iter()
+                .any(|error| error.code == "S07"),
             "exclusive aggregate view allowed a const field update: {:?}",
             exclusive_view.errors
         );
@@ -7856,12 +8004,18 @@ fn main() void {
 }
 "#,
         );
-        assert!(report.errors.is_empty(), "generic dependency test: {:?}", report.errors);
-        assert!(report
-            .dependency_graph
-            .calls_from
-            .get("Bucket.touch<i32>")
-            .is_some_and(|targets| targets.iter().any(|target| target == "helper")));
+        assert!(
+            report.errors.is_empty(),
+            "generic dependency test: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .dependency_graph
+                .calls_from
+                .get("Bucket.touch<i32>")
+                .is_some_and(|targets| targets.iter().any(|target| target == "helper"))
+        );
     }
 
     #[test]
@@ -7876,12 +8030,18 @@ fn main() void { live[i32](1); }
 fn unused() void { dead[i32](1); }
 "#,
         );
-        assert!(report.errors.is_empty(), "generic dependency test: {:?}", report.errors);
-        assert!(report
-            .dependency_graph
-            .calls_from
-            .get("live<i32>")
-            .is_some_and(|targets| targets.iter().any(|target| target == "leaf<i32>")));
+        assert!(
+            report.errors.is_empty(),
+            "generic dependency test: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .dependency_graph
+                .calls_from
+                .get("live<i32>")
+                .is_some_and(|targets| targets.iter().any(|target| target == "leaf<i32>"))
+        );
     }
 
     #[test]

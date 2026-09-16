@@ -101,16 +101,18 @@ impl MoveEnv {
     }
 
     fn allows_destructor_projection_move(&self, expr: &Expr) -> bool {
-        self.destructor_receiver.as_deref().is_some_and(|receiver| {
-            projection_root_ident(expr) == Some(receiver)
-        })
+        self.destructor_receiver
+            .as_deref()
+            .is_some_and(|receiver| projection_root_ident(expr) == Some(receiver))
     }
 
     fn allows_returned_receiver_field_move(&self, expr: &Expr) -> bool {
-        self.returning_receiver_field.as_deref().is_some_and(|receiver| {
-            matches!(&expr.node, ExprKind::Field { object, .. }
+        self.returning_receiver_field
+            .as_deref()
+            .is_some_and(|receiver| {
+                matches!(&expr.node, ExprKind::Field { object, .. }
                 if matches!(&object.node, ExprKind::Ident(name) if name == receiver))
-        })
+            })
     }
 
     fn enter_scope(&mut self) {
@@ -178,7 +180,9 @@ impl MoveEnv {
         let scope_depth = self.scopes.len().saturating_sub(1);
         for scope in self.scopes.iter_mut().rev() {
             if let Some(variable) = scope.get_mut(name) {
-                variable.shared_borrow.get_or_insert(Loan { at, scope_depth });
+                variable
+                    .shared_borrow
+                    .get_or_insert(Loan { at, scope_depth });
                 return;
             }
         }
@@ -300,8 +304,8 @@ impl Analyzer {
                                         TypeKind::Ref { .. } | TypeKind::MutRef { .. }
                                     )
                             });
-                            let is_consuming_destructor = has_consuming_receiver
-                                && name.rsplit('.').next() == Some("free");
+                            let is_consuming_destructor =
+                                has_consuming_receiver && name.rsplit('.').next() == Some("free");
                             let mut env = if is_consuming_destructor {
                                 MoveEnv::for_consuming_destructor("self".to_string())
                             } else if has_consuming_receiver {
@@ -707,8 +711,8 @@ impl Analyzer {
                 }
                 let shared_receiver = self.bc_has_explicit_shared_receiver(expr);
                 let exclusive_receiver = self.bc_has_explicit_exclusive_receiver(expr);
-                let consuming_receiver = self.bc_has_consuming_receiver(expr)
-                    && !self.bc_is_dynamic_receiver(object);
+                let consuming_receiver =
+                    self.bc_has_consuming_receiver(expr) && !self.bc_is_dynamic_receiver(object);
                 if exclusive_receiver {
                     self.bc_reject_borrowed_write(object, env);
                 }
@@ -809,7 +813,10 @@ impl Analyzer {
                 }
             }
 
-            ExprKind::Unary { op: UnaryOpKind::Deref, expr: inner } => {
+            ExprKind::Unary {
+                op: UnaryOpKind::Deref,
+                expr: inner,
+            } => {
                 if consumed
                     && self.bc_receiver_is_move_type(expr)
                     && self.bc_is_safe_reference_expr(inner)
@@ -930,13 +937,14 @@ impl Analyzer {
     fn bc_resolved_direct_call(&self, expr: &Expr) -> bool {
         self.bc_resolved_call_name(expr).is_some_and(|name| {
             self.source_function_symbols.contains(name)
-                && self
-                    .resolve_symbol(name)
-                    .is_some_and(|symbol| {
-                        !symbol.unsafe_fn
-                            && !symbol.variadic
-                            && !symbol.attributes.iter().any(|attribute| attribute == "intrinsic")
-                    })
+                && self.resolve_symbol(name).is_some_and(|symbol| {
+                    !symbol.unsafe_fn
+                        && !symbol.variadic
+                        && !symbol
+                            .attributes
+                            .iter()
+                            .any(|attribute| attribute == "intrinsic")
+                })
         })
     }
 
@@ -970,7 +978,10 @@ impl Analyzer {
         // verification exists.
         if symbol.unsafe_fn
             || symbol.variadic
-            || symbol.attributes.iter().any(|attribute| attribute == "intrinsic")
+            || symbol
+                .attributes
+                .iter()
+                .any(|attribute| attribute == "intrinsic")
             || !self.source_function_symbols.contains(resolved)
         {
             return CallArgumentEffect::Consume;
@@ -1103,17 +1114,26 @@ impl Analyzer {
         let TypeKind::Named { name, type_args } = self.resolve_type_aliases(ty) else {
             return;
         };
-        let visit_key = format!("{name}[{}]", type_args.iter().map(|arg| arg.node.to_string()).collect::<Vec<_>>().join(","));
+        let visit_key = format!(
+            "{name}[{}]",
+            type_args
+                .iter()
+                .map(|arg| arg.node.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         if !visiting.insert(visit_key) {
             return;
         }
         if !type_args.is_empty() && self.contiguous_element_containers.contains(&name) {
             let release = format!("{name}.free");
             let type_args = type_args
-            .iter()
-            .map(|argument| argument.node.clone())
-            .collect::<Vec<_>>();
-            let mangled_name = crate::semantic::typecheck::mangle_monomorphized(&release, &type_args);
+                .iter()
+                .map(|argument| argument.node.clone())
+                .collect::<Vec<_>>();
+            let element_type = type_args.first().cloned();
+            let mangled_name =
+                crate::semantic::typecheck::mangle_monomorphized(&release, &type_args);
             if !self
                 .monomorphizations
                 .iter()
@@ -1126,6 +1146,13 @@ impl Analyzer {
                 });
             }
             self.add_dependency_edge(DependencyKind::Call, owner, &mangled_name);
+            // Generated destruction recursively lowers the concrete element
+            // action. Keep the element's release specialization reachable too;
+            // otherwise Buffer[Buffer[Token]] can reach codegen without the
+            // Buffer.free<Token> chunk it must invoke.
+            if let Some(element) = element_type.as_ref() {
+                self.bc_record_contiguous_destructor_roots(element, owner, visiting);
+            }
             return;
         }
         if self
@@ -1138,13 +1165,18 @@ impl Analyzer {
         let Some(fields) = self.struct_defs.get(&name).cloned() else {
             return;
         };
-        let params = self.struct_generic_params.get(&name).cloned().unwrap_or_default();
+        let params = self
+            .struct_generic_params
+            .get(&name)
+            .cloned()
+            .unwrap_or_default();
         let substitutions = params
             .into_iter()
             .zip(type_args.into_iter().map(|argument| argument.node))
             .collect::<HashMap<_, _>>();
         for (_, field_ty) in fields {
-            let field_ty = crate::semantic::typecheck::substitute_type_kind(&field_ty, &substitutions);
+            let field_ty =
+                crate::semantic::typecheck::substitute_type_kind(&field_ty, &substitutions);
             self.bc_record_contiguous_destructor_roots(&field_ty, owner, visiting);
         }
     }
@@ -1168,16 +1200,24 @@ impl Analyzer {
     }
 
     fn bc_is_safe_reference_expr(&self, expr: &Expr) -> bool {
-        self.bc_annotated_type(expr).as_ref().is_some_and(|ty| matches!(
-            self.resolve_type_aliases(ty), TypeKind::Ref { .. } | TypeKind::MutRef { .. }
-        ))
+        self.bc_annotated_type(expr).as_ref().is_some_and(|ty| {
+            matches!(
+                self.resolve_type_aliases(ty),
+                TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+            )
+        })
     }
 
     fn bc_is_builtin_index_projection(&self, object: &Expr) -> bool {
-        self.bc_annotated_type(object).as_ref().is_some_and(|ty| matches!(
-            self.resolve_type_aliases(ty),
-            TypeKind::Array { .. } | TypeKind::Slice { .. } | TypeKind::FlexibleArray { .. } | TypeKind::Bytes
-        ))
+        self.bc_annotated_type(object).as_ref().is_some_and(|ty| {
+            matches!(
+                self.resolve_type_aliases(ty),
+                TypeKind::Array { .. }
+                    | TypeKind::Slice { .. }
+                    | TypeKind::FlexibleArray { .. }
+                    | TypeKind::Bytes
+            )
+        })
     }
 
     fn bc_reject_partial_move(&mut self, expr: &Expr) {
@@ -1194,7 +1234,11 @@ impl Analyzer {
         let Some(receiver) = env.consuming_receiver.as_deref() else {
             return false;
         };
-        let ExprKind::Field { object, name: field } = &expr.node else {
+        let ExprKind::Field {
+            object,
+            name: field,
+        } = &expr.node
+        else {
             return false;
         };
         let ExprKind::Ident(object_name) = &object.node else {

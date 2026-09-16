@@ -1,6 +1,7 @@
 # Change records
 
 - [2026-09-16: Stateful child-process polling](2026-09-16-http-process-receivers.md)
+- [2026-09-16: Nested contiguous-container destruction roots](2026-09-16-nested-container-destruction-roots.md)
 - [2026-09-16: Constrained receiver-field returns](2026-09-16-constrained-receiver-field-returns.md)
 - [2026-09-16: Reject unsafe owned Array reads](2026-09-16-reject-unsafe-owned-array-reads.md)
 - [2026-09-16: Source-call reference capabilities](2026-09-16-source-call-reference-capabilities.md)
