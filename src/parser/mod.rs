@@ -115,22 +115,45 @@ impl Parser {
 
     fn parse_item(&mut self) -> Result<Item, String> {
         let attributes = self.parse_attributes()?;
-        let is_pub = if self.at(TokenKind::Pub) {
-            self.advance();
-            true
-        } else {
-            false
-        };
+        // Declaration modifiers are order-independent, matching methods in
+        // an `impl`: both `pub unsafe fn` and `unsafe pub fn` are valid.
+        let mut is_pub = false;
+        let mut is_unsafe = false;
+        loop {
+            if self.at(TokenKind::Pub) {
+                if is_pub {
+                    return Err(self.err_here_with_code(
+                        "E03",
+                        "duplicate `pub` declaration modifier".to_string(),
+                    ));
+                }
+                self.advance();
+                is_pub = true;
+            } else if self.at(TokenKind::Unsafe) {
+                if is_unsafe {
+                    return Err(self.err_here_with_code(
+                        "E03",
+                        "duplicate `unsafe` declaration modifier".to_string(),
+                    ));
+                }
+                self.advance();
+                is_unsafe = true;
+            } else {
+                break;
+            }
+        }
+        if is_unsafe && !self.at(TokenKind::Fn) {
+            return Err(self.err_here_with_code(
+                "E03",
+                "`unsafe` is only valid before a function declaration".to_string(),
+            ));
+        }
         match self.peek_kind() {
             TokenKind::Error(msg) => {
                 Err(self.err_here_with_code("E00", format!("lexer error: {}", msg)))
             }
             TokenKind::Import => self.parse_import(is_pub, attributes),
-            TokenKind::Unsafe => {
-                self.advance(); // consume 'unsafe'
-                self.parse_fn(attributes, true, is_pub)
-            }
-            TokenKind::Fn => self.parse_fn(attributes, false, is_pub),
+            TokenKind::Fn => self.parse_fn(attributes, is_unsafe, is_pub),
             TokenKind::Struct => self.parse_struct(attributes, is_pub),
             TokenKind::Union => self.parse_union(attributes, is_pub),
             TokenKind::Trait => self.parse_trait(attributes, is_pub),
@@ -749,40 +772,44 @@ impl Parser {
     }
 
     fn parse_range(&mut self) -> Result<Expr, String> {
-        let start = self.parse_logical_or()?;
-        let (inclusive, operator_span) = if self.at(TokenKind::DotDotEq) {
-            (true, to_ast_span(self.advance().span))
-        } else if self.at(TokenKind::DotDot) {
-            (false, to_ast_span(self.advance().span))
-        } else {
-            return Ok(start);
-        };
-        let end = self.parse_logical_or()?;
-        let span = Span::merge(start.span, end.span);
-        let cast = |expr: Expr| {
-            let expr_span = expr.span;
-            Spanned::new(
-                ExprKind::Cast {
-                    expr: Box::new(expr),
-                    ty: Spanned::new(TypeKind::Int64, expr_span),
+        let mut range = self.parse_logical_or()?;
+        while self.at(TokenKind::DotDotEq) || self.at(TokenKind::DotDot) {
+            let (inclusive, operator_span) = if self.at(TokenKind::DotDotEq) {
+                (true, to_ast_span(self.advance().span))
+            } else {
+                (false, to_ast_span(self.advance().span))
+            };
+            let end = self.parse_logical_or()?;
+            let span = Span::merge(range.span, end.span);
+            let cast = |expr: Expr| {
+                let expr_span = expr.span;
+                Spanned::new(
+                    ExprKind::Cast {
+                        expr: Box::new(expr),
+                        ty: Spanned::new(TypeKind::Int64, expr_span),
+                    },
+                    expr_span,
+                )
+            };
+            range = Spanned::new(
+                ExprKind::StructInit {
+                    name: "Range".to_string(),
+                    fields: vec![
+                        ("start".to_string(), cast(range)),
+                        ("end".to_string(), cast(end)),
+                        (
+                            "inclusive".to_string(),
+                            Spanned::new(
+                                ExprKind::Literal(Literal::Bool(inclusive)),
+                                operator_span,
+                            ),
+                        ),
+                    ],
                 },
-                expr_span,
-            )
-        };
-        Ok(Spanned::new(
-            ExprKind::StructInit {
-                name: "Range".to_string(),
-                fields: vec![
-                    ("start".to_string(), cast(start)),
-                    ("end".to_string(), cast(end)),
-                    (
-                        "inclusive".to_string(),
-                        Spanned::new(ExprKind::Literal(Literal::Bool(inclusive)), operator_span),
-                    ),
-                ],
-            },
-            span,
-        ))
+                span,
+            );
+        }
+        Ok(range)
     }
 
     fn parse_logical_or(&mut self) -> Result<Expr, String> {
@@ -1919,6 +1946,7 @@ impl Parser {
                 | TokenKind::LBracket
                 | TokenKind::Ampersand
                 | TokenKind::Star
+                | TokenKind::StarStar
                 | TokenKind::Bang
                 | TokenKind::Fn
         )
@@ -2056,7 +2084,7 @@ mod tests {
 
     #[test]
     fn lowers_range_expressions_to_prelude_range_values() {
-        let program = parse_program("fn main() void { const die = 1..=6; }");
+        let program = parse_program("fn main() void { const die = 1..=6..8; }");
         let ItemKind::Fn { body, .. } = &program.items[0].node else {
             panic!("expected function item");
         };
@@ -2068,11 +2096,24 @@ mod tests {
         };
         assert_eq!(name, "Range");
         assert_eq!(fields.len(), 3);
-        assert!(matches!(fields[0].1.node, ExprKind::Cast { .. }));
+        let ExprKind::Cast { expr, .. } = &fields[0].1.node else {
+            panic!("expected the chained range start to be cast");
+        };
+        let ExprKind::StructInit {
+            fields: inner_fields,
+            ..
+        } = &expr.node
+        else {
+            panic!("expected the chained range start");
+        };
+        assert!(matches!(
+            inner_fields[2].1.node,
+            ExprKind::Literal(Literal::Bool(true))
+        ));
         assert!(matches!(fields[1].1.node, ExprKind::Cast { .. }));
         assert!(matches!(
             fields[2].1.node,
-            ExprKind::Literal(Literal::Bool(true))
+            ExprKind::Literal(Literal::Bool(false))
         ));
     }
 
@@ -2266,6 +2307,43 @@ fn main() void {
         assert!(matches!(params[0].ty.node, TypeKind::Isize));
         assert!(matches!(params[1].ty.node, TypeKind::Usize));
         assert!(matches!(return_ty.node, TypeKind::Isize));
+    }
+
+    #[test]
+    fn parses_double_pointer_function_return_type() {
+        let program = parse_program("fn pointer() **u8;");
+        let ItemKind::Fn { return_ty, .. } = &program.items[0].node else {
+            panic!("expected function declaration");
+        };
+        let TypeKind::RawPtr { inner } = &return_ty.node else {
+            panic!("expected outer raw pointer, got {return_ty:?}");
+        };
+        assert!(matches!(inner.node, TypeKind::RawPtr { .. }));
+    }
+
+    #[test]
+    fn accepts_reordered_function_visibility_and_safety_modifiers() {
+        let program = parse_program("unsafe pub fn exported() void {}");
+        let ItemKind::Fn {
+            pub_fn, unsafe_fn, ..
+        } = &program.items[0].node
+        else {
+            panic!("expected function declaration");
+        };
+        assert!(*pub_fn);
+        assert!(*unsafe_fn);
+    }
+
+    #[test]
+    fn rejects_duplicate_function_declaration_modifiers() {
+        for source in [
+            "pub pub fn duplicate() void {}",
+            "unsafe unsafe fn duplicate() void {}",
+            "impl S { pub pub fn duplicate() void {} }",
+            "impl S { unsafe unsafe fn duplicate() void {} }",
+        ] {
+            assert!(parse_program_err(source).contains("duplicate"));
+        }
     }
 
     #[test]

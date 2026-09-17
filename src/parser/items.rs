@@ -380,9 +380,21 @@ impl Parser {
             let mut is_unsafe = false;
             loop {
                 if self.at(TokenKind::Pub) {
+                    if is_pub {
+                        return Err(self.err_here_with_code(
+                            "E03",
+                            "duplicate `pub` declaration modifier".to_string(),
+                        ));
+                    }
                     self.advance();
                     is_pub = true;
                 } else if self.at(TokenKind::Unsafe) {
+                    if is_unsafe {
+                        return Err(self.err_here_with_code(
+                            "E03",
+                            "duplicate `unsafe` declaration modifier".to_string(),
+                        ));
+                    }
                     self.advance();
                     is_unsafe = true;
                 } else {
