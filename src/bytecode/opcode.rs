@@ -38,6 +38,10 @@ pub enum Opcode {
     Dup = 0x25,        // copy if type allows (Copy types only)
     ArrayStore = 0x26, // RRR: ops[0]=val, ops[1]=base, ops[2]=idx — base[idx] = val (scaled by 8)
     ArrayLoad = 0x27,  // RRR: ops[0]=dst, ops[1]=base, ops[2]=idx — dst = base[idx] (scaled by 8)
+    /// RRRR: ops[0]=dst, ops[1]=storage base, ops[2]=index, ops[3]=length.
+    /// `flags` is the non-zero element slot stride. The operation traps when
+    /// `index >= length` before computing the element address.
+    ContiguousElementAddr = 0x28,
 
     // 0x30–0x3F  Control flow
     Cmp = 0x30,
@@ -127,6 +131,7 @@ impl Opcode {
             0x25 => Some(Self::Dup),
             0x26 => Some(Self::ArrayStore),
             0x27 => Some(Self::ArrayLoad),
+            0x28 => Some(Self::ContiguousElementAddr),
             0x30 => Some(Self::Cmp),
             0x31 => Some(Self::Jmp),
             0x32 => Some(Self::Je),

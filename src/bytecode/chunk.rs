@@ -592,6 +592,9 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
             {
                 return fail("contiguous register block wraps past r255");
             }
+            if opcode == Opcode::ContiguousElementAddr && instruction.flags == 0 {
+                return fail("checked contiguous-element address has a zero slot stride");
+            }
             for register in crate::bytecode::regalloc::instruction_registers(instruction) {
                 // A zero-register void function still carries `Ret r0` by the
                 // historical QZI convention. The backend reserves that return slot.
@@ -1801,6 +1804,19 @@ mod tests {
         chunk.emit(crate::bytecode::instruction::mem_lea_block(250, 0, 0, 10));
         let error = serialize_qzi(&[chunk]).expect_err("wrapping block must be rejected");
         assert!(error.contains("wraps past r255"));
+    }
+
+    #[test]
+    fn qzi_rejects_zero_stride_checked_contiguous_element_addresses() {
+        let mut chunk = Chunk::new("bad_checked_address");
+        chunk.reg_count = 4;
+        chunk.emit(Instruction::new(
+            Opcode::ContiguousElementAddr,
+            [0, 1, 2, 3],
+            0,
+        ));
+        let error = serialize_qzi(&[chunk]).expect_err("zero stride must be rejected");
+        assert!(error.contains("zero slot stride"));
     }
 
     #[test]

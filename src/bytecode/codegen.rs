@@ -8504,6 +8504,15 @@ pub(crate) fn remap_instr_regs(
             // ops[2] unused — leave unchanged
         }
 
+        // Checked dense element addresses have four register operands; the
+        // stride is carried in flags rather than an operand byte.
+        Opcode::ContiguousElementAddr => {
+            instr.ops[0] = remap(instr.ops[0]);
+            instr.ops[1] = remap(instr.ops[1]);
+            instr.ops[2] = remap(instr.ops[2]);
+            instr.ops[3] = remap(instr.ops[3]);
+        }
+
         // Pow — RRR
         Opcode::Pow => {
             instr.ops[0] = remap(instr.ops[0]);

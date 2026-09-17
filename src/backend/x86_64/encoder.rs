@@ -18,11 +18,11 @@ use std::collections::HashMap;
 use iced_x86::code_asm::*;
 
 use crate::abi::{AbiSignature, AbiType, ForeignSymbol};
-use crate::backend::{target::Abi, BackendError, TargetSpec};
-use crate::bytecode::{instruction::MemWidth, Chunk, ConstPoolEntry, Opcode};
+use crate::backend::{BackendError, TargetSpec, target::Abi};
+use crate::bytecode::{Chunk, ConstPoolEntry, Opcode, instruction::MemWidth};
 
 use super::relocations::{PendingReloc, RelocKind};
-use super::sysv_abi::{classify, EightbyteClass, TypeClass};
+use super::sysv_abi::{EightbyteClass, TypeClass, classify};
 
 // ── Calling-convention register tables ──────────────────────────────────────
 
@@ -2128,6 +2128,34 @@ impl<'a> FnEncoder<'a> {
                     emit!(asm.mov(rax, qword_ptr(rax)));
                     emit!(asm.mov(slot(dst), rax));
                 }
+            }
+
+            Some(Opcode::ContiguousElementAddr) => {
+                let (dst, base, idx, len) = instr.rrrr();
+                let stride = instr.flags as i64;
+                if stride == 0 {
+                    return Err(BackendError(
+                        "checked contiguous-element address has zero stride".to_string(),
+                    ));
+                }
+                let mut in_bounds = asm.create_label();
+                let mut done = asm.create_label();
+                emit!(asm.mov(rcx, slot(idx)));
+                emit!(asm.cmp(rcx, slot(len)));
+                emit!(asm.jb(in_bounds));
+                emit!(asm.ud2());
+                emit!(asm.jmp(done));
+                emit!(asm.set_label(&mut in_bounds));
+                emit!(asm.mov(rax, slot(base)));
+                if stride == 1 {
+                    emit!(asm.shl(rcx, 3i32));
+                } else {
+                    emit!(asm.mov(rdx, stride * 8));
+                    emit!(asm.imul_2(rcx, rdx));
+                }
+                emit!(asm.add(rax, rcx));
+                emit!(asm.mov(slot(dst), rax));
+                emit!(asm.set_label(&mut done));
             }
 
             Some(Opcode::Syscall) => {
@@ -4410,6 +4438,7 @@ mod tests {
     use super::*;
     use crate::abi::{AbiField, ForeignGlobal};
     use crate::backend::target::{Arch, Os};
+    use crate::bytecode::Instruction;
     use crate::bytecode::instruction::{call_c_reg, ri16, rrr};
     use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 
@@ -4441,6 +4470,45 @@ mod tests {
             abi,
             emit_start: false,
             no_crash: true,
+        }
+    }
+
+    #[test]
+    fn checked_contiguous_element_address_checks_bounds_before_scaling() {
+        for (stride, scale) in [(1, Mnemonic::Shl), (2, Mnemonic::Imul)] {
+            let mut chunk = Chunk::new("checked_address");
+            chunk.reg_count = 4;
+            chunk.emit(Instruction::new(
+                Opcode::ContiguousElementAddr,
+                [0, 1, 2, 3],
+                stride,
+            ));
+            chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+            for abi in [Abi::SysV, Abi::Win64] {
+                let (bytes, _) = encode(&chunk, abi);
+                let mnemonics = mnemonics(&bytes);
+                let cmp = mnemonics
+                    .iter()
+                    .position(|mnemonic| *mnemonic == Mnemonic::Cmp)
+                    .expect("checked address must compare its index and length");
+                let in_bounds = mnemonics
+                    .iter()
+                    .position(|mnemonic| *mnemonic == Mnemonic::Jb)
+                    .expect("checked address must branch only for an in-bounds index");
+                let trap = mnemonics
+                    .iter()
+                    .position(|mnemonic| *mnemonic == Mnemonic::Ud2)
+                    .expect("checked address must trap out of bounds");
+                let scale = mnemonics
+                    .iter()
+                    .position(|mnemonic| *mnemonic == scale)
+                    .expect("checked address must scale the in-bounds index");
+                assert!(
+                    cmp < in_bounds && in_bounds < trap && trap < scale,
+                    "bounds check must precede address scaling: {mnemonics:?}"
+                );
+            }
         }
     }
 

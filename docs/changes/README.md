@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-09-17: Checked dense-element address foundation](2026-09-17-checked-dense-element-address.md)
 - [2026-09-16: Stateful child-process polling](2026-09-16-http-process-receivers.md)
 - [2026-09-16: Nested contiguous-container destruction roots](2026-09-16-nested-container-destruction-roots.md)
 - [2026-09-16: Constrained receiver-field returns](2026-09-16-constrained-receiver-field-returns.md)

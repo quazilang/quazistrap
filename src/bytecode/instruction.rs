@@ -46,6 +46,11 @@ impl Instruction {
         (self.ops[0], self.ops[1], self.ops[2])
     }
 
+    /// RRRR layout: (destination, storage base, index, initialized length).
+    pub fn rrrr(&self) -> (u8, u8, u8, u8) {
+        (self.ops[0], self.ops[1], self.ops[2], self.ops[3])
+    }
+
     /// RRI layout: (dst, src, imm8)
     pub fn rri(&self) -> (u8, u8, u8) {
         (self.ops[0], self.ops[1], self.ops[2])
@@ -158,9 +163,12 @@ impl Instruction {
             | Opcode::Dup
             | Opcode::Move
             | Opcode::Drop => "\x1b[34m", // blue   – data movement
-            Opcode::Load | Opcode::Store | Opcode::Lea | Opcode::ArrayStore | Opcode::ArrayLoad => {
-                "\x1b[35m"
-            } // magenta – memory
+            Opcode::Load
+            | Opcode::Store
+            | Opcode::Lea
+            | Opcode::ArrayStore
+            | Opcode::ArrayLoad
+            | Opcode::ContiguousElementAddr => "\x1b[35m", // magenta – memory
             Opcode::New
             | Opcode::NewObj
             | Opcode::FieldLoad
@@ -244,6 +252,18 @@ impl Instruction {
             Opcode::ArrayLoad => {
                 let (dst, base, idx) = self.rrr();
                 format!("{cop}{}, [{} + {}*8]", r(dst), r(base), r(idx))
+            }
+
+            Opcode::ContiguousElementAddr => {
+                let (dst, base, idx, len) = self.rrrr();
+                format!(
+                    "{cop}{}, checked_addr({}, {}, {}, stride={})",
+                    r(dst),
+                    r(base),
+                    r(idx),
+                    r(len),
+                    self.flags
+                )
             }
 
             Opcode::CallReg | Opcode::Spawn => {

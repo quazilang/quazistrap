@@ -529,6 +529,11 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
         }
         Opcode::ArrayLoad => vec![instr.ops[1], instr.ops[2]],
 
+        // A checked dense element address reads the storage base, requested
+        // index, and initialized length. Its destination is the computed
+        // element address; the stride lives in `flags`, not a register.
+        Opcode::ContiguousElementAddr => vec![instr.ops[1], instr.ops[2], instr.ops[3]],
+
         // Two-source RRR: ops[0]=dst, ops[1]=src1, ops[2]=src2.
         Opcode::Add
         | Opcode::Sub
@@ -713,6 +718,31 @@ mod tests {
             3,
             "a multi-slot ArrayStore must retain every source slot"
         );
+    }
+
+    #[test]
+    fn checked_contiguous_element_address_remaps_every_register_operand() {
+        let mut chunk = Chunk::new("checked_address_remap");
+        chunk.reg_count = 8;
+        chunk.emit(ri16(Opcode::MovI, 4, 64));
+        chunk.emit(ri16(Opcode::MovI, 5, 1));
+        chunk.emit(ri16(Opcode::MovI, 6, 2));
+        chunk.emit(Instruction::new(
+            Opcode::ContiguousElementAddr,
+            [7, 4, 5, 6],
+            3,
+        ));
+        chunk.emit(rrr(Opcode::Ret, 7, 0, 0));
+
+        compact_regs(&mut chunk);
+
+        let address = chunk
+            .code
+            .iter()
+            .find(|instruction| instruction.opcode() == Some(Opcode::ContiguousElementAddr))
+            .expect("checked address must remain");
+        assert_eq!(address.ops, [3, 0, 1, 2]);
+        assert_eq!(address.flags, 3);
     }
 
     #[test]

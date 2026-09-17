@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::chunk::{Chunk, ConstPoolEntry};
-use super::instruction::{Instruction, ri16};
+use super::instruction::{ri16, Instruction};
 use super::opcode::Opcode;
 
 // ── Lattice ───────────────────────────────────────────────────────────────────
@@ -377,6 +377,7 @@ fn has_dest(op: u8) -> bool {
                 | Opcode::Cmp
                 | Opcode::Load
                 | Opcode::Lea
+                | Opcode::ContiguousElementAddr
                 | Opcode::Dup
                 | Opcode::ArrayLoad
                 | Opcode::New
@@ -653,6 +654,24 @@ mod tests {
         assert_eq!(instr.opcode, Opcode::MovI as u8);
         let (_, imm) = instr.ri16();
         assert_eq!(imm as i16 as i64, 7);
+    }
+
+    #[test]
+    fn checked_contiguous_element_address_invalidates_its_destination() {
+        let mut chunk = make_chunk(
+            "checked_address_invalidates_destination",
+            vec![
+                ri16(Opcode::MovI, 0, 7),
+                Instruction::new(Opcode::ContiguousElementAddr, [0, 1, 2, 3], 1),
+                ri16(Opcode::MovI, 4, 1),
+                rrr(Opcode::Add, 5, 0, 4),
+                rrr(Opcode::Ret, 5, 0, 0),
+            ],
+        );
+
+        const_prop_fold(&mut chunk);
+
+        assert_eq!(chunk.code[3].opcode, Opcode::Add as u8);
     }
 
     #[test]

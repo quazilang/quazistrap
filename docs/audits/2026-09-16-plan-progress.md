@@ -30,7 +30,7 @@ work.
   `Array[Header]` operations need scoped borrowed elements and exact-once
   replacement/removal/freeing. It is intentionally not treated as a passing
   standard-library suite while those diagnostics remain.
-- The contained compiler's `cargo test --offline` passes 636 tests. A native
+- The contained compiler's `cargo test --offline` passes 640 tests. A native
   `qz test` regression exercises the prelude's generic `Array[i32].remove`:
   it checks the returned element, shortened length, and compacted remaining
   values after removing the middle slot. This is runtime evidence for the
@@ -39,6 +39,12 @@ work.
   signatures as the input schema for D-014's future effect solver; those
   signatures are not yet transitive ownership proofs or QZI summaries.
   Canonical Markdown checks pass 13 tests.
+- The compiler has a private, un-emitted `ContiguousElementAddr` bytecode
+  foundation for D-015. QZI validation rejects a zero stride, optimizer and
+  register remapping preserve its four operands, and both native ABI lowerings
+  check bounds before scaling. It does not yet make any source accessor safe,
+  change the QZI/QZC ownership boundary, or close the first required sequence
+  item.
 - The separate Tree-sitter corpus passes 28/28 and its workspace conformance
   command passes. This supersedes the obsolete resume warning about example 33.
 

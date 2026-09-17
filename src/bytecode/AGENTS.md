@@ -7,7 +7,8 @@ Emitting QZI is target-neutral and does not compile the current project's `[cc]`
 sources or require a host linker. Native inputs are used only for object/binary
 outputs.
 
-Operand layouts: **RRR** (dst/src1/src2), **RI16** (dst/unsigned imm16 LE), **MEM** (val/base/offset16 LE signed).
+Operand layouts: **RRR** (dst/src1/src2), **RRRR** (dst/storage-base/index/length),
+**RI16** (dst/unsigned imm16 LE), **MEM** (val/base/offset16 LE signed).
 Negative and larger integer values use `MovConst` with an `Int(u64)` constant;
 signed consumers interpret the stored two's-complement bits at their selected
 width.
@@ -39,6 +40,13 @@ Zero retains signed behavior for historical bytecode. Signed `>>` lowers to
 | `0x60–0x6F` | Strings: `StrLen=0x60`, `StrConcat=0x61`, `StrToInt=0x62`, `StrToFloat=0x63`, `PrimToStr=0x64`, `StrAsStr=0x65` |
 
 Key constants: `ENUM_DISCRIM_OFFSET=0`, `ENUM_PAYLOAD_OFFSET=8`, `enum_variant_alloc_size(n)=((n+1)*8).max(16)`.
+
+`ContiguousElementAddr` (`0x28`) is a compiler-private checked dense-storage
+address primitive. It takes a destination, storage base, index, initialized
+length, and non-zero slot stride in `flags`; its native lowering traps before
+address arithmetic when the index is out of bounds. It is not yet emitted by
+source codegen: D-015 must first add provenance-validated accessors and the
+matching artifact ownership boundary.
 
 `Chunk` = fn code + const pool + name + param_count + reg_count. Return value always in `r0`.
 
