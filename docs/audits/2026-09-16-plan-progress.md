@@ -37,7 +37,9 @@ work.
   plain-element lowering only; owned, nested, and out-of-bounds cases remain
   required. The compiler now records deterministic callable ownership
   signatures as the input schema for D-014's future effect solver; those
-  signatures are not yet transitive ownership proofs or QZI summaries.
+  signatures now include a conservative source-only direct-call closure used
+  solely to tighten the existing temporary-loan shortcut. They are not yet
+  whole-program transitive ownership proofs or QZI summaries.
   Canonical Markdown checks pass 13 tests.
 - The compiler has a private, un-emitted `ContiguousElementAddr` bytecode
   foundation for D-015. QZI validation rejects a zero stride, optimizer and

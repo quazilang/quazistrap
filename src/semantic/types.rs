@@ -354,8 +354,10 @@ pub enum VariadicOwnership {
 }
 
 /// A deterministic, compiler-derived ownership signature for one declared
-/// callable. `transitive_effects_verified` deliberately remains false until
-/// D-014's call-graph effect solver and QZI certificate verifier exist.
+/// callable. `source_effects_verified` is a conservative source-only
+/// fixed-point proof for the existing call-local loan rule. It deliberately
+/// does not validate an artifact. `transitive_effects_verified` therefore
+/// remains false until D-014's QZI certificate verifier exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableOwnershipSummary {
     pub callable: String,
@@ -366,8 +368,13 @@ pub struct CallableOwnershipSummary {
     pub has_body: bool,
     pub generic_template: bool,
     /// Whether the existing lexical direct-call rule may use this signature
-    /// for call-local borrow capabilities. This is not a transitive proof.
+    /// for call-local borrow capabilities. It requires a source-only
+    /// transitive direct-call proof, but is not an artifact proof.
     pub direct_call_eligible: bool,
+    /// Every resolved call reachable from this source callable is likewise a
+    /// verified safe source callable. Opaque, foreign, indirect, variadic,
+    /// and unsafe calls make this false conservatively.
+    pub source_effects_verified: bool,
     pub transitive_effects_verified: bool,
 }
 

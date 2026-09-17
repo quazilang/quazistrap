@@ -39,6 +39,16 @@ pub(super) enum MatchArmKindInfo {
     },
 }
 
+/// Call facts used only to decide whether the current lexical direct-call
+/// loan shortcut can end a temporary borrow. This is intentionally separate
+/// from reachability dependencies, which also model function values and
+/// compiler-injected calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SourceCallEffect {
+    ResolvedDirect(String),
+    Opaque,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct MatchArmInfo {
     pub(super) span: Span,
@@ -73,6 +83,9 @@ pub struct Analyzer {
     pub(super) dependency_edges: BTreeSet<(DependencyKind, String, String)>,
     /// Call-only adjacency index maintained with `dependency_edges`.
     pub(super) call_dependencies: HashMap<String, BTreeSet<String>>,
+    /// Source-body call facts for the conservative ownership shortcut. Unlike
+    /// `call_dependencies`, this records indirect and opaque calls explicitly.
+    pub(super) source_call_effects: HashMap<String, Vec<SourceCallEffect>>,
     pub(super) called_functions: BTreeSet<String>,
     pub(super) call_counts: HashMap<String, usize>,
     pub(super) current_function: Vec<String>,
@@ -855,6 +868,7 @@ impl Analyzer {
             exhaustiveness_checks: 0,
             dependency_edges: BTreeSet::new(),
             call_dependencies: HashMap::new(),
+            source_call_effects: HashMap::new(),
             called_functions: BTreeSet::new(),
             call_counts: HashMap::new(),
             current_function: Vec::new(),
@@ -1025,6 +1039,11 @@ impl Analyzer {
             self.type_check_item(item, &mut checkpoint)?;
         }
 
+        // A direct source call may end a temporary loan only after every
+        // resolved callee in its source call graph has the same property.
+        // QZI and other opaque boundaries stay outside this source-only proof.
+        self.refresh_source_ownership_effects();
+
         // Pass 3: unused symbol/import analysis.
         checkpoint()?;
         self.run_unused_pass();
@@ -1079,8 +1098,12 @@ impl Analyzer {
         }
 
         let symbol_table = self.build_symbol_table();
-        let callable_ownership_summaries =
-            self.derive_callable_ownership_summaries(&symbol_table);
+        let mut callable_ownership_summaries = self
+            .ownership_signature_index
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        callable_ownership_summaries.sort_by(|left, right| left.callable.cmp(&right.callable));
         let used_imports_vec: Vec<String> = self.used_import_paths.iter().cloned().collect();
         let used_imports_map = self.build_import_usage_map(&symbol_table, true);
         let unused_imports_vec: Vec<String> = self.unused_import_paths.iter().cloned().collect();
@@ -1321,6 +1344,7 @@ impl Analyzer {
         self.exhaustiveness_checks = 0;
         self.dependency_edges.clear();
         self.call_dependencies.clear();
+        self.source_call_effects.clear();
         self.called_functions.clear();
         self.call_counts.clear();
         self.current_function.clear();
@@ -1716,12 +1740,70 @@ impl Analyzer {
                             .attributes
                             .iter()
                             .any(|attribute| attribute == "intrinsic"),
+                    source_effects_verified: false,
                     transitive_effects_verified: false,
                 })
             })
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| left.callable.cmp(&right.callable));
         summaries
+    }
+
+    /// Refine source-call eligibility using the direct/opaque call facts
+    /// gathered during type checking. The greatest fixed point intentionally
+    /// accepts recursion when every edge remains within the safe-source set,
+    /// and rejects any path that reaches an opaque boundary.
+    fn refresh_source_ownership_effects(&mut self) {
+        let mut summaries = self.derive_callable_ownership_summaries(&self.build_symbol_table());
+        let candidates = summaries
+            .iter()
+            .filter(|summary| summary.direct_call_eligible)
+            .map(|summary| summary.callable.clone())
+            .collect::<BTreeSet<_>>();
+        let mut verified = candidates.clone();
+
+        loop {
+            let next = verified
+                .iter()
+                .filter(|callable| {
+                    self.source_call_effects
+                        .get(*callable)
+                        .into_iter()
+                        .flatten()
+                        .all(|effect| match effect {
+                            SourceCallEffect::ResolvedDirect(callee) => verified.contains(callee),
+                            SourceCallEffect::Opaque => false,
+                        })
+                })
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            if next == verified {
+                break;
+            }
+            verified = next;
+        }
+
+        for summary in &mut summaries {
+            summary.source_effects_verified = verified.contains(&summary.callable);
+            summary.direct_call_eligible = summary.direct_call_eligible
+                && summary.source_effects_verified;
+        }
+        self.ownership_signature_index = summaries
+            .into_iter()
+            .map(|summary| (summary.callable.clone(), summary))
+            .collect();
+    }
+
+    pub(super) fn record_source_call_effect(&mut self, effect: SourceCallEffect) {
+        let Some(caller) = self.current_function.last() else {
+            return;
+        };
+        if self.source_function_symbols.contains(caller) {
+            self.source_call_effects
+                .entry(caller.clone())
+                .or_default()
+                .push(effect);
+        }
     }
 
     fn ownership_capability_for_type(&self, ty: &TypeKind) -> Option<OwnershipCapability> {
@@ -2454,6 +2536,7 @@ fn generic[T](value: T) T { ret value; }
         );
         assert!(copy.has_body);
         assert!(copy.direct_call_eligible);
+        assert!(copy.source_effects_verified);
         assert_eq!(copy.receiver, None);
         assert_eq!(copy.variadic, None);
         assert!(!copy.transitive_effects_verified);
@@ -2523,6 +2606,7 @@ fn generic[T](value: T) T { ret value; }
             .unwrap();
         assert!(!opaque.has_body);
         assert!(!opaque.direct_call_eligible);
+        assert!(!opaque.source_effects_verified);
         assert!(!opaque.transitive_effects_verified);
         let names = report
             .callable_ownership_summaries
@@ -2533,6 +2617,57 @@ fn generic[T](value: T) T { ret value; }
         sorted_names.sort_unstable();
         assert_eq!(names, sorted_names, "summaries must have stable ordering");
         assert!(names.windows(3).any(|window| window == ["copy", "format_like", "generic"]));
+    }
+
+    #[test]
+    fn source_call_ownership_effects_require_a_closed_safe_call_graph() {
+        let report = analyze(
+            r#"
+struct Token { value: i32 }
+fn leaf(view: &Token) void {}
+fn chain(view: &Token) void { leaf(view); }
+fn opaque(view: &Token) void;
+fn blocked(view: &Token) void { opaque(view); }
+fn indirect(callback: fn(&Token) void, view: &Token) void { callback(view); }
+fn cycle_left(view: &Token) void { cycle_right(view); }
+fn cycle_right(view: &Token) void { cycle_left(view); }
+fn main() void {}
+"#,
+        );
+        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        let summary = |name: &str| {
+            report
+                .callable_ownership_summaries
+                .iter()
+                .find(|summary| summary.callable == name)
+                .unwrap()
+        };
+
+        for name in ["leaf", "chain", "cycle_left", "cycle_right"] {
+            let callable = summary(name);
+            assert!(callable.source_effects_verified, "{name}: {callable:?}");
+            assert!(callable.direct_call_eligible, "{name}: {callable:?}");
+            assert!(
+                !callable.transitive_effects_verified,
+                "source proof must not claim QZI verification: {name}: {callable:?}"
+            );
+        }
+        let blocked = summary("blocked");
+        assert!(!blocked.source_effects_verified, "{blocked:?}");
+        assert!(!blocked.direct_call_eligible, "{blocked:?}");
+        let indirect = summary("indirect");
+        assert!(!indirect.source_effects_verified, "{indirect:?}");
+        assert!(!indirect.direct_call_eligible, "{indirect:?}");
+
+        let invalid = analyze("fn invalid() void { missing(); } fn main() void {}");
+        assert!(invalid.errors.iter().any(|error| error.code == "S04"));
+        let invalid_summary = invalid
+            .callable_ownership_summaries
+            .iter()
+            .find(|summary| summary.callable == "invalid")
+            .unwrap();
+        assert!(!invalid_summary.source_effects_verified, "{invalid_summary:?}");
+        assert!(!invalid_summary.direct_call_eligible, "{invalid_summary:?}");
     }
 
     #[test]

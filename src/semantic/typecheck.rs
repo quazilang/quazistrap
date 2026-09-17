@@ -3381,6 +3381,14 @@ impl Analyzer {
                             .resolve_for_read(resolved)
                             .expect("resolved function should exist");
 
+                        // Generic source bodies are checked against their declared
+                        // template. Their concrete artifact effects remain outside
+                        // D-014; this retains the pre-existing source-only
+                        // reference-capability rule without trusting QZI.
+                        self.record_source_call_effect(SourceCallEffect::ResolvedDirect(
+                            resolved.clone(),
+                        ));
+
                         // Library functions require explicit import-by-name to be called unqualified.
                         // Exception: library code calling other library code is always allowed.
                         let caller_is_library = self
@@ -3429,6 +3437,7 @@ impl Analyzer {
                     // Not resolved as a function — fall through to generic symbol lookup
                     // for variables, parameters, function-pointer values, etc.
                     let Some(sym) = self.resolve_for_read(name) else {
+                        self.record_source_call_effect(SourceCallEffect::Opaque);
                         self.push_error(
                             callee.span,
                             "S04",
@@ -3442,6 +3451,7 @@ impl Analyzer {
                         && let resolved @ (TypeKind::Fn { .. } | TypeKind::CFn { .. }) =
                             self.resolve_type_aliases(fn_ty)
                     {
+                        self.record_source_call_effect(SourceCallEffect::Opaque);
                         self.annotate_expr(
                             callee,
                             &ExprEval {
@@ -3512,9 +3522,11 @@ impl Analyzer {
                     } else {
                         format!("cannot call '{}': not a function", name)
                     };
+                    self.record_source_call_effect(SourceCallEffect::Opaque);
                     self.push_error(callee.span, "S04", msg);
                     return ExprEval::default();
                 } else {
+                    self.record_source_call_effect(SourceCallEffect::Opaque);
                     let callee_eval = self.type_check_expr(callee, reachable);
                     match callee_eval.ty.as_ref() {
                         Some(resolved @ (TypeKind::Fn { .. } | TypeKind::CFn { .. })) => {
@@ -3586,6 +3598,9 @@ impl Analyzer {
                 args,
                 named_args,
             } => {
+                // Receiver dispatch, including an inherent method, remains
+                // outside the unqualified direct-call ownership checkpoint.
+                self.record_source_call_effect(SourceCallEffect::Opaque);
                 for type_arg in type_args {
                     if type_contains_any(&type_arg.node) {
                         self.push_error(

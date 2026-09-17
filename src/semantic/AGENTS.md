@@ -98,8 +98,13 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
   parameter: `&T` and `&T!` reborrow an existing reference capability rather than consuming it,
   while owned parameters still move. A temporary `&value`/`&value!` passed to
   that narrow source-call boundary ends after the call because current safe
-  references cannot escape it. Function values, module-qualified and method
-  calls, unsafe/foreign calls, variadics, and QZI interfaces remain opaque.
+  references cannot escape it. Eligibility now also requires a source-only
+  fixed point over explicit direct-call facts: every reachable call must be
+  another eligible unqualified, non-generic source function. Function values,
+  module-qualified and method calls, unsafe/foreign calls, variadics, and QZI
+  interfaces remain opaque. Generic source calls retain their existing
+  template-level reference-capability rule; this does not make their QZI
+  specializations verified ownership boundaries.
   This is not the D-014 whole-program effect solver; do not relax reference escape, indirect-call,
   or QZI boundaries on the basis of this syntax alone.
 - Move-only projections remain rejected. The sole non-destructor exception is
