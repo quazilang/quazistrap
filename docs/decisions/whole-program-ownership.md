@@ -129,11 +129,12 @@ future escape hatch.
 
 Implementing this contract requires a new QZI major version and matching QZC
 invalidation, dedicated serialization/verification tests, and migration
-documentation. Current QZI v2-v9 and QZC v7 carry no ownership-summary
-section; they must be rejected whenever a D-014-aware safe ownership link needs
-that metadata. The decision deliberately does not allocate future version
-numbers or change legacy compilation behavior before that implementation lands.
-Public generics, whose template bodies are currently source-only, remain source
+documentation. QZI v10 and QZC v8 now provide the required canonical,
+content-bound envelope and cache invalidation, but its only state is explicitly
+unverified: it carries neither effects nor a certificate. QZI v2-v9 carry no
+ownership-artifact section at all. Every one of these states must be rejected
+whenever a D-014-aware safe ownership link needs verified metadata. Public
+generics, whose template bodies are currently source-only, remain source
 dependencies until they receive an equally complete specialization/effect
 contract.
 

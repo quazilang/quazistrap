@@ -83,15 +83,16 @@ Build dependency trees show logical import names such as `std.io` and
 Git's reported percentage as an accurate progress bar followed by the same green
 status diamond as build stages; failures use a red diamond.
 
-## QZI v8
+## QZI v10
 
 QZI is both the portable bytecode container and compiled-library format. It is
-not a package-manager archive. A v8 file contains:
+not a package-manager archive. A v10 file contains:
 
 1. package name, version, `executable`/`library` kind, and entry signature;
 2. a source-visible public interface;
 3. symbolic call relocations;
-4. bytecode chunks and constant pools.
+4. a mandatory ownership-artifact envelope; and
+5. bytecode chunks and constant pools.
 
 V7 recorded unsigned integer division, remainder, and relational semantics in
 instruction flags. This prevents high-bit `u64` and `usize` values from being
@@ -100,11 +101,16 @@ address-taken block length so register allocation cannot recycle referenced
 slots. V8 adds the phase-2 layout-query intrinsic boundary:
 `quazi.size_of[T]()` and `quazi.align_of[T]()` are assigned stable intrinsic IDs,
 and current codegen resolves them to constants in each monomorphized wrapper.
-The current reader remains compatible with compatible v2-v7 files; v1
+V10 adds a canonical, content-bound ownership-artifact envelope covering the
+metadata, public interface, relocations, and bytecode. Its current state is
+explicitly unverified: it detects stale or malformed artifacts but does not yet
+prove D-014 effects or permit borrowed values through a QZI-only dependency.
+The current reader remains compatible with compatible v2-v9 files; v1
 requires a source rebuild because it omitted frame metadata, and legacy files
 with implicit `Lea` metadata, parameterized v6 trait interfaces, or v6 public
-runtime-`any` interfaces require rebuilding. Older compilers must reject v8
-rather than silently ignore the new semantics.
+runtime-`any` interfaces require rebuilding. Older compilers must reject v10
+rather than silently ignore the new semantics. QZC v8 invalidates older cached
+QZI modules automatically.
 
 QZI v7 is also the affine function-value ownership boundary. Compatible older
 artifacts remain readable only when they expose no owned `fn` contract and

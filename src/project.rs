@@ -1523,6 +1523,7 @@ version = "1.2.3"
             },
             interface,
             call_relocations: Vec::new(),
+            ownership: Default::default(),
             chunks: vec![answer],
         };
         let dependency_path = root.join("dep.qzi");
@@ -1595,12 +1596,17 @@ numbers = { path = "dep.qzi" }
             },
             interface: String::new(),
             call_relocations: codegen.external_call_relocations().to_vec(),
+            ownership: Default::default(),
             chunks,
         };
         let aliased_dependency = crate::bytecode::deserialize_qzi_module(
             &fs::read(&context.config.qzi_dependencies[0]).expect("read aliased dependency"),
         )
         .expect("deserialize aliased dependency");
+        assert!(matches!(
+            aliased_dependency.ownership,
+            crate::bytecode::QziOwnershipArtifact::Unverified { .. }
+        ));
         let linked = crate::bytecode::link_qzi_modules(&[generated, aliased_dependency])
             .expect("link QZI dependency");
         let symbols: StdHashMap<_, _> = linked

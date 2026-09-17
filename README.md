@@ -185,7 +185,7 @@ compile changed files, and rerun full WPO. Progress reports hit/partial/miss,
 restored/compiled function counts, and cache writes.
 Pass `--no-incremental` to bypass both reads and writes. See
 [Libraries, QZI, and incremental builds](docs/LIBRARIES.md) for dependency TOML,
-QZI v8 library rules, lockfile behavior, and cache guarantees.
+QZI v10 library rules, lockfile behavior, and cache guarantees.
 
 `qz header` reads the current project when no files are supplied and emits the
 public C surface formed by `@export` functions and their C-compatible type

@@ -6,6 +6,7 @@ use super::instruction::Instruction;
 use super::instruction::{ri16, rrr};
 use super::opcode::Opcode;
 use crate::abi::{ForeignGlobal, ForeignSymbol};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QziModuleKind {
@@ -28,6 +29,44 @@ pub struct QziCallRelocation {
     pub symbol: String,
 }
 
+/// Content binding for an ownership-artifact envelope. Each digest is domain
+/// separated so a section cannot be substituted for another one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QziContentBinding {
+    pub metadata: [u8; 32],
+    pub interface: [u8; 32],
+    pub relocations: [u8; 32],
+    pub bytecode: [u8; 32],
+}
+
+/// Ownership-artifact state carried by a QZI module. The current compiler can
+/// validate a content-bound envelope, but does not yet emit a verified effect
+/// certificate. Consumers must continue to treat `Unverified` as opaque.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QziOwnershipArtifact {
+    /// QZI v2-v9 predate ownership artifacts entirely.
+    LegacyAbsent,
+    /// QZI v10 carries a canonical, content-bound envelope without a proof.
+    Unverified {
+        schema_version: u16,
+        binding: QziContentBinding,
+    },
+}
+
+impl Default for QziOwnershipArtifact {
+    fn default() -> Self {
+        Self::Unverified {
+            schema_version: QZI_OWNERSHIP_SCHEMA_VERSION,
+            binding: QziContentBinding {
+                metadata: [0; 32],
+                interface: [0; 32],
+                relocations: [0; 32],
+                bytecode: [0; 32],
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QziModule {
     pub metadata: QziMetadata,
@@ -35,6 +74,7 @@ pub struct QziModule {
     /// UTF-8 so newer compilers can reject unsupported syntax explicitly.
     pub interface: String,
     pub call_relocations: Vec<QziCallRelocation>,
+    pub ownership: QziOwnershipArtifact,
     pub chunks: Vec<Chunk>,
 }
 
@@ -54,6 +94,7 @@ impl QziModule {
             },
             interface: String::new(),
             call_relocations: infer_call_relocations(&chunks).unwrap_or_default(),
+            ownership: QziOwnershipArtifact::default(),
             chunks,
         }
     }
@@ -683,9 +724,10 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 9;
+pub const QZI_VERSION: u8 = 10;
 const QZI_LEGACY_VERSION: u8 = 5;
 const QZI_FIRST_SECTIONED_VERSION: u8 = 6;
+const QZI_OWNERSHIP_SCHEMA_VERSION: u16 = 1;
 
 fn chunks_use_preownership_function_values(chunks: &[Chunk]) -> bool {
     chunks.iter().any(|chunk| {
@@ -771,7 +813,100 @@ const QZI_SECTION_METADATA: u8 = 1;
 const QZI_SECTION_INTERFACE: u8 = 2;
 const QZI_SECTION_CALL_RELOCATIONS: u8 = 3;
 const QZI_SECTION_BYTECODE: u8 = 4;
+const QZI_SECTION_OWNERSHIP: u8 = 5;
 const QZI_SECTION_ENTRY_SIZE: usize = 12;
+
+fn ownership_section_digest(label: &[u8], payload: &[u8]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"quazi.qzi.ownership.binding.v1\0");
+    digest.update(
+        u16::try_from(label.len())
+            .expect("ownership digest label is bounded")
+            .to_le_bytes(),
+    );
+    digest.update(label);
+    digest.update(
+        u64::try_from(payload.len())
+            .expect("QZI payload length fits u64")
+            .to_le_bytes(),
+    );
+    digest.update(payload);
+    digest.finalize().into()
+}
+
+fn qzi_content_binding(
+    metadata: &[u8],
+    interface: &[u8],
+    relocations: &[u8],
+    bytecode: &[u8],
+) -> QziContentBinding {
+    QziContentBinding {
+        metadata: ownership_section_digest(b"metadata", metadata),
+        interface: ownership_section_digest(b"interface", interface),
+        relocations: ownership_section_digest(b"relocations", relocations),
+        bytecode: ownership_section_digest(b"bytecode", bytecode),
+    }
+}
+
+fn encode_ownership_artifact(binding: &QziContentBinding) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(2 + 1 + 4 * 32);
+    bytes.extend_from_slice(&QZI_OWNERSHIP_SCHEMA_VERSION.to_le_bytes());
+    // State 0 is intentionally the only supported, non-proof state today.
+    bytes.push(0);
+    for digest in [
+        binding.metadata,
+        binding.interface,
+        binding.relocations,
+        binding.bytecode,
+    ] {
+        bytes.extend_from_slice(&digest);
+    }
+    bytes
+}
+
+fn decode_ownership_artifact(
+    bytes: &[u8],
+    expected_binding: &QziContentBinding,
+) -> Result<QziOwnershipArtifact, String> {
+    const ENVELOPE_LEN: usize = 2 + 1 + 4 * 32;
+    if bytes.len() != ENVELOPE_LEN {
+        return Err("invalid QZI ownership envelope length".to_string());
+    }
+    let schema_version = u16::from_le_bytes(bytes[..2].try_into().unwrap());
+    if schema_version != QZI_OWNERSHIP_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported QZI ownership schema version {schema_version}"
+        ));
+    }
+    if bytes[2] != 0 {
+        return Err(format!(
+            "unsupported QZI ownership envelope state {}",
+            bytes[2]
+        ));
+    }
+    let mut pos = 3;
+    let mut read_digest = || {
+        let digest = bytes[pos..pos + 32].try_into().unwrap();
+        pos += 32;
+        digest
+    };
+    let binding = QziContentBinding {
+        metadata: read_digest(),
+        interface: read_digest(),
+        relocations: read_digest(),
+        bytecode: read_digest(),
+    };
+    if &binding != expected_binding {
+        return Err(
+            "QZI ownership envelope does not match metadata, interface, relocations, or bytecode; rebuild the artifact from source"
+                .to_string(),
+        );
+    }
+    Ok(QziOwnershipArtifact::Unverified {
+        schema_version,
+        binding,
+    })
+}
 
 fn infer_call_relocations(chunks: &[Chunk]) -> Result<Vec<QziCallRelocation>, String> {
     let mut relocations = Vec::new();
@@ -932,6 +1067,13 @@ fn read_short_string(bytes: &[u8], pos: &mut usize, what: &str) -> Result<String
 }
 
 pub fn serialize_qzi_module(module: &QziModule) -> Result<Vec<u8>, String> {
+    // The sole current envelope state is deliberately regenerated from the
+    // final transformed payloads. Keep this match exhaustive: adding a future
+    // verified certificate must force this path to choose a proof-preserving
+    // transformation instead of silently rebinding it.
+    match &module.ownership {
+        QziOwnershipArtifact::LegacyAbsent | QziOwnershipArtifact::Unverified { .. } => {}
+    }
     validate_qzi_chunks(&module.chunks)?;
     if module
         .chunks
@@ -961,14 +1103,20 @@ pub fn serialize_qzi_module(module: &QziModule) -> Result<Vec<u8>, String> {
         );
     }
     let relocations: Vec<_> = relocation_map.into_values().collect();
+    let metadata = encode_qzi_metadata(&module.metadata)?;
+    let interface = module.interface.as_bytes().to_vec();
+    let relocations = encode_call_relocations(&relocations)?;
+    let bytecode = serialize_qzi_legacy(&module.chunks)?;
+    let binding = qzi_content_binding(&metadata, &interface, &relocations, &bytecode);
+    let ownership = encode_ownership_artifact(&binding);
+    // QZI v10 section order is part of the ownership envelope's canonical
+    // representation. Do not derive it from a map or caller-provided order.
     let sections = [
-        (QZI_SECTION_METADATA, encode_qzi_metadata(&module.metadata)?),
-        (QZI_SECTION_INTERFACE, module.interface.as_bytes().to_vec()),
-        (
-            QZI_SECTION_CALL_RELOCATIONS,
-            encode_call_relocations(&relocations)?,
-        ),
-        (QZI_SECTION_BYTECODE, serialize_qzi_legacy(&module.chunks)?),
+        (QZI_SECTION_METADATA, metadata),
+        (QZI_SECTION_INTERFACE, interface),
+        (QZI_SECTION_CALL_RELOCATIONS, relocations),
+        (QZI_SECTION_OWNERSHIP, ownership),
+        (QZI_SECTION_BYTECODE, bytecode),
     ];
     let directory_len = sections
         .len()
@@ -1031,6 +1179,7 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
             },
             interface: String::new(),
             call_relocations: relocations,
+            ownership: QziOwnershipArtifact::LegacyAbsent,
             chunks,
         });
     }
@@ -1050,9 +1199,11 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
         return Err("truncated QZI section directory".to_string());
     }
     let mut sections = std::collections::HashMap::new();
+    let mut section_kinds = Vec::with_capacity(section_count);
     let mut section_ranges = Vec::with_capacity(section_count);
     for _ in 0..section_count {
         let kind = read_u8(bytes, &mut pos, "QZI section kind")?;
+        section_kinds.push(kind);
         pos += 3;
         let offset = read_u32(bytes, &mut pos, "QZI section offset")? as usize;
         let len = read_u32(bytes, &mut pos, "QZI section length")? as usize;
@@ -1081,18 +1232,55 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
             bytes.len() - expected_offset
         ));
     }
-    let metadata = decode_qzi_metadata(
-        sections
-            .remove(&QZI_SECTION_METADATA)
-            .ok_or_else(|| "QZI metadata section is missing".to_string())?,
-    )?;
-    let interface = String::from_utf8(
-        sections
-            .remove(&QZI_SECTION_INTERFACE)
-            .unwrap_or_default()
-            .to_vec(),
-    )
-    .map_err(|_| "invalid UTF-8 in QZI interface".to_string())?;
+    if version >= 10 && !sections.contains_key(&QZI_SECTION_OWNERSHIP) {
+        return Err("QZI v10 ownership envelope is missing".to_string());
+    }
+    if version >= 10
+        && section_kinds
+            != [
+                QZI_SECTION_METADATA,
+                QZI_SECTION_INTERFACE,
+                QZI_SECTION_CALL_RELOCATIONS,
+                QZI_SECTION_OWNERSHIP,
+                QZI_SECTION_BYTECODE,
+            ]
+    {
+        return Err("QZI v10 sections are not in canonical ownership-envelope order".to_string());
+    }
+    let metadata_payload = sections
+        .remove(&QZI_SECTION_METADATA)
+        .ok_or_else(|| "QZI metadata section is missing".to_string())?;
+    let interface_payload = sections.remove(&QZI_SECTION_INTERFACE).unwrap_or_default();
+    let relocation_payload = sections
+        .remove(&QZI_SECTION_CALL_RELOCATIONS)
+        .ok_or_else(|| "QZI relocation section is missing".to_string())?;
+    let ownership_payload = sections.remove(&QZI_SECTION_OWNERSHIP);
+    let bytecode_payload = sections
+        .remove(&QZI_SECTION_BYTECODE)
+        .ok_or_else(|| "QZI bytecode section is missing".to_string())?;
+    let ownership = if version >= 10 {
+        let binding = qzi_content_binding(
+            metadata_payload,
+            interface_payload,
+            relocation_payload,
+            bytecode_payload,
+        );
+        decode_ownership_artifact(
+            ownership_payload.ok_or_else(|| "QZI v10 ownership envelope is missing".to_string())?,
+            &binding,
+        )?
+    } else {
+        if ownership_payload.is_some() {
+            return Err("QZI ownership envelope requires QZI v10".to_string());
+        }
+        QziOwnershipArtifact::LegacyAbsent
+    };
+    if !sections.is_empty() {
+        return Err("QZI contains an unknown section".to_string());
+    }
+    let metadata = decode_qzi_metadata(metadata_payload)?;
+    let interface = String::from_utf8(interface_payload.to_vec())
+        .map_err(|_| "invalid UTF-8 in QZI interface".to_string())?;
     if version == 6
         && !interface.is_empty()
         && crate::bytecode::interface::qzi_v6_interface_has_ambiguous_trait_receivers(&interface)?
@@ -1120,16 +1308,8 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
                 .to_string(),
         );
     }
-    let call_relocations = decode_call_relocations(
-        sections
-            .remove(&QZI_SECTION_CALL_RELOCATIONS)
-            .ok_or_else(|| "QZI relocation section is missing".to_string())?,
-    )?;
-    let chunks = deserialize_qzi_legacy(
-        sections
-            .remove(&QZI_SECTION_BYTECODE)
-            .ok_or_else(|| "QZI bytecode section is missing".to_string())?,
-    )?;
+    let call_relocations = decode_call_relocations(relocation_payload)?;
+    let chunks = deserialize_qzi_legacy(bytecode_payload)?;
     reject_implicit_lea_metadata(version, &chunks)?;
     if version < 7 && chunks_use_preownership_function_values(&chunks) {
         return Err(
@@ -1187,6 +1367,7 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
         metadata,
         interface,
         call_relocations,
+        ownership,
         chunks,
     })
 }
@@ -1438,6 +1619,44 @@ mod tests {
     use super::*;
     use crate::abi::{AbiSignature, AbiType, ForeignGlobal, ForeignSymbol};
 
+    /// Produces a real pre-envelope sectioned fixture from current payloads so
+    /// compatibility tests do not pretend a v10 directory is a v6 artifact.
+    fn qzi_v9_fixture(bytes: &[u8]) -> Vec<u8> {
+        assert_eq!(bytes[4], QZI_VERSION);
+        let count = u16::from_le_bytes(bytes[5..7].try_into().unwrap()) as usize;
+        let mut payloads = std::collections::BTreeMap::new();
+        for entry in 0..count {
+            let pos = 7 + entry * QZI_SECTION_ENTRY_SIZE;
+            let kind = bytes[pos];
+            let offset = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
+            let len = u32::from_le_bytes(bytes[pos + 8..pos + 12].try_into().unwrap()) as usize;
+            payloads.insert(kind, bytes[offset..offset + len].to_vec());
+        }
+        let kinds = [
+            QZI_SECTION_METADATA,
+            QZI_SECTION_INTERFACE,
+            QZI_SECTION_CALL_RELOCATIONS,
+            QZI_SECTION_BYTECODE,
+        ];
+        let mut output = Vec::new();
+        output.extend_from_slice(QZI_MAGIC);
+        output.push(9);
+        output.extend_from_slice(&(kinds.len() as u16).to_le_bytes());
+        let mut offset = 7 + kinds.len() * QZI_SECTION_ENTRY_SIZE;
+        for kind in kinds {
+            let payload = payloads.get(&kind).expect("v10 required section");
+            output.push(kind);
+            output.extend_from_slice(&[0, 0, 0]);
+            output.extend_from_slice(&(offset as u32).to_le_bytes());
+            output.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            offset += payload.len();
+        }
+        for kind in kinds {
+            output.extend_from_slice(payloads.remove(&kind).unwrap().as_slice());
+        }
+        output
+    }
+
     #[test]
     fn emit_and_patch_jump() {
         let mut chunk = Chunk::new("test");
@@ -1522,6 +1741,7 @@ mod tests {
             },
             interface: "pub fn add(a: i32, b: i32) i32;".to_string(),
             call_relocations: Vec::new(),
+            ownership: Default::default(),
             chunks: vec![chunk],
         };
 
@@ -1531,13 +1751,112 @@ mod tests {
         assert_eq!(decoded.metadata, module.metadata);
         assert_eq!(decoded.interface, module.interface);
         assert_eq!(decoded.chunks[0].name, "math.add");
+        assert!(matches!(
+            decoded.ownership,
+            QziOwnershipArtifact::Unverified {
+                schema_version: QZI_OWNERSHIP_SCHEMA_VERSION,
+                binding: QziContentBinding { metadata, interface, relocations, bytecode },
+            } if metadata != [0; 32]
+                && interface != [0; 32]
+                && relocations != [0; 32]
+                && bytecode != [0; 32]
+        ));
+    }
+
+    #[test]
+    fn qzi_v10_rejects_tampered_or_noncanonical_ownership_envelopes() {
+        let module = QziModule {
+            metadata: QziMetadata {
+                name: "bound".to_string(),
+                version: None,
+                kind: QziModuleKind::Library,
+                main_takes_args: false,
+            },
+            interface: "pub fn answer() i32;".to_string(),
+            call_relocations: Vec::new(),
+            ownership: Default::default(),
+            chunks: vec![{
+                let mut chunk = Chunk::new("bound.answer");
+                chunk.reg_count = 1;
+                chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+                chunk
+            }],
+        };
+        let encoded = serialize_qzi_module(&module).expect("serialize bound QZI");
+
+        let interface_entry = 7 + QZI_SECTION_ENTRY_SIZE;
+        let interface_offset = u32::from_le_bytes(
+            encoded[interface_entry + 4..interface_entry + 8]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let mut tampered = encoded.clone();
+        tampered[interface_offset] ^= 1;
+        let error = deserialize_qzi_module(&tampered).expect_err("binding must reject tampering");
+        assert!(error.contains("ownership envelope does not match"));
+
+        let ownership_entry = 7 + 3 * QZI_SECTION_ENTRY_SIZE;
+        let ownership_offset = u32::from_le_bytes(
+            encoded[ownership_entry + 4..ownership_entry + 8]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let mut malformed = encoded.clone();
+        malformed[ownership_offset + 2] = 1;
+        let error = deserialize_qzi_module(&malformed)
+            .expect_err("unknown ownership envelope state must be rejected");
+        assert!(error.contains("unsupported QZI ownership envelope state"));
+
+        for (name, entry) in [("metadata", 0usize), ("relocations", 2usize)] {
+            let directory = 7 + entry * QZI_SECTION_ENTRY_SIZE;
+            let offset =
+                u32::from_le_bytes(encoded[directory + 4..directory + 8].try_into().unwrap())
+                    as usize;
+            let mut tampered = encoded.clone();
+            tampered[offset] ^= 1;
+            let error = deserialize_qzi_module(&tampered)
+                .expect_err(&format!("binding must reject {name} tampering"));
+            assert!(
+                error.contains("ownership envelope does not match"),
+                "{error}"
+            );
+        }
+
+        let relocation_entry = 7 + 2 * QZI_SECTION_ENTRY_SIZE;
+        let mut reordered = encoded.clone();
+        let relocation =
+            reordered[relocation_entry..relocation_entry + QZI_SECTION_ENTRY_SIZE].to_vec();
+        let ownership =
+            reordered[ownership_entry..ownership_entry + QZI_SECTION_ENTRY_SIZE].to_vec();
+        reordered[relocation_entry..relocation_entry + QZI_SECTION_ENTRY_SIZE]
+            .copy_from_slice(&ownership);
+        reordered[ownership_entry..ownership_entry + QZI_SECTION_ENTRY_SIZE]
+            .copy_from_slice(&relocation);
+        let error = deserialize_qzi_module(&reordered)
+            .expect_err("v10 ownership section order must be canonical");
+        assert!(error.contains("canonical ownership-envelope order"));
+
+        let mut missing = qzi_v9_fixture(
+            &serialize_qzi_module(&module).expect("serialize missing-envelope fixture"),
+        );
+        missing[4] = QZI_VERSION;
+        let error =
+            deserialize_qzi_module(&missing).expect_err("v10 must require its ownership envelope");
+        assert!(error.contains("ownership envelope is missing"));
+    }
+
+    #[test]
+    fn qzi_v9_decodes_as_an_ownership_legacy_artifact() {
+        let bytes = qzi_v9_fixture(&serialize_qzi(&[Chunk::new("legacy")]).unwrap());
+        let module = deserialize_qzi_module(&bytes).expect("decode v9 compatibility fixture");
+        assert_eq!(module.ownership, QziOwnershipArtifact::LegacyAbsent);
     }
 
     #[test]
     fn current_qzi_reader_accepts_v6_sectioned_modules() {
         let mut chunk = Chunk::new("main");
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
-        let mut encoded = serialize_qzi(&[chunk]).expect("serialize current QZI");
+        let mut encoded = qzi_v9_fixture(&serialize_qzi(&[chunk]).expect("serialize current QZI"));
         encoded[4] = 6;
 
         let decoded = deserialize_qzi(&encoded).expect("read QZI v6 module");
@@ -1548,7 +1867,7 @@ mod tests {
     fn qzi_v6_function_values_require_an_ownership_rebuild() {
         let mut chunk = Chunk::new("__quazi_fwd_one");
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
-        let mut encoded = serialize_qzi(&[chunk]).expect("serialize current QZI");
+        let mut encoded = qzi_v9_fixture(&serialize_qzi(&[chunk]).expect("serialize current QZI"));
         encoded[4] = 6;
 
         let error = deserialize_qzi(&encoded)
@@ -1578,9 +1897,11 @@ mod tests {
             },
             interface,
             call_relocations: Vec::new(),
+            ownership: Default::default(),
             chunks: vec![chunk],
         };
-        let mut encoded = serialize_qzi_module(&module).expect("serialize sectioned module");
+        let mut encoded =
+            qzi_v9_fixture(&serialize_qzi_module(&module).expect("serialize sectioned module"));
         encoded[4] = 6;
 
         let error = deserialize_qzi_module(&encoded)
@@ -1622,9 +1943,11 @@ mod tests {
             },
             interface,
             call_relocations: Vec::new(),
+            ownership: Default::default(),
             chunks: vec![chunk],
         };
-        let mut encoded = serialize_qzi_module(&module).expect("serialize sectioned module");
+        let mut encoded =
+            qzi_v9_fixture(&serialize_qzi_module(&module).expect("serialize sectioned module"));
         encoded[4] = 6;
 
         let error = deserialize_qzi_module(&encoded)
@@ -1654,9 +1977,11 @@ mod tests {
             },
             interface,
             call_relocations: Vec::new(),
+            ownership: Default::default(),
             chunks: vec![chunk],
         };
-        let mut encoded = serialize_qzi_module(&module).expect("serialize sectioned module");
+        let mut encoded =
+            qzi_v9_fixture(&serialize_qzi_module(&module).expect("serialize sectioned module"));
         encoded[4] = 6;
 
         let error = deserialize_qzi_module(&encoded)
@@ -1681,7 +2006,7 @@ mod tests {
             0
         );
 
-        let mut downgraded = encoded;
+        let mut downgraded = qzi_v9_fixture(&encoded);
         downgraded[4] = 6;
         let error = deserialize_qzi(&downgraded).expect_err("v6 must reject v7 flags");
         assert!(error.contains("v7 unsigned-integer instruction flags"));
@@ -1697,7 +2022,8 @@ mod tests {
             chunk.reg_count = 2;
             chunk.emit(instruction);
             chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
-            let mut encoded = serialize_qzi(&[chunk]).expect("serialize current QZI");
+            let mut encoded =
+                qzi_v9_fixture(&serialize_qzi(&[chunk]).expect("serialize current QZI"));
             encoded[4] = 6;
             let error = deserialize_qzi(&encoded).expect_err("v6 must reject v7 safety data");
             assert!(error.contains("v7 safety"));
@@ -1723,6 +2049,7 @@ mod tests {
                 instruction_index: 0,
                 symbol: "math.add".to_string(),
             }],
+            ownership: Default::default(),
             chunks: vec![main],
         };
         let mut add = Chunk::new("math.add");
@@ -1737,6 +2064,7 @@ mod tests {
             },
             interface: String::new(),
             call_relocations: Vec::new(),
+            ownership: Default::default(),
             chunks: vec![add],
         };
 
@@ -1835,9 +2163,9 @@ mod tests {
         encoded[offset + 5] = 0;
 
         let error = deserialize_qzi_module(&encoded)
-            .expect_err("implicit address-taken metadata must require a source rebuild");
-        assert!(error.contains("without address-taken register metadata"));
-        assert!(error.contains("rebuild this dependency from source"));
+            .expect_err("tampered bytecode must invalidate the ownership envelope");
+        assert!(error.contains("ownership envelope does not match"));
+        assert!(error.contains("rebuild the artifact from source"));
     }
 
     #[test]

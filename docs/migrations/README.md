@@ -11,3 +11,4 @@ are treated as stable.
 - [Migrating multi-register generic values](generic-value-shapes.md)
 - [QZI v7](qzi-v7.md)
 - [QZI v8](qzi-v8.md)
+- [QZI v10 ownership-artifact envelope](qzi-v10.md)

@@ -12,7 +12,9 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-const QZC_VERSION: u8 = 7;
+// QZI v10 introduces a mandatory ownership-artifact envelope. Cached module
+// bytes from v7 must be rebuilt rather than reused under the new boundary.
+const QZC_VERSION: u8 = 8;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {

@@ -14,7 +14,8 @@ address and traps on an out-of-bounds request.
 
 This is private, un-emitted compiler infrastructure: no source-level accessor
 or public borrowed-element API emits the operation, so it does not alter the
-current QZI v9 or QZC v7 artifact contract and users have no migration work.
+new QZI v10/QZC v8 ownership-artifact contract beyond the mandatory unverified
+envelope and users have no source migration work.
 When D-015 begins to emit it, D-014 requires a new QZI/QZC ownership-summary
 boundary and a source rebuild of artifacts that lack those summaries.
 

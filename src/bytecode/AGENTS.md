@@ -88,7 +88,8 @@ never persisted.
 
 IDs `37` through `41` are the private process-runtime ABI: spawn, wait,
 try-wait, terminate, and close. They take only slot arguments and scalar
-out-pointers; QZI v9 is the compatibility boundary that admits them.
+out-pointers; QZI v9 first admitted them, and QZI v10 carries the current
+content-bound ownership-artifact envelope.
 
 ---
 

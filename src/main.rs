@@ -1189,6 +1189,7 @@ fn build_with_progress(
             }),
             interface: String::new(),
             call_relocations: external_call_relocations,
+            ownership: Default::default(),
             chunks,
         };
         let mut modules = vec![generated];
@@ -1254,6 +1255,7 @@ fn build_with_progress(
             metadata,
             interface,
             call_relocations: Vec::new(),
+            ownership: Default::default(),
             chunks: chunks.clone(),
         };
         module.qualify_library_root_symbols();

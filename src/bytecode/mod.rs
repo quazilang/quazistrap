@@ -11,7 +11,8 @@ pub mod opcode;
 pub mod regalloc;
 
 pub use chunk::{
-    Chunk, ConstPoolEntry, QziCallRelocation, QziMetadata, QziModule, QziModuleKind,
+    Chunk, ConstPoolEntry, QziCallRelocation, QziContentBinding, QziMetadata, QziModule,
+    QziModuleKind, QziOwnershipArtifact,
     deserialize_qzi, deserialize_qzi_module, link_qzi_modules, serialize_qzi, serialize_qzi_module,
 };
 pub use codegen::Codegen;

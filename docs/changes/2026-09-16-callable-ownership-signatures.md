@@ -32,9 +32,10 @@ deterministically ordered input.
 
 `transitive_effects_verified` is false for every current record. This release
 does not infer body effects, provenance, escapes, indirect-call targets, or
-QZI certificates. QZI v9 and QZC v7 therefore remain insufficient for safe
-borrowed values across an artifact boundary; existing conservative rejection
-rules remain in force.
+QZI certificates. QZI v10 and QZC v8 now bind an explicitly unverified
+ownership-artifact envelope, but remain insufficient for safe borrowed values
+across an artifact boundary; existing conservative rejection rules remain in
+force.
 
 ## Verification
 

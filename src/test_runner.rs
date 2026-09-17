@@ -287,6 +287,7 @@ fn run_project(
         },
         interface: String::new(),
         call_relocations: codegen.external_call_relocations().to_vec(),
+        ownership: Default::default(),
         chunks: generated,
     }];
     for dependency in &context.config.qzi_dependencies {

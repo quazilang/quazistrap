@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-09-17: QZI v10 ownership-artifact envelope](2026-09-17-qzi-v10-ownership-envelope.md)
 - [2026-09-17: Source-call ownership-effect closure](2026-09-17-source-call-effect-closure.md)
 - [2026-09-17: Canonical dense-container contracts](2026-09-17-canonical-dense-container-contracts.md)
 - [2026-09-17: Checked dense-element address foundation](2026-09-17-checked-dense-element-address.md)

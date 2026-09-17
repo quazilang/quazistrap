@@ -70,7 +70,11 @@ work.
 1. Implement D-015's provenance-tracked scoped borrowing for generic
    container elements. Its compiler-validated contract rejects an
    `Array`-specific escape hatch and requires an artifact-compatible address
-   operation; owned values may not be copied from an `Array` read.
+  operation; owned values may not be copied from an `Array` read.
+- QZI v10 and QZC v8 now require a canonical, content-bound unverified
+  ownership-artifact envelope. It rejects tampering and stale section bindings,
+  but carries no effect certificate and cannot make a QZI-only borrowed call
+  safe.
 2. Prove the new compiler-validated generic removal lowering against runtime
    ownership cases (including nested containers and out-of-bounds execution),
    then re-evaluate resource-owning collection APIs such as HTTP headers.
