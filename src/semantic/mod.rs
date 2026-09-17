@@ -171,10 +171,9 @@ pub struct Analyzer {
     /// Impl methods whose first parameter is an explicit owned `self: T` receiver.
     pub(super) consuming_receiver_methods: std::collections::HashSet<String>,
     /// Generic aggregates whose source destructor is a storage-release hook
-    /// and whose element cleanup is synthesized by code generation. The value
-    /// is the position of the declared element parameter, so ownership rules
-    /// do not assume a particular generic-parameter order.
-    pub(super) contiguous_element_containers: HashMap<String, usize>,
+    /// and whose element cleanup is synthesized by code generation. This is
+    /// the canonical semantic contract for generic dense storage.
+    pub(super) contiguous_element_contracts: HashMap<String, ContiguousElementContract>,
     /// Internal function name → stable native symbol requested by @export.
     pub(super) exported_symbols: HashMap<String, String>,
     /// Resolved Quazi binding name → imported C data symbol metadata.
@@ -901,7 +900,7 @@ impl Analyzer {
             explicit_shared_receiver_methods: std::collections::HashSet::new(),
             explicit_exclusive_receiver_methods: std::collections::HashSet::new(),
             consuming_receiver_methods: std::collections::HashSet::new(),
-            contiguous_element_containers: HashMap::new(),
+            contiguous_element_contracts: HashMap::new(),
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
         }
@@ -1134,6 +1133,7 @@ impl Analyzer {
             annotated_program,
             symbol_table,
             callable_ownership_summaries,
+            contiguous_element_contracts: self.contiguous_element_contracts.clone(),
             constant_evaluations,
             inline_candidates,
             optimization_hints,
@@ -1351,7 +1351,7 @@ impl Analyzer {
         self.explicit_shared_receiver_methods.clear();
         self.explicit_exclusive_receiver_methods.clear();
         self.consuming_receiver_methods.clear();
-        self.contiguous_element_containers.clear();
+        self.contiguous_element_contracts.clear();
         self.exported_symbols.clear();
         self.foreign_globals.clear();
         self.repr_c_structs.clear();
@@ -2134,9 +2134,9 @@ mod tests {
     };
 
     use super::{
-        Analyzer, ConstValue, DependencyKind, EnumInfo, MatchArmInfo, MatchArmKindInfo,
-        MatchCandidate, OwnershipCapability, OwnershipResult, SemanticReport, VariadicOwnership,
-        strip_cfg_for,
+        Analyzer, ConstValue, ContiguousElementContract, DependencyKind, EnumInfo, MatchArmInfo,
+        MatchArmKindInfo, MatchCandidate, OwnershipCapability, OwnershipResult, SemanticReport,
+        VariadicOwnership, strip_cfg_for,
     };
 
     fn parse_program(src: &str) -> crate::parser::ast::Program {
@@ -2368,6 +2368,14 @@ fn main() void {}
             report.errors.is_empty(),
             "valid contiguous-element contract should analyze: {:?}",
             report.errors
+        );
+        assert_eq!(
+            report.contiguous_element_contracts.get("Buffer"),
+            Some(&ContiguousElementContract {
+                element_param_index: 0,
+                pointer_field: "storage".to_string(),
+                length_field: "count".to_string(),
+            })
         );
 
         let report = analyze(
@@ -2646,6 +2654,14 @@ fn take(value: Buffer[i32, Buffer[i32, Token]]) void {}
 "#,
         );
         assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        assert_eq!(
+            report.contiguous_element_contracts.get("Buffer"),
+            Some(&ContiguousElementContract {
+                element_param_index: 1,
+                pointer_field: "storage".to_string(),
+                length_field: "count".to_string(),
+            })
+        );
         let releases = report
             .monomorphizations
             .iter()

@@ -371,6 +371,17 @@ pub struct CallableOwnershipSummary {
     pub transitive_effects_verified: bool,
 }
 
+/// Compiler-validated physical storage contract for a generic dense
+/// container. This metadata originates exclusively from `@contiguous_elements`
+/// and is shared with lowering; consumers must not infer it from a type or
+/// accessor name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContiguousElementContract {
+    pub element_param_index: usize,
+    pub pointer_field: String,
+    pub length_field: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct OptimizationHints {
     pub constant_evaluations: Vec<ConstantEvaluation>,
@@ -509,6 +520,9 @@ pub struct SemanticReport {
     /// Compiler-derived callable signature ownership facts. These are the
     /// schema foundation for D-014; they are not QZI summaries yet.
     pub callable_ownership_summaries: Vec<CallableOwnershipSummary>,
+    /// Validated generic dense-container storage contracts, keyed by the
+    /// canonical container type name.
+    pub contiguous_element_contracts: HashMap<String, ContiguousElementContract>,
     pub constant_evaluations: Vec<ConstantEvaluation>,
     pub inline_candidates: Vec<InlineCandidate>,
     pub optimization_hints: OptimizationHints,

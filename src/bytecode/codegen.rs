@@ -382,105 +382,9 @@ impl<'a> Codegen<'a> {
 
     fn collect_contiguous_element_containers(
         &self,
-        program: &Program,
     ) -> Result<HashMap<String, ContiguousElementContainer>, String> {
         let mut containers = HashMap::new();
-        for item in &program.items {
-            let ItemKind::Struct {
-                name,
-                generic_params,
-                fields,
-                is_union,
-                attributes,
-                ..
-            } = &item.node
-            else {
-                continue;
-            };
-            let attrs = attributes
-                .iter()
-                .filter(|attribute| attribute.name == "contiguous_elements")
-                .collect::<Vec<_>>();
-            if attrs.is_empty() {
-                continue;
-            }
-            if attrs.len() != 1 {
-                return Err(format!(
-                    "@contiguous_elements may appear at most once on `{name}`"
-                ));
-            }
-            if *is_union || self.report.repr_c_structs.contains(name) {
-                return Err(format!(
-                    "@contiguous_elements requires an ordinary non-C struct, not `{name}`"
-                ));
-            }
-
-            let attr = attrs[0];
-            let mut element = None;
-            let mut pointer = None;
-            let mut length = None;
-            for argument in &attr.args {
-                let AttrArg::KeyValue(key, AttrVal::Ident(value)) = argument else {
-                    return Err(format!(
-                        "@contiguous_elements on `{name}` requires named identifier arguments"
-                    ));
-                };
-                let slot = match key.as_str() {
-                    "element" => &mut element,
-                    "pointer" => &mut pointer,
-                    "length" => &mut length,
-                    _ => {
-                        return Err(format!(
-                            "@contiguous_elements on `{name}` has unknown argument `{key}`"
-                        ));
-                    }
-                };
-                if slot.replace(value.as_str()).is_some() {
-                    return Err(format!("@contiguous_elements on `{name}` repeats `{key}`"));
-                }
-            }
-            let element = element.ok_or_else(|| {
-                format!("@contiguous_elements on `{name}` requires `element=...`")
-            })?;
-            let pointer = pointer.ok_or_else(|| {
-                format!("@contiguous_elements on `{name}` requires `pointer=...`")
-            })?;
-            let length = length
-                .ok_or_else(|| format!("@contiguous_elements on `{name}` requires `length=...`"))?;
-            let element_param_index = generic_params
-                .iter()
-                .position(|parameter| parameter == element)
-                .ok_or_else(|| {
-                    format!(
-                        "@contiguous_elements on `{name}` names `{element}`, which is not a generic parameter"
-                    )
-                })?;
-            let pointer_field = fields
-                .iter()
-                .find(|field| field.name == pointer)
-                .ok_or_else(|| {
-                    format!(
-                        "@contiguous_elements on `{name}` names missing pointer field `{pointer}`"
-                    )
-                })?;
-            if !matches!(pointer_field.ty.node, TypeKind::RawPtr { .. }) {
-                return Err(format!(
-                    "@contiguous_elements pointer field `{name}.{pointer}` must have a raw-pointer type"
-                ));
-            }
-            let length_field = fields
-                .iter()
-                .find(|field| field.name == length)
-                .ok_or_else(|| {
-                    format!(
-                        "@contiguous_elements on `{name}` names missing length field `{length}`"
-                    )
-                })?;
-            if !matches!(length_field.ty.node, TypeKind::Usize) {
-                return Err(format!(
-                    "@contiguous_elements length field `{name}.{length}` must have type usize"
-                ));
-            }
+        for (name, contract) in &self.report.contiguous_element_contracts {
             let offsets = self.report.struct_field_offsets.get(name).ok_or_else(|| {
                 format!("missing field layout while registering `{name}` container contract")
             })?;
@@ -501,25 +405,14 @@ impl<'a> Codegen<'a> {
                         })
                     })
             };
-            let destructor = format!("{name}.free");
-            if !self.report.consuming_receiver_methods.contains(&destructor) {
-                return Err(format!(
-                    "@contiguous_elements on `{name}` requires consuming `fn free(self: {name}[...])`"
-                ));
-            }
-            if containers
-                .insert(
-                    name.clone(),
-                    ContiguousElementContainer {
-                        element_param_index,
-                        pointer_offset: field_offset(pointer)?,
-                        length_offset: field_offset(length)?,
-                    },
-                )
-                .is_some()
-            {
-                return Err(format!("duplicate container contract for `{name}`"));
-            }
+            containers.insert(
+                name.clone(),
+                ContiguousElementContainer {
+                    element_param_index: contract.element_param_index,
+                    pointer_offset: field_offset(&contract.pointer_field)?,
+                    length_offset: field_offset(&contract.length_field)?,
+                },
+            );
         }
         Ok(containers)
     }
@@ -677,7 +570,7 @@ impl<'a> Codegen<'a> {
             ));
         }
         self.source_files = source_files.to_vec();
-        self.contiguous_element_containers = self.collect_contiguous_element_containers(program)?;
+        self.contiguous_element_containers = self.collect_contiguous_element_containers()?;
         self.external_call_relocations.clear();
         self.incremental_snapshot.clear();
         self.incremental_hits = 0;

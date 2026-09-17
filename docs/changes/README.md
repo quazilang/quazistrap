@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-09-17: Canonical dense-container contracts](2026-09-17-canonical-dense-container-contracts.md)
 - [2026-09-17: Checked dense-element address foundation](2026-09-17-checked-dense-element-address.md)
 - [2026-09-16: Stateful child-process polling](2026-09-16-http-process-receivers.md)
 - [2026-09-16: Nested contiguous-container destruction roots](2026-09-16-nested-container-destruction-roots.md)

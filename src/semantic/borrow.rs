@@ -1049,10 +1049,10 @@ impl Analyzer {
         else {
             return false;
         };
-        let Some(&element_param_index) = self.contiguous_element_containers.get(&name) else {
+        let Some(contract) = self.contiguous_element_contracts.get(&name) else {
             return false;
         };
-        let Some(element) = type_args.get(element_param_index) else {
+        let Some(element) = type_args.get(contract.element_param_index) else {
             return false;
         };
         let element = self.resolve_type_aliases(&element.node);
@@ -1096,14 +1096,14 @@ impl Analyzer {
             return;
         }
         if !type_args.is_empty()
-            && let Some(&element_param_index) = self.contiguous_element_containers.get(&name)
+            && let Some(contract) = self.contiguous_element_contracts.get(&name)
         {
             let release = format!("{name}.free");
             let type_args = type_args
                 .iter()
                 .map(|argument| argument.node.clone())
                 .collect::<Vec<_>>();
-            let element_type = type_args.get(element_param_index).cloned();
+            let element_type = type_args.get(contract.element_param_index).cloned();
             let mangled_name =
                 crate::semantic::typecheck::mangle_monomorphized(&release, &type_args);
             if !self

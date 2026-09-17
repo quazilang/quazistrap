@@ -852,10 +852,10 @@ impl Analyzer {
                         if !replacement_attrs.is_empty() {
                             let element = match (
                                 &for_ty.node,
-                                self.contiguous_element_containers.get(&type_name),
+                                self.contiguous_element_contracts.get(&type_name),
                             ) {
-                                (TypeKind::Named { type_args, .. }, Some(index)) => {
-                                    type_args.get(*index)
+                                (TypeKind::Named { type_args, .. }, Some(contract)) => {
+                                    type_args.get(contract.element_param_index)
                                 }
                                 _ => None,
                             };
@@ -886,10 +886,10 @@ impl Analyzer {
                         if !removal_attrs.is_empty() {
                             let element = match (
                                 &for_ty.node,
-                                self.contiguous_element_containers.get(&type_name),
+                                self.contiguous_element_contracts.get(&type_name),
                             ) {
-                                (TypeKind::Named { type_args, .. }, Some(index)) => {
-                                    type_args.get(*index)
+                                (TypeKind::Named { type_args, .. }, Some(contract)) => {
+                                    type_args.get(contract.element_param_index)
                                 }
                                 _ => None,
                             };
@@ -1170,8 +1170,14 @@ impl Analyzer {
             && length_valid
             && destructor_valid
         {
-            self.contiguous_element_containers
-                .insert(name.to_string(), element_param_index);
+            self.contiguous_element_contracts.insert(
+                name.to_string(),
+                ContiguousElementContract {
+                    element_param_index,
+                    pointer_field: pointer.to_string(),
+                    length_field: length.to_string(),
+                },
+            );
         }
     }
 
