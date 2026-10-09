@@ -2,6 +2,90 @@
 
 Audience: the next assistant continuing the current `feat/test` worktree.
 
+## Checkpoint (2026-10-09, checked transparent aliases)
+
+User now explicitly authorized committing completed local changes. Preserve
+unrelated changes and keep the full workspace production-readiness goal active.
+The no-website clarification in `../RESUME.md` remains authoritative.
+
+Added `src/type_resolution.rs`, a shared bounded resolver used by semantic
+analysis, codegen, native ABI type lowering, and raw C-header validation.
+It performs substitution lazily with lexical environments, normalizes actual
+arguments before activating an alias, and rejects cycles/arity/growth before
+unchecked tree copying. Protected binders cannot be renamed by nominal
+canonicalization. Alias bodies do not capture caller substitutions.
+
+Analysis preflights target-active declaration types before initial ownership and
+serialization consumers. Generic binder scopes now cover function signatures,
+struct/enum declarations, trait method generics, and alias definitions. Deferred
+resolver errors are mandatory S14 diagnostics and reset between analyses.
+Codegen shares an error sink with anonymous function compilers and rejects
+malformed aliases in raw reports. Header spelling preserves callback typedefs
+and target-dependent C names. This does not complete D-014 or verify QZI effects.
+
+Verification: the pinned/bfd `cargo test --offline -q` passes 690/690; a final
+trait-binder regression rerun passes after adding a global reference alias.
+`cargo build --offline -q` and `cargo clippy --offline -q` succeed, with existing
+warnings. Earlier full runs encountered one transient `Text file busy` test
+runner failure; its isolated rerun and subsequent full suite both passed.
+Resolver tests cover 14 cases; standalone header tests pass 9/9.
+Native probes in `/tmp/quazi-alias-native-wwc5opt6` pass Linux execution, portable
+QZI emission, Windows COFF emission, and Linux/Windows C-header generation.
+Unused pointer-cycle aliases fail with S14 before codegen.
+
+Independent agents reviewed resolver/header and semantic binder integration;
+their findings were reconciled, including trait-method binder protection.
+Their usage limit interrupted final review of codegen; root checked its changes
+and regression coverage. Do not claim a final cross-workspace readiness review.
+See `docs/changes/2026-10-09-type-alias-resolution.md` and
+`docs/internals/type-alias-resolution.md` for the exact operational boundary.
+
+## Checkpoint (2026-10-09, ownership specialization evidence)
+
+The current workspace is `/DISK/QUAZI-PROJECTS/quazilang`, not the historical
+home-directory paths below. Read `../RESUME.md`, `../goal.md`, and
+`../AGENTS.md`; this is still the full production-readiness objective, with
+the later clarification excluding a documentation website. Do not mark that
+objective complete on the basis of this compiler checkpoint.
+
+Resumed the prior dirty `OwnershipCallEffect` / `CallableOwnershipBodyEffects`
+work without discarding it. Added a separate concrete source call graph in
+`src/semantic/ownership.rs`: qualified structural identities, substituted
+capabilities, source spans, explicit opaque/unavailable/unresolved boundaries,
+recursive source closure, cancellation, and independent graph bounds. Source
+declarations seed it; symbolic mono roots do not. Actual impl declarations now
+record enclosing generics instead of guessing from dotted module prefixes.
+
+Central emission checks reject mangled-name collisions and specialization
+growth beyond 64 levels / 4,096 type nodes with S14. The graph and emission
+registry have separate 16-bit callable budgets. Explicit wrong generic arity
+is S08. Recorded source target structure supplements transitive generic
+dependency expansion. Implicit dense-container release records its layout and
+uses the same identity checks.
+
+Current codegen still relies on some symbolic helper chunks; their names are
+covered by the collision diagnostic too. Removing all template/helper emission
+requires coordinated changes to generic intrinsic/mutation lowering. The source
+graph neither relaxes lexical loans nor verifies a QZI envelope. Place/effect
+IR, CFG/provenance, structural destruction, D-015 element loans, and artifact
+verification remain required. Alias resolution also still needs independent
+cycle/resource hardening; these specialization limits are not that resolver.
+
+Verification and command details are recorded in
+`docs/changes/2026-10-09-ownership-specialization-graph.md` and
+`docs/internals/ownership-call-graph.md`. Twenty focused graph regressions
+pass. Linux native scalar/multi-slot, Windows COFF, QZI, and negative CLI probes
+pass. The complete compiler suite passes 666/666, including 20 graph tests.
+Impl binder renaming/reordering is now shared with codegen, and a multi-slot
+renamed receiver regression checks its hidden-sret ABI. Use the pinned Rust toolchain with
+`RUSTFLAGS='-C link-arg=-fuse-ld=bfd'`: its bundled lld wrapper currently points
+to a missing Nix path. Give repeated full test runs a fresh TMPDIR because the
+existing LSP workspace fixture can otherwise collide with a stale PID directory.
+
+Preserve the prior Graphify setup changes and untracked example 35 build
+artifacts. Canonical std has unrelated CLI work; editor and Tree-sitter
+repositories remain separate. Nothing was committed or published.
+
 ## Read first
 
 - `/home/amapekibert/quazilang/RESUME.md`

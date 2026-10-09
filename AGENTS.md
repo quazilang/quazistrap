@@ -101,6 +101,29 @@ specialization after analysis. This records each transitive concrete callee and
 its value layout before bytecode emission, rather than falling back to a raw
 generic template at codegen time.
 
+`semantic/ownership.rs` separately closes resolved source call sites under
+concrete caller substitutions and publishes `SemanticReport::ownership_call_graph`.
+Its identities use tagged structural, alias-resolved types rather than lossy
+bytecode names or ordinary type display. Impl generic parameters come from
+actual method declarations. This graph retains call-site spans and conservative
+opaque/unavailable/unresolved boundaries; it does not replace lexical borrow
+checking or certify QZI effects. Specializations have operational bounds of
+64 type levels and 4,096 type nodes; emission and graph callable counts are
+bounded by the 16-bit function-index space. Exceeding a bound or mapping distinct
+identities to one emitted symbol is S14. Symbolic helper chunks still participate
+in that emitted namespace, so they are covered by collision checks too. See
+[the ownership graph contract](docs/internals/ownership-call-graph.md).
+
+`type_resolution.rs` is the shared checked transparent-alias and substitution
+engine. Normalize actual arguments before entering an alias frame; alias bodies
+use their own lexical parameters and global declarations, never caller binders.
+Protect declaration binders before signature validation. It rejects cycles,
+wrong alias arity, and bounded expansion with S14 in analysis, including unused
+and dependency aliases. Check budgets before copying resolved trees; do not
+restore eager substitution or separate recursive alias walkers in lowering.
+Header generation validates target-active definitions before rendering typedefs.
+See [the alias-resolution contract](docs/internals/type-alias-resolution.md).
+
 ### Loader (`src/loader.rs`)
 
 - `load_programs` — resolves imports recursively, merges dependency-first, parses as one `Program`.

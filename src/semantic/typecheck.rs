@@ -22,6 +22,9 @@ impl Analyzer {
         variadic: bool,
         span: Span,
     ) {
+        if !self.validate_specialization_identity(function, type_args, span) {
+            return;
+        }
         let key = if type_args.is_empty() {
             function.to_string()
         } else {
@@ -143,6 +146,7 @@ impl Analyzer {
                 c_variadic,
                 ..
             } => {
+                self.current_generic_params.push(generic_params.clone());
                 let erased_format_variadic = attributes.iter().any(|a| a.name == "format")
                     && params.last().is_some_and(|param| {
                         param.variadic && matches!(param.ty.node, TypeKind::Any)
@@ -315,7 +319,6 @@ impl Analyzer {
                 let prev_module_path = self.current_module_path.clone();
                 self.current_module_path = self.module_path_for_span(item.span);
                 self.current_function.push(fn_name);
-                self.current_generic_params.push(generic_params.clone());
                 self.enter_scope();
                 let fn_is_str_variadic = params.last().is_some_and(|p| {
                     p.variadic
@@ -453,6 +456,7 @@ impl Analyzer {
                 attributes,
                 ..
             } => {
+                self.current_generic_params.push(generic_params.clone());
                 self.validate_contiguous_elements_attribute(
                     name,
                     generic_params,
@@ -623,6 +627,7 @@ impl Analyzer {
                         format!("union `{name}` requires @repr(C)"),
                     );
                 }
+                self.current_generic_params.pop();
             }
             ItemKind::ForeignGlobal {
                 name,
@@ -684,7 +689,8 @@ impl Analyzer {
                     );
                 }
             }
-            ItemKind::Enum { name, variants, .. } => {
+            ItemKind::Enum { name, generic_params, variants, .. } => {
+                self.current_generic_params.push(generic_params.clone());
                 for variant in variants {
                     for payload in &variant.payload_types {
                         if type_contains_any(&payload.node) {
@@ -736,10 +742,13 @@ impl Analyzer {
                         }
                     }
                 }
+                self.current_generic_params.pop();
             }
             ItemKind::Import(_) => {}
-            ItemKind::Trait { name, methods, .. } => {
+            ItemKind::Trait { name, generic_params, methods, .. } => {
+                self.current_generic_params.push(generic_params.clone());
                 for method in methods {
+                    self.current_generic_params.push(method.generic_params.clone());
                     for param in &method.params {
                         if type_contains_any(&param.node) {
                             self.push_error(
@@ -798,7 +807,9 @@ impl Analyzer {
                             ),
                         );
                     }
+                    self.current_generic_params.pop();
                 }
+                self.current_generic_params.pop();
             }
             ItemKind::Impl {
                 for_ty,
@@ -821,18 +832,7 @@ impl Analyzer {
                     self.validate_trait_impl_conformance(trait_ty, for_ty, methods, item.span);
                 }
                 let type_name = crate::semantic::declare::type_kind_base_name(&for_ty.node);
-                let impl_generic_params = match &for_ty.node {
-                    TypeKind::Named { type_args, .. } => type_args
-                        .iter()
-                        .filter_map(|arg| match &arg.node {
-                            TypeKind::Named { name, type_args } if type_args.is_empty() => {
-                                Some(name.clone())
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
+                let impl_generic_params = self.resolved_impl_generic_parameters(&for_ty.node);
                 self.current_generic_params.push(impl_generic_params);
                 for method in methods {
                     if let ItemKind::Fn {
@@ -926,6 +926,7 @@ impl Analyzer {
                 attributes,
                 ..
             } => {
+                self.current_generic_params.push(generic_params.clone());
                 if type_contains_any(&aliased_type.node) {
                     self.push_error(
                         aliased_type.span,
@@ -1009,6 +1010,7 @@ impl Analyzer {
                         }
                     }
                 }
+                self.current_generic_params.pop();
             }
         }
         Ok(())
@@ -3282,6 +3284,7 @@ impl Analyzer {
                 args,
                 named_args,
             } => {
+                self.record_ownership_call_site(expr.span, None);
                 for type_arg in type_args {
                     if type_contains_any(&type_arg.node) {
                         self.push_error(
@@ -3385,7 +3388,7 @@ impl Analyzer {
                         // template. Their concrete artifact effects remain outside
                         // D-014; this retains the pre-existing source-only
                         // reference-capability rule without trusting QZI.
-                        self.record_source_call_effect(SourceCallEffect::ResolvedDirect(
+                        self.record_source_call_effect(OwnershipCallEffect::Direct(
                             resolved.clone(),
                         ));
 
@@ -3423,6 +3426,7 @@ impl Analyzer {
                         let eval = self.check_function_call(
                             resolved,
                             callee.span,
+                            expr.span,
                             args,
                             named_args,
                             &arg_evals,
@@ -3437,7 +3441,7 @@ impl Analyzer {
                     // Not resolved as a function — fall through to generic symbol lookup
                     // for variables, parameters, function-pointer values, etc.
                     let Some(sym) = self.resolve_for_read(name) else {
-                        self.record_source_call_effect(SourceCallEffect::Opaque);
+                        self.record_source_call_effect(OwnershipCallEffect::Opaque);
                         self.push_error(
                             callee.span,
                             "S04",
@@ -3451,7 +3455,7 @@ impl Analyzer {
                         && let resolved @ (TypeKind::Fn { .. } | TypeKind::CFn { .. }) =
                             self.resolve_type_aliases(fn_ty)
                     {
-                        self.record_source_call_effect(SourceCallEffect::Opaque);
+                        self.record_source_call_effect(OwnershipCallEffect::Opaque);
                         self.annotate_expr(
                             callee,
                             &ExprEval {
@@ -3522,11 +3526,11 @@ impl Analyzer {
                     } else {
                         format!("cannot call '{}': not a function", name)
                     };
-                    self.record_source_call_effect(SourceCallEffect::Opaque);
+                    self.record_source_call_effect(OwnershipCallEffect::Opaque);
                     self.push_error(callee.span, "S04", msg);
                     return ExprEval::default();
                 } else {
-                    self.record_source_call_effect(SourceCallEffect::Opaque);
+                    self.record_source_call_effect(OwnershipCallEffect::Opaque);
                     let callee_eval = self.type_check_expr(callee, reachable);
                     match callee_eval.ty.as_ref() {
                         Some(resolved @ (TypeKind::Fn { .. } | TypeKind::CFn { .. })) => {
@@ -3598,9 +3602,10 @@ impl Analyzer {
                 args,
                 named_args,
             } => {
+                self.record_ownership_call_site(expr.span, None);
                 // Receiver dispatch, including an inherent method, remains
                 // outside the unqualified direct-call ownership checkpoint.
-                self.record_source_call_effect(SourceCallEffect::Opaque);
+                self.record_source_call_effect(OwnershipCallEffect::Opaque);
                 for type_arg in type_args {
                     if type_contains_any(&type_arg.node) {
                         self.push_error(
@@ -3714,6 +3719,7 @@ impl Analyzer {
                                 let eval = self.check_function_call(
                                     resolved,
                                     expr.span,
+                                    expr.span,
                                     args,
                                     named_args,
                                     &arg_evals,
@@ -3778,11 +3784,7 @@ impl Analyzer {
                                         .and_then(|index| sym.params.get(index));
                                     self.type_check_expr_expected(arg, reachable, expected);
                                 }
-                                let struct_params = self
-                                    .struct_generic_params
-                                    .get(struct_name.as_str())
-                                    .cloned()
-                                    .unwrap_or_default();
+                                let struct_params = self.generic_params_for_function(&method_full);
                                 let from = self
                                     .current_function
                                     .last()
@@ -3846,6 +3848,10 @@ impl Analyzer {
                                             .filter_map(|p| subst.get(p).cloned())
                                             .collect();
                                         if type_args.len() == struct_params.len() {
+                                            self.record_ownership_call_site(
+                                                expr.span,
+                                                Some((&method_full, &type_args)),
+                                            );
                                             let specialized_params: Vec<TypeKind> = sym
                                                 .params
                                                 .iter()
@@ -3865,10 +3871,7 @@ impl Analyzer {
                                             );
                                             let mono_name =
                                                 mangle_monomorphized(&method_full, &type_args);
-                                            if !self
-                                                .monomorphizations
-                                                .iter()
-                                                .any(|m| m.mangled_name == mono_name)
+                                            if !self.has_monomorphization(&method_full, &type_args, &mono_name)
                                             {
                                                 self.monomorphizations.push(MonomorphizationInfo {
                                                     fn_name: method_full.clone(),
@@ -3885,6 +3888,10 @@ impl Analyzer {
                                     }
                                     sym.ty.as_ref().map(|t| substitute_type_kind(t, &subst))
                                 } else {
+                                    self.record_ownership_call_site(
+                                        expr.span,
+                                        Some((&method_full, &[])),
+                                    );
                                     sym.ty.clone()
                                 };
                                 self.add_dependency_edge(DependencyKind::Call, &from, &method_full);
@@ -4147,22 +4154,51 @@ impl Analyzer {
                                     .last()
                                     .cloned()
                                     .unwrap_or_else(|| "__program__".to_string());
-                                let subst: std::collections::HashMap<String, TypeKind> =
-                                    if !type_args.is_empty() {
-                                        if let Some(struct_params) =
-                                            self.struct_generic_params.get(declared_type_name)
-                                        {
-                                            struct_params
-                                                .iter()
-                                                .zip(type_args.iter())
-                                                .map(|(p, t)| (p.clone(), t.node.clone()))
-                                                .collect()
-                                        } else {
-                                            std::collections::HashMap::new()
+                                let impl_params = self
+                                    .impl_generic_params
+                                    .get(&resolved_mangled)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                let mut subst = std::collections::HashMap::new();
+                                let receiver_value_ty = match &resolved_object_ty {
+                                    TypeKind::Ref { inner } | TypeKind::MutRef { inner } => &inner.node,
+                                    other => other,
+                                };
+                                if let Some(receiver_ty) = sym.params.first() {
+                                    let expected_receiver = match receiver_ty {
+                                        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                                            &inner.node
                                         }
-                                    } else {
-                                        std::collections::HashMap::new()
+                                        other => other,
                                     };
+                                    infer_type_subst(
+                                        expected_receiver,
+                                        receiver_value_ty,
+                                        &impl_params,
+                                        &mut subst,
+                                    );
+                                    let expected_receiver = self.resolve_type_aliases(
+                                        &substitute_type_kind(expected_receiver, &subst),
+                                    );
+                                    if !self.types_compatible(&expected_receiver, receiver_value_ty) {
+                                        self.push_error(
+                                            expr.span,
+                                            "S08",
+                                            format!(
+                                                "receiver `{receiver_value_ty}` does not match implementation target `{expected_receiver}`"
+                                            ),
+                                        );
+                                        return ExprEval::default();
+                                    }
+                                }
+                                let ownership_type_args = impl_params
+                                    .iter()
+                                    .filter_map(|param| subst.get(param).cloned())
+                                    .collect::<Vec<_>>();
+                                self.record_ownership_call_site(
+                                    expr.span,
+                                    Some((&resolved_mangled, &ownership_type_args)),
+                                );
                                 let substituted_params: Vec<TypeKind> = sym
                                     .params
                                     .iter()
@@ -4298,10 +4334,7 @@ impl Analyzer {
                                     );
                                     let mono_name =
                                         mangle_monomorphized(&codegen_mangled, &type_kinds);
-                                    if !self
-                                        .monomorphizations
-                                        .iter()
-                                        .any(|m| m.mangled_name == mono_name)
+                                    if !self.has_monomorphization(&codegen_mangled, &type_kinds, &mono_name)
                                     {
                                         self.monomorphizations.push(MonomorphizationInfo {
                                             fn_name: codegen_mangled.clone(),
@@ -5200,10 +5233,7 @@ impl Analyzer {
                             );
                             if type_args.len() == generic_params.len() {
                                 let mono_name = mangle_monomorphized(&mangled, &type_args);
-                                if !self
-                                    .monomorphizations
-                                    .iter()
-                                    .any(|mono| mono.mangled_name == mono_name)
+                                if !self.has_monomorphization(&mangled, &type_args, &mono_name)
                                 {
                                     self.monomorphizations.push(MonomorphizationInfo {
                                         fn_name: mangled.clone(),
@@ -5569,6 +5599,7 @@ impl Analyzer {
         &mut self,
         name: &str,
         callee_span: Span,
+        call_span: Span,
         args: &[Expr],
         named_args: &[(String, Expr)],
         arg_evals: &[ExprEval],
@@ -5656,6 +5687,24 @@ impl Analyzer {
             };
         }
 
+        let ownership_type_args = type_args
+            .iter()
+            .map(|ty| ty.node.clone())
+            .collect::<Vec<_>>();
+        self.record_ownership_call_site(call_span, Some((name, &ownership_type_args)));
+        if !type_args.is_empty() && type_args.len() != sym.generic_params.len() {
+            self.push_error(
+                callee_span,
+                "S08",
+                format!(
+                    "function `{name}` expects {} type argument(s), got {}",
+                    sym.generic_params.len(),
+                    type_args.len()
+                ),
+            );
+            return ExprEval::default();
+        }
+
         // Build substitution map if this is a generic function call with type arguments.
         let subst: std::collections::HashMap<String, TypeKind> =
             if !sym.generic_params.is_empty() && type_args.len() == sym.generic_params.len() {
@@ -5672,11 +5721,7 @@ impl Analyzer {
         if !subst.is_empty() {
             let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
             let mangled = mangle_monomorphized(name, &type_kinds);
-            if !self
-                .monomorphizations
-                .iter()
-                .any(|m| m.mangled_name == mangled)
-            {
+            if !self.has_monomorphization(name, &type_kinds, &mangled) {
                 self.monomorphizations.push(MonomorphizationInfo {
                     fn_name: name.to_string(),
                     type_args: type_kinds.clone(),
@@ -6879,10 +6924,7 @@ impl Analyzer {
                             );
                         }
                         let mangled = mangle_monomorphized("Array.set", &type_kinds);
-                        if !self
-                            .monomorphizations
-                            .iter()
-                            .any(|mono| mono.mangled_name == mangled)
+                        if !self.has_monomorphization("Array.set", &type_kinds, &mangled)
                         {
                             self.monomorphizations.push(MonomorphizationInfo {
                                 fn_name: "Array.set".to_string(),

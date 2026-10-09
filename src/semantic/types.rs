@@ -353,6 +353,62 @@ pub enum VariadicOwnership {
     Elements(OwnershipCapability),
 }
 
+/// A compiler-resolved call boundary in a callable's source body. This is a
+/// canonical graph input for D-014, not a complete ownership certificate.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OwnershipCallEffect {
+    Direct(String),
+    /// Function values, dispatch, foreign/QZI calls, and recovery paths do not
+    /// have a closed safe target set yet.
+    Opaque,
+    /// A declaration has no source body from which effects can be derived.
+    Unavailable,
+}
+
+/// Deterministic source-body call facts for one declared callable. Direct
+/// targets are canonicalized by name; `Opaque` and `Unavailable` retain the
+/// conservative boundaries required before a D-014 verifier exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableOwnershipBodyEffects {
+    pub callable: String,
+    pub calls: Vec<OwnershipCallEffect>,
+}
+
+/// A source callable identity independent of lossy bytecode name mangling.
+/// Type arguments use a tagged structural encoding of alias-resolved types,
+/// without source spans (ordinary type display is not injective).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OwnershipCallableId {
+    pub callable: String,
+    pub type_arguments: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OwnershipCallTarget {
+    Direct(OwnershipCallableId),
+    /// A named target whose declaration or concrete substitution is unavailable.
+    Unresolved(OwnershipCallableId),
+    Opaque,
+    Unavailable,
+}
+
+/// Distinct source sites remain distinct for future argument/provenance work.
+#[derive(Debug, Clone)]
+pub struct OwnershipCallSite {
+    pub span: Span,
+    pub target: OwnershipCallTarget,
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnershipCallable {
+    pub id: OwnershipCallableId,
+    pub signature: CallableOwnershipSummary,
+    pub calls: Vec<OwnershipCallSite>,
+    /// Closure of the recorded source calls only. This neither verifies runtime
+    /// cleanup/implicit calls nor proves provenance, escapes, or a QZI artifact.
+    pub source_calls_closed: bool,
+}
+
 /// A deterministic, compiler-derived ownership signature for one declared
 /// callable. `source_effects_verified` is a conservative source-only
 /// fixed-point proof for the existing call-local loan rule. It deliberately
@@ -527,6 +583,14 @@ pub struct SemanticReport {
     /// Compiler-derived callable signature ownership facts. These are the
     /// schema foundation for D-014; they are not QZI summaries yet.
     pub callable_ownership_summaries: Vec<CallableOwnershipSummary>,
+    /// Compiler-derived direct and opaque call facts for ownership analysis.
+    /// This is source evidence only, not a complete QZI effect certificate.
+    pub callable_ownership_body_effects: Vec<CallableOwnershipBodyEffects>,
+    /// Concrete source call graph, closed independently of bytecode mangling.
+    /// Never grants a QZI ownership certificate or changes lexical loan rules.
+    pub ownership_call_graph: Vec<OwnershipCallable>,
+    /// Actual enclosing impl binders, in receiver type-argument order.
+    pub impl_generic_params: HashMap<String, Vec<String>>,
     /// Validated generic dense-container storage contracts, keyed by the
     /// canonical container type name.
     pub contiguous_element_contracts: HashMap<String, ContiguousElementContract>,

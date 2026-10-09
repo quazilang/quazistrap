@@ -37,6 +37,7 @@ pub fn generate(
     target: HeaderTarget,
     guard: &str,
 ) -> Result<String, Vec<String>> {
+    validate_aliases(program, target)?;
     let is_library = |start| library_ranges.iter().any(|range| range.contains(&start));
     let mut aliases = HashMap::new();
     let mut aggregates = HashMap::new();
@@ -268,6 +269,118 @@ pub fn generate(
     }
 }
 
+/// Header generation also accepts parsed programs directly. Validate the
+/// selected declarations before walking aliases or allocating rendered text,
+/// while preserving callback typedefs and target-specific C names for output.
+fn validate_aliases(program: &Program, target: HeaderTarget) -> Result<(), Vec<String>> {
+    let aliases = program
+        .items
+        .iter()
+        .filter_map(|item| match &item.node {
+            ItemKind::TypeAlias {
+                name,
+                generic_params,
+                aliased_type,
+                attributes,
+                ..
+            } if cfg_active(attributes, target) => Some((
+                name.clone(),
+                (generic_params.clone(), aliased_type.node.clone()),
+            )),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let substitutions = HashMap::new();
+    let mut errors = Vec::new();
+    let mut check = |ty: &TypeKind, parameters: &[String], declaration: &str| {
+        let bound = parameters.iter().cloned().collect::<HashSet<_>>();
+        if let Err(error) =
+            crate::type_resolution::resolve_type(ty, &aliases, &substitutions, &bound, |_| None)
+        {
+            errors.push(format!("header declaration `{declaration}`: {error}"));
+        }
+    };
+    for item in &program.items {
+        match &item.node {
+            ItemKind::TypeAlias {
+                name,
+                generic_params,
+                aliased_type,
+                attributes,
+                ..
+            } if cfg_active(attributes, target) => check(&aliased_type.node, generic_params, name),
+            ItemKind::Fn {
+                name,
+                generic_params,
+                params,
+                return_ty,
+                attributes,
+                ..
+            } if cfg_active(attributes, target) => {
+                for param in params {
+                    check(&param.ty.node, generic_params, name);
+                }
+                check(&return_ty.node, generic_params, name);
+            }
+            ItemKind::Struct {
+                name,
+                generic_params,
+                fields,
+                attributes,
+                ..
+            } if cfg_active(attributes, target) => {
+                for field in fields {
+                    check(&field.ty.node, generic_params, name);
+                }
+            }
+            ItemKind::Enum {
+                name,
+                generic_params,
+                variants,
+                attributes,
+                ..
+            } if cfg_active(attributes, target) => {
+                for variant in variants {
+                    for payload in &variant.payload_types {
+                        check(&payload.node, generic_params, name);
+                    }
+                }
+            }
+            ItemKind::Trait {
+                name,
+                generic_params,
+                methods,
+                attributes,
+                ..
+            } if cfg_active(attributes, target) => {
+                for method in methods {
+                    let parameters = generic_params
+                        .iter()
+                        .chain(&method.generic_params)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for param in &method.params {
+                        check(&param.node, &parameters, name);
+                    }
+                    check(&method.return_ty.node, &parameters, name);
+                }
+            }
+            ItemKind::ForeignGlobal {
+                name,
+                ty,
+                attributes,
+                ..
+            } if cfg_active(attributes, target) => check(&ty.node, &[], name),
+            _ => {}
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 fn emit_aggregate(
     out: &mut String,
     aggregate: &Aggregate<'_>,
@@ -366,69 +479,79 @@ fn c_base_type(
     context: &HeaderContext<'_>,
     resolving: &mut HashSet<String>,
 ) -> Result<String, String> {
-    let primitive = match ty {
-        TypeKind::Int8 => Some("int8_t"),
-        TypeKind::Int16 => Some("int16_t"),
-        TypeKind::Int32 => Some("int32_t"),
-        TypeKind::Int64 => Some("int64_t"),
-        TypeKind::Uint8 => Some("uint8_t"),
-        TypeKind::Uint16 => Some("uint16_t"),
-        TypeKind::Uint32 => Some("uint32_t"),
-        TypeKind::Uint64 => Some("uint64_t"),
-        TypeKind::Isize => Some("intptr_t"),
-        TypeKind::Usize => Some("uintptr_t"),
-        TypeKind::Float32 => Some("float"),
-        TypeKind::Float64 => Some("double"),
-        TypeKind::Bool => Some("bool"),
-        TypeKind::Void => Some("void"),
-        _ => None,
-    };
-    if let Some(primitive) = primitive {
-        return Ok(primitive.to_string());
-    }
-    match ty {
-        TypeKind::RawPtr { inner } => Ok(format!(
-            "{} *",
-            c_base_type(&inner.node, context, resolving)?
-        )),
-        TypeKind::Named { name, type_args } if type_args.is_empty() => {
-            if name == "c_long" {
-                return Ok(match context.target {
-                    HeaderTarget::X86_64Linux => "int64_t",
-                    HeaderTarget::X86_64Windows => "int32_t",
-                }
-                .to_string());
-            }
-            if name == "c_ulong" {
-                return Ok(match context.target {
-                    HeaderTarget::X86_64Linux => "uint64_t",
-                    HeaderTarget::X86_64Windows => "uint32_t",
-                }
-                .to_string());
-            }
-            if context.aggregates.contains_key(name.as_str())
-                || context
-                    .aliases
-                    .get(name.as_str())
-                    .is_some_and(|alias| has_repr_c(alias.attributes))
-            {
-                return Ok(name.clone());
-            }
-            let Some(alias) = context.aliases.get(name.as_str()) else {
-                return Err(format!("unsupported named type `{name}`"));
-            };
-            if !resolving.insert(name.clone()) {
-                return Err(format!("cyclic type alias `{name}`"));
-            }
-            let result = c_base_type(alias.ty, context, resolving);
-            resolving.remove(name);
-            result
+    let mut current = ty;
+    let mut traversed = Vec::new();
+    let result = (|| loop {
+        let primitive = match current {
+            TypeKind::Int8 => Some("int8_t"),
+            TypeKind::Int16 => Some("int16_t"),
+            TypeKind::Int32 => Some("int32_t"),
+            TypeKind::Int64 => Some("int64_t"),
+            TypeKind::Uint8 => Some("uint8_t"),
+            TypeKind::Uint16 => Some("uint16_t"),
+            TypeKind::Uint32 => Some("uint32_t"),
+            TypeKind::Uint64 => Some("uint64_t"),
+            TypeKind::Isize => Some("intptr_t"),
+            TypeKind::Usize => Some("uintptr_t"),
+            TypeKind::Float32 => Some("float"),
+            TypeKind::Float64 => Some("double"),
+            TypeKind::Bool => Some("bool"),
+            TypeKind::Void => Some("void"),
+            _ => None,
+        };
+        if let Some(primitive) = primitive {
+            return Ok(primitive.to_string());
         }
-        TypeKind::Array { .. } | TypeKind::FlexibleArray { .. } => {
-            Err("array type requires a declarator".to_string())
+        match current {
+            TypeKind::RawPtr { inner } => {
+                return Ok(format!(
+                    "{} *",
+                    c_base_type(&inner.node, context, resolving)?
+                ));
+            }
+            TypeKind::Named { name, type_args } if type_args.is_empty() => {
+                if name == "c_long" {
+                    return Ok(match context.target {
+                        HeaderTarget::X86_64Linux => "int64_t",
+                        HeaderTarget::X86_64Windows => "int32_t",
+                    }
+                    .to_string());
+                }
+                if name == "c_ulong" {
+                    return Ok(match context.target {
+                        HeaderTarget::X86_64Linux => "uint64_t",
+                        HeaderTarget::X86_64Windows => "uint32_t",
+                    }
+                    .to_string());
+                }
+                if context.aggregates.contains_key(name.as_str())
+                    || context
+                        .aliases
+                        .get(name.as_str())
+                        .is_some_and(|alias| has_repr_c(alias.attributes))
+                {
+                    return Ok(name.clone());
+                }
+                let Some(alias) = context.aliases.get(name.as_str()) else {
+                    return Err(format!("unsupported named type `{name}`"));
+                };
+                if !resolving.insert(name.clone()) {
+                    return Err(format!("cyclic type alias `{name}`"));
+                }
+                traversed.push(name.clone());
+                current = alias.ty;
+                continue;
+            }
+            TypeKind::Array { .. } | TypeKind::FlexibleArray { .. } => {
+                return Err("array type requires a declarator".to_string());
+            }
+            other => return Err(format!("unsupported C header type `{other}`")),
         }
-        other => Err(format!("unsupported C header type `{other}`")),
+    })();
+    for name in traversed {
+        resolving.remove(&name);
     }
+    result
 }
 
 fn collect_named_types(ty: &TypeKind, names: &mut HashSet<String>) {
@@ -661,5 +784,76 @@ pub type AlsoQuaziOnly = str;
         assert!(header.contains("int32_t answer(void);"));
         assert!(!header.contains("QuaziOnly"));
         assert!(!header.contains("AlsoQuaziOnly"));
+    }
+
+    #[test]
+    fn rejects_raw_program_alias_cycles_before_rendering() {
+        for source in [
+            "type A = A; @export pub fn answer() i32 { ret 1; }",
+            "type A = *B; type B = *A; @export pub fn answer() i32 { ret 1; }",
+            "type Loop[T] = Loop[T]; @export pub fn answer() i32 { ret 1; }",
+        ] {
+            let errors = generate(&parse(source), &[], HeaderTarget::X86_64Linux, "api.h")
+                .expect_err("raw parsed programs must not bypass alias validation");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("header declaration")),
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_raw_program_alias_arity_errors() {
+        for application in ["Identity", "Identity[i32, bool]"] {
+            let source = format!(
+                "type Identity[T] = T; type Broken = {application}; @export pub fn answer() i32 {{ ret 1; }}"
+            );
+            let errors = generate(&parse(&source), &[], HeaderTarget::X86_64Linux, "api.h")
+                .expect_err("unused alias declarations still require valid arity");
+            assert!(
+                errors.iter().any(|error| error.contains("Broken")),
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_raw_program_exponential_alias_width() {
+        let mut source =
+            String::from("struct Pair[A, B] { first: A, second: B } type Level0 = i32;\n");
+        for level in 1..=17 {
+            source.push_str(&format!(
+                "type Level{level} = Pair[Level{}, Level{}];\n",
+                level - 1,
+                level - 1,
+            ));
+        }
+        source.push_str("@export pub fn answer() i32 { ret 1; }");
+        let errors = generate(&parse(&source), &[], HeaderTarget::X86_64Linux, "api.h")
+            .expect_err("small source must not cause unbounded expansion");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("header declaration")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validates_symbolic_alias_parameters_and_target_selection() {
+        let program = parse(
+            r#"
+type T = bool;
+type Identity[T] = T;
+type Nested[T] = Identity[Identity[T]];
+@cfg(target_os="windows") type Invalid = Invalid;
+@export pub fn answer() i32 { ret 1; }
+"#,
+        );
+        let header = generate(&program, &[], HeaderTarget::X86_64Linux, "api.h").unwrap();
+        assert!(header.contains("int32_t answer(void);"));
+        assert!(generate(&program, &[], HeaderTarget::X86_64Windows, "api.h").is_err());
     }
 }

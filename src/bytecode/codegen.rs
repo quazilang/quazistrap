@@ -2,8 +2,10 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::LazyLock;
 
 use super::instruction::{
@@ -84,30 +86,27 @@ fn abi_type_from_layout(
     bit_field_layouts: &HashMap<String, HashMap<String, crate::semantic::BitFieldLayout>>,
     repr_c_structs: &HashSet<String>,
     type_aliases: &HashMap<String, (Vec<String>, TypeKind)>,
+    resolution_errors: &RefCell<Vec<String>>,
 ) -> Option<AbiType> {
-    let resolved = match ty {
-        TypeKind::Named { name, type_args } if type_args.is_empty() => {
-            if let Some((params, target)) = type_aliases.get(name)
-                && params.is_empty()
-            {
-                return abi_type_from_layout(
-                    target,
-                    struct_defs,
-                    struct_sizes,
-                    struct_field_offsets,
-                    struct_alignments,
-                    bit_field_layouts,
-                    repr_c_structs,
-                    type_aliases,
-                );
-            }
-            ty
+    let resolved = match crate::type_resolution::resolve_type(
+        ty,
+        type_aliases,
+        &HashMap::new(),
+        &HashSet::new(),
+        |name| {
+            name.rsplit_once('.')
+                .and_then(|(_, leaf)| struct_defs.contains_key(leaf).then(|| leaf.to_string()))
+        },
+    ) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            resolution_errors.borrow_mut().push(error.to_string());
+            return None;
         }
-        _ => ty,
     };
 
     let integer = |bytes, signed| AbiType::Integer { bytes, signed };
-    match resolved {
+    match &resolved {
         TypeKind::Int8 => Some(integer(1, true)),
         TypeKind::Int16 => Some(integer(2, true)),
         TypeKind::Int32 => Some(integer(4, true)),
@@ -130,6 +129,7 @@ fn abi_type_from_layout(
                 bit_field_layouts,
                 repr_c_structs,
                 type_aliases,
+                resolution_errors,
             )?;
             let elem_size = elem.size();
             let fields = (0..*len)
@@ -184,6 +184,7 @@ fn abi_type_from_layout(
                     bit_field_layouts,
                     repr_c_structs,
                     type_aliases,
+                    resolution_errors,
                 )?;
                 fields.push(AbiField {
                     offset: u16::try_from(*offset).ok()?,
@@ -204,6 +205,7 @@ fn abi_type_from_layout(
 
 pub struct Codegen<'a> {
     report: &'a SemanticReport,
+    resolution_errors: Rc<RefCell<Vec<String>>>,
     /// Layout records are canonical in semantic analysis, while bytecode chunks
     /// are addressed by monomorphized names. Keep a derived codegen lookup so
     /// the latter never falls back to the historical one-slot ABI.
@@ -315,6 +317,7 @@ impl<'a> Codegen<'a> {
         }
         Self {
             report,
+            resolution_errors: Rc::new(RefCell::new(Vec::new())),
             fn_value_layouts,
             fn_index: HashMap::new(),
             contiguous_element_containers: HashMap::new(),
@@ -548,6 +551,7 @@ impl<'a> Codegen<'a> {
             &self.report.bit_field_layouts,
             &self.report.repr_c_structs,
             &self.report.type_aliases,
+            &self.resolution_errors,
         )
     }
 
@@ -556,6 +560,19 @@ impl<'a> Codegen<'a> {
         program: &Program,
         source_files: &[SourceFile],
     ) -> Result<Vec<Chunk>, String> {
+        self.resolution_errors.borrow_mut().clear();
+        let mut aliases = self.report.type_aliases.iter().collect::<Vec<_>>();
+        aliases.sort_by_key(|(name, _)| *name);
+        for (name, (parameters, body)) in aliases {
+            crate::type_resolution::resolve_type(
+                body,
+                &self.report.type_aliases,
+                &HashMap::new(),
+                &parameters.iter().cloned().collect(),
+                |_| None,
+            )
+            .map_err(|error| format!("type alias `{name}`: {error}"))?;
+        }
         if let Some(annotation) = self.report.annotated_exprs.iter().find(|annotation| {
             annotation
                 .ty
@@ -1126,19 +1143,35 @@ impl<'a> Codegen<'a> {
                                 // Build substitution: struct-level generic params first, then method-level.
                                 let struct_params = self
                                     .report
-                                    .struct_generic_params
-                                    .get(type_part)
+                                    .impl_generic_params
+                                    .get(&mono.fn_name)
                                     .cloned()
                                     .unwrap_or_default();
-                                let all_params: Vec<String> = struct_params
-                                    .into_iter()
-                                    .chain(generic_params.iter().cloned())
-                                    .collect();
-                                let subst: HashMap<String, TypeKind> = all_params
+                                let target_args = match &for_ty.node {
+                                    TypeKind::Named { type_args, .. } => type_args.as_slice(),
+                                    _ => &[],
+                                };
+                                let mut subst = HashMap::new();
+                                for (index, argument) in target_args.iter().enumerate() {
+                                    if let TypeKind::Named { name, type_args } = &argument.node
+                                        && type_args.is_empty()
+                                        && struct_params.contains(name)
+                                    {
+                                        let actual =
+                                            mono.type_args.get(index).ok_or_else(|| {
+                                                format!(
+                                                    "missing impl type argument for `{mono_name}`"
+                                                )
+                                            })?;
+                                        subst.insert(name.clone(), actual.clone());
+                                    }
+                                }
+                                for (param, actual) in generic_params
                                     .iter()
-                                    .zip(mono.type_args.iter())
-                                    .map(|(p, t)| (p.clone(), t.clone()))
-                                    .collect();
+                                    .zip(mono.type_args.iter().skip(target_args.len()))
+                                {
+                                    subst.insert(param.clone(), actual.clone());
+                                }
                                 if let Some(mut chunk) = self.compile_fn_with_subst(
                                     mono_name,
                                     params,
@@ -1772,6 +1805,9 @@ impl<'a> Codegen<'a> {
                 ));
             }
         }
+        if let Some(error) = self.resolution_errors.borrow().first() {
+            return Err(format!("code generation type resolution failed: {error}"));
+        }
         crate::bytecode::chunk::validate_qzi_chunks(&chunks)
             .map_err(|error| format!("invalid generated bytecode: {error}"))?;
         Ok(chunks)
@@ -1906,6 +1942,8 @@ impl<'a> Codegen<'a> {
             &self.report.fn_param_names,
             &self.source_files,
             &self.report.annotated_exprs,
+            Rc::clone(&self.resolution_errors),
+            self.callable_bound_names(name),
         );
         // The function owns ordinary by-value parameters. A bare inherent
         // receiver is likewise owned, except in its `.free` destructor: that
@@ -2159,123 +2197,59 @@ impl<'a> Codegen<'a> {
         ty: &TypeKind,
         type_subst: &HashMap<String, TypeKind>,
     ) -> TypeKind {
-        match ty {
-            TypeKind::Named { name, type_args } if type_args.is_empty() => {
-                if let Some(concrete) = type_subst.get(name) {
-                    if !types_equal(concrete, ty) {
-                        return self.resolve_type_for_layout(concrete, type_subst);
-                    }
-                }
-                let alias = self.report.type_aliases.get(name).or_else(|| {
-                    name.rsplit_once('.')
-                        .and_then(|(_, leaf)| self.report.type_aliases.get(leaf))
-                });
-                if let Some((params, target)) = alias
-                    && params.is_empty()
-                {
-                    return self.resolve_type_for_layout(target, type_subst);
-                }
-                ty.clone()
-            }
-            TypeKind::Named { name, type_args } => {
-                let alias = self.report.type_aliases.get(name).or_else(|| {
-                    name.rsplit_once('.')
-                        .and_then(|(_, leaf)| self.report.type_aliases.get(leaf))
-                });
-                if let Some((params, target)) = alias
-                    && params.len() == type_args.len()
-                {
-                    let mut alias_subst = type_subst.clone();
-                    for (param, arg) in params.iter().zip(type_args) {
-                        alias_subst.insert(
-                            param.clone(),
-                            self.resolve_type_for_layout(&arg.node, type_subst),
-                        );
-                    }
-                    return self.resolve_type_for_layout(target, &alias_subst);
-                }
-                TypeKind::Named {
-                    name: name.clone(),
-                    type_args: type_args
+        match crate::type_resolution::resolve_type(
+            ty,
+            &self.report.type_aliases,
+            type_subst,
+            &type_subst.keys().cloned().collect(),
+            |name| {
+                name.rsplit_once('.').and_then(|(_, leaf)| {
+                    self.report
+                        .symbol_table
+                        .entries
                         .iter()
-                        .map(|arg| {
-                            Spanned::new(
-                                self.resolve_type_for_layout(&arg.node, type_subst),
-                                arg.span,
-                            )
+                        .any(|entry| {
+                            entry.scope_depth == 0
+                                && entry.name == leaf
+                                && entry.symbol.kind == SymbolKind::TypeName
                         })
-                        .collect(),
-                }
+                        .then(|| leaf.to_string())
+                })
+            },
+        ) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                self.resolution_errors.borrow_mut().push(error.to_string());
+                TypeKind::Error
             }
-            TypeKind::Ref { inner } => TypeKind::Ref {
-                inner: Box::new(Spanned::new(
-                    self.resolve_type_for_layout(&inner.node, type_subst),
-                    inner.span,
-                )),
-            },
-            TypeKind::MutRef { inner } => TypeKind::MutRef {
-                inner: Box::new(Spanned::new(
-                    self.resolve_type_for_layout(&inner.node, type_subst),
-                    inner.span,
-                )),
-            },
-            TypeKind::RawPtr { inner } => TypeKind::RawPtr {
-                inner: Box::new(Spanned::new(
-                    self.resolve_type_for_layout(&inner.node, type_subst),
-                    inner.span,
-                )),
-            },
-            TypeKind::Array { elem_ty, len } => TypeKind::Array {
-                elem_ty: Box::new(Spanned::new(
-                    self.resolve_type_for_layout(&elem_ty.node, type_subst),
-                    elem_ty.span,
-                )),
-                len: *len,
-            },
-            TypeKind::FlexibleArray { elem_ty } => TypeKind::FlexibleArray {
-                elem_ty: Box::new(Spanned::new(
-                    self.resolve_type_for_layout(&elem_ty.node, type_subst),
-                    elem_ty.span,
-                )),
-            },
-            TypeKind::Slice { elem_ty } => TypeKind::Slice {
-                elem_ty: Box::new(Spanned::new(
-                    self.resolve_type_for_layout(&elem_ty.node, type_subst),
-                    elem_ty.span,
-                )),
-            },
-            TypeKind::Fn { params, return_ty } => TypeKind::Fn {
-                params: params
-                    .iter()
-                    .map(|param| {
-                        Spanned::new(
-                            self.resolve_type_for_layout(&param.node, type_subst),
-                            param.span,
-                        )
-                    })
-                    .collect(),
-                return_ty: Box::new(Spanned::new(
-                    self.resolve_type_for_layout(&return_ty.node, type_subst),
-                    return_ty.span,
-                )),
-            },
-            TypeKind::CFn { params, return_ty } => TypeKind::CFn {
-                params: params
-                    .iter()
-                    .map(|param| {
-                        Spanned::new(
-                            self.resolve_type_for_layout(&param.node, type_subst),
-                            param.span,
-                        )
-                    })
-                    .collect(),
-                return_ty: Box::new(Spanned::new(
-                    self.resolve_type_for_layout(&return_ty.node, type_subst),
-                    return_ty.span,
-                )),
-            },
-            other => other.clone(),
         }
+    }
+
+    fn callable_bound_names(&self, emitted: &str) -> HashSet<String> {
+        let callable = self
+            .report
+            .monomorphizations
+            .iter()
+            .find(|mono| mono.mangled_name == emitted)
+            .map_or(emitted, |mono| mono.fn_name.as_str());
+        let mut names = self
+            .report
+            .impl_generic_params
+            .get(callable)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect::<HashSet<_>>();
+        if let Some(entry) = self
+            .report
+            .symbol_table
+            .entries
+            .iter()
+            .find(|entry| entry.scope_depth == 0 && entry.name == callable)
+        {
+            names.extend(entry.symbol.generic_params.iter().cloned());
+        }
+        names
     }
 
     fn has_unresolved_layout_param(ty: &TypeKind, type_subst: &HashMap<String, TypeKind>) -> bool {
@@ -2358,6 +2332,8 @@ struct FnCompiler<'a> {
     /// silently wrapping back to r0.
     next_reg: u16,
     codegen_error: Option<String>,
+    resolution_errors: Rc<RefCell<Vec<String>>>,
+    bound_names: HashSet<String>,
     drop_scopes: Vec<Vec<DropLocal>>,
     fn_index: &'a HashMap<String, u16>,
     contiguous_element_containers: &'a HashMap<String, ContiguousElementContainer>,
@@ -2558,6 +2534,8 @@ impl<'a> FnCompiler<'a> {
         fn_param_names: &'a HashMap<String, Vec<String>>,
         source_files: &'a [SourceFile],
         annotated_exprs: &'a [crate::semantic::ExprAnnotation],
+        resolution_errors: Rc<RefCell<Vec<String>>>,
+        bound_names: HashSet<String>,
     ) -> Self {
         Self {
             chunk: Chunk::with_params(name, param_count),
@@ -2565,6 +2543,8 @@ impl<'a> FnCompiler<'a> {
             local_types: HashMap::new(),
             next_reg: 0,
             codegen_error: None,
+            resolution_errors,
+            bound_names,
             drop_scopes: Vec::new(),
             fn_index,
             contiguous_element_containers,
@@ -2645,72 +2625,23 @@ impl<'a> FnCompiler<'a> {
     /// Resolve a type through the monomorphization substitution map.
     /// Generic param references `T` → concrete type; all others pass through.
     fn resolve_type(&self, ty: &TypeKind) -> TypeKind {
-        match ty {
-            TypeKind::Named { name, type_args } if type_args.is_empty() => {
-                if let Some(concrete) = self.type_subst.get(name) {
-                    return concrete.clone();
-                }
-                let alias = self.type_aliases.get(name).or_else(|| {
-                    name.rsplit_once('.')
-                        .and_then(|(_, leaf)| self.type_aliases.get(leaf))
-                });
-                if let Some((params, target)) = alias
-                    && params.is_empty()
-                {
-                    return self.resolve_type(target);
-                }
-                ty.clone()
+        match crate::type_resolution::resolve_type(
+            ty,
+            self.type_aliases,
+            &self.type_subst,
+            &self.bound_names,
+            |name| {
+                name.rsplit_once('.').and_then(|(_, leaf)| {
+                    (self.struct_defs.contains_key(leaf) || self.enum_defs.contains_key(leaf))
+                        .then(|| leaf.to_string())
+                })
+            },
+        ) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                self.resolution_errors.borrow_mut().push(error.to_string());
+                TypeKind::Error
             }
-            TypeKind::Named { name, type_args } => {
-                let resolved_args: Vec<Type> = type_args
-                    .iter()
-                    .map(|a| Spanned::new(self.resolve_type(&a.node), a.span))
-                    .collect();
-                TypeKind::Named {
-                    name: name.clone(),
-                    type_args: resolved_args,
-                }
-            }
-            TypeKind::Ref { inner } => TypeKind::Ref {
-                inner: Box::new(Spanned::new(self.resolve_type(&inner.node), inner.span)),
-            },
-            TypeKind::MutRef { inner } => TypeKind::MutRef {
-                inner: Box::new(Spanned::new(self.resolve_type(&inner.node), inner.span)),
-            },
-            TypeKind::RawPtr { inner } => TypeKind::RawPtr {
-                inner: Box::new(Spanned::new(self.resolve_type(&inner.node), inner.span)),
-            },
-            TypeKind::Array { elem_ty, len } => TypeKind::Array {
-                elem_ty: Box::new(Spanned::new(self.resolve_type(&elem_ty.node), elem_ty.span)),
-                len: *len,
-            },
-            TypeKind::FlexibleArray { elem_ty } => TypeKind::FlexibleArray {
-                elem_ty: Box::new(Spanned::new(self.resolve_type(&elem_ty.node), elem_ty.span)),
-            },
-            TypeKind::Slice { elem_ty } => TypeKind::Slice {
-                elem_ty: Box::new(Spanned::new(self.resolve_type(&elem_ty.node), elem_ty.span)),
-            },
-            TypeKind::Fn { params, return_ty } => TypeKind::Fn {
-                params: params
-                    .iter()
-                    .map(|param| Spanned::new(self.resolve_type(&param.node), param.span))
-                    .collect(),
-                return_ty: Box::new(Spanned::new(
-                    self.resolve_type(&return_ty.node),
-                    return_ty.span,
-                )),
-            },
-            TypeKind::CFn { params, return_ty } => TypeKind::CFn {
-                params: params
-                    .iter()
-                    .map(|param| Spanned::new(self.resolve_type(&param.node), param.span))
-                    .collect(),
-                return_ty: Box::new(Spanned::new(
-                    self.resolve_type(&return_ty.node),
-                    return_ty.span,
-                )),
-            },
-            _ => ty.clone(),
         }
     }
 
@@ -2844,7 +2775,7 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn emit_foreign_global_address(&mut self, global: &crate::semantic::ForeignGlobalInfo) -> u8 {
-        let ty = abi_type_from_layout(
+        let Some(ty) = abi_type_from_layout(
             &global.ty,
             self.struct_defs,
             self.struct_sizes,
@@ -2853,8 +2784,16 @@ impl<'a> FnCompiler<'a> {
             self.bit_field_layouts,
             self.repr_c_structs,
             self.type_aliases,
-        )
-        .expect("semantic analysis validated the foreign global ABI type");
+            &self.resolution_errors,
+        ) else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!(
+                    "unsupported ABI type for foreign global `{}`",
+                    global.symbol
+                )
+            });
+            return self.alloc_reg();
+        };
         let constant = self
             .chunk
             .add_constant(ConstPoolEntry::ForeignGlobal(AbiForeignGlobal {
@@ -2905,6 +2844,7 @@ impl<'a> FnCompiler<'a> {
                         self.bit_field_layouts,
                         self.repr_c_structs,
                         self.type_aliases,
+                        &self.resolution_errors,
                     )
                 })
                 .collect::<Option<Vec<_>>>()?,
@@ -2917,6 +2857,7 @@ impl<'a> FnCompiler<'a> {
                 self.bit_field_layouts,
                 self.repr_c_structs,
                 self.type_aliases,
+                &self.resolution_errors,
             )?,
             variadic: false,
         })
@@ -3054,9 +2995,28 @@ impl<'a> FnCompiler<'a> {
             let resolved_mono_args: Vec<TypeKind> = mono
                 .type_args
                 .iter()
-                .map(|ty| self.resolve_type(ty))
+                .map(|ty| {
+                    // Stored specialization arguments belong to their own
+                    // declaration context. Applying this caller's substitution
+                    // could turn a symbolic helper into a concrete candidate.
+                    match crate::type_resolution::resolve_type(
+                        ty,
+                        self.type_aliases,
+                        &HashMap::new(),
+                        &self.bound_names,
+                        |_| None,
+                    ) {
+                        Ok(resolved) => resolved,
+                        Err(error) => {
+                            self.resolution_errors.borrow_mut().push(error.to_string());
+                            TypeKind::Error
+                        }
+                    }
+                })
                 .collect();
-            mono.fn_name == fn_name && types_equal_slice(&resolved_mono_args, &resolved_kinds)
+            mono.fn_name == fn_name
+                && self.fn_index.contains_key(&mono.mangled_name)
+                && types_equal_slice(&resolved_mono_args, &resolved_kinds)
         }) {
             return Some(mono.mangled_name.clone());
         }
@@ -3223,19 +3183,7 @@ impl<'a> FnCompiler<'a> {
         else {
             return (MemWidth::Qword, false, false);
         };
-        let mut resolved = ty;
-        while let TypeKind::Named { name, type_args } = resolved {
-            if !type_args.is_empty() {
-                break;
-            }
-            let Some((params, target)) = self.type_aliases.get(name) else {
-                break;
-            };
-            if !params.is_empty() {
-                break;
-            }
-            resolved = target;
-        }
+        let resolved = self.resolve_type(ty);
         match resolved {
             TypeKind::Int8 => (MemWidth::Byte, true, false),
             TypeKind::Uint8 | TypeKind::Bool => (MemWidth::Byte, false, false),
@@ -4619,8 +4567,9 @@ impl<'a> FnCompiler<'a> {
             return;
         };
         let Some(TypeKind::Named { name, type_args }) = Some(self.resolve_type(&inner.node)) else {
-            self.codegen_error
-                .get_or_insert_with(|| "contiguous replacement receiver is not a container".to_string());
+            self.codegen_error.get_or_insert_with(|| {
+                "contiguous replacement receiver is not a container".to_string()
+            });
             return;
         };
         let Some(metadata) = self.contiguous_element_containers.get(&name) else {
@@ -4706,8 +4655,9 @@ impl<'a> FnCompiler<'a> {
             return;
         };
         let Some(TypeKind::Named { name, type_args }) = Some(self.resolve_type(&inner.node)) else {
-            self.codegen_error
-                .get_or_insert_with(|| "contiguous removal receiver is not a container".to_string());
+            self.codegen_error.get_or_insert_with(|| {
+                "contiguous removal receiver is not a container".to_string()
+            });
             return;
         };
         let Some(metadata) = self.contiguous_element_containers.get(&name) else {
@@ -4797,8 +4747,11 @@ impl<'a> FnCompiler<'a> {
         self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
         let exit = self.chunk.len() as u16;
         self.chunk.patch_jump(exit_jump, exit);
-        self.chunk
-            .emit(field_store(new_length, receiver_reg, metadata.length_offset));
+        self.chunk.emit(field_store(
+            new_length,
+            receiver_reg,
+            metadata.length_offset,
+        ));
         self.emit_block_copy(self.result_base_reg(), removed, element_slots as usize);
         let mut ret = rrr(Opcode::Ret, 0, 0, 0);
         ret.flags = element_slots;
@@ -6081,6 +6034,7 @@ impl<'a> FnCompiler<'a> {
                         self.bit_field_layouts,
                         self.repr_c_structs,
                         self.type_aliases,
+                        &self.resolution_errors,
                     )
                 })
             else {
@@ -8160,6 +8114,8 @@ impl<'a> FnCompiler<'a> {
                     self.fn_param_names,
                     self.source_files,
                     self.annotated_exprs,
+                    Rc::clone(&self.resolution_errors),
+                    self.bound_names.clone(),
                 );
                 // Reserve the complete incoming ABI frame before allocating
                 // capture locals or expression temporaries. r0 is the hidden
@@ -9159,6 +9115,53 @@ fn main() i32 {
     }
 
     #[test]
+    fn codegen_rejects_invalid_aliases_in_raw_reports() {
+        let program = Parser::new(Lexer::new("fn main() void {}").tokenize())
+            .parse()
+            .unwrap();
+        for target in [
+            TypeKind::Named {
+                name: "Bad".to_string(),
+                type_args: vec![],
+            },
+            TypeKind::Named {
+                name: "Id".to_string(),
+                type_args: vec![],
+            },
+        ] {
+            let mut report = Analyzer::new().analyze_program(&program);
+            report.type_aliases.insert(
+                "Id".to_string(),
+                (
+                    vec!["T".to_string()],
+                    TypeKind::Named {
+                        name: "T".to_string(),
+                        type_args: vec![],
+                    },
+                ),
+            );
+            report
+                .type_aliases
+                .insert("Bad".to_string(), (vec![], target));
+            let error = Codegen::new(&report)
+                .compile_program(&program, &[])
+                .expect_err("raw report must not bypass checked aliases");
+            assert!(
+                error.contains("cyclic type alias") || error.contains("expects 1 type argument"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn codegen_resolves_nested_aliases_under_generic_binders() {
+        let chunks = compile(
+            "type T = u32; type Id[T] = T; fn identity[T](value: Id[T]) T { ret value; } fn main() i32 { ret identity[i32](7); }",
+        );
+        assert!(chunks.iter().any(|chunk| chunk.name == "identity<i32>"));
+    }
+
+    #[test]
     fn generic_specializations_match_resolved_type_aliases() {
         let chunks = compile(
             r#"
@@ -9703,9 +9706,15 @@ fn update(buffer: &Buffer[Token]!, token: Token) void { buffer.set(0, token); }
             .iter()
             .position(|instruction| instruction.opcode == Opcode::CallIdx as u8)
             .unwrap();
-        assert!(load < drop && drop < store, "replacement must load, destroy, then store: {:?}", set.code);
         assert!(
-            set.code.iter().any(|instruction| instruction.opcode == Opcode::Jb as u8),
+            load < drop && drop < store,
+            "replacement must load, destroy, then store: {:?}",
+            set.code
+        );
+        assert!(
+            set.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::Jb as u8),
             "replacement must bounds-check before touching storage: {:?}",
             set.code
         );
@@ -9749,20 +9758,29 @@ fn update(buffer: &Buffer[Token]!) Token { ret buffer.remove(0); }
             .iter()
             .position(|instruction| instruction.opcode == Opcode::FieldStore as u8)
             .unwrap();
-        assert!(load < store && store < length_store, "removal must load, shift, then shorten: {:?}", remove.code);
         assert!(
-            remove.code.iter().any(|instruction| instruction.opcode == Opcode::Jb as u8),
+            load < store && store < length_store,
+            "removal must load, shift, then shorten: {:?}",
+            remove.code
+        );
+        assert!(
+            remove
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::Jb as u8),
             "removal must bounds-check before touching storage: {:?}",
             remove.code
         );
         assert!(
-            !remove.code.iter().any(|instruction| instruction.opcode == Opcode::CallIdx as u8),
+            !remove
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::CallIdx as u8),
             "removal transfers the returned owner and must not destroy shifted slots: {:?}",
             remove.code
         );
         assert_ne!(
-            remove.code[load].ops[0],
-            0,
+            remove.code[load].ops[0], 0,
             "the removed value must not overwrite the single-slot receiver before the length update: {:?}",
             remove.code
         );

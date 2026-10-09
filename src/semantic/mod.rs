@@ -12,6 +12,7 @@ pub use types::*;
 mod borrow;
 mod declare;
 mod optimize;
+mod ownership;
 pub(crate) mod typecheck;
 mod unused;
 
@@ -39,16 +40,6 @@ pub(super) enum MatchArmKindInfo {
     },
 }
 
-/// Call facts used only to decide whether the current lexical direct-call
-/// loan shortcut can end a temporary borrow. This is intentionally separate
-/// from reachability dependencies, which also model function values and
-/// compiler-injected calls.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum SourceCallEffect {
-    ResolvedDirect(String),
-    Opaque,
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct MatchArmInfo {
     pub(super) span: Span,
@@ -67,6 +58,7 @@ pub struct Analyzer {
     pub(super) scopes: Vec<HashMap<String, Symbol>>,
     pub(super) finished_scopes: Vec<Vec<(String, Symbol)>>,
     pub(super) errors: Vec<SemanticError>,
+    alias_resolution_errors: std::cell::RefCell<std::collections::BTreeMap<String, Span>>,
     pub(super) warnings: Vec<SemanticWarning>,
     pub(super) suggestions: Vec<SemanticSuggestion>,
     pub(super) used_import_paths: BTreeSet<String>,
@@ -85,7 +77,9 @@ pub struct Analyzer {
     pub(super) call_dependencies: HashMap<String, BTreeSet<String>>,
     /// Source-body call facts for the conservative ownership shortcut. Unlike
     /// `call_dependencies`, this records indirect and opaque calls explicitly.
-    pub(super) source_call_effects: HashMap<String, Vec<SourceCallEffect>>,
+    pub(super) source_call_effects: HashMap<String, Vec<OwnershipCallEffect>>,
+    ownership_call_sites:
+        HashMap<String, std::collections::BTreeMap<(usize, usize), ownership::SourceOwnershipCall>>,
     pub(super) called_functions: BTreeSet<String>,
     pub(super) call_counts: HashMap<String, usize>,
     pub(super) current_function: Vec<String>,
@@ -158,6 +152,8 @@ pub struct Analyzer {
     /// Recorded internal-ABI value layouts per function (see the matching
     /// `SemanticReport` field).
     pub(super) fn_value_layouts: HashMap<String, crate::runtime_layout::FnValueLayout>,
+    specialization_identities: HashMap<String, OwnershipCallableId>,
+    impl_generic_params: HashMap<String, Vec<String>>,
     /// Expected expression types supplied by surrounding annotations/returns.
     /// The innermost entry provides generic constructor context such as
     /// `var values: Array[i32] = Array.new()`.
@@ -853,6 +849,7 @@ impl Analyzer {
             scopes: vec![HashMap::new()],
             finished_scopes: Vec::new(),
             errors: Vec::new(),
+            alias_resolution_errors: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             warnings: Vec::new(),
             suggestions: Vec::new(),
             used_import_paths: BTreeSet::new(),
@@ -869,6 +866,7 @@ impl Analyzer {
             dependency_edges: BTreeSet::new(),
             call_dependencies: HashMap::new(),
             source_call_effects: HashMap::new(),
+            ownership_call_sites: HashMap::new(),
             called_functions: BTreeSet::new(),
             call_counts: HashMap::new(),
             current_function: Vec::new(),
@@ -906,6 +904,8 @@ impl Analyzer {
             current_module_path: None,
             monomorphizations: Vec::new(),
             fn_value_layouts: HashMap::new(),
+            specialization_identities: HashMap::new(),
+            impl_generic_params: HashMap::new(),
             contextual_expected_types: Vec::new(),
             type_aliases: std::collections::HashMap::new(),
             fn_param_names: HashMap::new(),
@@ -1025,6 +1025,27 @@ impl Analyzer {
             checkpoint()?;
             self.declare_top_level_item(item);
         }
+        // Implicit impl binders are unresolved target names, not concrete
+        // declared types/aliases. Resolve this after all forward declarations.
+        self.impl_generic_params = self
+            .impl_generic_params
+            .iter()
+            .map(|(name, params)| {
+                (
+                    name.clone(),
+                    params
+                        .iter()
+                        .filter(|param| !self.is_declared_type_name(param))
+                        .cloned()
+                        .collect(),
+                )
+            })
+            .collect();
+        // Validate declaration types before any layout or ownership consumer.
+        for item in &program.items {
+            checkpoint()?;
+            self.validate_declaration_aliases(item, &[], &mut checkpoint)?;
+        }
         self.validate_initial_serialize_fields();
         self.ownership_signature_index = self
             .derive_callable_ownership_summaries(&self.build_symbol_table())
@@ -1097,6 +1118,7 @@ impl Analyzer {
             });
         }
 
+        self.flush_alias_resolution_errors();
         let symbol_table = self.build_symbol_table();
         let mut callable_ownership_summaries = self
             .ownership_signature_index
@@ -1104,6 +1126,10 @@ impl Analyzer {
             .cloned()
             .collect::<Vec<_>>();
         callable_ownership_summaries.sort_by(|left, right| left.callable.cmp(&right.callable));
+        let callable_ownership_body_effects =
+            self.derive_callable_ownership_body_effects(&callable_ownership_summaries);
+        let ownership_call_graph =
+            self.build_ownership_call_graph(&callable_ownership_summaries, &mut checkpoint)?;
         let used_imports_vec: Vec<String> = self.used_import_paths.iter().cloned().collect();
         let used_imports_map = self.build_import_usage_map(&symbol_table, true);
         let unused_imports_vec: Vec<String> = self.unused_import_paths.iter().cloned().collect();
@@ -1143,6 +1169,7 @@ impl Analyzer {
         let dependency_graph = self.build_dependency_graph(&mut checkpoint)?;
 
         checkpoint()?;
+        self.flush_alias_resolution_errors();
         Ok(SemanticReport {
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
@@ -1156,6 +1183,9 @@ impl Analyzer {
             annotated_program,
             symbol_table,
             callable_ownership_summaries,
+            callable_ownership_body_effects,
+            ownership_call_graph,
+            impl_generic_params: self.impl_generic_params.clone(),
             contiguous_element_contracts: self.contiguous_element_contracts.clone(),
             constant_evaluations,
             inline_candidates,
@@ -1329,6 +1359,7 @@ impl Analyzer {
         self.finished_scopes.clear();
 
         self.errors.clear();
+        self.alias_resolution_errors.get_mut().clear();
         self.warnings.clear();
         self.suggestions.clear();
         self.used_import_paths.clear();
@@ -1345,6 +1376,7 @@ impl Analyzer {
         self.dependency_edges.clear();
         self.call_dependencies.clear();
         self.source_call_effects.clear();
+        self.ownership_call_sites.clear();
         self.called_functions.clear();
         self.call_counts.clear();
         self.current_function.clear();
@@ -1367,6 +1399,8 @@ impl Analyzer {
         self.trait_method_signatures.clear();
         self.monomorphizations.clear();
         self.fn_value_layouts.clear();
+        self.specialization_identities.clear();
+        self.impl_generic_params.clear();
         self.contextual_expected_types.clear();
         self.type_aliases.clear();
         self.fn_param_names.clear();
@@ -1528,6 +1562,16 @@ impl Analyzer {
 
         while let Some(source) = pending.pop() {
             checkpoint()?;
+            let source_span = self
+                .resolve_symbol(&source.fn_name)
+                .map_or(Span::new(0, 0, 0, 0), |symbol| symbol.span);
+            if !self.validate_specialization_identity(
+                &source.fn_name,
+                &source.type_args,
+                source_span,
+            ) {
+                continue;
+            }
             let source_params = self.generic_params_for_function(&source.fn_name);
             if source_params.len() != source.type_args.len()
                 || source
@@ -1548,8 +1592,40 @@ impl Analyzer {
                 .cloned()
                 .unwrap_or_default();
 
+            // Resolved source sites retain substitution structure even when
+            // a symbolic target collides with another lossy mangled name.
+            // Keep the reachability-only fallback for injected cleanup calls.
+            let sites = self
+                .ownership_call_sites
+                .get(&source.fn_name)
+                .cloned()
+                .unwrap_or_default();
+            let mut explicit_targets = HashSet::new();
+            let mut specialized_targets = Vec::new();
+            for site in sites.values() {
+                checkpoint()?;
+                let Some((callee, arguments)) = &site.target else {
+                    continue;
+                };
+                if arguments.is_empty() {
+                    self.add_dependency_edge(DependencyKind::Call, &source.mangled_name, callee);
+                    continue;
+                }
+                explicit_targets.insert(typecheck::mangle_monomorphized(callee, arguments));
+                specialized_targets.push((
+                    callee.clone(),
+                    arguments
+                        .iter()
+                        .map(|ty| substitute_type_kind(ty, &substitution))
+                        .collect::<Vec<_>>(),
+                ));
+            }
+
             for target_name in targets {
                 checkpoint()?;
+                if explicit_targets.contains(&target_name) {
+                    continue;
+                }
                 let Some(template) = template_monos.get(&target_name) else {
                     // A specialized generic body can call ordinary functions
                     // too (for example, Array.push[T] calls the non-generic
@@ -1567,7 +1643,12 @@ impl Analyzer {
                     .iter()
                     .map(|ty| substitute_type_kind(ty, &substitution))
                     .collect();
-                let target_params = self.generic_params_for_function(&template.fn_name);
+                specialized_targets.push((template.fn_name.clone(), type_args));
+            }
+
+            for (target_function, type_args) in specialized_targets {
+                checkpoint()?;
+                let target_params = self.generic_params_for_function(&target_function);
                 if target_params.len() != type_args.len()
                     || type_args
                         .iter()
@@ -1576,15 +1657,22 @@ impl Analyzer {
                     continue;
                 }
 
-                let mangled_name = typecheck::mangle_monomorphized(&template.fn_name, &type_args);
+                let mangled_name = typecheck::mangle_monomorphized(&target_function, &type_args);
+                let target_span = self
+                    .resolve_symbol(&target_function)
+                    .map_or(source_span, |symbol| symbol.span);
+                if !self.validate_specialization_identity(&target_function, &type_args, target_span)
+                {
+                    continue;
+                }
                 self.add_dependency_edge(DependencyKind::Call, &source.mangled_name, &mangled_name);
                 if !known_mangled.insert(mangled_name.clone()) {
                     continue;
                 }
 
-                self.record_specialization_layout(&template.fn_name, &target_params, &type_args);
+                self.record_specialization_layout(&target_function, &target_params, &type_args);
                 let specialization = MonomorphizationInfo {
-                    fn_name: template.fn_name.clone(),
+                    fn_name: target_function,
                     type_args,
                     mangled_name,
                 };
@@ -1596,15 +1684,22 @@ impl Analyzer {
     }
 
     fn generic_params_for_function(&self, fn_name: &str) -> Vec<String> {
-        let mut params = fn_name
-            .split_once('.')
-            .and_then(|(type_name, _)| self.struct_generic_params.get(type_name))
+        let mut params = self
+            .impl_generic_params
+            .get(fn_name)
             .cloned()
             .unwrap_or_default();
         if let Some(symbol) = self.resolve_symbol(fn_name) {
             params.extend(symbol.generic_params.clone());
         }
         params
+    }
+
+    fn resolved_impl_generic_parameters(&self, ty: &TypeKind) -> Vec<String> {
+        impl_generic_parameters(ty)
+            .into_iter()
+            .filter(|name| !self.is_declared_type_name(name))
+            .collect()
     }
 
     fn record_specialization_layout(
@@ -1681,23 +1776,31 @@ impl Analyzer {
             .iter()
             .filter(|entry| entry.scope_depth == 0 && entry.symbol.kind == SymbolKind::Function)
             .filter_map(|entry| {
+                let mut parameters = entry.symbol.generic_params.clone();
+                if let Some(enclosing) = self.impl_generic_params.get(&entry.name) {
+                    parameters.extend(enclosing.iter().cloned());
+                }
                 let resolved_params = entry
                     .symbol
                     .params
                     .iter()
-                    .map(|ty| self.resolve_type_aliases(ty))
+                    .map(|ty| self.resolve_type_with_parameters(ty, &parameters, entry.symbol.span))
                     .collect::<Vec<_>>();
                 let result = self.ownership_result_for_type(
                     entry
                         .symbol
                         .ty
                         .as_ref()
-                        .map(|ty| self.resolve_type_aliases(ty))
+                        .map(|ty| {
+                            self.resolve_type_with_parameters(ty, &parameters, entry.symbol.span)
+                        })
                         .as_ref(),
                 )?;
                 let receiver_count = usize::from(
                     self.explicit_shared_receiver_methods.contains(&entry.name)
-                        || self.explicit_exclusive_receiver_methods.contains(&entry.name)
+                        || self
+                            .explicit_exclusive_receiver_methods
+                            .contains(&entry.name)
                         || self.consuming_receiver_methods.contains(&entry.name),
                 );
                 let receiver = if receiver_count == 1 {
@@ -1731,7 +1834,7 @@ impl Analyzer {
                     variadic,
                     result,
                     has_body: self.source_function_symbols.contains(&entry.name),
-                    generic_template: !entry.symbol.generic_params.is_empty(),
+                    generic_template: !self.generic_params_for_function(&entry.name).is_empty(),
                     direct_call_eligible: self.source_function_symbols.contains(&entry.name)
                         && !entry.symbol.unsafe_fn
                         && !entry.symbol.variadic
@@ -1771,8 +1874,8 @@ impl Analyzer {
                         .into_iter()
                         .flatten()
                         .all(|effect| match effect {
-                            SourceCallEffect::ResolvedDirect(callee) => verified.contains(callee),
-                            SourceCallEffect::Opaque => false,
+                            OwnershipCallEffect::Direct(callee) => verified.contains(callee),
+                            OwnershipCallEffect::Opaque | OwnershipCallEffect::Unavailable => false,
                         })
                 })
                 .cloned()
@@ -1785,8 +1888,8 @@ impl Analyzer {
 
         for summary in &mut summaries {
             summary.source_effects_verified = verified.contains(&summary.callable);
-            summary.direct_call_eligible = summary.direct_call_eligible
-                && summary.source_effects_verified;
+            summary.direct_call_eligible =
+                summary.direct_call_eligible && summary.source_effects_verified;
         }
         self.ownership_signature_index = summaries
             .into_iter()
@@ -1794,7 +1897,7 @@ impl Analyzer {
             .collect();
     }
 
-    pub(super) fn record_source_call_effect(&mut self, effect: SourceCallEffect) {
+    pub(super) fn record_source_call_effect(&mut self, effect: OwnershipCallEffect) {
         let Some(caller) = self.current_function.last() else {
             return;
         };
@@ -1804,6 +1907,31 @@ impl Analyzer {
                 .or_default()
                 .push(effect);
         }
+    }
+
+    fn derive_callable_ownership_body_effects(
+        &self,
+        summaries: &[CallableOwnershipSummary],
+    ) -> Vec<CallableOwnershipBodyEffects> {
+        summaries
+            .iter()
+            .map(|summary| {
+                let mut calls = if summary.has_body {
+                    self.source_call_effects
+                        .get(&summary.callable)
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    vec![OwnershipCallEffect::Unavailable]
+                };
+                calls.sort();
+                calls.dedup();
+                CallableOwnershipBodyEffects {
+                    callable: summary.callable.clone(),
+                    calls,
+                }
+            })
+            .collect()
     }
 
     fn ownership_capability_for_type(&self, ty: &TypeKind) -> Option<OwnershipCapability> {
@@ -1955,116 +2083,155 @@ impl Analyzer {
             .is_some_and(|symbol| matches!(symbol.kind, SymbolKind::TypeName))
     }
 
-    /// Recursively expand type aliases in a TypeKind.
-    pub(super) fn resolve_type_aliases(&self, ty: &TypeKind) -> TypeKind {
-        match ty {
-            TypeKind::Named { name, type_args } => {
-                let alias_entry = self.type_aliases.get(name).or_else(|| {
-                    // Dotted name like "ffi.c_int": also try the leaf segment "c_int".
-                    if name.contains('.') {
-                        name.rsplit('.')
-                            .next()
-                            .and_then(|leaf| self.type_aliases.get(leaf))
-                    } else {
-                        None
-                    }
-                });
-                if let Some((generic_params, aliased)) = alias_entry {
-                    // Substitute generic params if this alias has type args
-                    if type_args.is_empty() || generic_params.is_empty() {
-                        let resolved = self.resolve_type_aliases(aliased);
-                        return self.resolve_type_aliases(&resolved);
-                    }
-                    let mut map = std::collections::HashMap::new();
-                    for (gp, ta) in generic_params.iter().zip(type_args.iter()) {
-                        map.insert(gp.clone(), self.resolve_type_aliases(&ta.node));
-                    }
-                    let substituted = substitute_type_kind(aliased, &map);
-                    self.resolve_type_aliases(&substituted)
-                } else {
-                    // A module-qualified reference to a type declared under
-                    // its leaf name (`fs.FsError` for `pub enum FsError` in
-                    // module `fs`) canonicalizes to the declaration name,
-                    // mirroring the alias leaf fallback above.
-                    let canonical = if name.contains('.') {
-                        name.rsplit('.').next().and_then(|leaf| {
-                            if self.is_declared_type_name(leaf) {
-                                Some(leaf.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                    } else {
-                        None
-                    };
-                    TypeKind::Named {
-                        name: canonical.unwrap_or_else(|| name.clone()),
-                        type_args: type_args
-                            .iter()
-                            .map(|t| Spanned::new(self.resolve_type_aliases(&t.node), t.span))
-                            .collect(),
+    fn validate_declaration_aliases(
+        &self,
+        item: &Item,
+        enclosing: &[String],
+        checkpoint: &mut dyn FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<(), crate::cancel::Cancelled> {
+        checkpoint()?;
+        let check = |ty: &Type, parameters: &[String]| {
+            self.resolve_type_with_parameters(&ty.node, parameters, ty.span);
+        };
+        match &item.node {
+            ItemKind::TypeAlias {
+                generic_params,
+                aliased_type,
+                attributes,
+                ..
+            } if item_should_include(attributes) => check(aliased_type, generic_params),
+            ItemKind::Fn {
+                generic_params,
+                params,
+                return_ty,
+                attributes,
+                ..
+            } if item_should_include(attributes) => {
+                let parameters = enclosing
+                    .iter()
+                    .chain(generic_params)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for param in params {
+                    check(&param.ty, &parameters);
+                }
+                check(return_ty, &parameters);
+            }
+            ItemKind::Struct {
+                generic_params,
+                fields,
+                attributes,
+                ..
+            } if item_should_include(attributes) => {
+                for field in fields {
+                    check(&field.ty, generic_params);
+                }
+            }
+            ItemKind::Enum {
+                generic_params,
+                variants,
+                attributes,
+                ..
+            } if item_should_include(attributes) => {
+                for variant in variants {
+                    for ty in &variant.payload_types {
+                        check(ty, generic_params);
                     }
                 }
             }
+            ItemKind::Trait {
+                generic_params,
+                methods,
+                attributes,
+                ..
+            } if item_should_include(attributes) => {
+                for method in methods {
+                    let parameters = generic_params
+                        .iter()
+                        .chain(&method.generic_params)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for ty in &method.params {
+                        check(ty, &parameters);
+                    }
+                    check(&method.return_ty, &parameters);
+                }
+            }
+            ItemKind::ForeignGlobal { ty, attributes, .. } if item_should_include(attributes) => {
+                check(ty, enclosing)
+            }
+            ItemKind::Impl {
+                for_ty,
+                trait_ty,
+                methods,
+            } => {
+                let parameters = self.resolved_impl_generic_parameters(&for_ty.node);
+                check(for_ty, &parameters);
+                if let Some(ty) = trait_ty {
+                    check(ty, &parameters);
+                }
+                for method in methods {
+                    self.validate_declaration_aliases(method, &parameters, checkpoint)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 
-            TypeKind::Ref { inner } => TypeKind::Ref {
-                inner: Box::new(Spanned::new(
-                    self.resolve_type_aliases(&inner.node),
-                    inner.span,
-                )),
+    /// Checked transparent expansion. Failures are retained even when callers
+    /// use the Error recovery type and only have shared access to the analyzer.
+    pub(super) fn resolve_type_aliases(&self, ty: &TypeKind) -> TypeKind {
+        self.resolve_type_with_parameters(ty, &[], Span::new(0, 0, 0, 0))
+    }
+
+    fn resolve_type_with_parameters(
+        &self,
+        ty: &TypeKind,
+        parameters: &[String],
+        span: Span,
+    ) -> TypeKind {
+        let bound_names = self
+            .current_generic_params
+            .iter()
+            .flatten()
+            .chain(parameters)
+            .cloned()
+            .collect();
+        match crate::type_resolution::resolve_type(
+            ty,
+            &self.type_aliases,
+            &HashMap::new(),
+            &bound_names,
+            |name| {
+                name.rsplit_once('.').and_then(|(_, leaf)| {
+                    self.scopes
+                        .first()?
+                        .get(leaf)
+                        .filter(|symbol| symbol.kind == SymbolKind::TypeName)
+                        .map(|_| leaf.to_string())
+                })
             },
-            TypeKind::MutRef { inner } => TypeKind::MutRef {
-                inner: Box::new(Spanned::new(
-                    self.resolve_type_aliases(&inner.node),
-                    inner.span,
-                )),
-            },
-            TypeKind::RawPtr { inner } => TypeKind::RawPtr {
-                inner: Box::new(Spanned::new(
-                    self.resolve_type_aliases(&inner.node),
-                    inner.span,
-                )),
-            },
-            TypeKind::Array { elem_ty, len } => TypeKind::Array {
-                elem_ty: Box::new(Spanned::new(
-                    self.resolve_type_aliases(&elem_ty.node),
-                    elem_ty.span,
-                )),
-                len: *len,
-            },
-            TypeKind::FlexibleArray { elem_ty } => TypeKind::FlexibleArray {
-                elem_ty: Box::new(Spanned::new(
-                    self.resolve_type_aliases(&elem_ty.node),
-                    elem_ty.span,
-                )),
-            },
-            TypeKind::Slice { elem_ty } => TypeKind::Slice {
-                elem_ty: Box::new(Spanned::new(
-                    self.resolve_type_aliases(&elem_ty.node),
-                    elem_ty.span,
-                )),
-            },
-            TypeKind::Fn { params, return_ty } => TypeKind::Fn {
-                params: params
-                    .iter()
-                    .map(|p| Spanned::new(self.resolve_type_aliases(&p.node), p.span))
-                    .collect(),
-                return_ty: Box::new(Spanned::new(
-                    self.resolve_type_aliases(&return_ty.node),
-                    return_ty.span,
-                )),
-            },
-            TypeKind::CFn { params, return_ty } => TypeKind::CFn {
-                params: params
-                    .iter()
-                    .map(|p| Spanned::new(self.resolve_type_aliases(&p.node), p.span))
-                    .collect(),
-                return_ty: Box::new(Spanned::new(
-                    self.resolve_type_aliases(&return_ty.node),
-                    return_ty.span,
-                )),
-            },
-            other => other.clone(),
+        ) {
+            Ok(ty) => ty,
+            Err(error) => {
+                let span = error
+                    .context_name()
+                    .and_then(|name| self.scopes.first()?.get(name))
+                    .map(|symbol| symbol.span)
+                    .unwrap_or(span);
+                self.alias_resolution_errors
+                    .borrow_mut()
+                    .entry(error.to_string())
+                    .or_insert(span);
+                TypeKind::Error
+            }
+        }
+    }
+
+    fn flush_alias_resolution_errors(&mut self) {
+        for (message, span) in std::mem::take(self.alias_resolution_errors.get_mut()) {
+            self.push_error(span, "S14", message);
         }
     }
 
@@ -2176,6 +2343,19 @@ impl Default for Analyzer {
     }
 }
 
+fn impl_generic_parameters(ty: &TypeKind) -> Vec<String> {
+    match ty {
+        TypeKind::Named { type_args, .. } => type_args
+            .iter()
+            .filter_map(|arg| match &arg.node {
+                TypeKind::Named { name, type_args } if type_args.is_empty() => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn type_mentions_params(ty: &TypeKind, params: &[String]) -> bool {
     match ty {
         TypeKind::Named { name, type_args } => {
@@ -2217,8 +2397,8 @@ mod tests {
 
     use super::{
         Analyzer, ConstValue, ContiguousElementContract, DependencyKind, EnumInfo, MatchArmInfo,
-        MatchArmKindInfo, MatchCandidate, OwnershipCapability, OwnershipResult, SemanticReport,
-        VariadicOwnership, strip_cfg_for,
+        MatchArmKindInfo, MatchCandidate, OwnershipCallEffect, OwnershipCapability,
+        OwnershipResult, SemanticReport, VariadicOwnership, strip_cfg_for,
     };
 
     fn parse_program(src: &str) -> crate::parser::ast::Program {
@@ -2516,7 +2696,11 @@ fn generic[T](value: T) T { ret value; }
 @api("foreign") fn opaque(pointer: *Token) void;
 "#,
         );
-        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
         let copy = report
             .callable_ownership_summaries
             .iter()
@@ -2616,7 +2800,11 @@ fn generic[T](value: T) T { ret value; }
         let mut sorted_names = names.clone();
         sorted_names.sort_unstable();
         assert_eq!(names, sorted_names, "summaries must have stable ordering");
-        assert!(names.windows(3).any(|window| window == ["copy", "format_like", "generic"]));
+        assert!(
+            names
+                .windows(3)
+                .any(|window| window == ["copy", "format_like", "generic"])
+        );
     }
 
     #[test]
@@ -2634,7 +2822,11 @@ fn cycle_right(view: &Token) void { cycle_left(view); }
 fn main() void {}
 "#,
         );
-        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
         let summary = |name: &str| {
             report
                 .callable_ownership_summaries
@@ -2659,6 +2851,27 @@ fn main() void {}
         assert!(!indirect.source_effects_verified, "{indirect:?}");
         assert!(!indirect.direct_call_eligible, "{indirect:?}");
 
+        let effects = |name: &str| {
+            report
+                .callable_ownership_body_effects
+                .iter()
+                .find(|effects| effects.callable == name)
+                .unwrap()
+        };
+        assert_eq!(
+            effects("chain").calls,
+            vec![OwnershipCallEffect::Direct("leaf".to_string())]
+        );
+        assert_eq!(
+            effects("blocked").calls,
+            vec![OwnershipCallEffect::Direct("opaque".to_string())]
+        );
+        assert_eq!(effects("indirect").calls, vec![OwnershipCallEffect::Opaque]);
+        assert_eq!(
+            effects("opaque").calls,
+            vec![OwnershipCallEffect::Unavailable]
+        );
+
         let invalid = analyze("fn invalid() void { missing(); } fn main() void {}");
         assert!(invalid.errors.iter().any(|error| error.code == "S04"));
         let invalid_summary = invalid
@@ -2666,8 +2879,20 @@ fn main() void {}
             .iter()
             .find(|summary| summary.callable == "invalid")
             .unwrap();
-        assert!(!invalid_summary.source_effects_verified, "{invalid_summary:?}");
+        assert!(
+            !invalid_summary.source_effects_verified,
+            "{invalid_summary:?}"
+        );
         assert!(!invalid_summary.direct_call_eligible, "{invalid_summary:?}");
+        assert_eq!(
+            invalid
+                .callable_ownership_body_effects
+                .iter()
+                .find(|effects| effects.callable == "invalid")
+                .unwrap()
+                .calls,
+            vec![OwnershipCallEffect::Opaque]
+        );
     }
 
     #[test]
@@ -2788,7 +3013,11 @@ impl Buffer[Marker, T] { fn free(self: Buffer[Marker, T]) void {} }
 fn take(value: Buffer[i32, Buffer[i32, Token]]) void {}
 "#,
         );
-        assert!(report.errors.is_empty(), "semantic errors: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
         assert_eq!(
             report.contiguous_element_contracts.get("Buffer"),
             Some(&ContiguousElementContract {
@@ -6460,6 +6689,87 @@ fn main() void { ret; }
             "duplicate impl method should produce error, got: {:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn invalid_unused_aliases_are_mandatory_errors() {
+        for source in [
+            "type A = A; fn main() void {}",
+            "type A = B; type B = *A; fn main() void {}",
+            "type Grow[T] = Grow[[T; 1]]; fn main() void {}",
+            "type Id[T] = T; type Bad = Id; fn main() void {}",
+            "type Id[T] = T; type Bad = Id[i32, u32]; fn main() void {}",
+        ] {
+            let program = parse_program(source);
+            let mut analyzer = Analyzer::new();
+            analyzer.set_library_char_ranges(vec![0..source.len()]);
+            let report = analyzer.analyze_program(&program);
+            assert!(
+                report.errors.iter().any(|error| error.code == "S14"
+                    && (error.message.contains("cyclic type alias")
+                        || error.message.contains("type argument"))),
+                "{source}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn alias_parameters_and_function_binders_shadow_global_aliases() {
+        let report = analyze(
+            "type T = u32; type Id[T] = T; fn identity[T](value: Id[T]) T { ret value; } fn main() void { var value: Id[Id[i32]] = identity[i32](7); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let mut analyzer = Analyzer::new();
+        analyzer
+            .type_aliases
+            .insert("T".to_string(), (vec![], TypeKind::Uint32));
+        let ty = TypeKind::Named {
+            name: "T".to_string(),
+            type_args: vec![],
+        };
+        assert!(
+            matches!(analyzer.resolve_type_with_parameters(&ty, &["T".to_string()], Span::new(0,0,0,0)), TypeKind::Named { name, .. } if name == "T")
+        );
+    }
+
+    #[test]
+    fn alias_width_growth_is_rejected_before_layout() {
+        let mut source = "type Double[T] = Pair[T, T]; type A0 = i32;".to_string();
+        for index in 1..=14 {
+            source.push_str(&format!("type A{index} = Double[A{}];", index - 1));
+        }
+        source.push_str("fn main() void {}");
+        let report = analyze(&source);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.code == "S14" && error.message.contains("expanded type nodes")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn declaration_alias_arity_is_checked_with_lexical_binders() {
+        for source in [
+            "type Id[T] = T; struct Holder { value: Id, } fn main() void {}",
+            "type Id[T] = T; enum Choice { One(Id), } fn main() void {}",
+            "type Id[T] = T; trait Choice { fn take(value: Id) void; } fn main() void {}",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| error.code == "S14"
+                    && error.message.contains("expects 1 type argument")),
+                "{source}: {:?}",
+                report.errors
+            );
+        }
+        let report = analyze(
+            "type T = fn() void; type U = &i32; struct Holder[T] { value: T, } enum Choice[T] { One(T), } trait Take[T] { fn take[U](value: T, other: U) T; } fn identity[T](value: T) T { ret value; } fn main() void { identity[i32](1); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
     }
 
     #[test]

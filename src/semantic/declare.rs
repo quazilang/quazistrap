@@ -666,6 +666,10 @@ impl Analyzer {
                             continue;
                         }
                         let mangled = format!("{}.{}", type_name, name);
+                        self.impl_generic_params.insert(
+                            mangled.clone(),
+                            super::impl_generic_parameters(&for_ty.node),
+                        );
                         if body.is_some() {
                             self.source_function_symbols.insert(mangled.clone());
                         }

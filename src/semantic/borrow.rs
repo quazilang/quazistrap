@@ -1106,11 +1106,9 @@ impl Analyzer {
             let element_type = type_args.get(contract.element_param_index).cloned();
             let mangled_name =
                 crate::semantic::typecheck::mangle_monomorphized(&release, &type_args);
-            if !self
-                .monomorphizations
-                .iter()
-                .any(|mono| mono.mangled_name == mangled_name)
-            {
+            let generic_params = self.generic_params_for_function(&release);
+            self.record_specialization_layout(&release, &generic_params, &type_args);
+            if !self.has_monomorphization(&release, &type_args, &mangled_name) {
                 self.monomorphizations.push(MonomorphizationInfo {
                     fn_name: release,
                     type_args,

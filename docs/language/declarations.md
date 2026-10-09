@@ -48,6 +48,13 @@ implicitly unsafe.
 
 ### Entry points
 
+Explicit generic function calls must supply the declaration's exact number of
+type arguments; a wrong explicit count is `S08`. Specialization types currently
+have compiler limits of 64 constructor levels and 4,096 type nodes across their
+arguments. Expanding recursion or colliding emitted specialization names is
+rejected with `S14`, rather than silently selecting another representation.
+See [generic-call diagnostics](../changes/2026-10-09-ownership-specialization-graph.md).
+
 ```quazi
 fn main() i32 { ret 0; }
 fn main(args: Array[str]) i32 { ret args.len() as i32; }
@@ -178,6 +185,17 @@ callback types:
 ```quazi
 @repr(C) type CCallback = fn(i32, i32) i32;
 ```
+
+Generic aliases require exactly their declared number of type arguments.
+Alias parameters are lexical: `type Id[T] = T` uses its parameter even if a
+global alias named `T` exists. Nested uses such as `Id[Id[i32]]` are valid.
+Recursive aliases, including cycles through pointers, are rejected with `S14`,
+even when unused. Use a named struct or enum for recursive data.
+
+Expansion is bounded by 64 type-constructor levels and 4,096 expanded nodes,
+with separate limits for alias-chain depth, resolution work, and type-name
+storage. Exceeding a bound produces a diagnostic; the compiler never silently
+truncates the type. See [alias-resolution limits](../internals/type-alias-resolution.md).
 
 ## Derive
 

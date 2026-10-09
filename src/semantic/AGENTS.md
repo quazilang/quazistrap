@@ -51,6 +51,36 @@ After all semantic passes, generic template call edges are instantiated for
 each concrete caller specialization. The closure must add both the concrete
 callee monomorphization and its layout record before bytecode codegen.
 
+## Ownership call evidence
+
+`ownership.rs` records source call sites separately from the existing lexical
+call shortcut. The concrete graph starts from non-generic declarations and
+substitutes recorded targets under each concrete caller. Never seed it from
+symbolic monomorphization names: bound parameters can shadow global types.
+Identity is qualified callable plus tagged alias-resolved type structure;
+capabilities are recomputed after substitution. Enclosing method generics are
+recorded by the declare pass, not inferred from a dotted module name.
+
+Unsafe/intrinsic/variadic, unavailable, opaque, and unresolved boundaries reject
+source closure backward through recursion. This is not a CFG/place/provenance
+proof, does not alter lexical loan eligibility, and is never a QZI certificate.
+Source-site recording uses an ordered span index; distinct calls remain distinct.
+The graph has its own callable budget. Shared specialization depth/width/count
+checks and emitted-name collisions produce S14 instead of truncation or an
+unchecked expansion. Symbolic helper chunks remain in the emission namespace.
+All new graph work must poll cooperative cancellation.
+
+## Transparent alias resolution
+
+Use the shared `type_resolution` engine. Validate target-active declarations
+before serialization and ownership consumers, including unused aliases.
+`resolve_type_with_parameters` protects explicit declaration binders; the
+current source binder stack must cover signatures as well as bodies. Deferred
+resolver failures recover as `Error` and must be flushed into mandatory S14
+errors before publishing a report. Clear the sink between analyses. Dependency
+ranges suppress warnings, never these errors. Do not eagerly duplicate an alias
+body before enforcing expansion bounds.
+
 ## Warning Suppression
 
 `@ignore` / `@ignore(unused_vars)` / `@ignore(dead_code)` suppress W01/W02/W03/W07.
