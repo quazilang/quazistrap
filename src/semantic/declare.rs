@@ -510,6 +510,7 @@ impl Analyzer {
             }
             ItemKind::Enum {
                 name,
+                generic_params,
                 variants,
                 attributes,
                 public,
@@ -531,7 +532,7 @@ impl Analyzer {
                         attributes: extract_attribute_names(attributes),
                         public: *public,
                         unsafe_fn: false,
-                        generic_params: vec![],
+                        generic_params: generic_params.clone(),
                     },
                 );
                 self.register_enum(name, variants, item.span);

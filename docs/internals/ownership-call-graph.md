@@ -87,3 +87,20 @@ receivers, recursive rejection, unknown calls, cancellation, generic shadowing,
 module/struct name collisions, and depth/width/count exhaustion. Existing
 semantic, codegen, documentation-fixture, and native collection regressions
 remain required when this graph changes.
+
+## Concrete names and lexical binders
+
+A concrete source argument may name a global type using the same spelling as a
+callee's generic parameter. Graph concreteness follows the source substitution
+context and resolved declaration, rather than rejecting the spelling alone.
+The graph is constructed before emission dependency closure; its concrete
+identities combine with binding context retained at specialization registration.
+This includes injected cleanup/intrinsic roots; symbolic registrations cannot
+be reinterpreted as concrete aliases after their caller scopes end.
+
+Proven concrete mono arguments are alias-normalized before building lowering
+substitutions, retaining their registered emitted names. An actual alias `T`
+resolving to `[i32; 3]` must not become the symbolic identity substitution
+`T -> T`, which would select an incorrect physical representation. Unproven
+symbolic helper arguments are retained. Transitive specializations use resolved
+concrete arguments. None of this certifies ownership effects or relaxes loans.

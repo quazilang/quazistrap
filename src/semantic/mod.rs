@@ -59,6 +59,8 @@ pub struct Analyzer {
     pub(super) finished_scopes: Vec<Vec<(String, Symbol)>>,
     pub(super) errors: Vec<SemanticError>,
     alias_resolution_errors: std::cell::RefCell<std::collections::BTreeMap<String, Span>>,
+    symbolic_specialization_names: HashSet<String>,
+    concrete_specialization_ids: BTreeSet<OwnershipCallableId>,
     pub(super) warnings: Vec<SemanticWarning>,
     pub(super) suggestions: Vec<SemanticSuggestion>,
     pub(super) used_import_paths: BTreeSet<String>,
@@ -850,6 +852,8 @@ impl Analyzer {
             finished_scopes: Vec::new(),
             errors: Vec::new(),
             alias_resolution_errors: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            symbolic_specialization_names: HashSet::new(),
+            concrete_specialization_ids: BTreeSet::new(),
             warnings: Vec::new(),
             suggestions: Vec::new(),
             used_import_paths: BTreeSet::new(),
@@ -1033,11 +1037,11 @@ impl Analyzer {
             .map(|(name, params)| {
                 (
                     name.clone(),
-                    params
-                        .iter()
-                        .filter(|param| !self.is_declared_type_name(param))
-                        .cloned()
-                        .collect(),
+                    self.impl_parameters_for_target(
+                        name.rsplit_once('.')
+                            .map_or(name.as_str(), |(target, _)| target),
+                        params,
+                    ),
                 )
             })
             .collect();
@@ -1091,13 +1095,55 @@ impl Analyzer {
         checkpoint()?;
         self.run_borrow_check_pass(program);
 
+        let mut callable_ownership_summaries = self
+            .ownership_signature_index
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        callable_ownership_summaries.sort_by(|left, right| left.callable.cmp(&right.callable));
+        let callable_ownership_body_effects =
+            self.derive_callable_ownership_body_effects(&callable_ownership_summaries);
+        let ownership_call_graph =
+            self.build_ownership_call_graph(&callable_ownership_summaries, &mut checkpoint)?;
+        // Source discovery retains binding context that symbolic mono spellings
+        // lose. Its concrete identities may disambiguate emission dependencies,
+        // while injected cleanup/intrinsic mono roots remain available too.
+        let mut concrete_specializations = ownership_call_graph
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+
+        concrete_specializations.extend(self.concrete_specialization_ids.iter().cloned());
+        // Preserve emitted names, but concrete substitutions must contain their
+        // resolved types. T -> alias T is concrete here, whereas an unproven
+        // helper's T -> T still denotes its lexical template atom.
+        let normalized_arguments = self
+            .monomorphizations
+            .iter()
+            .map(|mono| {
+                concrete_specializations
+                    .contains(&self.ownership_callable_id(&mono.fn_name, &mono.type_args))
+                    .then(|| {
+                        mono.type_args
+                            .iter()
+                            .map(|ty| self.resolve_type_aliases(ty))
+                            .collect::<Vec<_>>()
+                    })
+            })
+            .collect::<Vec<_>>();
+        for (mono, normalized) in self.monomorphizations.iter_mut().zip(normalized_arguments) {
+            if let Some(arguments) = normalized {
+                mono.type_args = arguments;
+            }
+        }
+
         // Generic method bodies are checked once against their declared type
         // parameters. Close that template call graph over every concrete call
         // site before handing the report to code generation, otherwise a
         // specialization such as `Array.index<str>` can call a missing
         // `Array.get<str>` chunk.
         checkpoint()?;
-        self.close_monomorphization_dependencies(&mut checkpoint)?;
+        self.close_monomorphization_dependencies(&concrete_specializations, &mut checkpoint)?;
 
         // A successful analysis must leave no representation-less inference
         // sentinels for code generation. Error recovery may still use them
@@ -1120,16 +1166,6 @@ impl Analyzer {
 
         self.flush_alias_resolution_errors();
         let symbol_table = self.build_symbol_table();
-        let mut callable_ownership_summaries = self
-            .ownership_signature_index
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        callable_ownership_summaries.sort_by(|left, right| left.callable.cmp(&right.callable));
-        let callable_ownership_body_effects =
-            self.derive_callable_ownership_body_effects(&callable_ownership_summaries);
-        let ownership_call_graph =
-            self.build_ownership_call_graph(&callable_ownership_summaries, &mut checkpoint)?;
         let used_imports_vec: Vec<String> = self.used_import_paths.iter().cloned().collect();
         let used_imports_map = self.build_import_usage_map(&symbol_table, true);
         let unused_imports_vec: Vec<String> = self.unused_import_paths.iter().cloned().collect();
@@ -1360,6 +1396,8 @@ impl Analyzer {
 
         self.errors.clear();
         self.alias_resolution_errors.get_mut().clear();
+        self.symbolic_specialization_names.clear();
+        self.concrete_specialization_ids.clear();
         self.warnings.clear();
         self.suggestions.clear();
         self.used_import_paths.clear();
@@ -1549,6 +1587,7 @@ impl Analyzer {
 
     fn close_monomorphization_dependencies(
         &mut self,
+        concrete_specializations: &BTreeSet<OwnershipCallableId>,
         checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
     ) -> Result<(), crate::cancel::Cancelled> {
         let template_monos: HashMap<String, MonomorphizationInfo> = self
@@ -1562,23 +1601,33 @@ impl Analyzer {
 
         while let Some(source) = pending.pop() {
             checkpoint()?;
+            if self
+                .symbolic_specialization_names
+                .contains(&source.mangled_name)
+                && !concrete_specializations
+                    .contains(&self.ownership_callable_id(&source.fn_name, &source.type_args))
+            {
+                continue;
+            }
             let source_span = self
                 .resolve_symbol(&source.fn_name)
                 .map_or(Span::new(0, 0, 0, 0), |symbol| symbol.span);
-            if !self.validate_specialization_identity(
-                &source.fn_name,
-                &source.type_args,
-                source_span,
-            ) {
-                continue;
-            }
             let source_params = self.generic_params_for_function(&source.fn_name);
             if source_params.len() != source.type_args.len()
                 || source
                     .type_args
                     .iter()
                     .any(|ty| type_mentions_params(ty, &source_params))
+                    && !concrete_specializations
+                        .contains(&self.ownership_callable_id(&source.fn_name, &source.type_args))
             {
+                continue;
+            }
+            if !self.validate_specialization_identity(
+                &source.fn_name,
+                &source.type_args,
+                source_span,
+            ) {
                 continue;
             }
             let substitution: HashMap<String, TypeKind> = source_params
@@ -1653,6 +1702,9 @@ impl Analyzer {
                     || type_args
                         .iter()
                         .any(|ty| type_mentions_params(ty, &target_params))
+                        && !type_args
+                            .iter()
+                            .all(|ty| self.ownership_type_is_concrete(ty))
                 {
                     continue;
                 }
@@ -1695,11 +1747,40 @@ impl Analyzer {
         params
     }
 
-    fn resolved_impl_generic_parameters(&self, ty: &TypeKind) -> Vec<String> {
-        impl_generic_parameters(ty)
-            .into_iter()
-            .filter(|name| !self.is_declared_type_name(name))
+    fn declared_type_parameters(&self, target: &str) -> Option<&Vec<String>> {
+        let leaf = target.rsplit('.').next().unwrap_or(target);
+        self.struct_generic_params
+            .get(target)
+            .or_else(|| self.struct_generic_params.get(leaf))
+            .or_else(|| {
+                self.scopes
+                    .first()?
+                    .get(target)
+                    .or_else(|| self.scopes.first()?.get(leaf))
+                    .filter(|symbol| symbol.kind == SymbolKind::TypeName)
+                    .map(|symbol| &symbol.generic_params)
+            })
+    }
+
+    fn impl_parameters_for_target(&self, target: &str, parameters: &[String]) -> Vec<String> {
+        let declared = self.declared_type_parameters(target);
+        parameters
+            .iter()
+            .filter(|name| {
+                !name.contains('.')
+                    && (declared.is_some_and(|params| params.contains(name))
+                        || !self.is_declared_type_name(name))
+            })
+            .cloned()
             .collect()
+    }
+
+    fn resolved_impl_generic_parameters(&self, ty: &TypeKind) -> Vec<String> {
+        let target = match ty {
+            TypeKind::Named { name, .. } => name.as_str(),
+            _ => return Vec::new(),
+        };
+        self.impl_parameters_for_target(target, &impl_generic_parameters(ty))
     }
 
     fn record_specialization_layout(
@@ -2955,6 +3036,49 @@ fn take(value: Buffer[Token]) void {}
                 && edge.from == "take"
                 && edge.to.contains("Buffer.free")
                 && edge.to.contains("Token")
+        }));
+    }
+
+    #[test]
+    fn implicit_cleanup_keeps_same_named_concrete_binder_provenance() {
+        let report = analyze(
+            r#"
+struct T { value: i32 }
+impl T { fn free(self: T) void {} }
+
+fn release_for[T](count: usize) void {}
+
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[T] { storage: *u8, count: usize }
+impl Buffer[T] {
+    fn free(self: Buffer[T]) void { release_for[T](self.count); }
+}
+
+fn take(value: Buffer[T]) void {}
+"#,
+        );
+        assert!(
+            report.errors.is_empty(),
+            "semantic errors: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .monomorphizations
+                .iter()
+                .any(|mono| { mono.fn_name == "Buffer.free" && mono.mangled_name.contains("T") })
+        );
+        assert!(
+            report
+                .monomorphizations
+                .iter()
+                .any(|mono| { mono.fn_name == "release_for" && mono.mangled_name.contains("T") })
+        );
+        assert!(report.dependency_graph.edges.iter().any(|edge| {
+            edge.kind == DependencyKind::Call
+                && edge.from == "take"
+                && edge.to.contains("Buffer.free")
+                && edge.to.contains("T")
         }));
     }
 

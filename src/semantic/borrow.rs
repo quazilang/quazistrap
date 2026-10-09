@@ -278,15 +278,25 @@ impl Analyzer {
                             .map(|module| format!("{module}.{name}"))
                             .unwrap_or_else(|| name.clone()),
                     );
+                    let callable = self
+                        .current_function
+                        .last()
+                        .expect("pushed callable")
+                        .clone();
+                    self.current_generic_params
+                        .push(self.generic_params_for_function(&callable));
                     let mut env = MoveEnv::new();
                     for p in params {
                         self.bc_record_contiguous_destructor_root(&p.ty.node);
                         env.declare(p.name.clone(), Some(p.ty.node.clone()));
                     }
                     self.bc_block(body, &mut env);
+                    self.current_generic_params.pop();
                     let _ = self.current_function.pop();
                 }
-                ItemKind::Impl { for_ty, methods, .. } => {
+                ItemKind::Impl {
+                    for_ty, methods, ..
+                } => {
                     let type_name = crate::semantic::declare::type_kind_base_name(&for_ty.node);
                     for m in methods {
                         if let ItemKind::Fn {
@@ -297,6 +307,13 @@ impl Analyzer {
                         } = &m.node
                         {
                             self.current_function.push(format!("{type_name}.{name}"));
+                            let callable = self
+                                .current_function
+                                .last()
+                                .expect("pushed callable")
+                                .clone();
+                            self.current_generic_params
+                                .push(self.generic_params_for_function(&callable));
                             let has_consuming_receiver = params.first().is_some_and(|param| {
                                 param.name == "self"
                                     && !matches!(
@@ -318,6 +335,7 @@ impl Analyzer {
                                 env.declare(p.name.clone(), Some(p.ty.node.clone()));
                             }
                             self.bc_block(body, &mut env);
+                            self.current_generic_params.pop();
                             let _ = self.current_function.pop();
                         }
                     }
@@ -508,7 +526,8 @@ impl Analyzer {
             | TypeKind::CFn { .. }
             | TypeKind::Ref { .. } => false,
             TypeKind::Named { name, type_args } if type_args.is_empty() => {
-                self.struct_defs.contains_key(name) || self.enums.contains_key(name)
+                self.is_declared_type_name(name)
+                    && (self.struct_defs.contains_key(name) || self.enums.contains_key(name))
             }
             // All other types (structs, enums, arrays, slices, dyn Trait, etc.) are move types.
             _ => true,

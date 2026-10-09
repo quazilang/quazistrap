@@ -162,6 +162,14 @@ impl Rectangle {
 
 Static methods (without `self`) are called as `Type.method(...)`.
 
+Generic impl targets introduce implicit local binders. A bare name that repeats
+a formal parameter of the target declaration is a binder, even if a global
+alias or type has that name. For `struct Holder[T]`, `impl Holder[T]` is generic;
+use `impl Holder[i32]` or a differently named concrete alias for a fixed target.
+Undeclared bare target-argument names may rename binders, such as `impl Holder[U]`.
+A declared concrete name that does not repeat a target formal parameter stays
+concrete, and qualified names do not introduce binders.
+
 ### Trait implementations
 
 ```quazi

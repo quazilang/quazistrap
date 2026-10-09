@@ -9174,8 +9174,8 @@ fn main() void { outer[Word](7); }
 "#,
         );
         assert!(
-            chunks.iter().any(|chunk| chunk.name == "inner<Word>"),
-            "inner alias specialization was not emitted"
+            chunks.iter().any(|chunk| chunk.name == "inner<u32>"),
+            "transitive specialization must use the resolved concrete alias type"
         );
     }
 

@@ -93,6 +93,19 @@ impl Analyzer {
         // They share the emitted namespace, so collisions must be diagnosed
         // there too until that template-emission path is removed coherently.
         let emitted_name = typecheck::mangle_monomorphized(callable, arguments);
+        let binders = self
+            .current_generic_params
+            .iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        let symbolic = arguments
+            .iter()
+            .any(|ty| type_mentions_params(ty, &binders));
+        if symbolic {
+            self.symbolic_specialization_names
+                .insert(emitted_name.clone());
+        }
         let identity = self.ownership_callable_id(callable, &resolved);
         if let Some(previous) = self.specialization_identities.get(&emitted_name) {
             if previous != &identity {
@@ -111,7 +124,14 @@ impl Analyzer {
                 return false;
             }
             self.specialization_identities
-                .insert(emitted_name, identity);
+                .insert(emitted_name, identity.clone());
+        }
+        if !symbolic
+            && resolved
+                .iter()
+                .all(|ty| self.ownership_type_is_concrete(ty))
+        {
+            self.concrete_specialization_ids.insert(identity);
         }
         true
     }
@@ -164,9 +184,10 @@ impl Analyzer {
         let generic_params = self.generic_params_for_function(&template.callable);
         if !specialization_types_are_bounded(args)
             || generic_params.len() != args.len()
-            || args.iter().any(|ty| {
-                type_mentions_params(ty, &generic_params) || !self.ownership_type_is_concrete(ty)
-            })
+            // These arguments came from concrete source sites, not symbolic
+            // mono roots. A global type may have the same spelling as the
+            // callee's binder without being that binder.
+            || args.iter().any(|ty| !self.ownership_type_is_concrete(ty))
         {
             return None;
         }
@@ -231,13 +252,13 @@ impl Analyzer {
         })
     }
 
-    fn ownership_type_is_concrete(&self, ty: &TypeKind) -> bool {
+    pub(super) fn ownership_type_is_concrete(&self, ty: &TypeKind) -> bool {
         match ty {
             TypeKind::Any | TypeKind::Error | TypeKind::FlexibleArray { .. } => false,
             TypeKind::Named { name, type_args } => {
                 self.resolve_symbol(name)
                     .is_some_and(|symbol| symbol.kind == SymbolKind::TypeName)
-                    && self.struct_generic_params.get(name).map_or(0, Vec::len) == type_args.len()
+                    && self.declared_type_parameters(name).map_or(0, Vec::len) == type_args.len()
                     && type_args
                         .iter()
                         .all(|arg| self.ownership_type_is_concrete(&arg.node))
@@ -998,6 +1019,139 @@ fn main() void { caller[i32](); }
                 .ownership_call_graph
                 .iter()
                 .any(|node| node.id == id("leaf", &["U"]))
+        );
+    }
+
+    #[test]
+    fn ownership_graph_keeps_concrete_types_named_like_callable_binders() {
+        let source = r#"
+struct T { value: i32 }
+fn identity[T](value: T) T { ret value; }
+fn leaf[U](value: U) U { ret value; }
+fn caller[T](value: T) T { ret leaf[T](value); }
+fn main() void {
+    identity[T](T { value: 1 });
+    caller[T](T { value: 2 });
+}
+"#;
+        let report = analyze(source);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        for name in ["identity", "caller", "leaf"] {
+            let concrete = node(&report, name, &["T"]);
+            assert_eq!(
+                concrete.signature.parameters,
+                vec![OwnershipCapability::Move]
+            );
+            assert_eq!(
+                concrete.signature.result,
+                OwnershipResult::Value(OwnershipCapability::Move)
+            );
+            assert!(concrete.source_calls_closed, "{name}: {concrete:?}");
+        }
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        crate::bytecode::codegen::Codegen::new(&report)
+            .compile_program(&program, &[])
+            .expect("globally declared concrete T must lower despite a same-named callable binder");
+    }
+
+    #[test]
+    fn concrete_same_named_alias_arguments_are_resolved_before_lowering() {
+        let source = "type T = [i32; 3]; fn identity[T](value: T) T { ret value; } fn main() i32 { var result = identity[T]([11, 22, 33]); ret result[2] - 33; }";
+        let report = analyze(source);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let mono = report
+            .monomorphizations
+            .iter()
+            .find(|mono| mono.mangled_name == "identity<T>")
+            .unwrap();
+        assert!(matches!(
+            mono.type_args.as_slice(),
+            [TypeKind::Array { len: 3, .. }]
+        ));
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        crate::bytecode::codegen::Codegen::new(&report)
+            .compile_program(&program, &[])
+            .unwrap();
+    }
+
+    #[test]
+    fn impl_formal_binders_shadow_global_aliases() {
+        let source = "type T = [i32; 3]; struct Holder[T] { value: T, } impl Holder[T] { fn forward(self: &Holder[T], value: T) T { ret value; } } fn main() i32 { var held: Holder[i32] = Holder { value: 1 }; ret held.forward(7) - 7; }";
+        let report = analyze(source);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(
+            report.impl_generic_params.get("Holder.forward"),
+            Some(&vec!["T".to_string()])
+        );
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        crate::bytecode::codegen::Codegen::new(&report)
+            .compile_program(&program, &[])
+            .unwrap();
+    }
+
+    #[test]
+    fn symbolic_helpers_keep_their_registration_binder_context() {
+        let report = analyze(
+            "type T = [i32; 3]; fn leaf[U]() void {} fn caller[T]() void { leaf[T](); } fn main() void { caller[i32](); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(
+            report
+                .monomorphizations
+                .iter()
+                .any(|mono| mono.mangled_name == "leaf<i32>")
+        );
+        assert!(
+            !report
+                .ownership_call_graph
+                .iter()
+                .any(|node| node.id == id("leaf", &["[i32; 3]"]))
+        );
+    }
+
+    #[test]
+    fn enum_formal_parameters_support_concrete_graph_signatures() {
+        let report = analyze(
+            "enum Choice[T] { One(T), Empty, } fn take(value: Choice[i32]) void {} fn main() void { var choice: Choice[i32] = Choice.One(7); take(choice); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let concrete = node(&report, "take", &[]);
+        assert_eq!(
+            concrete.signature.parameters,
+            vec![OwnershipCapability::Move]
+        );
+    }
+
+    #[test]
+    fn generic_copy_templates_ignore_same_named_global_owners() {
+        let report = analyze(
+            "struct T { value: i32 } fn repeat[T](value: T) T { const again = value; ret value; } fn main() void { repeat[i32](7); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn analyzer_reuse_resets_specialization_binding_provenance() {
+        let mut analyzer = Analyzer::new();
+        let first = Parser::new(Lexer::new("type T = i32; fn leaf[U]() void {} fn caller[T]() void { leaf[T](); } fn main() void { caller[u32](); }").tokenize()).parse().unwrap();
+        let report = analyzer.analyze_program(&first);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(analyzer.symbolic_specialization_names.contains("leaf<T>"));
+        let second = Parser::new(Lexer::new("struct T { value: i32 } fn leaf[U](value: U) void {} fn main() void { leaf[T](T { value: 1 }); }").tokenize()).parse().unwrap();
+        let report = analyzer.analyze_program(&second);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(!analyzer.symbolic_specialization_names.contains("leaf<T>"));
+        assert!(
+            report
+                .ownership_call_graph
+                .iter()
+                .any(|record| record.id == id("leaf", &["T"]))
+        );
+        assert!(
+            !report
+                .ownership_call_graph
+                .iter()
+                .any(|record| record.id == id("leaf", &["u32"]))
         );
     }
 

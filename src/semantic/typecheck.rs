@@ -828,12 +828,12 @@ impl Analyzer {
                         "`any` cannot be used as an implementation target".to_string(),
                     );
                 }
-                if let Some(trait_ty) = trait_ty {
-                    self.validate_trait_impl_conformance(trait_ty, for_ty, methods, item.span);
-                }
                 let type_name = crate::semantic::declare::type_kind_base_name(&for_ty.node);
                 let impl_generic_params = self.resolved_impl_generic_parameters(&for_ty.node);
                 self.current_generic_params.push(impl_generic_params);
+                if let Some(trait_ty) = trait_ty {
+                    self.validate_trait_impl_conformance(trait_ty, for_ty, methods, item.span);
+                }
                 for method in methods {
                     if let ItemKind::Fn {
                         name,

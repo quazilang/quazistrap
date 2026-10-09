@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-10-09: Generic binding context](2026-10-09-generic-binding-context.md)
+
 - [2026-10-09: Checked transparent aliases](2026-10-09-type-alias-resolution.md)
 - [2026-10-09: Ownership specialization evidence and generic-call diagnostics](2026-10-09-ownership-specialization-graph.md)
 - [2026-09-17: QZI v10 ownership-artifact envelope](2026-09-17-qzi-v10-ownership-envelope.md)

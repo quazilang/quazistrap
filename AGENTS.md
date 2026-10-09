@@ -123,6 +123,13 @@ and dependency aliases. Check budgets before copying resolved trees; do not
 restore eager substitution or separate recursive alias walkers in lowering.
 Header generation validates target-active definitions before rendering typedefs.
 See [the alias-resolution contract](docs/internals/type-alias-resolution.md).
+Concrete source graph identities and specialization registration context
+disambiguate actual types that share a callee binder's spelling before emission
+dependency closure. Normalize proven concrete
+mono arguments before lowering substitutions, while retaining registered emitted
+names and symbolic/injected helper support. Implicit impl target binders include
+bare names that repeat target formal parameters, even with global aliases;
+qualified names and other declared concrete names stay concrete.
 
 ### Loader (`src/loader.rs`)
 

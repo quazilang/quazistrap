@@ -2,6 +2,41 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-09, generic binding context)
+
+Fixed same-name generic capture across graph construction, emission closure,
+borrow checking, and lowering. Source graph identities plus registration-time
+symbolic/concrete provenance keep actual global type names distinct from lexical
+binders, including implicit cleanup roots. Proven concrete mono arguments are
+alias-normalized while registered emitted names are preserved. Transitive new
+specializations use normalized types. Enum generic metadata is retained and
+used for nominal arity. Borrow checking has callable binder scopes; impl scopes
+begin before trait conformance. Symbolic helper emission remains necessary.
+
+The maintainer explicitly accepted the rule that target formal parameter names
+introduce local impl binders even when global aliases share the spelling.
+Concrete target aliases use another spelling. Existing concrete `Holder[Token]`
+and renamed/reordered binder regressions remain passing.
+
+Verification: full suite 698/698; build and clippy succeed with existing warnings
+using the pinned Rust/bfd setup.
+Eight new regressions cover concrete same-name source calls, array aliases,
+impl formals, symbolic helper origin, enum signatures, template copy ownership,
+implicit cleanup dependencies, and analyzer reuse. `/tmp/qz-shadowed-alias-review-gdehiq79`
+originally built but exited one without std; it now exits zero. Default-prelude
+fixture `/tmp/quazi-formal-prelude-s5_e5ur4` also builds/runs zero, emits QZI,
+and emits Windows COFF. Reviewers found and root reconciled the enum, borrow,
+and injected-cleanup context gaps.
+
+Next required work: maintainer selected D-013 option 1, `Display.to_string()`
+returns owned `String`. The decision page records this, but implementation and
+coordinated prelude/compiler/std/examples/QZI migration are still pending.
+Current primitive numeric to_string allocates raw 80-byte buffers via intrinsic
+IDs 15/16 and returns ownerless `str`; bool/text cases return borrowed data.
+Do not merely change return annotations: construct real owners, handle allocation
+failure, keep temporary ownership and exact destruction, and migrate consumers.
+The canonical std has unrelated CLI edits; preserve them. No website is wanted.
+
 ## Checkpoint (2026-10-09, checked transparent aliases)
 
 Verified current branch is `dev`; historical checkpoints below used `feat/test`.
