@@ -1,9 +1,11 @@
 # Compiler checkpoint resume
 
-Audience: the next assistant continuing the current `feat/test` worktree.
+Audience: the next assistant continuing the current `dev` worktree.
 
 ## Checkpoint (2026-10-09, checked transparent aliases)
 
+Verified current branch is `dev`; historical checkpoints below used `feat/test`.
+Local commits: `2bce4e5` (compiler graph/aliases) and `caa5c0f` (Graphify setup).
 User now explicitly authorized committing completed local changes. Preserve
 unrelated changes and keep the full workspace production-readiness goal active.
 The no-website clarification in `../RESUME.md` remains authoritative.
