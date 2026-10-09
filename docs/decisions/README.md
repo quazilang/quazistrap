@@ -103,7 +103,7 @@ Resolved 2026-09-01: [serialization uses static typed derives, not runtime refle
 
 ## D-013: formatting result ownership
 
-Open: [choose an owned result contract for dynamic formatting](formatting-ownership.md).
+Resolved 2026-10-09: [dynamic formatting returns owned String](formatting-ownership.md). Implementation and migration remain pending.
 
 ## D-014: whole-program ownership and escape discipline
 

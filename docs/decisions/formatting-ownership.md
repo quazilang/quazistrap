@@ -1,6 +1,23 @@
 # D-013: formatting result ownership
 
-Status: maintainer decision required.
+Status: resolved 2026-10-09 by the maintainer. Implementation and migration
+remain pending; the current allocation-backed `str` surface is not stabilized.
+
+## Selected contract
+
+`Display.to_string()` will return owned `String`. The maintainer explicitly
+accepted the source and ABI break described in option 1 below. Dynamic numeric,
+boolean, and text conversion results must use that same owned contract;
+borrowed `to_str()` views remain separate and cannot own hidden allocations.
+
+The migration must update prelude trait implementations, primitive semantic
+return types and lowering, standard-library callers, examples, documentation,
+and QZI compatibility checks together. Returned owners transfer rather than
+being freed locally. Temporary results need exact-once destruction after their
+last use; copying a borrowed view out of a temporary owner is not a workaround.
+
+Until this implementation and its verification land, do not describe the
+existing `to_string() -> str` behavior as the selected final contract.
 
 ## Evidence
 
@@ -33,11 +50,11 @@ for exactly the lifetime of the result. It must not be represented as borrowed
    QZI, and references. It is substantially larger than formatting and should
    not be introduced as a local workaround.
 
-## Decision requested
+## Maintainer choice
 
-Choose whether Quazi accepts the explicit breaking correction in option 1, or
-whether the formatting surface should be temporarily narrowed under option 2.
-Do not implement an ownerless allocation-backed `str` workaround.
+The maintainer selected option 1 on 2026-10-09. Options 2 and 3 remain recorded
+for the compatibility tradeoff; they are not implementation alternatives to
+silently substitute for the accepted owned result.
 
 ## Verification required after a decision
 
