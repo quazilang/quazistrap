@@ -13,3 +13,6 @@ target/*
 .idea/*
 .claude/*
 .cargo/*
+
+# Local Graphify index, caches, and reports.
+/graphify-out/

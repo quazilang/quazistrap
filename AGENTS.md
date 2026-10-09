@@ -441,3 +441,29 @@ Native FFI artifacts support target-specific Windows `.dll`, Linux `.so`, and
 `qz header` `.h` output. Shared libraries omit process startup and expose only
 explicit `@export` symbols through an external linker. `std.dylib` provides
 runtime DLL/SO loading; raw symbol casts remain unsafe.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Use `bash scripts/graphify.sh` in place of the bare `graphify` command below.
+The wrapper runs from the project root and sets `PYTHONHASHSEED=0` before
+Python starts: Graphify 0.9.66's automatic re-exec otherwise treats the Nix
+shell launcher as Python source and fails. It defaults AST extraction to four
+workers; `GRAPHIFY_MAX_WORKERS` can override this.
+Rebuild the local code index with
+`bash scripts/graphify.sh extract . --code-only --cargo`, then generate the
+interactive view with `bash scripts/graphify.sh cluster-only . --no-label`.
+`.graphifyignore` excludes build outputs and tool configuration; generated
+`graphify-out/` artifacts are local and ignored by Git. The local AST index
+covers supported languages (including Rust and C), not Quazilang `.qz` files
+or semantic documentation extraction.
+
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

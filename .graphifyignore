@@ -1,0 +1,25 @@
+# Build outputs and dependency copies (at any depth).
+target/
+build/
+debug/
+graphify-out/
+node_modules/
+.git/
+.codex/
+.agents/
+.claude/
+.idea/
+.cargo/
+__pycache__/
+
+# Generated native and bytecode artifacts.
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.exe
+*.pdb
+*.qzi
+*.qzc
+*.rs.bk
