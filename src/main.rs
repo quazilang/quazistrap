@@ -966,6 +966,11 @@ fn build_with_progress(
                     eprintln!("\x1b[31;1merror:\x1b[0m invalid cached QZI: {error}");
                     std::process::exit(1);
                 });
+                module.validate_current_ownership_abi().unwrap_or_else(|error| {
+                    prog.fail("incompatible");
+                    eprintln!("error: incompatible cached QZI: {error}");
+                    std::process::exit(1);
+                });
                 prog.done(&format!("hit · {} functions", module.chunks.len()));
                 if debug {
                     for chunk in &module.chunks {
@@ -1182,6 +1187,7 @@ fn build_with_progress(
     if !qzi_dependencies.is_empty() {
         prog.begin("qzi linking");
         let generated = bytecode::QziModule {
+            ownership_abi_version: bytecode::chunk::QZI_VERSION,
             metadata: qzi_metadata.clone().unwrap_or(bytecode::QziMetadata {
                 name: String::new(),
                 version: None,
@@ -1253,6 +1259,7 @@ fn build_with_progress(
             String::new()
         };
         let mut module = bytecode::QziModule {
+            ownership_abi_version: bytecode::chunk::QZI_VERSION,
             metadata,
             interface,
             call_relocations: Vec::new(),
@@ -1692,6 +1699,10 @@ fn main() {
                             qzi_file.display(),
                             e
                         );
+                        std::process::exit(1);
+                    });
+                    module.validate_current_ownership_abi().unwrap_or_else(|error| {
+                        eprintln!("error: incompatible QZI '{}': {error}", qzi_file.display());
                         std::process::exit(1);
                     });
                     qzi_modules.push(module);

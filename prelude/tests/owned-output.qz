@@ -1,0 +1,18 @@
+// Expected stdout: "literal=42\ndynamic=43\nwriter=44\n".
+import std.io;
+
+fn output(template: str, value: String) void {
+    io.println(template, value);
+}
+
+fn writer(template: str, value: String) void {
+    const stdout = io.stdout();
+    stdout.writelnf(template, value);
+}
+
+fn main() i32 {
+    io.println("literal={}", (42 as i32).to_string());
+    output("dynamic={}", (43 as i32).to_string());
+    writer("writer={}", (44 as i32).to_string());
+    ret 0;
+}

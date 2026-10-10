@@ -30,7 +30,8 @@ policy must handle `Native` conservatively.
 `File` owns one native file handle. Its destructor calls `free`, which closes
 the handle on lexical exits when the compiler can discover the destructor.
 Use explicit `close()` only when the resource must be released before the end
-of scope. A successful close invalidates the value; a later automatic cleanup
+of scope. `close()` takes an exclusive receiver (`&File!`), so its binding must
+be mutable; `free(self)` consumes the owner. A successful close invalidates the handle; a later automatic cleanup
 is a no-op. `close()` returns `Ok(false)` for an already-invalid handle. On
 Windows a valid native handle can have a negative `isize` bit pattern; only
 the exact `-1` bit pattern is invalid, and callers must not use a sign check

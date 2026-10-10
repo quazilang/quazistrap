@@ -95,14 +95,9 @@ fn basename_of(path: String) String {
     ret copy_range(text, start, length);
 }
 
-// Adopt the primitive formatter's owning allocation into lexical String
-// ownership so Whole Program Analysis can destroy it automatically.
+// Formatting produces a complete String owner and transfers it to the caller.
 fn owned_u64(value: u64) String {
-    const raw: str = value.to_string();
-    const length: usize = core.strlen(raw);
-    var result: String = String.new();
-    unsafe { result = String.from_raw(core.str_as_ptr(raw), length, 80); }
-    ret result;
+    ret value.to_string();
 }
 
 @cfg(target_os = "linux")
@@ -184,15 +179,14 @@ fn get_desktop() String {
 }
 
 fn normalized_terminal(value: String) String {
-    const terminal: str = value.as_str();
-    if (terminal == "kgx") { ret String.from("GNOME Console"); }
-    if (terminal == "iTerm.app") { ret String.from("iTerm2"); }
-    if (terminal == "Terminal.app") { ret String.from("Apple Terminal"); }
-    if (terminal == "Hyper") { ret String.from("HyperTerm"); }
-    if (terminal == "rxvt-unicode-256color") { ret String.from("urxvt"); }
-    if (terminal == "xterm-256color") { ret String.from("xterm"); }
-    if (terminal == "xterm-kitty") { ret String.from("kitty"); }
-    if (terminal == "linux") { ret String.from("tty"); }
+    if (value.as_str() == "kgx") { ret String.from("GNOME Console"); }
+    if (value.as_str() == "iTerm.app") { ret String.from("iTerm2"); }
+    if (value.as_str() == "Terminal.app") { ret String.from("Apple Terminal"); }
+    if (value.as_str() == "Hyper") { ret String.from("HyperTerm"); }
+    if (value.as_str() == "rxvt-unicode-256color") { ret String.from("urxvt"); }
+    if (value.as_str() == "xterm-256color") { ret String.from("xterm"); }
+    if (value.as_str() == "xterm-kitty") { ret String.from("kitty"); }
+    if (value.as_str() == "linux") { ret String.from("tty"); }
     ret value;
 }
 

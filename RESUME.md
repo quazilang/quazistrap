@@ -2,6 +2,60 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-10, owned formatting migration)
+
+D-013 is implemented for primitive/text conversions: Display.to_string returns
+String; numeric to_str remains a borrowed static scratch view. Canonical core
+text helpers return owners; codec/os/net and local user-CLI immediate-copy
+callers were migrated. Formatting returns owned UTF-8, borrows String arguments,
+and handles literal/dynamic templates, specs, and escaped braces. Direct format
+packs its real variadic ABI; output wrappers borrow an owned formatter result.
+Module call annotations no longer lose their resolved target to a duplicate.
+
+Full-expression Named-owner scopes preallocate zero guarded slots, retain
+borrowed receivers/arguments, transfer at actual call/struct/enum commits, and
+clean prior untransferred arguments on question-mark failure. Root found/fixed
+an enum payload dangling owner (Ok(number.to_string())). Source free(self)
+hooks return void; supported hooks/structural cleanup release parent storage.
+Entry stubs heap-allocate the Array[str] header on both platforms. Index now
+has a shared receiver and generic indexing unwraps its declared capability.
+This prevents Array/String reads from destroying the receiver. File.close now
+uses &File!; old by-value close recursed via automatic File.free until stack
+exhaustion. Owned-args, File-read/repeated-close, and quazifetch native probes
+now succeed. Windows startup is emitted/checked, not executed on a host.
+
+Borrow checking tracks local String-view owner provenance and conservatively
+rejects local/temporary returns, retained temporary views, alias mutation,
+aggregate/closure escapes, and sibling moves. This is not D-014 effects or
+QZI certification. Unknown aggregate/function return captures remain unproved.
+QZI11 preserves original ownership ABI origin through namespaces/serialization;
+legacy owning/ambiguous contracts require source rebuilding. QZC9 invalidates
+old exact hits and partial chunks. Envelopes remain Unverified.
+
+Verification: full 728/728; final QZI focused suite 40/40 includes legacy
+intrinsic 14/24/realloc rejection. Build and clippy succeed with existing
+warnings. Native standalone fixtures live in prelude/tests/
+(owned-display/format/output/args/file). Formatting has 78 mmap/78 munmap;
+scoped number has 2/2. Injected mmap failure1/2 traps SIGILL. Independent
+no-prelude native counter proved 13 drops. Codec i64.to_json and quazifetch
+execute successfully. QZI roundtrip and Windows COFF pass for formatting/output.
+Args/File COFF also passes after the shared Index changes. Artifacts/logs are in
+/tmp/quazi-owned-*. Final reviewers hit usage limits; root reconciled their
+work and found enum/startup/index/File.close gaps through native verification.
+
+Whole canonical std qz test still fails at analysis: 39 HTTP ownership errors
+in net.qz plus 2 in user-owned unfinished CLI. Do not weaken ownership to hide
+these. The next task is coherent HTTP receiver/collection/view migration under
+D-014/D-015 support constraints, then full std tests and broader audits. General
+scalar-only/generic/enum shell destruction is still incomplete. The full goal
+remains active; no website is wanted, and no push/publish is authorized.
+
+Preserve std README.md, RESUME.md, src/mod.qz, untracked src/cli/ and tests/cli.qz.
+Local surgical CLI conversions to_str have backups in /tmp/quazi-format-std-
+backup-hby1er85. They must not be staged as whole user files. Clean tracked std
+migration files are core.qz/codec.qz/fs.qz/net.qz/os.qz. Local migration checkpoint commits are authorized; stage only the explicitly
+scoped compiler/std files. Inspect git log for their current hashes.
+
 ## Checkpoint (2026-10-09, generic binding context)
 
 Fixed same-name generic capture across graph construction, emission closure,

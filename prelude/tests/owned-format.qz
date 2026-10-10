@@ -1,0 +1,51 @@
+// Standalone native regression: qz run prelude/tests/owned-format.qz.
+import std.core;
+
+fn dynamic(template: str, value: String) String {
+    ret fmt.format(template, value);
+}
+
+fn check_format() i32 {
+    const literal = fmt.format("λ{}🙂", (42 as i32).to_string());
+    if (literal.as_str() != "λ42🙂") { ret 1; }
+    const runtime = dynamic("λ{}🙂", (43 as i32).to_string());
+    if (runtime.as_str() != "λ43🙂") { ret 2; }
+    const owned_template = "{}!".to_string();
+    const owned_argument = "yes".to_string();
+    const result = fmt.format(owned_template.as_str(), owned_argument);
+    if (result.as_str() != "yes!") { ret 3; }
+    if (owned_template.as_str() != "{}!" || owned_argument.as_str() != "yes") { ret 4; }
+    const zero = fmt.format("λ🙂");
+    if (zero.as_str() != "λ🙂") { ret 5; }
+    ret 0;
+}
+
+fn check_core() i32 {
+    const integer: String = core.int_to_str(-42);
+    const floating: String = core.float_to_str(1.5);
+    const joined: String = core.str_concat("λ", "🙂");
+    const ascii: String = core.str_from_byte(65 as u8);
+    const nul: String = core.str_from_byte(0 as u8);
+    if (integer.as_str() != "-42" || floating.as_str() != "1.5") { ret 6; }
+    if (joined.as_str() != "λ🙂" || ascii.as_str() != "A" || nul.len() != 0) { ret 7; }
+    ret 0;
+}
+
+fn check_specs() i32 {
+    const hexadecimal = fmt.format("{:X}", 255);
+    if (hexadecimal.as_str() != "FF") { ret 8; }
+    const escaped = fmt.format("{{{}}}", 7);
+    if (escaped.as_str() != "{7}") { ret 9; }
+    const reused = "retained".to_string();
+    const owned_copy = reused.to_string();
+    if (reused.as_str() != owned_copy.as_str()) { ret 10; }
+    ret 0;
+}
+
+fn main() i32 {
+    const result = check_format();
+    if (result != 0) { ret result; }
+    const core_result = check_core();
+    if (core_result != 0) { ret core_result; }
+    ret check_specs();
+}

@@ -108,7 +108,7 @@ impl Array[T] {
 }
 
 impl Index[usize, T] for Array[T] {
-    pub fn index(self: Array[T], i: usize) T {
+    pub fn index(self: &Array[T], i: usize) T {
         ret self.get(i);
     }
 }

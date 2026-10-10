@@ -425,8 +425,15 @@ impl StartStub {
             emit!(asm.mov(r12, qword_ptr(rsp)));
             emit!(asm.lea(r13, qword_ptr(rsp + 8i32))); // argv = &argv[0]
 
-            // Allocate the Array struct on the stack (24 bytes).
-            emit!(asm.sub(rsp, 24i32));
+            // Main receives an owned heap header, matching source Array.free.
+            emit!(asm.mov(rdi, 24i64));
+            call_ext!("malloc", RelocKind::Plt32);
+            let mut header_ready = asm.create_label();
+            emit!(asm.test(rax, rax));
+            emit!(asm.jnz(header_ready));
+            emit!(asm.ud2());
+            emit!(asm.set_label(&mut header_ready));
+            emit!(asm.mov(rbx, rax));
 
             // Allocate the pointer array: Array[str] stores one 8-byte pointer per element.
             emit!(asm.mov(rdi, r12));
@@ -439,11 +446,14 @@ impl StartStub {
             emit!(asm.jmp(args_malloc_done));
             emit!(asm.set_label(&mut args_malloc));
             call_ext!("malloc", RelocKind::Plt32);
+            emit!(asm.test(rax, rax));
+            emit!(asm.jnz(args_malloc_done));
+            emit!(asm.ud2());
             emit!(asm.set_label(&mut args_malloc_done));
 
-            emit!(asm.mov(qword_ptr(rsp), rax)); // ptr
-            emit!(asm.mov(qword_ptr(rsp + 8i32), r12)); // len
-            emit!(asm.mov(qword_ptr(rsp + 16i32), r12)); // cap
+            emit!(asm.mov(qword_ptr(rbx), rax)); // ptr
+            emit!(asm.mov(qword_ptr(rbx + 8i32), r12)); // len
+            emit!(asm.mov(qword_ptr(rbx + 16i32), r12)); // cap
 
             // Copy argv[i] pointers into the array.
             let mut args_loop = asm.create_label();
@@ -452,23 +462,18 @@ impl StartStub {
             emit!(asm.set_label(&mut args_loop));
             emit!(asm.cmp(r14, r12));
             emit!(asm.jae(args_loop_end));
-            emit!(asm.mov(r15, qword_ptr(rsp))); // array base
+            emit!(asm.mov(r15, qword_ptr(rbx))); // array base
             emit!(asm.mov(rdi, qword_ptr(r13 + r14 * 8))); // argv[i]
             emit!(asm.mov(qword_ptr(r15 + r14 * 8), rdi)); // array[i]
             emit!(asm.inc(r14));
             emit!(asm.jmp(args_loop));
             emit!(asm.set_label(&mut args_loop_end));
 
-            // Pass pointer to the stack-allocated Array struct in rdi.
-            emit!(asm.mov(rdi, rsp));
+            // Transfer the heap Array header to main.
+            emit!(asm.mov(rdi, rbx));
         }
 
         call_ext!("main", RelocKind::Plt32);
-
-        if main_takes_args {
-            // Pop the stack-allocated Array struct.
-            emit!(asm.add(rsp, 24i32));
-        }
 
         emit!(asm.mov(rdi, rax));
         emit!(asm.mov(rax, 60i64));
@@ -727,7 +732,14 @@ impl StartStub {
         if main_takes_args {
             emit!(asm.mov(r12, qword_ptr(rsp)));
             emit!(asm.lea(r13, qword_ptr(rsp + 8i32))); // argv = &argv[0]
-            emit!(asm.sub(rsp, 24i32));
+            emit!(asm.mov(rdi, 24i64));
+            call_ext!("malloc", RelocKind::Plt32);
+            let mut header_ready = asm.create_label();
+            emit!(asm.test(rax, rax));
+            emit!(asm.jnz(header_ready));
+            emit!(asm.ud2());
+            emit!(asm.set_label(&mut header_ready));
+            emit!(asm.mov(rbx, rax));
 
             emit!(asm.mov(rdi, r12));
             emit!(asm.shl(rdi, 3i32));
@@ -739,11 +751,14 @@ impl StartStub {
             emit!(asm.jmp(args_malloc_done));
             emit!(asm.set_label(&mut args_malloc));
             call_ext!("malloc", RelocKind::Plt32);
+            emit!(asm.test(rax, rax));
+            emit!(asm.jnz(args_malloc_done));
+            emit!(asm.ud2());
             emit!(asm.set_label(&mut args_malloc_done));
 
-            emit!(asm.mov(qword_ptr(rsp), rax));
-            emit!(asm.mov(qword_ptr(rsp + 8i32), r12));
-            emit!(asm.mov(qword_ptr(rsp + 16i32), r12));
+            emit!(asm.mov(qword_ptr(rbx), rax));
+            emit!(asm.mov(qword_ptr(rbx + 8i32), r12));
+            emit!(asm.mov(qword_ptr(rbx + 16i32), r12));
 
             let mut args_loop = asm.create_label();
             let mut args_loop_end = asm.create_label();
@@ -751,21 +766,17 @@ impl StartStub {
             emit!(asm.set_label(&mut args_loop));
             emit!(asm.cmp(r14, r12));
             emit!(asm.jae(args_loop_end));
-            emit!(asm.mov(r15, qword_ptr(rsp)));
+            emit!(asm.mov(r15, qword_ptr(rbx)));
             emit!(asm.mov(rdi, qword_ptr(r13 + r14 * 8)));
             emit!(asm.mov(qword_ptr(r15 + r14 * 8), rdi));
             emit!(asm.inc(r14));
             emit!(asm.jmp(args_loop));
             emit!(asm.set_label(&mut args_loop_end));
 
-            emit!(asm.mov(rdi, rsp));
+            emit!(asm.mov(rdi, rbx));
         }
 
         call_ext!("main", RelocKind::Plt32);
-
-        if main_takes_args {
-            emit!(asm.add(rsp, 24i32));
-        }
 
         emit!(asm.mov(rdi, rax));
         emit!(asm.mov(rax, 60i64));
@@ -1272,7 +1283,7 @@ impl StartStub {
             emit!(asm.set_label(&mut args_parsed));
 
             // Reserve Win64 shadow/stack-argument space, one scratch slot, and
-            // the 24-byte Array value. The Array must not overlap shadow space.
+            // padding outside shadow space; the owned Array header lives on the heap.
             emit!(asm.sub(rsp, 96i32));
 
             // Allocate the Array[str] pointer storage.
@@ -1339,10 +1350,21 @@ impl StartStub {
             emit!(asm.mov(rcx, r13));
             call_ext!("LocalFree", RelocKind::Plt32);
 
-            emit!(asm.mov(qword_ptr(rsp + 72i32), r14));
-            emit!(asm.mov(qword_ptr(rsp + 80i32), r12));
-            emit!(asm.mov(qword_ptr(rsp + 88i32), r12));
-            emit!(asm.lea(rcx, qword_ptr(rsp + 72i32)));
+            // Transfer an allocator-backed Array header to source main.
+            call_ext!("GetProcessHeap", RelocKind::Plt32);
+            emit!(asm.mov(rcx, rax));
+            emit!(asm.xor(edx, edx));
+            emit!(asm.mov(r8, 24i64));
+            call_ext!("HeapAlloc", RelocKind::Plt32);
+            let mut header_ready = asm.create_label();
+            emit!(asm.test(rax, rax));
+            emit!(asm.jnz(header_ready));
+            emit!(asm.ud2());
+            emit!(asm.set_label(&mut header_ready));
+            emit!(asm.mov(qword_ptr(rax), r14));
+            emit!(asm.mov(qword_ptr(rax + 8i32), r12));
+            emit!(asm.mov(qword_ptr(rax + 16i32), r12));
+            emit!(asm.mov(rcx, rax));
         }
 
         // call main
@@ -1647,10 +1669,21 @@ impl StartStub {
             emit!(asm.mov(rcx, r13));
             call_ext!("LocalFree", RelocKind::Plt32);
 
-            emit!(asm.mov(qword_ptr(rsp + 72i32), r14));
-            emit!(asm.mov(qword_ptr(rsp + 80i32), r12));
-            emit!(asm.mov(qword_ptr(rsp + 88i32), r12));
-            emit!(asm.lea(rcx, qword_ptr(rsp + 72i32)));
+            // Transfer an allocator-backed Array header to source main.
+            call_ext!("GetProcessHeap", RelocKind::Plt32);
+            emit!(asm.mov(rcx, rax));
+            emit!(asm.xor(edx, edx));
+            emit!(asm.mov(r8, 24i64));
+            call_ext!("HeapAlloc", RelocKind::Plt32);
+            let mut header_ready = asm.create_label();
+            emit!(asm.test(rax, rax));
+            emit!(asm.jnz(header_ready));
+            emit!(asm.ud2());
+            emit!(asm.set_label(&mut header_ready));
+            emit!(asm.mov(qword_ptr(rax), r14));
+            emit!(asm.mov(qword_ptr(rax + 8i32), r12));
+            emit!(asm.mov(qword_ptr(rax + 16i32), r12));
+            emit!(asm.mov(rcx, rax));
         }
 
         // call main
@@ -1719,6 +1752,23 @@ mod tests {
     use super::StartStub;
 
     #[test]
+    fn linux_argument_entry_owns_header_and_pointer_storage() {
+        for no_crash in [false, true] {
+            for main_takes_args in [false, true] {
+                let stub = StartStub::generate(0, no_crash, main_takes_args);
+                assert!(!stub.bytes.is_empty());
+                assert_eq!(
+                    stub.relocs
+                        .iter()
+                        .filter(|reloc| reloc.symbol == "malloc")
+                        .count(),
+                    if main_takes_args { 2 } else { 0 }
+                );
+            }
+        }
+    }
+
+    #[test]
     fn windows_argument_startup_uses_supported_win32_apis() {
         for no_crash in [false, true] {
             let stub = StartStub::generate_windows(0, no_crash, true);
@@ -1734,6 +1784,14 @@ mod tests {
             assert!(symbols.contains(&"LocalFree"));
             assert!(symbols.contains(&"GetProcessHeap"));
             assert!(symbols.contains(&"HeapAlloc"));
+            assert_eq!(
+                symbols
+                    .iter()
+                    .filter(|&&symbol| symbol == "HeapAlloc")
+                    .count(),
+                3,
+                "the owned Array header must use the same process allocator as pointer and UTF-8 storage"
+            );
             assert!(!symbols.contains(&"malloc"));
             assert!(!symbols.contains(&"__getmainargs"));
         }

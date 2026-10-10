@@ -1,11 +1,13 @@
 # D-013: formatting result ownership
 
-Status: resolved 2026-10-09 by the maintainer. Implementation and migration
-remain pending; the current allocation-backed `str` surface is not stabilized.
+Status: resolved 2026-10-09 by the maintainer. The primitive/text implementation
+and QZI v11 migration have a verified local checkpoint on 2026-10-10; whole
+stdlib stabilization remains incomplete. See the
+[implementation record](../changes/2026-10-10-owned-formatting.md).
 
 ## Selected contract
 
-`Display.to_string()` will return owned `String`. The maintainer explicitly
+`Display.to_string()` returns owned `String`. The maintainer explicitly
 accepted the source and ABI break described in option 1 below. Dynamic numeric,
 boolean, and text conversion results must use that same owned contract;
 borrowed `to_str()` views remain separate and cannot own hidden allocations.
@@ -16,17 +18,16 @@ and QZI compatibility checks together. Returned owners transfer rather than
 being freed locally. Temporary results need exact-once destruction after their
 last use; copying a borrowed view out of a temporary owner is not a workaround.
 
-Until this implementation and its verification land, do not describe the
-existing `to_string() -> str` behavior as the selected final contract.
+The old `to_string() -> str` behavior is replaced by the selected owned
+contract; see the [migration guide](../migrations/owned-formatting.md).
 
 ## Evidence
 
-`Display.to_string()` is declared as returning `str`, but primitive formatting
-lowers through allocation-backed runtime formatting. A borrowed `str` has no
-owner or destruction contract for that allocation. The current implementation
-can therefore either leak the formatting buffer or make a returned view dangle.
-The `Display` comments currently acknowledge that its ownership API is not
-stabilized; this is not a safe public contract.
+Before this migration, `Display.to_string()` returned `str`, while primitive formatting
+lowered through allocation-backed runtime formatting. A borrowed `str` has no
+owner or destruction contract for that allocation. That implementation
+could therefore either leak the formatting buffer or make a returned view dangle.
+This was not a safe public ownership contract.
 
 ## Required invariant
 

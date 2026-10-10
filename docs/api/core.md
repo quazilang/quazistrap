@@ -48,11 +48,15 @@ overlong encodings, surrogates, and incomplete sequences. `unsafe
 utf8_incomplete_tail(ptr, len)` reports continuation bytes needed for an
 otherwise valid trailing prefix; run full validation after completing the tail.
 
-## Unstable allocation-backed text results
+## Owned text results
 
-`str_concat`, `int_to_str`, `float_to_str`, and `str_from_byte` currently
-return allocation-backed `str` values. Their public ownership contract is not
-stable: callers cannot safely own or destroy such a result through `str`.
-Do not use them in new public APIs. The required correction is tracked in
-[D-013](../decisions/formatting-ownership.md); use `String`-returning APIs
-where available instead.
+`str_concat(a, b)`, `int_to_str(i64)`, `float_to_str(f64)`, and
+`str_from_byte(u8)` return owned `String` values. Return or move the result to
+transfer ownership; lexical cleanup releases it automatically. Borrow
+`.as_str()` only while its owner remains alive. Allocation failure terminates
+rather than returning invalid text; these convenience APIs are infallible.
+
+`str_from_byte` accepts ASCII only. Zero produces an empty string, preserving
+the former NUL-terminated behavior; bytes at or above 128 panic because a
+single such byte is not valid UTF-8. Use `bytes` for arbitrary byte data.
+See the [owned-formatting migration](../migrations/owned-formatting.md).

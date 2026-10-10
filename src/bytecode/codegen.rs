@@ -1944,6 +1944,15 @@ impl<'a> Codegen<'a> {
             &self.report.annotated_exprs,
             Rc::clone(&self.resolution_errors),
             self.callable_bound_names(name),
+            self.report
+                .symbol_table
+                .entries
+                .iter()
+                .find(|entry| entry.scope_depth == 0 && entry.name == "fmt.format")
+                .and_then(|entry| entry.symbol.ty.as_ref())
+                .map(|ty| self.resolve_type_for_layout(ty, &HashMap::new())),
+            &self.report.symbol_table,
+            &self.report.impl_generic_params,
         );
         // The function owns ordinary by-value parameters. A bare inherent
         // receiver is likewise owned, except in its `.free` destructor: that
@@ -1981,7 +1990,26 @@ impl<'a> Codegen<'a> {
                         .consuming_receiver_methods
                         .contains(declared_name);
                 let is_destructor = declared_name.ends_with(".free");
-                if p.name != "self" || (is_bare_self && !is_destructor) {
+                if is_bare_self && is_destructor {
+                    if let TypeKind::Named { name: owner, .. } = &param_ty
+                        && self.report.struct_defs.contains_key(owner)
+                        && !self.report.repr_c_structs.contains(owner)
+                    {
+                        // Source free bodies tear down resources; the compiler
+                        // retains the separate aggregate allocation as an owner.
+                        // A whole-receiver transfer deactivates this entry through
+                        // the ordinary ownership path, without recursive free.
+                        fc.drop_scopes
+                            .last_mut()
+                            .expect("parameter scope")
+                            .push(DropLocal {
+                                name: p.name.clone(),
+                                reg,
+                                action: DropAction::ReleaseStorage,
+                                active: true,
+                            });
+                    }
+                } else if p.name != "self" || is_bare_self {
                     fc.register_drop_local(&p.name, reg, Some(param_ty));
                 }
             }
@@ -2387,6 +2415,25 @@ struct FnCompiler<'a> {
     /// Expression annotations from semantic analysis (resolved function names, types, etc.)
     annotated_exprs: &'a [crate::semantic::ExprAnnotation],
     loop_stack: Vec<LoopFrame>,
+    expression_depth: usize,
+    expression_temporaries: Vec<ExpressionTemporary>,
+    format_result_type: Option<TypeKind>,
+    symbol_table: &'a crate::semantic::SymbolTable,
+    impl_generic_params: &'a HashMap<String, Vec<String>>,
+}
+
+/// One guarded owner in the current full expression. A local identifier only
+/// acquires this owner slot while it is an argument awaiting transfer.
+#[derive(Clone)]
+struct ExpressionTemporary {
+    span: (usize, usize),
+    slot: u8,
+    action: DropAction,
+    producer: bool,
+    consumed: bool,
+    produced: bool,
+    value_reg: Option<u8>,
+    synthetic_format: bool,
 }
 
 #[derive(Clone)]
@@ -2399,6 +2446,8 @@ struct DropLocal {
 
 #[derive(Clone)]
 enum DropAction {
+    /// Compiler-owned source aggregate storage, after source teardown.
+    ReleaseStorage,
     Call(String),
     Structural(Vec<StructuralFieldDrop>),
     /// A container declaration cannot make an element copyable. This sentinel
@@ -2536,6 +2585,9 @@ impl<'a> FnCompiler<'a> {
         annotated_exprs: &'a [crate::semantic::ExprAnnotation],
         resolution_errors: Rc<RefCell<Vec<String>>>,
         bound_names: HashSet<String>,
+        format_result_type: Option<TypeKind>,
+        symbol_table: &'a crate::semantic::SymbolTable,
+        impl_generic_params: &'a HashMap<String, Vec<String>>,
     ) -> Self {
         Self {
             chunk: Chunk::with_params(name, param_count),
@@ -2580,6 +2632,11 @@ impl<'a> FnCompiler<'a> {
             source_files,
             annotated_exprs,
             loop_stack: Vec::new(),
+            expression_depth: 0,
+            expression_temporaries: Vec::new(),
+            format_result_type,
+            symbol_table,
+            impl_generic_params,
         }
     }
 
@@ -4220,13 +4277,17 @@ impl<'a> FnCompiler<'a> {
 
     fn drop_action_for_type(&self, ty: &TypeKind) -> Option<DropAction> {
         let resolved = self.resolve_type(ty);
+        self.drop_action_for_resolved_type(&resolved)
+    }
+
+    fn drop_action_for_resolved_type(&self, resolved: &TypeKind) -> Option<DropAction> {
         if matches!(resolved, TypeKind::Fn { .. }) {
             return Some(DropAction::FreeClosureEnv);
         }
         let TypeKind::Named { name, type_args } = resolved else {
             return None;
         };
-        if let Some(action) = self.contiguous_element_drop_action(&name, &type_args) {
+        if let Some(action) = self.contiguous_element_drop_action(name, type_args) {
             return Some(action);
         }
         let base = format!("{}.free", name);
@@ -4474,6 +4535,13 @@ impl<'a> FnCompiler<'a> {
 
     fn emit_drop_action(&mut self, reg: u8, action: DropAction) {
         match action {
+            DropAction::ReleaseStorage => {
+                let argument = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Mov, argument, reg, 0));
+                let mut release = ri16(Opcode::Intrinsic, argument, 4);
+                release.flags = 1;
+                self.chunk.emit(release);
+            }
             DropAction::Call(drop_fn) => {
                 let dst = self.alloc_reg();
                 self.emit_call_by_name(&drop_fn, &[reg], dst);
@@ -4484,6 +4552,7 @@ impl<'a> FnCompiler<'a> {
                     self.chunk.emit(field_load(field_reg, reg, field.offset));
                     self.emit_drop_action(field_reg, *field.action);
                 }
+                self.emit_drop_action(reg, DropAction::ReleaseStorage);
             }
             DropAction::UnsupportedContiguousElement { container, element } => {
                 self.codegen_error.get_or_insert_with(|| {
@@ -4771,13 +4840,13 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
-    fn cleanup_discarded_fn_value(&mut self, expr: &Expr, reg: u8) {
-        if self
-            .type_of_span((expr.span.start, expr.span.end))
-            .is_some_and(|ty| matches!(self.resolve_type(&ty), TypeKind::Fn { .. }))
-            && !self.expr_is_local_value(expr)
+    fn cleanup_discarded_owned_value(&mut self, expr: &Expr, reg: u8) {
+        if !self.expr_is_local_value(expr)
+            && let Some(action) = self
+                .type_of_span((expr.span.start, expr.span.end))
+                .and_then(|ty| self.drop_action_for_type(&ty))
         {
-            self.emit_drop_action(reg, DropAction::FreeClosureEnv);
+            self.emit_drop_action(reg, action);
         }
     }
 
@@ -4787,7 +4856,264 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    fn expression_owner_sites(
+        &self,
+        expr: &Expr,
+        root: bool,
+        transfer: bool,
+        sites: &mut Vec<((usize, usize), DropAction, bool, bool)>,
+    ) {
+        let producer = matches!(
+            expr.node,
+            ExprKind::Call { .. }
+                | ExprKind::MethodCall { .. }
+                | ExprKind::StructInit { .. }
+                | ExprKind::Try { .. }
+        );
+        match &expr.node {
+            ExprKind::Group(inner)
+            | ExprKind::Unary { expr: inner, .. }
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::Try { expr: inner }
+            | ExprKind::IncDec { expr: inner, .. } => {
+                self.expression_owner_sites(inner, false, transfer, sites)
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.expression_owner_sites(left, false, false, sites);
+                self.expression_owner_sites(right, false, false, sites);
+            }
+            ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
+                self.expression_owner_sites(target, false, false, sites);
+                self.expression_owner_sites(value, false, true, sites);
+            }
+            ExprKind::Call {
+                callee,
+                args,
+                named_args,
+                ..
+            } => {
+                self.expression_owner_sites(callee, false, false, sites);
+                let target = self
+                    .resolved_fn_for_span(expr.span)
+                    .or_else(|| match &callee.node {
+                        ExprKind::Ident(name) => Some(name.clone()),
+                        _ => None,
+                    });
+                let consuming = target
+                    .as_ref()
+                    .is_none_or(|name| !self.str_variadic_fns.contains(name));
+                for child in args.iter().chain(named_args.iter().map(|(_, value)| value)) {
+                    self.expression_owner_sites(child, false, consuming, sites);
+                }
+            }
+            ExprKind::MethodCall {
+                object,
+                args,
+                named_args,
+                ..
+            } => {
+                let target = self.resolved_fn_for_span(expr.span);
+                let consuming_receiver = target
+                    .as_ref()
+                    .is_some_and(|name| self.has_consuming_receiver(name));
+                let consuming_arguments = target
+                    .as_ref()
+                    .is_none_or(|name| !self.str_variadic_fns.contains(name));
+                self.expression_owner_sites(object, false, consuming_receiver, sites);
+                for child in args.iter().chain(named_args.iter().map(|(_, value)| value)) {
+                    self.expression_owner_sites(child, false, consuming_arguments, sites);
+                }
+            }
+            ExprKind::Field { object, .. } => {
+                self.expression_owner_sites(object, false, false, sites)
+            }
+            ExprKind::StructInit { fields, .. } => {
+                for (_, child) in fields {
+                    self.expression_owner_sites(child, false, true, sites);
+                }
+            }
+            ExprKind::ArrayLit(values) => {
+                for child in values {
+                    self.expression_owner_sites(child, false, false, sites);
+                }
+            }
+            ExprKind::Index { object, indices } => {
+                self.expression_owner_sites(object, false, false, sites);
+                for child in indices {
+                    self.expression_owner_sites(child, false, false, sites);
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.expression_owner_sites(scrutinee, false, false, sites);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        self.expression_owner_sites(guard, false, false, sites);
+                    }
+                    self.expression_owner_sites(&arm.expr, false, transfer, sites);
+                }
+            }
+            // Fn environments retain their separate existing ownership path.
+            ExprKind::Closure { .. } | ExprKind::Ident(_) | ExprKind::Literal(_) => {}
+        }
+        let format_target = match &expr.node {
+            ExprKind::Call { callee, .. } => {
+                self.resolved_fn_for_span(expr.span)
+                    .or_else(|| match &callee.node {
+                        ExprKind::Ident(name) => Some(name.clone()),
+                        _ => None,
+                    })
+            }
+            ExprKind::MethodCall { object, method, .. } => {
+                self.resolved_fn_for_span(expr.span).or_else(|| {
+                    self.type_of_expr(object)
+                        .map(|ty| format!("{}.{}", type_kind_base_name(&ty), method))
+                })
+            }
+            _ => None,
+        };
+        if format_target
+            .as_ref()
+            .is_some_and(|name| self.str_variadic_fns.contains(name))
+            && let Some(ty) = &self.format_result_type
+            && let Some(action) = self.drop_action_for_resolved_type(ty)
+        {
+            sites.push(((expr.span.start, expr.span.end), action, true, true));
+        }
+        if !root
+            && (producer || (transfer && matches!(expr.node, ExprKind::Ident(_))))
+            && let Some(ty @ TypeKind::Named { .. }) = self.type_of_expr(expr)
+            && let Some(action) = self.drop_action_for_type(&ty)
+        {
+            sites.push(((expr.span.start, expr.span.end), action, producer, false));
+        }
+    }
+
+    fn begin_expression_temporaries(&mut self, expr: &Expr) {
+        let mut sites = Vec::new();
+        self.expression_owner_sites(expr, true, false, &mut sites);
+        let mut seen = HashSet::new();
+        for (span, action, producer, synthetic_format) in sites {
+            if !seen.insert((span, synthetic_format)) {
+                continue;
+            }
+            let slot = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, slot, 0));
+            self.expression_temporaries.push(ExpressionTemporary {
+                span,
+                slot,
+                action,
+                producer,
+                consumed: false,
+                produced: false,
+                value_reg: None,
+                synthetic_format,
+            });
+        }
+    }
+
+    fn injected_format_view(&mut self, span: Span, owner: u8) -> u8 {
+        let Some(ty) = self.format_result_type.clone() else {
+            return owner;
+        };
+        if self.drop_action_for_resolved_type(&ty).is_none() {
+            return owner;
+        }
+        let Some(temp) = self
+            .expression_temporaries
+            .iter_mut()
+            .find(|temp| temp.synthetic_format && temp.span == (span.start, span.end))
+        else {
+            self.codegen_error.get_or_insert_with(|| {
+                "injected owned formatter result has no full-expression owner slot".to_string()
+            });
+            return owner;
+        };
+        self.chunk.emit(rrr(Opcode::Mov, temp.slot, owner, 0));
+        temp.produced = true;
+        temp.value_reg = Some(owner);
+        let TypeKind::Named { name, .. } = ty else {
+            return owner;
+        };
+        let data = self.alloc_reg();
+        let offset = self.field_offset_by_name(&name, "data");
+        self.chunk.emit(field_load(data, owner, offset));
+        data
+    }
+
+    /// Clear any pending argument/receiver owner at the actual transfer point.
+    /// Runtime equality also handles groups and selected match-arm results.
+    fn transfer_expression_temporary(&mut self, owner: u8) {
+        let slots = self
+            .expression_temporaries
+            .iter_mut()
+            .filter_map(|temp| {
+                if !temp.produced {
+                    return None;
+                }
+                let direct = temp.value_reg == Some(owner);
+                if direct {
+                    temp.produced = false;
+                }
+                Some((temp.slot, direct))
+            })
+            .collect::<Vec<_>>();
+        for (slot, direct) in slots {
+            if direct {
+                self.chunk.emit(ri16(Opcode::MovI, slot, 0));
+            } else {
+                self.chunk.emit(rrr(Opcode::Cmp, 0, slot, owner));
+                let skip = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
+                self.chunk.emit(ri16(Opcode::MovI, slot, 0));
+                self.chunk.patch_jump(skip, self.chunk.len() as u16);
+            }
+        }
+    }
+
+    fn emit_expression_temporary_cleanup(&mut self, retained: Option<u8>) {
+        let temps = self
+            .expression_temporaries
+            .iter()
+            .filter(|temp| temp.produced)
+            .cloned()
+            .collect::<Vec<_>>();
+        if temps.is_empty() {
+            return;
+        }
+        let zero = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+        for temp in temps.into_iter().rev() {
+            self.chunk.emit(rrr(Opcode::Cmp, 0, temp.slot, zero));
+            let empty = self.chunk.emit(ri16(Opcode::Je, 0, 0));
+            let transferred = retained.map(|owner| {
+                self.chunk.emit(rrr(Opcode::Cmp, 0, temp.slot, owner));
+                self.chunk.emit(ri16(Opcode::Je, 0, 0))
+            });
+            let owner = self.alloc_reg();
+            self.chunk.emit(rrr(Opcode::Mov, owner, temp.slot, 0));
+            self.emit_drop_action(owner, temp.action);
+            // Runtime state changes only on this path; compiling an early
+            // return must not erase the success path's pending owners.
+            self.chunk.emit(ri16(Opcode::MovI, temp.slot, 0));
+            let end = self.chunk.len() as u16;
+            self.chunk.patch_jump(empty, end);
+            if let Some(jump) = transferred {
+                self.chunk.patch_jump(jump, end);
+            }
+        }
+    }
+
     fn mark_consumed_expr(&mut self, expr: &Expr) {
+        if let Some(temp) = self
+            .expression_temporaries
+            .iter_mut()
+            .find(|temp| !temp.synthetic_format && temp.span == (expr.span.start, expr.span.end))
+        {
+            temp.consumed = true;
+            if temp.produced {
+                self.chunk.emit(ri16(Opcode::MovI, temp.slot, 0));
+                temp.produced = false;
+            }
+        }
         match &expr.node {
             ExprKind::Ident(name) => self.deactivate_drop_local(name),
             ExprKind::Group(inner)
@@ -4798,11 +5124,13 @@ impl<'a> FnCompiler<'a> {
                     self.mark_consumed_expr(elem);
                 }
             }
-            ExprKind::StructInit { fields, .. } => {
-                for (_, value) in fields {
-                    self.mark_consumed_expr(value);
+            ExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    self.mark_consumed_expr(&arm.expr);
                 }
             }
+            // Constructor fields transfer only after all initializers succeed.
+            ExprKind::StructInit { .. } => {}
             _ => {}
         }
     }
@@ -4829,6 +5157,7 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn emit_all_cleanup(&mut self) {
+        self.emit_expression_temporary_cleanup(None);
         for depth in (0..self.drop_scopes.len()).rev() {
             let drops = self.drop_scopes[depth]
                 .iter()
@@ -4852,6 +5181,7 @@ impl<'a> FnCompiler<'a> {
     /// view of the cleanup action: mutating `DropLocal` would make a later
     /// return branch leak that field.
     fn emit_all_cleanup_except_structural_field(&mut self, local_name: &str, offset: u16) {
+        self.emit_expression_temporary_cleanup(None);
         for depth in (0..self.drop_scopes.len()).rev() {
             let drops = self.drop_scopes[depth]
                 .iter()
@@ -4881,8 +5211,7 @@ impl<'a> FnCompiler<'a> {
                             )
                         });
                     }
-                    (!remaining.is_empty())
-                        .then_some((local.reg, DropAction::Structural(remaining)))
+                    Some((local.reg, DropAction::Structural(remaining)))
                 })
                 .collect::<Vec<_>>();
             for (reg, action) in drops {
@@ -4953,6 +5282,9 @@ impl<'a> FnCompiler<'a> {
     /// Emit an indirect call through a register, dispatching via env-wrapper convention
     /// when `callee_reg` is a closure environment struct pointer.
     fn emit_indirect_call(&mut self, dst: u8, callee_reg: u8, arg_regs: &[u8]) {
+        for &reg in arg_regs {
+            self.transfer_expression_temporary(reg);
+        }
         // All fn-ptr values use env struct representation: {fn_ptr at offset 0, captures...}.
         // Always do env dispatch: load fn_ptr from env[0], pass env as hidden first arg.
         let fn_ptr_reg = self.alloc_reg();
@@ -5209,7 +5541,7 @@ impl<'a> FnCompiler<'a> {
             }
             StmtKind::ExprStmt(expr) => {
                 let result = self.compile_expr(expr);
-                self.cleanup_discarded_fn_value(expr, result);
+                self.cleanup_discarded_owned_value(expr, result);
                 false
             }
             StmtKind::CfgBlock { body, condition } => {
@@ -5752,6 +6084,23 @@ impl<'a> FnCompiler<'a> {
     /// `jump_if_false = true` means jump when condition is false (used for if/while).
     /// Returns the index of the emitted jump instruction (caller must patch).
     fn compile_condition_jump(&mut self, expr: &Expr, jump_if_false: bool) -> usize {
+        let mut owned_sites = Vec::new();
+        self.expression_owner_sites(expr, true, false, &mut owned_sites);
+        if owned_sites.iter().any(|(_, _, producer, _)| *producer) {
+            let condition = self.compile_expr(expr);
+            let zero = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+            self.chunk.emit(rrr(Opcode::Cmp, 0, condition, zero));
+            return self.chunk.emit(ri16(
+                if jump_if_false {
+                    Opcode::Je
+                } else {
+                    Opcode::Jne
+                },
+                0,
+                0,
+            ));
+        }
         match &expr.node {
             ExprKind::Binary { left, op, right } if is_comparison(op) => {
                 let string_comparison = self
@@ -5813,6 +6162,23 @@ impl<'a> FnCompiler<'a> {
     /// `dst` is the base of a result block that must already be large enough
     /// for the callee's result layout.
     fn emit_call_by_name(&mut self, name: &str, arg_bases: &[u8], dst: u8) {
+        let owned_arguments = self
+            .fn_value_layouts
+            .get(name)
+            .map(|layout| {
+                arg_bases
+                    .iter()
+                    .zip(&layout.params)
+                    .filter_map(|(&reg, parameter)| {
+                        (parameter.move_kind == crate::runtime_layout::MoveKind::Owned)
+                            .then_some(reg)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for reg in owned_arguments {
+            self.transfer_expression_temporary(reg);
+        }
         if self.emit_specialized_storage_intrinsic(name, arg_bases, dst) {
             return;
         }
@@ -6089,10 +6455,167 @@ impl<'a> FnCompiler<'a> {
 
     // ── Expression ───────────────────────────────────────────────────────────
 
-    /// Uses PrimToStr with a type tag in ops[2]: 0=int, 1=float, 2=bool.
-    /// For string views returns `reg` unchanged.
+    /// Pack source variadics into their internal pointer/count ABI. Formatting
+    /// borrows display arguments; ordinary variadics transfer owned elements.
+    fn compile_variadic_call(&mut self, name: &str, args: &[Expr]) -> u8 {
+        let fixed_count = self.variadic_fn_info[name];
+        let expanded = (name == "fmt.format")
+            .then(|| crate::parser::format::expand_format_call_args(args))
+            .flatten();
+        // Variadic call: compile fixed args, pack variadic args into
+        // consecutive stack slots, pass (ptr, len) as hidden trailing args.
+        let fixed_regs: Vec<u8> = args[..fixed_count.min(args.len())]
+            .iter()
+            .enumerate()
+            .map(|(index, a)| {
+                if index == 0
+                    && let Some(expanded) = &expanded
+                {
+                    let constant = self
+                        .chunk
+                        .add_constant(ConstPoolEntry::Str(expanded.clean_template.clone()));
+                    let reg = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovConst, reg, constant));
+                    return reg;
+                }
+                if self.str_variadic_fns.contains(name)
+                    && self.format_fixed_parameter_is_view(name, index)
+                {
+                    let reg = self.compile_expr(a);
+                    self.coerce_to_display_str(reg, a.span)
+                } else {
+                    self.mark_consumed_expr(a);
+                    self.compile_expr(a)
+                }
+            })
+            .collect();
+        let var_args = expanded
+            .as_ref()
+            .map(|expanded| expanded.args.as_slice())
+            .unwrap_or(&args[fixed_count.min(args.len())..]);
+        let (r_ptr, r_len) = if var_args.is_empty() {
+            // Zero variadic args: pass null ptr + count 0.
+            let rp = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, rp, 0));
+            let rl = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, rl, 0));
+            (rp, rl)
+        } else {
+            // Compile each variadic arg (may land in non-consecutive regs).
+            let var_regs: Vec<u8> = var_args
+                .iter()
+                .enumerate()
+                .map(|(index, a)| {
+                    if self.str_variadic_fns.contains(name) {
+                        let reg = self.compile_expr(a);
+                        let spec = expanded
+                            .as_ref()
+                            .and_then(|expanded| expanded.specs.get(index))
+                            .map(String::as_str)
+                            .unwrap_or("");
+                        self.coerce_with_spec(reg, spec, a.span)
+                    } else {
+                        self.mark_consumed_expr(a);
+                        self.compile_expr(a)
+                    }
+                })
+                .collect();
+            // Copy into fresh consecutive slots so Lea gives a contiguous block.
+            let first_slot = self.next_reg_slot();
+            for &r in &var_regs {
+                let slot = self.alloc_reg(); // = first_slot + i
+                if r != slot {
+                    self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
+                }
+            }
+            // Lea first_slot → pointer to its stack slot on this frame.
+            let rp = self.alloc_reg();
+            let block_length = self.qzi_u8(var_regs.len(), "variadic argument count");
+            self.chunk
+                .emit(mem_lea_block(first_slot, rp, 0, block_length));
+            let rl = self.alloc_reg();
+            self.chunk
+                .emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
+            (rp, rl)
+        };
+        let mut all_regs = fixed_regs;
+        all_regs.push(r_ptr);
+        all_regs.push(r_len);
+        let result_dst = self.alloc_result_block(name);
+        self.emit_call_by_name(name, &all_regs, result_dst);
+        result_dst
+    }
+
+    fn compile_runtime_format_wrapper(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        span: Span,
+        receiver: Option<u8>,
+    ) -> u8 {
+        let owner = self.compile_variadic_call("fmt.format", args);
+        let view = self.injected_format_view(span, owner);
+        let mut arguments = receiver.into_iter().collect::<Vec<_>>();
+        arguments.push(view);
+        if self.variadic_fn_info.contains_key(name) {
+            let pointer = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, pointer, 0));
+            let count = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, count, 0));
+            arguments.extend([pointer, count]);
+        }
+        let result = self.alloc_result_block(name);
+        self.emit_call_by_name(name, &arguments, result);
+        result
+    }
+
+    fn format_fixed_parameter_is_view(&self, target: &str, index: usize) -> bool {
+        let declared = target.split('<').next().unwrap_or(target);
+        let Some(entry) = self
+            .symbol_table
+            .entries
+            .iter()
+            .find(|entry| entry.scope_depth == 0 && entry.name == declared)
+        else {
+            return false;
+        };
+        let Some(parameter) = entry.symbol.params.get(index) else {
+            return false;
+        };
+        let names = entry
+            .symbol
+            .generic_params
+            .iter()
+            .chain(self.impl_generic_params.get(declared).into_iter().flatten())
+            .cloned()
+            .collect::<HashSet<_>>();
+        match crate::type_resolution::resolve_type(
+            parameter,
+            self.type_aliases,
+            &HashMap::new(),
+            &names,
+            |_| None,
+        ) {
+            Ok(ty) => is_string_view_type(&ty),
+            Err(error) => {
+                self.resolution_errors.borrow_mut().push(error.to_string());
+                false
+            }
+        }
+    }
+
     fn coerce_to_display_str(&mut self, reg: u8, span: crate::parser::ast::Span) -> u8 {
         let key = (span.start, span.end);
+        if self
+            .type_of_span(key)
+            .as_ref()
+            .is_some_and(is_owned_string_type)
+        {
+            let data = self.alloc_reg();
+            let offset = self.field_offset_by_name("String", "data");
+            self.chunk.emit(field_load(data, reg, offset));
+            return data;
+        }
         let type_tag: Option<u8> = match self.type_of_span(key) {
             Some(
                 TypeKind::Int8
@@ -6106,8 +6629,8 @@ impl<'a> FnCompiler<'a> {
                 | TypeKind::Isize
                 | TypeKind::Usize,
             ) => Some(0), // int
-            Some(TypeKind::Float32 | TypeKind::Float64) => Some(1), // float
-            Some(TypeKind::Bool) => Some(2),                        // bool
+            Some(TypeKind::Float16 | TypeKind::Float32 | TypeKind::Float64) => Some(1), // float
+            Some(TypeKind::Bool) => Some(2),                                            // bool
             Some(TypeKind::Str) | Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. }) => None, // str/&str — already a pointer
             // Known struct/enum Named types: pass as-is (pointer to heap object).
             // Unresolved generic type params (T, U, etc.) not in struct/enum defs: default to int.
@@ -6135,7 +6658,10 @@ impl<'a> FnCompiler<'a> {
         };
         if let Some(tag) = type_tag {
             let dst = self.alloc_reg();
-            let instr = rrr(Opcode::PrimToStr, dst, reg, tag);
+            let mut instr = rrr(Opcode::PrimToStr, dst, reg, tag);
+            if tag == 0 && self.is_unsigned_span(key) {
+                instr.flags |= UNSIGNED_FLAG;
+            }
             self.chunk.emit(instr);
             dst
         } else {
@@ -6209,8 +6735,37 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> u8 {
+        let root = self.expression_depth == 0;
+        if root {
+            self.begin_expression_temporaries(expr);
+        }
+        self.expression_depth += 1;
         let reg = self.compile_expr_inner(expr);
-        self.emit_autoderef_load(expr.span, reg)
+        let reg = self.emit_autoderef_load(expr.span, reg);
+        if matches!(expr.node, ExprKind::Assign { .. }) {
+            self.transfer_expression_temporary(reg);
+        }
+        if let Some(temp) = self
+            .expression_temporaries
+            .iter_mut()
+            .find(|temp| !temp.synthetic_format && temp.span == (expr.span.start, expr.span.end))
+            && (temp.producer || temp.consumed)
+        {
+            self.chunk.emit(rrr(Opcode::Mov, temp.slot, reg, 0));
+            temp.produced = true;
+            temp.value_reg = Some(reg);
+        }
+        self.expression_depth -= 1;
+        if root {
+            let retained = self
+                .type_of_expr(expr)
+                .filter(|ty| matches!(ty, TypeKind::Named { .. }))
+                .and_then(|ty| self.drop_action_for_type(&ty))
+                .map(|_| reg);
+            self.emit_expression_temporary_cleanup(retained);
+            self.expression_temporaries.clear();
+        }
+        reg
     }
 
     fn compile_expr_inner(&mut self, expr: &Expr) -> u8 {
@@ -6522,6 +7077,7 @@ impl<'a> FnCompiler<'a> {
                     }
                     let local_ty = self.type_of_span((value.span.start, value.span.end));
                     self.reactivate_drop_local(name, dst, local_ty);
+                    self.transfer_expression_temporary(src);
                     return dst;
                 }
                 match &target.node {
@@ -6675,19 +7231,33 @@ impl<'a> FnCompiler<'a> {
                     });
                     0
                 });
+                let initialized = field_order
+                    .iter()
+                    .filter_map(|field_name| {
+                        fields
+                            .iter()
+                            .find(|(name, _)| name == field_name)
+                            .map(|(_, value)| (field_name.clone(), value))
+                    })
+                    .map(|(name, value)| {
+                        let reg = self.compile_expr(value);
+                        (name, value, reg)
+                    })
+                    .collect::<Vec<_>>();
                 let dst = self.alloc_reg();
                 self.chunk.emit(ri16(Opcode::New, dst, struct_size));
 
                 // Compile and store each field in declaration order using computed offsets
-                for field_name in &field_order {
-                    if let Some((_, fval)) = fields.iter().find(|(fn_, _)| fn_ == field_name) {
-                        let val = self.compile_expr(fval);
-                        if let Some(layout) = self.bit_field_layout_by_name(name, field_name) {
+                for (field_name, fval, val) in initialized {
+                    self.mark_consumed_expr(fval);
+                    self.transfer_expression_temporary(val);
+                    {
+                        if let Some(layout) = self.bit_field_layout_by_name(name, &field_name) {
                             self.emit_bit_field_store(dst, val, layout);
                         } else {
-                            let off = self.field_offset_by_name(name, field_name);
+                            let off = self.field_offset_by_name(name, &field_name);
                             let (width, _, float32) =
-                                self.ffi_field_access_by_name(name, field_name);
+                                self.ffi_field_access_by_name(name, &field_name);
                             self.chunk
                                 .emit(field_store_typed(val, dst, off, width, float32));
                         }
@@ -6915,6 +7485,9 @@ impl<'a> FnCompiler<'a> {
                         self.emit_call_by_name(&mono_name, &arg_regs, result_dst);
                         return result_dst;
                     }
+                    if call_name == "fmt.format" {
+                        return self.compile_variadic_call(&call_name, args);
+                    }
                     // str_variadic dispatch: auto-coerce args to str at call sites.
                     if self.str_variadic_fns.contains(call_name.as_str()) && !args.is_empty() {
                         if let Some(expanded) = crate::parser::format::expand_format_call_args(args)
@@ -6950,7 +7523,7 @@ impl<'a> FnCompiler<'a> {
                                     .emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
                                 let fd = self.alloc_reg();
                                 self.emit_call_by_name("fmt.format", &[template_reg, rp, rl], fd);
-                                fd
+                                self.injected_format_view(expr.span, fd)
                             } else {
                                 template_reg
                             };
@@ -6968,59 +7541,12 @@ impl<'a> FnCompiler<'a> {
                             return dst;
                         }
                     }
-                    if let Some(&fixed_count) = self.variadic_fn_info.get(call_name.as_str()) {
-                        // Variadic call: compile fixed args, pack variadic args into
-                        // consecutive stack slots, pass (ptr, len) as hidden trailing args.
-                        let fixed_regs: Vec<u8> = args[..fixed_count.min(args.len())]
-                            .iter()
-                            .map(|a| {
-                                self.mark_consumed_expr(a);
-                                self.compile_expr(a)
-                            })
-                            .collect();
-                        let var_args = &args[fixed_count.min(args.len())..];
-                        let (r_ptr, r_len) = if var_args.is_empty() {
-                            // Zero variadic args: pass null ptr + count 0.
-                            let rp = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rp, 0));
-                            let rl = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rl, 0));
-                            (rp, rl)
-                        } else {
-                            // Compile each variadic arg (may land in non-consecutive regs).
-                            let var_regs: Vec<u8> = var_args
-                                .iter()
-                                .map(|a| {
-                                    self.mark_consumed_expr(a);
-                                    self.compile_expr(a)
-                                })
-                                .collect();
-                            // Copy into fresh consecutive slots so Lea gives a contiguous block.
-                            let first_slot = self.next_reg_slot();
-                            for (i, &r) in var_regs.iter().enumerate() {
-                                let slot = self.alloc_reg(); // = first_slot + i
-                                if r != slot {
-                                    self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
-                                }
-                                let _ = i; // suppress unused warning
-                            }
-                            // Lea first_slot → pointer to its stack slot on this frame.
-                            let rp = self.alloc_reg();
-                            let block_length =
-                                self.qzi_u8(var_regs.len(), "variadic argument count");
-                            self.chunk
-                                .emit(mem_lea_block(first_slot, rp, 0, block_length));
-                            let rl = self.alloc_reg();
-                            self.chunk
-                                .emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
-                            (rp, rl)
-                        };
-                        let mut all_regs = fixed_regs;
-                        all_regs.push(r_ptr);
-                        all_regs.push(r_len);
-                        let result_dst = self.alloc_result_block(&call_name);
-                        self.emit_call_by_name(&call_name, &all_regs, result_dst);
-                        return result_dst;
+                    if self.str_variadic_fns.contains(call_name.as_str()) && !args.is_empty() {
+                        return self
+                            .compile_runtime_format_wrapper(&call_name, args, expr.span, None);
+                    }
+                    if self.variadic_fn_info.contains_key(call_name.as_str()) {
+                        return self.compile_variadic_call(&call_name, args);
                     } else if let Some(tag) = self.enum_ctor_tag(&call_name) {
                         // Enum variant constructor: allocate heap struct, store discriminant + payloads.
                         let payload_regs: Vec<u8> = args
@@ -7044,6 +7570,7 @@ impl<'a> FnCompiler<'a> {
                         for (i, &payload) in payload_regs.iter().enumerate() {
                             let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
                             self.chunk.emit(field_store(payload, ptr, off));
+                            self.transfer_expression_temporary(payload);
                         }
                         if dst != ptr {
                             self.chunk.emit(rrr(Opcode::Mov, dst, ptr, 0));
@@ -7154,6 +7681,9 @@ impl<'a> FnCompiler<'a> {
                         };
                         call_target = mono_name;
                     }
+                    if call_target == "fmt.format" {
+                        return self.compile_variadic_call(&call_target, args);
+                    }
                     let is_fmt_fn = self.str_variadic_fns.contains(call_target.as_str());
                     let is_variadic_intrinsic =
                         self.variadic_intrinsic_fns.contains(call_target.as_str());
@@ -7206,7 +7736,7 @@ impl<'a> FnCompiler<'a> {
                                         &[template_reg, rp, rl],
                                         fd,
                                     );
-                                    fd
+                                    self.injected_format_view(expr.span, fd)
                                 } else {
                                     template_reg
                                 };
@@ -7214,6 +7744,17 @@ impl<'a> FnCompiler<'a> {
                             }
                             return dst;
                         }
+                    }
+                    if is_fmt_fn && !args.is_empty() {
+                        return self.compile_runtime_format_wrapper(
+                            &call_target,
+                            args,
+                            expr.span,
+                            None,
+                        );
+                    }
+                    if self.variadic_fn_info.contains_key(call_target.as_str()) {
+                        return self.compile_variadic_call(&call_target, args);
                     }
                     // Fallthrough: plain call (format expansion not applicable or no template match).
                     {
@@ -7260,6 +7801,7 @@ impl<'a> FnCompiler<'a> {
                         for (i, &payload) in payload_regs.iter().enumerate() {
                             let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
                             self.chunk.emit(field_store(payload, ptr, off));
+                            self.transfer_expression_temporary(payload);
                         }
                         let dst = self.alloc_reg();
                         if dst != ptr {
@@ -7356,6 +7898,17 @@ impl<'a> FnCompiler<'a> {
                         _ => resolved_target,
                     };
                     if self.fn_index.contains_key(&call_target) {
+                        if self.str_variadic_fns.contains(&call_target)
+                            && !args.is_empty()
+                            && crate::parser::format::expand_format_call_args(args).is_none()
+                        {
+                            return self.compile_runtime_format_wrapper(
+                                &call_target,
+                                args,
+                                expr.span,
+                                Some(receiver),
+                            );
+                        }
                         let arg_regs: Vec<u8> = args
                             .iter()
                             .map(|arg| {
@@ -7440,7 +7993,7 @@ impl<'a> FnCompiler<'a> {
                                         &[template_reg, rp, rl],
                                         fd,
                                     );
-                                    fd
+                                    self.injected_format_view(expr.span, fd)
                                 } else {
                                     template_reg
                                 };
@@ -7562,25 +8115,13 @@ impl<'a> FnCompiler<'a> {
                         }
                         PrimitiveMethod::PrimToStr { tag } => {
                             let dst = self.alloc_reg();
-                            self.chunk.emit(rrr(Opcode::PrimToStr, dst, obj, tag));
-                            return dst;
-                        }
-                        PrimitiveMethod::StrToString => {
-                            let dst = self.alloc_reg();
-                            self.chunk.emit(rrr(Opcode::StrAsStr, dst, obj, 0));
-                            return dst;
-                        }
-                        PrimitiveMethod::BoolToString => {
-                            let dst = self.alloc_reg();
-                            self.chunk.emit(rrr(Opcode::PrimToStr, dst, obj, 2));
-                            return dst;
-                        }
-                        PrimitiveMethod::PrimToString { intrinsic_id } => {
-                            let dst = self.alloc_reg();
-                            self.chunk.emit(rrr(Opcode::Mov, dst, obj, 0));
-                            let mut instr = ri16(Opcode::Intrinsic, dst, intrinsic_id);
-                            instr.flags = 1;
-                            self.chunk.emit(instr);
+                            let mut instruction = rrr(Opcode::PrimToStr, dst, obj, tag);
+                            if tag == 0
+                                && self.is_unsigned_span((object.span.start, object.span.end))
+                            {
+                                instruction.flags |= UNSIGNED_FLAG;
+                            }
+                            self.chunk.emit(instruction);
                             return dst;
                         }
                         PrimitiveMethod::AsStr => {
@@ -8054,6 +8595,10 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.emit(rrr(Opcode::Mov, 0, err_ptr, 0));
                     }
                 }
+                let failure = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Mov, failure, 0, 0));
+                self.emit_all_cleanup();
+                self.chunk.emit(rrr(Opcode::Mov, 0, failure, 0));
                 self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
 
                 self.chunk.patch_jump(jmp_end, self.chunk.len() as u16);
@@ -8116,6 +8661,9 @@ impl<'a> FnCompiler<'a> {
                     self.annotated_exprs,
                     Rc::clone(&self.resolution_errors),
                     self.bound_names.clone(),
+                    self.format_result_type.clone(),
+                    self.symbol_table,
+                    self.impl_generic_params,
                 );
                 // Reserve the complete incoming ABI frame before allocating
                 // capture locals or expression temporaries. r0 is the hidden
@@ -8384,12 +8932,6 @@ enum PrimitiveMethod {
     Len,
     /// .to_str() on primitives — emit PrimToStr with the given type tag
     PrimToStr { tag: u8 },
-    /// .to_string() on &str — identity view via StrAsStr
-    StrToString,
-    /// .to_string() on bool — PrimToStr with tag=2
-    BoolToString,
-    /// .to_string() on int/float — Intrinsic with given id
-    PrimToString { intrinsic_id: u16 },
     /// .as_str() / .as_string() — StrAsStr identity view
     AsStr,
     /// .as_ptr() on bytes â€” skip the read-only length prefix.
@@ -8463,17 +9005,9 @@ fn is_generic_param_name(name: &str) -> bool {
 /// Maps receiver types to their `PrimToStr` tag value.
 fn prim_to_str_tag(receiver_type: Option<&TypeKind>) -> u8 {
     match receiver_type {
-        Some(TypeKind::Float32 | TypeKind::Float64) => 1,
+        Some(TypeKind::Float16 | TypeKind::Float32 | TypeKind::Float64) => 1,
         Some(TypeKind::Bool) => 2,
         _ => 0,
-    }
-}
-
-/// Maps receiver types to the `PrimToString` intrinsic ID.
-fn prim_to_string_intrinsic_id(receiver_type: Option<&TypeKind>) -> u16 {
-    match receiver_type {
-        Some(TypeKind::Float32 | TypeKind::Float64) => 16,
-        _ => 15,
     }
 }
 
@@ -8500,15 +9034,6 @@ fn resolve_primitive_method(
             }
             _ => Some(PrimitiveMethod::PrimToStr {
                 tag: prim_to_str_tag(receiver_ty),
-            }),
-        },
-        "to_string" if args.is_empty() => match receiver_ty {
-            Some(TypeKind::Str) | Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. }) | None => {
-                Some(PrimitiveMethod::StrToString)
-            }
-            Some(TypeKind::Bool) => Some(PrimitiveMethod::BoolToString),
-            _ => Some(PrimitiveMethod::PrimToString {
-                intrinsic_id: prim_to_string_intrinsic_id(receiver_ty),
             }),
         },
         "as_string" | "as_str" if args.is_empty() => Some(PrimitiveMethod::AsStr),
@@ -9002,6 +9527,227 @@ mod tests {
         Codegen::new(&report)
             .compile_program(&program, &source_files)
             .expect("code generation should succeed")
+    }
+
+    #[test]
+    fn borrowed_temporary_receiver_has_guarded_full_expression_cleanup() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token {
+    fn free(self: Token) void {}
+    fn get(self: &Token) i32 { ret self.value; }
+}
+fn main() i32 { ret Token { value: 7 }.get(); }
+"#,
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(
+            main.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::CallIdx as u8
+                    && chunks
+                        .get(instruction.ri16().1 as usize)
+                        .is_some_and(|target| target.name == "Token.free")),
+            "borrowed temporary receiver must call its consuming cleanup hook"
+        );
+        assert!(
+            main.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::Je as u8),
+            "temporary cleanup must be guarded by the initialized owner slot"
+        );
+    }
+
+    #[test]
+    fn skipped_and_selected_temporary_producers_compile_with_cleanup_guards() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token {
+    fn free(self: Token) void {}
+    fn get(self: &Token) i32 { ret self.value; }
+}
+fn probe(flag: bool) i32 {
+    if (flag && Token { value: 7 }.get() == 7) { ret 1; }
+    ret (match flag { true => Token { value: 2 }, _ => Token { value: 3 } }).get();
+}
+fn main() i32 { ret probe(false); }
+"#,
+        );
+        let probe = chunks.iter().find(|chunk| chunk.name == "probe").unwrap();
+        assert!(
+            probe
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8
+                    && chunks
+                        .get(instruction.ri16().1 as usize)
+                        .is_some_and(|target| target.name == "Token.free"))
+                .count()
+                >= 3,
+            "every possible owned producer needs a guarded release path"
+        );
+        assert!(
+            probe
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::Je as u8)
+                .count()
+                >= 3
+        );
+    }
+
+    #[test]
+    fn consuming_manual_hook_releases_storage_on_each_return_path() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token {
+    fn free(self: Token) void { if (self.value == 0) { ret; } }
+}
+fn main() void { const token = Token { value: 1 }; }
+"#,
+        );
+        let hook = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Token.free")
+            .unwrap();
+        assert_eq!(
+            hook.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::Intrinsic as u8
+                    && instruction.ri16().1 == 4)
+                .count(),
+            2,
+            "each consuming hook return must release the aggregate storage once"
+        );
+    }
+
+    #[test]
+    fn sole_structural_field_return_releases_only_parent_storage() {
+        let chunks = compile(
+            r#"
+struct Item { value: i32 }
+impl Item { fn free(self: Item) void {} }
+struct Parent { child: Item }
+impl Parent { fn take(self: Parent) Item { ret self.child; } }
+fn main() void { const parent = Parent { child: Item { value: 1 } }; const item = parent.take(); }
+"#,
+        );
+        let take = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Parent.take")
+            .unwrap();
+        assert_eq!(
+            take.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::Intrinsic as u8
+                    && instruction.ri16().1 == 4)
+                .count(),
+            1,
+            "returning the sole child must still release the parent header"
+        );
+        assert!(
+            take.code
+                .iter()
+                .all(|instruction| instruction.opcode != Opcode::CallIdx as u8),
+            "the transferred child must not be destroyed by the parent"
+        );
+    }
+
+    #[test]
+    fn failed_later_argument_has_pending_owner_cleanup_before_return() {
+        let chunks = compile(
+            r#"
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+fn make() Token { ret Token { value: 1 }; }
+fn failure() Result[i32, i32] { ret Err(0); }
+fn take(value: Token, number: i32) void {}
+fn pending() Result[i32, i32] { take(make(), failure()?); ret Ok(1); }
+fn main() void { pending(); }
+"#,
+        );
+        let pending = chunks.iter().find(|chunk| chunk.name == "pending").unwrap();
+        let failure_return = pending
+            .code
+            .iter()
+            .position(|instruction| instruction.opcode == Opcode::Ret as u8)
+            .unwrap();
+        assert!(
+            pending.code[..failure_return]
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::CallIdx as u8
+                    && chunks
+                        .get(instruction.ri16().1 as usize)
+                        .is_some_and(|target| target.name == "Token.free")),
+            "an earlier owned argument must be destroyed when a later argument returns through ?"
+        );
+    }
+
+    #[test]
+    fn injected_owned_formatter_and_argument_share_full_expression_cleanup() {
+        let module =
+            "pub fn format(template: str, ...args: str) String { ret String { data: template }; }";
+        let main = r#"
+import fmt;
+struct String { data: str }
+impl String { fn free(self: String) void {} }
+fn make_text() String { ret String { data: "owned" }; }
+@format fn show(template: str, ...args: any) void {}
+fn main() void { show("{}", make_text()); }
+"#;
+        let merged = format!("{module}\n{main}");
+        let files = vec![
+            SourceFile {
+                path: "fmt.qz".to_string(),
+                module_name: Some("fmt".to_string()),
+                start: 0,
+                end: module.len(),
+                line_start: 1,
+            },
+            SourceFile {
+                path: "main.qz".to_string(),
+                module_name: None,
+                start: module.len() + 1,
+                end: merged.len(),
+                line_start: 2,
+            },
+        ];
+        let program =
+            Parser::new_with_source_files(Lexer::new(&merged).tokenize(), &merged, files.clone())
+                .parse()
+                .unwrap();
+        let mut analyzer = Analyzer::new();
+        analyzer.set_source_files(files.clone());
+        analyzer.set_namespaced_paths(HashSet::from(["fmt.qz".to_string()]));
+        let report = analyzer.analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let chunks = Codegen::new(&report)
+            .compile_program(&program, &files)
+            .unwrap();
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert_eq!(
+            main.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8
+                    && chunks
+                        .get(instruction.ri16().1 as usize)
+                        .is_some_and(|target| target.name == "String.free"))
+                .count(),
+            2,
+            "both the source argument owner and injected formatter owner must be destroyed"
+        );
+        assert!(
+            main.code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::FieldLoad as u8
+                    && instruction.ops[2] == 0)
+                .count()
+                >= 2,
+            "format arguments and formatter results must expose their data, not their header"
+        );
     }
 
     #[test]
@@ -10349,34 +11095,20 @@ fn take(value: Outer) void {}
     #[test]
     fn monomorphized_primitive_method_uses_concrete_type() {
         let chunks = compile(
-            r#"fn show[T](x: T) void {
-                var s = x.to_string();
-            }
-            fn main() void {
-                show[i32](1);
-                show[f64](2);
-            }"#,
+            r#"fn show[T](x: T) str { ret x.to_str(); }
+            fn main() void { show[i32](1); show[f64](2); }"#,
         );
-        // show<i32> should use Intrinsic(15) for int to_string
-        let show_i32 = chunks.iter().find(|c| c.name == "show<i32>").unwrap();
-        let has_int_intrinsic = show_i32
-            .code
-            .iter()
-            .any(|i| i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 15);
-        assert!(
-            has_int_intrinsic,
-            "show<i32> should use Intrinsic(15) for int to_string"
-        );
-        // show<f64> should use Intrinsic(16) for float to_string
-        let show_f64 = chunks.iter().find(|c| c.name == "show<f64>").unwrap();
-        let has_float_intrinsic = show_f64
-            .code
-            .iter()
-            .any(|i| i.opcode == Opcode::Intrinsic as u8 && i.ri16().1 == 16);
-        assert!(
-            has_float_intrinsic,
-            "show<f64> should use Intrinsic(16) for float to_string"
-        );
+        for (name, tag) in [("show<i32>", 0), ("show<f64>", 1)] {
+            let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+            assert!(
+                chunk
+                    .code
+                    .iter()
+                    .any(|instruction| instruction.opcode == Opcode::PrimToStr as u8
+                        && instruction.ops[2] == tag),
+                "{name} must format its concrete primitive type"
+            );
+        }
     }
 
     #[test]

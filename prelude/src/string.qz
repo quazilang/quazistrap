@@ -89,7 +89,7 @@ fn __owned_range(text: str, start: usize, end: usize) String {
     const length: usize = end - start;
     var data: *u8 = 0;
     unsafe { data = __string_malloc(length + 1); }
-    if (data == 0) { ret String.new(); }
+    if (data == 0) { panic("string allocation failed"); }
     unsafe {
         __string_memcpy(data, __string_as_ptr(text) + start, length);
         *(data + length) = 0;
@@ -183,7 +183,7 @@ impl str {
         const byte_len: usize = self.bytes_len();
         var data: *u8 = 0;
         unsafe { data = __string_malloc(byte_len + 1); }
-        if (data == 0) { ret String.new(); }
+        if (data == 0) { panic("string allocation failed"); }
         var source: usize = __rune_byte_offset(self, start as usize);
         var destination: usize = 0;
         var rune_index: isize = start;
@@ -224,7 +224,7 @@ impl str {
         if (length == 0) { ret String.new(); }
         var data: *u8 = 0;
         unsafe { data = __string_malloc(length + 1); }
-        if (data == 0) { ret String.new(); }
+        if (data == 0) { panic("string allocation failed"); }
         var source: usize = 0;
         for (source < length) {
             const width: usize = __utf8_width(__string_byte_at(self, source));
@@ -531,12 +531,14 @@ impl str {
     }
 }
 
+fn __string_index(text: str, index: isize) Rune {
+    const value: Option[Rune] = text.get(index);
+    if (value.is_none()) { panic("string index out of bounds"); }
+    ret value.unwrap();
+}
+
 impl Index[isize, Rune] for str {
-    pub fn index(self: str, index: isize) Rune {
-        const value: Option[Rune] = self.get(index);
-        if (value.is_none()) { panic("string index out of bounds"); }
-        ret value.unwrap();
-    }
+    pub fn index(self: &str, index: isize) Rune { ret __string_index(self, index); }
 }
 
 impl String {
@@ -618,5 +620,5 @@ impl String {
 }
 
 impl Index[isize, Rune] for String {
-    pub fn index(self: String, index: isize) Rune { ret self.data[index]; }
+    pub fn index(self: &String, index: isize) Rune { ret __string_index(self.data, index); }
 }

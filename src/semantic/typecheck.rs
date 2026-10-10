@@ -325,8 +325,7 @@ impl Analyzer {
                         && (matches!(
                             &p.ty.node,
                             TypeKind::Str | TypeKind::Ref { .. } | TypeKind::MutRef { .. }
-                        )
-                            || erased_format_variadic)
+                        ) || erased_format_variadic)
                 });
                 for p in params {
                     if erased_format_variadic && p.variadic && matches!(p.ty.node, TypeKind::Any) {
@@ -689,7 +688,12 @@ impl Analyzer {
                     );
                 }
             }
-            ItemKind::Enum { name, generic_params, variants, .. } => {
+            ItemKind::Enum {
+                name,
+                generic_params,
+                variants,
+                ..
+            } => {
                 self.current_generic_params.push(generic_params.clone());
                 for variant in variants {
                     for payload in &variant.payload_types {
@@ -745,10 +749,16 @@ impl Analyzer {
                 self.current_generic_params.pop();
             }
             ItemKind::Import(_) => {}
-            ItemKind::Trait { name, generic_params, methods, .. } => {
+            ItemKind::Trait {
+                name,
+                generic_params,
+                methods,
+                ..
+            } => {
                 self.current_generic_params.push(generic_params.clone());
                 for method in methods {
-                    self.current_generic_params.push(method.generic_params.clone());
+                    self.current_generic_params
+                        .push(method.generic_params.clone());
                     for param in &method.params {
                         if type_contains_any(&param.node) {
                             self.push_error(
@@ -843,8 +853,29 @@ impl Analyzer {
                         unsafe_fn,
                         c_variadic,
                         ..
-                    } = &method.node {
+                    } = &method.node
+                    {
                         self.validate_impl_receiver(for_ty, name, params);
+                        if name == "free"
+                            && matches!(
+                                self.resolve_type_aliases(&for_ty.node),
+                                TypeKind::Named { .. }
+                            )
+                            && params.first().is_some_and(|param| {
+                                param.name == "self"
+                                    && !matches!(
+                                        param.ty.node,
+                                        TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+                                    )
+                            })
+                            && !matches!(self.resolve_type_aliases(&return_ty.node), TypeKind::Void)
+                        {
+                            self.push_error(
+                                method.span,
+                                "S14",
+                                "a consuming `free(self)` destructor must return void; use another method name for ownership transfer or fallible cleanup".to_string(),
+                            );
+                        }
                         let replacement_attrs = attributes
                             .iter()
                             .filter(|attribute| attribute.name == "contiguous_element_replace")
@@ -866,7 +897,10 @@ impl Analyzer {
                                 && matches!(return_ty.node, TypeKind::Void)
                                 && params.len() == 3
                                 && matches!(params.first().map(|param| &param.ty.node), Some(TypeKind::MutRef { inner }) if self.resolve_type_aliases(&inner.node).to_string() == self.resolve_type_aliases(&for_ty.node).to_string())
-                                && matches!(params.get(1).map(|param| &param.ty.node), Some(TypeKind::Usize))
+                                && matches!(
+                                    params.get(1).map(|param| &param.ty.node),
+                                    Some(TypeKind::Usize)
+                                )
                                 && element.is_some_and(|element| {
                                     self.resolve_type_aliases(&params[2].ty.node).to_string()
                                         == self.resolve_type_aliases(&element.node).to_string()
@@ -899,7 +933,10 @@ impl Analyzer {
                                 && !c_variadic
                                 && params.len() == 2
                                 && matches!(params.first().map(|param| &param.ty.node), Some(TypeKind::MutRef { inner }) if self.resolve_type_aliases(&inner.node).to_string() == self.resolve_type_aliases(&for_ty.node).to_string())
-                                && matches!(params.get(1).map(|param| &param.ty.node), Some(TypeKind::Usize))
+                                && matches!(
+                                    params.get(1).map(|param| &param.ty.node),
+                                    Some(TypeKind::Usize)
+                                )
                                 && element.is_some_and(|element| {
                                     self.resolve_type_aliases(&return_ty.node).to_string()
                                         == self.resolve_type_aliases(&element.node).to_string()
@@ -1108,7 +1145,9 @@ impl Analyzer {
             );
             return;
         };
-        let element_param_index = generic_params.iter().position(|parameter| parameter == element);
+        let element_param_index = generic_params
+            .iter()
+            .position(|parameter| parameter == element);
         if element_param_index.is_none() {
             self.push_error(
                 attr.span,
@@ -1337,12 +1376,7 @@ impl Analyzer {
         }
     }
 
-    fn validate_impl_receiver(
-        &mut self,
-        for_ty: &Type,
-        method_name: &str,
-        params: &[Param],
-    ) {
+    fn validate_impl_receiver(&mut self, for_ty: &Type, method_name: &str, params: &[Param]) {
         let Some(receiver) = params.first().filter(|param| param.name == "self") else {
             return;
         };
@@ -1373,10 +1407,7 @@ impl Analyzer {
     ) -> (bool, bool) {
         let resolved = self.resolve_type_aliases(receiver_ty);
         let type_name = super::declare::type_kind_base_name(&resolved);
-        let declared_type_name = type_name
-            .rsplit('.')
-            .next()
-            .unwrap_or(type_name.as_str());
+        let declared_type_name = type_name.rsplit('.').next().unwrap_or(type_name.as_str());
         let method_names = [
             format!("{}.{}", type_name, method),
             format!("{}.{}", declared_type_name, method),
@@ -2169,11 +2200,9 @@ impl Analyzer {
                             format!("if condition must be bool or integer, got {}", ty),
                         );
                     }
-                    then_returns = self.type_check_block(
-                        else_if_block,
-                        expected_return,
-                        checkpoint,
-                    )? && then_returns;
+                    then_returns =
+                        self.type_check_block(else_if_block, expected_return, checkpoint)?
+                            && then_returns;
                 }
                 let else_returns = if let Some(else_block) = else_block {
                     self.type_check_block(else_block, expected_return, checkpoint)?
@@ -2277,7 +2306,8 @@ impl Analyzer {
                             ForIter::Iter(expr) => {
                                 let iter_eval = self.type_check_expr(expr, true);
                                 let iter_ty = iter_eval.ty.as_ref().map(|t| {
-                                    if let TypeKind::Ref { inner } | TypeKind::MutRef { inner } = t {
+                                    if let TypeKind::Ref { inner } | TypeKind::MutRef { inner } = t
+                                    {
                                         &inner.node
                                     } else {
                                         t
@@ -3648,8 +3678,8 @@ impl Analyzer {
                         .insert(full_access);
                 }
                 if self.is_module_import_receiver(object) {
-                    let resolved_method = self.resolve_module_method(object, method);
-                    let contextual_signature = resolved_method.as_ref().and_then(|resolved| {
+                    let module_method = self.resolve_module_method(object, method);
+                    let contextual_signature = module_method.as_ref().and_then(|resolved| {
                         self.resolve_symbol(resolved).map(|symbol| {
                             let substitution: std::collections::HashMap<String, TypeKind> = symbol
                                 .generic_params
@@ -3689,7 +3719,7 @@ impl Analyzer {
                         });
                         arg_evals.push(self.type_check_expr_expected(arg, reachable, expected));
                     }
-                    if let Some(resolved) = &resolved_method {
+                    if let Some(resolved) = &module_method {
                         if let Some(sym) = self.resolve_symbol(resolved) {
                             if !matches!(sym.kind, SymbolKind::Function) {
                                 let msg = if let Some(ref path) = sym.import_path {
@@ -3717,16 +3747,10 @@ impl Analyzer {
                                     );
                                 }
                                 let eval = self.check_function_call(
-                                    resolved,
-                                    expr.span,
-                                    expr.span,
-                                    args,
-                                    named_args,
-                                    &arg_evals,
-                                    &sym,
-                                    type_args,
+                                    resolved, expr.span, expr.span, args, named_args, &arg_evals,
+                                    &sym, type_args,
                                 );
-                                self.annotate_expr(expr, &eval, reachable, Some(resolved.clone()));
+                                resolved_method = Some(resolved.clone());
                                 eval
                             }
                         } else if !self.source_files.is_empty() {
@@ -3871,8 +3895,11 @@ impl Analyzer {
                                             );
                                             let mono_name =
                                                 mangle_monomorphized(&method_full, &type_args);
-                                            if !self.has_monomorphization(&method_full, &type_args, &mono_name)
-                                            {
+                                            if !self.has_monomorphization(
+                                                &method_full,
+                                                &type_args,
+                                                &mono_name,
+                                            ) {
                                                 self.monomorphizations.push(MonomorphizationInfo {
                                                     fn_name: method_full.clone(),
                                                     type_args,
@@ -4004,15 +4031,16 @@ impl Analyzer {
                         .map(|ty| self.explicit_method_receiver_capabilities(ty, method))
                         .unwrap_or((false, false));
                     self.require_exclusive_receiver(object, object_eval.ty.as_ref(), method);
-                    let reference_receiver_is_compatible = object_eval.ty.as_ref().is_some_and(|ty| {
-                        match self.resolve_type_aliases(ty) {
-                            TypeKind::Ref { .. } => shared_receiver_is_explicit,
-                            TypeKind::MutRef { .. } => {
-                                shared_receiver_is_explicit || exclusive_receiver_is_explicit
+                    let reference_receiver_is_compatible =
+                        object_eval.ty.as_ref().is_some_and(|ty| {
+                            match self.resolve_type_aliases(ty) {
+                                TypeKind::Ref { .. } => shared_receiver_is_explicit,
+                                TypeKind::MutRef { .. } => {
+                                    shared_receiver_is_explicit || exclusive_receiver_is_explicit
+                                }
+                                other => !contains_non_string_reference(&other),
                             }
-                            other => !contains_non_string_reference(&other),
-                        }
-                    });
+                        });
                     if !reference_receiver_is_compatible
                         || self.expr_dereferences_shared_reference(object)
                     {
@@ -4039,25 +4067,23 @@ impl Analyzer {
                                     });
                             }
                             let resolved_object_ty = self.resolve_type_aliases(object_ty);
-                            let type_name = super::declare::type_kind_base_name(&resolved_object_ty);
+                            let type_name =
+                                super::declare::type_kind_base_name(&resolved_object_ty);
                             let mangled = format!("{}.{}", type_name, method);
                             let symbol = self.resolve_symbol(&mangled)?;
                             let substitution: std::collections::HashMap<String, TypeKind> =
                                 match receiver_named_type_args(&resolved_object_ty).as_slice() {
-                                    type_args if !type_args.is_empty() => {
-                                        self.struct_generic_params
-                                            .get(type_name.as_str())
-                                            .map(|params| {
-                                                params
-                                                    .iter()
-                                                    .zip(type_args.iter())
-                                                    .map(|(param, ty)| {
-                                                        (param.clone(), ty.node.clone())
-                                                    })
-                                                    .collect()
-                                            })
-                                            .unwrap_or_default()
-                                    }
+                                    type_args if !type_args.is_empty() => self
+                                        .struct_generic_params
+                                        .get(type_name.as_str())
+                                        .map(|params| {
+                                            params
+                                                .iter()
+                                                .zip(type_args.iter())
+                                                .map(|(param, ty)| (param.clone(), ty.node.clone()))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default(),
                                     _ => std::collections::HashMap::new(),
                                 };
                             let params = symbol
@@ -4115,13 +4141,7 @@ impl Analyzer {
                         let prefer_primitive_builtin = !receiver_is_named_type(&resolved_object_ty)
                             && matches!(
                                 method.as_str(),
-                                "len"
-                                    | "to_str"
-                                    | "to_string"
-                                    | "as_string"
-                                    | "as_str"
-                                    | "as_ptr"
-                                    | "parse"
+                                "len" | "to_str" | "as_string" | "as_str" | "as_ptr" | "parse"
                             );
                         if prefer_primitive_builtin {
                             None
@@ -4138,11 +4158,7 @@ impl Analyzer {
                             // codegen key for reachability and direct dispatch.
                             let declared_type_name =
                                 type_name.rsplit('.').next().unwrap_or(type_name.as_str());
-                            let codegen_mangled = format!(
-                                "{}.{}",
-                                declared_type_name,
-                                method
-                            );
+                            let codegen_mangled = format!("{}.{}", declared_type_name, method);
                             let resolved_mangled = if self.resolve_symbol(&mangled).is_some() {
                                 mangled.clone()
                             } else {
@@ -4161,7 +4177,9 @@ impl Analyzer {
                                     .unwrap_or_default();
                                 let mut subst = std::collections::HashMap::new();
                                 let receiver_value_ty = match &resolved_object_ty {
-                                    TypeKind::Ref { inner } | TypeKind::MutRef { inner } => &inner.node,
+                                    TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                                        &inner.node
+                                    }
                                     other => other,
                                 };
                                 if let Some(receiver_ty) = sym.params.first() {
@@ -4180,7 +4198,8 @@ impl Analyzer {
                                     let expected_receiver = self.resolve_type_aliases(
                                         &substitute_type_kind(expected_receiver, &subst),
                                     );
-                                    if !self.types_compatible(&expected_receiver, receiver_value_ty) {
+                                    if !self.types_compatible(&expected_receiver, receiver_value_ty)
+                                    {
                                         self.push_error(
                                             expr.span,
                                             "S08",
@@ -4234,6 +4253,15 @@ impl Analyzer {
                                     );
                                 }
                                 for (i, arg_eval) in arg_evals.iter().enumerate() {
+                                    if is_variadic
+                                        && i >= fixed_count
+                                        && sym
+                                            .attributes
+                                            .iter()
+                                            .any(|attribute| attribute == "str_variadic")
+                                    {
+                                        continue;
+                                    }
                                     let param_ty = if is_variadic && i >= fixed_count {
                                         method_params.last()
                                     } else {
@@ -4334,8 +4362,11 @@ impl Analyzer {
                                     );
                                     let mono_name =
                                         mangle_monomorphized(&codegen_mangled, &type_kinds);
-                                    if !self.has_monomorphization(&codegen_mangled, &type_kinds, &mono_name)
-                                    {
+                                    if !self.has_monomorphization(
+                                        &codegen_mangled,
+                                        &type_kinds,
+                                        &mono_name,
+                                    ) {
                                         self.monomorphizations.push(MonomorphizationInfo {
                                             fn_name: codegen_mangled.clone(),
                                             type_args: type_kinds,
@@ -4353,6 +4384,24 @@ impl Analyzer {
                                     &from,
                                     &codegen_mangled,
                                 );
+                                if sym
+                                    .attributes
+                                    .iter()
+                                    .any(|attribute| attribute == "str_variadic")
+                                {
+                                    self.add_dependency_edge(
+                                        DependencyKind::Call,
+                                        &from,
+                                        "fmt.format",
+                                    );
+                                    if let Some(expanded) =
+                                        crate::parser::format::expand_format_call_args(args)
+                                    {
+                                        for argument in &expanded.args {
+                                            self.type_check_expr(argument, reachable);
+                                        }
+                                    }
+                                }
                                 if sym.unsafe_fn && self.unsafe_depth == 0 {
                                     self.push_error(
                                         expr.span,
@@ -4493,9 +4542,10 @@ impl Analyzer {
                         let builtin_ty = match method.as_str() {
                             "len" => Some(TypeKind::Usize),
                             "to_str" => Some(ref_str.clone()),
-                            // Runtime primitive formatting currently returns a heap-backed,
-                            // NUL-terminated string view, not the three-word String struct.
-                            "to_string" => Some(TypeKind::Str),
+                            "to_string" => {
+                                self.push_error(expr.span, "S04", "to_string() requires an owned Display implementation; enable the prelude or provide one".to_string());
+                                None
+                            }
                             "as_string" | "as_str" => match &object_eval.ty {
                                 Some(t)
                                     if matches!(t, TypeKind::Str | TypeKind::Ref { .. })
@@ -5198,6 +5248,12 @@ impl Analyzer {
                                     .unwrap_or_default();
                                 let mut substitution = std::collections::HashMap::new();
                                 if let Some(receiver_ty) = sym.params.first() {
+                                    let receiver_ty = match receiver_ty {
+                                        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                                            &inner.node
+                                        }
+                                        other => other,
+                                    };
                                     infer_type_subst(
                                         receiver_ty,
                                         object_ty,
@@ -5233,8 +5289,7 @@ impl Analyzer {
                             );
                             if type_args.len() == generic_params.len() {
                                 let mono_name = mangle_monomorphized(&mangled, &type_args);
-                                if !self.has_monomorphization(&mangled, &type_args, &mono_name)
-                                {
+                                if !self.has_monomorphization(&mangled, &type_args, &mono_name) {
                                     self.monomorphizations.push(MonomorphizationInfo {
                                         fn_name: mangled.clone(),
                                         type_args,
@@ -6589,9 +6644,13 @@ impl Analyzer {
             }
             _ => {}
         }
-        if matches!(expected_resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. })
-            && !matches!(actual_resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. } | TypeKind::Str)
-        {
+        if matches!(
+            expected_resolved,
+            TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+        ) && !matches!(
+            actual_resolved,
+            TypeKind::Ref { .. } | TypeKind::MutRef { .. } | TypeKind::Str
+        ) {
             return false;
         }
         self.types_compatible(&expected_resolved, &actual_resolved)
@@ -6924,8 +6983,7 @@ impl Analyzer {
                             );
                         }
                         let mangled = mangle_monomorphized("Array.set", &type_kinds);
-                        if !self.has_monomorphization("Array.set", &type_kinds, &mangled)
-                        {
+                        if !self.has_monomorphization("Array.set", &type_kinds, &mangled) {
                             self.monomorphizations.push(MonomorphizationInfo {
                                 fn_name: "Array.set".to_string(),
                                 type_args: type_kinds,
@@ -7384,7 +7442,9 @@ fn builtin_constructor_kind(name: &str, symbol: &Symbol) -> Option<&'static str>
 pub(super) fn type_contains_error(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Error => true,
-        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => type_contains_error(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
+            type_contains_error(&inner.node)
+        }
         TypeKind::Array { elem_ty, .. }
         | TypeKind::FlexibleArray { elem_ty }
         | TypeKind::Slice { elem_ty } => type_contains_error(&elem_ty.node),
@@ -8057,7 +8117,9 @@ fn infer_type_subst(
             infer_type_subst(&elem_ty.node, arg_ty, generic_params, subst);
         }
         TypeKind::Ref { inner } => {
-            if let TypeKind::Ref { inner: arg_inner } | TypeKind::MutRef { inner: arg_inner } = arg_ty {
+            if let TypeKind::Ref { inner: arg_inner } | TypeKind::MutRef { inner: arg_inner } =
+                arg_ty
+            {
                 infer_type_subst(&inner.node, &arg_inner.node, generic_params, subst);
             }
         }

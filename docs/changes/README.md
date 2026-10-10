@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-10-10: Owned formatting and temporary cleanup](2026-10-10-owned-formatting.md)
+
 - [2026-10-09: Generic binding context](2026-10-09-generic-binding-context.md)
 
 - [2026-10-09: Checked transparent aliases](2026-10-09-type-alias-resolution.md)

@@ -83,10 +83,10 @@ Build dependency trees show logical import names such as `std.io` and
 Git's reported percentage as an accurate progress bar followed by the same green
 status diamond as build stages; failures use a red diamond.
 
-## QZI v10
+## QZI v11
 
 QZI is both the portable bytecode container and compiled-library format. It is
-not a package-manager archive. A v10 file contains:
+not a package-manager archive. A v11 file contains:
 
 1. package name, version, `executable`/`library` kind, and entry signature;
 2. a source-visible public interface;
@@ -109,8 +109,13 @@ The current reader remains compatible with compatible v2-v9 files; v1
 requires a source rebuild because it omitted frame metadata, and legacy files
 with implicit `Lea` metadata, parameterized v6 trait interfaces, or v6 public
 runtime-`any` interfaces require rebuilding. Older compilers must reject v10
-rather than silently ignore the new semantics. QZC v8 invalidates older cached
+rather than silently ignore the new semantics. QZC v9 invalidates older cached
 QZI modules automatically.
+
+V11 adds the original ownership ABI generation to content-bound metadata.
+Older allocating or ambiguous ownership contracts require a source rebuild;
+namespace rewriting or reserialization retains their origin. See
+[owned formatting and QZI v11](migrations/owned-formatting.md).
 
 QZI v7 is also the affine function-value ownership boundary. Compatible older
 artifacts remain readable only when they expose no owned `fn` contract and

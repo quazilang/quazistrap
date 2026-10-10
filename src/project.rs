@@ -1054,6 +1054,7 @@ fn collect_modules(
                 })?;
                 let mut module = crate::bytecode::deserialize_qzi_module(&bytes)
                     .map_err(|error| format!("invalid QZI dependency '{}': {error}", dep.name))?;
+                module.validate_current_ownership_abi()?;
                 let identity =
                     (!module.metadata.name.is_empty()).then(|| module.metadata.name.clone());
                 if module.metadata.kind != crate::bytecode::QziModuleKind::Library {
@@ -1523,6 +1524,7 @@ version = "1.2.3"
             },
             interface,
             call_relocations: Vec::new(),
+            ownership_abi_version: 9,
             ownership: Default::default(),
             chunks: vec![answer],
         };
@@ -1596,6 +1598,7 @@ numbers = { path = "dep.qzi" }
             },
             interface: String::new(),
             call_relocations: codegen.external_call_relocations().to_vec(),
+            ownership_abi_version: crate::bytecode::chunk::QZI_VERSION,
             ownership: Default::default(),
             chunks,
         };
@@ -1603,6 +1606,7 @@ numbers = { path = "dep.qzi" }
             &fs::read(&context.config.qzi_dependencies[0]).expect("read aliased dependency"),
         )
         .expect("deserialize aliased dependency");
+        assert_eq!(aliased_dependency.ownership_abi_version, 9);
         assert!(matches!(
             aliased_dependency.ownership,
             crate::bytecode::QziOwnershipArtifact::Unverified { .. }

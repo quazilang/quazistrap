@@ -2496,6 +2496,73 @@ mod tests {
     }
 
     #[test]
+    fn consuming_destructor_cannot_return_an_owner_or_scalar() {
+        for result in ["Token", "i32"] {
+            let source = format!(
+                "struct Token {{ value: i32, }} impl Token {{ fn free(self: Token) {result}; }} fn main() void {{}}"
+            );
+            let report = analyze(&source);
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.code == "S14" && error.message.contains("destructor must return void")
+                }),
+                "{:?}",
+                report.errors
+            );
+        }
+        let report = analyze(
+            "type Nothing = void; struct Token { value: i32, } impl Token { fn free(self: Token) Nothing; } fn main() void {}",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let report = analyze(
+            "struct Token { value: i32, } impl Token { fn free(self: &Token) i32 { ret self.value; } } fn main() void {}",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn display_variadic_arguments_borrow_owned_strings_through_the_call() {
+        let declarations = "struct String { value: i32, } impl String { fn free(self: String) void {} fn len(self: &String) i32 { ret self.value; } } fn emit(template: str, ...args: str) void {} fn consume(value: String) i32 { ret 0; }";
+        let report = analyze(&format!(
+            "{declarations} fn main() void {{ const value = String {{ value: 1 }}; emit(\"{{}}\", value); value.len(); }}"
+        ));
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let report = analyze(&format!(
+            "{declarations} fn main() void {{ const value = String {{ value: 1 }}; emit(\"{{}}{{}}\", value, consume(value)); }}"
+        ));
+        assert!(
+            report.errors.iter().any(|error| error.code == "S10"),
+            "{:?}",
+            report.errors
+        );
+        let report = analyze_module_pair(
+            "pub fn apply(template: str, ...args: str) void {}",
+            "import helpers; struct String { value: i32, } impl String { fn free(self: String) void {} fn len(self: &String) i32 { ret self.value; } } fn main() void { const value = String { value: 1 }; helpers.apply(\"{}\", value); value.len(); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(
+            report
+                .annotated_exprs
+                .iter()
+                .any(|annotation| annotation.resolved_fn.as_deref() == Some("helpers.apply"))
+        );
+    }
+
+    #[test]
+    fn shared_index_receiver_infers_concrete_element_and_keeps_owner_live() {
+        let report = analyze(
+            "trait Index[I, O] { fn index(self: &Self, i: I) O; } struct Buffer[T] { value: T, } impl Index[usize, T] for Buffer[T] { fn index(self: &Buffer[T], i: usize) T { ret self.value; } } fn main() i32 { const items: Buffer[i32] = Buffer { value: 7 }; const first: i32 = items[0]; const second: i32 = items[0]; ret first + second; }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(
+            report
+                .monomorphizations
+                .iter()
+                .any(|mono| mono.mangled_name == "Buffer.index<i32>")
+        );
+    }
+
+    #[test]
     fn cancellable_analysis_stops_between_top_level_items() {
         let program = parse_program("fn first() void {}\nfn second() void {}\nfn main() void {}\n");
         let mut analyzer = Analyzer::new();
@@ -6767,12 +6834,12 @@ fn main() void {
     fn trait_impl_method_call_resolves_type() {
         let report = analyze(
             r#"
-trait Display { fn label(self: Self) str; }
+trait Display { fn label(self: &Self) str; }
 
 struct Tag { name: str, }
 
 impl Display for Tag {
-    fn label(self: Tag) str { ret self.name; }
+    fn label(self: &Tag) str { ret self.name; }
 }
 
 fn main() void {

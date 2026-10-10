@@ -221,9 +221,9 @@ content-bound ownership-artifact envelope.
 
 ### Local RAII Cleanup
 
-- Codegen tracks local variables with a consuming `free(self)` hook and emits destructor calls at block exits and before returns. It also has a constrained structural fallback for acyclic, non-generic, non-C-layout structs without a source hook: eligible fields are cleaned in reverse declaration order. Arrays, enums, recursive/generic layouts, and aggregate-storage release remain deferred.
+- Codegen tracks local variables with a consuming `free(self)` hook and emits destructor calls at block exits and before returns. It also has a constrained structural fallback for acyclic, non-generic, non-C-layout structs without a source hook: eligible fields are cleaned in reverse declaration order. Arrays, enums, recursive/generic layouts, remain deferred; supported source-hook and structural owners release parent storage after resource/field teardown.
 - Destructor roots are forced reachable so tree-shaking keeps `Type.free` and its dependencies.
-- Values moved into returns/call args are deactivated to avoid double-free; method receivers remain non-consuming to match existing `self: Array[T]` APIs.
+- Values moved into returns/call args are deactivated to avoid double-free; explicit by-value receivers consume; shared and exclusive receivers borrow. Consuming `free(self)` hooks return void. Full-expression named-owner temporaries use zero-initialized guarded slots so skipped branches and early exits release only produced, untransferred owners.
 - `Array[T]` and `String` locals are auto-cleaned at scope exit.
 - This is source-level cleanup, not `Drop` bytecode yet.
 

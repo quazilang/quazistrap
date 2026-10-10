@@ -72,8 +72,10 @@ input, output, runtime, selection, and limitation contracts.
 | macOS x86-64 | ~~Mach-O~~ ELF | SysV | Broken — `select_backend()` maps macOS to `ElfBackend`, `emit_start: false`, no Mach-O relocations |
 
 Windows argument-taking entry points parse the Unicode command line with
-`GetCommandLineW`/`CommandLineToArgvW`, convert each argument to UTF-8, and keep
-the Quazi `Array[str]` outside the Win64 caller shadow space. This requires
+`GetCommandLineW`/`CommandLineToArgvW`, convert each argument to UTF-8, and place
+the Quazi `Array[str]` header on the process heap, matching source destruction.
+Linux argument-taking entries likewise allocate their Array header and pointer
+storage through the embedded allocator; main owns both. This requires
 `shell32.lib` in addition to Kernel32. Windows links the system `ws2_32.lib`
 so `std.net` works without project-specific linker configuration; CRT libraries
 remain opt-in.

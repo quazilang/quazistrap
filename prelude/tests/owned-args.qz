@@ -1,0 +1,8 @@
+// main must receive a heap-owned Array header, including when it moves args.
+fn consume(args: Array[str]) i32 {
+    if (args.len() < 1) { ret 1; }
+    if (args[0].len() == 0) { ret 2; }
+    ret 0;
+}
+
+fn main(args: Array[str]) i32 { ret consume(args); }

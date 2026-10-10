@@ -279,6 +279,7 @@ fn run_project(
     codegen.set_native_mangling(context.config.package.mangling);
     let generated = codegen.compile_program(&program, &loaded.source_files)?;
     let mut modules = vec![QziModule {
+        ownership_abi_version: crate::bytecode::chunk::QZI_VERSION,
         metadata: QziMetadata {
             name: context.config.name.clone(),
             version: context.config.version.clone(),

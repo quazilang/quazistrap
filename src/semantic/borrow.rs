@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::parser::ast::*;
 
@@ -24,6 +24,14 @@ struct OwnedVar {
     shared_borrow: Option<Loan>,
     /// First live exclusive loan of this root.
     exclusive_borrow: Option<Loan>,
+    /// Conservative roots of a string view or a reference used to derive one.
+    view_origins: BTreeSet<ViewOrigin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ViewOrigin {
+    Owner { name: String, scope_depth: usize },
+    Temporary,
 }
 
 /// A lexical loan. Borrowed references cannot escape their declaring scope, so
@@ -70,6 +78,7 @@ struct MoveEnv {
     /// consumed receiver when compiler-generated structural cleanup can prove
     /// the remaining fields are still destructible.
     returning_receiver_field: Option<String>,
+    capture_boundary: Option<usize>,
 }
 
 impl MoveEnv {
@@ -82,6 +91,7 @@ impl MoveEnv {
             destructor_receiver: None,
             consuming_receiver: None,
             returning_receiver_field: None,
+            capture_boundary: None,
         }
     }
 
@@ -153,6 +163,7 @@ impl MoveEnv {
                     control_depth_at_decl: control_depth,
                     shared_borrow: None,
                     exclusive_borrow: None,
+                    view_origins: BTreeSet::new(),
                 },
             );
         }
@@ -165,6 +176,21 @@ impl MoveEnv {
             }
         }
         None
+    }
+
+    fn binding_depth(&self, name: &str) -> Option<usize> {
+        self.scopes
+            .iter()
+            .rposition(|scope| scope.contains_key(name))
+    }
+
+    fn set_view_origins(&mut self, name: &str, origins: BTreeSet<ViewOrigin>) {
+        if let Some(depth) = self.binding_depth(name) {
+            self.scopes[depth]
+                .get_mut(name)
+                .expect("binding exists")
+                .view_origins = origins;
+        }
     }
 
     fn mark_moved(&mut self, name: &str, at: Span) {
@@ -223,6 +249,13 @@ impl MoveEnv {
                 }
                 if let Some(loan) = var.exclusive_borrow {
                     self.mark_exclusive_borrowed(name, loan.at);
+                }
+                if let Some(depth) = self.binding_depth(name) {
+                    self.scopes[depth]
+                        .get_mut(name)
+                        .expect("binding exists")
+                        .view_origins
+                        .extend(var.view_origins.iter().cloned());
                 }
             }
         }
@@ -353,6 +386,219 @@ impl Analyzer {
         env.exit_scope();
     }
 
+    fn bc_is_string_view(&self, ty: &TypeKind) -> bool {
+        match self.resolve_type_aliases(ty) {
+            TypeKind::Str => true,
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                matches!(inner.node, TypeKind::Str)
+            }
+            _ => false,
+        }
+    }
+
+    fn bc_view_origins(&self, expr: &Expr, env: &MoveEnv) -> BTreeSet<ViewOrigin> {
+        if !self
+            .bc_annotated_type(expr)
+            .as_ref()
+            .is_some_and(|ty| self.bc_is_string_view(ty))
+        {
+            return BTreeSet::new();
+        }
+        match &expr.node {
+            ExprKind::Ident(name) => env
+                .lookup(name)
+                .map(|var| var.view_origins.clone())
+                .unwrap_or_default(),
+            ExprKind::Group(inner)
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::Unary { expr: inner, .. }
+            | ExprKind::Try { expr: inner } => self.bc_view_origins(inner, env),
+            ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
+                self.bc_owner_origins(object, env)
+            }
+            ExprKind::MethodCall {
+                object,
+                args,
+                named_args,
+                ..
+            } => {
+                let mut roots = self.bc_view_origins(object, env);
+                if !self.bc_has_consuming_receiver(expr) {
+                    roots.extend(self.bc_owner_origins(object, env));
+                }
+                for argument in args.iter().chain(named_args.iter().map(|(_, arg)| arg)) {
+                    roots.extend(self.bc_borrowed_argument_origins(argument, env));
+                }
+                roots
+            }
+            ExprKind::Call {
+                args, named_args, ..
+            } => args
+                .iter()
+                .chain(named_args.iter().map(|(_, arg)| arg))
+                .flat_map(|argument| self.bc_borrowed_argument_origins(argument, env))
+                .collect(),
+            ExprKind::Assign { value, .. } => self.bc_view_origins(value, env),
+            ExprKind::Match { arms, .. } => arms
+                .iter()
+                .flat_map(|arm| self.bc_view_origins(&arm.expr, env))
+                .collect(),
+            _ => BTreeSet::new(),
+        }
+    }
+
+    fn bc_borrowed_argument_origins(&self, expr: &Expr, env: &MoveEnv) -> BTreeSet<ViewOrigin> {
+        if self
+            .bc_annotated_type(expr)
+            .as_ref()
+            .is_some_and(|ty| self.bc_is_string_view(ty))
+        {
+            return self.bc_view_origins(expr, env);
+        }
+        if self.bc_annotated_type(expr).as_ref().is_some_and(|ty| {
+            matches!(
+                self.resolve_type_aliases(ty),
+                TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+            )
+        }) {
+            return self.bc_owner_origins(expr, env);
+        }
+        BTreeSet::new()
+    }
+
+    fn bc_owner_origins(&self, expr: &Expr, env: &MoveEnv) -> BTreeSet<ViewOrigin> {
+        match &expr.node {
+            ExprKind::Group(inner)
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::Unary { expr: inner, .. }
+            | ExprKind::Try { expr: inner } => {
+                return self.bc_owner_origins(inner, env);
+            }
+            ExprKind::Ident(name) => {
+                if let Some(var) = env.lookup(name) {
+                    if !var.view_origins.is_empty() {
+                        return var.view_origins.clone();
+                    }
+                    if var.ty.as_ref().is_some_and(|ty| {
+                        let resolved = self.resolve_type_aliases(ty);
+                        matches!(resolved, TypeKind::Named { .. })
+                            && self.bc_is_move_type(&resolved)
+                    }) {
+                        return BTreeSet::from([ViewOrigin::Owner {
+                            name: name.clone(),
+                            scope_depth: env.binding_depth(name).expect("binding exists"),
+                        }]);
+                    }
+                }
+                return BTreeSet::new();
+            }
+            ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
+                return self.bc_owner_origins(object, env);
+            }
+            _ => {}
+        }
+        match self
+            .bc_annotated_type(expr)
+            .as_ref()
+            .map(|ty| self.resolve_type_aliases(ty))
+        {
+            Some(ty @ TypeKind::Named { .. }) if self.bc_is_move_type(&ty) => {
+                BTreeSet::from([ViewOrigin::Temporary])
+            }
+            Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. }) => match &expr.node {
+                ExprKind::MethodCall { object, .. } => self.bc_owner_origins(object, env),
+                ExprKind::Call {
+                    args, named_args, ..
+                } => args
+                    .iter()
+                    .chain(named_args.iter().map(|(_, arg)| arg))
+                    .flat_map(|arg| self.bc_borrowed_argument_origins(arg, env))
+                    .collect(),
+                _ => BTreeSet::new(),
+            },
+            _ => BTreeSet::new(),
+        }
+    }
+
+    fn bc_bind_view(&mut self, name: &str, value: &Expr, env: &mut MoveEnv) {
+        let roots = self.bc_binding_view_origins(value, env);
+        self.bc_bind_view_origins(name, value, roots, env);
+    }
+
+    fn bc_binding_view_origins(&self, value: &Expr, env: &MoveEnv) -> BTreeSet<ViewOrigin> {
+        let is_view = self
+            .bc_annotated_type(value)
+            .as_ref()
+            .is_some_and(|ty| self.bc_is_string_view(ty));
+        if is_view {
+            self.bc_view_origins(value, env)
+        } else {
+            self.bc_borrowed_argument_origins(value, env)
+        }
+    }
+
+    fn bc_bind_view_origins(
+        &mut self,
+        name: &str,
+        value: &Expr,
+        roots: BTreeSet<ViewOrigin>,
+        env: &mut MoveEnv,
+    ) {
+        let is_view = self
+            .bc_annotated_type(value)
+            .as_ref()
+            .is_some_and(|ty| self.bc_is_string_view(ty));
+        let binding_depth = env.binding_depth(name).expect("view binding declared");
+        for root in roots.iter().filter(|_| is_view) {
+            match root {
+                ViewOrigin::Temporary => self.push_error(value.span, "S10",
+                    "cannot store a string view borrowed from a temporary owner; keep the owner in a local binding".to_string()),
+                ViewOrigin::Owner { name: owner, scope_depth } => {
+                    if *scope_depth > binding_depth {
+                        self.push_error(value.span, "S10", format!(
+                            "string view binding `{name}` would outlive its owner `{owner}`"));
+                    }
+                    if let Some(var) = env.scopes.get_mut(*scope_depth).and_then(|scope| scope.get_mut(owner)) {
+                        if let Some(loan) = &mut var.shared_borrow {
+                            loan.scope_depth = loan.scope_depth.min(binding_depth);
+                        } else {
+                            var.shared_borrow = Some(Loan { at: value.span, scope_depth: binding_depth });
+                        }
+                    }
+                }
+            }
+        }
+        env.set_view_origins(name, roots);
+    }
+
+    fn bc_loan_view_argument(&self, value: &Expr, env: &mut MoveEnv) {
+        let depth = env.scopes.len().saturating_sub(1);
+        for root in self.bc_view_origins(value, env) {
+            if let ViewOrigin::Owner { name, scope_depth } = root
+                && let Some(var) = env
+                    .scopes
+                    .get_mut(scope_depth)
+                    .and_then(|scope| scope.get_mut(&name))
+            {
+                if let Some(loan) = &mut var.shared_borrow {
+                    loan.scope_depth = loan.scope_depth.min(depth);
+                } else {
+                    var.shared_borrow = Some(Loan {
+                        at: value.span,
+                        scope_depth: depth,
+                    });
+                }
+            }
+        }
+    }
+
+    fn bc_reject_view_escape(&mut self, value: &Expr, env: &MoveEnv, destination: &str) {
+        if !self.bc_view_origins(value, env).is_empty() {
+            self.push_error(value.span, "S10", format!(
+                "cannot {destination} a string view rooted in an owned local or temporary before escape analysis proves its lifetime"));
+        }
+    }
+
     fn bc_stmt(&mut self, stmt: &Stmt, env: &mut MoveEnv) {
         match &stmt.node {
             StmtKind::Var {
@@ -366,10 +612,21 @@ impl Analyzer {
                 if let Some(v) = value {
                     self.bc_expr(v, env, true);
                 }
+                let origins = value
+                    .as_ref()
+                    .map(|value| self.bc_binding_view_origins(value, env));
                 if let Some(var_ty) = &var_ty {
                     self.bc_record_contiguous_destructor_root(var_ty);
                 }
                 env.declare(name.clone(), var_ty);
+                if let Some(value) = value {
+                    self.bc_bind_view_origins(
+                        name,
+                        value,
+                        origins.expect("initialized binding"),
+                        env,
+                    );
+                }
             }
             StmtKind::Const {
                 name, ty, value, ..
@@ -379,12 +636,15 @@ impl Analyzer {
                     .map(|t| t.node.clone())
                     .or_else(|| self.bc_annotated_type(value));
                 self.bc_expr(value, env, true);
+                let origins = self.bc_binding_view_origins(value, env);
                 if let Some(var_ty) = &var_ty {
                     self.bc_record_contiguous_destructor_root(var_ty);
                 }
                 env.declare(name.clone(), var_ty);
+                self.bc_bind_view_origins(name, value, origins, env);
             }
             StmtKind::Return(Some(expr)) => {
+                self.bc_reject_view_escape(expr, env, "return");
                 // Return exits the function; moves here don't affect post-return code.
                 // Use a cloned env with loop_depth=0 to suppress the "move in loop" error
                 // (the loop never runs again after a return) and don't apply back.
@@ -503,7 +763,8 @@ impl Analyzer {
     /// Returns true only for Named types that are concrete user-defined structs/enums.
     /// Generic type params (K, V, T, etc.) and unknown names are treated as Copy.
     pub(super) fn bc_is_move_type(&self, ty: &TypeKind) -> bool {
-        match ty {
+        let resolved = self.resolve_type_aliases(ty);
+        match &resolved {
             // Primitives and shared references are Copy. Exclusive references are
             // affine capabilities, so assigning one transfers it instead.
             TypeKind::Bool
@@ -547,6 +808,35 @@ impl Analyzer {
         match &expr.node {
             ExprKind::Ident(name) => {
                 let Some(var) = env.lookup(name) else { return };
+                if !var.view_origins.is_empty() {
+                    if env.capture_boundary.is_some_and(|boundary| {
+                        env.binding_depth(name)
+                            .is_some_and(|depth| depth < boundary)
+                    }) {
+                        self.push_error(expr.span, "S10", format!(
+                            "cannot capture owner-rooted string view `{name}` before escape analysis proves its lifetime"));
+                    }
+                    for origin in &var.view_origins {
+                        if let ViewOrigin::Owner {
+                            name: owner,
+                            scope_depth,
+                        } = origin
+                            && env
+                                .scopes
+                                .get(*scope_depth)
+                                .and_then(|scope| scope.get(owner))
+                                .is_none_or(|root| root.moved_at.is_some())
+                        {
+                            self.push_error(
+                                expr.span,
+                                "S10",
+                                format!(
+                                    "string view `{name}` refers to an unavailable owner `{owner}`"
+                                ),
+                            );
+                        }
+                    }
+                }
                 if let Some(borrowed_at) = var.exclusive_borrow.map(|loan| loan.at) {
                     self.push_error(
                         expr.span,
@@ -661,7 +951,13 @@ impl Analyzer {
                 if let Some(name) = assignment_target_ident(target) {
                     env.reassign_targets.remove(name);
                     env.reinit(name);
+                    if env.lookup(name).is_some() {
+                        self.bc_bind_view(name, value, env);
+                    } else {
+                        self.bc_reject_view_escape(value, env, "store");
+                    }
                 } else {
+                    self.bc_reject_view_escape(value, env, "store");
                     self.bc_expr(target, env, false);
                 }
             }
@@ -686,6 +982,13 @@ impl Analyzer {
                 ..
             } => {
                 self.bc_expr(callee, env, false);
+                if let ExprKind::Ident(variant) = &callee.node
+                    && self.bc_is_enum_constructor(expr, variant)
+                {
+                    for argument in args.iter().chain(named_args.iter().map(|(_, arg)| arg)) {
+                        self.bc_reject_view_escape(argument, env, "store in an enum");
+                    }
+                }
                 // A resolved safe source function cannot currently return,
                 // store, or capture a non-string reference. Give its
                 // direct-call arguments a synthetic lexical scope so an
@@ -693,7 +996,16 @@ impl Analyzer {
                 // Function values, foreign/unsafe calls, variadics, and QZI
                 // interfaces remain opaque and retain the surrounding loan.
                 let direct_call = self.bc_resolved_direct_call(expr);
-                if direct_call {
+                // Keep an owner-backed string argument alive through sibling
+                // argument evaluation. This region is only a local evaluation
+                // guard; returned views are propagated separately and it is
+                // not an opaque-callee escape certificate.
+                let view_arguments = args
+                    .iter()
+                    .chain(named_args.iter().map(|(_, arg)| arg))
+                    .any(|argument| !self.bc_view_origins(argument, env).is_empty())
+                    || self.bc_is_display_variadic_call(expr);
+                if direct_call || view_arguments {
                     env.enter_scope();
                 }
                 for (index, arg) in args.iter().enumerate() {
@@ -710,17 +1022,23 @@ impl Analyzer {
                         env,
                     );
                 }
-                if direct_call {
+                if direct_call || view_arguments {
                     env.exit_scope();
                 }
             }
 
             ExprKind::MethodCall {
                 object,
+                method,
                 args,
                 named_args,
                 ..
             } => {
+                if self.bc_is_enum_constructor(expr, method) {
+                    for argument in args.iter().chain(named_args.iter().map(|(_, arg)| arg)) {
+                        self.bc_reject_view_escape(argument, env, "store in an enum");
+                    }
+                }
                 if self.bc_is_owned_contiguous_element_value_read(expr, object) {
                     self.push_error(
                         expr.span,
@@ -730,27 +1048,44 @@ impl Analyzer {
                 }
                 let shared_receiver = self.bc_has_explicit_shared_receiver(expr);
                 let exclusive_receiver = self.bc_has_explicit_exclusive_receiver(expr);
+                let view_receiver = !self.bc_view_origins(object, env).is_empty();
+                let view_arguments = args
+                    .iter()
+                    .chain(named_args.iter().map(|(_, arg)| arg))
+                    .any(|argument| !self.bc_view_origins(argument, env).is_empty())
+                    || self.bc_is_display_variadic_call(expr);
                 let consuming_receiver =
                     self.bc_has_consuming_receiver(expr) && !self.bc_is_dynamic_receiver(object);
                 if exclusive_receiver {
                     self.bc_reject_borrowed_write(object, env);
                 }
                 self.bc_expr(object, env, consuming_receiver);
-                if shared_receiver || exclusive_receiver {
+                if shared_receiver || exclusive_receiver || view_receiver || view_arguments {
                     env.enter_scope();
                     if shared_receiver {
                         self.bc_mark_shared_receiver_loan(object, env, expr.span);
-                    } else {
+                    } else if exclusive_receiver {
                         self.bc_mark_exclusive_receiver_loan(object, env, expr.span);
                     }
+                    self.bc_loan_view_argument(object, env);
                 }
-                for arg in args {
-                    self.bc_expr(arg, env, true);
+                for (index, arg) in args.iter().enumerate() {
+                    if self.bc_is_display_variadic_call(expr) {
+                        self.bc_call_argument(
+                            arg,
+                            self.bc_call_argument_effect(expr, index, None),
+                            env,
+                        );
+                    } else {
+                        self.bc_expr(arg, env, true);
+                        self.bc_loan_view_argument(arg, env);
+                    }
                 }
                 for (_, arg) in named_args {
                     self.bc_expr(arg, env, true);
+                    self.bc_loan_view_argument(arg, env);
                 }
-                if shared_receiver || exclusive_receiver {
+                if shared_receiver || exclusive_receiver || view_receiver || view_arguments {
                     env.exit_scope();
                 }
             }
@@ -887,6 +1222,7 @@ impl Analyzer {
             ExprKind::ArrayLit(elems) => {
                 // Array construction consumes each element.
                 for elem in elems {
+                    self.bc_reject_view_escape(elem, env, "store in an array");
                     self.bc_expr(elem, env, true);
                 }
             }
@@ -916,6 +1252,7 @@ impl Analyzer {
             ExprKind::StructInit { fields, .. } => {
                 // Struct construction consumes each field value.
                 for (_, fval) in fields {
+                    self.bc_reject_view_escape(fval, env, "store in an aggregate");
                     self.bc_expr(fval, env, true);
                 }
             }
@@ -930,6 +1267,7 @@ impl Analyzer {
                     _ => Vec::new(),
                 };
                 let mut closure_env = env.clone();
+                closure_env.capture_boundary = Some(closure_env.scopes.len());
                 closure_env.enter_scope();
                 for (index, name) in params.iter().enumerate() {
                     closure_env.declare(
@@ -937,6 +1275,7 @@ impl Analyzer {
                         parameter_types.get(index).map(|ty| ty.node.clone()),
                     );
                 }
+                self.bc_reject_view_escape(body, &closure_env, "return from a closure");
                 self.bc_expr(body, &mut closure_env, true);
                 closure_env.exit_scope();
             }
@@ -951,6 +1290,24 @@ impl Analyzer {
                 annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
             })
             .and_then(|annotation| annotation.ty.clone())
+    }
+
+    fn bc_is_enum_constructor(&self, expr: &Expr, variant: &str) -> bool {
+        if self.bc_resolved_call_name(expr).is_some_and(|name| {
+            self.resolve_symbol(name)
+                .is_some_and(|symbol| !matches!(symbol.ty, Some(TypeKind::Error)))
+        }) {
+            return false;
+        }
+        let Some(TypeKind::Named { name, .. }) = self
+            .bc_annotated_type(expr)
+            .map(|ty| self.resolve_type_aliases(&ty))
+        else {
+            return false;
+        };
+        self.enums
+            .get(&name)
+            .is_some_and(|info| info.variants.contains_key(variant))
     }
 
     fn bc_resolved_direct_call(&self, expr: &Expr) -> bool {
@@ -970,8 +1327,28 @@ impl Analyzer {
             // into a second independent loan here.
             CallArgumentEffect::SharedBorrow | CallArgumentEffect::ExclusiveBorrow => {
                 self.bc_expr(argument, env, false);
+                if effect == CallArgumentEffect::SharedBorrow
+                    && self.bc_annotated_type(argument).is_some_and(|ty| {
+                        matches!(self.resolve_type_aliases(&ty), TypeKind::Named { name, .. } if name == "String")
+                    })
+                {
+                    self.bc_mark_shared_receiver_loan(argument, env, argument.span);
+                }
             }
         }
+        self.bc_loan_view_argument(argument, env);
+    }
+
+    fn bc_is_display_variadic_call(&self, call: &Expr) -> bool {
+        self.bc_resolved_call_name(call)
+            .and_then(|name| self.resolve_symbol(name))
+            .is_some_and(|symbol| {
+                symbol.variadic
+                    && symbol
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute == "str_variadic")
+            })
     }
 
     fn bc_call_argument_effect(
@@ -983,6 +1360,23 @@ impl Analyzer {
         let Some(resolved) = self.bc_resolved_call_name(call) else {
             return CallArgumentEffect::Consume;
         };
+        if let Some(symbol) = self.resolve_symbol(resolved)
+            && symbol.variadic
+            && symbol
+                .attributes
+                .iter()
+                .any(|attribute| attribute == "str_variadic")
+            && named_argument.is_none()
+            && positional_index
+                + symbol.params.len().saturating_sub(
+                    self.fn_param_names
+                        .get(resolved)
+                        .map_or(symbol.params.len(), Vec::len),
+                )
+                >= symbol.params.len().saturating_sub(1)
+        {
+            return CallArgumentEffect::SharedBorrow;
+        }
         let Some(summary) = self.ownership_signature_index.get(resolved) else {
             return CallArgumentEffect::Consume;
         };
@@ -1333,9 +1727,26 @@ impl Analyzer {
     }
 
     fn bc_reject_borrowed_write(&mut self, target: &Expr, env: &MoveEnv) {
-        let Some(name) = assignment_root_ident(target) else {
+        let Some(name) = projection_root_ident(target) else {
             return;
         };
+        if let Some(variable) = env.lookup(name) {
+            for origin in &variable.view_origins {
+                if let ViewOrigin::Owner {
+                    name: owner,
+                    scope_depth,
+                } = origin
+                    && env
+                        .scopes
+                        .get(*scope_depth)
+                        .and_then(|scope| scope.get(owner))
+                        .is_some_and(|root| root.shared_borrow.is_some())
+                {
+                    self.push_error(target.span, "S10", format!(
+                        "cannot mutate through `{name}` while a string view borrows owner `{owner}`"));
+                }
+            }
+        }
         if let Some(borrowed_at) = env
             .lookup(name)
             .and_then(|variable| variable.shared_borrow)
@@ -1375,5 +1786,190 @@ fn assignment_root_ident(expr: &Expr) -> Option<&str> {
             assignment_root_ident(object)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod string_view_tests {
+    use super::*;
+    use crate::{lexer::Lexer, parser::Parser};
+
+    const OWNERS: &str = r#"
+struct Owner { text: str }
+impl Owner {
+    fn view(self: &Owner) str { ret self.text; }
+    fn edit(self: &Owner!) void { self.text = "changed"; }
+    fn free(self: Owner) void {}
+}
+fn make() Owner { ret Owner { text: "held" }; }
+fn sink(text: str) void {}
+fn forward(text: str) str { ret text; }
+fn borrowed(owner: &Owner) str { ret owner.view(); }
+"#;
+
+    fn analyze(body: &str) -> SemanticReport {
+        let source = format!("{OWNERS}\n{body}");
+        let program = Parser::new(Lexer::new(&source).tokenize()).parse().unwrap();
+        Analyzer::new().analyze_program(&program)
+    }
+
+    fn rejects_view(body: &str) {
+        let report = analyze(body);
+        assert!(
+            report.errors.iter().any(|error| error.code == "S10"
+                && (error.message.contains("string view")
+                    || error.message.contains("shared-borrow"))),
+            "missing ownership diagnostic for {body}: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn temporary_views_cannot_be_bound_returned_or_forwarded_into_storage() {
+        for body in [
+            "fn main() void { var view = make().view(); }",
+            "fn leak() str { ret make().view(); } fn main() void {}",
+            "fn main() void { const view: str = forward(make().view()); }",
+            "fn main() void { var view: str = \"\"; view = make().view(); }",
+        ] {
+            rejects_view(body);
+        }
+    }
+
+    #[test]
+    fn full_expression_temporary_views_remain_usable() {
+        let report = analyze(
+            "fn main() void { sink(make().view()); sink(forward(make().view())); var length = make().view().len(); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn local_views_freeze_owner_moves_and_mutation() {
+        for action in [
+            "owner.free();",
+            "owner.edit();",
+            "owner.text = \"changed\";",
+        ] {
+            rejects_view(&format!(
+                "fn main() void {{ var owner = make(); var view = owner.view(); {action} sink(view); }}"
+            ));
+        }
+        rejects_view(
+            "type Alias = Owner; fn main() void { var owner: Alias = make(); var view = owner.view(); owner.free(); sink(view); }",
+        );
+    }
+
+    #[test]
+    fn view_aliases_and_reference_aliases_retain_the_owner_root() {
+        rejects_view(
+            "fn main() void { var owner = make(); var view = owner.view(); var alias: str = (view as str); owner.free(); sink(alias); }",
+        );
+        rejects_view(
+            "fn leak() str { var owner = make(); var reference = &owner; ret reference.view(); } fn main() void {}",
+        );
+        rejects_view(
+            "fn main() void { var owner = make(); var reference = &owner!; var view = reference.view(); reference.edit(); sink(view); }",
+        );
+    }
+
+    #[test]
+    fn reference_mutation_without_a_derived_view_is_legal() {
+        let report = analyze(
+            "fn main() void { var owner = make(); var reference = &owner!; reference.edit(); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn by_value_parameters_and_owned_local_fields_cannot_return_views() {
+        rejects_view("fn leak(owner: Owner) str { ret owner.view(); } fn main() void {}");
+        rejects_view("fn leak() str { var owner = make(); ret owner.text; } fn main() void {}");
+    }
+
+    #[test]
+    fn borrowed_inputs_remain_external_and_caller_roots_are_propagated() {
+        let report = analyze("fn main() void { sink(borrowed(&make())); }");
+        // Existing address-of checking independently rejects references to
+        // temporaries; direct method borrowing is the supported expression form.
+        assert!(!report.errors.is_empty());
+        rejects_view(
+            "fn main() void { var owner = make(); var view = borrowed(&owner); owner.free(); sink(view); }",
+        );
+        rejects_view(
+            "fn main() void { var owner = make(); var view = owner.view(); var alias = forward(&view); owner.free(); sink(alias); }",
+        );
+        let report = analyze(
+            "fn passthrough(text: str) str { ret forward(text); } fn main() void { sink(passthrough(\"literal\")); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn a_view_cannot_outlive_an_inner_owner_when_assigned_outward() {
+        rejects_view(
+            "fn main() void { var view: str = \"\"; if (true) { var owner = make(); view = owner.view(); } sink(view); }",
+        );
+    }
+
+    #[test]
+    fn inner_view_scope_releases_its_shared_loan() {
+        let report = analyze(
+            "fn main() void { var owner = make(); if (true) { var view = owner.view(); sink(view); } owner.free(); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn owner_rooted_views_cannot_escape_into_aggregates_arrays_or_closures() {
+        for body in [
+            "struct Holder { text: str } fn main() void { var owner = make(); var holder = Holder { text: owner.view() }; }",
+            "fn main() void { var owner = make(); var array = [owner.view()]; }",
+            "fn main() void { var owner = make(); var value = Some(owner.view()); }",
+            "fn main() void { var owner = make(); var view = owner.view(); var closure: fn() str = || view; }",
+            "fn main() void { var closure: fn() str = || make().view(); }",
+            "struct Holder { text: str } fn main() void { var holder = Holder { text: \"\" }; holder.text = make().view(); }",
+        ] {
+            rejects_view(body);
+        }
+    }
+
+    #[test]
+    fn direct_call_arguments_hold_views_until_sibling_arguments_finish() {
+        rejects_view(
+            "fn release(owner: Owner) i32 { owner.free(); ret 0; } fn pair(text: str, ignored: i32) void {} fn main() void { var owner = make(); pair(owner.view(), release(owner)); }",
+        );
+    }
+
+    #[test]
+    fn shadowed_bindings_preserve_the_original_owner_identity() {
+        rejects_view(
+            "fn leak() str { var owner = make(); if (true) { var owner = owner.view(); ret owner; } ret \"\"; } fn main() void {}",
+        );
+    }
+
+    #[test]
+    fn destructor_field_arguments_do_not_freeze_the_receiver_after_the_call() {
+        let report = analyze(
+            r#"
+@intrinsic("quazi.free") fn release_data(data: str) void;
+struct Buffer { data: str }
+impl Buffer { fn free(self: Buffer) void { release_data(self.data); self.data = ""; } }
+fn main() void {}
+"#,
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn raw_allocated_views_can_still_construct_a_new_owned_result() {
+        let report = analyze(
+            r#"
+@intrinsic("quazi.str_concat") fn allocate(first: str, second: str) str;
+fn copy(text: str) Owner { const data = allocate(text, ""); ret Owner { text: data }; }
+fn main() void { var copied = copy("literal"); copied.free(); }
+"#,
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
     }
 }

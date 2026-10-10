@@ -1,0 +1,105 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
+// Standalone native ownership regression: qz run prelude/tests/owned-display.qz.
+// Helpers keep the checks within the compiler's virtual-register limit.
+fn returned_number() String { ret (123 as i32).to_string(); }
+fn transfer_number(value: String) String { ret value; }
+fn checked_number() Result[String, i32] { ret Ok((789 as i32).to_string()); }
+
+fn check_enum_transfer() i32 {
+    const result = checked_number();
+    const value = result.unwrap();
+    if (value.as_str() != "789") { ret 17; }
+    const scratch = (999 as i32).to_string();
+    if (scratch.as_str() != "999" || value.as_str() != "789") { ret 18; }
+    ret 0;
+}
+
+fn check_return_and_transfer() i32 {
+    const first = returned_number();
+    const second = (456 as i32).to_string();
+    if (first.as_str() != "123" || second.as_str() != "456") { ret 1; }
+    const moved = transfer_number(first);
+    if (moved.as_str() != "123") { ret 2; }
+    const scratch = (999 as i32).to_str();
+    if (scratch != "999" || moved.as_str() != "123") { ret 3; }
+    ret 0;
+}
+
+fn check_signed() i32 {
+    const signed8 = (-12 as i8).to_string();
+    const signed16 = (-1234 as i16).to_string();
+    const signed64 = (-123456789 as i64).to_string();
+    const signed_size = (-42 as isize).to_string();
+    if (signed8.as_str() != "-12" || signed16.as_str() != "-1234") { ret 4; }
+    if (signed64.as_str() != "-123456789" || signed_size.as_str() != "-42") { ret 5; }
+    const scratch = (999 as i32).to_str();
+    if (scratch != "999" || signed8.as_str() != "-12") { ret 6; }
+    ret 0;
+}
+
+fn check_unsigned() i32 {
+    const unsigned8 = (250 as u8).to_string();
+    const unsigned16 = (60000 as u16).to_string();
+    const unsigned32 = (4000000000 as u32).to_string();
+    const unsigned64 = (9000000000 as u64).to_string();
+    const unsigned_size = (42 as usize).to_string();
+    if (unsigned8.as_str() != "250" || unsigned16.as_str() != "60000") { ret 7; }
+    if (unsigned32.as_str() != "4000000000" || unsigned64.as_str() != "9000000000") { ret 8; }
+    if (unsigned_size.as_str() != "42") { ret 9; }
+    ret 0;
+}
+
+fn check_unsigned_limits() i32 {
+    const maximum = (-1 as u64).to_string();
+    const high_bit = ((1 as usize) << 63).to_string();
+    if (maximum.as_str() != "18446744073709551615") { ret 10; }
+    if (high_bit.as_str() != "9223372036854775808") { ret 11; }
+    ret 0;
+}
+
+fn check_boolean() i32 {
+    const yes = true.to_string();
+    const no = false.to_string();
+    if (yes.as_str() != "true" || no.as_str() != "false") { ret 12; }
+    const scratch = (999 as i32).to_str();
+    if (scratch != "999" || yes.as_str() != "true") { ret 13; }
+    ret 0;
+}
+
+fn check_text() i32 {
+    const text = "owned text".to_string();
+    const other_text = "other text".to_string();
+    if (text.as_str() != "owned text" || other_text.as_str() != "other text") { ret 14; }
+    ret 0;
+}
+
+fn check_float() i32 {
+    const half = (1.5 as f16).to_string();
+    const single = (2.5 as f32).to_string();
+    const double = (3.5 as f64).to_string();
+    if (half.as_str() != "1.5" || single.as_str() != "2.5" || double.as_str() != "3.5") { ret 15; }
+    const scratch = (999 as i32).to_str();
+    if (scratch != "999" || half.as_str() != "1.5") { ret 16; }
+    ret 0;
+}
+
+fn main() i32 {
+    var status = check_return_and_transfer();
+    if (status != 0) { ret status; }
+    status = check_signed();
+    if (status != 0) { ret status; }
+    status = check_unsigned();
+    if (status != 0) { ret status; }
+    status = check_unsigned_limits();
+    if (status != 0) { ret status; }
+    status = check_boolean();
+    if (status != 0) { ret status; }
+    status = check_text();
+    if (status != 0) { ret status; }
+    status = check_float();
+    if (status != 0) { ret status; }
+    ret check_enum_transfer();
+}

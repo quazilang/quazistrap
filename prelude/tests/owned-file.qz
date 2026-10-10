@@ -1,0 +1,12 @@
+// Run from the compiler root; validates automatic and reusable explicit close.
+import std.fs;
+import std.fs.File;
+
+fn main() i32 {
+    const content = fs.read_to_string("prelude/tests/owned-file.qz").unwrap();
+    if (content.len() == 0) { ret 1; }
+    var file = File.open("prelude/tests/owned-file.qz").unwrap();
+    if (!file.close().unwrap()) { ret 2; }
+    if (file.close().unwrap()) { ret 3; }
+    ret 0;
+}

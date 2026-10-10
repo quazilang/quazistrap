@@ -38,6 +38,22 @@ Every method is available on both `str` and owned `String`. Methods returning a
 `String` allocate a new value. Whole Program Analysis inserts scope cleanup, so
 normal application code does not call `.free()` manually.
 
+## Text conversion ownership
+
+`to_string()` returns an owned `String` for integers, floating-point values,
+booleans, borrowed text, and `String`. It remains valid after later conversions.
+`Display` implementations must return `String` from this method.
+
+`to_str()` returns a borrowed view. Numeric conversion uses static scratch
+storage and may be overwritten by later calls to the same conversion site;
+copy it into a `String` when retaining it. `String.as_str()` and
+`String.to_str()` borrow their owner. The compiler rejects storing a view of a
+temporary owner or returning a view of a local owned string.
+
+`fmt.format(...)` returns owned UTF-8 text. Formatting borrows `String` arguments
+through the call and copies their contents. See the
+[migration guide](migrations/owned-formatting.md) for source and QZI changes.
+
 ## Checked parsing
 
 Parsing never silently substitutes zero:

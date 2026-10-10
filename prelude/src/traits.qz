@@ -7,10 +7,10 @@
 // ── Display ──────────────────────────────────────────────────────────────────
 // Human-readable string representation.
 // to_str()    → &str   — borrowed view (may point to a static buffer)
-// to_string() → str — heap-backed view (ownership API is not yet stabilized)
+// to_string() → String — owned copy, independent of later borrowed conversions
 pub trait Display {
     fn to_str() &str;
-    fn to_string() str;
+    fn to_string() String;
 }
 
 // ── Debug ────────────────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ pub trait Drop {
 
 // ── Index ────────────────────────────────────────────────────────────────────
 pub trait Index[I, O] {
-    fn index(i: I) O;
+    fn index(self: &Self, i: I) O;
 }
 
 // ── Write ─────────────────────────────────────────────────────────────────────
@@ -87,20 +87,86 @@ pub trait Write {
 
 // ── Display impls for primitives ─────────────────────────────────────────────
 
-impl Display for i8   { pub fn to_str(self: i8)   str { ret self.to_string(); } pub fn to_string(self: i8)   str { ret self.to_string(); } }
-impl Display for i16  { pub fn to_str(self: i16)  str { ret self.to_string(); } pub fn to_string(self: i16)  str { ret self.to_string(); } }
-impl Display for i32  { pub fn to_str(self: i32)  str { ret self.to_string(); } pub fn to_string(self: i32)  str { ret self.to_string(); } }
-impl Display for i64  { pub fn to_str(self: i64)  str { ret self.to_string(); } pub fn to_string(self: i64)  str { ret self.to_string(); } }
-impl Display for u8   { pub fn to_str(self: u8)   str { ret self.to_string(); } pub fn to_string(self: u8)   str { ret self.to_string(); } }
-impl Display for u16  { pub fn to_str(self: u16)  str { ret self.to_string(); } pub fn to_string(self: u16)  str { ret self.to_string(); } }
-impl Display for u32  { pub fn to_str(self: u32)  str { ret self.to_string(); } pub fn to_string(self: u32)  str { ret self.to_string(); } }
-impl Display for u64  { pub fn to_str(self: u64)  str { ret self.to_string(); } pub fn to_string(self: u64)  str { ret self.to_string(); } }
-impl Display for isize { pub fn to_str(self: isize) str { ret self.to_string(); } pub fn to_string(self: isize) str { ret self.to_string(); } }
-impl Display for usize { pub fn to_str(self: usize) str { ret self.to_string(); } pub fn to_string(self: usize) str { ret self.to_string(); } }
-impl Display for f32  { pub fn to_str(self: f32)  str { ret self.to_string(); } pub fn to_string(self: f32)  str { ret self.to_string(); } }
-impl Display for f64  { pub fn to_str(self: f64)  str { ret self.to_string(); } pub fn to_string(self: f64)  str { ret self.to_string(); } }
-impl Display for bool { pub fn to_str(self: bool) str { ret self.to_string(); } pub fn to_string(self: bool) str { ret self.to_string(); } }
-impl Display for str  { pub fn to_str(self: str)  str { ret self; }            pub fn to_string(self: str)  str { ret self; } }
+impl Display for i8 {
+    pub fn to_str(self: i8) str { ret self.to_str(); }
+    pub fn to_string(self: i8) String { ret String.from(self.to_str()); }
+}
+
+impl Display for i16 {
+    pub fn to_str(self: i16) str { ret self.to_str(); }
+    pub fn to_string(self: i16) String { ret String.from(self.to_str()); }
+}
+
+impl Display for i32 {
+    pub fn to_str(self: i32) str { ret self.to_str(); }
+    pub fn to_string(self: i32) String { ret String.from(self.to_str()); }
+}
+
+impl Display for i64 {
+    pub fn to_str(self: i64) str { ret self.to_str(); }
+    pub fn to_string(self: i64) String { ret String.from(self.to_str()); }
+}
+
+impl Display for u8 {
+    pub fn to_str(self: u8) str { ret self.to_str(); }
+    pub fn to_string(self: u8) String { ret String.from(self.to_str()); }
+}
+
+impl Display for u16 {
+    pub fn to_str(self: u16) str { ret self.to_str(); }
+    pub fn to_string(self: u16) String { ret String.from(self.to_str()); }
+}
+
+impl Display for u32 {
+    pub fn to_str(self: u32) str { ret self.to_str(); }
+    pub fn to_string(self: u32) String { ret String.from(self.to_str()); }
+}
+
+impl Display for u64 {
+    pub fn to_str(self: u64) str { ret self.to_str(); }
+    pub fn to_string(self: u64) String { ret String.from(self.to_str()); }
+}
+
+impl Display for isize {
+    pub fn to_str(self: isize) str { ret self.to_str(); }
+    pub fn to_string(self: isize) String { ret String.from(self.to_str()); }
+}
+
+impl Display for usize {
+    pub fn to_str(self: usize) str { ret self.to_str(); }
+    pub fn to_string(self: usize) String { ret String.from(self.to_str()); }
+}
+
+impl Display for f16 {
+    pub fn to_str(self: f16) str { ret (self as f64).to_str(); }
+    pub fn to_string(self: f16) String { ret String.from((self as f64).to_str()); }
+}
+
+impl Display for f32 {
+    pub fn to_str(self: f32) str { ret self.to_str(); }
+    pub fn to_string(self: f32) String { ret String.from(self.to_str()); }
+}
+
+impl Display for f64 {
+    pub fn to_str(self: f64) str { ret self.to_str(); }
+    pub fn to_string(self: f64) String { ret String.from(self.to_str()); }
+}
+
+impl Display for bool {
+    pub fn to_str(self: bool) str { ret self.to_str(); }
+    pub fn to_string(self: bool) String { ret String.from(self.to_str()); }
+}
+
+impl Display for str {
+    pub fn to_str(self: str) str { ret self; }
+    pub fn to_string(self: &str) String { ret String.from(self); }
+}
+
+// Owned text exposes borrowed display views and explicit owned copies.
+impl String {
+    pub fn to_str(self: &String) str { ret self.as_str(); }
+    pub fn to_string(self: &String) String { ret String.from(self.as_str()); }
+}
 
 // ── Operator overloading ──────────────────────────────────────────────────────
 pub trait Add[T] { fn add(rhs: T) T; }

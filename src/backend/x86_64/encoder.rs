@@ -2605,6 +2605,11 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdi, rax));
                             call_ext!("malloc".into(), RelocKind::Plt32);
                         }
+                        let mut allocated = asm.create_label();
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.jnz(allocated));
+                        emit!(asm.ud2()); // infallible construction terminates on allocation failure
+                        emit!(asm.set_label(&mut allocated));
                         emit!(asm.mov(rbx, rax)); // rbx = buf
                         let mut copy_first = asm.create_label();
                         let mut copy_second = asm.create_label();
@@ -2711,7 +2716,7 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.test(rax, rax));
                             emit!(asm.je(allocation_failed));
                             emit!(asm.mov(rbx, rax)); // rbx = thread_storage_ptr
-                                                      // pthread_create(storage, NULL, fn_ptr, NULL)
+                            // pthread_create(storage, NULL, fn_ptr, NULL)
                             emit!(asm.mov(rdi, rbx));
                             emit!(asm.xor(rsi, rsi));
                             emit!(asm.mov(rdx, slot(dst)));
@@ -2923,6 +2928,11 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdi, 2i64));
                             call_ext!("malloc".into(), RelocKind::Plt32);
                         }
+                        let mut allocated = asm.create_label();
+                        emit!(asm.test(rax, rax));
+                        emit!(asm.jnz(allocated));
+                        emit!(asm.ud2());
+                        emit!(asm.set_label(&mut allocated));
                         // rax = allocated ptr; write b at [rax] and '\0' at [rax+1]
                         emit!(asm.mov(rbx, slot(dst))); // b
                         emit!(asm.mov(byte_ptr(rax), bl));
@@ -4043,7 +4053,13 @@ impl<'a> FnEncoder<'a> {
                     _ => {
                         emit!(asm.mov(rax, slot(src)));
                         lea_rip!(r11, buf_sym.clone());
-                        emit_integer_to_string(asm, 10, false, true).map_err(err)?;
+                        emit_integer_to_string(
+                            asm,
+                            10,
+                            false,
+                            instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG == 0,
+                        )
+                        .map_err(err)?;
                     }
                 }
                 lea_rip!(rax, buf_sym);
@@ -4123,6 +4139,11 @@ impl<'a> FnEncoder<'a> {
                     emit!(asm.mov(rsi, size_bytes as i64));
                     call_ext!("calloc".into(), RelocKind::Plt32);
                 }
+                let mut allocated = asm.create_label();
+                emit!(asm.test(rax, rax));
+                emit!(asm.jnz(allocated));
+                emit!(asm.ud2()); // no write through a failed source-object allocation
+                emit!(asm.set_label(&mut allocated));
                 emit!(asm.mov(slot(dst), rax));
             }
 
