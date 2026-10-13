@@ -6,32 +6,32 @@
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
 
-**Plan completion: ~71%.**
+**Plan completion: 72.5%.**
 
-**Remaining work: ~29%.**
+**Remaining work: 27.5%.**
 
-Unfinished roadmap items (percentages show completion of each item):
+Completion of unfinished plan items:
 
-| Plan item | Complete | Remaining work |
-| --- | --- | --- |
-| Built-in linker | ~50% | Archives and final validation |
-| Ownership / RAII bytecode | ~50% | Whole-program borrow/effect proofs, structural destruction, verified QZI summaries |
-| LSP improvements | ~50% | Real-client Unicode/formatting coverage and performance validation |
-| Strength reduction | 0% | Implement and verify the optimization |
-| macOS Mach-O backend | 0% | Output, startup, and relocations |
-| Atomic opcodes | 0% | Native `AtomicAdd` / `AtomicCas` lowering |
-| Format string literals | 0% | Compile-time interpolation |
-| Nested struct patterns | 0% | Struct destructuring in match arms |
-| `async` / `await` | 0% | Deferred until lifetimes are implemented |
-| `qz doc` | 0% | Documentation generation command |
-| JIT VM | 0% | Deferred |
+| Plan item | Implemented requirements | Complete | Remaining |
+| --- | --- | --- | --- |
+| Built-in linker | 7/9 | 77.8% | 22.2% |
+| Strength reduction | 0/1 | 0.0% | 100.0% |
+| macOS Mach-O backend | 0/3 | 0.0% | 100.0% |
+| Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
+| Atomic opcodes | 0/2 | 0.0% | 100.0% |
+| Format string literals | 0/1 | 0.0% | 100.0% |
+| Nested struct patterns | 0/1 | 0.0% | 100.0% |
+| async / await | 0/1 | 0.0% | 100.0% |
+| LSP improvements | 12/20 | 60.0% | 40.0% |
+| qz doc | 0/1 | 0.0% | 100.0% |
+| JIT VM | 0/1 | 0.0% | 100.0% |
 
-Estimate as of 2026-10-13 for the 33 items in the [compiler roadmap](AGENTS.md#roadmap):
-22 implemented, 3 partial (built-in linker, ownership/RAII, LSP), and 8 pending
-or deferred. Each item has equal weight; partial items count as half complete.
-This includes the implemented FFI and owned-formatting checkpoints recorded in
-[the resume log](RESUME.md). This is roadmap progress, not a
-production-readiness or effort estimate.
+Counted on 2026-10-13 from the [requirement checklist](docs/audits/2026-10-13-readme-plan-checklist.md).
+Each item has equal weight; its percentage is implemented requirements
+divided by listed requirements. The overall percentage averages those
+fractions before rounding. Pending or failing requirements receive no
+credit. These figures measure checklist coverage, not remaining effort
+or production readiness.
 
 ---
 
