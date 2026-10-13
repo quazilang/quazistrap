@@ -185,6 +185,10 @@ pub struct Analyzer {
     /// and whose element cleanup is synthesized by code generation. This is
     /// the canonical semantic contract for generic dense storage.
     pub(super) contiguous_element_contracts: HashMap<String, ContiguousElementContract>,
+    /// Generic source reads to validate after concrete specialization closure.
+    pending_contiguous_value_reads: Vec<(String, Span, TypeKind)>,
+    /// The indexed place currently being typed for replacement, not a read.
+    index_write_target_span: Option<(usize, usize)>,
     /// Internal function name → stable native symbol requested by @export.
     pub(super) exported_symbols: HashMap<String, String>,
     /// Resolved Quazi binding name → imported C data symbol metadata.
@@ -919,6 +923,8 @@ impl Analyzer {
             explicit_exclusive_receiver_methods: std::collections::HashSet::new(),
             consuming_receiver_methods: std::collections::HashSet::new(),
             contiguous_element_contracts: HashMap::new(),
+            pending_contiguous_value_reads: Vec::new(),
+            index_write_target_span: None,
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
         }
@@ -1143,7 +1149,11 @@ impl Analyzer {
         // specialization such as `Array.index<str>` can call a missing
         // `Array.get<str>` chunk.
         checkpoint()?;
-        self.close_monomorphization_dependencies(&concrete_specializations, &mut checkpoint)?;
+        self.close_monomorphization_dependencies(&mut concrete_specializations, &mut checkpoint)?;
+        self.validate_contiguous_value_read_specializations(
+            &concrete_specializations,
+            &mut checkpoint,
+        )?;
 
         // A successful analysis must leave no representation-less inference
         // sentinels for code generation. Error recovery may still use them
@@ -1448,6 +1458,8 @@ impl Analyzer {
         self.explicit_exclusive_receiver_methods.clear();
         self.consuming_receiver_methods.clear();
         self.contiguous_element_contracts.clear();
+        self.pending_contiguous_value_reads.clear();
+        self.index_write_target_span = None;
         self.exported_symbols.clear();
         self.foreign_globals.clear();
         self.repr_c_structs.clear();
@@ -1587,7 +1599,7 @@ impl Analyzer {
 
     fn close_monomorphization_dependencies(
         &mut self,
-        concrete_specializations: &BTreeSet<OwnershipCallableId>,
+        concrete_specializations: &mut BTreeSet<OwnershipCallableId>,
         checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
     ) -> Result<(), crate::cancel::Cancelled> {
         let template_monos: HashMap<String, MonomorphizationInfo> = self
@@ -1718,7 +1730,21 @@ impl Analyzer {
                     continue;
                 }
                 self.add_dependency_edge(DependencyKind::Call, &source.mangled_name, &mangled_name);
+                // A dependency instantiated from a proven concrete caller
+                // retains that provenance, even if a symbolic spelling was
+                // registered first. Revisit it once when proof arrives late.
+                let newly_concrete = concrete_specializations
+                    .contains(&self.ownership_callable_id(&source.fn_name, &source.type_args))
+                    && concrete_specializations
+                        .insert(self.ownership_callable_id(&target_function, &type_args));
                 if !known_mangled.insert(mangled_name.clone()) {
+                    if newly_concrete {
+                        pending.push(MonomorphizationInfo {
+                            fn_name: target_function,
+                            type_args,
+                            mangled_name,
+                        });
+                    }
                     continue;
                 }
 
@@ -5345,6 +5371,215 @@ fn main() void {}
             plain.errors.is_empty(),
             "Plain Array.get should remain usable: {:?}",
             plain.errors
+        );
+    }
+
+    #[test]
+    fn rejects_owned_contiguous_index_reads_until_borrows_exist() {
+        let source = r#"
+struct Token { value: i32 }
+trait Index[I, T] { fn index(self: &Self, index: I) T; }
+@intrinsic("quazi.array.load") fn load[T](base: *u8, index: usize) T;
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[Marker, T] { storage: *u8, count: usize }
+impl Buffer[Marker, T] {
+    fn free(self: Buffer[Marker, T]) void {}
+    @contiguous_element_replace fn set(self: &Buffer[Marker, T]!, index: usize, value: T) void {}
+    @contiguous_element_remove fn remove(self: &Buffer[Marker, T]!, index: usize) T { ret load(self.storage, index); }
+}
+impl Index[usize, T] for Buffer[Marker, T] {
+    fn index(self: &Buffer[Marker, T], index: usize) T { ret load(self.storage, index); }
+}
+struct Holder { items: Buffer[i32, Token] }
+fn inspect(items: Buffer[i32, Token]) void { const token: Token = items[0]; }
+fn observe(items: Buffer[i32, Token]) void { items[0].value; }
+type OwnedBuffer = Buffer[i32, Token];
+fn borrowed(items: &Buffer[i32, Token]) void { items[0]; }
+fn alias(items: OwnedBuffer) void { items[0]; }
+fn method_borrowed(items: &Buffer[i32, Token]) void { const token: Token = items.index(0); }
+fn projected(holder: Holder) void { const token: Token = holder.items[0]; }
+fn plain(items: Buffer[i32, i32]) void { const value: i32 = items[0]; }
+fn replace(items: Buffer[i32, Token], value: Token) void { items[0] = value; }
+fn remove(items: Buffer[i32, Token]) Token { ret items.remove(0); }
+fn main() void {}
+"#;
+        let report = analyze(source);
+        let reads: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|error| {
+                error.code == "S10"
+                    && error
+                        .message
+                        .contains("cannot read an owned contiguous-container element by value")
+            })
+            .collect();
+        assert_eq!(
+            reads.len(),
+            6,
+            "indexing must not duplicate an owned element, even for observation or projected roots: {:?}",
+            report.errors
+        );
+        assert_eq!(
+            report.errors.len(),
+            6,
+            "Plain indexing should remain usable: {:?}",
+            report.errors
+        );
+
+        let exclusive = analyze(&source.replace(
+            "fn index(self: &Buffer[Marker, T],",
+            "fn index(self: &Buffer[Marker, T]!,",
+        ));
+        assert!(
+            exclusive
+                .errors
+                .iter()
+                .filter(|error| error.code == "S10"
+                    && error
+                        .message
+                        .contains("cannot read an owned contiguous-container element by value"))
+                .count()
+                >= 5,
+            "exclusive Index must not bypass the owned read gate: {:?}",
+            exclusive.errors
+        );
+
+        let replacement = analyze(
+            r#"
+struct Token { value: i32 }
+trait Index[I, T] { fn index(self: &Self, index: I) T; }
+@intrinsic("quazi.array.load") fn load[T](base: *u8, index: usize) T;
+@contiguous_elements(element=T, pointer=ptr, length=len)
+struct Array[T] { ptr: *u8, len: usize }
+impl Array[T] {
+    fn free(self: Array[T]) void {}
+    fn get(self: &Array[T], index: usize) T { ret load(self.ptr, index); }
+    @contiguous_element_replace fn set(self: &Array[T]!, index: usize, value: T) void {}
+}
+impl Index[usize, T] for Array[T] {
+    fn index(self: &Array[T], index: usize) T { ret self.get(index); }
+}
+fn replace(items: Array[Token], value: Token) void { items[0] = value; }
+"#,
+        );
+        assert!(
+            replacement.errors.is_empty(),
+            "owning indexed replacement must remain legal: {:?}",
+            replacement.errors
+        );
+    }
+
+    #[test]
+    fn rejects_generic_owned_contiguous_reads_at_concrete_specializations() {
+        let definitions = r#"
+struct Token { value: i32 }
+trait Index[I, T] { fn index(self: &Self, index: I) T; }
+@intrinsic("quazi.array.load") fn load[T](base: *u8, index: usize) T;
+@contiguous_elements(element=T, pointer=storage, length=count)
+struct Buffer[Marker, T] { storage: *u8, count: usize }
+impl Buffer[Marker, T] {
+    fn free(self: Buffer[Marker, T]) void {}
+    fn element(self: &Buffer[Marker, T], index: usize) T { ret load(self.storage, index); }
+}
+impl Index[usize, T] for Buffer[Marker, T] {
+    fn index(self: &Buffer[Marker, T], index: usize) T { ret self.element(index); }
+}
+fn indexed[T](items: Buffer[i32, T]) T { ret items[0]; }
+fn method[T](items: Buffer[i32, T]) T { ret items.element(0); }
+fn forward[U](items: Buffer[i32, U]) U { ret indexed[U](items); }
+"#;
+        for operation in ["indexed", "method", "forward"] {
+            let report = analyze(&format!(
+                "{definitions} fn entry(items: Buffer[i32, Token]) Token {{ ret {operation}[Token](items); }}"
+            ));
+            assert!(
+                report.errors.iter().any(|error| error.code == "S10"
+                    && error.message.contains("specialization")
+                    && error
+                        .message
+                        .contains("cannot read an owned contiguous-container element by value")),
+                "generic {operation} bypassed ownership checking: {:?}",
+                report.errors
+            );
+            let plain = analyze(&format!(
+                "{definitions} fn entry(items: Buffer[i32, i32]) i32 {{ ret {operation}[i32](items); }}"
+            ));
+            assert!(
+                plain.errors.is_empty(),
+                "plain generic {operation} was rejected: {:?}",
+                plain.errors
+            );
+        }
+
+        let shadowed = analyze(&format!(
+            r#"{definitions}
+type T = Token;
+fn entry(items: Buffer[i32, T]) T {{ ret indexed[T](items); }}
+"#
+        ));
+        assert!(
+            shadowed
+                .errors
+                .iter()
+                .any(|error| error.code == "S10" && error.message.contains("specialization")),
+            "a same-named global alias must not hide the concrete owner: {:?}",
+            shadowed.errors
+        );
+        let impl_source = format!(
+            r#"{definitions}
+struct Wrapper[A] {{ items: Buffer[i32, A] }}
+impl Wrapper[B] {{ fn read(self: Wrapper[B]) B {{ ret self.items[0]; }} }}
+fn entry(wrapper: Wrapper[Token]) Token {{ ret wrapper.read(); }}
+"#
+        );
+        let owning_impl = analyze(&impl_source);
+        assert!(
+            owning_impl
+                .errors
+                .iter()
+                .any(|error| error.code == "S10" && error.message.contains("specialization")),
+            "renamed impl binders must retain the concrete ownership check: {:?}",
+            owning_impl.errors
+        );
+        let plain_impl =
+            analyze(&impl_source.replace("Wrapper[Token]) Token", "Wrapper[i32]) i32"));
+        assert!(
+            plain_impl.errors.is_empty(),
+            "plain impl indexing was rejected: {:?}",
+            plain_impl.errors
+        );
+        let symbolic = analyze(definitions);
+        assert!(
+            symbolic.errors.is_empty(),
+            "uninstantiated templates must remain usable: {:?}",
+            symbolic.errors
+        );
+        let mut analyzer = Analyzer::new();
+        let owned_program = parse_program(&impl_source);
+        assert!(
+            analyzer
+                .analyze_program(&owned_program)
+                .errors
+                .iter()
+                .any(|error| error.code == "S10")
+        );
+        assert!(
+            analyzer
+                .analyze_program(&parse_program("fn main() void {}"))
+                .errors
+                .is_empty(),
+            "deferred reads must reset between analyses"
+        );
+
+        let hidden = analyze(&(definitions.split("fn indexed[T]").next().unwrap().replace("impl Index[usize, T] for Buffer[Marker, T]", "impl Index[usize, i32] for Buffer[Marker, T]").replace("fn index(self: &Buffer[Marker, T], index: usize) T { ret self.element(index); }", "fn index(self: &Buffer[Marker, T], index: usize) i32 { self.element(index); ret 1; }") + "fn entry(items: Buffer[i32, Token]) i32 { ret items[0]; }"));
+        assert!(
+            hidden
+                .errors
+                .iter()
+                .any(|error| error.code == "S10" && error.message.contains("specialization")),
+            "plain Index results must not hide owning reads in their concrete body: {:?}",
+            hidden.errors
         );
     }
 

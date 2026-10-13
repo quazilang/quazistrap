@@ -225,6 +225,13 @@ content-bound ownership-artifact envelope.
 - Destructor roots are forced reachable so tree-shaking keeps `Type.free` and its dependencies.
 - Values moved into returns/call args are deactivated to avoid double-free; explicit by-value receivers consume; shared and exclusive receivers borrow. Consuming `free(self)` hooks return void. Full-expression named-owner temporaries use zero-initialized guarded slots so skipped branches and early exits release only produced, untransferred owners.
 - `Array[T]` and `String` locals are auto-cleaned at scope exit.
+- Named source calls without a concrete layout transfer full-expression owners
+  only when the callee's fixed declared capability consumes and the actual
+  caller argument owns. Protect callee binders independently of caller
+  substitutions; borrowed/scalar arguments and variadic pointer/count packing
+  are not ownership transfers. Fixed arrays need element ownership proof.
+- Assignment results alias destination storage; discarding an indexed or field
+  assignment must preserve the owner deposited there.
 - This is source-level cleanup, not `Drop` bytecode yet.
 
 ---

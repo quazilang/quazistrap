@@ -9,6 +9,7 @@ are treated as stable.
 - [Migrating shared-reference code](references.md)
 - [Migrating function values and closures](closures.md)
 - [Migrating multi-register generic values](generic-value-shapes.md)
+- [HTTP receiver ownership](http-receivers.md)
 - [Owned formatting and QZI v11](owned-formatting.md)
 - [QZI v7](qzi-v7.md)
 - [QZI v8](qzi-v8.md)

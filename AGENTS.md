@@ -103,6 +103,9 @@ generic template at codegen time.
 
 `semantic/ownership.rs` separately closes resolved source call sites under
 concrete caller substitutions and publishes `SemanticReport::ownership_call_graph`.
+Concrete identity provenance also propagates through emission dependency closure.
+Deferred dense-element read checks use those proven identities and checked caller
+substitutions; symbolic template chunks do not imply a concrete ownership proof.
 Its identities use tagged structural, alias-resolved types rather than lossy
 bytecode names or ordinary type display. Impl generic parameters come from
 actual method declarations. This graph retains call-site spans and conservative
@@ -144,7 +147,7 @@ qualified names and other declared concrete names stay concrete.
 - `quazi.toml`: `[package]` including `out_dir = "build"`, `[lib]`, `[[bin]]`, `[dependencies]`, `[cc]`, `[link]`, and target link overrides. Dependencies support local projects, singular `.qz`, compiled `.qzi`, and internet `git`/`archive`/`source`/`qzi` sources. `quazi.lock` records exact revisions/checksums and is validated on build.
 - `pub import` is the only public-import/re-export syntax. Quazi module and symbol paths use `.`, never `::`.
 - QZI v11 is a sectioned executable/library bytecode container with package metadata, a public source interface, named call relocations, a mandatory canonical ownership-artifact envelope, signedness-correct integer instruction flags, affine function-value ownership, layout-query and process-runtime intrinsic IDs, and legacy chunk payloads. The current envelope content-binds metadata, interface, relocations, and bytecode but is explicitly unverified: it is not a D-014 certificate and never permits a QZI-only borrowed safe call. Readers retain compatible QZI v2-v9 bytecode as `LegacyAbsent`; v1 omitted frame metadata, parameterized v6 trait interfaces lack receiver metadata, and pre-v7 public function-value contracts or synthetic closure/forwarder chunks require a source rebuild. Immutable golden fixtures from real historical writers (`src/bytecode/fixtures/qzi/`) lock the v2-v6 reading paths, including the v2 chunk-header layout without a flags byte and v3 string-based `@api` metadata. QZI libraries work without original source; generic template bodies remain source-only for now.
-- QZC v9 (`build/quazi/<target>/<artifact>/incremental.qzc` by default) stores exact-hit linked QZI plus source-hashed pre-WPO function chunks. Partial misses restore unchanged chunks, compile changed files, then rerun full-program WPO. V9 invalidates v8 caches because QZI v11 changes owned formatting and receiver-storage cleanup. Signature/type/import/config changes conservatively invalidate all chunks. Downloaded dependencies live in `<out_dir>/deps`.
+- QZC v10 (`build/quazi/<target>/<artifact>/incremental.qzc` by default) stores exact-hit linked QZI plus source-hashed pre-WPO function chunks. Partial misses restore unchanged chunks, compile changed files, then rerun full-program WPO. V10 invalidates v9 exact hits and reusable chunks so cached output cannot bypass indexed/concrete-generic dense-element read validation or generic ownership-transfer lowering. Signature/type/import/config changes conservatively invalidate all chunks. Downloaded dependencies live in `<out_dir>/deps`.
 - `type = "lib"` → lib project; default entry `src/lib.qz`; default output `.qzi`.
 
 ---

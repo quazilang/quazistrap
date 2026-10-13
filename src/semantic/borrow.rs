@@ -958,7 +958,16 @@ impl Analyzer {
                     }
                 } else {
                     self.bc_reject_view_escape(value, env, "store");
-                    self.bc_expr(target, env, false);
+                    // Indexed replacement evaluates the storage and index,
+                    // but does not materialize the old element as a value.
+                    if let ExprKind::Index { object, indices } = &target.node {
+                        self.bc_expr(object, env, false);
+                        for index in indices {
+                            self.bc_expr(index, env, false);
+                        }
+                    } else {
+                        self.bc_expr(target, env, false);
+                    }
                 }
             }
 
@@ -1039,13 +1048,7 @@ impl Analyzer {
                         self.bc_reject_view_escape(argument, env, "store in an enum");
                     }
                 }
-                if self.bc_is_owned_contiguous_element_value_read(expr, object) {
-                    self.push_error(
-                        expr.span,
-                        "S10",
-                        "cannot read an owned contiguous-container element by value before borrowed-element access and element destruction are implemented".to_string(),
-                    );
-                }
+                self.bc_check_contiguous_element_value_read(expr, object);
                 let shared_receiver = self.bc_has_explicit_shared_receiver(expr);
                 let exclusive_receiver = self.bc_has_explicit_exclusive_receiver(expr);
                 let view_receiver = !self.bc_view_origins(object, env).is_empty();
@@ -1206,6 +1209,7 @@ impl Analyzer {
             }
 
             ExprKind::Index { object, indices } => {
+                self.bc_check_contiguous_element_value_read(expr, object);
                 if consumed
                     && self.bc_receiver_is_move_type(expr)
                     && self.bc_is_builtin_index_projection(object)
@@ -1450,31 +1454,156 @@ impl Analyzer {
     /// element's owner. The rule is derived from the storage declaration and
     /// resolved types, rather than a container or accessor spelling. Plain
     /// elements remain readable until D-015 supplies provenance-tracked
-    /// borrowed element references and exact-once element destruction.
-    fn bc_is_owned_contiguous_element_value_read(&self, expr: &Expr, object: &Expr) -> bool {
-        if !self.bc_has_explicit_shared_receiver(expr) {
-            return false;
+    /// borrowed element references.
+    fn bc_contiguous_element_value_type(&self, expr: &Expr, object: &Expr) -> Option<TypeKind> {
+        // Index lowering has no ownership-transfer proof, even for an
+        // exclusive implementation. A separate exclusive remove method may
+        // transfer an element through its validated mutation contract.
+        if !matches!(expr.node, ExprKind::Index { .. })
+            && !self.bc_has_explicit_shared_receiver(expr)
+        {
+            return None;
         }
-        let Some(TypeKind::Named { name, type_args }) = self
-            .bc_annotated_type(object)
-            .as_ref()
-            .map(|ty| self.resolve_type_aliases(ty))
-        else {
-            return false;
+        let Some(receiver) = self.bc_annotated_type(object) else {
+            return None;
         };
-        let Some(contract) = self.contiguous_element_contracts.get(&name) else {
-            return false;
+        let receiver = self.resolve_type_aliases(&receiver);
+        let mut owner = &receiver;
+        while let TypeKind::Ref { inner } | TypeKind::MutRef { inner } = owner {
+            owner = &inner.node;
+        }
+        let TypeKind::Named { name, type_args } = owner else {
+            return None;
+        };
+        let Some(contract) = self.contiguous_element_contracts.get(name) else {
+            return None;
         };
         let Some(element) = type_args.get(contract.element_param_index) else {
-            return false;
+            return None;
         };
         let element = self.resolve_type_aliases(&element.node);
-        self.bc_is_move_type(&element)
-            && self
-                .bc_annotated_type(expr)
+        let result = if matches!(expr.node, ExprKind::Index { .. }) {
+            // This is a rejection proof, not permission to lower borrowed
+            // Index receivers. Their executable ABI still needs D-014 work.
+            // Derive the result from the declaration, because indexing through
+            // an alias/reference may have an unresolved expression annotation.
+            if !self
+                .trait_impls
+                .get(name)
+                .is_some_and(|traits| traits.contains("Index"))
+            {
+                return None;
+            }
+            let target = self
+                .bc_resolved_call_name(expr)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{name}.index"));
+            let Some(symbol) = self.resolve_symbol(&target) else {
+                return None;
+            };
+            let Some(mut receiver) = symbol.params.first() else {
+                return None;
+            };
+            while let TypeKind::Ref { inner } | TypeKind::MutRef { inner } = receiver {
+                receiver = &inner.node;
+            }
+            let parameters = self
+                .impl_generic_params
+                .get(&target)
+                .cloned()
+                .unwrap_or_default();
+            let mut substitution = HashMap::new();
+            super::typecheck::infer_type_subst(receiver, owner, &parameters, &mut substitution);
+            symbol
+                .ty
                 .as_ref()
-                .map(|result| self.resolve_type_aliases(result).to_string() == element.to_string())
-                .unwrap_or(false)
+                .map(|result| super::typecheck::substitute_type_kind(result, &substitution))
+        } else {
+            self.bc_annotated_type(expr)
+        };
+        result
+            .as_ref()
+            .filter(|result| self.resolve_type_aliases(result).to_string() == element.to_string())
+            .map(|_| element)
+    }
+
+    fn bc_check_contiguous_element_value_read(&mut self, expr: &Expr, object: &Expr) {
+        let Some(element) = self.bc_contiguous_element_value_type(expr, object) else {
+            return;
+        };
+        if self.bc_is_move_type(&element) {
+            self.push_error(expr.span, "S10", "cannot read an owned contiguous-container element by value before borrowed-element access is implemented".to_string());
+        } else if self
+            .current_generic_params
+            .last()
+            .is_some_and(|parameters| !parameters.is_empty())
+            && let Some(callable) = self.current_function.last()
+        {
+            // A template parameter is not known to be Copy. Recheck the
+            // source read after its proven concrete specializations close.
+            self.pending_contiguous_value_reads
+                .push((callable.clone(), expr.span, element));
+        }
+    }
+
+    pub(super) fn validate_contiguous_value_read_specializations(
+        &mut self,
+        concrete: &BTreeSet<OwnershipCallableId>,
+        checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<(), crate::cancel::Cancelled> {
+        let mut reads: HashMap<String, Vec<(Span, TypeKind)>> = HashMap::new();
+        for (callable, span, element) in &self.pending_contiguous_value_reads {
+            checkpoint()?;
+            reads
+                .entry(callable.clone())
+                .or_default()
+                .push((*span, element.clone()));
+        }
+        let mut rejected = HashSet::new();
+        let mut diagnostics = Vec::new();
+        for mono in &self.monomorphizations {
+            checkpoint()?;
+            if !concrete.contains(&self.ownership_callable_id(&mono.fn_name, &mono.type_args)) {
+                continue;
+            }
+            let Some(sites) = reads.get(&mono.fn_name) else {
+                continue;
+            };
+            let parameters = self.generic_params_for_function(&mono.fn_name);
+            let substitution: HashMap<_, _> = parameters
+                .into_iter()
+                .zip(mono.type_args.iter().cloned())
+                .collect();
+            for (span, element) in sites {
+                checkpoint()?;
+                let resolved = crate::type_resolution::resolve_type(
+                    element,
+                    &self.type_aliases,
+                    &substitution,
+                    &HashSet::new(),
+                    |_| None,
+                );
+                match resolved {
+                    Ok(element)
+                        if self.bc_is_move_type(&element)
+                            && rejected.insert((span.start, span.end)) =>
+                    {
+                        diagnostics.push(SemanticError {
+                            span: *span, code: "S10",
+                            message: format!("specialization `{}` cannot read an owned contiguous-container element by value before borrowed-element access is implemented", mono.mangled_name),
+                        });
+                    }
+                    Err(error) => diagnostics.push(SemanticError {
+                        span: *span,
+                        code: "S14",
+                        message: error.to_string(),
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        self.errors.extend(diagnostics);
+        Ok(())
     }
 
     /// Implicit scope cleanup is an ownership use just like an explicit

@@ -12,9 +12,9 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Owned formatting and compiler-owned storage destruction change generated
-// signatures and cleanup. Neither exact hits nor pre-WPO units may reuse v8.
-const QZC_VERSION: u8 = 9;
+// Dense-element checks and generic owner transfer change analysis/lowering.
+// Older exact hits bypass analysis; reusable units retain premature cleanup.
+const QZC_VERSION: u8 = 10;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn qzc_v4_is_rejected_after_generic_abi_validation_changed() {
+    fn prior_cache_versions_cannot_bypass_dense_element_read_validation() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -612,9 +612,15 @@ mod tests {
             0,
             0,
         ));
-        let qzi = crate::bytecode::serialize_qzi(&[chunk]).unwrap();
+        let qzi = crate::bytecode::serialize_qzi(&[chunk.clone()]).unwrap();
         let cache = root.join("incremental.qzc");
         let hashes = source_hashes(std::slice::from_ref(&input)).unwrap();
+        let units = [CachedCodegenUnit {
+            source_path: input.to_string_lossy().into_owned(),
+            source_hash: hashes[&input.to_string_lossy().into_owned()],
+            chunk,
+            calls: Vec::new(),
+        }];
         store(
             &cache,
             std::slice::from_ref(&input),
@@ -622,15 +628,34 @@ mod tests {
             &qzi,
             false,
             [0; 32],
-            &[],
+            &units,
         )
         .unwrap();
 
-        let mut legacy = fs::read(&cache).unwrap();
-        assert_eq!(&legacy[..4], QZC_MAGIC);
-        legacy[4] = 4;
-        fs::write(&cache, legacy).unwrap();
-        assert!(load(&cache).unwrap().is_none());
+        assert!(load(&cache).unwrap().is_some());
+        assert!(has_codegen_units(&cache));
+        assert_eq!(
+            load_codegen_units(&cache, [0; 32], &hashes).unwrap().len(),
+            1
+        );
+        let current = fs::read(&cache).unwrap();
+        assert_eq!(&current[..4], QZC_MAGIC);
+        for version in [4, 9] {
+            let mut legacy = current.clone();
+            legacy[4] = version;
+            fs::write(&cache, legacy).unwrap();
+            assert!(
+                load(&cache).unwrap().is_none(),
+                "old exact cache hit for version {version}"
+            );
+            assert!(
+                load_codegen_units(&cache, [0; 32], &hashes)
+                    .unwrap()
+                    .is_empty(),
+                "old reusable unit for version {version}"
+            );
+            assert!(!has_codegen_units(&cache));
+        }
         let _ = fs::remove_dir_all(root);
     }
 

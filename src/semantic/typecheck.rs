@@ -3229,8 +3229,16 @@ impl Analyzer {
                 ExprEval { ty, const_value }
             }
             ExprKind::Assign { target, value } => {
-                let indexed_target_eval = matches!(target.node, ExprKind::Index { .. })
-                    .then(|| self.type_check_expr(target, reachable));
+                let indexed_target_eval = if matches!(target.node, ExprKind::Index { .. }) {
+                    let previous = self
+                        .index_write_target_span
+                        .replace((target.span.start, target.span.end));
+                    let target_eval = self.type_check_expr(target, reachable);
+                    self.index_write_target_span = previous;
+                    Some(target_eval)
+                } else {
+                    None
+                };
                 let assignment_expected = indexed_target_eval
                     .as_ref()
                     .and_then(|eval| eval.ty.clone())
@@ -5221,15 +5229,22 @@ impl Analyzer {
                     None
                 };
 
+                let index_reads_value =
+                    self.index_write_target_span != Some((expr.span.start, expr.span.end));
                 let elem_ty = if let Some(mangled) = maybe_index_mangled {
+                    if index_reads_value {
+                        resolved_method = Some(mangled.clone());
+                    }
                     let from = self
                         .current_function
                         .last()
                         .cloned()
                         .unwrap_or_else(|| "__program__".to_string());
-                    self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
+                    if index_reads_value {
+                        self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
+                    }
                     if let Some(sym) = self.resolve_symbol(&mangled) {
-                        if sym.unsafe_fn && self.unsafe_depth == 0 {
+                        if index_reads_value && sym.unsafe_fn && self.unsafe_depth == 0 {
                             self.push_error(
                                 expr.span,
                                 "S11",
@@ -5274,11 +5289,17 @@ impl Analyzer {
                             .ty
                             .as_ref()
                             .map(|ty| substitute_type_kind(ty, &substitution));
-                        if !substitution.is_empty() {
+                        if index_reads_value && !substitution.is_empty() {
                             let type_args: Vec<TypeKind> = generic_params
                                 .iter()
-                                .filter_map(|param| substitution.get(param).cloned())
+                                .filter_map(|param| substitution.get(param))
+                                .map(|argument| self.resolve_type_aliases(argument))
                                 .collect();
+                            if !self
+                                .validate_specialization_identity(&mangled, &type_args, expr.span)
+                            {
+                                return ExprEval::default();
+                            }
                             self.record_fn_value_layout(
                                 &mangled,
                                 &type_args,
@@ -8082,7 +8103,7 @@ fn is_lexical_reference_expr(expr: &Expr) -> bool {
     }
 }
 
-fn infer_type_subst(
+pub(super) fn infer_type_subst(
     param_ty: &TypeKind,
     arg_ty: &TypeKind,
     generic_params: &[String],

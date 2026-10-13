@@ -2,6 +2,74 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-13, HTTP receivers and dense read safety)
+
+Resumed the full workspace goal and used the local Graphify query/index. All
+work remains local; commits are explicitly authorized, pushing is not. Compiler
+branch is `dev`; std is the workspace symlink to `~/.quazi/std` on `main`.
+The prebuilt qz referenced an old CARGO_MANIFEST_DIR and could not load the
+prelude; rebuilding with the pinned Rust/bfd setup corrected that environment.
+
+STD now uses shared datagram/HTTP value observations and exclusive HTTP socket
+operations. `serve_once` keeps a mutable client; request `send` captures its
+response limit before consuming `encode`. Connection field destruction remains
+implicit; server cleanup retains its consuming source hook. Exact declarations
+are exercised by std/scripts/check_net_receivers.py and tests/net_receivers.qz.
+The script deliberately excludes unfinished Headers/codecs and the user CLI.
+
+Compiler ownership guards now reject owning `[]` reads, including observation,
+projected roots, aliases/references, and exclusive Index implementations. Index
+annotations retain the resolved method. Signature instantiation in the guard is
+only a rejection proof; it does not enable new plain borrowed-reference Index
+ABI behavior. Indexed replacement and exclusive remove remain accepted.
+Generic helpers cannot bypass the guard: deferred source-read facts preserve
+binder context and are checked against proven concrete mono identities after
+closure. Closure propagates concrete provenance and revisits earlier symbolic
+registrations when proof arrives. Checked resolver errors, cancellation, and
+analyzer reset remain explicit. QZI remains v11 and unverified. QZC v10 invalidates v9 exact/reusable caches
+so old accepted bytecode cannot bypass the strengthened analysis/lowering.
+
+Native Array[Token] replacement/removal exposed premature cleanup at inferred
+generic storage calls and discarded assignment results. Typed source-call
+transfer now requires consuming declared fixed parameters plus actual caller
+ownership (callee binders protected, unresolved actual binders rejected,
+fixed-array ownership recursive). Concrete layouts remain authoritative.
+Variadic packing and scalar/reference arguments cannot clear owner guards.
+Assignment results alias destination storage and are retained on discard.
+
+Verification: pinned/bfd full compiler suite 733/733, focused contiguous 23/23;
+build and clippy succeed with existing warnings. The generic storage-call
+regression fails with previous lowering; actual prelude owned-element-replacement
+passes Linux native/QZI execution and Windows COFF emission after the fixes. Indexed-read regression failed
+before the fix; an extract[Item](Array[Item]) native-source fixture emitted QZI
+before the generic guard and now receives S10 before codegen. The isolated STD
+suite passes 10 native tests (7 new + 3 existing), 3 specific negative lifetime
+checks, QZI execution of the 7 new tests, and Windows COFF emission. The Linux
+socketpair test reads twice and verifies EOF after implicit connection cleanup.
+Previous STD source fails the same receiver regression suite. No Windows host
+execution or full HTTP roundtrip is claimed. See
+`docs/changes/2026-10-13-http-receiver-ownership.md` for exact commands/bounds.
+
+The full std qz test still fails analysis: 30 net diagnostics, one json.qz
+Array[String] owning read, one prelude Array.index specialization
+rejection, and two unrelated CLI errors. Current logs/probes are
+/tmp/quazi-owned-reads-*, /tmp/quazi-net-receivers-*.log,
+/tmp/quazi-http-full-final.log, and /tmp/quazi-generic-owned-index*. The old
+unsafe generic .qzi probe was emitted only to establish the rejection regression.
+
+Next: complete the accepted D-014 provenance/effect and artifact-summary
+foundation needed by D-015, then implement checked dense-element access and
+coherent Headers/HTTP/JSON migration. D-015's first slice admits local/parameter
+roots, not self.items field projections or arbitrary view escapes. Do not fake
+this with unsafe casts, shallow owners, or alternative storage shadows. Full
+std tests and broader workspace audits remain required. Generic/scalar/enum
+shell cleanup remains incomplete. The full production-readiness goal is active;
+no website is wanted.
+
+Preserve unrelated std README.md, RESUME.md, src/mod.qz, src/cli/, tests/cli.qz,
+and compiler .codex/ plus examples/35-multi-slot-arrays/build/. Other repositories
+were inspected and not changed; jetbrains-quazi has an untracked .gradle/.
+
 ## Checkpoint (2026-10-10, owned formatting migration)
 
 D-013 is implemented for primitive/text conversions: Display.to_string returns

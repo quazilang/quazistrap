@@ -143,6 +143,13 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
   field has compiler-generated structural cleanup. Do not extend this to
   aliases, nested projections, wrappers, call arguments, or source destructors
   without place-level move state and path-sensitive destruction.
+- Metadata-derived dense-element read checks apply to `[]` and shared methods,
+  including alias/reference receivers and observation without consumption.
+  Indexed replacement checks only storage/index operands; it does not read the
+  prior element. Generic read facts retain the caller binder context and are
+  validated after concrete specialization closure through checked substitution.
+  Concrete identity provenance propagates through closure, including symbolic
+  registrations later proved concrete. Never infer concreteness from names.
 - `Array.get` may return Plain elements by value, but an owned element is now
   rejected with S10 instead of materializing a shallow second owner. Do not
   weaken this gate by changing a receiver spelling: safe owned collection

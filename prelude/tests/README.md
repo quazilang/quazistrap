@@ -13,6 +13,7 @@ target/debug/qz build prelude/tests/owned-format.qz --no-incremental -o /tmp/qz-
 target/debug/qz build prelude/tests/owned-output.qz --no-incremental -o /tmp/qz-owned-output -r
 target/debug/qz build prelude/tests/owned-args.qz --no-incremental -o /tmp/qz-owned-args -r
 target/debug/qz build prelude/tests/owned-file.qz --no-incremental -o /tmp/qz-owned-file -r
+target/debug/qz build prelude/tests/owned-element-replacement.qz --no-incremental -o /tmp/qz-owned-element-replacement -r
 ```
 
 `owned-output` prints exactly `literal=42`, `dynamic=43`, and `writer=44`,
@@ -26,3 +27,7 @@ emission, not Windows execution. For allocator accounting, Linux `strace -e
 trace=mmap,munmap` on `owned-format` should show equal mapping/unmapping counts.
 Enum shell and general scalar-only aggregate destruction remain incomplete;
 do not infer their leak freedom from the format fixture.
+
+`owned-element-replacement` uses actual `Array[Token]` indexed replacement and
+exclusive removal. It proves the setter path does not instantiate a by-value
+Index read, replaces the old owner, and transfers the remaining owner out.

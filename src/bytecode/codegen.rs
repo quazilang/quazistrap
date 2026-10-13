@@ -4827,21 +4827,22 @@ impl<'a> FnCompiler<'a> {
         self.chunk.emit(ret);
     }
 
-    fn expr_is_local_value(&self, expr: &Expr) -> bool {
+    fn expr_has_retained_storage(&self, expr: &Expr) -> bool {
         match &expr.node {
             ExprKind::Ident(name) => self.regs.contains_key(name),
             ExprKind::Group(inner)
             | ExprKind::Cast { expr: inner, .. }
-            | ExprKind::Try { expr: inner } => self.expr_is_local_value(inner),
-            ExprKind::Assign { target, .. } => {
-                assignment_target_ident(target).is_some_and(|name| self.regs.contains_key(name))
-            }
+            | ExprKind::Try { expr: inner } => self.expr_has_retained_storage(inner),
+            // The assignment result aliases the destination after transfer,
+            // including indexed and field storage. Discarding the expression
+            // must not destroy the owner just deposited in that destination.
+            ExprKind::Assign { .. } => true,
             _ => false,
         }
     }
 
     fn cleanup_discarded_owned_value(&mut self, expr: &Expr, reg: u8) {
-        if !self.expr_is_local_value(expr)
+        if !self.expr_has_retained_storage(expr)
             && let Some(action) = self
                 .type_of_span((expr.span.start, expr.span.end))
                 .and_then(|ty| self.drop_action_for_type(&ty))
@@ -4851,7 +4852,7 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn cleanup_temporary_fn_callee(&mut self, expr: &Expr, reg: u8) {
-        if !self.expr_is_local_value(expr) {
+        if !self.expr_has_retained_storage(expr) {
             self.emit_drop_action(reg, DropAction::FreeClosureEnv);
         }
     }
@@ -6156,6 +6157,40 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// Source calls can retain a generic wrapper without a concrete layout.
+    /// Transfer only fixed arguments whose declared capability consumes and
+    /// whose actual type is owned in this caller's specialization. A symbolic
+    /// callee binder alone is not proof that an actual scalar argument owns.
+    fn emit_source_call_by_name(&mut self, name: &str, arg_bases: &[u8], args: &[Expr], dst: u8) {
+        if !self.fn_value_layouts.contains_key(name) {
+            let owned_arguments = args
+                .iter()
+                .zip(arg_bases)
+                .enumerate()
+                .filter_map(|(index, (arg, &reg))| {
+                    let declared = self.declared_fixed_parameter_type(name, index)?;
+                    let actual = self.type_of_expr(arg)?;
+                    // An unresolved caller binder has no actual owner contract.
+                    if !self.actual_argument_owns(&actual) {
+                        return None;
+                    }
+                    let owned = crate::runtime_layout::MoveKind::Owned;
+                    (crate::runtime_layout::runtime_move_kind(&declared) == owned).then_some(reg)
+                })
+                .collect::<Vec<_>>();
+            for reg in owned_arguments {
+                self.transfer_expression_temporary(reg);
+            }
+        }
+        self.emit_call_by_name(name, arg_bases, dst);
+    }
+
+    fn actual_argument_owns(&self, ty: &TypeKind) -> bool {
+        actual_type_owns(ty, &self.bound_names, &self.type_subst, &|name| {
+            self.struct_defs.contains_key(name) || self.enum_defs.contains_key(name)
+        })
+    }
+
     /// Emit a call to a named function. `arg_bases` carries one base register
     /// per *logical* argument; multi-slot parameters are expanded to the
     /// recorded number of consecutive slots before `CallIdx` is emitted.
@@ -6542,7 +6577,12 @@ impl<'a> FnCompiler<'a> {
         all_regs.push(r_ptr);
         all_regs.push(r_len);
         let result_dst = self.alloc_result_block(name);
-        self.emit_call_by_name(name, &all_regs, result_dst);
+        self.emit_source_call_by_name(
+            name,
+            &all_regs,
+            &args[..fixed_count.min(args.len())],
+            result_dst,
+        );
         result_dst
     }
 
@@ -6569,7 +6609,7 @@ impl<'a> FnCompiler<'a> {
         result
     }
 
-    fn format_fixed_parameter_is_view(&self, target: &str, index: usize) -> bool {
+    fn declared_fixed_parameter_type(&self, target: &str, index: usize) -> Option<TypeKind> {
         let declared = target.split('<').next().unwrap_or(target);
         let Some(entry) = self
             .symbol_table
@@ -6577,10 +6617,18 @@ impl<'a> FnCompiler<'a> {
             .iter()
             .find(|entry| entry.scope_depth == 0 && entry.name == declared)
         else {
-            return false;
+            return None;
         };
+        let fixed_count = entry
+            .symbol
+            .params
+            .len()
+            .saturating_sub(usize::from(entry.symbol.variadic));
+        if index >= fixed_count {
+            return None;
+        }
         let Some(parameter) = entry.symbol.params.get(index) else {
-            return false;
+            return None;
         };
         let names = entry
             .symbol
@@ -6596,12 +6644,18 @@ impl<'a> FnCompiler<'a> {
             &names,
             |_| None,
         ) {
-            Ok(ty) => is_string_view_type(&ty),
+            Ok(ty) => Some(ty),
             Err(error) => {
                 self.resolution_errors.borrow_mut().push(error.to_string());
-                false
+                None
             }
         }
+    }
+
+    fn format_fixed_parameter_is_view(&self, target: &str, index: usize) -> bool {
+        self.declared_fixed_parameter_type(target, index)
+            .as_ref()
+            .is_some_and(is_string_view_type)
     }
 
     fn coerce_to_display_str(&mut self, reg: u8, span: crate::parser::ast::Span) -> u8 {
@@ -7482,7 +7536,7 @@ impl<'a> FnCompiler<'a> {
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&mono_name);
-                        self.emit_call_by_name(&mono_name, &arg_regs, result_dst);
+                        self.emit_source_call_by_name(&mono_name, &arg_regs, args, result_dst);
                         return result_dst;
                     }
                     if call_name == "fmt.format" {
@@ -7605,7 +7659,7 @@ impl<'a> FnCompiler<'a> {
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&call_name);
-                        self.emit_call_by_name(&call_name, &arg_regs, result_dst);
+                        self.emit_source_call_by_name(&call_name, &arg_regs, args, result_dst);
                         return result_dst;
                     }
                 } else {
@@ -7766,7 +7820,7 @@ impl<'a> FnCompiler<'a> {
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&call_target);
-                        self.emit_call_by_name(&call_target, &arg_regs, result_dst);
+                        self.emit_source_call_by_name(&call_target, &arg_regs, args, result_dst);
                         return result_dst;
                     }
                 }
@@ -7850,7 +7904,7 @@ impl<'a> FnCompiler<'a> {
                                 })
                                 .collect();
                             let result_dst = self.alloc_result_block(&call_target);
-                            self.emit_call_by_name(&call_target, &arg_regs, result_dst);
+                            self.emit_source_call_by_name(&call_target, &arg_regs, args, result_dst);
                             return result_dst;
                         }
                     }
@@ -9469,6 +9523,29 @@ fn types_equal_slice(a: &[TypeKind], b: &[TypeKind]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(t1, t2)| types_equal(t1, t2))
 }
 
+/// Unlike declared generic capabilities, actual ownership needs a concrete
+/// nominal identity. Fixed arrays inherit this proof from their element type.
+fn actual_type_owns(
+    ty: &TypeKind,
+    bound_names: &HashSet<String>,
+    substitution: &HashMap<String, TypeKind>,
+    nominal_exists: &impl Fn(&str) -> bool,
+) -> bool {
+    match ty {
+        TypeKind::Named { name, type_args } => {
+            let unresolved_binder = type_args.is_empty()
+                && (matches!(substitution.get(name), Some(TypeKind::Named { name: replacement, type_args })
+                    if replacement == name && type_args.is_empty())
+                    || (bound_names.contains(name) && !substitution.contains_key(name)));
+            !unresolved_binder && nominal_exists(name)
+        }
+        TypeKind::Array { elem_ty, .. } => {
+            actual_type_owns(&elem_ty.node, bound_names, substitution, nominal_exists)
+        }
+        _ => crate::runtime_layout::runtime_move_kind(ty) == crate::runtime_layout::MoveKind::Owned,
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -9527,6 +9604,144 @@ mod tests {
         Codegen::new(&report)
             .compile_program(&program, &source_files)
             .expect("code generation should succeed")
+    }
+
+    #[test]
+    fn actual_owner_proof_rejects_symbolic_atoms_and_array_elements() {
+        let binder = TypeKind::Named {
+            name: "T".into(),
+            type_args: Vec::new(),
+        };
+        let array = TypeKind::Array {
+            elem_ty: Box::new(crate::parser::ast::Spanned {
+                node: binder.clone(),
+                span: Span::new(1, 1, 0, 0),
+            }),
+            len: 2,
+        };
+        // Even a real nominal type with this spelling cannot supply proof for
+        // the protected binder or a retained T -> T symbolic specialization.
+        for bound in [HashSet::new(), HashSet::from(["T".to_string()])] {
+            let identity = HashMap::from([("T".to_string(), binder.clone())]);
+            for ty in [&binder, &array] {
+                assert!(!actual_type_owns(ty, &bound, &identity, &|_| true));
+                assert!(!actual_type_owns(ty, &bound, &HashMap::new(), &|_| false));
+            }
+        }
+        assert!(!actual_type_owns(
+            &array,
+            &HashSet::from(["T".into()]),
+            &HashMap::new(),
+            &|_| true
+        ));
+        let token = TypeKind::Named {
+            name: "Token".into(),
+            type_args: Vec::new(),
+        };
+        assert!(actual_type_owns(
+            &token,
+            &HashSet::new(),
+            &HashMap::new(),
+            &|name| name == "Token"
+        ));
+    }
+
+    #[test]
+    fn generic_storage_calls_transfer_actual_owned_arguments() {
+        let chunks = compile(
+            r#"
+type T = *u8;
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+@intrinsic("quazi.array.store")
+fn store[T](base: *u8, index: usize, value: T) void;
+unsafe fn insert[A](base: *u8, value: A) void { store(base, 0, value); }
+unsafe fn invoke(base: *u8) void { insert[Token](base, Token { value: 7 }); }
+"#,
+        );
+        let insert = chunks
+            .iter()
+            .find(|chunk| chunk.name == "insert<Token>")
+            .unwrap();
+        assert!(insert.code.iter().any(|instruction| {
+            instruction.opcode() == Some(Opcode::CallIdx)
+                && chunks[instruction.ri16().1 as usize].name == "store"
+        }));
+        assert!(
+            !insert.code.iter().any(|instruction| {
+                instruction.opcode() == Some(Opcode::CallIdx)
+                    && chunks[instruction.ri16().1 as usize].name == "Token.free"
+            }),
+            "the stored argument must not receive caller cleanup: {:?}",
+            insert.code
+        );
+    }
+
+    #[test]
+    fn generic_scalar_and_borrow_calls_preserve_pending_owner_cleanup() {
+        for invocation in [
+            "scalar[i32](7)",
+            "borrow[i32](&value)",
+            "variadic[i32](7, 8, 9)",
+            "fixed[i32]([7, 8])",
+        ] {
+            let source = format!(
+                r#"
+struct Token {{ value: i32 }}
+impl Token {{
+    fn free(self: Token) void {{}}
+    fn observe(self: &Token, value: i32) i32 {{ ret self.value + value; }}
+}}
+fn make() Token {{ ret Token {{ value: 1 }}; }}
+fn scalar[T](value: T) T {{ ret value; }}
+fn borrow[T](value: &T) i32 {{ ret 7; }}
+fn variadic[T](value: T, ...rest: T) T {{ ret value; }}
+fn fixed[T](value: [T; 2]) i32 {{ ret 7; }}
+fn main() void {{ const value: i32 = 7; make().observe({invocation}); }}
+"#
+            );
+            let tokens = Lexer::new(&source).tokenize();
+            let program = Parser::new(tokens).parse().unwrap();
+            let mut report = Analyzer::new().analyze_program(&program);
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            // Exercise source-call transfer without a concrete layout, as with
+            // retained symbolic storage wrappers in enclosing specializations.
+            report.fn_value_layouts.retain(|name, _| {
+                !["scalar", "borrow", "variadic", "fixed"]
+                    .iter()
+                    .any(|base| name.starts_with(base))
+            });
+            let chunks = Codegen::new(&report)
+                .compile_program(&program, &[])
+                .unwrap();
+            let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+            let observe = main
+                .code
+                .iter()
+                .position(|instruction| {
+                    instruction.opcode() == Some(Opcode::CallIdx)
+                        && chunks[instruction.ri16().1 as usize].name == "Token.observe"
+                })
+                .unwrap();
+            assert!(
+                !main.code[..observe]
+                    .iter()
+                    .any(|instruction| { instruction.opcode() == Some(Opcode::Cmp) }),
+                "{invocation} must not compare a plain argument against owner guards: {:?}",
+                main.code
+            );
+            assert_eq!(
+                main.code
+                    .iter()
+                    .filter(|instruction| {
+                        instruction.opcode() == Some(Opcode::CallIdx)
+                            && chunks[instruction.ri16().1 as usize].name == "Token.free"
+                    })
+                    .count(),
+                1,
+                "{invocation} must retain the temporary receiver's cleanup"
+            );
+        }
     }
 
     #[test]

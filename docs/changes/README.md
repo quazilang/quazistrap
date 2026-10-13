@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-10-13: HTTP receiver ownership and dense-element read guards](2026-10-13-http-receiver-ownership.md)
+
 - [2026-10-10: Owned formatting and temporary cleanup](2026-10-10-owned-formatting.md)
 
 - [2026-10-09: Generic binding context](2026-10-09-generic-binding-context.md)

@@ -1,0 +1,12 @@
+// Owning indexed replacement must never instantiate an owning Index read.
+struct Token { value: i32 }
+impl Token { fn free(self: Token) void {} }
+
+fn main() i32 {
+    var items: Array[Token] = Array.new();
+    items.push(Token { value: 1 });
+    items[0] = Token { value: 7 };
+    const removed: Token = items.remove(0);
+    if (removed.value != 7 || items.len() != 0) { ret 1; }
+    ret 0;
+}

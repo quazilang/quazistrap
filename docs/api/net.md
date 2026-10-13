@@ -78,6 +78,12 @@ close and automatic consuming `free` behavior as TCP.
 
 ## HTTP/1.1 helpers
 
+Current integration limitation: the full module still fails ownership analysis
+in `Headers` and the HTTP codecs. The following describes its declared API;
+receiver fixes are independently verified, while end-to-end HTTP use awaits
+checked element loans and ownership provenance. See the
+[receiver change record](../changes/2026-10-13-http-receiver-ownership.md).
+
 `HttpMethod` supplies `Get`, `Head`, `Post`, `Put`, `Patch`, `Delete`,
 `Options`, `Connect`, and `Trace`; `name()` returns the wire spelling.
 `Url.parse` accepts only `http` and `https`, host, optional numeric port, and a
@@ -106,7 +112,7 @@ headers, and response limit. A caller-supplied `Host` header remains an
 intentional virtual-host override; otherwise it adds the URL authority,
 including a non-default HTTP port. It rejects HTTPS with `TlsUnavailable` and
 does not silently downgrade transport security. `parse(raw)` parses an owned
-request text.
+request text. `method`, `target`, `host`, and `body_text` use shared receivers.
 
 `HttpResponse.new`, `text`, `header`, `status`, `reason`, `headers`, `body`,
 `encode`, and `parse` provide the matching response surface. `text` supplies a
@@ -114,7 +120,8 @@ small conventional reason phrase table and a UTF-8 text content type. Parsing
 recognizes HTTP/1.0 and HTTP/1.1, validates basic framing, and decodes chunked
 bodies with a fixed 16 MiB limit. It is not a hardened general HTTP parser:
 there is no header-count/line-size policy, trailer API, compression, redirect,
-cookie, or authentication support.
+cookie, or authentication support. `status`, `reason`, and `body` use shared
+receivers.
 
 `HttpServer.bind(port)` wraps a `TcpListener`; `accept()` returns one owning
 `HttpConnection`. A connection can `read(limit)` into `HttpRequest`,
@@ -125,7 +132,10 @@ request text after responding, and closes both connection and listener.
 `http_request`, `http_get`, and `http_post` are compatibility helpers that
 return only an owned response body; new code should use `HttpRequest` and
 inspect `HttpResponse`. This is a one-request building block, not a concurrent
-HTTP server runtime.
+HTTP server runtime. `read`, `read_request`, `respond`, and `close` require
+exclusive connection access; `accept` and `close` require exclusive server
+access. Use mutable locals. `serve_once` and server `free` remain consuming;
+connections close through structural field cleanup at scope exit.
 
 ## Security and portability
 
