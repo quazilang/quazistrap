@@ -12,9 +12,9 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Dense-element checks and generic owner transfer change analysis/lowering.
-// Older exact hits bypass analysis; reusable units retain premature cleanup.
-const QZC_VERSION: u8 = 10;
+// Match-arm provenance rejects previously accepted local-owner view escapes.
+// Older exact hits and reusable units cannot bypass the strengthened analysis.
+const QZC_VERSION: u8 = 11;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn prior_cache_versions_cannot_bypass_dense_element_read_validation() {
+    fn prior_cache_versions_cannot_bypass_ownership_validation() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -640,7 +640,7 @@ mod tests {
         );
         let current = fs::read(&cache).unwrap();
         assert_eq!(&current[..4], QZC_MAGIC);
-        for version in [4, 9] {
+        for version in [4, 9, 10] {
             let mut legacy = current.clone();
             legacy[4] = version;
             fs::write(&cache, legacy).unwrap();

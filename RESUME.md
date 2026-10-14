@@ -2,6 +2,52 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-14, local view provenance)
+
+Resumed the dirty borrow.rs checkpoint and used Graphify query plus incremental
+Rust/Cargo extraction and clustering (4,459 nodes / 11,147 edges). Independent
+read-only reviewers identified/reconciled match-arm origin loss and capability
+transfer rebasing. All work stays local; commits authorized, pushes are not.
+
+Local view roots now include declaration identity; branch merges match roots
+and retain loan region depth. Parameters retain slot provenance. Views derived
+from exclusive parameters freeze mutation until scope exit; moved exclusive
+capabilities rebase their active root. Scoped match environments preserve enum
+payload view origins through return, aggregate storage, and temporary binding.
+Untyped qualified enum constructors still contribute temporary storage roots.
+The I/O tutorial fixture now prints its owner inside the match arm. QZC v11
+invalidates older exact hits and reusable units; QZI remains v11/unverified.
+
+Do not infer D-014 completion: parameter-derived aggregate retention remains the
+existing unverified boundary. A blanket constructor ban broke synchronous
+PanicInfo use and copying helpers, so it was removed without API/type exceptions.
+Exact source result summaries and complete aggregate-origin propagation remain
+required alongside the effect solver and QZI body verification. The initial
+resumed patch failed an allocation-constructor regression; intermediate blanket
+retention checks failed 17 compiler tests. Those approaches were reconciled;
+see docs/changes/2026-10-14-view-root-provenance.md for final support limits.
+
+Verification: compiler full suite passes 738/738; focused view suite has 19
+tests. New match and exclusive-parameter negative regressions fail against HEAD's
+previous implementation (baseline log /tmp/quazi-provenance-before-fix.log).
+Build and clippy succeed with existing warnings; owned Rust files are formatted.
+The local-owner probe passes Linux native/QZI execution and Windows COFF
+emission. Match escape source receives S10 before QZI emission.
+
+Native verification also CONFIRMED AN UNRESOLVED ABI BUG: general &Owner!
+arguments hold slot pointers, but struct methods expect raw aggregate handles.
+Forwarding through a free function overwrites the caller's owner slot. Direct,
+one-alias and two-alias probes crash; the larger transferred-view probe exits
+one. QZI/COFF emission is not proof of runtime correctness. The exact evidence,
+required coherent slot-reference/receiver migration, and regression matrix are
+in docs/audits/2026-10-14-reference-receiver-abi.md. Treat this as the next
+runtime priority before D-015 or general borrowed-resource API claims.
+
+Artifacts/logs: /tmp/quazi-provenance-*. Preserve unrelated compiler .codex/ and
+example 35 build output, std README/RESUME/src/mod.qz/CLI work, and JetBrains
+.gradle/. Std and editor repositories were inspected and left untouched. The
+full workspace goal remains active; no website is wanted.
+
 ## Checkpoint (2026-10-13, HTTP receivers and dense read safety)
 
 Resumed the full workspace goal and used the local Graphify query/index. All

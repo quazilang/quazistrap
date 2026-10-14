@@ -109,9 +109,10 @@ The current reader remains compatible with compatible v2-v9 files; v1
 requires a source rebuild because it omitted frame metadata, and legacy files
 with implicit `Lea` metadata, parameterized v6 trait interfaces, or v6 public
 runtime-`any` interfaces require rebuilding. Older compilers must reject v10
-rather than silently ignore the new semantics. QZC v10 invalidates older exact
-hits and reusable chunks so cached QZI cannot bypass the indexed and
-concrete-generic dense-element read checks or corrected ownership transfers.
+rather than silently ignore the new semantics. QZC v11 invalidates older exact
+hits and reusable chunks so cached QZI cannot bypass match-arm string-view
+provenance checks, indexed and concrete-generic dense-element read checks,
+or corrected ownership transfers.
 
 V11 adds the original ownership ABI generation to content-bound metadata.
 Older allocating or ambiguous ownership contracts require a source rebuild;

@@ -154,6 +154,16 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
   rejected with S10 instead of materializing a shallow second owner. Do not
   weaken this gate by changing a receiver spelling: safe owned collection
   reads require a provenance-tracked borrowed-element API and element cleanup.
+- String-view roots use declaration identity (span plus binding ordinal), name,
+  and lexical depth; branch merging cannot transfer loans/moves to a same-name
+  declaration. Match result origins use scoped pattern bindings seeded from the
+  scrutinee, including untyped qualified enum temporaries. Borrowed parameters
+  retain parameter-slot provenance; exclusive capability transfers rebase the
+  active capability root, and a derived view freezes that root until scope exit.
+  Parameter-derived aggregate retention remains an unverified existing boundary:
+  synchronous aggregate use and escaping storage require D-014 composed effects
+  to distinguish them. These local facts are neither exact result-effect
+  summaries nor QZI certificates.
 - Quazi `fn` values are affine owners. Passing, returning, and assignment move
   them; calls borrow them; self-assignment is rejected. Until recursive cleanup
   and capture ownership are implemented, do not permit `fn` inside aggregates

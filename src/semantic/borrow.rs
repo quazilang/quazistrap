@@ -14,6 +14,7 @@ use super::*;
 
 #[derive(Debug, Clone)]
 struct OwnedVar {
+    binding: BindingId,
     ty: Option<TypeKind>,
     /// Some(span) → moved at that span; None → valid (not moved).
     moved_at: Option<Span>,
@@ -30,8 +31,38 @@ struct OwnedVar {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ViewOrigin {
-    Owner { name: String, scope_depth: usize },
+    Owner(OwnerRoot),
+    Parameter {
+        slot: usize,
+        reference_root: Option<OwnerRoot>,
+    },
     Temporary,
+}
+
+/// Stable across branch clones; lexical spelling/depth alone can identify a
+/// different declaration after shadowing or a scope has ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct BindingId {
+    start: usize,
+    end: usize,
+    ordinal: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct OwnerRoot {
+    binding: BindingId,
+    name: String,
+    scope_depth: usize,
+}
+
+impl ViewOrigin {
+    fn storage_root(&self) -> Option<&OwnerRoot> {
+        match self {
+            Self::Owner(root) => Some(root),
+            Self::Parameter { reference_root, .. } => reference_root.as_ref(),
+            Self::Temporary => None,
+        }
+    }
 }
 
 /// A lexical loan. Borrowed references cannot escape their declaring scope, so
@@ -150,13 +181,18 @@ impl MoveEnv {
         }
     }
 
-    fn declare(&mut self, name: String, ty: Option<TypeKind>) {
+    fn declare(&mut self, name: String, ty: Option<TypeKind>, span: Span, ordinal: usize) {
         let depth = self.loop_depth;
         let control_depth = self.control_depth;
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
                 name,
                 OwnedVar {
+                    binding: BindingId {
+                        start: span.start,
+                        end: span.end,
+                        ordinal,
+                    },
                     ty,
                     moved_at: None,
                     loop_depth_at_decl: depth,
@@ -182,6 +218,29 @@ impl MoveEnv {
         self.scopes
             .iter()
             .rposition(|scope| scope.contains_key(name))
+    }
+
+    fn owner_root(&self, name: &str) -> Option<OwnerRoot> {
+        let scope_depth = self.binding_depth(name)?;
+        Some(OwnerRoot {
+            binding: self.scopes[scope_depth].get(name)?.binding,
+            name: name.to_string(),
+            scope_depth,
+        })
+    }
+
+    fn root(&self, root: &OwnerRoot) -> Option<&OwnedVar> {
+        self.scopes
+            .get(root.scope_depth)?
+            .get(&root.name)
+            .filter(|var| var.binding == root.binding)
+    }
+
+    fn root_mut(&mut self, root: &OwnerRoot) -> Option<&mut OwnedVar> {
+        self.scopes
+            .get_mut(root.scope_depth)?
+            .get_mut(&root.name)
+            .filter(|var| var.binding == root.binding)
     }
 
     fn set_view_origins(&mut self, name: &str, origins: BTreeSet<ViewOrigin>) {
@@ -239,24 +298,33 @@ impl MoveEnv {
     /// Conservative branch merge: if a variable was moved in `branch`, mark it
     /// moved in `self` too (union of moved sets).
     fn apply_branch_moves(&mut self, branch: &MoveEnv) {
-        for scope in &branch.scopes {
+        for (depth, scope) in branch.scopes.iter().enumerate() {
             for (name, var) in scope {
+                let root = OwnerRoot {
+                    binding: var.binding,
+                    name: name.clone(),
+                    scope_depth: depth,
+                };
+                let Some(current) = self.root_mut(&root) else {
+                    continue;
+                };
                 if let Some(at) = var.moved_at {
-                    self.mark_moved(name, at);
+                    current.moved_at = Some(at);
                 }
-                if let Some(loan) = var.shared_borrow {
-                    self.mark_shared_borrowed(name, loan.at);
+                for (current_loan, branch_loan) in [
+                    (&mut current.shared_borrow, var.shared_borrow),
+                    (&mut current.exclusive_borrow, var.exclusive_borrow),
+                ] {
+                    if let Some(loan) = branch_loan {
+                        match current_loan {
+                            Some(existing) if existing.scope_depth <= loan.scope_depth => {}
+                            _ => *current_loan = Some(loan),
+                        }
+                    }
                 }
-                if let Some(loan) = var.exclusive_borrow {
-                    self.mark_exclusive_borrowed(name, loan.at);
-                }
-                if let Some(depth) = self.binding_depth(name) {
-                    self.scopes[depth]
-                        .get_mut(name)
-                        .expect("binding exists")
-                        .view_origins
-                        .extend(var.view_origins.iter().cloned());
-                }
+                current
+                    .view_origins
+                    .extend(var.view_origins.iter().cloned());
             }
         }
     }
@@ -319,9 +387,8 @@ impl Analyzer {
                     self.current_generic_params
                         .push(self.generic_params_for_function(&callable));
                     let mut env = MoveEnv::new();
-                    for p in params {
-                        self.bc_record_contiguous_destructor_root(&p.ty.node);
-                        env.declare(p.name.clone(), Some(p.ty.node.clone()));
+                    for (slot, p) in params.iter().enumerate() {
+                        self.bc_declare_parameter(p, slot, &mut env);
                     }
                     self.bc_block(body, &mut env);
                     self.current_generic_params.pop();
@@ -363,9 +430,8 @@ impl Analyzer {
                             } else {
                                 MoveEnv::new()
                             };
-                            for p in params {
-                                self.bc_record_contiguous_destructor_root(&p.ty.node);
-                                env.declare(p.name.clone(), Some(p.ty.node.clone()));
+                            for (slot, p) in params.iter().enumerate() {
+                                self.bc_declare_parameter(p, slot, &mut env);
                             }
                             self.bc_block(body, &mut env);
                             self.current_generic_params.pop();
@@ -393,6 +459,39 @@ impl Analyzer {
                 matches!(inner.node, TypeKind::Str)
             }
             _ => false,
+        }
+    }
+
+    fn bc_parameter_contains_views(&self, ty: &TypeKind) -> bool {
+        match self.resolve_type_aliases(ty) {
+            TypeKind::Array { elem_ty, .. } | TypeKind::Slice { elem_ty } => {
+                self.bc_parameter_contains_views(&elem_ty.node)
+            }
+            resolved => self.bc_is_string_view(&resolved),
+        }
+    }
+
+    fn bc_declare_parameter(&mut self, parameter: &Param, slot: usize, env: &mut MoveEnv) {
+        self.bc_record_contiguous_destructor_root(&parameter.ty.node);
+        env.declare(
+            parameter.name.clone(),
+            Some(parameter.ty.node.clone()),
+            parameter.name_span,
+            0,
+        );
+        let resolved = self.resolve_type_aliases(&parameter.ty.node);
+        let views = self.bc_parameter_contains_views(&resolved);
+        let reference = matches!(resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. });
+        if views || reference {
+            let reference_root = (reference && !self.bc_is_string_view(&resolved))
+                .then(|| env.owner_root(&parameter.name).expect("declared parameter"));
+            env.set_view_origins(
+                &parameter.name,
+                BTreeSet::from([ViewOrigin::Parameter {
+                    slot,
+                    reference_root,
+                }]),
+            );
         }
     }
 
@@ -439,12 +538,27 @@ impl Analyzer {
                 .flat_map(|argument| self.bc_borrowed_argument_origins(argument, env))
                 .collect(),
             ExprKind::Assign { value, .. } => self.bc_view_origins(value, env),
-            ExprKind::Match { arms, .. } => arms
+            ExprKind::Match { scrutinee, arms } => arms
                 .iter()
-                .flat_map(|arm| self.bc_view_origins(&arm.expr, env))
+                .flat_map(|arm| {
+                    let arm_env = self.bc_match_arm_env(scrutinee, arm, env);
+                    self.bc_view_origins(&arm.expr, &arm_env)
+                })
                 .collect(),
             _ => BTreeSet::new(),
         }
+    }
+
+    fn bc_match_arm_env(&self, scrutinee: &Expr, arm: &MatchArm, env: &MoveEnv) -> MoveEnv {
+        let mut arm_env = env.clone();
+        arm_env.control_depth += 1;
+        arm_env.enter_scope();
+        let origins = self.bc_owner_origins(scrutinee, env);
+        for (ordinal, name) in pattern_all_bindings(&arm.pattern).into_iter().enumerate() {
+            arm_env.declare(name.clone(), Some(TypeKind::Error), arm.expr.span, ordinal);
+            arm_env.set_view_origins(&name, origins.clone());
+        }
+        arm_env
     }
 
     fn bc_borrowed_argument_origins(&self, expr: &Expr, env: &MoveEnv) -> BTreeSet<ViewOrigin> {
@@ -484,16 +598,25 @@ impl Analyzer {
                         matches!(resolved, TypeKind::Named { .. })
                             && self.bc_is_move_type(&resolved)
                     }) {
-                        return BTreeSet::from([ViewOrigin::Owner {
-                            name: name.clone(),
-                            scope_depth: env.binding_depth(name).expect("binding exists"),
-                        }]);
+                        return BTreeSet::from([ViewOrigin::Owner(
+                            env.owner_root(name).expect("binding exists"),
+                        )]);
                     }
                 }
                 return BTreeSet::new();
             }
             ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
                 return self.bc_owner_origins(object, env);
+            }
+            // Qualified enum constructors can still lack a result annotation.
+            // Their payload storage is nevertheless a temporary owner; do not
+            // let that inference gap erase a match binding's storage origin.
+            ExprKind::MethodCall { object, method, .. }
+                if matches!(&object.node, ExprKind::Ident(name)
+                    if self.enums.get(name).is_some_and(|info| info.variants.contains_key(method)))
+                    && self.bc_resolved_call_name(expr).is_none() =>
+            {
+                return BTreeSet::from([ViewOrigin::Temporary]);
             }
             _ => {}
         }
@@ -549,36 +672,67 @@ impl Analyzer {
             .as_ref()
             .is_some_and(|ty| self.bc_is_string_view(ty));
         let binding_depth = env.binding_depth(name).expect("view binding declared");
-        for root in roots.iter().filter(|_| is_view) {
-            match root {
-                ViewOrigin::Temporary => self.push_error(value.span, "S10",
-                    "cannot store a string view borrowed from a temporary owner; keep the owner in a local binding".to_string()),
-                ViewOrigin::Owner { name: owner, scope_depth } => {
-                    if *scope_depth > binding_depth {
-                        self.push_error(value.span, "S10", format!(
-                            "string view binding `{name}` would outlive its owner `{owner}`"));
-                    }
-                    if let Some(var) = env.scopes.get_mut(*scope_depth).and_then(|scope| scope.get_mut(owner)) {
-                        if let Some(loan) = &mut var.shared_borrow {
-                            loan.scope_depth = loan.scope_depth.min(binding_depth);
-                        } else {
-                            var.shared_borrow = Some(Loan { at: value.span, scope_depth: binding_depth });
-                        }
+        for origin in roots.iter().filter(|_| is_view) {
+            if matches!(origin, ViewOrigin::Temporary) {
+                self.push_error(value.span, "S10", "cannot store a string view borrowed from a temporary owner; keep the owner in a local binding".to_string());
+            }
+            if let Some(root) = origin.storage_root() {
+                if root.scope_depth > binding_depth {
+                    self.push_error(
+                        value.span,
+                        "S10",
+                        format!(
+                            "string view binding `{name}` would outlive its owner `{}`",
+                            root.name
+                        ),
+                    );
+                }
+                if let Some(var) = env.root_mut(root) {
+                    if let Some(loan) = &mut var.shared_borrow {
+                        loan.scope_depth = loan.scope_depth.min(binding_depth);
+                    } else {
+                        var.shared_borrow = Some(Loan {
+                            at: value.span,
+                            scope_depth: binding_depth,
+                        });
                     }
                 }
             }
         }
+        // An exclusive parameter capability moves to the new binding. Its
+        // pointee remains live even though the old capability is unavailable;
+        // derived views must now freeze the receiving capability instead.
+        let roots = if env
+            .lookup(name)
+            .and_then(|var| var.ty.as_ref())
+            .is_some_and(|ty| matches!(self.resolve_type_aliases(ty), TypeKind::MutRef { .. }))
+        {
+            roots
+                .into_iter()
+                .map(|origin| match origin {
+                    ViewOrigin::Parameter {
+                        slot,
+                        reference_root: Some(root),
+                    } if env.root(&root).is_some_and(|var| var.moved_at.is_some()) => {
+                        ViewOrigin::Parameter {
+                            slot,
+                            reference_root: env.owner_root(name),
+                        }
+                    }
+                    other => other,
+                })
+                .collect()
+        } else {
+            roots
+        };
         env.set_view_origins(name, roots);
     }
 
     fn bc_loan_view_argument(&self, value: &Expr, env: &mut MoveEnv) {
         let depth = env.scopes.len().saturating_sub(1);
-        for root in self.bc_view_origins(value, env) {
-            if let ViewOrigin::Owner { name, scope_depth } = root
-                && let Some(var) = env
-                    .scopes
-                    .get_mut(scope_depth)
-                    .and_then(|scope| scope.get_mut(&name))
+        for origin in self.bc_view_origins(value, env) {
+            if let Some(root) = origin.storage_root()
+                && let Some(var) = env.root_mut(root)
             {
                 if let Some(loan) = &mut var.shared_borrow {
                     loan.scope_depth = loan.scope_depth.min(depth);
@@ -593,9 +747,17 @@ impl Analyzer {
     }
 
     fn bc_reject_view_escape(&mut self, value: &Expr, env: &MoveEnv, destination: &str) {
-        if !self.bc_view_origins(value, env).is_empty() {
+        // Parameter-derived aggregate retention is the existing, unverified
+        // boundary. Rejecting every such constructor also rejects call-local
+        // values (including PanicInfo); proving retention requires composed
+        // D-014 effects and aggregate provenance, not a constructor-wide ban.
+        if self
+            .bc_view_origins(value, env)
+            .iter()
+            .any(|origin| !matches!(origin, ViewOrigin::Parameter { .. }))
+        {
             self.push_error(value.span, "S10", format!(
-                "cannot {destination} a string view rooted in an owned local or temporary before escape analysis proves its lifetime"));
+                "cannot {destination} a borrowed string view before escape analysis proves its lifetime"));
         }
     }
 
@@ -618,7 +780,7 @@ impl Analyzer {
                 if let Some(var_ty) = &var_ty {
                     self.bc_record_contiguous_destructor_root(var_ty);
                 }
-                env.declare(name.clone(), var_ty);
+                env.declare(name.clone(), var_ty, stmt.span, 0);
                 if let Some(value) = value {
                     self.bc_bind_view_origins(
                         name,
@@ -640,7 +802,7 @@ impl Analyzer {
                 if let Some(var_ty) = &var_ty {
                     self.bc_record_contiguous_destructor_root(var_ty);
                 }
-                env.declare(name.clone(), var_ty);
+                env.declare(name.clone(), var_ty, stmt.span, 0);
                 self.bc_bind_view_origins(name, value, origins, env);
             }
             StmtKind::Return(Some(expr)) => {
@@ -711,8 +873,16 @@ impl Analyzer {
                 match kind {
                     ForLoop::Each { vars, .. } => {
                         loop_env.enter_scope();
-                        for var in vars {
-                            loop_env.declare(var.clone(), None);
+                        for (ordinal, var) in vars.iter().enumerate() {
+                            loop_env.declare(var.clone(), None, stmt.span, ordinal);
+                            if let ForLoop::Each {
+                                iter: ForIter::Iter(iter),
+                                ..
+                            } = kind
+                            {
+                                let origins = self.bc_owner_origins(iter, env);
+                                loop_env.set_view_origins(var, origins);
+                            }
                         }
                         for s in &body.stmts {
                             self.bc_stmt(s, &mut loop_env);
@@ -808,7 +978,15 @@ impl Analyzer {
         match &expr.node {
             ExprKind::Ident(name) => {
                 let Some(var) = env.lookup(name) else { return };
-                if !var.view_origins.is_empty() {
+                if !var.view_origins.is_empty()
+                    && self.bc_annotated_type(expr).is_some_and(|ty| {
+                        self.bc_is_string_view(&ty)
+                            || matches!(
+                                self.resolve_type_aliases(&ty),
+                                TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+                            )
+                    })
+                {
                     if env.capture_boundary.is_some_and(|boundary| {
                         env.binding_depth(name)
                             .is_some_and(|depth| depth < boundary)
@@ -817,21 +995,15 @@ impl Analyzer {
                             "cannot capture owner-rooted string view `{name}` before escape analysis proves its lifetime"));
                     }
                     for origin in &var.view_origins {
-                        if let ViewOrigin::Owner {
-                            name: owner,
-                            scope_depth,
-                        } = origin
-                            && env
-                                .scopes
-                                .get(*scope_depth)
-                                .and_then(|scope| scope.get(owner))
-                                .is_none_or(|root| root.moved_at.is_some())
+                        if let Some(root) = origin.storage_root()
+                            && env.root(root).is_none_or(|var| var.moved_at.is_some())
                         {
                             self.push_error(
                                 expr.span,
                                 "S10",
                                 format!(
-                                    "string view `{name}` refers to an unavailable owner `{owner}`"
+                                    "string view `{name}` refers to an unavailable owner `{}`",
+                                    root.name
                                 ),
                             );
                         }
@@ -1237,16 +1409,13 @@ impl Analyzer {
                 // Each arm body is checked in an independent clone; then merge.
                 let base_env = env.clone();
                 for arm in arms {
-                    let mut arm_env = base_env.clone();
-                    arm_env.control_depth += 1;
-                    for b in crate::parser::ast::pattern_all_bindings(&arm.pattern) {
-                        arm_env.declare(b, Some(TypeKind::Error));
-                    }
+                    let mut arm_env = self.bc_match_arm_env(scrutinee, arm, &base_env);
                     // Guard expression is checked in the arm's scope (bindings available).
                     if let Some(guard) = &arm.guard {
                         self.bc_expr(guard, &mut arm_env, false);
                     }
                     self.bc_expr(&arm.expr, &mut arm_env, consumed);
+                    arm_env.exit_scope();
                     env.apply_branch_moves(&arm_env);
                 }
             }
@@ -1277,6 +1446,8 @@ impl Analyzer {
                     closure_env.declare(
                         name.clone(),
                         parameter_types.get(index).map(|ty| ty.node.clone()),
+                        expr.span,
+                        index,
                     );
                 }
                 self.bc_reject_view_escape(body, &closure_env, "return from a closure");
@@ -1861,18 +2032,19 @@ impl Analyzer {
         };
         if let Some(variable) = env.lookup(name) {
             for origin in &variable.view_origins {
-                if let ViewOrigin::Owner {
-                    name: owner,
-                    scope_depth,
-                } = origin
+                if let Some(root) = origin.storage_root()
                     && env
-                        .scopes
-                        .get(*scope_depth)
-                        .and_then(|scope| scope.get(owner))
-                        .is_some_and(|root| root.shared_borrow.is_some())
+                        .root(root)
+                        .is_some_and(|var| var.shared_borrow.is_some())
                 {
-                    self.push_error(target.span, "S10", format!(
-                        "cannot mutate through `{name}` while a string view borrows owner `{owner}`"));
+                    self.push_error(
+                        target.span,
+                        "S10",
+                        format!(
+                            "cannot mutate through `{name}` while a string view borrows owner `{}`",
+                            root.name
+                        ),
+                    );
                 }
             }
         }
@@ -1951,6 +2123,80 @@ fn borrowed(owner: &Owner) str { ret owner.view(); }
             "missing ownership diagnostic for {body}: {:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn match_bindings_cannot_hide_borrowed_view_origins() {
+        for body in [
+            "enum Wrap { Item(Owner) } fn leak(w: Wrap) str { ret match w { Wrap.Item(owner) => owner.view(), }; }",
+            "enum Wrap { Item(Owner) } struct Holder { text: str } fn stash(w: Wrap) Holder { ret Holder { text: match w { Wrap.Item(owner) => owner.view(), } }; }",
+            "enum Wrap { Item(Owner) } fn main() void { const text = match Wrap.Item(make()) { Wrap.Item(owner) => owner.view(), }; sink(text); }",
+        ] {
+            rejects_view(body);
+        }
+    }
+
+    #[test]
+    fn branch_moves_update_the_declaration_instead_of_its_shadow() {
+        rejects_view(
+            "fn main() void { var owner = make(); var view = owner.view(); if (true) { var owner = make(); owner.free(); } owner.free(); sink(view); }",
+        );
+        let report = analyze(
+            "fn main() void { var owner = make(); if (true) { var owner = make(); owner.free(); } sink(owner.view()); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn moved_exclusive_parameter_rebases_the_capability_root() {
+        let report = analyze(
+            "fn inspect(owner: &Owner!) void { const alias = owner; const text = alias.view(); sink(text); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        rejects_view(
+            "fn inspect(owner: &Owner!) void { const alias = owner; const text = alias.view(); alias.edit(); sink(text); }",
+        );
+        for body in [
+            "fn inspect(owner: &Owner!) void { const alias = owner; if (true) { const alias = alias; const text = alias.view(); sink(text); } }",
+            "fn inspect(owner: &Owner!) void { const alias = owner; const second = alias; const text = second.view(); sink(text); }",
+        ] {
+            let report = analyze(body);
+            assert!(report.errors.is_empty(), "{body}: {:?}", report.errors);
+        }
+    }
+
+    #[test]
+    fn a_root_does_not_resolve_a_reused_scope_declaration() {
+        let mut env = MoveEnv::new();
+        env.enter_scope();
+        let first_span = Span::new(1, 1, 0, 5);
+        env.declare("owner".into(), Some(TypeKind::Str), first_span, 0);
+        let first = env.owner_root("owner").unwrap();
+        let mut old_branch = env.clone();
+        old_branch.mark_moved("owner", first_span);
+        env.exit_scope();
+        env.enter_scope();
+        env.declare(
+            "owner".into(),
+            Some(TypeKind::Str),
+            Span::new(2, 1, 6, 11),
+            0,
+        );
+        assert!(env.root(&first).is_none());
+        assert_ne!(env.owner_root("owner").unwrap(), first);
+        env.apply_branch_moves(&old_branch);
+        assert!(env.lookup("owner").unwrap().moved_at.is_none());
+    }
+
+    #[test]
+    fn views_derived_from_exclusive_parameters_freeze_mutation_until_scope_exit() {
+        rejects_view(
+            "fn edit(owner: &Owner!) void { const text = owner.view(); owner.edit(); sink(text); }",
+        );
+        let report = analyze(
+            "fn edit(owner: &Owner!) void { if (true) { const text = owner.view(); sink(text); } owner.edit(); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
     }
 
     #[test]
