@@ -761,6 +761,36 @@ impl<'a> Codegen<'a> {
                 .iter()
                 .any(|item| matches!(&item.node, ItemKind::Fn { name, .. } if name == "main"));
 
+        // A dynamic receiver selects any implementation in its declared trait
+        // target set. Retain those methods and their ordinary call dependencies
+        // even though a dynamic call has no single named call-graph edge.
+        let dynamic_traits = self
+            .report
+            .annotated_exprs
+            .iter()
+            .filter_map(|annotation| match annotation.ty.as_ref() {
+                Some(TypeKind::Dyn { trait_name }) => Some(trait_name.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let dynamic_roots = self
+            .report
+            .trait_impls
+            .iter()
+            .flat_map(|(ty, traits)| {
+                traits
+                    .iter()
+                    .filter(|name| dynamic_traits.contains(*name))
+                    .flat_map(|name| {
+                        self.report
+                            .trait_method_slots
+                            .get(name)
+                            .into_iter()
+                            .flatten()
+                    })
+                    .map(move |method| format!("{ty}.{method}"))
+            })
+            .collect::<HashSet<_>>();
         let destructor_roots = collect_destructor_roots(program);
         let reachable: Option<std::collections::HashSet<String>> = if has_main {
             let mut set = std::collections::HashSet::new();
@@ -770,6 +800,7 @@ impl<'a> Codegen<'a> {
                 set.insert("main".to_string());
             }
             set.extend(self.foreign_exports.keys().cloned());
+            set.extend(dynamic_roots.iter().cloned());
             for root in &destructor_roots {
                 set.insert(root.clone());
             }
@@ -838,6 +869,7 @@ impl<'a> Codegen<'a> {
                     _ => {}
                 }
             }
+            set.extend(dynamic_roots.iter().cloned());
             let mut queue = set.iter().cloned().collect::<Vec<_>>();
             while let Some(fn_name) = queue.pop() {
                 if let Some(targets) = self.report.dependency_graph.calls_from.get(&fn_name) {
@@ -1936,6 +1968,7 @@ impl<'a> Codegen<'a> {
             &self.report.monomorphizations,
             &self.fn_value_layouts,
             &self.report.trait_method_slots,
+            &self.report.trait_method_signatures,
             output_chunks,
             next_closure_idx,
             type_subst,
@@ -2400,6 +2433,8 @@ struct FnCompiler<'a> {
     fn_value_layouts: &'a HashMap<String, crate::runtime_layout::FnValueLayout>,
     /// Vtable method slot order per trait: trait name → ordered method names.
     trait_method_slots: &'a HashMap<String, Vec<String>>,
+    trait_method_signatures:
+        &'a HashMap<String, HashMap<String, crate::semantic::TraitMethodSignature>>,
     /// Output chunks accumulator — closure chunks are pushed here.
     output_chunks: &'a mut Vec<Chunk>,
     /// Counter for generating unique closure names.
@@ -2577,6 +2612,10 @@ impl<'a> FnCompiler<'a> {
         monomorphizations: &'a [crate::semantic::MonomorphizationInfo],
         fn_value_layouts: &'a HashMap<String, crate::runtime_layout::FnValueLayout>,
         trait_method_slots: &'a HashMap<String, Vec<String>>,
+        trait_method_signatures: &'a HashMap<
+            String,
+            HashMap<String, crate::semantic::TraitMethodSignature>,
+        >,
         output_chunks: &'a mut Vec<Chunk>,
         next_closure_idx: &'a mut u16,
         type_subst: HashMap<String, TypeKind>,
@@ -2624,6 +2663,7 @@ impl<'a> FnCompiler<'a> {
             monomorphizations,
             fn_value_layouts,
             trait_method_slots,
+            trait_method_signatures,
             output_chunks,
             next_closure_idx,
             closure_env_regs: HashSet::new(),
@@ -2975,10 +3015,11 @@ impl<'a> FnCompiler<'a> {
 
     fn string_data_reg(&mut self, expr: &Expr, value: u8) -> u8 {
         if self
-            .type_of_span((expr.span.start, expr.span.end))
+            .receiver_value_type(expr)
             .as_ref()
             .is_some_and(is_owned_string_type)
         {
+            let value = self.aggregate_handle(value, self.type_of_expr(expr));
             let data = self.alloc_reg();
             self.chunk.emit(field_load(data, value, 0));
             data
@@ -3508,7 +3549,7 @@ impl<'a> FnCompiler<'a> {
                 name: field_name,
             } => {
                 let byte_offset = self.field_offset(object, field_name);
-                let obj = self.compile_expr(object);
+                let obj = self.compile_aggregate_object(object);
                 let dst = self.alloc_reg();
                 self.chunk.emit(field_load(dst, obj, byte_offset));
                 dst
@@ -3537,7 +3578,7 @@ impl<'a> FnCompiler<'a> {
                             )
                         };
                         if self.fn_index.contains_key(&mangled) {
-                            let obj = self.compile_expr(object);
+                            let obj = self.compile_method_receiver(object, &mangled);
                             let idx_regs: Vec<u8> =
                                 indices.iter().map(|i| self.compile_expr(i)).collect();
                             let dst = self.alloc_result_block(&mangled);
@@ -3614,14 +3655,18 @@ impl<'a> FnCompiler<'a> {
                 name: field_name,
             } => {
                 let byte_offset = self.field_offset(object, field_name);
-                let obj = self.compile_expr(object);
+                let obj = self.compile_aggregate_object(object);
                 self.chunk.emit(field_store(src, obj, byte_offset));
                 src
             }
             ExprKind::Index { object, indices } => {
-                let obj_key = (object.span.start, object.span.end);
-                let obj_ty = self.type_of_span(obj_key);
+                let obj_ty = self.receiver_value_type(object);
                 let index = indices.first().expect("index must have at least one index");
+
+                if let Some(address) = self.borrowed_fixed_array_address(object, index) {
+                    self.store_lvalue(&address, src);
+                    return src;
+                }
 
                 if let Some(TypeKind::FlexibleArray { elem_ty }) = &obj_ty {
                     let base = self.compile_expr(object);
@@ -3653,7 +3698,12 @@ impl<'a> FnCompiler<'a> {
                     let obj_reg = self.compile_expr(object);
                     let idx_reg = self.compile_expr(index);
                     let _dst = self.alloc_reg();
-                    self.emit_call_by_name(&set_target, &[obj_reg, idx_reg, src], _dst);
+                    let receiver = self.prepare_method_receiver(
+                        obj_reg,
+                        self.type_of_expr(object),
+                        &set_target,
+                    );
+                    self.emit_call_by_name(&set_target, &[receiver, idx_reg, src], _dst);
                     src
                 } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
                     let ptr = self.compile_expr(object);
@@ -3722,7 +3772,7 @@ impl<'a> FnCompiler<'a> {
                 object,
                 name: field_name,
             } => {
-                let obj = self.compile_expr(object);
+                let obj = self.compile_aggregate_object(object);
                 if let Some(layout) = self.bit_field_layout(object, field_name) {
                     LvalueAddr::BitField { obj, layout }
                 } else {
@@ -3734,9 +3784,12 @@ impl<'a> FnCompiler<'a> {
                 }
             }
             ExprKind::Index { object, indices } => {
-                let obj_key = (object.span.start, object.span.end);
-                let obj_ty = self.type_of_span(obj_key);
+                let obj_ty = self.receiver_value_type(object);
                 let index = indices.first().expect("index must have at least one index");
+
+                if let Some(address) = self.borrowed_fixed_array_address(object, index) {
+                    return address;
+                }
 
                 if let Some(TypeKind::FlexibleArray { elem_ty }) = &obj_ty {
                     let base = self.compile_expr(object);
@@ -3775,6 +3828,8 @@ impl<'a> FnCompiler<'a> {
                         (set_target, index_target)
                     };
                     let obj = self.compile_expr(object);
+                    let obj =
+                        self.prepare_method_receiver(obj, self.type_of_expr(object), &set_target);
                     let idx = self.compile_expr(index);
                     LvalueAddr::IndexArray {
                         obj,
@@ -4081,44 +4136,224 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
-    /// Shared enum parameters are pointers to a register holding an enum
-    /// handle. Materialize that representation for owned method receivers so
-    /// direct calls and explicit shared views use one coherent ABI.
-    fn prepare_shared_enum_receiver(
+    /// An explicit borrowed receiver has the same slot-reference ABI as an
+    /// ordinary safe-reference parameter. Existing references pass through;
+    /// owned values are borrowed from their address-stable register block.
+    /// Shared str is the established representation-identical view exception.
+    fn prepare_method_receiver(
         &mut self,
         receiver: u8,
-        object: &Expr,
+        receiver_ty: Option<TypeKind>,
         declared_target: &str,
     ) -> u8 {
+        self.prepare_method_receiver_at(receiver, receiver_ty, declared_target, None)
+    }
+
+    fn prepare_method_receiver_at(
+        &mut self,
+        receiver: u8,
+        receiver_ty: Option<TypeKind>,
+        declared_target: &str,
+        place: Option<u8>,
+    ) -> u8 {
         let declared_target = declared_target.split('<').next().unwrap_or(declared_target);
-        if !self
+        let shared = self
             .explicit_shared_receiver_methods
-            .contains(declared_target)
-        {
-            return receiver;
+            .contains(declared_target);
+        let exclusive = self
+            .explicit_exclusive_receiver_methods
+            .contains(declared_target);
+        if !shared && !exclusive {
+            return self.load_reference_value(receiver, receiver_ty);
         }
-        let object_ty = self.type_of_expr(object);
-        let is_shared_view = matches!(
-            &object_ty,
+        if shared {
+            match &receiver_ty {
+                Some(TypeKind::Str) => return receiver,
+                Some(TypeKind::Ref { inner })
+                    if matches!(self.resolve_type(&inner.node), TypeKind::Str) =>
+                {
+                    return receiver;
+                }
+                Some(TypeKind::MutRef { inner })
+                    if matches!(self.resolve_type(&inner.node), TypeKind::Str) =>
+                {
+                    return self.load_reference_value(receiver, receiver_ty);
+                }
+                _ => {}
+            }
+        }
+        if matches!(
+            receiver_ty,
             Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. })
-        );
-        let enum_ty = match object_ty {
-            Some(TypeKind::Ref { inner } | TypeKind::MutRef { inner }) => inner.node,
-            Some(TypeKind::Named { name, type_args }) => TypeKind::Named { name, type_args },
-            _ => return receiver,
-        };
-        let TypeKind::Named { name, .. } = self.resolve_type(&enum_ty) else {
-            return receiver;
-        };
-        if !self.enum_defs.contains_key(&name) {
+        ) {
             return receiver;
         }
-        if is_shared_view {
-            receiver
+        if let Some(place) = place {
+            return place;
+        }
+        let slots = receiver_ty
+            .as_ref()
+            .and_then(|ty| crate::runtime_layout::runtime_value_layout(ty).slot_count())
+            .unwrap_or(1);
+        let slots = self.qzi_u8(slots, "borrowed receiver slot count");
+        let reference = self.alloc_reg();
+        self.chunk
+            .emit(mem_lea_block(receiver, reference, 0, slots));
+        reference
+    }
+
+    /// Evaluate a projected receiver once, retaining its real slot address.
+    /// C narrow fields and bitfields are values rather than VM reference slots;
+    /// shared observations can borrow a temporary, while exclusive calls are
+    /// rejected by analysis.
+    fn compile_receiver_object(&mut self, object: &Expr) -> (u8, Option<u8>) {
+        if let ExprKind::Group(inner) = &object.node {
+            return self.compile_receiver_object(inner);
+        }
+        if let ExprKind::Field { object: base, name } = &object.node
+            && let Some(TypeKind::Named {
+                name: aggregate, ..
+            }) = self.aggregate_type_of_span((base.span.start, base.span.end))
+            && self
+                .struct_defs
+                .get(&aggregate)
+                .is_some_and(|fields| fields.iter().any(|(field, _)| field == name))
+        {
+            let (width, _, float32) = self.ffi_field_access(base, name);
+            if width == MemWidth::Qword
+                && !float32
+                && self.bit_field_layout(base, name).is_none()
+                && !matches!(
+                    self.type_of_expr(object),
+                    Some(TypeKind::FlexibleArray { .. })
+                )
+            {
+                let handle = self.compile_aggregate_object(base);
+                let offset = self.field_offset(base, name);
+                let value = self.alloc_reg();
+                self.chunk.emit(field_load(value, handle, offset));
+                let address = if offset == 0 {
+                    handle
+                } else {
+                    let offset = self.emit_u64_constant(offset as u64);
+                    let address = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Add, address, handle, offset));
+                    address
+                };
+                return (value, Some(address));
+            }
+        }
+        (self.compile_expr(object), None)
+    }
+
+    fn compile_method_receiver(&mut self, object: &Expr, target: &str) -> u8 {
+        let (value, place) = self.compile_receiver_object(object);
+        self.prepare_method_receiver_at(value, self.type_of_expr(object), target, place)
+    }
+
+    /// Fixed-array references already point to the first descending VM slot;
+    /// taking another address would index the reference variable itself.
+    fn borrowed_fixed_array_address(&mut self, object: &Expr, index: &Expr) -> Option<LvalueAddr> {
+        let (TypeKind::Ref { inner } | TypeKind::MutRef { inner }) = self.type_of_expr(object)?
+        else {
+            return None;
+        };
+        let TypeKind::Array { len, .. } = self.resolve_type(&inner.node) else {
+            return None;
+        };
+        let ptr = self.compile_expr(object);
+        let idx = self.compile_expr(index);
+        let length = self.emit_length_constant(len);
+        self.emit_bounds_guard(idx, length, index.span);
+        // Freeze the checked address before an assignment RHS can change the
+        // index variable. Retaining its register would invalidate the guard.
+        let eight = self.emit_u64_constant(8);
+        let offset = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mul, offset, idx, eight));
+        let address = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Sub, address, ptr, offset));
+        Some(LvalueAddr::Deref {
+            ptr: address,
+            width: MemWidth::Qword,
+            signed: false,
+        })
+    }
+
+    /// Read a referenced value into ordinary ABI value slots. Shared string
+    /// views already have value representation; exclusive string references
+    /// still address a replaceable slot.
+    fn load_reference_value(&mut self, reference: u8, ty: Option<TypeKind>) -> u8 {
+        let inner = match ty {
+            Some(TypeKind::Ref { inner })
+                if !matches!(self.resolve_type(&inner.node), TypeKind::Str) =>
+            {
+                inner
+            }
+            Some(TypeKind::MutRef { inner }) => inner,
+            _ => return reference,
+        };
+        let slots = crate::runtime_layout::runtime_value_layout(&self.resolve_type(&inner.node))
+            .slot_count()
+            .unwrap_or(1);
+        let slots = self.qzi_u8(slots, "referenced receiver slot count") as usize;
+        let value = self.reserve_reg_block(slots);
+        for index in 0..slots {
+            self.chunk.emit(mem_load(
+                reference,
+                value + index as u8,
+                -(index as i16 * 8),
+            ));
+        }
+        value
+    }
+
+    /// Field operations address the aggregate allocation, whereas a safe
+    /// reference addresses the slot holding that allocation's handle.
+    fn compile_aggregate_object(&mut self, object: &Expr) -> u8 {
+        let value = self.compile_expr(object);
+        self.aggregate_handle(value, self.type_of_expr(object))
+    }
+
+    fn aggregate_handle(&mut self, value: u8, ty: Option<TypeKind>) -> u8 {
+        if matches!(ty, Some(TypeKind::Ref { inner } | TypeKind::MutRef { inner })
+            if matches!(self.resolve_type(&inner.node), TypeKind::Named { .. }))
+        {
+            let handle = self.alloc_reg();
+            self.chunk.emit(mem_load(value, handle, 0));
+            handle
         } else {
-            let reference = self.alloc_reg();
-            self.chunk.emit(mem_lea_block(receiver, reference, 0, 1));
-            reference
+            value
+        }
+    }
+
+    fn receiver_value_type(&self, object: &Expr) -> Option<TypeKind> {
+        self.type_of_expr(object).map(|ty| match ty {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => self.resolve_type(&inner.node),
+            other => other,
+        })
+    }
+
+    /// Dyn stores its concrete owned value in word zero. That word is the
+    /// addressable receiver slot for a borrowed trait receiver; legacy/value
+    /// receiver declarations still receive the stored handle itself.
+    fn dynamic_receiver(&self, fat: u8, value: u8, trait_name: &str, method: &str) -> u8 {
+        if self
+            .trait_method_signatures
+            .get(trait_name)
+            .and_then(|methods| methods.get(method))
+            .is_some_and(|signature| {
+                signature.has_explicit_receiver
+                    && signature.params.first().is_some_and(|ty| {
+                        matches!(
+                            self.resolve_type(ty),
+                            TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+                        )
+                    })
+            })
+        {
+            fat
+        } else {
+            value
         }
     }
 
@@ -4663,7 +4898,9 @@ impl<'a> FnCompiler<'a> {
             });
             return;
         };
-        let receiver_reg = self.reg_of(&receiver.name);
+        let receiver_slot = self.reg_of(&receiver.name);
+        let receiver_reg =
+            self.aggregate_handle(receiver_slot, self.local_types.get(&receiver.name).cloned());
         let index_reg = self.reg_of(&index.name);
         let value_reg = self.reg_of(&value.name);
         let pointer = self.alloc_reg();
@@ -4751,7 +4988,9 @@ impl<'a> FnCompiler<'a> {
             });
             return;
         };
-        let receiver_reg = self.reg_of(&receiver.name);
+        let receiver_slot = self.reg_of(&receiver.name);
+        let receiver_reg =
+            self.aggregate_handle(receiver_slot, self.local_types.get(&receiver.name).cloned());
         let index_reg = self.reg_of(&index.name);
         let pointer = self.alloc_reg();
         let length = self.alloc_reg();
@@ -5839,7 +6078,12 @@ impl<'a> FnCompiler<'a> {
                                     );
                                 }
                                 let len_reg = self.alloc_reg();
-                                self.emit_call_by_name(&len_target, &[arr_reg], len_reg);
+                                let receiver = self.prepare_method_receiver(
+                                    arr_reg,
+                                    self.type_of_expr(expr),
+                                    &len_target,
+                                );
+                                self.emit_call_by_name(&len_target, &[receiver], len_reg);
 
                                 let (r_idx, r_val_opt) = match vars.as_slice() {
                                     [] => (self.alloc_reg(), None),
@@ -5856,9 +6100,14 @@ impl<'a> FnCompiler<'a> {
                                 let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
                                 if let Some(r_val) = r_val_opt {
                                     let elem_reg = self.alloc_reg();
+                                    let receiver = self.prepare_method_receiver(
+                                        arr_reg,
+                                        self.type_of_expr(expr),
+                                        &get_target,
+                                    );
                                     self.emit_call_by_name(
                                         &get_target,
-                                        &[arr_reg, r_idx],
+                                        &[receiver, r_idx],
                                         elem_reg,
                                     );
                                     self.chunk.emit(rrr(Opcode::Mov, r_val, elem_reg, 0));
@@ -5913,7 +6162,12 @@ impl<'a> FnCompiler<'a> {
                                         } else {
                                             base
                                         };
-                                        self.emit_call_by_name(&target, &[iter_reg], r_has_next);
+                                        let receiver = self.prepare_method_receiver(
+                                            iter_reg,
+                                            self.type_of_expr(expr),
+                                            &target,
+                                        );
+                                        self.emit_call_by_name(&target, &[receiver], r_has_next);
                                     }
                                     Some(TypeKind::Dyn { trait_name }) => {
                                         if let Some(slots) = self.trait_method_slots.get(trait_name)
@@ -5953,7 +6207,10 @@ impl<'a> FnCompiler<'a> {
                                                 iter_reg,
                                                 0,
                                             ));
-                                            self.chunk.emit(rrr(Opcode::CallArg, data_ptr, 0, 0));
+                                            let receiver = self.dynamic_receiver(
+                                                iter_reg, data_ptr, trait_name, "has_next",
+                                            );
+                                            self.chunk.emit(rrr(Opcode::CallArg, receiver, 0, 0));
                                             self.chunk.emit(rrr(
                                                 Opcode::CallReg,
                                                 r_has_next,
@@ -5986,7 +6243,12 @@ impl<'a> FnCompiler<'a> {
                                         } else {
                                             base
                                         };
-                                        self.emit_call_by_name(&target, &[iter_reg], r_next_opt);
+                                        let receiver = self.prepare_method_receiver(
+                                            iter_reg,
+                                            self.type_of_expr(expr),
+                                            &target,
+                                        );
+                                        self.emit_call_by_name(&target, &[receiver], r_next_opt);
                                     }
                                     Some(TypeKind::Dyn { trait_name }) => {
                                         if let Some(slots) = self.trait_method_slots.get(trait_name)
@@ -6026,7 +6288,10 @@ impl<'a> FnCompiler<'a> {
                                                 iter_reg,
                                                 0,
                                             ));
-                                            self.chunk.emit(rrr(Opcode::CallArg, data_ptr, 0, 0));
+                                            let receiver = self.dynamic_receiver(
+                                                iter_reg, data_ptr, trait_name, "next",
+                                            );
+                                            self.chunk.emit(rrr(Opcode::CallArg, receiver, 0, 0));
                                             self.chunk.emit(rrr(
                                                 Opcode::CallReg,
                                                 r_next_opt,
@@ -6660,17 +6925,29 @@ impl<'a> FnCompiler<'a> {
 
     fn coerce_to_display_str(&mut self, reg: u8, span: crate::parser::ast::Span) -> u8 {
         let key = (span.start, span.end);
-        if self
-            .type_of_span(key)
-            .as_ref()
-            .is_some_and(is_owned_string_type)
-        {
+        let source_ty = self.type_of_span(key);
+        let reg = self.load_reference_value(reg, source_ty.clone());
+        let value_ty = source_ty.map(|ty| match ty {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => self.resolve_type(&inner.node),
+            other => other,
+        });
+        if value_ty.as_ref().is_some_and(is_owned_string_type) {
             let data = self.alloc_reg();
             let offset = self.field_offset_by_name("String", "data");
             self.chunk.emit(field_load(data, reg, offset));
             return data;
         }
-        let type_tag: Option<u8> = match self.type_of_span(key) {
+        let unsigned = matches!(
+            &value_ty,
+            Some(
+                TypeKind::Uint8
+                    | TypeKind::Uint16
+                    | TypeKind::Uint32
+                    | TypeKind::Uint64
+                    | TypeKind::Usize
+            )
+        );
+        let type_tag: Option<u8> = match value_ty {
             Some(
                 TypeKind::Int8
                 | TypeKind::Int16
@@ -6713,7 +6990,7 @@ impl<'a> FnCompiler<'a> {
         if let Some(tag) = type_tag {
             let dst = self.alloc_reg();
             let mut instr = rrr(Opcode::PrimToStr, dst, reg, tag);
-            if tag == 0 && self.is_unsigned_span(key) {
+            if tag == 0 && unsigned {
                 instr.flags |= UNSIGNED_FLAG;
             }
             self.chunk.emit(instr);
@@ -6730,7 +7007,11 @@ impl<'a> FnCompiler<'a> {
             return self.coerce_to_display_str(reg, span);
         }
         let key = (span.start, span.end);
-        let ty = self.type_of_span(key);
+        let source_ty = self.type_of_span(key);
+        let ty = source_ty.clone().map(|ty| match ty {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => self.resolve_type(&inner.node),
+            other => other,
+        });
         let is_int = matches!(
             ty.as_ref(),
             Some(
@@ -6762,6 +7043,7 @@ impl<'a> FnCompiler<'a> {
             None
         };
         if let Some(t) = tag {
+            let reg = self.load_reference_value(reg, source_ty);
             let dst = self.alloc_reg();
             self.chunk.emit(rrr(Opcode::PrimToStr, dst, reg, t));
             dst
@@ -6922,6 +7204,14 @@ impl<'a> FnCompiler<'a> {
             ExprKind::Unary { op, expr: inner } => match op {
                 UnaryOpKind::Ref | UnaryOpKind::RefMut => {
                     let src = self.compile_expr(inner);
+                    if matches!(op, UnaryOpKind::Ref)
+                        && self
+                            .type_of_expr(inner)
+                            .as_ref()
+                            .is_some_and(is_string_view_type)
+                    {
+                        return src;
+                    }
                     let dst = self.alloc_reg();
                     if let Some(TypeKind::Array { len, .. }) =
                         self.type_of_span((inner.span.start, inner.span.end))
@@ -6935,6 +7225,10 @@ impl<'a> FnCompiler<'a> {
                 }
                 UnaryOpKind::Deref => {
                     let ptr = self.compile_expr(inner);
+                    if matches!(self.type_of_expr(inner), Some(TypeKind::Ref { inner }) if matches!(self.resolve_type(&inner.node), TypeKind::Str))
+                    {
+                        return ptr;
+                    }
                     let dst = self.alloc_reg();
                     let (width, signed) = self.raw_pointee_access(inner);
                     self.chunk.emit(mem_load_w(ptr, dst, 0, width, signed));
@@ -7151,7 +7445,7 @@ impl<'a> FnCompiler<'a> {
                         name: field_name,
                     } => {
                         let src = self.compile_expr(value);
-                        let obj = self.compile_expr(object);
+                        let obj = self.compile_aggregate_object(object);
                         if let Some(layout) = self.bit_field_layout(object, field_name) {
                             self.emit_bit_field_store(obj, src, layout);
                         } else {
@@ -7168,9 +7462,14 @@ impl<'a> FnCompiler<'a> {
                         src
                     }
                     ExprKind::Index { object, indices } => {
-                        let obj_key = (object.span.start, object.span.end);
-                        let obj_ty = self.type_of_span(obj_key);
+                        let obj_ty = self.receiver_value_type(object);
                         let index = indices.first().expect("index must have at least one index");
+
+                        if let Some(address) = self.borrowed_fixed_array_address(object, index) {
+                            let src = self.compile_expr(value);
+                            self.store_lvalue(&address, src);
+                            return src;
+                        }
 
                         // Evaluate object and index first; the value register may otherwise
                         // be overwritten before the store happens.
@@ -7210,7 +7509,12 @@ impl<'a> FnCompiler<'a> {
                             };
                             let src = self.compile_expr(value);
                             let _dst = self.alloc_reg();
-                            self.emit_call_by_name(&set_target, &[obj_reg, idx_reg, src], _dst);
+                            let receiver = self.prepare_method_receiver(
+                                obj_reg,
+                                self.type_of_expr(object),
+                                &set_target,
+                            );
+                            self.emit_call_by_name(&set_target, &[receiver, idx_reg, src], _dst);
                             src
                         } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
                             // Slice: store at stack address ptr - (idx * 8)
@@ -7910,7 +8214,7 @@ impl<'a> FnCompiler<'a> {
                     }
                 }
 
-                let obj = self.compile_expr(object);
+                let (obj, receiver_place) = self.compile_receiver_object(object);
                 let key = (object.span.start, object.span.end);
 
                 // A declared contiguous-element container has one destruction
@@ -7939,8 +8243,13 @@ impl<'a> FnCompiler<'a> {
                 // lose enough surface type information for reconstruction.
                 if let Some(resolved_target) = self.resolved_fn_for_span(expr.span) {
                     let consuming_receiver = self.has_consuming_receiver(&resolved_target);
-                    let receiver = self.prepare_shared_enum_receiver(obj, object, &resolved_target);
-                    let call_target = match self.type_of_expr(object) {
+                    let receiver = self.prepare_method_receiver_at(
+                        obj,
+                        self.type_of_expr(object),
+                        &resolved_target,
+                        receiver_place,
+                    );
+                    let call_target = match self.receiver_value_type(object) {
                         Some(TypeKind::Named { type_args, .. }) if !type_args.is_empty() => {
                             let Some(target) =
                                 self.require_monomorphized_name(&resolved_target, &type_args)
@@ -7983,7 +8292,7 @@ impl<'a> FnCompiler<'a> {
 
                 // Resolve the receiver type through monomorphization substitution,
                 // so generic param `T` resolves to the concrete type (e.g., Int32).
-                let receiver_ty = self.type_of_expr(object);
+                let receiver_ty = self.receiver_value_type(object);
 
                 // Static dispatch: library impls for named and primitive types take
                 // priority over builtins. This lets the prelude define most primitive
@@ -8052,7 +8361,17 @@ impl<'a> FnCompiler<'a> {
                                     template_reg
                                 };
                                 let result_dst = self.alloc_result_block(&mangled_check);
-                                self.emit_call_by_name(&mangled_check, &[obj, fmt_reg], result_dst);
+                                let receiver = self.prepare_method_receiver_at(
+                                    obj,
+                                    self.type_of_expr(object),
+                                    &mangled_check,
+                                    receiver_place,
+                                );
+                                self.emit_call_by_name(
+                                    &mangled_check,
+                                    &[receiver, fmt_reg],
+                                    result_dst,
+                                );
                                 return result_dst;
                             }
                         }
@@ -8078,7 +8397,12 @@ impl<'a> FnCompiler<'a> {
                         None
                     };
                     if let Some(call_target) = lookup {
-                        let receiver = self.prepare_shared_enum_receiver(obj, object, &call_target);
+                        let receiver = self.prepare_method_receiver_at(
+                            obj,
+                            self.type_of_expr(object),
+                            &call_target,
+                            receiver_place,
+                        );
                         let arg_regs: Vec<u8> = args
                             .iter()
                             .map(|a| {
@@ -8122,7 +8446,8 @@ impl<'a> FnCompiler<'a> {
                     let data_ptr = self.alloc_reg();
                     self.chunk.emit(rrr(Opcode::FieldLoad, data_ptr, obj, 0));
                     let dst = self.alloc_reg();
-                    let mut all_args = vec![data_ptr];
+                    let receiver = self.dynamic_receiver(obj, data_ptr, &trait_name, method);
+                    let mut all_args = vec![receiver];
                     for a in args {
                         self.mark_consumed_expr(a);
                         all_args.push(self.compile_expr(a));
@@ -8135,18 +8460,19 @@ impl<'a> FnCompiler<'a> {
                 }
 
                 // Built-in methods for primitive and known types.
-                let resolved_receiver = self.type_of_expr(object);
+                let resolved_receiver = self.receiver_value_type(object);
                 if let Some(pm) = resolve_primitive_method(method, args, resolved_receiver.as_ref())
                 {
+                    let obj = self.load_reference_value(obj, self.type_of_expr(object));
                     match pm {
                         PrimitiveMethod::Len => {
-                            if matches!(self.type_map.get(&key), Some(TypeKind::Bytes)) {
+                            if matches!(resolved_receiver.as_ref(), Some(TypeKind::Bytes)) {
                                 let dst = self.alloc_reg();
                                 self.chunk.emit(mem_load(obj, dst, 0));
                                 return dst;
                             }
                             // Slice: .len() returns the hidden __len register.
-                            if matches!(self.type_map.get(&key), Some(TypeKind::Slice { .. })) {
+                            if matches!(resolved_receiver.as_ref(), Some(TypeKind::Slice { .. })) {
                                 let len_reg = if let ExprKind::Ident(vname) = &object.node {
                                     self.regs
                                         .get(&format!("__len_{}", vname))
@@ -8171,7 +8497,16 @@ impl<'a> FnCompiler<'a> {
                             let dst = self.alloc_reg();
                             let mut instruction = rrr(Opcode::PrimToStr, dst, obj, tag);
                             if tag == 0
-                                && self.is_unsigned_span((object.span.start, object.span.end))
+                                && matches!(
+                                    resolved_receiver,
+                                    Some(
+                                        TypeKind::Uint8
+                                            | TypeKind::Uint16
+                                            | TypeKind::Uint32
+                                            | TypeKind::Uint64
+                                            | TypeKind::Usize
+                                    )
+                                )
                             {
                                 instruction.flags |= UNSIGNED_FLAG;
                             }
@@ -8202,11 +8537,13 @@ impl<'a> FnCompiler<'a> {
                                     "str"
                                 };
                             if let Some(suffix) = suffix {
-                                self.emit_call_by_name(
-                                    &format!("{prefix}.parse_{suffix}"),
-                                    &[obj],
-                                    dst,
+                                let target = format!("{prefix}.parse_{suffix}");
+                                let receiver = self.prepare_method_receiver(
+                                    obj,
+                                    resolved_receiver.clone(),
+                                    &target,
                                 );
+                                self.emit_call_by_name(&target, &[receiver], dst);
                             } else if self.codegen_error.is_none() {
                                 self.codegen_error = Some(
                                     "unsupported parse[T]() target reached codegen".to_string(),
@@ -8341,7 +8678,7 @@ impl<'a> FnCompiler<'a> {
                     self.type_of_span((expr.span.start, expr.span.end)),
                     Some(TypeKind::FlexibleArray { .. })
                 ) {
-                    let base = self.compile_expr(object);
+                    let base = self.compile_aggregate_object(object);
                     let byte_offset = self.field_offset(object, name);
                     if byte_offset == 0 {
                         return base;
@@ -8351,7 +8688,7 @@ impl<'a> FnCompiler<'a> {
                     self.chunk.emit(rrr(Opcode::Add, address, base, offset));
                     return address;
                 }
-                let obj = self.compile_expr(object);
+                let obj = self.compile_aggregate_object(object);
                 if let Some(layout) = self.bit_field_layout(object, name) {
                     return self.emit_bit_field_load(obj, layout);
                 }
@@ -8393,10 +8730,14 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::Index { object, indices } => {
+                if let Some(index) = indices.first()
+                    && let Some(address) = self.borrowed_fixed_array_address(object, index)
+                {
+                    return self.load_lvalue(&address);
+                }
                 // Named type that implements the Index trait → dispatch to Type.index.
                 // Checks trait_impls registry — no accidental dispatch from any "index" method.
-                let key = (object.span.start, object.span.end);
-                if let Some(object_ty) = self.type_of_span(key) {
+                if let Some(object_ty) = self.receiver_value_type(object) {
                     let type_name = type_kind_base_name(&object_ty);
                     let implements_index = self
                         .trait_impls
@@ -8417,7 +8758,7 @@ impl<'a> FnCompiler<'a> {
                             _ => base_target,
                         };
                         if self.fn_index.contains_key(&index_target) {
-                            let obj = self.compile_expr(object);
+                            let obj = self.compile_method_receiver(object, &index_target);
                             let idx_regs: Vec<u8> =
                                 indices.iter().map(|i| self.compile_expr(i)).collect();
                             let dst = self.alloc_result_block(&index_target);
@@ -8707,6 +9048,7 @@ impl<'a> FnCompiler<'a> {
                     self.monomorphizations,
                     self.fn_value_layouts,
                     self.trait_method_slots,
+                    self.trait_method_signatures,
                     &mut temp_chunks,
                     &mut *self.next_closure_idx,
                     self.type_subst.clone(),
@@ -9604,6 +9946,51 @@ mod tests {
         Codegen::new(&report)
             .compile_program(&program, &source_files)
             .expect("code generation should succeed")
+    }
+
+    #[test]
+    fn explicit_custom_parse_method_keeps_its_receiver_capability() {
+        let chunks = compile(
+            "struct Parser {} impl Parser { fn parse[T](self: &Parser, value: i32) i32 { ret value; } } fn main() i32 { var parser = Parser {}; const view = &parser; ret view.parse[i32](7); }",
+        );
+        assert!(chunks.iter().any(|chunk| chunk.name == "main"));
+    }
+
+    #[test]
+    fn consuming_custom_parse_cannot_borrow_a_shared_suffix_capability() {
+        let source = "struct Parser { value: i32 } impl Parser { fn parse[T](self: Parser) i32 { ret self.value; } fn parse_i32(self: &Parser) i32 { ret self.value; } } fn borrowed(value: &Parser) i32 { ret value.parse[i32](); }";
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let report = Analyzer::new().analyze_program(&program);
+        assert!(
+            report.errors.iter().any(|error| error.code == "S07"),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn dynamic_root_discovery_preserves_lexical_generic_binders() {
+        let source =
+            "fn identity[T](value: T) T { ret value; } fn main() i32 { ret identity[i32](7); }";
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let mut report = Analyzer::new().analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        // Supply global alias metadata independently of declaration checking:
+        // symbolic expression T belongs to identity's binder, not this alias.
+        report.type_aliases.insert(
+            "T".into(),
+            (
+                vec!["U".into()],
+                TypeKind::Named {
+                    name: "U".into(),
+                    type_args: vec![],
+                },
+            ),
+        );
+        let chunks = Codegen::new(&report)
+            .compile_program(&program, &[])
+            .unwrap();
+        assert!(chunks.iter().any(|chunk| chunk.name == "main"));
     }
 
     #[test]

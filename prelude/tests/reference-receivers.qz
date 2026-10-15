@@ -1,0 +1,73 @@
+// Native/QZI readback regression for the safe-reference receiver ABI.
+struct Counter { padding: i64, value: i32 }
+impl Counter {
+    fn read(self: &Counter) i32 { ret self.value; }
+    fn bump(self: &Counter!) void { self.value += 1; }
+    fn forward(self: &Counter!) void { self.bump(); }
+    fn forward_alias(self: &Counter!) void { const alias = self; alias.bump(); }
+}
+type CounterAlias = Counter;
+fn mutate(counter: &CounterAlias!) void {
+    const alias = counter;
+    const second = alias;
+    second.forward();
+}
+fn field_mutation(counter: &Counter!) void { counter.value += 2; }
+fn inspect(counter: &Counter) i32 { ret counter.value + counter.read(); }
+fn replace(counter: &Counter!) void { *counter = Counter { padding: 1, value: 42 }; }
+fn update_array(values: &Array[i32]!) void {
+    values[0] = 7;
+    const old = values.remove(1);
+    values.push(old + 1);
+}
+fn inspect_array(values: &Array[i32]) i32 { ret values[0] + values.get(1); }
+struct Holder[T] { value: T }
+impl Holder[T] { fn read(self: &Holder[T]) T { ret self.value; } }
+impl i32 {
+    fn read_slot(self: &i32) i32 { ret *self; }
+    fn bump_slot(self: &i32!) void { *self += 1; }
+}
+fn text_length(text: &str) usize { ret text.len(); }
+fn parse_view(text: &String) i32 { ret text.parse[i32]().unwrap(); }
+fn scalar_read(value: &i32) i32 { ret value.read_slot(); }
+fn scalar_write(value: &i32!) void { value.bump_slot(); }
+fn exercise_reference_receivers() i32 {
+    var counter = Counter { padding: 99, value: 10 };
+    if (true) { mutate(&counter!); }
+    if (counter.read() != 11) { ret 1; }
+    counter.forward_alias();
+    if (counter.read() != 12) { ret 2; }
+    if (true) { field_mutation(&counter!); }
+    if (counter.read() != 14) { ret 3; }
+    if (true) { if (inspect(&counter) != 28) { ret 4; } }
+    if (true) { replace(&counter!); }
+    if (counter.read() != 42) { ret 5; }
+    var values: Array[i32] = Array.new();
+    values.push(1);
+    values.push(2);
+    if (true) { update_array(&values!); }
+    if (true) { if (inspect_array(&values) != 10) { ret 6; } }
+    if (values.len() != 2) { ret 7; }
+    values[0] += 1;
+    values[0]++;
+    if (values[0] != 9) { ret 8; }
+    var holder: Holder[i32] = Holder { value: 17 };
+    if (holder.read() != 17) { ret 9; }
+    var number: i32 = 19;
+    number.bump_slot();
+    if (number.read_slot() != 20) { ret 10; }
+    const text = "abc";
+    if (text_length(&text) != 3) { ret 11; }
+    const owned = "owned".to_string();
+    if (fmt.format("{}", &owned).as_str() != "owned") { ret 12; }
+    if ("31".parse[i32]().unwrap() != 31) { ret 13; }
+    const digits = "32".to_string();
+    if (digits.parse[i32]().unwrap() != 32 || parse_view(&digits) != 32) { ret 14; }
+    if (true) { scalar_write(&number!); }
+    if (scalar_read(&number) != 21) { ret 15; }
+    const wide: u64 = 18446744073709551615;
+    if (fmt.format("{}", &wide).as_str() != "18446744073709551615") { ret 16; }
+    if (fmt.format("{:X}", &wide).as_str() != "FFFFFFFFFFFFFFFF") { ret 17; }
+    ret 0;
+}
+fn main() i32 { ret exercise_reference_receivers(); }

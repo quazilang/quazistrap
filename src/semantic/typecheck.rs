@@ -1447,6 +1447,56 @@ impl Analyzer {
                 "exclusive receiver requires a mutable local variable or parameter".to_string(),
             );
         }
+        if exclusive_receiver_is_explicit
+            && !object_is_exclusive_reference
+            && !self.receiver_has_slot_storage(object)
+        {
+            self.push_error(
+                object.span,
+                "S14",
+                "exclusive receiver requires value-slot storage; narrow C fields and bitfields cannot back safe references".to_string(),
+            );
+        }
+    }
+
+    fn receiver_has_slot_storage(&self, expr: &Expr) -> bool {
+        let ExprKind::Field { object, name } = &expr.node else {
+            return match &expr.node {
+                ExprKind::Group(inner) => self.receiver_has_slot_storage(inner),
+                _ => true,
+            };
+        };
+        let Some(aggregate) = self.receiver_place_type(object) else {
+            return true;
+        };
+        let aggregate = self.resolve_type_aliases(&aggregate);
+        let aggregate_name = super::declare::type_kind_base_name(&aggregate);
+        if !self.repr_c_structs.contains(&aggregate_name) {
+            return true;
+        }
+        if self
+            .struct_field_bit_widths
+            .get(&aggregate_name)
+            .is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|(field, width)| field == name && width.is_some())
+            })
+        {
+            return false;
+        }
+        self.receiver_place_type(expr).is_some_and(|ty| {
+            matches!(
+                self.resolve_type_aliases(&ty),
+                TypeKind::Int64
+                    | TypeKind::Uint64
+                    | TypeKind::Isize
+                    | TypeKind::Usize
+                    | TypeKind::Float64
+                    | TypeKind::RawPtr { .. }
+                    | TypeKind::CFn { .. }
+            )
+        })
     }
 
     fn is_exclusive_receiver_place(&self, expr: &Expr) -> bool {
@@ -4033,16 +4083,48 @@ impl Analyzer {
                     }
 
                     let object_eval = self.type_check_expr(object, reachable);
+                    // Only builtin-style parse[T] falls back to parse_<suffix>.
+                    // A declared consuming or legacy parse method has neither
+                    // explicit borrow capability, but must still take priority.
+                    let has_declared_parse = object_eval.ty.as_ref().is_some_and(|ty| {
+                        let resolved = self.resolve_type_aliases(ty);
+                        let type_name = super::declare::type_kind_base_name(&resolved);
+                        let leaf = type_name.rsplit('.').next().unwrap_or(&type_name);
+                        [format!("{type_name}.parse"), format!("{leaf}.parse")]
+                            .iter()
+                            .any(|name| self.resolve_symbol(name).is_some())
+                    });
+                    let capability_method = if method == "parse" && !has_declared_parse {
+                        type_args
+                            .first()
+                            .and_then(|ty| parse_method_suffix(&ty.node))
+                            .map(|suffix| format!("parse_{suffix}"))
+                            .unwrap_or_else(|| method.clone())
+                    } else {
+                        method.clone()
+                    };
                     let (shared_receiver_is_explicit, exclusive_receiver_is_explicit) = object_eval
                         .ty
                         .as_ref()
-                        .map(|ty| self.explicit_method_receiver_capabilities(ty, method))
+                        .map(|ty| {
+                            self.explicit_method_receiver_capabilities(ty, &capability_method)
+                        })
                         .unwrap_or((false, false));
-                    self.require_exclusive_receiver(object, object_eval.ty.as_ref(), method);
+                    self.require_exclusive_receiver(
+                        object,
+                        object_eval.ty.as_ref(),
+                        &capability_method,
+                    );
                     let reference_receiver_is_compatible =
                         object_eval.ty.as_ref().is_some_and(|ty| {
                             match self.resolve_type_aliases(ty) {
-                                TypeKind::Ref { .. } => shared_receiver_is_explicit,
+                                TypeKind::Ref { inner } => {
+                                    shared_receiver_is_explicit
+                                        || matches!(
+                                            self.resolve_type_aliases(&inner.node),
+                                            TypeKind::Str
+                                        )
+                                }
                                 TypeKind::MutRef { .. } => {
                                     shared_receiver_is_explicit || exclusive_receiver_is_explicit
                                 }
@@ -5201,6 +5283,16 @@ impl Analyzer {
             }
             ExprKind::Index { object, indices } => {
                 let obj_eval = self.type_check_expr(object, reachable);
+                let object_value_ty = obj_eval
+                    .ty
+                    .as_ref()
+                    .map(|ty| self.resolve_type_aliases(ty))
+                    .map(|ty| match ty {
+                        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                            self.resolve_type_aliases(&inner.node)
+                        }
+                        other => other,
+                    });
                 let idx_evals: Vec<ExprEval> = indices
                     .iter()
                     .map(|i| self.type_check_expr(i, reachable))
@@ -5208,7 +5300,7 @@ impl Analyzer {
 
                 // Named type that explicitly implements the Index trait → dispatch to Type.index.
                 // Checks trait_impls registry so accidental `fn index` methods don't trigger [].
-                let maybe_index_mangled = if let Some(object_ty) = &obj_eval.ty {
+                let maybe_index_mangled = if let Some(object_ty) = &object_value_ty {
                     let tn = super::declare::type_kind_base_name(object_ty);
                     let implements_index = self
                         .trait_impls
@@ -5254,7 +5346,7 @@ impl Analyzer {
                                 ),
                             );
                         }
-                        let (generic_params, substitution) = match obj_eval.ty.as_ref() {
+                        let (generic_params, substitution) = match object_value_ty.as_ref() {
                             Some(object_ty @ TypeKind::Named { name, .. }) => {
                                 let generic_params = self
                                     .struct_generic_params
@@ -6097,7 +6189,16 @@ impl Analyzer {
             );
             return None;
         };
-        let prefix = match receiver {
+        let receiver_value_ty = receiver
+            .as_ref()
+            .map(|ty| self.resolve_type_aliases(ty))
+            .map(|ty| match ty {
+                TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                    self.resolve_type_aliases(&inner.node)
+                }
+                other => other,
+            });
+        let prefix = match &receiver_value_ty {
             Some(TypeKind::Named { name, .. }) if name == "String" || name.ends_with(".String") => {
                 "String"
             }
@@ -6932,10 +7033,20 @@ impl Analyzer {
             ExprKind::Index { object, indices } => {
                 let object_eval = self.type_check_expr(object, true);
                 self.require_exclusive_receiver(object, object_eval.ty.as_ref(), "set");
+                let object_value_ty = object_eval
+                    .ty
+                    .as_ref()
+                    .map(|ty| self.resolve_type_aliases(ty))
+                    .map(|ty| match ty {
+                        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                            self.resolve_type_aliases(&inner.node)
+                        }
+                        other => other,
+                    });
                 if matches!(&object_eval.ty, Some(TypeKind::Bytes)) {
                     self.push_error(target.span, "S07", "byte strings are immutable".to_string());
                 }
-                if let Some(TypeKind::Named { name, type_args }) = &object_eval.ty
+                if let Some(TypeKind::Named { name, type_args }) = &object_value_ty
                     && name == "Array"
                 {
                     let setter_name = format!("{name}.set");

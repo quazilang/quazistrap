@@ -145,9 +145,11 @@ fn run_test_binary(
     target: &TargetSpec,
     no_crash: bool,
     link_flags: &[String],
+    report: &crate::semantic::SemanticReport,
 ) -> Result<std::process::ExitStatus, String> {
     let harness = harness_for(chunks, test_index)?;
-    let object = crate::try_compile_to_object(&harness, true, no_crash, None, false, target)?;
+    let object =
+        crate::try_compile_to_object(&harness, true, no_crash, Some(report), false, target)?;
     link_object(&object, output, target.clone(), link_flags, None)?;
     std::process::Command::new(output)
         .status()
@@ -321,6 +323,7 @@ fn run_project(
             &target,
             !context.config.package.crash_handler,
             &link_flags,
+            &report,
         ) {
             Ok(status) if status.success() => {
                 passed += 1;
@@ -584,6 +587,49 @@ mod tests {
 
         assert!(run_project(&root, None, true, true).unwrap());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn run_receiver_fixture(name: &str, source: &str, entry: &str) {
+        let root = temp_dir(name);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("quazi.toml"),
+            "[package]\nname = \"reference_receivers\"\ncrash_handler = false\n",
+        )
+        .unwrap();
+        let source = format!(
+            "{source}\n@test fn receiver_readback() void {{ if {entry}() != 0 {{ panic(\"receiver readback failed\"); }} }}\n"
+        );
+        std::fs::write(root.join("src/main.qz"), source).unwrap();
+        assert!(run_project(&root, None, true, true).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reference_receivers_mutate_and_observe_the_original_owner() {
+        run_receiver_fixture(
+            "reference-receivers",
+            include_str!("../prelude/tests/reference-receivers.qz"),
+            "exercise_reference_receivers",
+        );
+    }
+
+    #[test]
+    fn dynamic_reference_receiver_uses_the_concrete_value_slot() {
+        run_receiver_fixture(
+            "dynamic-reference-receivers",
+            include_str!("../prelude/tests/reference-receivers-dynamic.qz"),
+            "exercise_dynamic_receiver",
+        );
+    }
+
+    #[test]
+    fn reference_receivers_and_array_views_address_original_places() {
+        run_receiver_fixture(
+            "reference-receiver-places",
+            include_str!("../prelude/tests/reference-receiver-places.qz"),
+            "exercise_receiver_places",
+        );
     }
 
     #[cfg(not(target_os = "windows"))]

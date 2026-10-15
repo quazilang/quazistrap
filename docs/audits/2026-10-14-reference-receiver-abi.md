@@ -1,6 +1,9 @@
 # Confirmed safe-reference receiver ABI mismatch
 
-Audience: compiler maintainers. Priority: high; unresolved runtime corruption.
+Audience: compiler maintainers. Status: the demonstrated receiver corruption
+is fixed by the canonical slot-reference migration described in the
+[change record](../changes/2026-10-14-reference-receiver-abi.md). The evidence
+below records the original defect; whole-program ownership remains incomplete.
 
 ## Evidence
 
@@ -61,3 +64,20 @@ Do not substitute static-dispatch assertions for pointer correctness.
 This must precede claims of safe dense-element access, D-014 effect completeness,
 or general resource API readiness. Parameter-derived aggregate retention and
 artifact effect verification remain separate unresolved requirements.
+
+## Implemented correction and remaining artifact gap
+
+The current compiler auto-borrows owned explicit receivers, forwards ordinary
+slot references, and loads aggregate handles for field/dense metadata access.
+The original direct and transferred-alias native repros now exit zero. QZI v12
+and QZC v12 prevent incompatible old artifacts/caches from bypassing that change.
+A genuine v11 writer fixture locks down source-rebuild rejection.
+
+Dynamic source dispatch also uses the concrete fat-value slot, retains target
+methods, and passes its source report through native test emission. Source
+native readback and Windows object emission pass. However, QZI-only dynamic
+vtables still lack retained layout metadata: the backend currently constructs
+vtables from a source SemanticReport. A standalone QZI round trip cannot supply
+that report. This remains required artifact work; portable dynamic dispatch is
+not established by the static receiver QZI fixture. Dynamic cleanup, accurate
+source reachability warnings, and D-014 effect proof remain separate work.

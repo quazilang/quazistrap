@@ -8793,6 +8793,26 @@ fn main() void {
     }
 
     #[test]
+    fn exclusive_field_receivers_require_real_value_slots() {
+        for field in ["value: i32", "value: i64:3"] {
+            let source = format!(
+                "@repr(C) struct Owner {{ {field} }} \
+                 impl i32 {{ fn bump(self: &i32!) void {{ *self += 1; }} }} \
+                 impl i64 {{ fn bump(self: &i64!) void {{ *self += 1; }} }} \
+                 fn main() void {{ var owner = Owner {{ value: 1 }}; (owner.value).bump(); }}"
+            );
+            let report = analyze(&source);
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.code == "S14" && error.message.contains("value-slot storage")
+                }),
+                "{field}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
     fn ffi_union_packed_alignment_and_bitfield_layouts_are_recorded() {
         let report = analyze(
             r#"

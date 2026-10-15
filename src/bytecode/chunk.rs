@@ -102,15 +102,53 @@ impl QziModule {
         }
     }
 
-    /// Old owning contracts cannot be mixed with the receiver-storage and owned
-    /// formatting ABI introduced in v11. This is compatibility metadata, not an
-    /// ownership certificate; current envelopes remain unverified.
+    /// Old contracts must prove independence from the v12 slot-reference
+    /// receiver ABI and the v11 owned-value ABI. This is compatibility metadata,
+    /// not an ownership certificate; current envelopes remain unverified.
     pub fn validate_current_ownership_abi(&self) -> Result<(), String> {
         if !(2..=QZI_VERSION).contains(&self.ownership_abi_version) {
             return Err(
                 "unsupported QZI ownership ABI generation; rebuild this artifact from source"
                     .to_string(),
             );
+        }
+        if self.ownership_abi_version >= 12 {
+            return Ok(());
+        }
+        // Legacy bytecode contains no typed call-site receiver ABI facts. Only
+        // retained scalar interfaces and closed direct calls establish that it
+        // cannot mix a raw receiver handle with a new slot reference. Shared
+        // string views retain their historical representation.
+        let symbols = self
+            .chunks
+            .iter()
+            .map(|chunk| chunk.name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let opaque_calls = self
+            .call_relocations
+            .iter()
+            .any(|relocation| !symbols.contains(relocation.symbol.as_str()))
+            || self.chunks.iter().any(|chunk| {
+                chunk.code.iter().any(|instruction| {
+                    instruction.opcode() == Some(Opcode::CallReg)
+                }) || chunk.constants.iter().any(|constant| {
+                    matches!(constant, ConstPoolEntry::FnAddr(name) if !symbols.contains(name.as_str()))
+                })
+            });
+        // Parameterized libraries need retained callable declarations even if
+        // an interface section exists: an empty bundle is still unavailable.
+        let requires_callable_interface = self.metadata.kind == QziModuleKind::Library
+            && self.chunks.iter().any(|chunk| chunk.param_count != 0);
+        let ambiguous_interface = if self.interface.is_empty() {
+            requires_callable_interface
+        } else {
+            legacy_interface_has_ambiguous_ownership(&self.interface, requires_callable_interface)?
+        };
+        if opaque_calls || ambiguous_interface {
+            return Err(format!(
+                "QZI ownership ABI v{} cannot establish compatibility with v12 slot-reference receivers; rebuild this artifact from source with the current compiler",
+                self.ownership_abi_version
+            ));
         }
         if self.ownership_abi_version >= 11 {
             return Ok(());
@@ -152,15 +190,7 @@ impl QziModule {
                             _ => false,
                         })
             });
-        let incompatible_interface = if self.interface.is_empty() {
-            // A legacy library without retained declarations cannot establish
-            // whether incoming slots are scalar arguments or owned receivers.
-            self.metadata.kind == QziModuleKind::Library
-                && self.chunks.iter().any(|chunk| chunk.param_count != 0)
-        } else {
-            legacy_interface_has_ambiguous_ownership(&self.interface)?
-        };
-        if incompatible_code || incompatible_interface {
+        if incompatible_code {
             return Err(format!(
                 "QZI ownership ABI v{} is incompatible with v11 owned formatting and receiver-storage cleanup; rebuild this artifact from source with the current compiler",
                 self.ownership_abi_version
@@ -794,7 +824,7 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 11;
+pub const QZI_VERSION: u8 = 12;
 const QZI_LEGACY_VERSION: u8 = 5;
 const QZI_FIRST_SECTIONED_VERSION: u8 = 6;
 const QZI_OWNERSHIP_SCHEMA_VERSION: u16 = 1;
@@ -1462,7 +1492,10 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
 /// Only primitive and raw-pointer legacy interfaces are proven independent of
 /// the changed owned-value ABI. Resolve transparent aliases before deciding;
 /// unresolved or recursive names require source rebuilding rather than guessing.
-fn legacy_interface_has_ambiguous_ownership(interface: &str) -> Result<bool, String> {
+fn legacy_interface_has_ambiguous_ownership(
+    interface: &str,
+    requires_callable: bool,
+) -> Result<bool, String> {
     use crate::parser::ast::{ItemKind, TypeKind};
     let bundle = crate::bytecode::interface::parse_qzi_interface(interface)
         .map_err(|error| format!("{error}; rebuild this artifact from source"))?;
@@ -1495,6 +1528,7 @@ fn legacy_interface_has_ambiguous_ownership(interface: &str) -> Result<bool, Str
         aliases: &'a std::collections::HashMap<String, TypeKind>,
     ) -> bool {
         let mut active = std::collections::HashSet::new();
+        let mut shared_reference = false;
         // This is a bounded acceptance check, not a second alias-expansion
         // engine: no generic substitution or resolved type trees are built.
         for _ in 0..crate::type_resolution::MAX_TYPE_DEPTH {
@@ -1514,8 +1548,12 @@ fn legacy_interface_has_ambiguous_ownership(interface: &str) -> Result<bool, Str
                     module = key.rsplit_once('.').map_or(module, |(owner, _)| owner);
                     ty = alias;
                 }
-                TypeKind::RawPtr { .. } => return false,
-                TypeKind::Ref { inner } => ty = &inner.node,
+                TypeKind::RawPtr { .. } => return shared_reference,
+                TypeKind::Ref { inner } if !shared_reference => {
+                    shared_reference = true;
+                    ty = &inner.node;
+                }
+                TypeKind::Str => return false,
                 TypeKind::Int8
                 | TypeKind::Int16
                 | TypeKind::Int32
@@ -1530,15 +1568,15 @@ fn legacy_interface_has_ambiguous_ownership(interface: &str) -> Result<bool, Str
                 | TypeKind::Float32
                 | TypeKind::Float64
                 | TypeKind::Bool
-                | TypeKind::Str
                 | TypeKind::Bytes
                 | TypeKind::Void
-                | TypeKind::Never => return false,
+                | TypeKind::Never => return shared_reference,
                 _ => return true,
             }
         }
         true
     }
+    let mut has_callable = false;
     for (module, program) in &programs {
         let check = |ty: &TypeKind| ambiguous(ty, module, &aliases);
         for item in &program.items {
@@ -1547,8 +1585,10 @@ fn legacy_interface_has_ambiguous_ownership(interface: &str) -> Result<bool, Str
                     name,
                     params,
                     return_ty,
+                    pub_fn,
                     ..
                 } => {
+                    has_callable |= *pub_fn;
                     name.rsplit('.').next() == Some("to_string")
                         || params.iter().any(|param| check(&param.ty.node))
                         || check(&return_ty.node)
@@ -1563,7 +1603,7 @@ fn legacy_interface_has_ambiguous_ownership(interface: &str) -> Result<bool, Str
             }
         }
     }
-    Ok(false)
+    Ok(requires_callable && !has_callable)
 }
 
 fn reject_implicit_lea_metadata(version: u8, chunks: &[Chunk]) -> Result<(), String> {
@@ -2024,6 +2064,210 @@ mod tests {
         let module = legacy_abi_library(&source);
         let error = module.validate_current_ownership_abi().unwrap_err();
         assert!(error.contains("rebuild this artifact from source"));
+    }
+
+    #[test]
+    fn qzi_v11_reference_and_aggregate_contracts_require_slot_abi_rebuild() {
+        for source in [
+            "pub fn answer(value: &i32) i32;",
+            "pub fn answer(value: &i32!) i32;",
+            "pub type Number = i32; pub type Loan = &Number; pub fn answer(value: Loan) i32;",
+            "pub type Number = i32; pub fn answer() &Number;",
+            "pub struct Owner { value: i32, } impl Owner { pub fn answer(self: &Owner) i32; }",
+            "pub struct Owner { value: i32, } impl Owner { pub fn answer(self: &Owner!) i32; }",
+            "pub fn answer(value: &*i32) i32;",
+            "pub fn answer(value: & &str) i32;",
+        ] {
+            let mut module = legacy_abi_library(source);
+            module.ownership_abi_version = 11;
+            let error = module.validate_current_ownership_abi().expect_err(source);
+            assert!(error.contains("v12 slot-reference receivers"), "{error}");
+            assert!(
+                error.contains("rebuild this artifact from source"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn qzi_v11_scalar_and_shared_string_contracts_remain_compatible() {
+        for source in [
+            "pub fn answer(value: i32) i32;",
+            "pub fn answer(value: *i32) *i32;",
+            "pub fn answer(value: &str) str;",
+            "pub type Text = str; pub type View = &Text; pub fn answer(value: View) Text;",
+        ] {
+            let mut module = legacy_abi_library(source);
+            module.ownership_abi_version = 11;
+            // V11 and v12 use the same section encoding. A v11 stream retains
+            // its original origin when read and reserialized by the new writer.
+            let mut old = serialize_qzi_module(&module).unwrap();
+            old[4] = 11;
+            let decoded = deserialize_qzi_module(&old).unwrap();
+            assert_eq!(decoded.ownership_abi_version, 11);
+            decoded.validate_current_ownership_abi().expect(source);
+            link_qzi_modules(&[decoded]).expect(source);
+        }
+    }
+
+    #[test]
+    fn qzi_v11_opaque_outbound_calls_require_slot_abi_rebuild() {
+        let mut base = legacy_abi_library("pub fn answer() i32;");
+        base.ownership_abi_version = 11;
+        let mut relocated = base.clone();
+        relocated.call_relocations.push(QziCallRelocation {
+            chunk_index: 0,
+            instruction_index: 0,
+            symbol: "other.Owner.read".to_string(),
+        });
+        let mut addressed = base.clone();
+        addressed.chunks[0]
+            .constants
+            .push(ConstPoolEntry::FnAddr("other.Owner.read".to_string()));
+        let mut indirect = base.clone();
+        indirect.chunks[0]
+            .code
+            .insert(0, rrr(Opcode::CallReg, 0, 0, 0));
+        let mut unavailable = base.clone();
+        unavailable.interface.clear();
+        unavailable.chunks[0].param_count = 1;
+        for module in [relocated, addressed, indirect, unavailable] {
+            let error = module.validate_current_ownership_abi().unwrap_err();
+            assert!(error.contains("v12 slot-reference receivers"), "{error}");
+        }
+        // A known internal target preserves the old module's own convention.
+        base.call_relocations.push(QziCallRelocation {
+            chunk_index: 0,
+            instruction_index: 0,
+            symbol: base.chunks[0].name.clone(),
+        });
+        base.validate_current_ownership_abi().unwrap();
+    }
+
+    #[test]
+    fn qzi_legacy_parameterized_libraries_require_retained_callable_declarations() {
+        use crate::bytecode::interface::{QziInterfaceBundle, QziInterfaceModule};
+        let interfaces = [
+            String::new(),
+            toml::to_string(&QziInterfaceBundle {
+                modules: Vec::new(),
+            })
+            .unwrap(),
+            toml::to_string(&QziInterfaceBundle {
+                modules: vec![QziInterfaceModule {
+                    name: "old".to_string(),
+                    exports: Vec::new(),
+                    source: String::new(),
+                }],
+            })
+            .unwrap(),
+            toml::to_string(&QziInterfaceBundle {
+                modules: vec![QziInterfaceModule {
+                    name: "old".to_string(),
+                    exports: vec!["Number".to_string()],
+                    source: "pub type Number = i32;".to_string(),
+                }],
+            })
+            .unwrap(),
+        ];
+        for origin in [10, 11] {
+            for interface in &interfaces {
+                let mut module = legacy_abi_library("pub fn answer(value: i32) i32;");
+                module.ownership_abi_version = origin;
+                module.chunks[0].param_count = 1;
+                module.interface = interface.clone();
+                let encoded = serialize_qzi_module(&module).unwrap();
+                let decoded = deserialize_qzi_module(&encoded).unwrap();
+                let error = decoded.validate_current_ownership_abi().unwrap_err();
+                assert!(
+                    error.contains("rebuild this artifact from source"),
+                    "{error}"
+                );
+                assert!(link_qzi_modules(&[decoded]).is_err());
+            }
+            let mut declared = legacy_abi_library("pub fn answer(value: i32) i32;");
+            declared.ownership_abi_version = origin;
+            declared.chunks[0].param_count = 1;
+            declared.validate_current_ownership_abi().unwrap();
+        }
+    }
+
+    #[test]
+    fn qzi_v11_receiver_origin_survives_namespace_and_reserialization() {
+        let mut module = legacy_abi_library("pub fn answer(value: &i32) i32;");
+        module.ownership_abi_version = 11;
+        module.alias_library_namespace("renamed");
+        module.qualify_library_root_symbols();
+        let encoded = serialize_qzi_module(&module).unwrap();
+        assert_eq!(encoded[4], 12);
+        let decoded = deserialize_qzi_module(&encoded).unwrap();
+        assert_eq!(decoded.ownership_abi_version, 11);
+        assert_eq!(decoded.metadata.name, "renamed");
+        assert!(decoded.validate_current_ownership_abi().is_err());
+        assert!(link_qzi_modules(&[decoded]).is_err());
+        let mut tampered = encoded.clone();
+        let metadata_offset = u32::from_le_bytes(encoded[11..15].try_into().unwrap()) as usize;
+        let metadata_len = u32::from_le_bytes(encoded[15..19].try_into().unwrap()) as usize;
+        tampered[metadata_offset + metadata_len - 1] = 12;
+        assert!(
+            deserialize_qzi_module(&tampered)
+                .unwrap_err()
+                .contains("ownership envelope does not match")
+        );
+    }
+
+    #[test]
+    fn golden_v11_receiver_requires_source_rebuild_at_current_link_boundary() {
+        let bytes = include_bytes!("fixtures/qzi/v11-shared-receiver.qzi");
+        assert_eq!(&bytes[..5], b"\0QZI\x0b");
+        let module = deserialize_qzi_module(bytes).expect("real v11 receiver fixture must decode");
+        assert_eq!(module.ownership_abi_version, 11);
+        let receiver = module
+            .chunks
+            .iter()
+            .find(|chunk| chunk.name.ends_with("Counter.read"))
+            .unwrap();
+        assert!(
+            receiver
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode() == Some(Opcode::FieldLoad))
+        );
+        assert!(
+            !receiver
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode() == Some(Opcode::Load)),
+            "historical receiver read its raw handle without a slot load"
+        );
+        let error = module.validate_current_ownership_abi().unwrap_err();
+        assert!(
+            error.contains("rebuild this artifact from source"),
+            "{error}"
+        );
+        assert!(
+            link_qzi_modules(&[module])
+                .unwrap_err()
+                .contains("v12 slot-reference receivers")
+        );
+    }
+
+    #[test]
+    fn qzi_v12_receiver_contract_roundtrip_stays_unverified() {
+        let mut module = legacy_abi_library(
+            "pub struct Owner { value: i32, } impl Owner { pub fn answer(self: &Owner) i32; }",
+        );
+        module.ownership_abi_version = QZI_VERSION;
+        let encoded = serialize_qzi_module(&module).unwrap();
+        assert_eq!(encoded[4], 12);
+        let decoded = deserialize_qzi_module(&encoded).unwrap();
+        assert_eq!(decoded.ownership_abi_version, 12);
+        assert!(matches!(
+            decoded.ownership,
+            QziOwnershipArtifact::Unverified { .. }
+        ));
+        decoded.validate_current_ownership_abi().unwrap();
+        link_qzi_modules(&[decoded]).unwrap();
     }
 
     #[test]

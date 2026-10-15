@@ -174,6 +174,18 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
   path-sensitive, consuming assignment expressions, and function-valued match
   results. Same-signature casts remain transparent ownership wrappers.
 
+Named Index read/write inference unwraps a safe-reference receiver before
+substituting element arguments and registering setter specializations. The
+original reference capability remains authoritative for mutation and ownership
+checks. Checked `parse[T]()` uses the declared `parse_<suffix>` receiver
+capability, preserving explicit custom `parse` methods. Shared `&str` methods
+retain the string-view exception. None of these adaptations permit owning
+element reads or general reference escape.
+
+Exclusive field receivers require actual value-slot storage. Source fields and
+scalar qword C fields qualify; narrow C fields, bitfields, and inline C
+aggregates produce S14 instead of borrowing a temporary or overlapping bytes.
+
 ## Generic Receiver Methods
 
 For `Named` receivers with concrete type args, substitute receiver generics into method params before checking args (`Array[i32].push("x")` must error because `T = i32`).

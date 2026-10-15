@@ -1,0 +1,13 @@
+// Source-native dispatch regression; QZI-only vtables still need retained layout metadata.
+struct DynamicCounter { padding: i64, value: i32 }
+trait Readable { fn read_dyn(self: &Self) i32; }
+impl Readable for DynamicCounter {
+    fn read_dyn(self: &DynamicCounter) i32 { ret self.value; }
+}
+fn dynamic_read(value: dyn Readable) i32 { ret value.read_dyn(); }
+fn exercise_dynamic_receiver() i32 {
+    var dynamic: dyn Readable = DynamicCounter { padding: 99, value: 23 };
+    if (dynamic_read(dynamic) != 23) { ret 1; }
+    ret 0;
+}
+fn main() i32 { ret exercise_dynamic_receiver(); }

@@ -12,9 +12,9 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Match-arm provenance rejects previously accepted local-owner view escapes.
-// Older exact hits and reusable units cannot bypass the strengthened analysis.
-const QZC_VERSION: u8 = 11;
+// Canonical slot references change explicit non-string borrowed receiver ABI.
+// Neither exact hits nor reusable units may retain the previous calling convention.
+const QZC_VERSION: u8 = 12;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {
@@ -640,7 +640,7 @@ mod tests {
         );
         let current = fs::read(&cache).unwrap();
         assert_eq!(&current[..4], QZC_MAGIC);
-        for version in [4, 9, 10] {
+        for version in [4, 9, 10, 11] {
             let mut legacy = current.clone();
             legacy[4] = version;
             fs::write(&cache, legacy).unwrap();

@@ -2,6 +2,84 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-15, resumed receiver ABI verification)
+
+Resumed the uncommitted canonical-receiver checkpoint below and reviewed it
+with two independent read-only agents. Graphify query traced the Rust receiver,
+chunk, serialization, linker, and native-emission paths; its AST index was
+updated after the fixes. Quazi sources remain outside that index.
+
+Review found/fixed actual field-slot borrowing (scalar mutation and nested
+handle replacement previously changed a temporary) and fixed-array reference
+indexing (previously wrote the reference register). Checked array addresses
+are fixed before assignment RHS evaluation, including RHS index mutation.
+Exclusive narrow C fields, bitfields, and inline C aggregates are rejected with
+S14; ordinary qword scalar C fields retain direct mutation, including packed
+fields. See the expanded receiver change record and migration.
+
+Verification: pinned Rust with RUSTFLAGS='-C link-arg=-fuse-ld=bfd':
+`cargo test --offline -q` passes 752/752; build and clippy pass with existing
+warnings. All three receiver fixtures run natively and emit Windows COFF;
+static/field/array fixtures execute through QZI. Isolated real STD receiver
+suite passes 10 tests, three negative lifetime checks, QZI execution and COFF.
+The new native storage regression failed before its fix. Logs:
+/tmp/quazi-resume-compiler-final.log, /tmp/quazi-resume-places-before.log,
+/tmp/quazi-resume-places-final-focused.log, /tmp/quazi-resume-net-receivers-final.log.
+The historical v11 fixture is intentionally included despite the *.qzi ignore.
+
+Next artifact priority remains QZI-only dynamic vtables: persist ordered
+implementation symbols for each (type, trait), bind them into the artifact,
+preserve namespace rewrites and linker validation, and share descriptor-driven
+native emission between source and QZI. Do not reconstruct layouts from public
+interfaces or infer ownership certification. Alias/const dynamic-local coercion
+also remains an existing source-analysis/lowering gap found during review.
+D-014, D-015, full STD migration/tests, and the broader workspace objective
+remain active. Preserve unrelated .codex/, example35 build output, user STD CLI
+work, and JetBrains .gradle/. No push, website, or external changes.
+
+## Checkpoint (2026-10-14, canonical receiver slots)
+
+Fixed the confirmed native receiver corruption from the prior checkpoint.
+Explicit borrowed receivers and ordinary safe-reference parameters now share a
+slot-reference ABI. Owned receiver calls borrow their storage; existing refs
+forward unchanged; field/dense metadata access loads the aggregate handle.
+All direct/indexed/compound/format/parse/generated iterator paths adapt receivers.
+Shared str/&str retains its value representation. Borrowed named Index types
+now instantiate concrete element signatures and setter specializations. Checked
+parse resolves its actual declared receiver capability, preserving custom parse.
+
+Dynamic source dispatch uses the concrete fat-value slot and retains target
+methods/dependencies. The test runner supplies the source report for vtables.
+Discovery uses existing Dyn annotations, avoiding unscoped generic resolution.
+QZI12/QZC12 reject unproved old receiver contracts and invalidate cached chunks.
+Original ABI generation survives namespace rewriting. Real v11 writer fixture
+v11-shared-receiver.qzi establishes historical raw-handle behavior and current
+source-rebuild rejection, including direct CLI, project dependency, and module
+link routes. Empty encoded interfaces cannot substitute for callable evidence.
+
+Native static fixture covers forwarded/aliased refs, nonzero-offset fields,
+replacement/readback, generic containers, indexed compound updates, scalar
+methods, shared text, formatting, and checked parse. Linux native/QZI execution
+and Windows COFF emission pass. Dynamic source native/COFF passes; Windows host
+execution is unavailable. The old binary SIGSEGV reproduction now exits zero.
+STD's isolated real receiver suite passes 10 tests plus negative lifetime, QZI,
+and COFF checks. Full STD remains unverified; no std source was edited.
+
+IMPORTANT remaining artifact gap: QZI-only dynamic vtables lack retained layout
+metadata. Emitting the dynamic fixture succeeds, but compiling its QZI fails on
+__vtable_DynamicCounter_Readable. Envelopes remain Unverified. D-014 exact
+provenance/effects/aggregate retention/body verification, structural cleanup,
+and D-015 loans remain required. Additional source-analysis generic alias/binder
+and method-local generic substitution gaps are recorded in the change entry.
+Do not mistake this representation fix for full ownership or readiness proof.
+
+See docs/changes/2026-10-14-reference-receiver-abi.md for commands and exact
+bounds. Logs and old/current native artifacts are /tmp/quazi-slot-ref-*.
+Graphify was used to trace receiver/field/codegen connections. User authorized
+local commits only. Preserve compiler .codex/ and example35 artifacts, unrelated
+std README/RESUME/src/mod.qz/CLI work, and other editor outputs. Full workspace
+goal stays active; no website, push, deployment, or external changes are wanted.
+
 ## Checkpoint (2026-10-14, local view provenance)
 
 Resumed the dirty borrow.rs checkpoint and used Graphify query plus incremental

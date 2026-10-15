@@ -1,0 +1,53 @@
+// Borrowed methods and array references must address the original storage.
+struct PlaceCounter { padding: i64, value: i32 }
+impl i32 {
+    fn bump_place(self: &i32!) void { *self += 1; }
+}
+impl PlaceCounter {
+    fn replace_place(self: &PlaceCounter!) void {
+        *self = PlaceCounter { padding: 1, value: 42 };
+    }
+}
+struct PlaceHolder { counter: PlaceCounter }
+@repr(C, packed) struct WidePlace { tag: u8, value: i64 }
+impl i64 {
+    fn bump_wide_place(self: &i64!) void { *self += 1; }
+}
+fn update_field(counter: &PlaceCounter!) void { counter.value.bump_place(); }
+fn update_fixed(values: &[i32; 2]!) void {
+    values[0] = 7;
+    var index = 1;
+    values[index] += values[0];
+    values[0]++;
+}
+fn read_fixed(values: &[i32; 2]) i32 {
+    var index = 1;
+    ret values[0] + values[index];
+}
+fn update_evaluated_index(values: &[i32; 2]!) void {
+    var index = 0;
+    values[index] = (index = 1);
+    index = 0;
+    values[index] += (index = 1);
+}
+fn exercise_receiver_places() i32 {
+    var counter = PlaceCounter { padding: 99, value: 10 };
+    counter.value.bump_place();
+    if (counter.value != 11 || counter.padding != 99) { ret 1; }
+    var holder = PlaceHolder { counter: PlaceCounter { padding: 99, value: 10 } };
+    holder.counter.replace_place();
+    if (holder.counter.value != 42 || holder.counter.padding != 1) { ret 2; }
+    var values = [1, 2];
+    if (true) { update_fixed(&values!); }
+    if (values[0] != 8 || values[1] != 9) { ret 3; }
+    if (read_fixed(&values) != 17) { ret 4; }
+    if (true) { update_field(&counter!); }
+    if (counter.value != 12) { ret 5; }
+    var wide = WidePlace { tag: 9, value: 33 };
+    wide.value.bump_wide_place();
+    if (wide.value != 34 || wide.tag != 9) { ret 6; }
+    if (true) { update_evaluated_index(&values!); }
+    if (values[0] != 2 || values[1] != 9) { ret 7; }
+    ret 0;
+}
+fn main() i32 { ret exercise_receiver_places(); }

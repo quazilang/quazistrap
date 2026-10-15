@@ -53,8 +53,13 @@ matching artifact ownership boundary.
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x09` (readers retain compatible v2-v8 bytecode; v1 omitted
-  required frame metadata and parameterized v6 trait interfaces need rebuilding)
+- Version: `0x0C` (v12). Readers retain compatible v2-v11 bytecode, but
+  decoding does not prove current link compatibility. Pre-v12 safe-reference
+  receiver/aggregate contracts and opaque outbound calls require a source
+  rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
+  compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
+  also require rebuilding. Original ownership ABI generation survives aliases
+  and reserialization. QZC v12 invalidates earlier exact and reusable caches.
 
 Immutable golden fixtures from real historical writers (v2-v6) live in
 `src/bytecode/fixtures/qzi/` with provenance in their README; `golden_*` tests
@@ -133,6 +138,25 @@ content-bound ownership-artifact envelope.
 - `FieldLoad`/`FieldStore` reuse memory-width flags for `@repr(C)` byte, word,
   dword, and qword fields, including sign extension on signed loads. `FLOAT_FLAG`
   on a dword field marks C `f32` conversion to/from internal f64 slots.
+- Explicit shared/exclusive receivers use the same pointer-to-value-slot ABI as
+  ordinary safe-reference parameters. `prepare_method_receiver` borrows an owned
+  value block or forwards an existing reference. Field, bitfield, flexible-tail,
+  and dense-metadata access load a referenced aggregate's handle before memory
+  access. All Index/set/compound-update and compiler-generated call paths use
+  the same adaptation. Shared `str` / `&str` is representation-identical;
+  taking a shared string reference does not introduce an extra slot pointer.
+- `compile_receiver_object` evaluates projected receivers once and retains the
+  actual field slot for borrowing; mutating a loaded temporary is incorrect.
+  Module fields remain ordinary expression resolution. Exclusive C-field
+  receivers require scalar qword slots, not narrow fields or bitfields.
+  `borrowed_fixed_array_address` indexes the existing descending slot pointer,
+  checks bounds, and fixes the address before evaluating an assignment RHS.
+- Dynamic source receivers use word zero of their fat value as the concrete
+  borrowed slot. Reachability conservatively retains methods of the observed
+  trait target set and their call dependencies. Do not resolve arbitrary
+  generic expression annotations outside their lexical binder context. Native
+  test runners pass the source report for vtable emission. QZI-only vtable
+  layout retention remains incomplete; this is not a D-014 effect certificate.
 - Named C bitfields lower to storage-unit loads, masks, shifts, and stores.
   Flexible-array field expressions produce the tail address and indexing uses
   the element's C width; packed fields remain valid unaligned x86-64 accesses.
