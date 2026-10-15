@@ -2,7 +2,8 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-use std::collections::{BTreeMap, HashSet};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,42 @@ pub fn build_qzi_interface(
             "QZI library name `{package_name}` must be a Quazi identifier"
         ));
     }
+    // Only a same-source nominal declaration proves a private identity here.
+    // Aliases and generic argument spellings need checked semantic resolution;
+    // they must never cause silent interface omission.
+    let mut private_types: HashMap<Option<usize>, HashSet<&str>> = HashMap::new();
+    for item in &program.items {
+        let source = source_files
+            .iter()
+            .position(|file| file.contains(item.span));
+        if source.is_none() && !source_files.is_empty() {
+            continue;
+        }
+        if source.is_some_and(|index| excluded_paths.contains(Path::new(&source_files[index].path)))
+        {
+            continue;
+        }
+        let name = match &item.node {
+            ItemKind::Struct {
+                name,
+                public: false,
+                ..
+            }
+            | ItemKind::Enum {
+                name,
+                public: false,
+                ..
+            }
+            | ItemKind::Trait {
+                name,
+                public: false,
+                ..
+            } => name,
+            _ => continue,
+        };
+        private_types.entry(source).or_default().insert(name);
+    }
+    let no_private_types = HashSet::new();
     let mut modules: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
     for item in &program.items {
         let source_path = source_files
@@ -46,6 +83,17 @@ pub fn build_qzi_interface(
         {
             continue;
         }
+        let source = source_files
+            .iter()
+            .position(|file| file.contains(item.span));
+        let Some(interface_item) = private_impl_interface(
+            item,
+            private_types.get(&source).unwrap_or(&no_private_types),
+        )?
+        else {
+            continue;
+        };
+        let item = interface_item.as_ref();
         let unsupported_generic = public_item_with_unsupported_generic(item);
         if let Some(name) = unsupported_generic {
             return Err(format!(
@@ -89,6 +137,65 @@ pub fn build_qzi_interface(
         .collect();
     toml::to_string(&QziInterfaceBundle { modules })
         .map_err(|error| format!("cannot serialize QZI interface: {error}"))
+}
+
+fn private_impl_interface<'a>(
+    item: &'a Item,
+    private_types: &HashSet<&str>,
+) -> Result<Option<Cow<'a, Item>>, String> {
+    let ItemKind::Impl {
+        trait_ty,
+        for_ty,
+        methods,
+    } = &item.node
+    else {
+        return Ok(Some(Cow::Borrowed(item)));
+    };
+    fn is_private(ty: &TypeKind, private_types: &HashSet<&str>) -> bool {
+        match ty {
+            TypeKind::Named { name, .. } => private_types.contains(name.as_str()),
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                is_private(&inner.node, private_types)
+            }
+            _ => false,
+        }
+    }
+    let has_public_method = methods
+        .iter()
+        .any(|method| matches!(method.node, ItemKind::Fn { pub_fn: true, .. }));
+    if is_private(&for_ty.node, private_types) {
+        if has_public_method {
+            return Err(format!(
+                "QZI cannot export public methods of private target `{}`; make the target public or depend on this package's sources instead",
+                for_ty.node
+            ));
+        }
+        return Ok(None);
+    }
+    if trait_ty
+        .as_ref()
+        .is_some_and(|ty| is_private(&ty.node, private_types))
+    {
+        if !has_public_method {
+            return Ok(None);
+        }
+        let public_methods = methods
+            .iter()
+            .filter(|method| matches!(method.node, ItemKind::Fn { pub_fn: true, .. }))
+            .cloned()
+            .collect();
+        // Public methods remain callable by Type.method, independently of the
+        // inaccessible private trait. Render only that public inherent surface.
+        return Ok(Some(Cow::Owned(Item {
+            span: item.span,
+            node: ItemKind::Impl {
+                trait_ty: None,
+                for_ty: for_ty.clone(),
+                methods: public_methods,
+            },
+        })));
+    }
+    Ok(Some(Cow::Borrowed(item)))
 }
 
 fn public_item_with_unsupported_generic(item: &Item) -> Option<String> {
@@ -770,6 +877,141 @@ mod tests {
     }
 
     #[test]
+    fn private_trait_and_target_implementations_stay_out_of_public_interface() {
+        let source = r#"
+struct PrivateCounter { value: i32 }
+trait PrivateReadable { fn hidden(self: &Self) i32; }
+pub struct PublicCounter { value: i32 }
+pub trait PublicReadable { fn read(self: &Self) i32; }
+impl PrivateReadable for PrivateCounter { fn hidden(self: &PrivateCounter) i32 { ret self.value; } }
+impl PrivateReadable for PublicCounter { fn hidden(self: &PublicCounter) i32 { ret self.value; } }
+impl PublicReadable for PrivateCounter { fn read(self: &PrivateCounter) i32 { ret self.value; } }
+impl PrivateCounter { fn generic[T](self: &PrivateCounter, value: T) T { ret value; } }
+impl PublicReadable for PublicCounter { fn read(self: &PublicCounter) i32 { ret self.value; } }
+pub fn answer(seed: i32) i32 { ret seed; }
+"#;
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let encoded = build_qzi_interface(
+            "private_dispatch",
+            &program,
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .unwrap();
+        let bundle = parse_qzi_interface(&encoded).unwrap();
+        assert_eq!(bundle.modules.len(), 1);
+        let interface = &bundle.modules[0];
+        assert_eq!(
+            interface.exports,
+            ["PublicCounter", "PublicReadable", "answer"]
+        );
+        assert!(
+            !interface.source.contains("Private"),
+            "{}",
+            interface.source
+        );
+        assert!(!interface.source.contains("generic"));
+        assert!(
+            interface
+                .source
+                .contains("impl PublicReadable for PublicCounter")
+        );
+        let program = Parser::new(Lexer::new(&interface.source).tokenize())
+            .parse()
+            .unwrap();
+        let report = crate::semantic::Analyzer::new().analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn private_trait_keeps_explicit_public_methods_as_inherent_surface() {
+        let source = "pub struct Api {} trait Hidden { fn exposed(self: &Self) i32; fn internal(self: &Self) i32; } impl Hidden for Api { pub fn exposed(self: &Api) i32 { ret 7; } fn internal(self: &Api) i32 { ret 1; } }";
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let encoded =
+            build_qzi_interface("api", &program, &[], &HashSet::new(), &HashSet::new()).unwrap();
+        let bundle = parse_qzi_interface(&encoded).unwrap();
+        let source = &bundle.modules[0].source;
+        assert!(source.contains("impl Api"), "{source}");
+        assert!(source.contains("pub fn exposed"));
+        assert!(!source.contains("Hidden") && !source.contains("internal"));
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let report = crate::semantic::Analyzer::new().analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn public_methods_on_private_targets_need_actionable_export_error() {
+        let source =
+            "struct Hidden {} impl Hidden { pub fn exposed(self: &Hidden) i32 { ret 7; } }";
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let error = build_qzi_interface("api", &program, &[], &HashSet::new(), &HashSet::new())
+            .unwrap_err();
+        assert!(error.contains("private target") && error.contains("make the target public"));
+    }
+
+    #[test]
+    fn aliases_and_generic_argument_spellings_never_prove_private_targets() {
+        for source in [
+            "type Alias = i32; impl Alias { pub fn exposed(self: &Alias) i32 { ret 7; } }",
+            "struct T {} impl Holder[T] { pub fn exposed(self: &Holder[T]) i32 { ret 7; } }",
+        ] {
+            let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+            let encoded =
+                build_qzi_interface("api", &program, &[], &HashSet::new(), &HashSet::new())
+                    .unwrap();
+            let bundle = parse_qzi_interface(&encoded).unwrap();
+            assert!(
+                bundle.modules[0].source.contains("pub fn exposed"),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_source_private_names_do_not_erase_public_implementations() {
+        let private = "struct Api {}";
+        let public = "pub struct Api {} impl Api { pub fn exposed(self: &Api) i32 { ret 7; } }";
+        let source = format!("{private}\n{public}");
+        let program = Parser::new(Lexer::new(&source).tokenize()).parse().unwrap();
+        let offset = private.chars().count() + 1;
+        let files = vec![
+            SourceFile {
+                path: "private.qz".into(),
+                module_name: Some("private".into()),
+                start: 0,
+                end: offset,
+                line_start: 1,
+            },
+            SourceFile {
+                path: "public.qz".into(),
+                module_name: Some("public".into()),
+                start: offset,
+                end: source.chars().count(),
+                line_start: 2,
+            },
+        ];
+        for excluded in [HashSet::new(), HashSet::from([PathBuf::from("private.qz")])] {
+            let encoded = build_qzi_interface(
+                "api",
+                &program,
+                &files,
+                &HashSet::from([PathBuf::from("public.qz")]),
+                &excluded,
+            )
+            .unwrap();
+            let bundle = parse_qzi_interface(&encoded).unwrap();
+            assert!(
+                bundle
+                    .modules
+                    .iter()
+                    .any(|module| module.name == "public"
+                        && module.source.contains("pub fn exposed"))
+            );
+        }
+    }
+
+    #[test]
     fn public_type_and_method_interface_is_parseable() {
         let source = r#"
 pub struct Point { x: i32, y: i32, }
@@ -880,7 +1122,7 @@ pub type Coordinate = i32;
             "pub type Erased = any;",
             "pub trait Sink { fn put(value: any) void; }",
             "pub struct Api {} impl Api { pub fn erase(self: Api, value: any) void {} }",
-            "trait Sink { fn put(value: any) void; } struct Api {} impl Sink for Api { fn put(self: Api, value: any) void {} }",
+            "pub trait Sink { fn put(value: any) void; } pub struct Api {} impl Sink for Api { fn put(self: Api, value: any) void {} }",
         ] {
             let program = Parser::new(Lexer::new(source).tokenize())
                 .parse()

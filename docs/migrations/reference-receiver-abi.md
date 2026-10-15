@@ -33,5 +33,6 @@ Fixed-array references retain their pointee address for indexing and mutation.
 
 The ownership envelope remains `Unverified`. This migration does not certify
 D-014 effects, complete structural destruction, or enable borrowed dense-element
-APIs. QZI-only dynamic vtable layout metadata remains incomplete. See the
+APIs. The later [QZI v13 migration](qzi-v13-vtables.md) adds portable dynamic
+vtable layouts. See the
 [change record](../changes/2026-10-14-reference-receiver-abi.md) for evidence.

@@ -53,13 +53,13 @@ matching artifact ownership boundary.
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x0C` (v12). Readers retain compatible v2-v11 bytecode, but
+- Version: `0x0D` (v13). Readers retain compatible v2-v12 bytecode, but
   decoding does not prove current link compatibility. Pre-v12 safe-reference
   receiver/aggregate contracts and opaque outbound calls require a source
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. QZC v12 invalidates earlier exact and reusable caches.
+  and reserialization. QZC v13 invalidates earlier exact and reusable caches.
 
 Immutable golden fixtures from real historical writers (v2-v6) live in
 `src/bytecode/fixtures/qzi/` with provenance in their README; `golden_*` tests
@@ -84,10 +84,11 @@ never persisted.
 | `1` | Float(f64) |
 | `2` | Str(u16_len + bytes) |
 | `3` | FnAddr(u16_len + bytes) |
-| `4` | VtableAddr(type u16 + bytes, trait u16 + bytes) |
+| `4` | Historical VtableAddr(type u16 + bytes, trait u16 + bytes); decoding only, rebuild before linking |
 | `5` | ForeignSymbol(symbol + target-neutral `AbiSignature`) |
 | `6` | Bytes(u32_len + exact bytes) |
 | `7` | ForeignGlobal(symbol + target-neutral `AbiType`) |
+| `8` | VtableLayout(type/trait u16 strings, u16 method count, ordered u16 method-symbol strings); QZI v13 |
 
 ### Runtime intrinsic IDs
 
@@ -154,9 +155,10 @@ content-bound ownership-artifact envelope.
 - Dynamic source receivers use word zero of their fat value as the concrete
   borrowed slot. Reachability conservatively retains methods of the observed
   trait target set and their call dependencies. Do not resolve arbitrary
-  generic expression annotations outside their lexical binder context. Native
-  test runners pass the source report for vtable emission. QZI-only vtable
-  layout retention remains incomplete; this is not a D-014 effect certificate.
+  generic expression annotations outside their lexical binder context. Source
+  and QZI-only native backends use retained ordered descriptors. Descriptor
+  targets remain address roots through dead-inline elimination. This is not
+  a D-014 effect certificate.
 - Named C bitfields lower to storage-unit loads, masks, shifts, and stores.
   Flexible-array field expressions produce the tail address and indexing uses
   the element's C width; packed fields remain valid unaligned x86-64 accesses.
@@ -223,7 +225,7 @@ content-bound ownership-artifact envelope.
 
 ### `dyn Trait`
 
-- `coerce_to_dyn(obj_reg, type_name, trait_name)` allocates 16-byte fat pointer — `fat[0]=concrete_ptr`, `fat[8]=vtable_ptr` (via `MovConst(VtableAddr)`).
+- `coerce_to_dyn(obj_reg, type_name, trait_name)` allocates 16-byte fat pointer — `fat[0]=concrete_ptr`, `fat[8]=vtable_ptr` (via `MovConst(Vtable)` with retained method symbols).
 - MethodCall on `Dyn` receiver: `FieldLoad fat[8]→vtbl_ptr`, `VtblLoad vtbl_ptr[slot]→fn_ptr`, `FieldLoad fat[0]→data_ptr`, `CallArg*+CallReg`.
 
 ### Non-Slice Iterator (`ForLoop::Each` on non-slice)
@@ -282,3 +284,19 @@ sizing so less-common opcodes cannot access slots outside the allocated frame.
 - **`as` casts**: Previously a lazy no-op (`..` pattern). Now explicit with a comment. The current typechecker permits integer-family and same-family float casts; integer/float cross-family conversion needs dedicated lowering and remains rejected.
 - **`Array.from` hardcoding removed**: Previously codegen had an inline `new() + push()` special case for `Array.from([...])`. Now `Array.from(...items: T)` is a real variadic method in `prelude/src/array.qz` that iterates the variadic slice and pushes each element. Generic inference for variadic static methods was fixed in `typecheck.rs` (`infer_type_subst` now handles `Slice` types).
 - **`import_aliases` removed**: Unnecessary `HashMap` added by a teammate that did not change behavior; cleaned up from `Codegen` and `FnCompiler`.
+
+## Portable vtable layouts
+
+`vtable.rs` validates bounded tag-8 descriptors, deduplicates matching layouts,
+rejects conflicts and historical layout-free addresses, and resolves complete
+method bundles at linking/native emission. Serialization and raw cache decoding
+validate shape without requiring companion chunks. Namespace aliases rewrite
+matching type/trait/method prefixes; root qualification follows the existing
+function-only map. See [the full contract](../../docs/internals/dynamic-vtable-layout.md).
+
+The QZI source interface excludes internal-only impl declarations for proven
+same-source private nominal targets/traits before public-template restrictions.
+Explicit public methods on public targets survive as inherent declarations if
+the trait is private; public methods on private targets get an export error.
+Other-source names, aliases, and nested generic spellings never prove privacy.
+Implementation bytecode and private vtable metadata remain internal dependencies.

@@ -9,6 +9,7 @@ pub mod instruction;
 pub mod interface;
 pub mod opcode;
 pub mod regalloc;
+pub mod vtable;
 
 pub use chunk::{
     Chunk, ConstPoolEntry, QziCallRelocation, QziContentBinding, QziMetadata, QziModule,

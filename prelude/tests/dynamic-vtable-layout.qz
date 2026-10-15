@@ -1,0 +1,35 @@
+// Slot order and implementation reachability must survive QZI without source.
+struct PortableCounter { padding: i64, value: i32 }
+struct AlternateCounter { value: i32, padding: i64 }
+trait PortableReadable {
+    fn z_read(self: &Self) i32;
+    fn a_read(self: &Self) i32;
+    fn bump(self: &Self!) void;
+}
+fn portable_adjust(value: i32) i32 { ret value + 3; }
+impl PortableReadable for PortableCounter {
+    @inline
+    fn z_read(self: &PortableCounter) i32 { ret portable_adjust(self.value); }
+    fn a_read(self: &PortableCounter) i32 { ret self.value * 2; }
+    fn bump(self: &PortableCounter!) void { self.value += 1; }
+}
+impl PortableReadable for AlternateCounter {
+    fn z_read(self: &AlternateCounter) i32 { ret self.value + 4; }
+    fn a_read(self: &AlternateCounter) i32 { ret self.value * 3; }
+    fn bump(self: &AlternateCounter!) void { self.value += 2; }
+}
+fn exercise_portable_vtables() i32 {
+    var direct = PortableCounter { padding: 99, value: 5 };
+    if (direct.z_read() != 8) { ret 1; }
+    var first: dyn PortableReadable = PortableCounter { padding: 99, value: 20 };
+    if (first.z_read() != 23 || first.a_read() != 40) { ret 2; }
+    first.bump();
+    if (first.z_read() != 24 || first.a_read() != 42) { ret 3; }
+    var second: dyn PortableReadable = AlternateCounter { value: 30, padding: 99 };
+    second.bump();
+    if (second.z_read() != 36 || second.a_read() != 96) { ret 4; }
+    var again: dyn PortableReadable = PortableCounter { padding: 1, value: 7 };
+    if (again.z_read() != 10 || again.a_read() != 14) { ret 5; }
+    ret 0;
+}
+fn main() i32 { ret exercise_portable_vtables(); }

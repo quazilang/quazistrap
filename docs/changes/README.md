@@ -1,5 +1,8 @@
 # Change records
 
+- [2026-10-15: Portable dynamic vtables](2026-10-15-portable-vtables.md)
+- [2026-10-14: Canonical safe-reference receiver ABI](2026-10-14-reference-receiver-abi.md)
+
 - [2026-10-13: HTTP receiver ownership and dense-element read guards](2026-10-13-http-receiver-ownership.md)
 
 - [2026-10-10: Owned formatting and temporary cleanup](2026-10-10-owned-formatting.md)

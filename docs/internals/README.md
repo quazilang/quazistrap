@@ -7,6 +7,8 @@ runtime ABI, ownership invariants, testing, and contribution workflows.
 
 ## Pages
 
+- [Portable dynamic vtable layouts](dynamic-vtable-layout.md)
+
 - [Checked type-alias resolution](type-alias-resolution.md)
 
 - [Concrete source ownership call graph](ownership-call-graph.md)

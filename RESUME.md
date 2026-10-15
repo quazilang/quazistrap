@@ -2,6 +2,55 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-15, portable dynamic vtables)
+
+Resolved the QZI-only dynamic layout gap from the preceding checkpoint.
+QZI13 constant tag8 retains target-neutral type/trait identities and exact
+implementation symbols in trait-slot order. Source/QZI native emission shares
+that descriptor path. WPO retains descriptor method targets; final linking and
+native emission reject conflicts and missing targets. Table symbols encode
+identity without punctuation collisions; relocations use actual native names.
+Historical tag4 addresses still decode but require a source rebuild to link.
+Original ownership ABI generations and Unverified envelopes remain intact.
+QZC13 invalidates older exact hits and reusable units, and preserves descriptors
+through disk cache restoration and WPO.
+
+The source-removed aliased-library regression exposed private impl declarations
+leaking into the public interface without their defining nominal declarations.
+Interface projection now uses proven same-source private nominal identities:
+internal-only impl declarations are omitted, explicit public methods on public
+targets survive as inherent declarations for private traits, and public methods
+on private targets produce an actionable export error. Excluded/other-source
+names, aliases, and nested generic argument spellings do not prove privacy.
+General alias/composite/cross-source interface visibility closure remains open.
+
+Two independent reviewers examined descriptor design, bytecode/cache binding,
+native emission and optimization, and challenged the interface projection.
+Their alias/binder/public-method findings were reconciled against the code.
+Graphify query and AST update were used; the Rust/Python graph does not index
+Quazi source semantics. See docs/internals/dynamic-vtable-layout.md,
+docs/changes/2026-10-15-portable-vtables.md and docs/migrations/qzi-v13-vtables.md.
+
+Verification with pinned Rust and RUSTFLAGS='-C link-arg=-fuse-ld=bfd':
+`cargo test --offline -q` passes 770/770 (13 focused vtable and 13 interface
+tests); build and clippy pass with existing warnings. Source and QZI-only
+Linux execution plus QZI->Windows COFF pass for original and multi-method
+fixtures. `python3 scripts/check_dynamic_vtables.py target/debug/qz` passes
+imported trait/type dispatch with mangling=false, cold/exact/partial/updated
+exact caches (1 restored | 1 compiled after implementation-only edit), and an
+aliased scalar QZI library using private dyn after removing defining source.
+Baseline old QZI12 failure is /tmp/quazi-vtables-before.log. Final logs are
+/tmp/quazi-vtables-full-final.log, /tmp/quazi-vtables-integration-final.log,
+/tmp/quazi-vtables-clippy-final.log. No Windows host execution is claimed.
+
+Next: D-014 exact provenance/effect/body verification and D-015 element loans,
+then coherent Headers/HTTP/JSON migration and full STD verification. Existing
+alias/const dynamic-local coercion, dynamic cleanup, and unused-method warning
+precision remain separate gaps. The full workspace objective stays active;
+this checkpoint proves retained table layouts, not ownership or readiness.
+Preserve unrelated compiler .codex/ and example35 build output, user STD CLI
+work, and JetBrains .gradle/. Local commits authorized; no push/site/external work.
+
 ## Checkpoint (2026-10-15, resumed receiver ABI verification)
 
 Resumed the uncommitted canonical-receiver checkpoint below and reviewed it
@@ -165,7 +214,7 @@ Verification: pinned/bfd full compiler suite 733/733, focused contiguous 23/23;
 build and clippy succeed with existing warnings. The generic storage-call
 regression fails with previous lowering; actual prelude owned-element-replacement
 passes Linux native/QZI execution and Windows COFF emission after the fixes. Indexed-read regression failed
-before the fix; an extract[Item](Array[Item]) native-source fixture emitted QZI
+before the fix; an `extract[Item](Array[Item])` native-source fixture emitted QZI
 before the generic guard and now receives S10 before codegen. The isolated STD
 suite passes 10 native tests (7 new + 3 existing), 3 specific negative lifetime
 checks, QZI execution of the 7 new tests, and Windows COFF emission. The Linux

@@ -632,6 +632,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dynamic_vtables_execute_after_qzi_roundtrip_without_source_report() {
+        use crate::bytecode::{deserialize_qzi_module, link_qzi_modules, serialize_qzi};
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+        use crate::semantic::Analyzer;
+
+        let source = include_str!("../prelude/tests/dynamic-vtable-layout.qz");
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let report = Analyzer::new().analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let chunks = Codegen::new(&report)
+            .compile_program(&program, &[])
+            .unwrap();
+        let encoded = serialize_qzi(&chunks).unwrap();
+        let decoded = deserialize_qzi_module(&encoded).unwrap();
+        let linked = link_qzi_modules(&[decoded]).unwrap();
+        let root = temp_dir("portable-vtables");
+        let binary = root.join("portable-vtables");
+        let target = TargetSpec::host().with_no_crash();
+        let object =
+            crate::try_compile_to_object(&linked, true, true, None, false, &target).unwrap();
+        link_object(&object, &binary, target, &[], None).unwrap();
+        assert!(
+            std::process::Command::new(&binary)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn target_gated_modules_are_not_loaded_as_independent_test_roots() {

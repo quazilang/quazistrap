@@ -5,6 +5,7 @@
 use super::instruction::Instruction;
 use super::instruction::{ri16, rrr};
 use super::opcode::Opcode;
+use super::vtable::VtableLayout;
 use crate::abi::{ForeignGlobal, ForeignSymbol};
 use sha2::{Digest, Sha256};
 
@@ -213,10 +214,22 @@ impl QziModule {
         }
         for chunk in &mut self.chunks {
             for constant in &mut chunk.constants {
-                if let ConstPoolEntry::FnAddr(name) = constant
-                    && let Some(replacement) = renamed.get(name)
-                {
-                    *name = replacement.clone();
+                match constant {
+                    ConstPoolEntry::FnAddr(name) => {
+                        if let Some(replacement) = renamed.get(name) {
+                            *name = replacement.clone();
+                        }
+                    }
+                    ConstPoolEntry::Vtable(layout) => {
+                        // Root qualification renames functions, not source type
+                        // identities. Only actual implementation symbols follow it.
+                        for method in &mut layout.methods {
+                            if let Some(replacement) = renamed.get(method) {
+                                *method = replacement.clone();
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -243,8 +256,20 @@ impl QziModule {
         for chunk in &mut self.chunks {
             chunk.name = rename(&chunk.name);
             for constant in &mut chunk.constants {
-                if let ConstPoolEntry::FnAddr(symbol) = constant {
-                    *symbol = rename(symbol);
+                match constant {
+                    ConstPoolEntry::FnAddr(symbol) => *symbol = rename(symbol),
+                    ConstPoolEntry::Vtable(layout) => {
+                        layout.type_name = rename(&layout.type_name);
+                        layout.trait_name = rename(&layout.trait_name);
+                        for method in &mut layout.methods {
+                            *method = rename(method);
+                        }
+                    }
+                    ConstPoolEntry::VtableAddr(ty, tr) => {
+                        *ty = rename(ty);
+                        *tr = rename(tr);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -273,6 +298,8 @@ pub enum ConstPoolEntry {
     FnAddr(String),
     /// Address of a vtable for a (type, trait) pair — tag 4.
     VtableAddr(String, String),
+    /// Target-neutral ordered implementation symbols, retained in QZI v13.
+    Vtable(VtableLayout),
     /// External C symbol plus its target-neutral ABI signature — tag 5.
     ForeignSymbol(ForeignSymbol),
     /// Addressable external C data symbol and its source-level ABI type — tag 7.
@@ -430,6 +457,10 @@ impl Chunk {
                     buf.push(5);
                     symbol.encode(&mut buf);
                 }
+                ConstPoolEntry::Vtable(layout) => {
+                    buf.push(8);
+                    layout.encode(&mut buf);
+                }
                 ConstPoolEntry::ForeignGlobal(global) => {
                     buf.push(7);
                     global.encode(&mut buf);
@@ -442,7 +473,7 @@ impl Chunk {
     }
 }
 
-fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
+fn deserialize_qzi_legacy(buf: &[u8], allow_vtable_layouts: bool) -> Result<Vec<Chunk>, String> {
     use super::instruction::Instruction;
 
     let mut pos = 0;
@@ -644,6 +675,9 @@ fn deserialize_qzi_legacy(buf: &[u8]) -> Result<Vec<Chunk>, String> {
                         buf, &mut pos,
                     )?));
                 }
+                8 if allow_vtable_layouts => {
+                    constants.push(ConstPoolEntry::Vtable(VtableLayout::decode(buf, &mut pos)?));
+                }
                 _ => return Err(format!("unknown const tag {}", tag)),
             }
         }
@@ -824,7 +858,7 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 12;
+pub const QZI_VERSION: u8 = 13;
 const QZI_LEGACY_VERSION: u8 = 5;
 const QZI_FIRST_SECTIONED_VERSION: u8 = 6;
 const QZI_OWNERSHIP_SCHEMA_VERSION: u16 = 1;
@@ -886,6 +920,7 @@ fn serialize_qzi_legacy(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
                     ));
                 }
                 ConstPoolEntry::ForeignSymbol(symbol) => validate_foreign_symbol(symbol)?,
+                ConstPoolEntry::Vtable(layout) => layout.validate()?,
                 ConstPoolEntry::ForeignGlobal(global) => {
                     if global.symbol.len() > u16::MAX as usize {
                         return Err("QZI foreign-global symbol is too long".to_string());
@@ -1262,7 +1297,7 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
     }
     let version = bytes[4];
     if version <= QZI_LEGACY_VERSION {
-        let chunks = deserialize_qzi_legacy(bytes)?;
+        let chunks = deserialize_qzi_legacy(bytes, false)?;
         reject_implicit_lea_metadata(version, &chunks)?;
         if chunks_use_preownership_function_values(&chunks) {
             return Err(format!(
@@ -1425,7 +1460,7 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
         );
     }
     let call_relocations = decode_call_relocations(relocation_payload)?;
-    let chunks = deserialize_qzi_legacy(bytecode_payload)?;
+    let chunks = deserialize_qzi_legacy(bytecode_payload, version >= 13)?;
     reject_implicit_lea_metadata(version, &chunks)?;
     if version < 7 && chunks_use_preownership_function_values(&chunks) {
         return Err(
@@ -1680,6 +1715,7 @@ pub fn link_qzi_modules(modules: &[QziModule]) -> Result<Vec<Chunk>, String> {
         }
     }
     validate_qzi_chunks(&linked)?;
+    super::vtable::validate_vtable_targets(&linked)?;
     Ok(linked)
 }
 
@@ -1764,6 +1800,12 @@ impl std::fmt::Display for Chunk {
                     ConstPoolEntry::FnAddr(name) => format!("\x1b[36m{name}\x1b[0m"),
                     ConstPoolEntry::VtableAddr(tn, tr) => {
                         format!("\x1b[35mvtable({tn}::{tr})\x1b[0m")
+                    }
+                    ConstPoolEntry::Vtable(layout) => {
+                        format!(
+                            "\x1b[35mvtable({}::{}, {:?})\x1b[0m",
+                            layout.type_name, layout.trait_name, layout.methods
+                        )
                     }
                     ConstPoolEntry::ForeignSymbol(symbol) => {
                         format!("\x1b[35mforeign({})\x1b[0m", symbol.symbol)
@@ -2199,7 +2241,7 @@ mod tests {
         module.alias_library_namespace("renamed");
         module.qualify_library_root_symbols();
         let encoded = serialize_qzi_module(&module).unwrap();
-        assert_eq!(encoded[4], 12);
+        assert_eq!(encoded[4], QZI_VERSION);
         let decoded = deserialize_qzi_module(&encoded).unwrap();
         assert_eq!(decoded.ownership_abi_version, 11);
         assert_eq!(decoded.metadata.name, "renamed");
@@ -2257,9 +2299,9 @@ mod tests {
         let mut module = legacy_abi_library(
             "pub struct Owner { value: i32, } impl Owner { pub fn answer(self: &Owner) i32; }",
         );
-        module.ownership_abi_version = QZI_VERSION;
+        module.ownership_abi_version = 12;
         let encoded = serialize_qzi_module(&module).unwrap();
-        assert_eq!(encoded[4], 12);
+        assert_eq!(encoded[4], QZI_VERSION);
         let decoded = deserialize_qzi_module(&encoded).unwrap();
         assert_eq!(decoded.ownership_abi_version, 12);
         assert!(matches!(
@@ -2268,6 +2310,154 @@ mod tests {
         ));
         decoded.validate_current_ownership_abi().unwrap();
         link_qzi_modules(&[decoded]).unwrap();
+    }
+
+    fn vtable_module(caller: &str) -> QziModule {
+        let mut chunk = Chunk::new(caller);
+        chunk.reg_count = 1;
+        let constant = chunk.add_constant(ConstPoolEntry::Vtable(VtableLayout {
+            type_name: "library.Counter".into(),
+            trait_name: "library.Readable".into(),
+            methods: vec!["library.Counter.z".into(), "library.Counter.a".into()],
+        }));
+        chunk.emit(ri16(Opcode::MovConst, 0, constant));
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+        QziModule::from_chunks(vec![chunk])
+    }
+
+    #[test]
+    fn vtable_layout_roundtrip_binds_content_and_requires_generation_13() {
+        let module = vtable_module("main");
+        let encoded = serialize_qzi_module(&module).unwrap();
+        let decoded = deserialize_qzi_module(&encoded).unwrap();
+        assert_eq!(decoded.chunks, module.chunks);
+        assert!(matches!(
+            decoded.ownership,
+            QziOwnershipArtifact::Unverified { .. }
+        ));
+        // Partial cache units can retain descriptors before target chunks exist.
+        assert!(
+            link_qzi_modules(&[decoded])
+                .unwrap_err()
+                .contains("unresolved QZI vtable method")
+        );
+        let mut downgraded = encoded.clone();
+        downgraded[4] = 12;
+        assert!(
+            deserialize_qzi_module(&downgraded)
+                .unwrap_err()
+                .contains("unknown const tag 8")
+        );
+        let mut tampered = encoded.clone();
+        let pos = tampered
+            .windows(b"library.Counter.z".len())
+            .position(|bytes| bytes == b"library.Counter.z")
+            .unwrap();
+        tampered[pos] = b'x';
+        assert!(
+            deserialize_qzi_module(&tampered)
+                .unwrap_err()
+                .contains("ownership envelope does not match")
+        );
+        for end in 0..encoded.len() {
+            assert!(
+                deserialize_qzi_module(&encoded[..end]).is_err(),
+                "prefix {end}"
+            );
+        }
+    }
+
+    #[test]
+    fn vtable_linking_resolves_targets_across_modules_and_rejects_conflicts() {
+        let left = vtable_module("left");
+        let right = vtable_module("right");
+        let targets = QziModule::from_chunks(
+            ["library.Counter.z", "library.Counter.a"]
+                .iter()
+                .map(|name| {
+                    let mut chunk = Chunk::new(*name);
+                    chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+                    chunk
+                })
+                .collect(),
+        );
+        let linked = link_qzi_modules(&[left.clone(), right.clone(), targets.clone()]).unwrap();
+        assert_eq!(
+            super::super::vtable::collect_vtable_layouts(&linked)
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut conflict = right;
+        let ConstPoolEntry::Vtable(layout) = &mut conflict.chunks[0].constants[0] else {
+            unreachable!()
+        };
+        layout.methods.reverse();
+        assert!(
+            link_qzi_modules(&[left, conflict, targets])
+                .unwrap_err()
+                .contains("conflicting QZI vtable layouts")
+        );
+    }
+
+    #[test]
+    fn vtable_namespace_rewriting_preserves_order_and_origin() {
+        let mut module = vtable_module("factory");
+        module.metadata.name = "library".into();
+        module.metadata.kind = QziModuleKind::Library;
+        module.ownership_abi_version = 12;
+        module.chunks.extend(
+            ["library.Counter.z", "library.Counter.a"]
+                .iter()
+                .map(|name| {
+                    let mut chunk = Chunk::new(*name);
+                    chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+                    chunk
+                }),
+        );
+        module.qualify_library_root_symbols();
+        module.alias_library_namespace("renamed");
+        let encoded = serialize_qzi_module(&module).unwrap();
+        let decoded = deserialize_qzi_module(&encoded).unwrap();
+        assert_eq!(decoded.ownership_abi_version, 12);
+        assert_eq!(decoded.chunks[0].name, "renamed.factory");
+        let ConstPoolEntry::Vtable(layout) = &decoded.chunks[0].constants[0] else {
+            unreachable!()
+        };
+        assert_eq!(layout.type_name, "renamed.Counter");
+        assert_eq!(layout.trait_name, "renamed.Readable");
+        assert_eq!(layout.methods, ["renamed.Counter.z", "renamed.Counter.a"]);
+        link_qzi_modules(&[decoded]).unwrap();
+        // A directly named implementation follows the exact root function map.
+        let mut root = vtable_module("method");
+        root.metadata.name = "library".into();
+        root.metadata.kind = QziModuleKind::Library;
+        let ConstPoolEntry::Vtable(layout) = &mut root.chunks[0].constants[0] else {
+            unreachable!()
+        };
+        layout.methods = vec!["method".into()];
+        root.qualify_library_root_symbols();
+        let ConstPoolEntry::Vtable(layout) = &root.chunks[0].constants[0] else {
+            unreachable!()
+        };
+        assert_eq!(layout.methods, ["library.method"]);
+        link_qzi_modules(&[root]).unwrap();
+    }
+
+    #[test]
+    fn legacy_vtable_addresses_decode_but_require_source_rebuild_when_linked() {
+        let mut module = vtable_module("main");
+        module.ownership_abi_version = 12;
+        module.chunks[0].constants[0] =
+            ConstPoolEntry::VtableAddr("Counter".into(), "Readable".into());
+        let mut encoded = serialize_qzi_module(&module).unwrap();
+        encoded[4] = 12;
+        let decoded = deserialize_qzi_module(&encoded).unwrap();
+        assert!(
+            link_qzi_modules(&[decoded])
+                .unwrap_err()
+                .contains("rebuild this artifact from source")
+        );
     }
 
     #[test]

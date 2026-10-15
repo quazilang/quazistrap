@@ -97,3 +97,12 @@ reserved scratch slot outside callee-owned shadow space and map API failure to
 `-1`. Linux integer and floating-point formatting is emitted
 inline and does not import `sprintf`; Windows keeps its target-specific native
 formatting path.
+
+## Dynamic vtables
+
+Source and QZI-only emission consume retained `VtableLayout` constants. Validate
+all target chunks and layout conflicts, then map exact Quazi method names to
+the actual native function-symbol table. Hex-encoded identity components avoid
+punctuation collisions; marker tables reserve one word. Table relocation errors
+propagate as BackendError. Historical layout-free addresses require a source
+rebuild. No ownership/effect proof follows from a retained table.

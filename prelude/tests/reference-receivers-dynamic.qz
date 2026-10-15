@@ -1,4 +1,4 @@
-// Source-native dispatch regression; QZI-only vtables still need retained layout metadata.
+// Source/QZI dispatch regression for concrete borrowed receiver slots.
 struct DynamicCounter { padding: i64, value: i32 }
 trait Readable { fn read_dyn(self: &Self) i32; }
 impl Readable for DynamicCounter {

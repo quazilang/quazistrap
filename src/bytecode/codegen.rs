@@ -1609,14 +1609,13 @@ impl<'a> Codegen<'a> {
 
             let fn_addr_refs: HashSet<&str> = chunks
                 .iter()
-                .flat_map(|c| c.constants.iter())
-                .filter_map(|e| {
-                    if let crate::bytecode::chunk::ConstPoolEntry::FnAddr(n) = e {
-                        Some(n.as_str())
-                    } else {
-                        None
-                    }
+                .flat_map(|chunk| &chunk.constants)
+                .flat_map(|constant| match constant {
+                    ConstPoolEntry::FnAddr(name) => std::slice::from_ref(name),
+                    ConstPoolEntry::Vtable(layout) => layout.methods.as_slice(),
+                    _ => &[],
                 })
+                .map(String::as_str)
                 .collect();
 
             // Dead idx set: inline candidate, no remaining CallIdx, no FnAddr ref.
@@ -7059,12 +7058,38 @@ impl<'a> FnCompiler<'a> {
         self.chunk.emit(ri16(Opcode::New, fat, 16));
         // fat[0] = concrete ptr
         self.chunk.emit(rrr(Opcode::FieldStore, obj_reg, fat, 0));
-        // fat[8] = vtable ptr (loaded via MovConst + VtableAddr)
+        // Retain exact implementation symbols in semantic slot order. Native
+        // emission must not reconstruct this layout from a source-only report.
+        let methods = self.trait_method_slots.get(trait_name).map(|slots| {
+            slots
+                .iter()
+                .map(|method| format!("{type_name}.{method}"))
+                .collect::<Vec<_>>()
+        });
+        let Some(methods) = methods else {
+            self.codegen_error
+                .get_or_insert_with(|| format!("missing vtable layout for trait `{trait_name}`"));
+            return fat;
+        };
+        if let Some(missing) = methods
+            .iter()
+            .find(|method| !self.fn_index.contains_key(*method))
+        {
+            self.codegen_error
+                .get_or_insert_with(|| format!("missing vtable implementation `{missing}`"));
+            return fat;
+        }
+        let layout = super::vtable::VtableLayout {
+            type_name: type_name.to_string(),
+            trait_name: trait_name.to_string(),
+            methods,
+        };
+        if let Err(error) = layout.validate() {
+            self.codegen_error.get_or_insert(error);
+            return fat;
+        }
         let vtbl_reg = self.alloc_reg();
-        let idx = self.chunk.add_constant(ConstPoolEntry::VtableAddr(
-            type_name.to_string(),
-            trait_name.to_string(),
-        ));
+        let idx = self.chunk.add_constant(ConstPoolEntry::Vtable(layout));
         self.chunk.emit(ri16(Opcode::MovConst, vtbl_reg, idx));
         self.chunk.emit(rrr(Opcode::FieldStore, vtbl_reg, fat, 8));
         fat
@@ -10525,6 +10550,66 @@ fn main() void { outer[Word](7); }
             chunks.iter().any(|chunk| chunk.name == "inner<u32>"),
             "transitive specialization must use the resolved concrete alias type"
         );
+    }
+
+    #[test]
+    fn dynamic_vtable_units_survive_disk_cache_and_reenter_optimization() {
+        let source = include_str!("../../prelude/tests/dynamic-vtable-layout.qz");
+        let root = std::env::temp_dir().join(format!(
+            "quazi-vtable-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let input = root.join("main.qz");
+        std::fs::write(&input, source).unwrap();
+        let path = input.to_string_lossy().into_owned();
+        let source_files = vec![SourceFile {
+            path: path.clone(),
+            module_name: None,
+            start: 0,
+            end: source.chars().count(),
+            line_start: 1,
+        }];
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let mut analyzer = Analyzer::new();
+        analyzer.set_source_files(source_files.clone());
+        let report = analyzer.analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        use sha2::Digest;
+        let hashes = HashMap::from([(path, sha2::Sha256::digest(source.as_bytes()).into())]);
+        let mut cold = Codegen::new(&report);
+        cold.set_incremental_codegen(Vec::new(), hashes.clone());
+        let chunks = cold.compile_program(&program, &source_files).unwrap();
+        let snapshot = cold.incremental_codegen_snapshot();
+        assert!(snapshot.iter().any(|unit| {
+            unit.chunk
+                .constants
+                .iter()
+                .any(|constant| matches!(constant, ConstPoolEntry::Vtable(_)))
+        }));
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.name == "PortableCounter.z_read"),
+            "inline candidate must remain addressable"
+        );
+        let qzi = crate::bytecode::serialize_qzi(&chunks).unwrap();
+        let cache = root.join("incremental.qzc");
+        crate::incremental::store(&cache, &[input], &hashes, &qzi, false, [9; 32], snapshot)
+            .unwrap();
+        assert!(crate::incremental::load(&cache).unwrap().is_some());
+        let restored = crate::incremental::load_codegen_units(&cache, [9; 32], &hashes).unwrap();
+        let mut warm = Codegen::new(&report);
+        warm.set_incremental_codegen(restored, hashes);
+        let warmed = warm.compile_program(&program, &source_files).unwrap();
+        assert_eq!(warmed, chunks);
+        assert!(warm.incremental_codegen_stats().restored > 0);
+        super::super::vtable::validate_vtable_targets(&warmed).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -1653,14 +1653,14 @@ impl<'a> FnEncoder<'a> {
                         lea_rip!(rax, sym);
                         emit!(asm.mov(slot(dst), rax));
                     }
-                    Some(ConstPoolEntry::VtableAddr(type_name, trait_name)) => {
-                        let sym = format!(
-                            "__vtable_{}_{}",
-                            safe_fn_label(type_name),
-                            safe_fn_label(trait_name)
-                        );
-                        lea_rip!(rax, sym);
+                    Some(ConstPoolEntry::Vtable(layout)) => {
+                        lea_rip!(rax, layout.symbol());
                         emit!(asm.mov(slot(dst), rax));
+                    }
+                    Some(ConstPoolEntry::VtableAddr(_, _)) => {
+                        return Err(BackendError(
+                            "vtable lacks retained method layout; rebuild this artifact from source with the current compiler".to_string(),
+                        ));
                     }
                     Some(ConstPoolEntry::ForeignGlobal(global)) => {
                         lea_rip!(rax, global.symbol.clone());

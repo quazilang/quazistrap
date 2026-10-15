@@ -110,6 +110,9 @@ impl Instruction {
                 }
                 ConstPoolEntry::FnAddr(name) => format!("\x1b[36m{name}\x1b[0m"),
                 ConstPoolEntry::VtableAddr(tn, tr) => format!("\x1b[35mvtable({tn}::{tr})\x1b[0m"),
+                ConstPoolEntry::Vtable(layout) => {
+                    format!("vtable({}::{})", layout.type_name, layout.trait_name)
+                }
                 ConstPoolEntry::ForeignSymbol(symbol) => {
                     format!("\x1b[35mforeign({})\x1b[0m", symbol.symbol)
                 }
@@ -367,6 +370,9 @@ impl Instruction {
                         ConstPoolEntry::Float(f) => format!(" \x1b[33m{f}\x1b[0m"),
                         ConstPoolEntry::FnAddr(name) => format!(" \x1b[36m{name}\x1b[0m"),
                         ConstPoolEntry::VtableAddr(tn, tr) => format!(" vtable({tn}::{tr})"),
+                        ConstPoolEntry::Vtable(layout) => {
+                            format!(" vtable({}::{})", layout.type_name, layout.trait_name)
+                        }
                         ConstPoolEntry::ForeignSymbol(symbol) => {
                             format!(" foreign({})", symbol.symbol)
                         }

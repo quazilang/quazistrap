@@ -83,10 +83,10 @@ Build dependency trees show logical import names such as `std.io` and
 Git's reported percentage as an accurate progress bar followed by the same green
 status diamond as build stages; failures use a red diamond.
 
-## QZI v12
+## QZI v13
 
 QZI is both the portable bytecode container and compiled-library format. It is
-not a package-manager archive. A v12 file contains:
+not a package-manager archive. A v13 file contains:
 
 1. package name, version, `executable`/`library` kind, and entry signature;
 2. a source-visible public interface;
@@ -105,14 +105,13 @@ V10 adds a canonical, content-bound ownership-artifact envelope covering the
 metadata, public interface, relocations, and bytecode. Its current state is
 explicitly unverified: it detects stale or malformed artifacts but does not yet
 prove D-014 effects or permit borrowed values through a QZI-only dependency.
-The current reader decodes supported v2-v11 files; link compatibility is checked
+The current reader decodes supported v2-v12 files; link compatibility is checked
 separately. V1
 requires a source rebuild because it omitted frame metadata, and legacy files
 with implicit `Lea` metadata, parameterized v6 trait interfaces, or v6 public
 runtime-`any` interfaces require rebuilding. Compilers must reject newer QZI
-generations rather than silently ignore unsupported semantics. QZC v12 invalidates older exact
-hits and reusable chunks so cached QZI cannot mix the previous raw receiver
-ABI with current slot references or bypass match-arm string-view provenance checks, indexed and concrete-generic dense-element read checks,
+generations rather than silently ignore unsupported semantics. QZC v13 invalidates older exact
+hits and reusable chunks so cached QZI cannot omit dynamic table layouts or bypass match-arm string-view provenance checks, indexed and concrete-generic dense-element read checks,
 or corrected ownership transfers.
 
 V12 uses one slot-reference convention for explicit borrowed receivers and
@@ -121,8 +120,12 @@ identical. Older ambiguous reference/aggregate interfaces, missing callable
 interfaces on parameterized libraries, and opaque outbound calls require a
 source rebuild. Proven closed scalar/raw-pointer/shared-string contracts retain
 compatibility. See [the receiver migration](migrations/reference-receiver-abi.md).
-QZI-only dynamic vtables still lack retained layout metadata; successful source
-native dispatch does not establish their portable round trip.
+V13 retains exact ordered implementation symbols for dynamic vtables. Source
+and QZI-only native builds share descriptor-driven emission; old layout-free
+table addresses require a source rebuild. Private trait implementations stay
+out of the public interface while their bytecode remains internal. See the
+[v13 migration](migrations/qzi-v13-vtables.md) and
+[developer contract](internals/dynamic-vtable-layout.md).
 
 V11 adds the original ownership ABI generation to content-bound metadata.
 Older allocating or ambiguous ownership contracts require a source rebuild;

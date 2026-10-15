@@ -5,6 +5,8 @@ Audience: language users maintaining existing Quazi code.
 Compatibility-sensitive changes will receive a migration page here before they
 are treated as stable.
 
+- [QZI v13 portable vtables](qzi-v13-vtables.md)
+- [Safe-reference receiver ABI](reference-receiver-abi.md)
 - [Migrating away from runtime `any`](runtime-any.md)
 - [Migrating shared-reference code](references.md)
 - [Migrating function values and closures](closures.md)

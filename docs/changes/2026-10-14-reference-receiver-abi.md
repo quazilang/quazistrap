@@ -125,10 +125,13 @@ or effect certification. Envelopes remain `Unverified`; structural destruction,
 parameter-derived aggregate retention, and D-015 element loans remain incomplete.
 Pointee replacement readback is tested, not complete replacement cleanup.
 
-QZI-only dynamic vtables still lack retained layout metadata. The dynamic source
-fixture emits QZI, but compiling that artifact fails to resolve
-`__vtable_DynamicCounter_Readable` because no source report is available. This is
-a confirmed remaining artifact requirement, not a passing portable dispatch
+At this checkpoint, QZI-only dynamic vtables lacked retained layout metadata.
+This artifact gap is resolved by the later
+[QZI v13 change](2026-10-15-portable-vtables.md). The original evidence follows.
+ The dynamic source
+fixture emitted QZI, but compiling that artifact failed to resolve
+`__vtable_DynamicCounter_Readable` because no source report is available. This was
+a confirmed artifact requirement rather than a passing portable dispatch
 test. Dynamic cleanup and source unused-method warning precision remain open.
 
 Additional investigation found existing source-analysis gaps for a generic alias

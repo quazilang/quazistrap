@@ -81,3 +81,12 @@ vtables from a source SemanticReport. A standalone QZI round trip cannot supply
 that report. This remains required artifact work; portable dynamic dispatch is
 not established by the static receiver QZI fixture. Dynamic cleanup, accurate
 source reachability warnings, and D-014 effect proof remain separate work.
+
+## Follow-up (2026-10-15)
+
+QZI v13 resolves the retained-layout gap above. Ordered table descriptors now
+survive serialization, linking, namespace aliases, optimization and QZC units;
+native source and QZI builds use the same descriptors. The original dynamic
+fixture now executes through QZI and emits Windows COFF without a source report.
+See [the change and verification record](../changes/2026-10-15-portable-vtables.md).
+Ownership effects and dynamic cleanup remain open.

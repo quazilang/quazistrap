@@ -3,10 +3,11 @@
 // SPDX-License-Identifier: 0BSD
 
 use object::write::{Object, Relocation, SectionId, StandardSection};
-use object::{BinaryFormat, RelocationEncoding, RelocationFlags, RelocationKind};
+use object::{RelocationEncoding, RelocationFlags, RelocationKind};
 
 use crate::bytecode::{Chunk, ConstPoolEntry, Opcode};
-use crate::semantic::SemanticReport;
+use crate::backend::BackendError;
+use crate::bytecode::vtable::VtableLayout;
 
 use super::symbols::SymbolTable;
 
@@ -215,80 +216,50 @@ impl SectionAccumulator {
             .collect()
     }
 
-    /// Emit vtable arrays in .rodata only for (type, trait) pairs referenced by compiled chunks.
+    /// Emit each validated target-neutral table once, using actual native
+    /// function symbols (including unmangled/export/intrinsic spellings).
     pub fn build_vtables(
         &self,
         obj: &mut Object<'_>,
         sym_table: &mut SymbolTable,
-        report: &SemanticReport,
-        fn_names: &[String],
-        used_vtables: &std::collections::HashSet<(String, String)>,
-    ) {
-        let fmt = obj.format();
-        for (type_name, trait_names) in &report.trait_impls {
-            for trait_name in trait_names {
-                if !used_vtables.contains(&(type_name.clone(), trait_name.clone())) {
-                    continue;
-                }
-                let Some(slots) = report.trait_method_slots.get(trait_name.as_str()) else {
-                    continue;
-                };
-                let n = slots.len();
-                if n == 0 {
-                    continue;
-                }
-                let zeros = vec![0u8; n * 8];
-                let vtbl_sym = format!(
-                    "__vtable_{}_{}",
-                    safe_label(type_name),
-                    safe_label(trait_name)
-                );
-                let base_offset = obj.append_section_data(self.rodata_id, &zeros, 8);
-                let vtbl_id = sym_table.define_data(
-                    obj,
+        layouts: &[VtableLayout],
+        function_symbols: &std::collections::HashMap<&str, &str>,
+    ) -> Result<(), BackendError> {
+        for layout in layouts {
+            let symbol = layout.symbol();
+            if sym_table.get_defined(&symbol).is_some() {
+                return Err(BackendError(format!(
+                    "native vtable symbol collision `{symbol}`"
+                )));
+            }
+            // A marker trait still needs an addressable table symbol.
+            let size = layout.methods.len().max(1) * 8;
+            let offset = obj.append_section_data(self.rodata_id, &vec![0; size], 8);
+            sym_table.define_data(obj, self.rodata_id, &symbol, offset, size as u64);
+            for (slot, method) in layout.methods.iter().enumerate() {
+                let native = function_symbols.get(method.as_str()).ok_or_else(|| {
+                    BackendError(format!("missing native vtable target `{method}`"))
+                })?;
+                let target = sym_table.get_defined(native).ok_or_else(|| {
+                    BackendError(format!("undefined native vtable target `{native}`"))
+                })?;
+                obj.add_relocation(
                     self.rodata_id,
-                    &vtbl_sym,
-                    base_offset,
-                    (n * 8) as u64,
-                );
-                let _ = vtbl_id;
-                for (slot, method) in slots.iter().enumerate() {
-                    let impl_fn = format!("{}.{}", type_name, method);
-                    // Resolve to the safe-label name used in fn_names, falling back to safe_label.
-                    let fn_sym = fn_names
-                        .iter()
-                        .find(|s| s.as_str() == safe_label(&impl_fn) || s.as_str() == impl_fn)
-                        .cloned()
-                        .unwrap_or_else(|| safe_label(&impl_fn));
-                    let sym_id = sym_table
-                        .get_defined(&fn_sym)
-                        .unwrap_or_else(|| sym_table.get_or_add_undef(obj, &fn_sym));
-                    let abs_flags = if fmt == BinaryFormat::Coff {
-                        RelocationFlags::Generic {
+                    Relocation {
+                        offset: offset + slot as u64 * 8,
+                        symbol: target,
+                        addend: 0,
+                        flags: RelocationFlags::Generic {
                             kind: RelocationKind::Absolute,
                             encoding: RelocationEncoding::Generic,
                             size: 64,
-                        }
-                    } else {
-                        RelocationFlags::Generic {
-                            kind: RelocationKind::Absolute,
-                            encoding: RelocationEncoding::Generic,
-                            size: 64,
-                        }
-                    };
-                    obj.add_relocation(
-                        self.rodata_id,
-                        Relocation {
-                            offset: base_offset + (slot as u64) * 8,
-                            symbol: sym_id,
-                            addend: 0,
-                            flags: abs_flags,
                         },
-                    )
-                    .ok();
-                }
+                    },
+                )
+                .map_err(|error| BackendError(format!("cannot emit vtable relocation: {error}")))?;
             }
         }
+        Ok(())
     }
 
     /// Write accumulated .text bytes into the object and return the text section offset.

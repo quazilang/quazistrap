@@ -242,22 +242,13 @@ fn emit_native_object(
 
     section_acc.write_text(&mut obj, &text_bytes);
 
-    // Collect VtableAddr refs from all chunks; only emit vtables actually used.
-    let used_vtables: std::collections::HashSet<(String, String)> = chunks
+    let layouts = crate::bytecode::vtable::validate_vtable_targets(chunks).map_err(BackendError)?;
+    let function_symbols = chunks
         .iter()
-        .flat_map(|c| c.constants.iter())
-        .filter_map(|e| {
-            if let crate::bytecode::chunk::ConstPoolEntry::VtableAddr(tn, tr) = e {
-                Some((tn.clone(), tr.clone()))
-            } else {
-                None
-            }
-        })
+        .zip(&fn_names)
+        .map(|(chunk, native)| (chunk.name.as_str(), native.as_str()))
         .collect();
-
-    if let Some(rep) = report {
-        section_acc.build_vtables(&mut obj, &mut sym_table, rep, &fn_names, &used_vtables);
-    }
+    section_acc.build_vtables(&mut obj, &mut sym_table, &layouts, &function_symbols)?;
 
     let bin_fmt = target.binary_format();
 
@@ -343,6 +334,74 @@ mod tests {
         main.emit(ri16(Opcode::MovI, 0, 0));
         main.emit(rrr(Opcode::Ret, 0, 0, 0));
         main
+    }
+
+    #[test]
+    fn portable_vtables_resolve_actual_native_names_without_source_report() {
+        use crate::bytecode::ConstPoolEntry;
+        use crate::bytecode::vtable::VtableLayout;
+        let layout = VtableLayout {
+            type_name: "T".into(),
+            trait_name: "R".into(),
+            methods: vec!["pkg.read".into()],
+        };
+        let marker = VtableLayout {
+            type_name: "T".into(),
+            trait_name: "Marker".into(),
+            methods: vec![],
+        };
+        let mut main = returning_main();
+        main.constants = vec![
+            ConstPoolEntry::Vtable(layout.clone()),
+            ConstPoolEntry::Vtable(marker.clone()),
+        ];
+        let mut method = returning_main();
+        method.name = "pkg.read".into();
+        method.native_unmangled = true;
+        for target in [
+            TargetSpec::x86_64_linux().without_start(),
+            TargetSpec::x86_64_windows().without_start(),
+        ] {
+            let chunks = [main.clone(), method.clone()];
+            let output = match target.os {
+                Os::Linux => ElfBackend.compile(&chunks, &target, None, false),
+                Os::Windows => PeBackend.compile(&chunks, &target, None, false),
+                _ => unreachable!(),
+            }
+            .unwrap();
+            let object = object::File::parse(output.bytes.as_slice()).unwrap();
+            for expected in [layout.symbol(), marker.symbol()] {
+                let symbol = object
+                    .symbols()
+                    .find(|symbol| symbol.name() == Ok(expected.as_str()))
+                    .unwrap();
+                assert!(!symbol.is_undefined());
+                assert_eq!(symbol.size(), if target.os == Os::Linux { 8 } else { 0 });
+            }
+            assert!(
+                object
+                    .symbols()
+                    .any(|symbol| symbol.name() == Ok("read") && !symbol.is_undefined())
+            );
+            assert!(
+                !object
+                    .symbols()
+                    .any(|symbol| symbol.name() == Ok("pkg_read"))
+            );
+            use object::ObjectSection;
+            assert!(
+                object
+                    .sections()
+                    .flat_map(|section| section.relocations())
+                    .any(|(_, relocation)| {
+                        if let object::RelocationTarget::Symbol(index) = relocation.target() {
+                            object.symbol_by_index(index).unwrap().name() == Ok("read")
+                        } else {
+                            false
+                        }
+                    })
+            );
+        }
     }
 
     #[test]
