@@ -47,6 +47,9 @@ pub(super) fn specialization_types_are_bounded(types: &[TypeKind]) -> bool {
 #[derive(Debug, Clone)]
 pub(super) struct SourceOwnershipCall {
     pub(super) span: Span,
+    /// Resolved declaration even when generic arguments are not yet complete.
+    /// Never proves that this edge is concrete or ownership-closed.
+    pub(super) declaration: Option<String>,
     pub(super) target: Option<(String, Vec<TypeKind>)>,
 }
 
@@ -150,15 +153,36 @@ impl Analyzer {
             return;
         }
         let calls = self.ownership_call_sites.entry(caller.clone()).or_default();
+        let declaration = target.map(|(name, _)| name.to_string());
         let target = target.map(|(name, args)| (name.to_string(), args.to_vec()));
         if let Some(site) = calls.get_mut(&(span.start, span.end)) {
             // Named-argument checking may visit a site twice. Preserve its
             // resolved identity when a later visit starts conservatively.
             if target.is_some() {
+                site.declaration = declaration;
                 site.target = target;
             }
         } else {
-            calls.insert((span.start, span.end), SourceOwnershipCall { span, target });
+            calls.insert(
+                (span.start, span.end),
+                SourceOwnershipCall {
+                    span,
+                    declaration,
+                    target,
+                },
+            );
+        }
+    }
+
+    pub(super) fn record_source_call_declaration(&mut self, span: Span, declaration: &str) {
+        self.record_ownership_call_site(span, None);
+        if let Some(site) = self
+            .current_function
+            .last()
+            .and_then(|caller| self.ownership_call_sites.get_mut(caller))
+            .and_then(|sites| sites.get_mut(&(span.start, span.end)))
+        {
+            site.declaration = Some(declaration.to_string());
         }
     }
 

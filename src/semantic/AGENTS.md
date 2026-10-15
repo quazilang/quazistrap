@@ -160,10 +160,14 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
   scrutinee, including untyped qualified enum temporaries. Borrowed parameters
   retain parameter-slot provenance; exclusive capability transfers rebase the
   active capability root, and a derived view freezes that root until scope exit.
-  Parameter-derived aggregate retention remains an unverified existing boundary:
-  synchronous aggregate use and escaping storage require D-014 composed effects
-  to distinguish them. These local facts are neither exact result-effect
-  summaries nor QZI certificates.
+  `retention.rs` now composes conservative source parameter-slot dependencies
+  through aggregate results before lexical checking. Retained roots extend
+  binding loans and reject local-owner/outward escapes; unused arguments and
+  static/fresh results remain distinct. Intrinsic allocation facts use declared
+  intrinsic identities, never API or type names. Destructible by-value storage
+  remains a local projection root. These are conservative source facts, not
+  exact projection effects, escape certificates, or verified QZI summaries;
+  D-014 and D-015 remain incomplete.
 - Quazi `fn` values are affine owners. Passing, returning, and assignment move
   them; calls borrow them; self-assignment is rejected. Until recursive cleanup
   and capture ownership are implemented, do not permit `fn` inside aggregates

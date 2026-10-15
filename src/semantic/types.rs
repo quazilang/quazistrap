@@ -589,6 +589,9 @@ pub struct SemanticReport {
     /// Concrete source call graph, closed independently of bytecode mangling.
     /// Never grants a QZI ownership certificate or changes lexical loan rules.
     pub ownership_call_graph: Vec<OwnershipCallable>,
+    /// Conservative source result parameter dependencies, in declaration slot order.
+    /// These are lexical provenance facts, never artifact effect certificates.
+    pub source_result_retention: std::collections::BTreeMap<String, std::collections::BTreeSet<usize>>,
     /// Actual enclosing impl binders, in receiver type-argument order.
     pub impl_generic_params: HashMap<String, Vec<String>>,
     /// Validated generic dense-container storage contracts, keyed by the

@@ -2,6 +2,64 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-15, source aggregate result retention)
+
+`semantic/retention.rs` derives source result parameter dependencies before
+lexical borrow checking. Returned structs, nested/generic wrappers, enums,
+arrays, forwarding calls, and outward assignments retain caller roots instead
+of losing them at helper boundaries. Actual return dependencies compose through
+recursive source calls, with named/variadic slots and legacy receivers handled
+in declaration order. Static-only results and unused argument owners remain
+independent. Source facts are exposed in SemanticReport::source_result_retention.
+
+The evaluator conservatively models lexical assignments, branches, loops,
+closure captures, pointer lineage and possible writes. Callee capabilities use
+callee generic binders. Body-overriding intrinsic/foreign attributes cannot
+prove source independence; the compiler's declared quazi.str_concat allocation
+semantics preserve owned copies. Declaration-only call identity is retained
+separately from complete generic targets; unresolved concrete graph edges stay
+opaque. A span index avoids repeated whole-program annotation scans and is
+cleared on reset/cancellation.
+
+Lexical checking extends aggregate loans, preserves untyped qualified enum
+payload roots, distinguishes moved enum payload ownership from borrowed storage,
+and retains the existing narrow structural receiver-field transfer. Opaque
+aggregate results containing views require source result facts. Own destructible
+storage remains a local root for by-value parameter projections. No API-name or
+String type-name special case was introduced.
+
+QZC14 invalidates old exact hits and reusable units. QZI stays13, ownership
+artifacts stay Unverified, and source result dependencies are not certificates.
+This remains conservative parameter-slot flow: exact projection/effect/escape
+facts, concrete control-flow analysis, indirect targets, destruction effects,
+and artifact-body verification remain D-014 work. D-015 and full Headers/HTTP/JSON
+migration remain open; do not enable borrowed element access from these facts.
+See docs/internals/source-result-retention.md and
+docs/changes/2026-10-15-result-retention.md.
+
+Verification: pinned Rust with RUSTFLAGS='-C link-arg=-fuse-ld=bfd', full
+`cargo test --offline -q` passes 790/790, focused result-retention 16/16.
+`python3 scripts/check_result_retention.py target/debug/qz` covers 10 source
+rejections during checking/building/QZI emission and 6 valid cases with source
+and QZI native execution plus QZI->Windows COFF. Initial 8 cases were accepted
+and crashed before the fix; the regression runner never executes rejected cases.
+The old baseline evidence is /tmp/quazi-d014-review/cases/results.json;
+full logs /tmp/quazi-retention-full-final.log and
+/tmp/quazi-retention-integration-final.log. Build and clippy pass with existing
+warnings. Dynamic-vtable/cache integration still passes, and the isolated STD
+receiver script passes 10 tests, 3 rejection cases, QZI execution and Windows COFF
+emission (/tmp/quazi-retention-std-net-final.log). Its first invocation used a
+relative compiler path through the STD symlink and failed before launching qz;
+the corrected absolute-path invocation passed. No full STD success is claimed.
+Independent review findings about
+legacy slots, generic aliases, overridden bodies, and ownership transfers were
+reconciled with focused regressions. Graphify query and code AST update used;
+its graph does not index Quazi source semantics or certify ownership.
+
+The broader local workspace goal stays active. Preserve user STD CLI work,
+compiler .codex/ and example35 build output, and JetBrains .gradle/. No push,
+publication, PR, website, or unrelated repository changes are authorized.
+
 ## Checkpoint (2026-10-15, portable dynamic vtables)
 
 Resolved the QZI-only dynamic layout gap from the preceding checkpoint.

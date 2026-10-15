@@ -37,6 +37,7 @@ enum ViewOrigin {
         reference_root: Option<OwnerRoot>,
     },
     Temporary,
+    UnverifiedCall,
 }
 
 /// Stable across branch clones; lexical spelling/depth alone can identify a
@@ -60,7 +61,7 @@ impl ViewOrigin {
         match self {
             Self::Owner(root) => Some(root),
             Self::Parameter { reference_root, .. } => reference_root.as_ref(),
-            Self::Temporary => None,
+            Self::Temporary | Self::UnverifiedCall => None,
         }
     }
 }
@@ -462,13 +463,116 @@ impl Analyzer {
         }
     }
 
-    fn bc_parameter_contains_views(&self, ty: &TypeKind) -> bool {
-        match self.resolve_type_aliases(ty) {
-            TypeKind::Array { elem_ty, .. } | TypeKind::Slice { elem_ty } => {
-                self.bc_parameter_contains_views(&elem_ty.node)
+    /// Structural may-contain query: uncertainty retains provenance rather than
+    /// proving that a generic, recursive, or unresolved value owns all its data.
+    pub(super) fn retention_type_may_contain_views(&self, ty: &TypeKind) -> bool {
+        fn visit(
+            analyzer: &Analyzer,
+            ty: &TypeKind,
+            active: &mut HashSet<String>,
+            fuel: &mut usize,
+        ) -> bool {
+            if *fuel == 0 || active.len() >= 64 {
+                return true;
             }
-            resolved => self.bc_is_string_view(&resolved),
+            *fuel -= 1;
+            let resolved = analyzer.resolve_type_aliases(ty);
+            match &resolved {
+                TypeKind::Str
+                | TypeKind::Ref { .. }
+                | TypeKind::MutRef { .. }
+                | TypeKind::Dyn { .. }
+                | TypeKind::Error
+                | TypeKind::Any => true,
+                TypeKind::Array { elem_ty, .. }
+                | TypeKind::Slice { elem_ty }
+                | TypeKind::FlexibleArray { elem_ty } => {
+                    visit(analyzer, &elem_ty.node, active, fuel)
+                }
+                TypeKind::Named { name, type_args } => {
+                    if type_args
+                        .iter()
+                        .any(|arg| visit(analyzer, &arg.node, active, fuel))
+                    {
+                        return true;
+                    }
+                    if !active.insert(name.clone()) {
+                        return true;
+                    }
+                    let parameters = analyzer
+                        .struct_generic_params
+                        .get(name)
+                        .cloned()
+                        .or_else(|| {
+                            analyzer
+                                .scopes
+                                .first()?
+                                .get(name)
+                                .map(|symbol| symbol.generic_params.clone())
+                        })
+                        .unwrap_or_default();
+                    let substitution = parameters
+                        .into_iter()
+                        .zip(type_args.iter().map(|arg| arg.node.clone()))
+                        .collect();
+                    let fields: Option<Vec<&TypeKind>> = analyzer
+                        .struct_defs
+                        .get(name)
+                        .map(|fields| fields.iter().map(|(_, ty)| ty).collect())
+                        .or_else(|| {
+                            analyzer
+                                .enums
+                                .get(name)
+                                .map(|info| info.variant_fields.values().flatten().collect())
+                        });
+                    let result = fields.is_none_or(|fields| {
+                        fields.into_iter().any(|field| {
+                            crate::type_resolution::resolve_type(
+                                field,
+                                &analyzer.type_aliases,
+                                &substitution,
+                                &HashSet::new(),
+                                |_| None,
+                            )
+                            .map_or(true, |field| visit(analyzer, &field, active, fuel))
+                        })
+                    });
+                    active.remove(name);
+                    result
+                }
+                _ => false,
+            }
         }
+        visit(self, ty, &mut HashSet::new(), &mut 4096)
+    }
+
+    fn bc_parameter_contains_views(&self, ty: &TypeKind) -> bool {
+        self.retention_type_may_contain_views(ty)
+    }
+
+    fn bc_is_view_value(&self, ty: &TypeKind) -> bool {
+        self.bc_is_string_view(ty)
+            || match self.resolve_type_aliases(ty) {
+                // Template T is not an aggregate place. Its result dependency is
+                // retained symbolically by retention.rs and checked at concrete
+                // call sites; existing generic element-read gates still apply.
+                TypeKind::Named {
+                    ref name,
+                    ref type_args,
+                } if type_args.is_empty()
+                    && self
+                        .current_generic_params
+                        .iter()
+                        .flatten()
+                        .any(|parameter| parameter == name) =>
+                {
+                    false
+                }
+                TypeKind::Named { .. } | TypeKind::Array { .. } | TypeKind::Slice { .. } => {
+                    self.retention_type_may_contain_views(ty)
+                }
+                _ => false,
+            }
     }
 
     fn bc_declare_parameter(&mut self, parameter: &Param, slot: usize, env: &mut MoveEnv) {
@@ -496,12 +600,60 @@ impl Analyzer {
     }
 
     fn bc_view_origins(&self, expr: &Expr, env: &MoveEnv) -> BTreeSet<ViewOrigin> {
+        if self
+            .bc_resolved_call_name(expr)
+            .is_some_and(|name| self.fresh_result_intrinsics.contains(name))
+        {
+            return BTreeSet::new();
+        }
+        // Qualified enum constructors may intentionally lack an expression
+        // type annotation. Their payload roots still cross this boundary.
+        if let ExprKind::MethodCall {
+            object,
+            method,
+            args,
+            named_args,
+            ..
+        } = &expr.node
+            && matches!(&object.node, ExprKind::Ident(name)
+                if self.enums.get(name).is_some_and(|info| info.variants.contains_key(method)))
+            && self.bc_resolved_call_name(expr).is_none()
+        {
+            return args
+                .iter()
+                .chain(named_args.iter().map(|(_, value)| value))
+                .flat_map(|value| self.bc_borrowed_argument_origins(value, env))
+                .collect();
+        }
+        if let ExprKind::Group(inner) = &expr.node {
+            return self.bc_view_origins(inner, env);
+        }
         if !self
             .bc_annotated_type(expr)
             .as_ref()
-            .is_some_and(|ty| self.bc_is_string_view(ty))
+            .is_some_and(|ty| self.bc_is_view_value(ty))
         {
             return BTreeSet::new();
+        }
+        if let Some(slots) = self.retention_call_slots(expr)
+            && let Some(name) = self.retention_call_name(expr)
+            && let Some(retained) = self.result_retention.get(name)
+        {
+            let mut roots = BTreeSet::new();
+            for slot in retained {
+                if let Some(arguments) = slots.get(*slot) {
+                    for argument in arguments {
+                        roots.extend(self.bc_borrowed_argument_origins(argument, env));
+                        if let ExprKind::MethodCall { object, .. } = &expr.node
+                            && std::ptr::eq(*argument, object.as_ref())
+                            && !self.bc_has_consuming_receiver(expr)
+                        {
+                            roots.extend(self.bc_owner_origins(argument, env));
+                        }
+                    }
+                }
+            }
+            return roots;
         }
         match &expr.node {
             ExprKind::Ident(name) => env
@@ -528,14 +680,44 @@ impl Analyzer {
                 for argument in args.iter().chain(named_args.iter().map(|(_, arg)| arg)) {
                     roots.extend(self.bc_borrowed_argument_origins(argument, env));
                 }
+                if self
+                    .bc_annotated_type(expr)
+                    .is_some_and(|ty| !self.bc_is_string_view(&ty))
+                {
+                    roots.insert(ViewOrigin::UnverifiedCall);
+                }
                 roots
             }
             ExprKind::Call {
-                args, named_args, ..
-            } => args
+                callee,
+                args,
+                named_args,
+                ..
+            } => {
+                let mut roots: BTreeSet<_> = args
+                    .iter()
+                    .chain(named_args.iter().map(|(_, arg)| arg))
+                    .flat_map(|argument| self.bc_borrowed_argument_origins(argument, env))
+                    .collect();
+                let constructor = matches!(&callee.node, ExprKind::Ident(variant)
+                    if self.bc_is_enum_constructor(expr, variant));
+                if !constructor
+                    && self
+                        .bc_annotated_type(expr)
+                        .is_some_and(|ty| !self.bc_is_string_view(&ty))
+                {
+                    // A missing source summary never proves an aggregate's roots.
+                    roots.insert(ViewOrigin::UnverifiedCall);
+                }
+                roots
+            }
+            ExprKind::StructInit { fields, .. } => fields
                 .iter()
-                .chain(named_args.iter().map(|(_, arg)| arg))
-                .flat_map(|argument| self.bc_borrowed_argument_origins(argument, env))
+                .flat_map(|(_, value)| self.bc_borrowed_argument_origins(value, env))
+                .collect(),
+            ExprKind::ArrayLit(elements) => elements
+                .iter()
+                .flat_map(|value| self.bc_borrowed_argument_origins(value, env))
                 .collect(),
             ExprKind::Assign { value, .. } => self.bc_view_origins(value, env),
             ExprKind::Match { scrutinee, arms } => arms
@@ -555,17 +737,47 @@ impl Analyzer {
         arm_env.enter_scope();
         let origins = self.bc_owner_origins(scrutinee, env);
         for (ordinal, name) in pattern_all_bindings(&arm.pattern).into_iter().enumerate() {
-            arm_env.declare(name.clone(), Some(TypeKind::Error), arm.expr.span, ordinal);
-            arm_env.set_view_origins(&name, origins.clone());
+            let ty = self
+                .annotated_exprs
+                .iter()
+                .rev()
+                .find_map(|annotation| {
+                    annotation
+                        .resolved_binding
+                        .as_ref()
+                        .filter(|binding| {
+                            binding.name == name
+                                && binding.span == arm.pattern.span
+                                && matches!(binding.kind, SymbolKind::Variable { .. })
+                        })
+                        .and(annotation.ty.clone())
+                })
+                .unwrap_or(TypeKind::Error);
+            // Matching transfers an owned payload into this binding. Its own
+            // storage is now rooted here, while embedded external loans remain
+            // those of the scrutinee. Borrowed payloads still retain the
+            // scrutinee's storage when no ownership transfer is established.
+            let transferred = self.bc_is_move_type(&ty)
+                && self.bc_contains_owned_storage(&ty, &mut HashSet::new(), &mut 4096);
+            let binding_origins = if transferred {
+                self.bc_view_origins(scrutinee, env)
+            } else {
+                origins.clone()
+            };
+            arm_env.declare(name.clone(), Some(ty), arm.pattern.span, ordinal);
+            arm_env.set_view_origins(&name, binding_origins);
         }
         arm_env
     }
 
     fn bc_borrowed_argument_origins(&self, expr: &Expr, env: &MoveEnv) -> BTreeSet<ViewOrigin> {
+        if self.bc_annotated_type(expr).is_none() {
+            return self.bc_view_origins(expr, env);
+        }
         if self
             .bc_annotated_type(expr)
             .as_ref()
-            .is_some_and(|ty| self.bc_is_string_view(ty))
+            .is_some_and(|ty| self.bc_is_view_value(ty))
         {
             return self.bc_view_origins(expr, env);
         }
@@ -580,6 +792,81 @@ impl Analyzer {
         BTreeSet::new()
     }
 
+    // Borrowed fields and storage released by a consuming hook are distinct.
+    // A projection from a by-value parameter with owned storage must not gain
+    // the lifetime of the caller's external view parameters.
+    fn bc_contains_owned_storage(
+        &self,
+        ty: &TypeKind,
+        visiting: &mut HashSet<String>,
+        fuel: &mut usize,
+    ) -> bool {
+        if *fuel == 0 || visiting.len() >= 64 {
+            return true;
+        }
+        *fuel -= 1;
+        match self.resolve_type_aliases(ty) {
+            TypeKind::Named { name, type_args } => {
+                if self
+                    .consuming_receiver_methods
+                    .contains(&format!("{name}.free"))
+                {
+                    return true;
+                }
+                if !visiting.insert(name.clone()) {
+                    return true;
+                }
+                let parameters = self
+                    .struct_generic_params
+                    .get(&name)
+                    .cloned()
+                    .or_else(|| {
+                        self.scopes
+                            .first()?
+                            .get(&name)
+                            .map(|symbol| symbol.generic_params.clone())
+                    })
+                    .unwrap_or_default();
+                let substitutions = parameters
+                    .into_iter()
+                    .zip(type_args.iter().map(|argument| argument.node.clone()))
+                    .collect();
+                let fields = self
+                    .struct_defs
+                    .get(&name)
+                    .map(|fields| fields.iter().map(|(_, ty)| ty).collect::<Vec<_>>())
+                    .or_else(|| {
+                        self.enums
+                            .get(&name)
+                            .map(|info| info.variant_fields.values().flatten().collect())
+                    });
+                let result = type_args
+                    .iter()
+                    .any(|arg| self.bc_contains_owned_storage(&arg.node, visiting, fuel))
+                    || fields.is_some_and(|fields| {
+                        fields.into_iter().any(|field| {
+                            crate::type_resolution::resolve_type(
+                                field,
+                                &self.type_aliases,
+                                &substitutions,
+                                &HashSet::new(),
+                                |_| None,
+                            )
+                            .map_or(true, |field| {
+                                self.bc_contains_owned_storage(&field, visiting, fuel)
+                            })
+                        })
+                    });
+                visiting.remove(&name);
+                result
+            }
+            TypeKind::Array { elem_ty, .. } | TypeKind::Slice { elem_ty } => {
+                self.bc_contains_owned_storage(&elem_ty.node, visiting, fuel)
+            }
+            _ => false,
+        }
+    }
+
     fn bc_owner_origins(&self, expr: &Expr, env: &MoveEnv) -> BTreeSet<ViewOrigin> {
         match &expr.node {
             ExprKind::Group(inner)
@@ -591,7 +878,15 @@ impl Analyzer {
             ExprKind::Ident(name) => {
                 if let Some(var) = env.lookup(name) {
                     if !var.view_origins.is_empty() {
-                        return var.view_origins.clone();
+                        let mut roots = var.view_origins.clone();
+                        if var.ty.as_ref().is_some_and(|ty| {
+                            self.bc_contains_owned_storage(ty, &mut HashSet::new(), &mut 4096)
+                        }) {
+                            roots.insert(ViewOrigin::Owner(
+                                env.owner_root(name).expect("binding exists"),
+                            ));
+                        }
+                        return roots;
                     }
                     if var.ty.as_ref().is_some_and(|ty| {
                         let resolved = self.resolve_type_aliases(ty);
@@ -611,14 +906,32 @@ impl Analyzer {
             // Qualified enum constructors can still lack a result annotation.
             // Their payload storage is nevertheless a temporary owner; do not
             // let that inference gap erase a match binding's storage origin.
-            ExprKind::MethodCall { object, method, .. }
-                if matches!(&object.node, ExprKind::Ident(name)
+            ExprKind::MethodCall {
+                object,
+                method,
+                args,
+                named_args,
+                ..
+            } if matches!(&object.node, ExprKind::Ident(name)
                     if self.enums.get(name).is_some_and(|info| info.variants.contains_key(method)))
-                    && self.bc_resolved_call_name(expr).is_none() =>
+                && self.bc_resolved_call_name(expr).is_none() =>
             {
-                return BTreeSet::from([ViewOrigin::Temporary]);
+                let roots: BTreeSet<_> = args
+                    .iter()
+                    .chain(named_args.iter().map(|(_, value)| value))
+                    .flat_map(|value| self.bc_borrowed_argument_origins(value, env))
+                    .collect();
+                return if roots.is_empty() {
+                    BTreeSet::from([ViewOrigin::Temporary])
+                } else {
+                    roots
+                };
             }
             _ => {}
+        }
+        let retained = self.bc_view_origins(expr, env);
+        if !retained.is_empty() {
+            return retained;
         }
         match self
             .bc_annotated_type(expr)
@@ -652,7 +965,7 @@ impl Analyzer {
         let is_view = self
             .bc_annotated_type(value)
             .as_ref()
-            .is_some_and(|ty| self.bc_is_string_view(ty));
+            .is_some_and(|ty| self.bc_is_view_value(ty));
         if is_view {
             self.bc_view_origins(value, env)
         } else {
@@ -667,12 +980,24 @@ impl Analyzer {
         roots: BTreeSet<ViewOrigin>,
         env: &mut MoveEnv,
     ) {
+        let binding_type = env.lookup(name).and_then(|variable| variable.ty.as_ref());
+        let is_reference = binding_type.is_some_and(|ty| {
+            matches!(
+                self.resolve_type_aliases(ty),
+                TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+            )
+        });
         let is_view = self
             .bc_annotated_type(value)
             .as_ref()
-            .is_some_and(|ty| self.bc_is_string_view(ty));
+            .or(binding_type)
+            .is_some_and(|ty| self.bc_is_view_value(ty))
+            || (!roots.is_empty() && !is_reference);
         let binding_depth = env.binding_depth(name).expect("view binding declared");
         for origin in roots.iter().filter(|_| is_view) {
+            if matches!(origin, ViewOrigin::UnverifiedCall) {
+                self.push_error(value.span, "S10", "cannot store an aggregate containing string views without source result-retention facts; rebuild the dependency from source before using this result".to_string());
+            }
             if matches!(origin, ViewOrigin::Temporary) {
                 self.push_error(value.span, "S10", "cannot store a string view borrowed from a temporary owner; keep the owner in a local binding".to_string());
             }
@@ -747,10 +1072,10 @@ impl Analyzer {
     }
 
     fn bc_reject_view_escape(&mut self, value: &Expr, env: &MoveEnv, destination: &str) {
-        // Parameter-derived aggregate retention is the existing, unverified
-        // boundary. Rejecting every such constructor also rejects call-local
-        // values (including PanicInfo); proving retention requires composed
-        // D-014 effects and aggregate provenance, not a constructor-wide ban.
+        // Parameter slots remain symbolic in source helpers. Their callers
+        // instantiate retained slots with actual roots and extend lexical loans.
+        // Local/temporary/unverified roots cannot escape through this boundary.
+        // This is conservative result flow, not a D-014 escape certificate.
         if self
             .bc_view_origins(value, env)
             .iter()
@@ -806,13 +1131,18 @@ impl Analyzer {
                 self.bc_bind_view_origins(name, value, origins, env);
             }
             StmtKind::Return(Some(expr)) => {
-                self.bc_reject_view_escape(expr, env, "return");
+                // The narrow structural field-transfer rule moves ownership of
+                // this field; its storage is not a borrowed return projection.
+                let transfers_field = self.bc_can_return_receiver_field(expr, env);
+                if !transfers_field {
+                    self.bc_reject_view_escape(expr, env, "return");
+                }
                 // Return exits the function; moves here don't affect post-return code.
                 // Use a cloned env with loop_depth=0 to suppress the "move in loop" error
                 // (the loop never runs again after a return) and don't apply back.
                 let mut ret_env = env.clone();
                 ret_env.loop_depth = 0;
-                if self.bc_can_return_receiver_field(expr, &ret_env) {
+                if transfers_field {
                     ret_env.returning_receiver_field = ret_env.consuming_receiver.clone();
                 }
                 self.bc_expr(expr, &mut ret_env, true);
@@ -980,7 +1310,7 @@ impl Analyzer {
                 let Some(var) = env.lookup(name) else { return };
                 if !var.view_origins.is_empty()
                     && self.bc_annotated_type(expr).is_some_and(|ty| {
-                        self.bc_is_string_view(&ty)
+                        self.bc_is_view_value(&ty)
                             || matches!(
                                 self.resolve_type_aliases(&ty),
                                 TypeKind::Ref { .. } | TypeKind::MutRef { .. }
@@ -1458,12 +1788,7 @@ impl Analyzer {
     }
 
     fn bc_annotated_type(&self, expr: &Expr) -> Option<TypeKind> {
-        self.annotated_exprs
-            .iter()
-            .rev()
-            .find(|annotation| {
-                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
-            })
+        self.retention_annotation(expr)
             .and_then(|annotation| annotation.ty.clone())
     }
 
@@ -1575,12 +1900,7 @@ impl Analyzer {
     }
 
     fn bc_resolved_call_name(&self, expr: &Expr) -> Option<&str> {
-        self.annotated_exprs
-            .iter()
-            .rev()
-            .find(|annotation| {
-                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
-            })
+        self.retention_annotation(expr)
             .and_then(|annotation| annotation.resolved_fn.as_deref())
     }
 
@@ -2137,6 +2457,17 @@ fn borrowed(owner: &Owner) str { ret owner.view(); }
     }
 
     #[test]
+    fn owned_match_payloads_transfer_storage_and_keep_external_roots() {
+        let report = analyze(
+            "enum Wrap { Item(Owner) } fn take(value: Wrap) Owner { ret match value { Wrap.Item(owner) => owner, }; } fn main() void { var owner = take(Wrap.Item(make())); sink(owner.view()); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        rejects_view(
+            "struct View { text: str } fn wrap(text: str) View { ret View { text: text }; } enum Wrap { Item(View) } fn make_wrap(text: str) Wrap { ret Wrap.Item(wrap(text)); } fn main() void { var owner = make(); var value = make_wrap(owner.view()); owner.free(); match value { Wrap.Item(view) => sink(view.text), }; }",
+        );
+    }
+
+    #[test]
     fn branch_moves_update_the_declaration_instead_of_its_shadow() {
         rejects_view(
             "fn main() void { var owner = make(); var view = owner.view(); if (true) { var owner = make(); owner.free(); } owner.free(); sink(view); }",
@@ -2321,6 +2652,40 @@ fn borrowed(owner: &Owner) str { ret owner.view(); }
         rejects_view(
             "fn leak() str { var owner = make(); if (true) { var owner = owner.view(); ret owner; } ret \"\"; } fn main() void {}",
         );
+    }
+
+    #[test]
+    fn aggregate_helper_results_retain_owner_roots() {
+        for body in [
+            "struct View { text: str } fn wrap(text: str) View { ret View { text: text }; } fn main() void { var owner = make(); var view = wrap(owner.view()); owner.free(); sink(view.text); }",
+            "struct View { text: str } fn wrap(text: str) View { ret View { text: text }; } fn leak() View { var owner = make(); ret wrap(owner.view()); }",
+            "struct View { text: str } fn wrap(text: str) View { ret View { text: text }; } enum Wrap { Item(View) } fn leak() Wrap { var owner = make(); ret Wrap.Item(wrap(owner.view())); }",
+            "struct View { text: str } fn wrap(text: str) View { ret View { text: text }; } fn main() void { var outer = wrap(\"static\"); if (true) { var owner = make(); outer = wrap(owner.view()); } sink(outer.text); }",
+        ] {
+            rejects_view(body);
+        }
+    }
+
+    #[test]
+    fn unavailable_aggregate_results_do_not_prove_static_lifetimes() {
+        for declaration in [
+            "struct View { text: str } fn opaque() View; fn main() void { var view = opaque(); sink(view.text); }",
+            "struct View { text: str } fn opaque(text: str) View; fn main() void { var view = opaque(\"literal\"); sink(view.text); }",
+        ] {
+            rejects_view(declaration);
+        }
+    }
+
+    #[test]
+    fn aggregate_result_composition_preserves_static_and_unused_arguments() {
+        for body in [
+            "struct View { text: str } fn wrap(a: str, ignored: str) View { ret View { text: a }; } fn main() void { var first = make(); var second = make(); var view = wrap(first.view(), second.view()); second.free(); sink(view.text); }",
+            "struct View { text: str } fn wrap(a: str) View { ret View { text: \"static\" }; } fn main() void { var owner = make(); var view = wrap(owner.view()); owner.free(); sink(view.text); }",
+            "struct View { text: str } fn wrap(a: str) View { ret View { text: a }; } fn main() void { var owner = make(); if (true) { var view = wrap(owner.view()); sink(view.text); } owner.free(); }",
+        ] {
+            let report = analyze(body);
+            assert!(report.errors.is_empty(), "{body}: {:?}", report.errors);
+        }
     }
 
     #[test]

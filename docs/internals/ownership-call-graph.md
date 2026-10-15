@@ -65,6 +65,10 @@ leave `direct_call_eligible`, `source_effects_verified`, and
 and source-body call facts remain the separate conservative shortcut input.
 QZI v10's ownership envelope remains unverified.
 
+The separate [source result-retention pass](source-result-retention.md) now
+composes conservative parameter dependencies for lexical aggregate roots.
+These facts do not make this graph an effect proof.
+
 This graph does not yet record argument places, reads/writes, provenance,
 escape paths, control flow, or destruction effects. Closure bodies are currently
 attributed conservatively to their enclosing source callable; compiler-injected

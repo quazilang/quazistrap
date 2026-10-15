@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-10-15: Retained borrowed aggregate roots](2026-10-15-result-retention.md)
 - [2026-10-15: Portable dynamic vtables](2026-10-15-portable-vtables.md)
 - [2026-10-14: Canonical safe-reference receiver ABI](2026-10-14-reference-receiver-abi.md)
 

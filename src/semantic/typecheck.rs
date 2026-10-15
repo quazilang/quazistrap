@@ -3846,6 +3846,9 @@ impl Analyzer {
                         if is_struct_ns {
                             let method_full = format!("{}.{}", struct_name, method);
                             if let Some(sym) = self.resolve_for_read(&method_full) {
+                                // Retain declaration identity independently of whether
+                                // this call's generic arguments have been inferred.
+                                self.record_source_call_declaration(expr.span, &method_full);
                                 let arg_evals: Vec<ExprEval> = args
                                     .iter()
                                     .enumerate()

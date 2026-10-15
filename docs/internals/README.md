@@ -7,6 +7,7 @@ runtime ABI, ownership invariants, testing, and contribution workflows.
 
 ## Pages
 
+- [Source result retention](source-result-retention.md)
 - [Portable dynamic vtable layouts](dynamic-vtable-layout.md)
 
 - [Checked type-alias resolution](type-alias-resolution.md)

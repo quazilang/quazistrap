@@ -156,6 +156,21 @@ These restrictions keep references sound while whole-program ownership is
 implemented. See
 [reference migration](../migrations/references.md).
 
+## Borrowed fields in aggregate results
+
+A source helper returning a struct, enum, or array that retains a borrowed
+string view also retains its caller's owner root. For example, after
+`const view = wrap(owner.as_str())`, releasing or moving `owner` is rejected
+while `view`'s lexical scope remains live. Returning such a result from a local
+owner, or assigning it beyond that owner's scope, is also rejected. A source
+helper that copies its input into a fresh owned allocation does not retain the
+input loan. Static-only results and synchronous observation remain supported.
+
+The compiler composes conservative parameter dependencies through source
+helpers. It does not yet derive exact field regions, last-use lifetimes, or
+verified QZI ownership effects. See [source result
+retention](../internals/source-result-retention.md) for the current boundary.
+
 ## Raw pointers
 
 `*T` is a raw native pointer. Properties:

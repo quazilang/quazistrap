@@ -13,6 +13,7 @@ mod borrow;
 mod declare;
 mod optimize;
 mod ownership;
+mod retention;
 pub(crate) mod typecheck;
 mod unused;
 
@@ -77,6 +78,11 @@ pub struct Analyzer {
     pub(super) dependency_edges: BTreeSet<(DependencyKind, String, String)>,
     /// Call-only adjacency index maintained with `dependency_edges`.
     pub(super) call_dependencies: HashMap<String, BTreeSet<String>>,
+    /// Conservative source result dependencies in declared parameter slot order.
+    pub(super) result_retention: std::collections::BTreeMap<String, BTreeSet<usize>>,
+    pub(super) fresh_result_intrinsics: HashSet<String>,
+    /// Last type-check annotation per source span; stable through ownership passes.
+    pub(super) retention_annotation_index: HashMap<(usize, usize), usize>,
     /// Source-body call facts for the conservative ownership shortcut. Unlike
     /// `call_dependencies`, this records indirect and opaque calls explicitly.
     pub(super) source_call_effects: HashMap<String, Vec<OwnershipCallEffect>>,
@@ -873,6 +879,9 @@ impl Analyzer {
             exhaustiveness_checks: 0,
             dependency_edges: BTreeSet::new(),
             call_dependencies: HashMap::new(),
+            result_retention: std::collections::BTreeMap::new(),
+            fresh_result_intrinsics: HashSet::new(),
+            retention_annotation_index: HashMap::new(),
             source_call_effects: HashMap::new(),
             ownership_call_sites: HashMap::new(),
             called_functions: BTreeSet::new(),
@@ -1097,6 +1106,9 @@ impl Analyzer {
         checkpoint()?;
         self.run_lazy_import_pass(&mut checkpoint)?;
 
+        // Compose source result dependencies before checking lexical loans.
+        self.derive_result_retention(program, &mut checkpoint)?;
+
         // Pass 7: borrow / move checker.
         checkpoint()?;
         self.run_borrow_check_pass(program);
@@ -1231,6 +1243,7 @@ impl Analyzer {
             callable_ownership_summaries,
             callable_ownership_body_effects,
             ownership_call_graph,
+            source_result_retention: self.result_retention.clone(),
             impl_generic_params: self.impl_generic_params.clone(),
             contiguous_element_contracts: self.contiguous_element_contracts.clone(),
             constant_evaluations,
@@ -1423,6 +1436,9 @@ impl Analyzer {
         self.exhaustiveness_checks = 0;
         self.dependency_edges.clear();
         self.call_dependencies.clear();
+        self.result_retention.clear();
+        self.fresh_result_intrinsics.clear();
+        self.retention_annotation_index.clear();
         self.source_call_effects.clear();
         self.ownership_call_sites.clear();
         self.called_functions.clear();
