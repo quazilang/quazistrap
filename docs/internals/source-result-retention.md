@@ -61,7 +61,8 @@ whole-program effect solver. They do not certify writes, global/heap escapes,
 destruction paths, indirect targets, or artifact bodies. They do not relax
 reference escape restrictions or enable [D-015 borrowed collection
 elements](../decisions/borrowed-elements.md). The separate concrete ownership
-call graph still lacks argument places and control-flow edges.
+call graph now retains [argument storage facts](ownership-call-arguments.md),
+but still lacks control-flow edges and effect proofs.
 
 QZI remains v13, and its ownership envelope remains Unverified. Source result
 facts are not serialized as ownership certificates. QZC v14 invalidates older

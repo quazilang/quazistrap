@@ -70,6 +70,17 @@ checks and emitted-name collisions produce S14 instead of truncation or an
 unchecked expansion. Symbolic helper chunks remain in the emission namespace.
 All new graph work must poll cooperative cancellation.
 
+`places.rs` snapshots call actuals using resolved declaration identities before
+borrow checking. It shares declared-slot mapping with result retention and
+specializes snapshot types when constructing the concrete graph. Preserve
+lexical argument order independently of slots; namespace objects are not
+receivers. Global declaration types resolve outside caller binders. Only
+builtin array/slice indexes describe storage projections; overloads and
+projections of temporaries stay unknown. Closure-body calls retain their
+deferred closure spans. These facts never grant loan or artifact permissions.
+Bound source bodies/projection depth and total specialized argument nodes;
+report S14 rather than silently publishing truncated success.
+
 ## Transparent alias resolution
 
 Use the shared `type_resolution` engine. Validate target-active declarations

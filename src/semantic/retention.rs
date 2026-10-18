@@ -184,7 +184,7 @@ impl Analyzer {
             .and_then(|annotation| annotation.resolved_fn.as_deref())
     }
 
-    fn retention_instance_receiver(&self, expression: &Expr) -> bool {
+    pub(super) fn retention_instance_receiver(&self, expression: &Expr) -> bool {
         let ExprKind::MethodCall { object, .. } = &expression.node else {
             return false;
         };
@@ -200,51 +200,7 @@ impl Analyzer {
         expression: &'a Expr,
     ) -> Option<Vec<Vec<&'a Expr>>> {
         let name = self.retention_call_name(expression)?;
-        let names = self.fn_param_names.get(name)?;
-        let symbol = self.resolve_symbol(name)?;
-        let implicit = symbol.params.len().checked_sub(names.len())?;
-        if implicit > 1 {
-            return None;
-        }
-        let (receiver, args, named_args) = match &expression.node {
-            ExprKind::Call {
-                args, named_args, ..
-            } => (None, args, named_args),
-            ExprKind::MethodCall {
-                object,
-                args,
-                named_args,
-                ..
-            } => (Some(object.as_ref()), args, named_args),
-            _ => return None,
-        };
-        let offset = usize::from(self.retention_instance_receiver(expression));
-        let mut slots = vec![Vec::new(); symbol.params.len()];
-        if offset != 0 {
-            slots.get_mut(0)?.push(receiver?);
-        }
-        for (index, argument) in args.iter().enumerate() {
-            let index = index + offset;
-            let index = if symbol.variadic {
-                index.min(slots.len().checked_sub(1)?)
-            } else {
-                index
-            };
-            slots.get_mut(index)?.push(argument);
-        }
-        for (name, argument) in named_args {
-            let index = names.iter().position(|parameter| parameter == name)? + implicit;
-            let slot = slots.get_mut(index)?;
-            if !slot.is_empty() {
-                return None;
-            }
-            slot.push(argument);
-        }
-        let fixed = slots.len().checked_sub(usize::from(symbol.variadic))?;
-        if slots[..fixed].iter().any(Vec::is_empty) {
-            return None;
-        }
-        Some(slots)
+        self.ownership_call_argument_slots(expression, name)
     }
 
     pub(super) fn derive_result_retention<F>(
@@ -427,7 +383,12 @@ impl Analyzer {
         Ok(())
     }
 
-    fn retention_source_name(&self, name: &str, attributes: &[Attribute], span: Span) -> String {
+    pub(super) fn retention_source_name(
+        &self,
+        name: &str,
+        attributes: &[Attribute],
+        span: Span,
+    ) -> String {
         if name.starts_with("__quazi_")
             || attributes
                 .iter()

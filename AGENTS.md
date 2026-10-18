@@ -117,6 +117,13 @@ identities to one emitted symbol is S14. Symbolic helper chunks still participat
 in that emitted namespace, so they are covered by collision checks too. See
 [the ownership graph contract](docs/internals/ownership-call-graph.md).
 
+`semantic/places.rs` attaches declaration-backed argument snapshots to source
+call sites and specializes their types under each concrete caller. Snapshots
+retain lexical operand roles, declared parameter slots, storage roots and
+field/dereference/builtin-index projections, with deferred closure attribution.
+They are evidence only: no alias, sequencing, move, escape, effect or artifact
+proof is inferred. See [the argument contract](docs/internals/ownership-call-arguments.md).
+
 `type_resolution.rs` is the shared checked transparent-alias and substitution
 engine. Normalize actual arguments before entering an alias frame; alias bodies
 use their own lexical parameters and global declarations, never caller binders.

@@ -2,6 +2,55 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-18, ownership call argument facts)
+
+Resumed the prior dirty D-014 argument-place pass using Graphify and two
+independent read-only reviewers. The concrete ownership graph now retains
+lexically ordered actual operands, declared parameter slots, declaration-backed
+storage roots, field/dereference/builtin-index paths, and deferred closure spans.
+Snapshot types specialize under concrete caller substitutions. Global storage
+aliases retain their declaration context through grouping/dereference; projected
+temporaries and overloaded indexing remain unknown. Resource exhaustion is S14;
+new work polls cancellation. Result retention shares the declared-slot mapper.
+
+These facts do not grant loan permissions or implement a CFG, effects, place
+moves, structural destruction, D-015 or artifact-body verification. QZI13 stays
+Unverified; QZC14 is unchanged. See docs/internals/ownership-call-arguments.md
+and docs/changes/2026-10-18-ownership-call-arguments.md.
+
+IMPORTANT: preserve the unfinished raw-memory retention refinement in
+src/semantic/retention.rs and its three Analyzer state lines in mod.rs. It was
+already dirty at resume and is deliberately UNSTAGED, outside this checkpoint.
+Review confirmed it loses a parameter dependency when a source helper returns
+malloc storage, memcpy stores a view through it, and a wrapper returns the loaded
+view. The same regression passes with HEAD retention and fails with that dirty
+refinement. Evidence: /tmp/quazi-retention-review-current.log (failure),
+/tmp/quazi-retention-review-head.log (pass), and the raw_memory_review_tests
+module in /tmp/quazi-retention-review/retention-dirty.rs. Do not enable these
+refinements without conservative source-call allocation/pointee flow and tests.
+
+The completed staged candidate was verified separately in detached worktree
+/tmp/quazi-argument-facts-verify using pinned stable Rust/bfd and target dir
+/tmp/quazi-argument-facts-target: full tests 808/808, focused places 18/18,
+build and clippy pass with existing warnings. Result-retention integration
+passes 10 rejected / 6 valid cases with source/QZI execution and Windows COFF;
+dynamic-vtable/cache integration passes. Logs: /tmp/quazi-argument-facts-*.log.
+The inherited deep-parser test aborted with stack overflow; the replacement
+isolates this pass via a synthetic deep operand after normal source analysis.
+The full worktree with raw-memory changes is not certified by these results.
+
+Graphify AST update is local and excludes .qz semantics. Its integrity diagnostic
+reported 63 dangling endpoint edges and 40 undirected endpoint collisions.
+Preserve compiler .codex/, example35 build artifacts, STD CLI work and JetBrains
+.gradle/. No STD or editor sources were changed. Local commits are authorized;
+no push, PR, publication, external changes or documentation website.
+
+Next: complete D-014 typed reads/writes, alias/provenance and control-flow facts,
+recursive effect composition, structural destruction and artifact verification;
+then D-015 and coherent Headers/HTTP/JSON migration with full STD verification.
+The original production-readiness objective in ../goal.md remains active and
+much larger than this checkpoint; do not mark it complete.
+
 ## Checkpoint (2026-10-15, source aggregate result retention)
 
 `semantic/retention.rs` derives source result parameter dependencies before

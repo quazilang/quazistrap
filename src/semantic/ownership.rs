@@ -51,6 +51,7 @@ pub(super) struct SourceOwnershipCall {
     /// Never proves that this edge is concrete or ownership-closed.
     pub(super) declaration: Option<String>,
     pub(super) target: Option<(String, Vec<TypeKind>)>,
+    pub(super) arguments: Option<OwnershipCallArguments>,
 }
 
 impl Analyzer {
@@ -169,6 +170,7 @@ impl Analyzer {
                     span,
                     declaration,
                     target,
+                    arguments: None,
                 },
             );
         }
@@ -344,6 +346,8 @@ impl Analyzer {
             }
         }
         let mut nodes = BTreeMap::new();
+        let mut argument_budget = super::places::MAX_GRAPH_ARGUMENT_NODES;
+        let mut argument_overflow = None;
         while let Some((name, args)) = pending.pop_front() {
             checkpoint()?;
             let args = args
@@ -370,6 +374,7 @@ impl Analyzer {
                 calls.push(OwnershipCallSite {
                     span: self.resolve_symbol(&name).expect("declared callable").span,
                     target: OwnershipCallTarget::Unavailable,
+                    arguments: None,
                 });
             } else if let Some(sites) = self.ownership_call_sites.get(&name) {
                 for site in sites.values() {
@@ -402,9 +407,25 @@ impl Analyzer {
                     } else {
                         OwnershipCallTarget::Opaque
                     };
+                    let arguments = match &site.arguments {
+                        Some(arguments) => {
+                            let result = self.instantiate_ownership_arguments(
+                                arguments,
+                                &substitution,
+                                &mut argument_budget,
+                                checkpoint,
+                            )?;
+                            if result.is_none() {
+                                argument_overflow.get_or_insert(site.span);
+                            }
+                            result
+                        }
+                        None => None,
+                    };
                     calls.push(OwnershipCallSite {
                         span: site.span,
                         target,
+                        arguments,
                     });
                 }
             }
@@ -430,6 +451,16 @@ impl Analyzer {
                 span,
                 "S14",
                 format!("ownership call graph exceeds its {limit}-callable compiler limit"),
+            );
+        }
+        if let Some(span) = argument_overflow {
+            self.push_error(
+                span,
+                "S14",
+                format!(
+                    "ownership argument graph exceeds its {}-node compiler limit",
+                    super::places::MAX_GRAPH_ARGUMENT_NODES
+                ),
             );
         }
         close_source_calls(&mut nodes, self, checkpoint)?;

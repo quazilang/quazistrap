@@ -13,6 +13,9 @@ mod borrow;
 mod declare;
 mod optimize;
 mod ownership;
+mod places;
+#[cfg(test)]
+mod places_tests;
 mod retention;
 pub(crate) mod typecheck;
 mod unused;
@@ -1108,6 +1111,7 @@ impl Analyzer {
 
         // Compose source result dependencies before checking lexical loans.
         self.derive_result_retention(program, &mut checkpoint)?;
+        self.record_ownership_argument_places(program, &mut checkpoint)?;
 
         // Pass 7: borrow / move checker.
         checkpoint()?;

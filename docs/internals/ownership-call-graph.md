@@ -69,9 +69,11 @@ The separate [source result-retention pass](source-result-retention.md) now
 composes conservative parameter dependencies for lexical aggregate roots.
 These facts do not make this graph an effect proof.
 
-This graph does not yet record argument places, reads/writes, provenance,
-escape paths, control flow, or destruction effects. Closure bodies are currently
-attributed conservatively to their enclosing source callable; compiler-injected
+The graph now retains [argument storage snapshots](ownership-call-arguments.md).
+It does not yet record reads/writes, alias provenance, escape paths, control
+flow, or destruction effects. Closure bodies remain conservatively attributed
+to their enclosing source callable, with deferred closure spans on argument
+snapshots; compiler-injected
 cleanup, formatting, and panic calls are not complete source-site evidence.
 `source_calls_closed` must never be used as a runtime-effect or artifact proof.
 Cycle-safe, resource-bounded alias expansion is also a separate prerequisite:

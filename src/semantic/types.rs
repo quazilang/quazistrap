@@ -392,11 +392,108 @@ pub enum OwnershipCallTarget {
     Unavailable,
 }
 
+/// Lexical spelling order is independent of declared parameter slot order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnershipArgumentRole {
+    Receiver,
+    Positional(usize),
+    Named(String),
+}
+
+/// Address formation is syntax evidence, not a granted call capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipArgumentFormation {
+    Value,
+    SharedAddress,
+    ExclusiveAddress,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnershipPlaceStorage {
+    Parameter(usize),
+    Local,
+    Global,
+    ClosureParameter,
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnershipPlaceRoot {
+    pub binding: ResolvedBinding,
+    pub storage: OwnershipPlaceStorage,
+    /// Declaration storage type before expression-level automatic reads.
+    pub ty: Option<TypeKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipDerefKind {
+    Shared,
+    Exclusive,
+    Raw,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnershipIndex {
+    pub span: Span,
+    pub ty: Option<TypeKind>,
+    /// Retain the typed constant bits; do not infer disjointness from it.
+    pub constant: Option<ConstValue>,
+}
+
+#[derive(Debug, Clone)]
+pub enum OwnershipProjection {
+    Field(String),
+    /// Only builtin fixed-array/slice storage, never a named Index overload.
+    Index(Vec<OwnershipIndex>),
+    Deref {
+        kind: OwnershipDerefKind,
+        implicit: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnershipPlace {
+    pub root: OwnershipPlaceRoot,
+    pub projections: Vec<OwnershipProjection>,
+}
+
+#[derive(Debug, Clone)]
+pub enum OwnershipArgumentValue {
+    Place(OwnershipPlace),
+    /// A non-place expression, including literals and call results. This does
+    /// not assert that it owns storage or has a static lifetime.
+    Rvalue,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnershipCallArgument {
+    pub span: Span,
+    pub role: OwnershipArgumentRole,
+    pub parameter_slot: Option<usize>,
+    pub ty: Option<TypeKind>,
+    pub formation: OwnershipArgumentFormation,
+    pub auto_deref: bool,
+    pub value: OwnershipArgumentValue,
+}
+
+/// Actuals are in lexical order (receiver, positionals, then named spellings).
+/// This is not a CFG or a promise about lowering's argument evaluation order.
+#[derive(Debug, Clone)]
+pub struct OwnershipCallArguments {
+    pub actuals: Vec<OwnershipCallArgument>,
+    /// Calls nested in closure bodies are deferred source evidence, not
+    /// synchronous operations of the enclosing callable.
+    pub deferred_closures: Vec<Span>,
+}
+
 /// Distinct source sites remain distinct for future argument/provenance work.
 #[derive(Debug, Clone)]
 pub struct OwnershipCallSite {
     pub span: Span,
     pub target: OwnershipCallTarget,
+    /// None means argument evidence was unavailable, not an empty call.
+    pub arguments: Option<OwnershipCallArguments>,
 }
 
 #[derive(Debug, Clone)]
