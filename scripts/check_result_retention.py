@@ -12,6 +12,49 @@ fn wrap(value: str) View { ret View { value: value }; }
 """
 
 NEGATIVE_CASES = {
+    "raw_helper_copy": """struct View { value: str }
+@intrinsic("quazi.malloc") unsafe fn allocate(n: usize) *u8;
+@intrinsic("quazi.memcpy") unsafe fn copy(dst: *u8, src: *u8, n: usize) *u8;
+unsafe fn storage() *u8 { ret allocate(8); }
+fn wrap(value: str) View {
+    var result: str = "";
+    unsafe {
+        var source = allocate(8);
+        *(source as *str) = value;
+        var destination = storage();
+        copy(destination, source, 8);
+        result = *(destination as *str);
+    }
+    ret View { value: result };
+}
+fn main() i32 {
+    var owner = "retained".to_string();
+    const view = wrap(owner.as_str());
+    owner.free();
+    ret view.value.len() as i32;
+}
+""",
+    "unknown_pointer_alias": """struct View { value: str }
+@intrinsic("quazi.malloc") unsafe fn allocate(n: usize) *u8;
+unsafe fn read_after_write(left: *str, right: *str, value: str) str {
+    *left = value;
+    ret *right;
+}
+fn wrap(value: str) View {
+    var result: str = "";
+    unsafe {
+        var pointer = allocate(8);
+        result = read_after_write(pointer, pointer, value);
+    }
+    ret View { value: result };
+}
+fn main() i32 {
+    var owner = "retained".to_string();
+    const view = wrap(owner.as_str());
+    owner.free();
+    ret view.value.len() as i32;
+}
+""",
     "legacy_receiver_forwarding": """struct View { value: str }
 struct Holder { value: str }
 impl Holder { fn view(receiver: Holder) str { ret receiver.value; } }
@@ -112,6 +155,15 @@ fn main() i32 {
 }
 
 POSITIVE_CASES = {
+    "owned_range_copy": """fn copy(value: str) String { ret value[1:4]; }
+fn main() i32 {
+    var owner = "abcdef".to_string();
+    const copied = copy(owner.as_str());
+    owner.free();
+    if copied.as_str() != "bcd" { ret 1; }
+    ret 0;
+}
+""",
     "named_unretained_argument": """struct View { value: str }
 fn wrap(first: str, ignored: str) View { ret View { value: first }; }
 fn main() i32 {

@@ -466,11 +466,20 @@ impl Analyzer {
     /// Structural may-contain query: uncertainty retains provenance rather than
     /// proving that a generic, recursive, or unresolved value owns all its data.
     pub(super) fn retention_type_may_contain_views(&self, ty: &TypeKind) -> bool {
+        self.retention_type_may_contain(ty, false)
+    }
+
+    pub(super) fn retention_type_may_contain_storage(&self, ty: &TypeKind) -> bool {
+        self.retention_type_may_contain(ty, true)
+    }
+
+    fn retention_type_may_contain(&self, ty: &TypeKind, storage: bool) -> bool {
         fn visit(
             analyzer: &Analyzer,
             ty: &TypeKind,
             active: &mut HashSet<String>,
             fuel: &mut usize,
+            storage: bool,
         ) -> bool {
             if *fuel == 0 || active.len() >= 64 {
                 return true;
@@ -478,21 +487,22 @@ impl Analyzer {
             *fuel -= 1;
             let resolved = analyzer.resolve_type_aliases(ty);
             match &resolved {
-                TypeKind::Str
-                | TypeKind::Ref { .. }
-                | TypeKind::MutRef { .. }
-                | TypeKind::Dyn { .. }
-                | TypeKind::Error
-                | TypeKind::Any => true,
+                TypeKind::RawPtr { .. } => storage,
+                TypeKind::Str => !storage,
+                TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                    !storage || !matches!(inner.node, TypeKind::Str)
+                }
+                TypeKind::Dyn { .. } | TypeKind::Error | TypeKind::Any => true,
+                TypeKind::Slice { .. } if storage => true,
                 TypeKind::Array { elem_ty, .. }
                 | TypeKind::Slice { elem_ty }
                 | TypeKind::FlexibleArray { elem_ty } => {
-                    visit(analyzer, &elem_ty.node, active, fuel)
+                    visit(analyzer, &elem_ty.node, active, fuel, storage)
                 }
                 TypeKind::Named { name, type_args } => {
                     if type_args
                         .iter()
-                        .any(|arg| visit(analyzer, &arg.node, active, fuel))
+                        .any(|arg| visit(analyzer, &arg.node, active, fuel, storage))
                     {
                         return true;
                     }
@@ -534,7 +544,7 @@ impl Analyzer {
                                 &HashSet::new(),
                                 |_| None,
                             )
-                            .map_or(true, |field| visit(analyzer, &field, active, fuel))
+                            .map_or(true, |field| visit(analyzer, &field, active, fuel, storage))
                         })
                     });
                     active.remove(name);
@@ -543,7 +553,7 @@ impl Analyzer {
                 _ => false,
             }
         }
-        visit(self, ty, &mut HashSet::new(), &mut 4096)
+        visit(self, ty, &mut HashSet::new(), &mut 4096, storage)
     }
 
     fn bc_parameter_contains_views(&self, ty: &TypeKind) -> bool {

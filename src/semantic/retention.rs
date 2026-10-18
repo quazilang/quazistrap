@@ -14,25 +14,73 @@ use super::Analyzer;
 
 type Dependencies = BTreeSet<usize>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RetentionIntrinsic {
+    Allocate,
+    Copy,
+    Fill,
+    StringPointer,
+    PointerString,
+}
+
+fn retention_intrinsic(attributes: &[Attribute]) -> Option<RetentionIntrinsic> {
+    let attribute = attributes
+        .iter()
+        .find(|attribute| attribute.name == "intrinsic")?;
+    let AttrArg::Positional(AttrVal::Str(name)) = attribute.args.first()? else {
+        return None;
+    };
+    match name.as_str() {
+        "quazi.malloc" => Some(RetentionIntrinsic::Allocate),
+        "quazi.memcpy" | "quazi.memmove" => Some(RetentionIntrinsic::Copy),
+        "quazi.memset" => Some(RetentionIntrinsic::Fill),
+        "quazi.str.as_ptr" => Some(RetentionIntrinsic::StringPointer),
+        "quazi.str.from_ptr" => Some(RetentionIntrinsic::PointerString),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Default, PartialEq, Eq)]
 struct Value {
     parameters: Dependencies,
     /// Local storage identities whose later writes are visible through this value.
-    roots: BTreeSet<usize>,
+    roots: BTreeSet<Storage>,
+    /// Storage read by dereference/copy, separate from pointer identity.
+    pointees: BTreeSet<Storage>,
+    unknown_pointee: bool,
+    /// A declared UTF-8 byte view needs no invented pointee cell. Existing
+    /// tracked contents/uncertainty survive; writes may still alias storage.
+    byte_pointer: bool,
 }
 
 impl Value {
     fn extend(&mut self, other: Self) {
         self.parameters.extend(other.parameters);
         self.roots.extend(other.roots);
+        self.pointees.extend(other.pointees);
+        self.unknown_pointee |= other.unknown_pointee;
+        self.byte_pointer |= other.byte_pointer;
     }
+}
+
+/// Binding identities and stable allocation/call-site identities occupy
+/// separate namespaces and survive cloned branch environments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Storage {
+    Binding(usize),
+    Allocation(usize, usize),
+    Unmodeled(usize, usize),
 }
 
 #[derive(Clone, Default)]
 struct Environment {
-    scopes: Vec<BTreeMap<String, usize>>,
-    values: BTreeMap<usize, Value>,
+    scopes: Vec<BTreeMap<String, Storage>>,
+    values: BTreeMap<Storage, Value>,
     next: usize,
+    /// An unknown pointer may alias any known write. Conversely, a write
+    /// through an unknown pointer may affect every later memory read.
+    all_writes: Value,
+    unknown_writes: Value,
 }
 
 impl Environment {
@@ -49,7 +97,7 @@ impl Environment {
     }
 
     fn declare(&mut self, name: &str, mut value: Value) {
-        let id = self.next;
+        let id = Storage::Binding(self.next);
         self.next += 1;
         value.roots.insert(id);
         self.values.insert(id, value);
@@ -59,7 +107,7 @@ impl Environment {
             .insert(name.into(), id);
     }
 
-    fn id(&self, name: &str) -> Option<usize> {
+    fn id(&self, name: &str) -> Option<Storage> {
         self.scopes
             .iter()
             .rev()
@@ -75,10 +123,95 @@ impl Environment {
             }
             if let Some(stored) = self.values.get(&root) {
                 value.parameters.extend(stored.parameters.iter().copied());
+                value.pointees.extend(stored.pointees.iter().copied());
+                value.unknown_pointee |= stored.unknown_pointee;
+                value.byte_pointer |= stored.byte_pointer;
                 pending.extend(stored.roots.iter().copied());
             }
         }
+        // Reachable stored views remain dependencies of returned containers,
+        // but their addresses do not become this pointer's pointees.
+        let mut pending = value.pointees.iter().copied().collect::<Vec<_>>();
+        if value.unknown_pointee {
+            value
+                .parameters
+                .extend(self.all_writes.parameters.iter().copied());
+            pending.extend(
+                self.all_writes
+                    .roots
+                    .iter()
+                    .chain(&self.all_writes.pointees)
+                    .copied(),
+            );
+        }
+        if !value.pointees.is_empty() || value.unknown_pointee {
+            value
+                .parameters
+                .extend(self.unknown_writes.parameters.iter().copied());
+            pending.extend(
+                self.unknown_writes
+                    .roots
+                    .iter()
+                    .chain(&self.unknown_writes.pointees)
+                    .copied(),
+            );
+        }
+        let mut seen = BTreeSet::new();
+        while let Some(root) = pending.pop() {
+            if !seen.insert(root) {
+                continue;
+            }
+            if let Some(stored) = self.values.get(&root) {
+                value.parameters.extend(stored.parameters.iter().copied());
+                pending.extend(stored.roots.iter().chain(&stored.pointees).copied());
+            }
+        }
         value
+    }
+
+    fn allocate(&mut self, span: Span) -> Value {
+        let id = Storage::Allocation(span.start, span.end);
+        self.values.entry(id).or_default();
+        Value {
+            pointees: BTreeSet::from([id]),
+            ..Value::default()
+        }
+    }
+
+    fn uncertain_result(&mut self, span: Span, mut value: Value) -> Value {
+        let id = Storage::Unmodeled(span.start, span.end);
+        self.values.entry(id).or_default();
+        value.pointees.insert(id);
+        value.unknown_pointee = true;
+        value
+    }
+
+    fn contents(&self, pointer: &Value) -> Value {
+        let mut value = self.unknown_writes.clone();
+        if pointer.unknown_pointee {
+            value.extend(self.all_writes.clone());
+            value.parameters.extend(pointer.parameters.iter().copied());
+            value.unknown_pointee = true;
+        }
+        for id in &pointer.pointees {
+            if let Some(stored) = self.values.get(id) {
+                value.extend(self.expand(stored.clone()));
+            }
+        }
+        value
+    }
+
+    fn write_contents(&mut self, pointer: &Value, value: &Value) {
+        let value = self.expand(value.clone());
+        self.all_writes.extend(value.clone());
+        if pointer.unknown_pointee || pointer.byte_pointer {
+            self.unknown_writes.extend(value.clone());
+        }
+        for id in &pointer.pointees {
+            if let Some(stored) = self.values.get_mut(id) {
+                stored.extend(value.clone());
+            }
+        }
     }
 
     fn get(&self, name: &str) -> Value {
@@ -97,23 +230,35 @@ impl Environment {
     }
 
     fn mutate(&mut self, target: &Value, value: &Value) {
+        self.write_contents(target, value);
         for root in &target.roots {
             if let Some(stored) = self.values.get_mut(root) {
-                stored.parameters.extend(value.parameters.iter().copied());
-                stored.roots.extend(value.roots.iter().copied());
+                stored.extend(value.clone());
             }
         }
     }
 
-    /// Merge only existing bindings; branch-local declarations do not escape.
+    /// Preserve heap cells and weakly merge existing lexical bindings. Branch
+    /// locals are removed by exit(), but escaped abstract allocations survive.
     fn merge(&mut self, branch: &Self) -> bool {
-        let before = self.values.clone();
-        for (id, value) in &mut self.values {
-            if let Some(other) = branch.values.get(id) {
-                value.extend(other.clone());
+        let before = (
+            self.values.clone(),
+            self.all_writes.clone(),
+            self.unknown_writes.clone(),
+        );
+        for (id, value) in &branch.values {
+            if !matches!(id, Storage::Binding(_)) || self.values.contains_key(id) {
+                self.values.entry(*id).or_default().extend(value.clone());
             }
         }
-        before != self.values
+        self.all_writes.extend(branch.all_writes.clone());
+        self.unknown_writes.extend(branch.unknown_writes.clone());
+        before
+            != (
+                self.values.clone(),
+                self.all_writes.clone(),
+                self.unknown_writes.clone(),
+            )
     }
 }
 
@@ -230,6 +375,7 @@ impl Analyzer {
         checkpoint()?;
         self.result_retention.clear();
         self.fresh_result_intrinsics.clear();
+        self.retention_intrinsics.clear();
         let mut annotations = HashMap::with_capacity(self.annotated_exprs.len());
         for (index, annotation) in self.annotated_exprs.iter().enumerate() {
             if index % 256 == 0 {
@@ -252,6 +398,15 @@ impl Analyzer {
             {
                 let canonical = self.retention_source_name(name, attributes, item.span);
                 self.fresh_result_intrinsics.insert(canonical);
+            }
+            if let ItemKind::Fn {
+                name, attributes, ..
+            } = &item.node
+                && super::item_should_include(attributes)
+                && let Some(effect) = retention_intrinsic(attributes)
+            {
+                let canonical = self.retention_source_name(name, attributes, item.span);
+                self.retention_intrinsics.insert(canonical, effect);
             }
             match &item.node {
                 ItemKind::Fn {
@@ -347,7 +502,10 @@ impl Analyzer {
                             &parameter.name,
                             Value {
                                 parameters: BTreeSet::from([slot]),
-                                roots: BTreeSet::new(),
+                                unknown_pointee: evaluation
+                                    .analyzer
+                                    .retention_type_may_contain_storage(&parameter.ty.node),
+                                ..Value::default()
                             },
                         );
                     }
@@ -421,8 +579,7 @@ impl Analyzer {
     fn retention_value_has_dependencies(&self, ty: &TypeKind) -> bool {
         // Unsafe loads can turn pointer lineage back into a view. Keeping that
         // lineage here grants no permission for safe pointer/reference escape.
-        matches!(self.resolve_type_aliases(ty), TypeKind::RawPtr { .. })
-            || self.retention_type_may_contain_views(ty)
+        self.retention_type_may_contain_storage(ty) || self.retention_type_may_contain_views(ty)
     }
 }
 
@@ -462,7 +619,8 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
         self.saturated = true;
         Value {
             parameters: self.all_parameters.clone(),
-            roots: BTreeSet::new(),
+            unknown_pointee: true,
+            ..Value::default()
         }
     }
 
@@ -540,7 +698,7 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
                 env.enter();
                 let element = match kind {
                     ForLoop::Each { iter, .. } => match iter {
-                        ForIter::Iter(expr) => self.expression(expr, env, 0)?,
+                        ForIter::Iter(expr) => self.projection_value(expr, env, 0)?,
                         ForIter::Range { start, end } => {
                             let mut value = self.expression(start, env, 0)?;
                             value.extend(self.expression(end, env, 0)?);
@@ -615,11 +773,17 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
                 self.expression(expr, env, depth + 1)?
             }
             ExprKind::Unary { op, expr } => {
-                let value = self.expression(expr, env, depth + 1)?;
                 if matches!(op, UnaryOpKind::Ref | UnaryOpKind::RefMut) {
-                    self.place_value(expr, env)
+                    self.address_value(expr, env, depth + 1)?
                 } else {
-                    value
+                    let pointer = self.expression(expr, env, depth + 1)?;
+                    if matches!(op, UnaryOpKind::Deref) {
+                        let mut loaded = env.contents(&pointer);
+                        loaded.parameters.extend(pointer.parameters);
+                        loaded
+                    } else {
+                        pointer
+                    }
                 }
             }
             ExprKind::Try { expr } => {
@@ -627,9 +791,9 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
                 self.returned.extend(value.parameters.iter().copied());
                 value
             }
-            ExprKind::Field { object, .. } => self.expression(object, env, depth + 1)?,
+            ExprKind::Field { object, .. } => self.projection_value(object, env, depth + 1)?,
             ExprKind::Index { object, indices } => {
-                let value = self.expression(object, env, depth + 1)?;
+                let value = self.projection_value(object, env, depth + 1)?;
                 for index in indices {
                     self.expression(index, env, depth + 1)?;
                 }
@@ -655,16 +819,18 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
                 value
             }
             ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
-                self.expression(target, env, depth + 1)?;
-                let target_value = self.place_value(target, env);
+                let target_address = self.address_value(target, env, depth + 1)?;
+                let previous = if matches!(expr.node, ExprKind::CompoundAssign { .. }) {
+                    env.contents(&target_address)
+                } else {
+                    Value::default()
+                };
                 let mut value = self.expression(value, env, depth + 1)?;
-                if matches!(expr.node, ExprKind::CompoundAssign { .. }) {
-                    value.extend(target_value.clone());
-                }
+                value.extend(previous);
                 if let ExprKind::Ident(name) = &target.node {
                     env.assign(name, value.clone());
                 } else {
-                    env.mutate(&target_value, &value);
+                    env.write_contents(&target_address, &value);
                 }
                 value
             }
@@ -685,7 +851,7 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
                 captured
             }
             ExprKind::Match { scrutinee, arms } => {
-                let scrutinee = self.expression(scrutinee, env, depth + 1)?;
+                let scrutinee = self.projection_value(scrutinee, env, depth + 1)?;
                 let initial = env.clone();
                 let mut value = Value::default();
                 for arm in arms {
@@ -712,11 +878,20 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
                 self.call(expr, Some(receiver), Value::default(), env, depth + 1)?
             }
         };
-        let value = env.expand(value);
         let ty = self
             .analyzer
             .retention_annotation(expr)
             .and_then(|annotation| annotation.ty.as_ref());
+        let value = if value.pointees.is_empty()
+            && !value.unknown_pointee
+            && !value.byte_pointer
+            && ty.is_some_and(|ty| self.analyzer.retention_type_may_contain_storage(ty))
+        {
+            env.uncertain_result(expr.span, value)
+        } else {
+            value
+        };
+        let value = env.expand(value);
         if ty.is_some_and(|ty| !self.analyzer.retention_value_has_dependencies(ty)) {
             // Evaluate effects first, then discard dependencies of a copied
             // scalar value. Address-of separately preserves its
@@ -727,17 +902,84 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
         }
     }
 
-    fn place_value(&self, expr: &Expr, env: &Environment) -> Value {
+    fn address_value(
+        &mut self,
+        expr: &Expr,
+        env: &mut Environment,
+        depth: usize,
+    ) -> Result<Value, Cancelled> {
+        (self.checkpoint)()?;
+        self.nodes += 1;
+        if depth > 128 || self.nodes > 100_000 {
+            return Ok(self.fallback());
+        }
         match &expr.node {
-            ExprKind::Ident(name) => env.get(name),
-            ExprKind::Group(inner)
-            | ExprKind::Unary { expr: inner, .. }
-            | ExprKind::Field { object: inner, .. }
-            | ExprKind::Index { object: inner, .. } => self.place_value(inner, env),
-            _ => Value {
-                parameters: self.all_parameters.clone(),
-                roots: env.values.keys().copied().collect(),
-            },
+            ExprKind::Ident(name) => {
+                if let Some(id) = env.id(name) {
+                    Ok(Value {
+                        parameters: env.get(name).parameters,
+                        pointees: BTreeSet::from([id]),
+                        ..Value::default()
+                    })
+                } else {
+                    Ok(self.fallback())
+                }
+            }
+            ExprKind::Group(inner) => self.address_value(inner, env, depth + 1),
+            ExprKind::Unary {
+                op: UnaryOpKind::Deref,
+                expr: inner,
+            } => self.expression(inner, env, depth + 1),
+            ExprKind::Field { object, .. } => self.projection_address(object, env, depth + 1),
+            ExprKind::Index { object, indices } => {
+                let address = self.projection_address(object, env, depth + 1)?;
+                for index in indices {
+                    self.expression(index, env, depth + 1)?;
+                }
+                Ok(address)
+            }
+            _ => Ok(self.fallback()),
+        }
+    }
+
+    fn projection_value(
+        &mut self,
+        object: &Expr,
+        env: &mut Environment,
+        depth: usize,
+    ) -> Result<Value, Cancelled> {
+        let value = self.expression(object, env, depth + 1)?;
+        if self.indirect_projection(object) {
+            let mut loaded = env.contents(&value);
+            loaded.parameters.extend(value.parameters);
+            Ok(loaded)
+        } else {
+            Ok(value)
+        }
+    }
+
+    fn indirect_projection(&self, object: &Expr) -> bool {
+        self.analyzer
+            .retention_annotation(object)
+            .and_then(|annotation| annotation.ty.as_ref())
+            .is_some_and(|ty| {
+                matches!(
+                    self.analyzer.resolve_type_aliases(ty),
+                    TypeKind::Ref { .. } | TypeKind::MutRef { .. } | TypeKind::Slice { .. }
+                )
+            })
+    }
+
+    fn projection_address(
+        &mut self,
+        object: &Expr,
+        env: &mut Environment,
+        depth: usize,
+    ) -> Result<Value, Cancelled> {
+        if self.indirect_projection(object) {
+            self.expression(object, env, depth + 1)
+        } else {
+            self.address_value(object, env, depth + 1)
         }
     }
 
@@ -787,6 +1029,63 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
             let value = self.expression(argument, env, depth + 1)?;
             all.extend(value.clone());
             named.insert(name.as_str(), value);
+        }
+        if let Some(effect) = resolved
+            .and_then(|name| self.analyzer.retention_intrinsics.get(name))
+            .copied()
+        {
+            let slots =
+                resolved.and_then(|name| self.analyzer.ownership_call_argument_slots(expr, name));
+            if let Some(slots) = slots {
+                let mut evaluated = HashMap::new();
+                if let ExprKind::MethodCall { object, .. } = &expr.node
+                    && let Some(value) = &receiver
+                {
+                    evaluated.insert(object.as_ref() as *const Expr, value);
+                }
+                for (argument, value) in args.iter().zip(&positional) {
+                    evaluated.insert(argument as *const Expr, value);
+                }
+                for (name, argument) in named_args {
+                    if let Some(value) = named.get(name.as_str()) {
+                        evaluated.insert(argument as *const Expr, value);
+                    }
+                }
+                let supplied = slots
+                    .iter()
+                    .map(|actuals| {
+                        let mut value = Value::default();
+                        for actual in actuals {
+                            value.extend((*evaluated.get(&(*actual as *const Expr))?).clone());
+                        }
+                        Some(value)
+                    })
+                    .collect::<Option<Vec<_>>>();
+                let Some(supplied) = supplied else {
+                    return Ok(self.fallback());
+                };
+                match (effect, supplied.as_slice()) {
+                    (RetentionIntrinsic::Allocate, [_]) => return Ok(env.allocate(expr.span)),
+                    (RetentionIntrinsic::StringPointer, [source]) => {
+                        let mut result = source.clone();
+                        result.roots.clear();
+                        result.byte_pointer = true;
+                        return Ok(result);
+                    }
+                    (RetentionIntrinsic::PointerString, [source]) => {
+                        return Ok(env.expand(source.clone()));
+                    }
+                    (RetentionIntrinsic::Copy, [destination, source, _]) => {
+                        let contents = env.contents(source);
+                        env.write_contents(destination, &contents);
+                        return Ok(env.expand(destination.clone()));
+                    }
+                    (RetentionIntrinsic::Fill, [destination, _, _]) => {
+                        return Ok(env.expand(destination.clone()));
+                    }
+                    _ => {}
+                }
+            }
         }
         let fresh_allocation =
             resolved.is_some_and(|name| self.analyzer.fresh_result_intrinsics.contains(name));
@@ -859,6 +1158,9 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
         }
         if result_type.is_some_and(|ty| !self.analyzer.retention_value_has_dependencies(ty)) {
             return Ok(Value::default());
+        }
+        if result_type.is_none_or(|ty| self.analyzer.retention_type_may_contain_storage(ty)) {
+            result = env.uncertain_result(expr.span, result);
         }
         Ok(result)
     }

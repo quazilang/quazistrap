@@ -39,6 +39,41 @@ Expression and type traversal have conservative resource bounds. Derivation
 polls typed cooperative cancellation during declaration, iteration, statement,
 and expression work. Analysis reuse clears all facts.
 
+## Raw storage and copying
+
+The evaluator separates a pointer's identity from the contents reachable
+through it. Lexical bindings, allocation sites and unmodeled expression sites
+have structurally distinct identities. Branch/loop merges preserve reachable
+allocation cells after branch-local bindings leave scope. Explicit loads and
+implicit field/index/iteration reads through references recover stored pointer
+identities; writes use the addressed storage rather than the pointer binding.
+Field and element paths remain coarse and writes are weak unions.
+
+Declared `quazi.malloc`, `quazi.memcpy`, `quazi.memmove`, `quazi.memset`,
+`quazi.str.as_ptr` and `quazi.str.from_ptr` intrinsics have bounded storage
+semantics. Recognition uses resolved declaration/attribute identity, not API
+names. Named actuals use declared slots. Copying a stored `str` handle retains
+its owner dependencies; copying ordinary UTF-8 character bytes into fresh
+storage does not copy that handle. String-pointer conversions preserve any
+already tracked storage and uncertainty. Fill operations never erase an
+existing dependency merely because bytes were overwritten.
+
+Unknown pointer writes may affect any later memory read, and unknown reads may
+observe any earlier known write. These shared facts participate in branch/loop
+convergence. Known direct allocations remain distinct until uncertainty connects
+them. A source helper's empty parameter-slot summary does not prove its returned
+storage fresh or empty: pointer-bearing results retain conservative abstract
+storage even without an input dependency. This includes raw-pointer fields in
+aggregates. The model deliberately does not serialize source allocation or
+effect certificates, and may retain unrelated inputs at uncertain boundaries.
+
+These facts allow valid prelude range copies to remain independent after the
+original owner is released. They do not enable new pointer casts, projected
+address-of syntax, element loans, or arbitrary unsafe memory reconstruction.
+Raw-pointer operations retain their existing unsafe validity obligations;
+complete raw aliasing, external/global state, byte ranges and interprocedural
+memory effects are not certified by these parameter-slot facts.
+
 ## Lexical enforcement
 
 `borrow.rs` propagates retained roots through named aggregates, fixed arrays,
@@ -65,9 +100,10 @@ call graph now retains [argument storage facts](ownership-call-arguments.md),
 but still lacks control-flow edges and effect proofs.
 
 QZI remains v13, and its ownership envelope remains Unverified. Source result
-facts are not serialized as ownership certificates. QZC v14 invalidates older
+facts are not serialized as ownership certificates. QZC v15 invalidates older
 exact hits and reusable units so previously accepted source must pass these
-checks again. Historical QZI artifacts have not acquired this source proof.
+checks again, including the raw-storage dependency model. Historical QZI
+artifacts have not acquired this source proof.
 
 ## Verification
 
@@ -78,3 +114,9 @@ owned-storage projection restrictions. Run
 `python3 scripts/check_result_retention.py target/debug/qz` for unsafe-source
 rejections during checking/building/QZI emission and valid source/QZI native
 execution plus Windows COFF emission. COFF emission is not Windows execution.
+
+`semantic::retention_memory_tests` covers known/unknown storage, copied handles,
+byte copies, source/opaque helper returns, nested pointer loads, implicit
+reference projections, branch/loop storage, intrinsic aliases/named slots,
+string-pointer round trips, weak fills and analyzer reuse. It also locks the
+existing rejection of pointer/integer casts and projected address-of syntax.

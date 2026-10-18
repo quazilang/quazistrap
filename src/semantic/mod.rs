@@ -17,6 +17,8 @@ mod places;
 #[cfg(test)]
 mod places_tests;
 mod retention;
+#[cfg(test)]
+mod retention_memory_tests;
 pub(crate) mod typecheck;
 mod unused;
 
@@ -84,6 +86,7 @@ pub struct Analyzer {
     /// Conservative source result dependencies in declared parameter slot order.
     pub(super) result_retention: std::collections::BTreeMap<String, BTreeSet<usize>>,
     pub(super) fresh_result_intrinsics: HashSet<String>,
+    retention_intrinsics: HashMap<String, retention::RetentionIntrinsic>,
     /// Last type-check annotation per source span; stable through ownership passes.
     pub(super) retention_annotation_index: HashMap<(usize, usize), usize>,
     /// Source-body call facts for the conservative ownership shortcut. Unlike
@@ -884,6 +887,7 @@ impl Analyzer {
             call_dependencies: HashMap::new(),
             result_retention: std::collections::BTreeMap::new(),
             fresh_result_intrinsics: HashSet::new(),
+            retention_intrinsics: HashMap::new(),
             retention_annotation_index: HashMap::new(),
             source_call_effects: HashMap::new(),
             ownership_call_sites: HashMap::new(),
@@ -1442,6 +1446,7 @@ impl Analyzer {
         self.call_dependencies.clear();
         self.result_retention.clear();
         self.fresh_result_intrinsics.clear();
+        self.retention_intrinsics.clear();
         self.retention_annotation_index.clear();
         self.source_call_effects.clear();
         self.ownership_call_sites.clear();

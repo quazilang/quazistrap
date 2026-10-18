@@ -2,6 +2,60 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-18, raw-storage result retention)
+
+The unfinished raw-memory refinement from the preceding checkpoint is now
+integrated and verified. Pointer identity is separate from stored contents;
+lexical, direct-allocation and unmodeled expression cells have tagged identities.
+Explicit and implicit field/index/iteration loads recover stored pointer targets.
+Unknown reads/writes share conservative weak facts through branch/loop merges.
+Source pointer/aggregate helper results never become proven-empty storage just
+because their retained parameter slots are empty. Intrinsic copy/fill and
+string-pointer facts follow resolved declarations and named slots; byte-view
+conversions preserve known underlying storage and uncertainty.
+
+Valid UTF-8 range copies now remain independent after releasing their source
+owner. Copied view handles keep their borrowed roots, including helper allocation,
+nested pointer, temporary result and unknown-alias paths. No pointer/integer
+casts, projected address-of syntax, borrowed element APIs or reference escapes
+were enabled. Exact effects/projections, external/global memory, destruction
+and artifact verification remain D-014 work. QZI13 stays Unverified; QZC15
+invalidates v14 exact and reusable caches so source checks rerun.
+
+Correction to the prior checkpoint: its saved (&view) as *u8 regression is
+INVALID source (S06). It proved a metadata discrepancy on rejected input, not
+a runtime vulnerability. New valid tests use allocated source slots or supported
+direct-address argument conversion. Five of the initial eight valid memory
+tests failed with the inherited dirty refinement. The previous committed
+compiler also rejects the new valid owned-range copy fixture; current source
+and QZI native execution pass after freeing the original owner. Both old and new
+committed semantics reject the two negative CLI fixtures; do not claim new old-
+compiler unsafe acceptance from them.
+
+Verification with pinned stable Rust/bfd: full cargo test --offline -q passes
+831/831, focused semantic::retention 39/39 (23 memory regressions), cache-version
+guard, build and clippy pass with existing warnings. Expanded result-retention
+runner passes 12 rejected / 7 valid cases, with source/QZI native and Windows
+COFF. Dynamic-vtable/cache integration passes. Isolated real STD receiver suite
+passes 10 tests, three S10 rejection probes, QZI execution and COFF. Full STD,
+Windows host runtime, complete effect analysis and workspace readiness are not
+claimed. See docs/changes/2026-10-18-raw-storage-retention.md and
+/tmp/quazi-memory-retention-*.log. Independent reviewers verified range-copy
+independence and the retained-owner rejection fixtures in /tmp.
+
+Graphify query and AST update used; current diagnostic has 63 dangling edges
+and 43 undirected endpoint collisions. It excludes .qz semantics. The raw
+refinement files now belong to this completed local checkpoint; no unfinished
+raw-memory patch from the previous checkpoint is intentionally left unstaged.
+Preserve compiler .codex/, example35 build artifacts, STD CLI work and JetBrains
+.gradle/. No STD/editor sources were changed. Local commits only; no push,
+publication, PR, external service changes or documentation website.
+
+Next: D-014 typed reads/writes and CFG/provenance/effect composition, structural
+destruction and artifact-body verification, then D-015 and coherent Headers /
+HTTP / JSON migration with full STD checks. The original ../goal.md readiness
+objective remains active and substantially larger than these checkpoints.
+
 ## Checkpoint (2026-10-18, ownership call argument facts)
 
 Resumed the prior dirty D-014 argument-place pass using Graphify and two

@@ -69,5 +69,6 @@ Reads/writes, alias flow, control-flow edges, place moves, destruction effects,
 recursive effect composition and retained artifact-body verification remain
 required by [D-014](../decisions/whole-program-ownership.md). These snapshots do
 not enable [D-015 element loans](../decisions/borrowed-elements.md). QZI remains
-v13 with unverified envelopes; QZC remains v14 because runtime acceptance and
-emission do not change.
+v13 with unverified envelopes. Argument snapshots do not change emission;
+QZC v15 separately invalidates caches for the
+[raw-storage retention checks](source-result-retention.md#raw-storage-and-copying).

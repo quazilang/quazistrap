@@ -179,6 +179,15 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
   remains a local projection root. These are conservative source facts, not
   exact projection effects, escape certificates, or verified QZI summaries;
   D-014 and D-015 remain incomplete.
+- Retention storage identities are tagged lexical/allocation/unmodeled cells.
+  Pointer identity and stored contents are separate; explicit and implicit
+  projection loads must recover stored pointer targets. Unknown writes and
+  reads use shared weak memory facts, merged through branches/loops. Declared
+  memory/string-pointer intrinsics distinguish copied UTF-8 bytes from view
+  handles without inferring behavior from API names. Preserve known pointees
+  through string-pointer round trips; an empty source result slot summary is
+  not a freshness proof. Structural storage queries include nested raw fields
+  while the lexical view query retains its separate existing semantics.
 - Quazi `fn` values are affine owners. Passing, returning, and assignment move
   them; calls borrow them; self-assignment is rejected. Until recursive cleanup
   and capture ownership are implemented, do not permit `fn` inside aggregates
