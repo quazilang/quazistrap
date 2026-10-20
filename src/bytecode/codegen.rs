@@ -19,7 +19,7 @@ use crate::abi::{
 };
 use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
-use crate::semantic::{ConstValue, SemanticReport};
+use crate::semantic::{ConstValue, OwnershipArgumentRole, SemanticReport};
 
 fn chunk_requires_owned_callable_companions(chunk: &Chunk) -> bool {
     chunk.constants.iter().any(|constant| {
@@ -230,6 +230,7 @@ pub struct Codegen<'a> {
     /// Resolved Quazi function name -> portable C export description.
     foreign_exports: HashMap<String, ForeignSymbol>,
     source_files: Vec<SourceFile>,
+    named_call_slots: NamedCallSlots,
     external_call_relocations: Vec<QziCallRelocation>,
     library_export_exclusions: Option<HashSet<PathBuf>>,
     test_mode: bool,
@@ -239,6 +240,84 @@ pub struct Codegen<'a> {
     incremental_snapshot: Vec<CachedCodegenUnit>,
     incremental_hits: usize,
     incremental_misses: usize,
+}
+
+/// Declaration slots retained by semantic analysis, independent of emitted
+/// specialization names. Different concrete callers must agree on a source
+/// site's syntactic argument mapping.
+type NamedArgumentSlots = Vec<(OwnershipArgumentRole, Option<usize>)>;
+type NamedCallSlots = HashMap<(usize, usize), Option<NamedArgumentSlots>>;
+
+fn named_call_slots(report: &SemanticReport) -> NamedCallSlots {
+    let mut result = HashMap::new();
+    for callable in &report.ownership_call_graph {
+        for site in &callable.calls {
+            let Some(arguments) = &site.arguments else {
+                continue;
+            };
+            let slots = arguments
+                .actuals
+                .iter()
+                .map(|argument| (argument.role.clone(), argument.parameter_slot))
+                .collect::<Vec<_>>();
+            result
+                .entry((site.span.start, site.span.end))
+                .and_modify(|previous: &mut Option<Vec<_>>| {
+                    if previous.as_ref() != Some(&slots) {
+                        *previous = None;
+                    }
+                })
+                .or_insert(Some(slots));
+        }
+    }
+    result
+}
+
+fn order_named_arguments(
+    slots: Option<&Option<NamedArgumentSlots>>,
+    positional: &[Expr],
+    named: &[(String, Expr)],
+) -> Result<Vec<Expr>, String> {
+    let slots = slots.and_then(Option::as_ref).ok_or_else(|| {
+        "named call has no unambiguous resolved declaration-slot mapping".to_string()
+    })?;
+    let supplied =
+        positional
+            .iter()
+            .enumerate()
+            .map(|(index, expression)| (OwnershipArgumentRole::Positional(index), expression))
+            .chain(named.iter().map(|(name, expression)| {
+                (OwnershipArgumentRole::Named(name.clone()), expression)
+            }));
+    let expected = slots
+        .iter()
+        .filter(|(role, _)| *role != OwnershipArgumentRole::Receiver)
+        .collect::<Vec<_>>();
+    if expected.len() != positional.len() + named.len() {
+        return Err(
+            "named call declaration-slot mapping does not cover every supplied argument"
+                .to_string(),
+        );
+    }
+    let mut ordered = Vec::with_capacity(expected.len());
+    for ((role, expression), (expected_role, slot)) in supplied.zip(expected) {
+        if &role != expected_role {
+            return Err(
+                "named call declaration-slot mapping does not match its supplied arguments"
+                    .to_string(),
+            );
+        }
+        let slot =
+            slot.ok_or_else(|| "named call argument has no resolved declaration slot".to_string())?;
+        ordered.push((slot, expression.clone()));
+    }
+    // Stable sorting keeps all supplied variadic elements in their existing
+    // order. Receiver arguments are emitted separately by method dispatch.
+    ordered.sort_by_key(|(slot, _)| *slot);
+    Ok(ordered
+        .into_iter()
+        .map(|(_, expression)| expression)
+        .collect())
 }
 
 /// Physical layout contract for a generic container whose initialized elements
@@ -316,6 +395,7 @@ impl<'a> Codegen<'a> {
             }
         }
         Self {
+            named_call_slots: named_call_slots(report),
             report,
             resolution_errors: Rc::new(RefCell::new(Vec::new())),
             fn_value_layouts,
@@ -1971,7 +2051,7 @@ impl<'a> Codegen<'a> {
             output_chunks,
             next_closure_idx,
             type_subst,
-            &self.report.fn_param_names,
+            &self.named_call_slots,
             &self.source_files,
             &self.report.annotated_exprs,
             Rc::clone(&self.resolution_errors),
@@ -2443,8 +2523,8 @@ struct FnCompiler<'a> {
     closure_env_regs: HashSet<u8>,
     /// Type substitution map for monomorphized functions: generic param name → concrete type.
     type_subst: HashMap<String, TypeKind>,
-    /// Ordered parameter names per function: used to resolve named arguments at call sites.
-    fn_param_names: &'a HashMap<String, Vec<String>>,
+    /// Semantic declaration-slot mappings for source call sites.
+    named_call_slots: &'a NamedCallSlots,
     source_files: &'a [SourceFile],
     /// Expression annotations from semantic analysis (resolved function names, types, etc.)
     annotated_exprs: &'a [crate::semantic::ExprAnnotation],
@@ -2618,7 +2698,7 @@ impl<'a> FnCompiler<'a> {
         output_chunks: &'a mut Vec<Chunk>,
         next_closure_idx: &'a mut u16,
         type_subst: HashMap<String, TypeKind>,
-        fn_param_names: &'a HashMap<String, Vec<String>>,
+        named_call_slots: &'a NamedCallSlots,
         source_files: &'a [SourceFile],
         annotated_exprs: &'a [crate::semantic::ExprAnnotation],
         resolution_errors: Rc<RefCell<Vec<String>>>,
@@ -2667,7 +2747,7 @@ impl<'a> FnCompiler<'a> {
             next_closure_idx,
             closure_env_regs: HashSet::new(),
             type_subst,
-            fn_param_names,
+            named_call_slots,
             source_files,
             annotated_exprs,
             loop_stack: Vec::new(),
@@ -2679,43 +2759,17 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
-    /// Merge positional args + named args into correct param order (cloned).
-    /// Named args are inserted at their declared parameter positions.
     fn merge_named_args(
         &self,
-        callee_name: &str,
+        span: Span,
         positional: &[Expr],
         named: &[(String, Expr)],
-    ) -> Vec<Expr> {
-        let param_names = self.fn_param_names.get(callee_name);
-        let total = param_names
-            .map(|n| n.len())
-            .unwrap_or(positional.len() + named.len());
-        let mut result: Vec<Option<Expr>> = vec![None; total];
-        for (i, e) in positional.iter().enumerate() {
-            if i < total {
-                result[i] = Some(e.clone());
-            }
-        }
-        if let Some(names) = param_names {
-            for (arg_name, arg_expr) in named {
-                if let Some(pos) = names.iter().position(|n| n == arg_name)
-                    && pos < total
-                {
-                    result[pos] = Some(arg_expr.clone());
-                }
-            }
-        } else {
-            // Unknown function — append named args after positional.
-            let start = positional.len();
-            for (i, (_, arg_expr)) in named.iter().enumerate() {
-                let pos = start + i;
-                if pos < total {
-                    result[pos] = Some(arg_expr.clone());
-                }
-            }
-        }
-        result.into_iter().flatten().collect()
+    ) -> Result<Vec<Expr>, String> {
+        order_named_arguments(
+            self.named_call_slots.get(&(span.start, span.end)),
+            positional,
+            named,
+        )
     }
 
     /// Resolve a type through the monomorphization substitution map.
@@ -7771,7 +7825,13 @@ impl<'a> FnCompiler<'a> {
                     let args: &[Expr] = if named_args.is_empty() {
                         args
                     } else {
-                        merged_owned = self.merge_named_args(&call_name, args, named_args);
+                        merged_owned = match self.merge_named_args(expr.span, args, named_args) {
+                            Ok(arguments) => arguments,
+                            Err(error) => {
+                                self.codegen_error.get_or_insert(error);
+                                return dst;
+                            }
+                        };
                         &merged_owned
                     };
                     if self.emit_c_variadic_call(&call_name, args, dst) {
@@ -8027,7 +8087,13 @@ impl<'a> FnCompiler<'a> {
                 let args: &[Expr] = if named_args.is_empty() {
                     args
                 } else {
-                    merged_owned = self.merge_named_args(method, args, named_args);
+                    merged_owned = match self.merge_named_args(expr.span, args, named_args) {
+                        Ok(arguments) => arguments,
+                        Err(error) => {
+                            self.codegen_error.get_or_insert(error);
+                            return self.alloc_reg();
+                        }
+                    };
                     &merged_owned
                 };
                 // Sema also resolves a namespaced file's own module calls
@@ -9077,7 +9143,7 @@ impl<'a> FnCompiler<'a> {
                     &mut temp_chunks,
                     &mut *self.next_closure_idx,
                     self.type_subst.clone(),
-                    self.fn_param_names,
+                    self.named_call_slots,
                     self.source_files,
                     self.annotated_exprs,
                     Rc::clone(&self.resolution_errors),
@@ -9921,6 +9987,108 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
     use crate::semantic::{Analyzer, SourceFile};
+
+    fn parsed_named_arguments(source: &str) -> (Vec<Expr>, Vec<(String, Expr)>) {
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let ItemKind::Fn {
+            body: Some(body), ..
+        } = &program.items[0].node
+        else {
+            panic!("function");
+        };
+        let StmtKind::Return(Some(expression)) = &body.stmts[0].node else {
+            panic!("return call");
+        };
+        let ExprKind::Call {
+            args, named_args, ..
+        } = &expression.node
+        else {
+            panic!("call");
+        };
+        (args.clone(), named_args.clone())
+    }
+
+    #[test]
+    fn named_arguments_keep_all_variadic_actuals_in_slot_order() {
+        let (positional, named) =
+            parsed_named_arguments("fn main() i32 { ret target(10, 20, 30, tail = 40); }");
+        let slots = Some(vec![
+            (OwnershipArgumentRole::Positional(0), Some(0)),
+            (OwnershipArgumentRole::Positional(1), Some(1)),
+            (OwnershipArgumentRole::Positional(2), Some(1)),
+            (OwnershipArgumentRole::Named("tail".into()), Some(1)),
+        ]);
+        let ordered = order_named_arguments(Some(&slots), &positional, &named).unwrap();
+        let values = ordered
+            .iter()
+            .map(|expression| match expression.node {
+                ExprKind::Literal(Literal::Int(value)) => value,
+                _ => panic!("integer actual"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(values, [10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn named_arguments_skip_receiver_slot_without_short_name_lookup() {
+        let (positional, named) =
+            parsed_named_arguments("fn main() i32 { ret target(second = 2, first = 1); }");
+        let slots = Some(vec![
+            (OwnershipArgumentRole::Receiver, Some(0)),
+            (OwnershipArgumentRole::Named("second".into()), Some(2)),
+            (OwnershipArgumentRole::Named("first".into()), Some(1)),
+        ]);
+        let ordered = order_named_arguments(Some(&slots), &positional, &named).unwrap();
+        assert!(matches!(
+            ordered[0].node,
+            ExprKind::Literal(Literal::Int(1))
+        ));
+        assert!(matches!(
+            ordered[1].node,
+            ExprKind::Literal(Literal::Int(2))
+        ));
+    }
+
+    #[test]
+    fn named_arguments_reject_missing_ambiguous_and_incomplete_slot_evidence() {
+        let (positional, named) =
+            parsed_named_arguments("fn main() i32 { ret target(value = 1); }");
+        for slots in [
+            None,
+            Some(vec![]),
+            Some(vec![(OwnershipArgumentRole::Named("value".into()), None)]),
+            Some(vec![(
+                OwnershipArgumentRole::Named("other".into()),
+                Some(0),
+            )]),
+        ] {
+            assert!(order_named_arguments(Some(&slots), &positional, &named).is_err());
+        }
+        assert!(order_named_arguments(None, &positional, &named).is_err());
+        let source =
+            "fn target(value: i32) i32 { ret value; } fn main() i32 { ret target(value = 1); }";
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let mut report = Analyzer::new().analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let mut conflicting = report
+            .ownership_call_graph
+            .iter()
+            .find(|node| node.id.callable == "main")
+            .unwrap()
+            .clone();
+        let site = &mut conflicting.calls[0];
+        let key = (site.span.start, site.span.end);
+        site.arguments.as_mut().unwrap().actuals[0].parameter_slot = Some(1);
+        report.ownership_call_graph.push(conflicting);
+        assert_eq!(named_call_slots(&report).get(&key), Some(&None));
+        let error = Codegen::new(&report)
+            .compile_program(&program, &[])
+            .unwrap_err();
+        assert!(
+            error.contains("unambiguous resolved declaration-slot mapping"),
+            "{error}"
+        );
+    }
 
     fn compile(src: &str) -> Vec<Chunk> {
         let tokens = Lexer::new(src).tokenize();

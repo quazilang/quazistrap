@@ -2,6 +2,45 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-20, named calls and quazifetch RAM)
+
+Named call emission now orders supplied operands using semantic declaration
+slots. Bare method names previously missed qualified declarations or collided
+with unrelated functions, silently swapping accepted named arguments. Source
+spans retain one consistent mapping across concrete specializations; missing or
+conflicting maps fail explicitly. Receiver operands stay separate and repeated
+variadic slots preserve supplied order. This does not add a source evaluation-
+order guarantee, ownership permissions or artifact-body verification. QZI13 is
+unchanged; QZC16 invalidates older exact and reusable chunks.
+
+Full compiler suite: 834/834 (831 existing plus three focused regressions).
+Native/QZI-only/Windows COFF and aliased scalar QZI library imports with the
+defining source removed pass scripts/check_named_arguments.py. The preceding
+compiler fails the fixture at native exit 2. Independent read-only review found
+no blocking issue. Named calls through erased function values still lack
+parameter-name metadata and fail explicitly; a semantic diagnostic is follow-up.
+
+User-reported quazifetch S10 errors no longer reproduce after the preceding
+raw-retention fix: ordinary build/run succeed. A separate STD commit d3e3a0b
+fixes Linux memory_available to use MemAvailable including reclaimable cache,
+with native free-RAM fallback on unreadable/invalid procfs. Six deterministic
+parser fixtures pass scripts/check_os_memory.py. Quazifetch source and QZI native
+runs, repeated incremental builds, and Windows object emission pass. Live used
+RAM follows installed fastfetch within sampling fluctuation (about 2.7 GiB).
+Windows-host runtime and full STD checks are not claimed.
+
+Rust checks use /tmp/quazi-named-rust-bin wrappers around the existing stable
+binaries: their original Nix ELF loader disappeared after the environment
+update. Build, full unit tests and cache-version regression pass with offline
+Cargo and bfd. See docs/changes/2026-10-20-named-call-slots.md for commands and
+lint details. Graphify query and AST update used; the local index is a navigation
+aid and excludes .qz semantics. Preserve STD CLI work, compiler .codex/ and
+example35 build artifacts. No push, PR, external publication or editor changes.
+
+The broad ../goal.md readiness objective remains unfinished: D-014 CFG/effects,
+structural destruction and artifact verification, D-015, and coherent full STD
+migration remain outstanding. These bug fixes are a bounded checkpoint.
+
 ## Checkpoint (2026-10-18, raw-storage result retention)
 
 The unfinished raw-memory refinement from the preceding checkpoint is now

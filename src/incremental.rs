@@ -12,8 +12,8 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Re-run source provenance checks with conservative raw-memory alias tracking.
-const QZC_VERSION: u8 = 15;
+// Re-emit named calls using semantic declaration slots instead of short names.
+const QZC_VERSION: u8 = 16;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {
@@ -639,7 +639,7 @@ mod tests {
         );
         let current = fs::read(&cache).unwrap();
         assert_eq!(&current[..4], QZC_MAGIC);
-        for version in [4, 9, 10, 11, 12, 13, 14] {
+        for version in [4, 9, 10, 11, 12, 13, 14, 15] {
             let mut legacy = current.clone();
             legacy[4] = version;
             fs::write(&cache, legacy).unwrap();
