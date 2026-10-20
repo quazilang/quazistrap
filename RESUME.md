@@ -2,6 +2,60 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-20, typed Try propagation and wrapper aliases)
+
+Confirmed and fixed the next audit issue: `?` checked its operand but not its
+failure return. Baseline /tmp/quazi-try-before accepts a Result[i32,i32]? inside
+an i32-returning function and emits an enum-object address as the scalar return.
+Analysis now requires the nearest callable to return the same wrapper. Result
+error types must match structurally in both directions after alias resolution;
+success types may differ. This rejects numeric/pointer/generic error conversions
+that lowering never emits. Unknown qualified-constructor operands receive S14.
+Closures replace the return context even for unknown inferred returns, and do
+not inherit a surrounding function's wrapper. Scoped replacement restores the
+context (including before propagating function-check cancellation), and reuse
+clears it. Existing wrapper-result closure ownership gates remain enforced.
+
+The native alias fixture also exposed `match` treating Result/Option aliases
+as unknown enums. It now resolves the whole scrutinee before reference peeling,
+pattern/payload/exhaustiveness checking and borrowed-enum detection. Aliases to
+references retain discriminant-only restrictions; no borrowed payload projection
+is enabled. No codegen or ABI change is needed. QZC19 invalidates older exact
+and reusable source caches; QZI13 remains Unverified, and old QZI bodies need
+source rebuild for the new checks.
+
+Verification: full offline tests 861/861. Seven new tests cover wrappers,
+error conversions, nested closures/restoration, alias/generic/method success,
+unknown operands, analyzer reuse and alias match restrictions. Before logs show
+the original five propagation tests and separate match-alias regression failing.
+Build and direct Clippy-driver check pass with existing warnings. New
+scripts/check_try_propagation.py rejects nine invalid programs via check and
+before native/QZI/COFF emission; eight success/failure/discriminant assertions
+pass native and QZI with source removed, and Windows COFF emits. Its optional
+--before-qz rejects the old invalid source cache, then runs valid source and an
+exact hit. The QZI-only emission runs outside the deleted-entry manifest because
+project loading validates its source entry. This is an existing CLI boundary,
+not a frontend dependency of artifact emission.
+
+Expression-control 36 checks and retention 12 rejected/7 valid pass; six isolated
+STD memory tests pass. Ordinary matching-compiler quazifetch build/run pass.
+Independent read-only design/implementation and regression reviews used;
+Graphify queries and AST update used. Logs: /tmp/quazi-try-*.log. Existing Rust
+ELF-loader wrappers remain necessary. See
+[change record](docs/changes/2026-10-20-typed-try-propagation.md) and
+[migration](docs/migrations/typed-try-propagation.md).
+
+Commit code first, then refresh README's source checkpoint and test count as
+requested. Checklist credit remains 73.2% overall / 26.8% remaining, LSP16/20,
+Ownership9/16; this fix does not complete a new roadmap requirement.
+
+Next: audit break/continue cleanup using native destructor counters; jumps may
+skip owned-local cleanup. Then continue normalized lvalue/call/aggregate/match
+schedules, typed memory access, effect/provenance composition, structural
+destruction and artifact verification before D-015/full STD migration. The broad
+../goal.md objective remains active and incomplete. Preserve STD CLI dirt,
+compiler .codex/ and example35 outputs. No push or external publication.
+
 ## Checkpoint (2026-10-20, shared expression control and logical bools)
 
 src/evaluation.rs now supplies operand control consumed by codegen and source

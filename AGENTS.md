@@ -135,9 +135,11 @@ scope exits are explicit; closure bodies have separate deferred graphs.
 codegen. Unclassified expression regions and implicit iteration effects remain
 opaque. Result identities do not prove typed accesses or aliases. Do not use
 these graphs as typed effects, loan permissions or artifact certificates. See
-[the control-flow contract](docs/internals/source-control-flow.md). QZC18
-invalidates older exact and reusable chunks for refined flow and canonical
-logical-bool emission.
+[the control-flow contract](docs/internals/source-control-flow.md). The type
+checker independently validates `?` against the nearest callable return wrapper
+and invariant Result error payload; aliases resolve before checking. QZC19
+invalidates older exact and reusable chunks so source caches rerun these checks.
+The preceding QZC18 introduced refined flow and canonical logical-bool emission.
 
 `semantic/retention.rs` distinguishes lexical bindings, direct allocations and
 unmodeled storage while deriving source result dependencies. Explicit/implicit

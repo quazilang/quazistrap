@@ -115,7 +115,10 @@ This validation says nothing about expression effects or ownership correctness.
 The pass leaves all lexical borrow rules, call-closure eligibility and artifact
 verification flags unchanged. Typed reads/writes, alias flow, moves, destruction,
 recursive effect composition and retained artifact-body verification remain
-required. QZI13 stays Unverified; QZC18 invalidates older exact and reusable
-caches for refined flow checks and canonical logical-bool emission. Existing
+required. Try wrapper/error compatibility is checked independently by semantic
+analysis against the nearest callable return context; graph edges alone do not
+certify it. QZI13 stays Unverified; QZC19 invalidates older exact and reusable
+caches for these typed propagation checks. QZC18 introduced refined flow and
+canonical logical-bool emission. Existing
 QZI bodies retain their emitted behavior; rebuild affected dependencies from
 source to obtain the logical-result fix.

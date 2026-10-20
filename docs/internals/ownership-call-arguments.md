@@ -74,6 +74,6 @@ flow, complete expression control flow, place moves, destruction effects,
 recursive effect composition and retained artifact-body verification remain
 required by [D-014](../decisions/whole-program-ownership.md). These snapshots do
 not enable [D-015 element loans](../decisions/borrowed-elements.md). QZI remains
-v13 with unverified envelopes. QZC v18 reruns refined flow checks and emits
-canonical logical bools; v16 introduced the
+v13 with unverified envelopes. QZC v19 reruns typed `?` compatibility checks;
+v18 introduced refined flow and canonical logical bools; v16 introduced the
 [named-call emission correction](../changes/2026-10-20-named-call-slots.md).

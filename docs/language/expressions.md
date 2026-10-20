@@ -223,10 +223,28 @@ for i : 0..=10 { ... }     // 0 through 10
 Outside loop headers, range expressions produce the prelude `Range` value,
 consumed by APIs such as `std.random.range(0..=5)`.
 
+Transparent aliases to enum types are resolved before checking match patterns,
+payload bindings and exhaustiveness. An alias to `&Option[T]` keeps the same
+borrowed-enum restrictions as the underlying reference.
+
 ## Error propagation
 
 `expression?` unwraps `Some`/`Ok` values. `None` or `Err` returns early from
-a function with a compatible return type:
+the nearest function or closure. `Option[T]?` requires an `Option[U]` return
+type; `Result[T, E]?` requires `Result[U, E]`. The success types `T` and `U`
+may differ. After transparent alias resolution, error types must match without
+conversion: `?` never widens numbers, changes signedness or converts error
+pointers. Handle and convert errors explicitly with `match` when needed.
+
+A closure has its own return context and cannot propagate to the enclosing
+function. Its return type must be known and compatible; wrapper-returning
+closures currently also fail the separate closure-result ownership gate.
+A qualified constructor such as `Option.Some(1)` has no resolved result type
+yet and cannot be used directly as a `?` operand. Use a typed local built with
+`Some`/`Ok`/`Err`/`None`, or a function with a declared wrapper return type.
+Incompatible or unknown propagation emits `S14`.
+
+For example (fragment, requiring a `ParseError` type and `parse` method):
 
 ```quazi
 fn port(text: str) Result[u16, ParseError] {

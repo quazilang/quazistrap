@@ -107,6 +107,8 @@ pub struct Analyzer {
     pub(super) called_functions: BTreeSet<String>,
     pub(super) call_counts: HashMap<String, usize>,
     pub(super) current_function: Vec<String>,
+    /// Nearest callable return type; closures replace the surrounding context.
+    pub(super) current_return_type: Option<TypeKind>,
     /// Generic parameters of the function currently being type-checked.
     pub(super) current_generic_params: Vec<Vec<String>>,
     pub(super) math_optimizations: Vec<MathOptimization>,
@@ -904,6 +906,7 @@ impl Analyzer {
             called_functions: BTreeSet::new(),
             call_counts: HashMap::new(),
             current_function: Vec::new(),
+            current_return_type: None,
             current_generic_params: Vec::new(),
             math_optimizations: Vec::new(),
             lazy_import_accesses: HashMap::new(),
@@ -1468,6 +1471,7 @@ impl Analyzer {
         self.called_functions.clear();
         self.call_counts.clear();
         self.current_function.clear();
+        self.current_return_type = None;
         self.current_generic_params.clear();
         self.math_optimizations.clear();
         self.lazy_import_accesses.clear();
@@ -2559,6 +2563,173 @@ mod tests {
         let program = parse_program(src);
         let mut analyzer = Analyzer::new();
         analyzer.analyze_program(&program)
+    }
+
+    #[test]
+    fn try_requires_a_compatible_callable_return_wrapper() {
+        for source in [
+            "fn bad(value: Result[i32, i32]) i32 { ret value?; } fn main() void {}",
+            "fn bad(value: Option[i32]) void { const item = value?; } fn main() void {}",
+            "fn bad(value: Result[i32, i32]) Option[i32] { ret Some(value?); } fn main() void {}",
+            "fn bad(value: Option[i32]) Result[i32, i32] { ret Ok(value?); } fn main() void {}",
+            "fn bad(value: Result[i32, i32]) ! { const item = value?; } fn main() void {}",
+            "fn bad(value: Option[i32, i32]) Option[i32] { ret Some(value?); } fn main() void {}",
+            "fn bad(value: Result[i32]) Result[i32, i32] { ret Ok(value?); } fn main() void {}",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| { error.code == "S14" && error.message.contains("`?`") }),
+                "incompatible propagation accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn try_does_not_convert_error_payloads_or_unify_generic_binders() {
+        for source in [
+            "fn bad(value: Result[i32, i32]) Result[i32, f64] { ret Ok(value?); } fn main() void {}",
+            "fn bad(value: Result[i32, i32]) Result[i32, u32] { ret Ok(value?); } fn main() void {}",
+            "fn bad(value: Result[i32, *i32]) Result[i32, *u32] { ret Ok(value?); } fn main() void {}",
+            "fn bad[E, F](value: Result[i32, E]) Result[i32, F] { ret Ok(value?); } fn main() void {}",
+            "enum A { Failed, } enum B { Failed, } fn bad(value: Result[i32, A]) Result[i32, B] { ret Ok(value?); } fn main() void {}",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.code == "S14"
+                        && error.message.contains("`?`")
+                        && error.message.contains("error type")
+                }),
+                "unchecked error conversion accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn try_uses_the_nearest_closure_return_context() {
+        for declaration in [
+            "var callback: fn() i32 = || failed()?;",
+            "var callback = || failed()?;",
+            "var callback: fn() i32 = || apply(|| failed()?);",
+        ] {
+            let source = format!(
+                "fn failed() Result[i32, i32] {{ ret Err(7); }} fn apply(callback: fn() i32) i32 {{ ret callback(); }} fn outer() Result[i32, i32] {{ {declaration} ret Ok(1); }} fn main() void {{}}"
+            );
+            let report = analyze(&source);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| { error.code == "S14" && error.message.contains("`?`") }),
+                "closure inherited outer return wrapper: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn try_preserves_aliases_generic_errors_and_different_success_types() {
+        for source in [
+            "fn map(value: Result[i32, i32]) Result[bool, i32] { ret Ok(value? > 0); } fn main() void {}",
+            "fn map(value: Option[i32]) Option[bool] { ret Some(value? > 0); } fn main() void {}",
+            "type ErrorCode = i32; type Input = Result[i32, ErrorCode]; type Output = Result[bool, i32]; fn map(value: Input) Output { ret Ok(value? > 0); } fn main() void {}",
+            "type Maybe[T] = Option[T]; fn map(value: Maybe[i32]) Maybe[bool] { ret Some(value? > 0); } fn main() void {}",
+            "fn map[E](value: Result[i32, E]) Result[bool, E] { ret Ok(value? > 0); } fn main() void {}",
+            "type E = f64; fn map[E](value: Result[i32, E]) Result[bool, E] { ret Ok(value? > 0); } fn main() void {}",
+            "struct Code[T] { value: T, } type Failure[E] = Code[E]; fn map[E](value: Result[i32, Failure[E]]) Result[bool, Code[E]] { ret Ok(value? > 0); } fn main() void {}",
+            "struct Mapper {} impl Mapper { fn map(self: &Mapper, value: Result[i32, i32]) Result[bool, i32] { ret Ok(value? > 0); } } fn main() void {}",
+            "fn outer(value: Option[i32]) Option[bool] { var callback: fn() i32 = || 1; ret Some(value? > callback()); } fn main() void {}",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.is_empty(),
+                "valid propagation rejected: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn try_rejects_untyped_qualified_constructor_operands() {
+        for operand in [
+            "Option.Some(1)",
+            "Option.None",
+            "Result.Ok(1)",
+            "Result.Err(1)",
+        ] {
+            let source =
+                format!("fn test() Result[i32, i32] {{ ret Ok({operand}?); }} fn main() void {{}}");
+            let report = analyze(&source);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| { error.code == "S14" && error.message.contains("`?`") }),
+                "untyped propagation operand accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn match_resolves_wrapper_aliases_and_preserves_borrowed_enum_gates() {
+        for source in [
+            "type Wrapped = Result[i32, i32]; fn test(value: Wrapped) i32 { ret match value { Ok(item) => item, Err(code) => code, }; } fn main() void {}",
+            "type Maybe[T] = Option[T]; fn test(value: Maybe[bool]) bool { ret match value { Some(item) => item, None => false, }; } fn main() void {}",
+            "type Shared = &Option[i32]; fn test(value: Shared) bool { ret match value { Some(_) => true, None => false, }; } fn main() void {}",
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.is_empty(),
+                "alias match rejected: {source}\n{:?}",
+                report.errors
+            );
+        }
+        let report = analyze(
+            "type Shared = &Option[i32]; fn test(value: Shared) i32 { ret match value { Some(item) => item, None => 0, }; } fn main() void {}",
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.code == "S10" && error.message.contains("discriminant")),
+            "borrowed alias exposed a payload: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn try_return_context_is_restored_after_analysis() {
+        let source = "fn probe() Option[i32] { ret Some(optional()?); } fn optional() Option[i32] { ret None; } fn main() void {}";
+        let program = parse_program(source);
+        let mut analyzer = Analyzer::new();
+        let report = analyzer.analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(analyzer.current_return_type.is_none());
+        let crate::parser::ast::ItemKind::Fn {
+            body: Some(body), ..
+        } = &program.items[0].node
+        else {
+            panic!("probe function");
+        };
+        let crate::parser::ast::StmtKind::Return(Some(value)) = &body.stmts[0].node else {
+            panic!("probe return");
+        };
+        analyzer.type_check_expr(value, true);
+        assert!(
+            analyzer
+                .errors
+                .iter()
+                .any(|error| { error.code == "S14" && error.message.contains("`?`") })
+        );
+        let report = analyzer.analyze_program(&parse_program("fn main() void {}"));
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(analyzer.current_return_type.is_none());
     }
 
     #[test]

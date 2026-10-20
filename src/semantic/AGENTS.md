@@ -33,6 +33,16 @@ arity, and one-slot payload representation, but their result stays untyped
 until semantic constructor resolution exists; codegen lowers them
 structurally.
 
+`?` requires a resolved `Option[T]` or `Result[T, E]` operand and the same
+wrapper in the nearest callable return context; success types may differ.
+Resolve aliases first. Result error payloads are copied unchanged by lowering,
+so check their runtime shape in both directions, not ordinary assignment
+compatibility. Closures replace the surrounding return context even when their
+return type is unknown; an inference `Error` placeholder cannot grant propagation.
+Restore the context after body checking and clear it on analyzer reuse. Untyped
+qualified constructors cannot be propagated until their result is resolved.
+The separate closure-result ownership gate remains enforced.
+
 ## Value-Shape Gates
 
 One slot per value is the current internal storage contract outside register

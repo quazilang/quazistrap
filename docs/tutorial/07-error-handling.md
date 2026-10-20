@@ -107,8 +107,12 @@ fn load_config(path: str) Result[i32, ParseError] {
 }
 ```
 
-The enclosing function must have a compatible `Result` or `Option` return
-type.
+The nearest function must return the same wrapper: `Option[T]?` can propagate
+to `Option[U]`, and `Result[T, E]?` to `Result[U, E]`. The success types can
+differ; the error type must match after aliases resolve. `?` does not convert
+errors. Use `match` to perform an explicit conversion when needed. A closure
+cannot use `?` to return from its surrounding function. See the
+[precise propagation rules and current closure boundary](../language/expressions.md#error-propagation).
 
 ### Chaining with `?`
 

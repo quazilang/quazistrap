@@ -422,7 +422,10 @@ impl Analyzer {
                 }
 
                 let guaranteed = if let Some(body) = body {
-                    self.type_check_block(body, Some(&expected), checkpoint)?
+                    let previous_return = self.current_return_type.replace(expected.clone());
+                    let checked = self.type_check_block(body, Some(&expected), checkpoint);
+                    self.current_return_type = previous_return;
+                    checked?
                 } else {
                     true // bodyless declaration — no return check
                 };
@@ -2829,7 +2832,9 @@ impl Analyzer {
                 },
             );
         }
+        let previous_return = self.current_return_type.replace(expected_return.clone());
         let body_eval = self.type_check_expr_expected(body, reachable, Some(&expected_return));
+        self.current_return_type = previous_return;
         self.exit_scope_collect();
 
         if let Some(actual) = &body_eval.ty
@@ -4979,19 +4984,23 @@ impl Analyzer {
             }
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee_eval = self.type_check_expr(scrutinee, reachable);
+                let scrutinee_ty = scrutinee_eval
+                    .ty
+                    .as_ref()
+                    .map(|ty| self.resolve_type_aliases(ty));
                 // Enum discriminants are readable through either kind of safe
                 // reference. Payload projection remains unavailable: a payload
                 // binding would require materializing an aggregate or taking a
                 // reference to inline scalar storage, neither of which has a
                 // stable ownership/provenance model yet.
-                let match_scrutinee_ty = match &scrutinee_eval.ty {
+                let match_scrutinee_ty = match &scrutinee_ty {
                     Some(TypeKind::Ref { inner }) | Some(TypeKind::MutRef { inner }) => {
                         Some(inner.node.clone())
                     }
                     ty => ty.clone(),
                 };
                 let borrowed_enum_scrutinee = matches!(
-                    &scrutinee_eval.ty,
+                    &scrutinee_ty,
                     Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. })
                 ) && match_scrutinee_ty.as_ref().is_some_and(|ty| {
                     let TypeKind::Named { name, .. } = self.resolve_type_aliases(ty) else {
@@ -5526,33 +5535,7 @@ impl Analyzer {
                 }
             }
 
-            ExprKind::Try { expr: inner } => {
-                let inner_eval = self.type_check_expr(inner, reachable);
-                // Validate the wrapper and retain its payload type when known.
-                let payload_ty = match &inner_eval.ty {
-                    Some(TypeKind::Named { name, type_args })
-                        if (name == "Result" || name == "Option") && !type_args.is_empty() =>
-                    {
-                        Some(type_args[0].node.clone())
-                    }
-                    Some(TypeKind::Named { name, .. }) if name == "Result" || name == "Option" => {
-                        Some(TypeKind::Error)
-                    }
-                    Some(ty) => {
-                        self.push_error(
-                            expr.span,
-                            "S14",
-                            format!("`?` operator requires Result or Option, got {}", ty),
-                        );
-                        Some(TypeKind::Error)
-                    }
-                    None => None,
-                };
-                ExprEval {
-                    ty: payload_ty,
-                    const_value: None,
-                }
-            }
+            ExprKind::Try { expr: inner } => self.type_check_try_expr(expr, inner, reachable),
 
             ExprKind::Closure { params, body } => {
                 return self.type_check_closure_expr(expr, params, body, reachable, None);
@@ -5562,6 +5545,76 @@ impl Analyzer {
         self.reject_nested_owned_function_expression(expr, &result);
         self.annotate_expr(expr, &result, reachable, resolved_method);
         result
+    }
+
+    fn type_check_try_expr(&mut self, expr: &Expr, inner: &Expr, reachable: bool) -> ExprEval {
+        let inner_eval = self.type_check_expr(inner, reachable);
+        let operand = inner_eval
+            .ty
+            .as_ref()
+            .map(|ty| self.resolve_type_aliases(ty));
+        let (wrapper, type_args) = match &operand {
+            Some(TypeKind::Named { name, type_args })
+                if (name == "Result" && type_args.len() == 2)
+                    || (name == "Option" && type_args.len() == 1) =>
+            {
+                (name, type_args)
+            }
+            Some(TypeKind::Error) => return inner_eval,
+            _ => {
+                self.push_error(
+                    expr.span,
+                    "S14",
+                    format!(
+                        "`?` operator requires a known Result[T, E] or Option[T] operand, got {}",
+                        operand
+                            .as_ref()
+                            .map_or_else(|| "an unknown type".to_string(), ToString::to_string)
+                    ),
+                );
+                return ExprEval {
+                    ty: Some(TypeKind::Error),
+                    const_value: None,
+                };
+            }
+        };
+        let target = self
+            .current_return_type
+            .as_ref()
+            .map(|ty| self.resolve_type_aliases(ty));
+        match &target {
+            Some(TypeKind::Named { name, type_args: target_args })
+                if name == wrapper && target_args.len() == type_args.len() =>
+            {
+                // Failure lowering copies the payload unchanged. Assignment
+                // compatibility permits conversions which are not emitted here.
+                if wrapper == "Result"
+                    && !(self.types_have_same_runtime_shape(&target_args[1].node, &type_args[1].node)
+                        && self.types_have_same_runtime_shape(&type_args[1].node, &target_args[1].node))
+                {
+                    self.push_error(
+                        expr.span,
+                        "S14",
+                        format!(
+                            "`?` cannot propagate error type {} into {}; error types must match without conversion",
+                            type_args[1].node, target_args[1].node
+                        ),
+                    );
+                }
+            }
+            _ => self.push_error(
+                expr.span,
+                "S14",
+                format!(
+                    "`?` on {wrapper} requires an enclosing function or explicitly typed closure returning {wrapper}; current return type is {}",
+                    target.as_ref().map_or_else(|| "unavailable".to_string(), ToString::to_string)
+                ),
+            ),
+        }
+        ExprEval {
+            ty: Some(type_args[0].node.clone()),
+            const_value: None,
+        }
     }
 
     fn is_module_import_receiver(&self, object: &Expr) -> bool {
