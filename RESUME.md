@@ -45,8 +45,9 @@ ELF-loader wrappers remain necessary. See
 [change record](docs/changes/2026-10-20-typed-try-propagation.md) and
 [migration](docs/migrations/typed-try-propagation.md).
 
-Commit code first, then refresh README's source checkpoint and test count as
-requested. Checklist credit remains 73.2% overall / 26.8% remaining, LSP16/20,
+Code committed as 7e151aa, followed by a separate README/audit refresh as
+requested. README now references that source checkpoint and 861 tests.
+Checklist credit remains 73.2% overall / 26.8% remaining, LSP16/20,
 Ownership9/16; this fix does not complete a new roadmap requirement.
 
 Next: audit break/continue cleanup using native destructor counters; jumps may

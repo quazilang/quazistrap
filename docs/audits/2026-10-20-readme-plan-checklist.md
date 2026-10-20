@@ -1,6 +1,6 @@
 # Compiler roadmap checklist — 2026-10-20
 
-Audited compiler commit: `d72a1c5c472cd0c73d7e99a7944ac07ec96f1089`.
+Audited compiler commit: `7e151aad105bf4d9ccf460cb24cb7a867b92138b`.
 
 **Complete: 73.2%. Remaining: 26.8%.**
 
@@ -31,6 +31,10 @@ and its 33-item weighting. Four LSP gates previously blocked by failing
 current-checkout regressions now pass. No requirement was removed or narrowed;
 no credit is added for unfinished ownership-control/effect foundations. Historical
 failures in the earlier snapshot remain historical evidence, not current failures.
+The initial refresh used `d72a1c5`; after the typed-propagation fix in `7e151aa`,
+all 861 tests pass with the same checklist credit. The seven added regressions
+strengthen existing correctness requirements without completing a new roadmap
+item. See [the follow-up change record](../changes/2026-10-20-typed-try-propagation.md).
 
 ## Summary
 
@@ -322,9 +326,11 @@ Checks use the existing stable toolchain through `/tmp/quazi-named-rust-bin`
 ELF-loader wrappers, with `RUSTC=/tmp/quazi-named-rust-bin/rustc` and
 `RUSTFLAGS='-C link-arg=-fuse-ld=bfd'`:
 
-- `cargo test --offline -q`: **854 passed**, zero failed/ignored. This includes
+- `cargo test --offline -q`: **861 passed**, zero failed/ignored. This includes
   the current compiler, backend, semantic and contained-LSP regression suite.
-- `cargo test --offline -q lsp::`: **60 passed**, zero failed. The three earlier
+- `cargo test --offline -q lsp::`: **60 passed**, zero failed at the initial
+  `d72a1c5` refresh; all 60 also pass inside the latest full 861-test run.
+  The three earlier
   failures — `indexes_only_parseable_local_quazi_sources`,
   `loaded_definition_uses_unsaved_importer_and_target_overlays`, and
   `loaded_references_and_rename_follow_an_imported_binding` — now pass.
@@ -337,6 +343,9 @@ ELF-loader wrappers, with `RUSTC=/tmp/quazi-named-rust-bin/rustc` and
   with existing warnings. Source/QZI native, Windows COFF, old-cache upgrade
   and exact/partial-cache runners pass; see
   [the expression-control verification record](../changes/2026-10-20-expression-control.md).
+  The latest source checkpoint additionally passes the typed-propagation native,
+  source-removed QZI, Windows COFF and old-cache rejection runner documented
+  in [its verification record](../changes/2026-10-20-typed-try-propagation.md).
 
 LSP implementation is inspected in
 [`workspace.rs`](../../src/lsp/workspace.rs),

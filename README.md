@@ -26,9 +26,9 @@ Completion of unfinished plan items:
 | qz doc | 0/1 | 0.0% | 100.0% |
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
-Revalidated on 2026-10-20 after compiler commit `d72a1c5`, using the
+Revalidated on 2026-10-20 after compiler commit `7e151aa`, using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 854 tests pass, including the 60 contained-LSP tests. The four previously
+All 861 tests pass, including the 60 contained-LSP tests. The four previously
 blocked LSP regression gates are now counted. Ownership remains 9/16.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
