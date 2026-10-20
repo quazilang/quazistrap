@@ -1,4 +1,4 @@
-# 22-system-information
+# 22-quazifetch
 
 A Windows/Linux system-information example built on Quazi's cross-platform
 standard library. It avoids shell commands, `popen`, libc-specific bindings,
@@ -27,13 +27,18 @@ cross-target flag.
 | Value | Linux | Windows |
 |---|---|---|
 | Hostname | `uname(2)` intrinsic, normalized lowercase | `GetComputerNameA` intrinsic, normalized lowercase |
-| Memory | `sysinfo(2)` intrinsic | `GlobalMemoryStatusEx` intrinsic |
+| Memory | Total from `sysinfo(2)`, available from `/proc/meminfo` (`MemAvailable`) | `GlobalMemoryStatusEx` intrinsic |
 | CPU | `/proc/cpuinfo` via `std.fs` | CPUID processor brand leaves |
 | OS release | Kernel release | shared kernel build number plus `GetProductInfo` edition |
 | Shell | `$SHELL` | Toolhelp parent-process ancestry |
 | Terminal | `$TERM_PROGRAM` / `$TERM` | `WT_SESSION` plus parent-process ancestry |
 | Packages | Package databases and package directories | Package-manager-owned package directories |
 | Files | Linux syscalls via `std.fs.File` | Win32 handles via `std.fs.File` |
+
+RAM displays `(total - available) / total` in MiB. Linux availability includes
+reclaimable cache, so the used counter follows the usual fastfetch accounting.
+If procfs cannot supply a valid `MemAvailable`, the standard library falls back
+to free physical memory. Counters are live estimates and can change between calls.
 
 Package output includes the discovered count, for example `apt (425)` or
 `choco (3)`. Debian/APK counts come from their installed-package databases;

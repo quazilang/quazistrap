@@ -46,7 +46,7 @@ use env instead.
 | cpu_name() | Best-effort owned CPU-brand text, or "unknown" on failure. |
 | shell() / terminal() | Best-effort interactive-environment names. Linux reads SHELL/TERM; Windows uses environment hints and a bounded parent-process scan whose native snapshot handle is released once. They may be "unknown", "Console", or "Windows Console" and must not drive security or compatibility policy. |
 | hostname() | Owned host name from the platform intrinsic, or "unknown" on failure. |
-| memory_total() / memory_available() | Physical-memory counters in bytes. Linux currently uses sysinfo.free_ram for “available”, which is not Linux’s broader reclaimable-memory estimate. Values can change immediately after return. |
+| memory_total() / memory_available() | Physical-memory counters in bytes. Linux availability uses `/proc/meminfo`'s `MemAvailable`, including reclaimable memory; unavailable, missing, malformed or inconsistent procfs data falls back to `sysinfo.free_ram`. Windows uses `MEMORYSTATUSEX.available_physical`. Values can change immediately after return; separate calls are not an atomic snapshot. |
 
 ## Unix-specific low-level functions
 
