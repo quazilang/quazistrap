@@ -37,12 +37,13 @@ See docs/changes/2026-10-20-expression-control.md and the updated source-flow
 contract. New-file and changed-region formatting/diff checks pass. Graphify query and AST update used; six isolated
 STD memory tests and ordinary quazifetch build also pass with the matching compiler.
 
-User explicitly requested README progress refresh after code commits. Rechecked
-LSP 60/60 and inspected prior failing navigation/workspace/reference/rename cases:
-all four original checklist gates can now be checked, giving 16/20 LSP and 73.2%
-overall using the unchanged 33-item rubric. Ownership stays 9/16. Record the code
-commit as the new audit base, then update README and its dated checklist in a
-separate documentation commit; do not manufacture new credit for partial D-014.
+Refreshed README after code commit d72a1c5, as explicitly requested, with the
+new docs/audits/2026-10-20-readme-plan-checklist.md audit. Rechecked LSP 60/60
+and inspected prior failing navigation/workspace/reference/rename cases. The
+four original regression gates now pass, giving 16/20 LSP and 73.2% overall
+(26.8% remaining) using the unchanged 33-item rubric. Ownership stays 9/16;
+partial D-014 receives no new credit. The README refresh is a separate
+documentation commit after the code commit.
 
 Next: normalized lvalue/call/aggregate/match schedules and typed memory access
 facts, then effect/provenance composition, structural destruction and artifact

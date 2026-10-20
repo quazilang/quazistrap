@@ -6,9 +6,9 @@
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
 
-**Plan completion: 72.5%.**
+**Plan completion: 73.2%.**
 
-**Remaining work: 27.5%.**
+**Remaining work: 26.8%.**
 
 Completion of unfinished plan items:
 
@@ -22,11 +22,14 @@ Completion of unfinished plan items:
 | Format string literals | 0/1 | 0.0% | 100.0% |
 | Nested struct patterns | 0/1 | 0.0% | 100.0% |
 | async / await | 0/1 | 0.0% | 100.0% |
-| LSP improvements | 12/20 | 60.0% | 40.0% |
+| LSP improvements | 16/20 | 80.0% | 20.0% |
 | qz doc | 0/1 | 0.0% | 100.0% |
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
-Counted on 2026-10-13 from the [requirement checklist](docs/audits/2026-10-13-readme-plan-checklist.md).
+Revalidated on 2026-10-20 after compiler commit `d72a1c5`, using the
+[requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
+All 854 tests pass, including the 60 contained-LSP tests. The four previously
+blocked LSP regression gates are now counted. Ownership remains 9/16.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no
