@@ -2,6 +2,70 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-20, abrupt-loop cleanup and terminal CFG)
+
+Confirmed the pending native destructor audit. Baseline
+/tmp/quazi-loop-cleanup-before builds a valid counting free(self) fixture but
+exits 7 because break does not run its body-local destructor. Codegen now stores
+body cleanup depth in every LoopFrame and emits read-only reverse cleanup for
+break/continue. Every loop owns a persistent cleanup scope for initializer/hidden
+iterable ownership. Continue retains it and cleans body owners before update;
+break and condition exhaustion reach its common cleanup epilogue. Existing
+return cleanup walks every active scope.
+
+Lexical block/loop register and type maps are restored at scope exit so a
+cleaned inner shadow cannot replace an outer owner. Return generation snapshots
+and restores compile-time drop state: transferring an initializer on a terminal
+path must not suppress its zero-iteration/sibling cleanup. Borrow checking
+checks C-style init once at ambient loop/control depth, inside a loop lexical
+scope; repeated condition/body/update retain the move-in-loop gate. Scope/loans
+end before identity-based outer merging. Once-only moves/reown policy preserved.
+
+The native early-return fixture exposed constant propagation folding an unknown
+pointer parameter to return constant zero through an unreachable loop backedge.
+Ret/Trap now split and terminate CFG blocks. Propagation/rewrite use only
+statically reachable blocks and predecessor facts, with shared block_input.
+Every encoded entry register is Bottom/overdefined, including block zero with
+a live backedge; Top means no reaching fact/unprocessed input. Four focused
+constprop regressions fail before and pass after. No ABI change; QZC20 rejects
+older exact/reusable caches. QZI13 remains Unverified; rebuild old artifacts
+from source for missing cleanup and already-folded code corrections.
+
+Verification: full offline cargo tests 872/872, including eleven new regressions;
+14 loop-focused and 16 constprop tests pass. The original seven regression tests
+failed before cleanup/scope fixes; the initializer order marker was corrected
+to avoid inlining and then failed on actual reversed call order. Build/direct
+Clippy-driver check pass with existing warnings. Script
+scripts/check_loop_cleanup.py has 23 actual destructor-trace cases, all passing
+native, source-removed QZI execution and Windows COFF emission. Optional
+--before-qz /tmp/quazi-loop-cleanup-before verifies old-cache miss/rebuild and
+new exact-hit execution. Initial script syntax/loan issues were fixture bugs:
+C-style index declarations must omit a type colon; each raw-pointer counter
+uses its own lexical scope. All 23 final cases pass, including initializer ret.
+
+Typed-Try rejection/native/QZI/COFF,36 expression-control checks, retention
+12 rejected/7 valid, named arguments, and dynamic-vtable/cache runners pass.
+Six isolated STD memory fixtures and ordinary matching-compiler quazifetch
+build/run pass. Independent read-only design/implementation/regression review
+found and challenged the optimizer cause; root reconciled the code/tests.
+Graphify queries/AST update used; changed regions formatted and Markdown links
+checked. Logs: /tmp/quazi-loop-*.log. Existing ELF-loader wrappers still needed.
+See docs/changes/2026-10-20-loop-cleanup.md and docs/migrations/loop-cleanup.md.
+
+Latest user instruction supersedes earlier post-commit README preference:
+update README statuses/percentages BEFORE committing. README/audit now reflect
+872 tests and the loop-cleanup checkpoint in this same commit. The unchanged
+33-item/78-requirement rubric remains 73.2% complete/26.8% remaining, LSP16/20,
+Ownership9/16; this fix strengthens already-counted requirements.
+
+Next: audit path-dependent initialization of previously uninitialized owners;
+existing static active booleans do not establish a general destruction proof.
+Then continue normalized lvalue/call/aggregate/match schedules, typed memory
+access, effect/provenance composition, structural destruction and artifact
+verification before D-015/full STD migration. The broad ../goal.md objective
+remains active/incomplete. Preserve STD CLI dirt, compiler .codex/ and example35
+outputs. No push or external publication.
+
 ## Checkpoint (2026-10-20, typed Try propagation and wrapper aliases)
 
 Confirmed and fixed the next audit issue: `?` checked its operand but not its

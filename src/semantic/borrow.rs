@@ -1207,8 +1207,16 @@ impl Analyzer {
                         }
                     }
                 }
-                env.loop_depth += 1;
                 let mut loop_env = env.clone();
+                loop_env.enter_scope();
+                // Initialization runs once; its owners persist across iterations.
+                if let ForLoop::CStyle {
+                    init: Some(init), ..
+                } = kind
+                {
+                    self.bc_stmt(init, &mut loop_env);
+                }
+                loop_env.loop_depth += 1;
                 loop_env.control_depth += 1;
                 match kind {
                     ForLoop::Each { vars, .. } => {
@@ -1230,13 +1238,10 @@ impl Analyzer {
                         loop_env.exit_scope();
                     }
                     ForLoop::CStyle {
-                        init,
                         condition,
                         update,
+                        ..
                     } => {
-                        if let Some(init_stmt) = init {
-                            self.bc_stmt(init_stmt, &mut loop_env);
-                        }
                         if let Some(cond) = condition {
                             self.bc_expr(cond, &mut loop_env, false);
                         }
@@ -1252,7 +1257,7 @@ impl Analyzer {
                         self.bc_block(body, &mut loop_env);
                     }
                 }
-                env.loop_depth -= 1;
+                loop_env.exit_scope();
                 env.apply_branch_moves(&loop_env);
             }
             StmtKind::Break | StmtKind::Continue => {}

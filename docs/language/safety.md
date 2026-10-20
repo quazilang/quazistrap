@@ -96,6 +96,14 @@ This applies on:
 
 - Normal fallthrough at the end of a block.
 - Early return via `ret`.
+- `break` and `continue`, for the body scopes they exit.
+
+A loop initializer and any compiler-owned iterable have a scope lasting until
+loop exit. `continue` keeps those owners alive; `break` or condition exhaustion
+destroys them before the next statement. Body locals are destroyed before a
+C-style update runs. This covers supported initialized owners; complete
+path-dependent initialization and recursive destruction remain part of
+[D-014](../decisions/whole-program-ownership.md).
 
 `String.clear()` takes an exclusive receiver and releases an owned allocation
 while retaining an empty, reusable `String`. A direct `String.free()` call

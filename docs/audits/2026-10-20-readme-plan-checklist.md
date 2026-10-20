@@ -1,6 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
-Audited compiler commit: `7e151aad105bf4d9ccf460cb24cb7a867b92138b`.
+Audited compiler source: the [loop-cleanup checkpoint](../changes/2026-10-20-loop-cleanup.md).
+Previous committed source: `7e151aad105bf4d9ccf460cb24cb7a867b92138b`.
+README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
 
@@ -32,9 +34,13 @@ current-checkout regressions now pass. No requirement was removed or narrowed;
 no credit is added for unfinished ownership-control/effect foundations. Historical
 failures in the earlier snapshot remain historical evidence, not current failures.
 The initial refresh used `d72a1c5`; after the typed-propagation fix in `7e151aa`,
-all 861 tests pass with the same checklist credit. The seven added regressions
-strengthen existing correctness requirements without completing a new roadmap
-item. See [the follow-up change record](../changes/2026-10-20-typed-try-propagation.md).
+all 861 tests passed with the same checklist credit. The seven added regressions
+strengthened existing correctness requirements without completing a new roadmap
+item. The subsequent loop-cleanup/CFG checkpoint passes 872 tests, including
+11 new regressions, with the same 33 items and 78 requirement texts. Its fixes
+strengthen existing lexical-cleanup and loop-move coverage; they do not complete
+a new Ownership requirement. See the [typed-propagation change record](../changes/2026-10-20-typed-try-propagation.md)
+and [loop-cleanup verification](../changes/2026-10-20-loop-cleanup.md).
 
 ## Summary
 
@@ -321,15 +327,16 @@ Evidence: [AGENTS.md](../../AGENTS.md).
 
 ## Current-checkout checks
 
-The new source checkpoint is committed before this README refresh, as requested.
+This README refresh accompanies the verified source checkpoint and is prepared
+before its commit, following the latest instruction.
 Checks use the existing stable toolchain through `/tmp/quazi-named-rust-bin`
 ELF-loader wrappers, with `RUSTC=/tmp/quazi-named-rust-bin/rustc` and
 `RUSTFLAGS='-C link-arg=-fuse-ld=bfd'`:
 
-- `cargo test --offline -q`: **861 passed**, zero failed/ignored. This includes
+- `cargo test --offline -q`: **872 passed**, zero failed/ignored. This includes
   the current compiler, backend, semantic and contained-LSP regression suite.
 - `cargo test --offline -q lsp::`: **60 passed**, zero failed at the initial
-  `d72a1c5` refresh; all 60 also pass inside the latest full 861-test run.
+  `d72a1c5` refresh; all 60 also pass inside the latest full 872-test run.
   The three earlier
   failures — `indexes_only_parseable_local_quazi_sources`,
   `loaded_definition_uses_unsaved_importer_and_target_overlays`, and
@@ -346,6 +353,8 @@ ELF-loader wrappers, with `RUSTC=/tmp/quazi-named-rust-bin/rustc` and
   The latest source checkpoint additionally passes the typed-propagation native,
   source-removed QZI, Windows COFF and old-cache rejection runner documented
   in [its verification record](../changes/2026-10-20-typed-try-propagation.md).
+  The loop-cleanup checkpoint adds 23 native/QZI destructor-trace cases,
+  Windows COFF emission, and old-source-cache invalidation; all pass.
 
 LSP implementation is inspected in
 [`workspace.rs`](../../src/lsp/workspace.rs),
@@ -364,9 +373,11 @@ Ownership remains **9/16**. Concrete call/argument facts, statement graphs,
 selected expression controls and raw-storage retention are prerequisites of
 D-014; they do not complete flow-sensitive interprocedural loans, recursive
 call effects, structural destruction or verified artifacts. The existing
-lexical-cleanup point covers fallthrough and explicit return; the newly flagged
-abrupt-loop cleanup path still needs a native destructor-counter audit and
-must not be treated as a general destruction guarantee.
+lexical-cleanup point now has native regression coverage for abrupt loop exits
+as well as fallthrough and explicit return. Scope/return snapshots and terminal
+CFG corrections pass the corresponding before/after regressions. Complete
+path-dependent initialization and general structural destruction remain
+unverified; this is not a general destruction guarantee.
 
 The other checklist item counts retain their listed scope. This score excludes
 workspace-wide documentation/editor production-readiness milestones, full STD

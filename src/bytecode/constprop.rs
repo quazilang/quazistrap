@@ -27,9 +27,9 @@ use super::opcode::Opcode;
 /// Lattice of known constant values for a single virtual register.
 ///
 /// Ordering (height): `Top > Const(_) > Bottom`.
-/// - `Top`    — register not yet analysed or value unknown (e.g. parameter, load).
+/// - `Top`    — no reaching fact yet, for example an unprocessed predecessor.
 /// - `Const`  — exactly one known value on all reaching paths.
-/// - `Bottom` — two different reaching paths give different values; not foldable.
+/// - `Bottom` — runtime-unknown input/load or conflicting values; not foldable.
 #[derive(Debug, Clone, PartialEq)]
 enum ConstLattice {
     Top,
@@ -110,6 +110,10 @@ fn is_branch(op: u8) -> bool {
     is_unconditional_jump(op) || is_conditional_branch(op)
 }
 
+fn is_terminal(op: u8) -> bool {
+    op == Opcode::Ret as u8 || op == Opcode::Trap as u8
+}
+
 /// Build a CFG from a flat instruction array.
 /// Returns `(blocks, instr_to_block)`.
 fn build_cfg(code: &[Instruction]) -> (Vec<BasicBlock>, Vec<usize>) {
@@ -129,9 +133,9 @@ fn build_cfg(code: &[Instruction]) -> (Vec<BasicBlock>, Vec<usize>) {
             if target < code.len() {
                 leaders.insert(target);
             }
-            if i + 1 < code.len() {
-                leaders.insert(i + 1);
-            }
+        }
+        if (is_branch(op) || is_terminal(op)) && i + 1 < code.len() {
+            leaders.insert(i + 1);
         }
     }
 
@@ -189,7 +193,7 @@ fn build_cfg(code: &[Instruction]) -> (Vec<BasicBlock>, Vec<usize>) {
                 blocks[bi].succs.push(succ);
                 blocks[succ].preds.push(bi);
             }
-        } else if last_op != Opcode::Ret as u8 {
+        } else if !is_terminal(last_op) {
             if bi + 1 < n {
                 let succ = bi + 1;
                 blocks[bi].succs.push(succ);
@@ -410,29 +414,55 @@ fn has_dest(op: u8) -> bool {
     )
 }
 
+fn reachable_blocks(blocks: &[BasicBlock]) -> Vec<bool> {
+    let mut reachable = vec![false; blocks.len()];
+    let mut pending = vec![0];
+    while let Some(block) = pending.pop() {
+        if std::mem::replace(&mut reachable[block], true) {
+            continue;
+        }
+        pending.extend(blocks[block].succs.iter().copied());
+    }
+    reachable
+}
+
+/// Include the real callable entry even when block zero has a backedge. Missing
+/// facts are lattice Top, so they cannot represent an unknown incoming argument.
+fn block_input(
+    block: usize,
+    blocks: &[BasicBlock],
+    outputs: &[RegState],
+    reachable: &[bool],
+    entry: &RegState,
+) -> RegState {
+    let mut state = if block == 0 {
+        entry.clone()
+    } else {
+        RegState::new()
+    };
+    for &pred in &blocks[block].preds {
+        if reachable[pred] {
+            state = meet_states(&state, &outputs[pred]);
+        }
+    }
+    state
+}
+
 fn run_dataflow(
     blocks: &[BasicBlock],
     code: &[Instruction],
     constants: &[ConstPoolEntry],
+    reachable: &[bool],
+    entry: &RegState,
 ) -> Vec<RegState> {
     let n = blocks.len();
     let mut out_state: Vec<RegState> = vec![RegState::new(); n];
-    let mut worklist: VecDeque<usize> = (0..n).collect();
+    let mut worklist: VecDeque<usize> = (0..n).filter(|&block| reachable[block]).collect();
 
     while let Some(bi) = worklist.pop_front() {
         let bb = &blocks[bi];
 
-        let new_in: RegState = if bb.preds.is_empty() {
-            RegState::new()
-        } else {
-            let mut state = out_state[bb.preds[0]].clone();
-            for &pred in &bb.preds[1..] {
-                state = meet_states(&state, &out_state[pred]);
-            }
-            state
-        };
-
-        let mut state = new_in;
+        let mut state = block_input(bi, blocks, &out_state, reachable, entry);
         for i in bb.start..=bb.end {
             transfer(&code[i], &mut state, constants);
         }
@@ -532,31 +562,23 @@ pub fn const_prop_fold(chunk: &mut Chunk) {
         return;
     }
 
-    let constants = chunk.constants.clone();
-    let out_states = run_dataflow(&blocks, &chunk.code, &constants);
-
-    // Re-derive in-state for each block from predecessors' out-states.
-    let in_states: Vec<RegState> = blocks
-        .iter()
-        .enumerate()
-        .map(|(_bi, bb)| {
-            if bb.preds.is_empty() {
-                RegState::new()
-            } else {
-                let mut state = out_states[bb.preds[0]].clone();
-                for &pred in &bb.preds[1..] {
-                    state = meet_states(&state, &out_states[pred]);
-                }
-                state
-            }
-        })
+    let reachable = reachable_blocks(&blocks);
+    // Every incoming register is unknown. Definitions inside the function can
+    // refine it, but a backedge cannot invent a constant for the first entry.
+    let entry: RegState = (0..chunk.reg_count)
+        .map(|reg| (reg, ConstLattice::Bottom))
         .collect();
+    let constants = chunk.constants.clone();
+    let out_states = run_dataflow(&blocks, &chunk.code, &constants, &reachable, &entry);
 
     let n_instrs = chunk.code.len();
     for bi in 0..blocks.len() {
+        if !reachable[bi] {
+            continue;
+        }
         let bb_start = blocks[bi].start;
         let bb_end = blocks[bi].end;
-        let mut state = in_states[bi].clone();
+        let mut state = block_input(bi, &blocks, &out_states, &reachable, &entry);
 
         for i in bb_start..=bb_end {
             if i >= n_instrs {
@@ -634,6 +656,77 @@ mod tests {
         let (dst, imm) = instr.ri16();
         assert_eq!(dst, 2);
         assert_eq!(imm as i16 as i64, 8);
+    }
+
+    #[test]
+    fn terminal_instructions_end_cfg_blocks() {
+        for terminal in [Opcode::Ret, Opcode::Trap] {
+            let code = vec![rrr(terminal, 0, 0, 0), ri16(Opcode::Jmp, 0, 0)];
+            let (blocks, owners) = build_cfg(&code);
+            assert_ne!(owners[0], owners[1]);
+            assert_eq!(blocks[owners[0]].end, 0);
+            assert!(blocks[owners[0]].succs.is_empty());
+        }
+    }
+
+    #[test]
+    fn return_constant_cannot_flow_through_a_dead_backedge() {
+        let mut chunk = make_chunk(
+            "return_backedge",
+            vec![
+                rrr(Opcode::Mov, 1, 0, 0),
+                ri16(Opcode::MovI, 0, 7),
+                rrr(Opcode::Ret, 0, 0, 0),
+                ri16(Opcode::MovI, 0, 9),
+                ri16(Opcode::Jmp, 0, 0),
+            ],
+        );
+        chunk.param_count = 1;
+        chunk.reg_count = 2;
+        const_prop_fold(&mut chunk);
+        assert_eq!(
+            chunk.code[0].opcode,
+            Opcode::Mov as u8,
+            "an unknown parameter cannot become the return constant"
+        );
+    }
+
+    #[test]
+    fn live_backedge_meets_the_unknown_callable_entry() {
+        let mut chunk = make_chunk(
+            "entry_backedge",
+            vec![
+                rrr(Opcode::Mov, 1, 0, 0),
+                ri16(Opcode::MovI, 0, 7),
+                ri16(Opcode::Jmp, 0, 0),
+            ],
+        );
+        chunk.param_count = 1;
+        chunk.reg_count = 2;
+        const_prop_fold(&mut chunk);
+        assert_eq!(
+            chunk.code[0].opcode,
+            Opcode::Mov as u8,
+            "the first iteration observes the caller's unknown argument"
+        );
+    }
+
+    #[test]
+    fn unreachable_predecessors_do_not_pollute_reachable_constants() {
+        let mut chunk = make_chunk(
+            "dead_predecessor",
+            vec![
+                ri16(Opcode::MovI, 0, 3),
+                ri16(Opcode::Jmp, 0, 4),
+                ri16(Opcode::MovI, 0, 9),
+                ri16(Opcode::Jmp, 0, 4),
+                rrr(Opcode::Mov, 1, 0, 0),
+                rrr(Opcode::Ret, 1, 0, 0),
+            ],
+        );
+        chunk.reg_count = 2;
+        const_prop_fold(&mut chunk);
+        assert_eq!(chunk.code[4], ri16(Opcode::MovI, 1, 3));
     }
 
     #[test]

@@ -117,8 +117,10 @@ verification flags unchanged. Typed reads/writes, alias flow, moves, destruction
 recursive effect composition and retained artifact-body verification remain
 required. Try wrapper/error compatibility is checked independently by semantic
 analysis against the nearest callable return context; graph edges alone do not
-certify it. QZI13 stays Unverified; QZC19 invalidates older exact and reusable
-caches for these typed propagation checks. QZC18 introduced refined flow and
-canonical logical-bool emission. Existing
-QZI bodies retain their emitted behavior; rebuild affected dependencies from
-source to obtain the logical-result fix.
+certify it. Physical cleanup on abrupt loop edges is separately covered by
+[the loop-cleanup regressions](../changes/2026-10-20-loop-cleanup.md); the graph
+is not a destruction certificate. QZI13 stays Unverified; QZC20 invalidates
+older exact/reusable caches for cleanup and optimizer corrections. QZC19
+introduced typed propagation checks and QZC18 refined flow/canonical bools.
+Existing QZI bodies retain their emitted behavior; rebuild affected dependencies
+from source to obtain those fixes.

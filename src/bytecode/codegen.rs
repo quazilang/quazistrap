@@ -2604,6 +2604,8 @@ struct StructuralFieldDrop {
 }
 
 struct LoopFrame {
+    /// Scopes below this depth persist for the lifetime of the loop.
+    cleanup_depth: usize,
     break_jumps: Vec<usize>,
     continue_jumps: Vec<usize>,
 }
@@ -2654,8 +2656,9 @@ enum LvalueAddr {
 }
 
 impl LoopFrame {
-    fn new() -> Self {
+    fn new(cleanup_depth: usize) -> Self {
         Self {
+            cleanup_depth,
             break_jumps: Vec::new(),
             continue_jumps: Vec::new(),
         }
@@ -5452,7 +5455,14 @@ impl<'a> FnCompiler<'a> {
 
     fn emit_all_cleanup(&mut self) {
         self.emit_expression_temporary_cleanup(None);
-        for depth in (0..self.drop_scopes.len()).rev() {
+        self.emit_cleanup_from_depth(0);
+    }
+
+    /// An abrupt edge cleans only exited scopes. Keep compile-time state intact
+    /// so alternate paths still emit their own cleanup.
+    fn emit_cleanup_from_depth(&mut self, first: usize) {
+        debug_assert!(first <= self.drop_scopes.len());
+        for depth in (first..self.drop_scopes.len()).rev() {
             let drops = self.drop_scopes[depth]
                 .iter()
                 .rev()
@@ -5666,19 +5676,26 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn compile_block(&mut self, block: &Block) -> bool {
+        let previous_regs = self.regs.clone();
+        let previous_types = self.local_types.clone();
         self.drop_scopes.push(Vec::new());
+        let mut exits = false;
         for stmt in &block.stmts {
             if self.compile_stmt(stmt) {
-                self.drop_scopes.pop();
-                return true;
+                exits = true;
+                break;
             }
         }
-        self.emit_scope_cleanup();
+        if !exits {
+            self.emit_scope_cleanup();
+        }
         self.drop_scopes.pop();
-        false
+        self.regs = previous_regs;
+        self.local_types = previous_types;
+        exits
     }
 
-    /// Returns true if the statement guarantees exit (return).
+    /// Reports a known terminal transfer (return, break, or continue).
     fn compile_stmt(&mut self, stmt: &Stmt) -> bool {
         match &stmt.node {
             StmtKind::Var {
@@ -5791,6 +5808,7 @@ impl<'a> FnCompiler<'a> {
                 false
             }
             StmtKind::Return(expr) => {
+                let previous_drops = self.drop_scopes.clone();
                 let result_slots = self.result_slot_count();
                 let result_base = self.result_base_reg();
                 if let Some(expr) = expr {
@@ -5831,6 +5849,9 @@ impl<'a> FnCompiler<'a> {
                 let mut ret = rrr(Opcode::Ret, 0, 0, 0);
                 ret.flags = result_slots as u8;
                 self.chunk.emit(ret);
+                // A transfer on this terminated path must not deactivate an
+                // owner on another path, including a zero-iteration loop exit.
+                self.drop_scopes = previous_drops;
                 true
             }
             StmtKind::ExprStmt(expr) => {
@@ -5877,25 +5898,38 @@ impl<'a> FnCompiler<'a> {
                 }
                 then_returns && chain_returns
             }
-            StmtKind::Break => {
-                if let Some(frame) = self.loop_stack.last_mut() {
+            StmtKind::Break | StmtKind::Continue => {
+                if let Some(depth) = self.loop_stack.last().map(|frame| frame.cleanup_depth) {
+                    self.emit_cleanup_from_depth(depth);
                     let jmp = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
-                    frame.break_jumps.push(jmp);
-                }
-                true
-            }
-            StmtKind::Continue => {
-                if let Some(frame) = self.loop_stack.last_mut() {
-                    let jmp = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
-                    frame.continue_jumps.push(jmp);
+                    let frame = self.loop_stack.last_mut().expect("loop frame");
+                    if matches!(&stmt.node, StmtKind::Break) {
+                        frame.break_jumps.push(jmp);
+                    } else {
+                        frame.continue_jumps.push(jmp);
+                    }
                 }
                 true
             }
             StmtKind::For { kind, body } => {
+                if let ForLoop::Cond {
+                    condition: Some(condition),
+                } = kind
+                    && self
+                        .const_map
+                        .get(&(condition.span.start, condition.span.end))
+                        == Some(&ConstValue::Bool(false))
+                {
+                    return false;
+                }
+                let previous_regs = self.regs.clone();
+                let previous_types = self.local_types.clone();
+                self.drop_scopes.push(Vec::new());
                 match kind {
                     ForLoop::Cond { condition: None } => {
                         let loop_top = self.chunk.len() as u16;
-                        self.loop_stack.push(LoopFrame::new());
+                        self.loop_stack
+                            .push(LoopFrame::new(self.drop_scopes.len()));
                         self.compile_block(body);
                         let frame = self.loop_stack.pop().unwrap();
                         for jmp in &frame.continue_jumps {
@@ -5910,15 +5944,10 @@ impl<'a> FnCompiler<'a> {
                     ForLoop::Cond {
                         condition: Some(condition),
                     } => {
-                        let cond_key = (condition.span.start, condition.span.end);
-                        if let Some(ConstValue::Bool(false)) =
-                            self.const_map.get(&cond_key).cloned()
-                        {
-                            return false;
-                        }
                         let loop_top = self.chunk.len() as u16;
                         let jump_exit = self.compile_condition_jump(condition, true);
-                        self.loop_stack.push(LoopFrame::new());
+                        self.loop_stack
+                            .push(LoopFrame::new(self.drop_scopes.len()));
                         self.compile_block(body);
                         let frame = self.loop_stack.pop().unwrap();
                         for jmp in &frame.continue_jumps {
@@ -5943,7 +5972,8 @@ impl<'a> FnCompiler<'a> {
                         let jump_exit = condition
                             .as_ref()
                             .map(|cond| self.compile_condition_jump(cond, true));
-                        self.loop_stack.push(LoopFrame::new());
+                        self.loop_stack
+                            .push(LoopFrame::new(self.drop_scopes.len()));
                         self.compile_block(body);
                         let frame = self.loop_stack.pop().unwrap();
                         let continue_pos = self.chunk.len() as u16;
@@ -5974,7 +6004,8 @@ impl<'a> FnCompiler<'a> {
                             let loop_top = self.chunk.len() as u16;
                             self.chunk.emit(rrr(Opcode::Cmp, 0, r_i, r_end));
                             let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
-                            self.loop_stack.push(LoopFrame::new());
+                            self.loop_stack
+                                .push(LoopFrame::new(self.drop_scopes.len()));
                             self.compile_block(body);
                             let frame = self.loop_stack.pop().unwrap();
                             let continue_pos = self.chunk.len() as u16;
@@ -6075,7 +6106,8 @@ impl<'a> FnCompiler<'a> {
                                     self.chunk.emit(rrr(Opcode::Sub, addr, base_addr, offset));
                                     self.chunk.emit(mem_load(addr, r_val, 0));
                                 }
-                                self.loop_stack.push(LoopFrame::new());
+                                self.loop_stack
+                                    .push(LoopFrame::new(self.drop_scopes.len()));
                                 self.compile_block(body);
                                 let frame = self.loop_stack.pop().unwrap();
                                 let continue_pos = self.chunk.len() as u16;
@@ -6166,7 +6198,8 @@ impl<'a> FnCompiler<'a> {
                                     );
                                     self.chunk.emit(rrr(Opcode::Mov, r_val, elem_reg, 0));
                                 }
-                                self.loop_stack.push(LoopFrame::new());
+                                self.loop_stack
+                                    .push(LoopFrame::new(self.drop_scopes.len()));
                                 self.compile_block(body);
                                 let frame = self.loop_stack.pop().unwrap();
                                 let continue_pos = self.chunk.len() as u16;
@@ -6371,7 +6404,8 @@ impl<'a> FnCompiler<'a> {
                                 self.chunk
                                     .emit(field_load(r_val, r_next_opt, ENUM_PAYLOAD_OFFSET));
 
-                                self.loop_stack.push(LoopFrame::new());
+                                self.loop_stack
+                                    .push(LoopFrame::new(self.drop_scopes.len()));
                                 self.compile_block(body);
                                 let frame = self.loop_stack.pop().unwrap();
                                 for jmp in &frame.continue_jumps {
@@ -6389,6 +6423,10 @@ impl<'a> FnCompiler<'a> {
                         }
                     },
                 }
+                self.emit_scope_cleanup();
+                self.drop_scopes.pop();
+                self.regs = previous_regs;
+                self.local_types = previous_types;
                 false
             }
             StmtKind::UnsafeBlock { body } => {
@@ -11779,6 +11817,100 @@ fn take(value: Outer) void {}
                 .count(),
             1,
             "only the initialized value should be destroyed"
+        );
+    }
+
+    #[test]
+    fn loop_break_cleanup_preserves_the_alternate_exit() {
+        let chunks = compile(
+            r#"struct Owner { value: i32 }
+            impl Owner { fn free(self: Owner) void {} }
+            fn branch(stop: bool) void {
+                for { var item = Owner { value: 1 }; if stop { break; } break; }
+            }"#,
+        );
+        let branch = chunks.iter().find(|chunk| chunk.name == "branch").unwrap();
+        assert_eq!(
+            branch
+                .code
+                .iter()
+                .filter(|op| op.opcode == Opcode::CallIdx as u8)
+                .count(),
+            2,
+            "both break edges must destroy the body local"
+        );
+    }
+
+    #[test]
+    fn loop_continue_cleanup_preserves_the_later_break() {
+        let chunks = compile(
+            r#"struct Owner { value: i32 }
+            impl Owner { fn free(self: Owner) void {} }
+            fn branch(skip: bool) void {
+                for { var item = Owner { value: 1 }; if skip { continue; } break; }
+            }"#,
+        );
+        let branch = chunks.iter().find(|chunk| chunk.name == "branch").unwrap();
+        assert_eq!(
+            branch
+                .code
+                .iter()
+                .filter(|op| op.opcode == Opcode::CallIdx as u8)
+                .count(),
+            2,
+            "continue and break need independent body cleanup"
+        );
+    }
+
+    #[test]
+    fn loop_initializer_cleanup_precedes_the_following_statement() {
+        let chunks = compile(
+            r#"struct Owner { value: i32 }
+            impl Owner { fn free(self: Owner) void {} }
+            @api("after") unsafe fn after() void;
+            unsafe fn test() void { for var item = Owner { value: 1 }; false; {} after(); }"#,
+        );
+        let free = chunks
+            .iter()
+            .position(|chunk| chunk.name == "Owner.free")
+            .unwrap() as u16;
+        let after = chunks
+            .iter()
+            .position(|chunk| chunk.name == "after")
+            .unwrap() as u16;
+        let test = chunks.iter().find(|chunk| chunk.name == "test").unwrap();
+        let calls = test
+            .code
+            .iter()
+            .filter(|op| op.opcode == Opcode::CallIdx as u8)
+            .map(|op| op.ri16().1)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            calls,
+            [free, after],
+            "the initializer's lexical scope ends with the loop"
+        );
+    }
+
+    #[test]
+    fn loop_return_transfer_does_not_disable_zero_iteration_cleanup() {
+        let chunks = compile(
+            r#"struct Owner { value: i32 }
+            impl Owner { fn free(self: Owner) void {} }
+            fn choose(enter: bool) Owner {
+                for var item = Owner { value: 1 }; enter; { ret item; }
+                ret Owner { value: 2 };
+            }"#,
+        );
+        let choose = chunks.iter().find(|chunk| chunk.name == "choose").unwrap();
+        assert_eq!(
+            choose
+                .code
+                .iter()
+                .filter(|op| op.opcode == Opcode::CallIdx as u8)
+                .count(),
+            1,
+            "the non-returning loop path must destroy its initializer"
         );
     }
 

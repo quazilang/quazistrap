@@ -143,6 +143,7 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 - `reassign_targets` set suppresses move-in-loop for `x = x.method()` patterns (value immediately re-owned).
 - `for x : iterable` **moves** the iterable (like Rust's `for x in collection`); borrow with `for x : &collection`.
 - The iterable is consumed before the loop body so it does not trigger move-in-loop.
+- C-style initialization runs once at ambient loop/control depth inside a lexical loop scope. Condition/body/update run at repeated depth, so initializer owners cannot be consumed repeatedly. Pop the initializer scope and its loans before identity-aware merging into the outer environment. Keep the existing immediate reown-assignment exception.
 - Legacy method receivers remain borrowed and non-consuming. An explicit
   `self: &T` receiver is read-only: it may run while shared loans exist and
   creates a shared loan for its call. The implementation validates that an

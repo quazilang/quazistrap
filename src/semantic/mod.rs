@@ -6396,6 +6396,74 @@ fn main() void {
     }
 
     #[test]
+    fn loop_initializer_owners_cannot_be_consumed_by_repeated_regions() {
+        for statement in [
+            "for var item = make(); false; { consume(item); }",
+            "for var item = make(); consume(item) > 0; {}",
+            "for var item = make(); false; consume(item) {}",
+        ] {
+            let source = format!(
+                "struct Obj {{ value: i32 }} fn make() Obj {{ ret Obj {{ value: 1 }}; }} fn consume(value: Obj) i32 {{ ret value.value; }} fn main() void {{ {statement} }}"
+            );
+            let report = analyze(&source);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.code == "S10" && error.message.contains("inside a loop")),
+                "repeated initializer consumption accepted: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn loop_initializer_moves_happen_once_at_the_ambient_depth() {
+        let prelude = "struct Obj { value: i32 } fn make() Obj { ret Obj { value: 1 }; } fn consume(value: Obj) i32 { ret value.value; } fn forward(value: Obj) Obj { ret value; }";
+        for body in [
+            "var item = make(); for consume(item); false; {}",
+            "var item = make(); for var inner = item; false; {}",
+            "for var item = make(); false; item = forward(item) {}",
+        ] {
+            let report = analyze(&format!("{prelude} fn main() void {{ {body} }}"));
+            assert!(
+                report.errors.is_empty(),
+                "once-only initialization rejected: {body}\n{:?}",
+                report.errors
+            );
+        }
+        for body in [
+            "var item = make(); for consume(item); false; {} consume(item);",
+            "var item = make(); for { for var inner = item; false; {} break; }",
+        ] {
+            let report = analyze(&format!("{prelude} fn main() void {{ {body} }}"));
+            assert!(
+                report.errors.iter().any(|error| error.code == "S10"),
+                "initializer lost outer move state: {body}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn loop_initializer_scope_releases_loans_and_preserves_outer_bindings() {
+        for body in [
+            "var item = make(); for var reference = &item; false; {} consume(item);",
+            "var item = make(); for var item = make(); false; {} consume(item);",
+        ] {
+            let source = format!(
+                "struct Obj {{ value: i32 }} fn make() Obj {{ ret Obj {{ value: 1 }}; }} fn consume(value: Obj) i32 {{ ret value.value; }} fn main() void {{ {body} }}"
+            );
+            let report = analyze(&source);
+            assert!(
+                report.errors.is_empty(),
+                "loop initializer leaked its scope: {source}\n{:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
     fn move_in_loop_is_error() {
         let report = analyze(
             r#"

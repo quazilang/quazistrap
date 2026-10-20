@@ -136,7 +136,12 @@ for {
 ### `break` and `continue`
 
 `break;` exits the nearest enclosing loop. `continue;` skips to the next
-iteration:
+iteration, running the C-style update or range/index increment when present.
+Both destroy supported owners in the body scopes they exit before transferring
+control. Loop initializer owners survive `continue` and are destroyed at loop
+exit. See [scope cleanup](safety.md#scope-cleanup-raii).
+
+For example:
 
 ```quazi
 for i : 0..100 {
