@@ -1,11 +1,12 @@
-# Source statement control flow
+# Source statement and expression control flow
 
 Audience: compiler and tooling developers.
 
 `semantic/control_flow.rs` builds `OwnershipCallable::control_flow`, a bounded
 source graph for the next stage of [D-014](../decisions/whole-program-ownership.md).
-It records statement transitions, lexical scopes and deferred closure bodies.
-Expression regions remain opaque. This is neither a typed effect IR nor a
+It records statement transitions, lexical scopes, deferred closure bodies and
+a lowering-shared subset of expression control. Unclassified regions remain
+opaque. This is neither a typed effect IR nor a
 provenance, destruction, normal-completion or ownership certificate.
 
 ## Identity and representation
@@ -43,6 +44,32 @@ they do not certify emitted destructor calls or partial-move state.
 - Closure creation remains in its enclosing opaque region. Each closure body
   has a separate deferred graph and no synchronous edge from the creator.
 
+## Shared expression control
+
+`src/evaluation.rs` classifies operand scheduling for both codegen and this
+graph. Groups, casts and unary operators evaluate their child once; ordinary
+binary operators evaluate left before right. A separate result event describes
+the enclosing operation. In particular, unary `!` does not forward its child's
+truth value, and casts are distinct from grouping. These source result identities
+do not certify implicit automatic reads, typed conversions, storage aliases,
+allocations, traps or ownership effects.
+
+`&&` and `||` evaluate the left operand, branch on its truthiness, and evaluate
+the right operand only on the required path. Both paths define the whole
+expression's result: canonical boolean truthiness of the RHS, or a shortcut
+`false` for `&&` / `true` for `||`. The physical lowering consumes the same
+branch-polarity plan and normalizes integer operands' logical results to 0/1.
+
+An exposed `?` evaluates its operand once and branches on `TrySuccess`, a wrapper
+success-discriminant condition distinct from ordinary pointer truthiness.
+Success records payload extraction; failure returns from the current callable
+and retains its active scope exits. Typed wrapper compatibility and emitted
+cleanup effects remain unverified by this graph.
+
+Refinement is iterative and charges expansion to the existing aggregate budget.
+Completed wrappers are not scanned again as opaque regions, so an exposed `?`
+does not acquire a duplicate possible-return edge.
+
 ## Opaque expression regions
 
 An evaluation event references one expression, or the input spans belonging to
@@ -56,10 +83,11 @@ its deferred graph. The edge does not identify the exact failing subexpression
 or prove which preceding effects occurred. A `?` on a conditionally unexecuted
 path can therefore introduce a conservative extra edge.
 
-Short-circuit operators, guarded matches, calls, assignments and aggregate
-initializers inside expressions remain opaque. Their internal branches and
-operand order must be represented by a future normalized evaluation plan
-shared with lowering before any path-sensitive ownership proof consumes them.
+Calls, assignments, increment/decrement, guarded matches, fields/indexes and
+aggregate initializers remain whole opaque regions. Controls nested inside
+these regions are not individually expanded. Multi-input iteration regions also
+remain opaque. Their internal branches and operand order require further shared
+normalization before any path-sensitive ownership proof consumes them.
 In particular, current lowering reorders named arguments and struct fields,
 and uses different operand orders for indexed and field assignments. The
 lexical [argument snapshot walk](ownership-call-arguments.md) is not that plan.
@@ -87,5 +115,7 @@ This validation says nothing about expression effects or ownership correctness.
 The pass leaves all lexical borrow rules, call-closure eligibility and artifact
 verification flags unchanged. Typed reads/writes, alias flow, moves, destruction,
 recursive effect composition and retained artifact-body verification remain
-required. QZI13 stays Unverified; QZC17 invalidates older exact and reusable
-caches so the new mandatory source pass and its limits run on rebuild.
+required. QZI13 stays Unverified; QZC18 invalidates older exact and reusable
+caches for refined flow checks and canonical logical-bool emission. Existing
+QZI bodies retain their emitted behavior; rebuild affected dependencies from
+source to obtain the logical-result fix.

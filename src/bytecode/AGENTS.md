@@ -59,7 +59,7 @@ matching artifact ownership boundary.
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. QZC v17 invalidates earlier exact and reusable caches.
+  and reserialization. QZC v18 invalidates earlier exact and reusable caches.
 
 Immutable golden fixtures from real historical writers (v2-v6) live in
 `src/bytecode/fixtures/qzi/` with provenance in their README; `golden_*` tests
@@ -274,10 +274,13 @@ Key: `Ret` has `ops[0]` = return-value register (remapped by `remap_instr_regs`;
 Register operand discovery is shared by validation, allocation, and native frame
 sizing so less-common opcodes cannot access slots outside the allocated frame.
 
-## Missing / Planned
+## Structured control
 
-- **`break` / `continue`**: No codegen support. Will need a loop-context stack in `FnCompiler` tracking `(loop_start_label, loop_end_label)` so `break` emits `Jmp` to `loop_end` and `continue` emits `Jmp` to `loop_start`.
-- **`else if` chains**: Currently compiled as nested `If` inside `else_block` (two jumps per branch: `Jz` over then-block + `Jmp` over else-block). A flattened AST would allow chained `Jz` jumps with a single final `Jmp` to the end, saving one jump per `else if` branch. See P1 roadmap in `DOCS.md`.
+- `FnCompiler.loop_stack` records and patches break/continue jumps for each loop.
+  C-style continue targets the update before returning to the condition.
+  Source graph scope-exit markers do not certify emitted cleanup on these edges.
+- `compile_else_if_chain` consumes the AST's ordered cases, shares final join
+  patches and handles constant conditions without rewriting the AST.
 
 ## Recent Cleanups
 

@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-10-20: Shared expression control and logical bools](2026-10-20-expression-control.md)
 - [2026-10-20: Source statement control flow](2026-10-20-source-statement-flow.md)
 - [2026-10-20: Named calls follow declaration slots](2026-10-20-named-call-slots.md)
 - [2026-10-18: Retention through raw storage and byte copies](2026-10-18-raw-storage-retention.md)

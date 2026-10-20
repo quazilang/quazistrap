@@ -68,11 +68,12 @@ global binder isolation, temporary projections, budget exhaustion, cancellation
 and analyzer reuse.
 
 The separate [statement graph](source-control-flow.md) records structured
-control-flow edges while expressions remain opaque. Typed reads/writes, alias
+control-flow edges and selected expression controls shared with codegen;
+unclassified regions remain opaque. Typed reads/writes, alias
 flow, complete expression control flow, place moves, destruction effects,
 recursive effect composition and retained artifact-body verification remain
 required by [D-014](../decisions/whole-program-ownership.md). These snapshots do
 not enable [D-015 element loans](../decisions/borrowed-elements.md). QZI remains
-v13 with unverified envelopes. QZC v17 also reruns the mandatory statement-flow
-pass; v16 introduced the
+v13 with unverified envelopes. QZC v18 reruns refined flow checks and emits
+canonical logical bools; v16 introduced the
 [named-call emission correction](../changes/2026-10-20-named-call-slots.md).

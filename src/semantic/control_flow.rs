@@ -2,9 +2,9 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-//! Bounded source-statement control flow. Span events are occurrence references,
-//! not an ordering of calls/effects within expressions. Captures, destruction,
-//! implicit runtime effects and opaque evaluation remain unverified; these graphs
+//! Bounded source control flow with a lowering-shared subset of operand control.
+//! Opaque regions do not order their internal calls/effects. Captures, destruction,
+//! implicit runtime effects and typed accesses remain unverified; these graphs
 //! grant no ownership permission and are not artifact certificates.
 
 use std::collections::{BTreeMap, VecDeque};
@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use super::{Analyzer, item_should_include};
 use crate::cancel::Cancelled;
+use crate::evaluation::{ExpressionControl, expression_control};
 use crate::parser::ast::*;
 
 pub type OwnershipFlowBlockId = usize;
@@ -81,11 +82,35 @@ pub enum OwnershipFlowEvent {
         spans: Vec<Span>,
         kind: OwnershipEvaluationKind,
     },
+    /// Result identity after the scheduled operands. Physical operations,
+    /// traps, allocations and ownership effects remain unverified.
+    ExpressionResult {
+        span: Span,
+        value: OwnershipExpressionResult,
+    },
     /// Unknown protocol/storage effects; never a resolved call or effect proof.
     IterationProtocol {
         span: Span,
         stage: OwnershipIterationStage,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum OwnershipExpressionResult {
+    Group(Span),
+    Cast(Span),
+    Unary {
+        op: UnaryOpKind,
+        operand: Span,
+    },
+    Binary {
+        op: BinOpKind,
+        left: Span,
+        right: Span,
+    },
+    Truth(Span),
+    Boolean(bool),
+    TryPayload(Span),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +123,11 @@ pub enum OwnershipReturnKind {
 #[derive(Debug, Clone)]
 pub enum OwnershipBranchCondition {
     Expression(Span),
+    /// Tests the wrapper's success discriminant, never its pointer truthiness.
+    TrySuccess {
+        expression: Span,
+        operand: Span,
+    },
     IterationProtocol(Span),
 }
 
@@ -686,6 +716,158 @@ where
         Ok(())
     }
     fn evaluate(
+        &mut self,
+        current: usize,
+        expressions: &[&'a Expr],
+        kind: OwnershipEvaluationKind,
+        normal: usize,
+        scopes: &[usize],
+    ) -> FlowResult<()> {
+        // Multi-input iteration regions have no shared operand schedule yet.
+        if expressions.len() != 1 {
+            return self.evaluate_opaque(current, expressions, kind, normal, scopes);
+        }
+        self.budget.charge(3, expressions[0].span)?;
+        let mut pending = vec![(current, expressions[0], normal)];
+        while let Some((current, expression, normal)) = pending.pop() {
+            self.tick(expression.span)?;
+            match expression_control(expression) {
+                ExpressionControl::Opaque => {
+                    self.evaluate_opaque(current, &[expression], kind, normal, scopes)?;
+                }
+                ExpressionControl::UnaryChild(operand) => {
+                    let value = match &expression.node {
+                        ExprKind::Unary { op, .. } => OwnershipExpressionResult::Unary {
+                            op: op.clone(),
+                            operand: operand.span,
+                        },
+                        ExprKind::Group(_) => OwnershipExpressionResult::Group(operand.span),
+                        ExprKind::Cast { .. } => OwnershipExpressionResult::Cast(operand.span),
+                        _ => unreachable!("shared unary-child control"),
+                    };
+                    let complete =
+                        self.expression_result(expression.span, value, normal, scopes)?;
+                    self.budget.charge(3, operand.span)?;
+                    pending.push((current, operand, complete));
+                }
+                ExpressionControl::EagerBinary { left, right } => {
+                    let ExprKind::Binary { op, .. } = &expression.node else {
+                        unreachable!("shared binary control");
+                    };
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::Binary {
+                            op: op.clone(),
+                            left: left.span,
+                            right: right.span,
+                        },
+                        normal,
+                        scopes,
+                    )?;
+                    let right_entry = self.block(scopes, right.span)?;
+                    self.budget.charge(6, expression.span)?;
+                    pending.push((right_entry, right, complete));
+                    pending.push((current, left, right_entry));
+                }
+                ExpressionControl::ShortCircuit {
+                    left,
+                    right,
+                    evaluate_right_on,
+                } => {
+                    let right_result = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::Truth(right.span),
+                        normal,
+                        scopes,
+                    )?;
+                    let shortcut = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::Boolean(!evaluate_right_on),
+                        normal,
+                        scopes,
+                    )?;
+                    let right_entry = self.block(scopes, right.span)?;
+                    let branch = self.block(scopes, left.span)?;
+                    let (then_target, else_target) = if evaluate_right_on {
+                        (right_entry, shortcut)
+                    } else {
+                        (shortcut, right_entry)
+                    };
+                    self.terminate(
+                        branch,
+                        OwnershipFlowTerminator::Branch {
+                            condition: OwnershipBranchCondition::Expression(left.span),
+                            then_target,
+                            else_target,
+                        },
+                        expression.span,
+                    )?;
+                    self.budget.charge(6, expression.span)?;
+                    pending.push((right_entry, right, right_result));
+                    pending.push((current, left, branch));
+                }
+                ExpressionControl::TryOperand(operand) => {
+                    let success = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::TryPayload(operand.span),
+                        normal,
+                        scopes,
+                    )?;
+                    let failure = self.block(scopes, expression.span)?;
+                    self.terminate(
+                        failure,
+                        OwnershipFlowTerminator::Return {
+                            span: expression.span,
+                            kind: OwnershipReturnKind::TryFailure,
+                            exited_scopes: scopes.iter().rev().copied().collect(),
+                        },
+                        expression.span,
+                    )?;
+                    let branch = self.block(scopes, expression.span)?;
+                    self.terminate(
+                        branch,
+                        OwnershipFlowTerminator::Branch {
+                            condition: OwnershipBranchCondition::TrySuccess {
+                                expression: expression.span,
+                                operand: operand.span,
+                            },
+                            then_target: success,
+                            else_target: failure,
+                        },
+                        expression.span,
+                    )?;
+                    self.budget.charge(3, operand.span)?;
+                    pending.push((current, operand, branch));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn expression_result(
+        &mut self,
+        span: Span,
+        value: OwnershipExpressionResult,
+        normal: usize,
+        scopes: &[usize],
+    ) -> FlowResult<usize> {
+        self.budget.charge(4, span)?;
+        let complete = self.block(scopes, span)?;
+        self.graph.blocks[complete]
+            .events
+            .push(OwnershipFlowEvent::ExpressionResult { span, value });
+        self.terminate(
+            complete,
+            OwnershipFlowTerminator::Opaque {
+                normal,
+                early_return: None,
+            },
+            span,
+        )?;
+        Ok(complete)
+    }
+
+    fn evaluate_opaque(
         &mut self,
         current: usize,
         expressions: &[&'a Expr],

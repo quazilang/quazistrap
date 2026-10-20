@@ -2,6 +2,59 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-20, shared expression control and logical bools)
+
+src/evaluation.rs now supplies operand control consumed by codegen and source
+flow for groups/casts/unary, eager binary, logical short-circuit and Try.
+Source flow refines those outer forms iteratively, keeping result identities
+separate (notably unary Not, casts and shortcut/RHS bool results). TrySuccess
+means wrapper discriminant success, never enum-pointer truthiness. Failure
+returns preserve active scopes. Opaque calls/assignments/match/field/index/
+aggregates/incdec and multi-input iteration regions still scan possible nested
+Try exits conservatively, stopping at deferred closures. Completed wrappers
+are not rescanned. Auto-reads, typed accesses/aliases, allocation/traps/cleanup
+and all ownership permissions remain unverified. QZI13 remains Unverified.
+
+Fixed a confirmed runtime bug: integer logical RHS values were copied raw into
+Bool-typed results; logical_and(2,3) compared unequal to true. Both evaluated
+and skipped paths now materialize canonical 0/1 with laziness unchanged. Do not
+claim prior integer-constant folding proved the discrepancy: current constant
+evaluation folds Bool/Bool logical operands, not Int/Int. The valid before
+fixture instead contrasts runtime integer truthiness with canonical Boolean
+expressions. Baseline /tmp/quazi-expression-control-before builds it but exits 3;
+current source/QZI native and Windows COFF pass all 36 checks. Optional --before-qz
+regression also verifies old source-cache invalidation and new exact-hit runtime.
+QZC18 rejects v17 exact/reusable caches. Old QZI bodies require source rebuild.
+
+Verification: full offline tests 854/854, LSP 60/60, codegen 128/128 before final
+integration, nineteen source-flow tests in the full suite, build and direct
+Clippy-driver check pass with existing warnings. Named-call, result-retention
+(12 rejected/7 valid) and dynamic-vtable/cache integrations pass. Independent
+read-only implementation review found no blocking control defect and required
+the included cache invalidation. Existing Rust ELF-loader wrappers remain
+necessary. Logs: /tmp/quazi-expr-*.log and /tmp/quazi-expression-*.log.
+See docs/changes/2026-10-20-expression-control.md and the updated source-flow
+contract. New-file and changed-region formatting/diff checks pass. Graphify query and AST update used; six isolated
+STD memory tests and ordinary quazifetch build also pass with the matching compiler.
+
+User explicitly requested README progress refresh after code commits. Rechecked
+LSP 60/60 and inspected prior failing navigation/workspace/reference/rename cases:
+all four original checklist gates can now be checked, giving 16/20 LSP and 73.2%
+overall using the unchanged 33-item rubric. Ownership stays 9/16. Record the code
+commit as the new audit base, then update README and its dated checklist in a
+separate documentation commit; do not manufacture new credit for partial D-014.
+
+Next: normalized lvalue/call/aggregate/match schedules and typed memory access
+facts, then effect/provenance composition, structural destruction and artifact
+verification before D-015/full STD migration. Also audit Try failure compatibility
+with the enclosing function/closure return wrapper: current type checking does
+not visibly enforce that contract; graph edges do not certify it. Also audit
+abrupt-loop cleanup: compile_stmt Break/Continue emits jumps, while compile_block
+pops its cleanup scope on terminal statements. Verify with native destructor
+counters before claiming cleanup on those edges. The broad
+../goal.md objective remains active and incomplete. Preserve STD CLI dirt,
+compiler .codex/ and example35 outputs; no push or external publication.
+
 ## Checkpoint (2026-10-20, source statement control flow)
 
 Added src/semantic/control_flow.rs and fourteen focused tests as the next D-014

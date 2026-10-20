@@ -85,9 +85,14 @@ report S14 rather than silently publishing truncated success.
 checking and shares each canonical declaration graph across concrete callers.
 Include leaves without calls. Return/break/continue end their path and retain
 lexical scope exits; C-style continue targets the update. Closure graphs are
-deferred, never synchronous successors of creation. All expression regions and
-implicit iteration effects remain opaque. A conservative `?` failure edge must
-stop at closure boundaries. No effect/loan/artifact flags may be inferred from
+deferred, never synchronous successors of creation. `evaluation.rs` supplies
+operand control shared with codegen for unary/eager-binary/short-circuit/try
+forms. Result events distinguish group/cast/unary/binary completion, logical
+normalization and payload extraction; they prove no typed access or storage alias.
+Exposed `?` uses a success-discriminant branch, never enum-handle truthiness.
+Do not rescan completed wrappers and duplicate their failure edges. Unclassified
+regions and iteration protocols stay opaque; conservative nested-`?` scans stop
+at closure boundaries. No effect/loan/artifact flags may be inferred from
 this graph. Bound aggregate construction/retained metadata, poll cancellation,
 and reject resource exhaustion with S14 instead of publishing partial success.
 

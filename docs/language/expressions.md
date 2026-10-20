@@ -64,7 +64,12 @@ comparisons.
 
 ## Logical operators
 
-`&&` (logical AND) and `||` (logical OR) short-circuit. `!` is logical NOT:
+`&&` (logical AND) and `||` (logical OR) short-circuit. `!` is logical NOT.
+
+`&&` and `||` accept booleans or integers. Zero is false and nonzero is true;
+the result is always a `bool`, with canonical `false`/`true` values, rather than
+the integer value of an evaluated operand. The right operand is evaluated only
+when needed to determine the result.
 
 ```quazi
 var ok: bool = true && false;

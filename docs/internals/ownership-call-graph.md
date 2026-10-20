@@ -71,7 +71,8 @@ These facts do not make this graph an effect proof.
 
 The graph now retains [argument storage snapshots](ownership-call-arguments.md).
 It also retains [source statement control flow](source-control-flow.md), shared
-by concrete instances of a declaration. Expressions remain opaque and no typed
+by concrete instances of a declaration. Selected operand controls are shared
+with codegen; unclassified expression regions remain opaque. No typed
 reads/writes, alias provenance, escape paths or destruction effects are proved.
 Closure calls remain conservatively attributed
 to their enclosing source callable, with deferred closure spans on argument

@@ -131,10 +131,13 @@ guarantee.
 `semantic/control_flow.rs` records source statement graphs, shared by concrete
 instances of each declaration. Structured branches, loops, abrupt transfers and
 scope exits are explicit; closure bodies have separate deferred graphs.
-Expression regions and implicit iteration effects remain opaque. Do not use
+`evaluation.rs` shares unary/eager-binary/short-circuit/try operand control with
+codegen. Unclassified expression regions and implicit iteration effects remain
+opaque. Result identities do not prove typed accesses or aliases. Do not use
 these graphs as typed effects, loan permissions or artifact certificates. See
-[the control-flow contract](docs/internals/source-control-flow.md). QZC17
-invalidates older exact and reusable chunks for this mandatory source pass.
+[the control-flow contract](docs/internals/source-control-flow.md). QZC18
+invalidates older exact and reusable chunks for refined flow and canonical
+logical-bool emission.
 
 `semantic/retention.rs` distinguishes lexical bindings, direct allocations and
 unmodeled storage while deriving source result dependencies. Explicit/implicit
@@ -403,7 +406,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | Item | Target |
 |------|--------|
 | macOS Mach-O backend | Actually implement Mach-O output, `__start` stub, relocations. |
-| Ownership / RAII bytecode | In progress — WPO discovers `free` destructors and codegen inserts reverse-order lexical cleanup for locals and owned by-value parameters on fallthrough/early return, transfers returned ownership, and keeps method receivers borrowed. Explicit lifetime syntax, complete borrow checking, real `Move`/`Drop`/`Dup` lowering, trait dispatch, and recursive generic drops remain pending. |
+| Ownership / RAII bytecode | In progress — WPO discovers `free` destructors and codegen inserts reverse-order lexical cleanup on fallthrough/early return. Explicit receivers distinguish shared/exclusive loans and consumption. D-014 uses inferred regions rather than source lifetime names. Complete flow-sensitive effects, place-level moves, structural destruction and verified artifact contracts remain pending; source call/place/control evidence is a prerequisite, not their proof. |
 | Atomic opcodes in encoder | `AtomicAdd`, `AtomicCas` lowering. |
 
 ### P4 — Language Features

@@ -17,6 +17,7 @@ use super::{Chunk, ConstPoolEntry, Opcode, QziCallRelocation};
 use crate::abi::{
     AbiField, AbiSignature, AbiType, ForeignGlobal as AbiForeignGlobal, ForeignSymbol,
 };
+use crate::evaluation::{ExpressionControl, expression_control};
 use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
 use crate::semantic::{ConstValue, OwnershipArgumentRole, SemanticReport};
@@ -6421,7 +6422,11 @@ impl<'a> FnCompiler<'a> {
             ));
         }
         match &expr.node {
-            ExprKind::Binary { left, op, right } if is_comparison(op) => {
+            ExprKind::Binary { op, .. } if is_comparison(op) => {
+                let ExpressionControl::EagerBinary { left, right } = expression_control(expr)
+                else {
+                    unreachable!("comparison operands");
+                };
                 let string_comparison = self
                     .type_of_span((left.span.start, left.span.end))
                     .as_ref()
@@ -6461,7 +6466,12 @@ impl<'a> FnCompiler<'a> {
                 }
                 self.chunk.emit(jump)
             }
-            ExprKind::Group(inner) => self.compile_condition_jump(inner, jump_if_false),
+            ExprKind::Group(_) => {
+                let ExpressionControl::UnaryChild(inner) = expression_control(expr) else {
+                    unreachable!("group operand");
+                };
+                self.compile_condition_jump(inner, jump_if_false)
+            }
             _ => {
                 let r = self.compile_expr(expr);
                 let jop = if jump_if_false {
@@ -7271,107 +7281,122 @@ impl<'a> FnCompiler<'a> {
                 self.reg_of(name)
             }
 
-            ExprKind::Group(inner) => self.compile_expr(inner),
-
-            ExprKind::Cast { expr: inner, ty: _ } => {
+            ExprKind::Group(_) | ExprKind::Cast { .. } => {
+                let ExpressionControl::UnaryChild(inner) = expression_control(expr) else {
+                    unreachable!("transparent operand");
+                };
                 // QZI uses 64-bit slots for all values. Integer size changes and
                 // float size changes are no-ops at this level; the encoder and ABI
                 // handle the actual width. The typechecker has already validated.
                 self.compile_expr(inner)
             }
 
-            ExprKind::Unary { op, expr: inner } => match op {
-                UnaryOpKind::Ref | UnaryOpKind::RefMut => {
-                    let src = self.compile_expr(inner);
-                    if matches!(op, UnaryOpKind::Ref)
-                        && self
-                            .type_of_expr(inner)
-                            .as_ref()
-                            .is_some_and(is_string_view_type)
-                    {
-                        return src;
+            ExprKind::Unary { op, .. } => {
+                let ExpressionControl::UnaryChild(inner) = expression_control(expr) else {
+                    unreachable!("unary operand");
+                };
+                match op {
+                    UnaryOpKind::Ref | UnaryOpKind::RefMut => {
+                        let src = self.compile_expr(inner);
+                        if matches!(op, UnaryOpKind::Ref)
+                            && self
+                                .type_of_expr(inner)
+                                .as_ref()
+                                .is_some_and(is_string_view_type)
+                        {
+                            return src;
+                        }
+                        let dst = self.alloc_reg();
+                        if let Some(TypeKind::Array { len, .. }) =
+                            self.type_of_span((inner.span.start, inner.span.end))
+                        {
+                            let block_length = self.fixed_array_block_length(len);
+                            self.chunk.emit(mem_lea_block(src, dst, 0, block_length));
+                        } else {
+                            self.chunk.emit(mem_lea_block(src, dst, 0, 1));
+                        }
+                        dst
                     }
-                    let dst = self.alloc_reg();
-                    if let Some(TypeKind::Array { len, .. }) =
-                        self.type_of_span((inner.span.start, inner.span.end))
-                    {
-                        let block_length = self.fixed_array_block_length(len);
-                        self.chunk.emit(mem_lea_block(src, dst, 0, block_length));
+                    UnaryOpKind::Deref => {
+                        let ptr = self.compile_expr(inner);
+                        if matches!(self.type_of_expr(inner), Some(TypeKind::Ref { inner }) if matches!(self.resolve_type(&inner.node), TypeKind::Str))
+                        {
+                            return ptr;
+                        }
+                        let dst = self.alloc_reg();
+                        let (width, signed) = self.raw_pointee_access(inner);
+                        self.chunk.emit(mem_load_w(ptr, dst, 0, width, signed));
+                        dst
+                    }
+                    UnaryOpKind::Neg => {
+                        let src = self.compile_expr(inner);
+                        let dst = self.alloc_reg();
+                        let mut instruction = rrr(Opcode::Neg, dst, src, 0);
+                        if self.is_float_span((inner.span.start, inner.span.end)) {
+                            instruction.flags |= FLOAT_FLAG;
+                        }
+                        self.chunk.emit(instruction);
+                        dst
+                    }
+                    UnaryOpKind::Not => {
+                        let src = self.compile_expr(inner);
+                        let dst = self.alloc_reg();
+                        // Logical not: dst = (src == 0) ? 1 : 0
+                        self.chunk.emit(ri16(Opcode::MovI, dst, 1));
+                        let jump_idx = self.chunk.emit(ri16(Opcode::Jz, src, 0));
+                        self.chunk.emit(ri16(Opcode::MovI, dst, 0));
+                        self.chunk.patch_jump(jump_idx, self.chunk.len() as u16);
+                        dst
+                    }
+                }
+            }
+
+            // The shared operand plan controls which RHS evaluation is reachable.
+            ExprKind::Binary {
+                op: BinOpKind::AndAnd | BinOpKind::OrOr,
+                ..
+            } => {
+                let ExpressionControl::ShortCircuit {
+                    left,
+                    right,
+                    evaluate_right_on,
+                } = expression_control(expr)
+                else {
+                    unreachable!("logical operands");
+                };
+                let left_value = self.compile_expr(left);
+                let dst = self.alloc_reg();
+                let shortcut = self.chunk.emit(ri16(
+                    if evaluate_right_on {
+                        Opcode::Jz
                     } else {
-                        self.chunk.emit(mem_lea_block(src, dst, 0, 1));
-                    }
-                    dst
-                }
-                UnaryOpKind::Deref => {
-                    let ptr = self.compile_expr(inner);
-                    if matches!(self.type_of_expr(inner), Some(TypeKind::Ref { inner }) if matches!(self.resolve_type(&inner.node), TypeKind::Str))
-                    {
-                        return ptr;
-                    }
-                    let dst = self.alloc_reg();
-                    let (width, signed) = self.raw_pointee_access(inner);
-                    self.chunk.emit(mem_load_w(ptr, dst, 0, width, signed));
-                    dst
-                }
-                UnaryOpKind::Neg => {
-                    let src = self.compile_expr(inner);
-                    let dst = self.alloc_reg();
-                    let mut instruction = rrr(Opcode::Neg, dst, src, 0);
-                    if self.is_float_span((inner.span.start, inner.span.end)) {
-                        instruction.flags |= FLOAT_FLAG;
-                    }
-                    self.chunk.emit(instruction);
-                    dst
-                }
-                UnaryOpKind::Not => {
-                    let src = self.compile_expr(inner);
-                    let dst = self.alloc_reg();
-                    // Logical not: dst = (src == 0) ? 1 : 0
-                    self.chunk.emit(ri16(Opcode::MovI, dst, 1));
-                    let jump_idx = self.chunk.emit(ri16(Opcode::Jz, src, 0));
-                    self.chunk.emit(ri16(Opcode::MovI, dst, 0));
-                    self.chunk.patch_jump(jump_idx, self.chunk.len() as u16);
-                    dst
-                }
-            },
-
-            // Short-circuit logical ops — lazy right evaluation.
-            ExprKind::Binary {
-                left,
-                op: BinOpKind::AndAnd,
-                right,
-            } => {
-                let r1 = self.compile_expr(left);
-                let dst = self.alloc_reg();
-                let false_idx = self.chunk.emit(ri16(Opcode::Jz, r1, 0));
-                let r2 = self.compile_expr(right);
-                self.chunk.emit(rrr(Opcode::Mov, dst, r2, 0));
-                let end_idx = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
-                let false_tgt = self.chunk.len() as u16;
-                self.chunk.patch_jump(false_idx, false_tgt);
+                        Opcode::Jnz
+                    },
+                    left_value,
+                    0,
+                ));
+                let right_value = self.compile_expr(right);
+                // Logical expressions have bool type even for integer operands.
+                // Materialize a canonical 0/1 on the evaluated path as well as
+                // the shortcut path, matching semantic constant evaluation.
                 self.chunk.emit(ri16(Opcode::MovI, dst, 0));
-                self.chunk.patch_jump(end_idx, self.chunk.len() as u16);
-                dst
-            }
-            ExprKind::Binary {
-                left,
-                op: BinOpKind::OrOr,
-                right,
-            } => {
-                let r1 = self.compile_expr(left);
-                let dst = self.alloc_reg();
-                let true_idx = self.chunk.emit(ri16(Opcode::Jnz, r1, 0));
-                let r2 = self.compile_expr(right);
-                self.chunk.emit(rrr(Opcode::Mov, dst, r2, 0));
-                let end_idx = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
-                let true_tgt = self.chunk.len() as u16;
-                self.chunk.patch_jump(true_idx, true_tgt);
+                let right_is_zero = self.chunk.emit(ri16(Opcode::Jz, right_value, 0));
                 self.chunk.emit(ri16(Opcode::MovI, dst, 1));
-                self.chunk.patch_jump(end_idx, self.chunk.len() as u16);
+                self.chunk
+                    .patch_jump(right_is_zero, self.chunk.len() as u16);
+                let end = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
+                self.chunk.patch_jump(shortcut, self.chunk.len() as u16);
+                self.chunk
+                    .emit(ri16(Opcode::MovI, dst, u16::from(!evaluate_right_on)));
+                self.chunk.patch_jump(end, self.chunk.len() as u16);
                 dst
             }
 
-            ExprKind::Binary { left, op, right } => {
+            ExprKind::Binary { op, .. } => {
+                let ExpressionControl::EagerBinary { left, right } = expression_control(expr)
+                else {
+                    unreachable!("eager binary operands");
+                };
                 let left_key = (left.span.start, left.span.end);
                 let is_float = self.is_float_span(left_key);
                 let is_unsigned = self.is_unsigned_span(left_key);
@@ -9000,7 +9025,10 @@ impl<'a> FnCompiler<'a> {
                 dst
             }
 
-            ExprKind::Try { expr: inner } => {
+            ExprKind::Try { .. } => {
+                let ExpressionControl::TryOperand(inner) = expression_control(expr) else {
+                    unreachable!("try operand");
+                };
                 let scr = self.compile_expr(inner);
                 let key = (inner.span.start, inner.span.end);
                 let enum_name = match self.type_of_span(key) {

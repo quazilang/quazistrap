@@ -10,6 +10,7 @@ pub mod cancel;
 pub mod cli;
 #[cfg(test)]
 mod docs;
+mod evaluation;
 mod header;
 mod incremental;
 pub mod lexer;

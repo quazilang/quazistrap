@@ -102,8 +102,8 @@ and unproved effects still prevent a path-sensitive ownership proof.
 
 QZI remains v13, and its ownership envelope remains Unverified. Source result
 facts are not serialized as ownership certificates. QZC v15 introduced cache
-invalidation for the raw-storage dependency model; the current v17 also reruns
-the mandatory statement-flow pass. Exact hits and reusable units from older
+invalidation for the raw-storage dependency model; the current v18 also reruns
+refined flow checks and fixes logical-result emission. Exact hits and reusable units from older
 versions cannot bypass the current source checks. Historical QZI
 artifacts have not acquired this source proof.
 

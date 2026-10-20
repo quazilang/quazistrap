@@ -350,12 +350,23 @@ fn source_control_flow_try_failures_in_loop_regions_exit_entire_callable() {
     let graph = &maps["main"];
     let mut regions = BTreeSet::new();
     for block in &graph.blocks {
-        let OwnershipFlowTerminator::Opaque {
-            early_return: Some(failure),
-            ..
-        } = block.terminator
-        else {
-            continue;
+        let failure = match block.terminator {
+            OwnershipFlowTerminator::Opaque {
+                early_return: Some(failure),
+                ..
+            } => failure,
+            OwnershipFlowTerminator::Opaque {
+                normal,
+                early_return: None,
+            } => match graph.blocks[normal].terminator {
+                OwnershipFlowTerminator::Branch {
+                    condition: OwnershipBranchCondition::TrySuccess { .. },
+                    else_target,
+                    ..
+                } => else_target,
+                _ => continue,
+            },
+            _ => continue,
         };
         let OwnershipFlowTerminator::Return {
             kind: OwnershipReturnKind::TryFailure,
@@ -484,4 +495,284 @@ fn source_control_flow_opaque_scan_accepts_deep_binary_expression() {
                 }
             )))
     );
+}
+
+fn evaluation_block(graph: &OwnershipControlFlow, source: &str, text: &str) -> usize {
+    let start = source.find(text).unwrap();
+    graph
+        .blocks
+        .iter()
+        .position(|block| {
+            block.events.iter().any(|event| {
+                matches!(event, OwnershipFlowEvent::Evaluate { spans, .. }
+                    if spans.iter().any(|span| span.start == start))
+            })
+        })
+        .unwrap_or_else(|| panic!("missing evaluation {text}"))
+}
+
+#[test]
+fn source_control_flow_logical_skip_excludes_rhs_and_its_try_exit() {
+    for (operator, right_on) in [("&&", true), ("||", false)] {
+        let source =
+            format!("fn main() void {{ var value = left() {operator} right()?; done(); }}");
+        let maps = graphs(&source);
+        let graph = &maps["main"];
+        graph.validate().unwrap();
+        let left = source.find("left()").unwrap();
+        let (then_target, else_target) = graph
+            .blocks
+            .iter()
+            .find_map(|block| match block.terminator {
+                OwnershipFlowTerminator::Branch {
+                    condition: OwnershipBranchCondition::Expression(span),
+                    then_target,
+                    else_target,
+                } if span.start == left => Some((then_target, else_target)),
+                _ => None,
+            })
+            .unwrap();
+        let (rhs, skip) = if right_on {
+            (then_target, else_target)
+        } else {
+            (else_target, then_target)
+        };
+        let skip_path = reachable(graph, skip);
+        let rhs_path = reachable(graph, rhs);
+        let rhs_evaluation = evaluation_block(graph, &source, "right()");
+        assert!(!skip_path.contains(&rhs_evaluation));
+        assert!(rhs_path.contains(&rhs_evaluation));
+        let failures = graph
+            .blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(id, block)| {
+                matches!(
+                    block.terminator,
+                    OwnershipFlowTerminator::Return {
+                        kind: OwnershipReturnKind::TryFailure,
+                        ..
+                    }
+                )
+                .then_some(id)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(failures.len(), 1);
+        assert!(!skip_path.contains(&failures[0]));
+        assert!(rhs_path.contains(&failures[0]));
+        assert!(skip_path.iter().any(|id| graph.blocks[*id].events.iter().any(|event| {
+            matches!(event, OwnershipFlowEvent::ExpressionResult { span, value: OwnershipExpressionResult::Boolean(value) }
+                if span.start == left && *value == !right_on)
+        })));
+        assert!(rhs_path.iter().any(|id| graph.blocks[*id].events.iter().any(|event| {
+            matches!(event, OwnershipFlowEvent::ExpressionResult { span, value: OwnershipExpressionResult::Truth(_) } if span.start == left)
+        })));
+    }
+}
+
+#[test]
+fn source_control_flow_eager_failure_skips_later_operand_and_preserves_unary_result() {
+    let source = "fn main() void { var value = -(first()? + later()); done(); }";
+    let maps = graphs(source);
+    let graph = &maps["main"];
+    let (success, failure) = graph
+        .blocks
+        .iter()
+        .find_map(|block| match block.terminator {
+            OwnershipFlowTerminator::Branch {
+                condition: OwnershipBranchCondition::TrySuccess { operand, .. },
+                then_target,
+                else_target,
+            } if operand.start == source.find("first()").unwrap() => {
+                Some((then_target, else_target))
+            }
+            _ => None,
+        })
+        .unwrap();
+    let later = evaluation_block(graph, source, "later()");
+    let done = statement_block(graph, source, "done()");
+    assert!(reachable(graph, success).contains(&later));
+    assert!(reachable(graph, success).contains(&done));
+    assert!(!reachable(graph, failure).contains(&later));
+    assert!(!reachable(graph, failure).contains(&done));
+    assert!(
+        graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.events)
+            .any(|event| matches!(
+                event,
+                OwnershipFlowEvent::ExpressionResult {
+                    value: OwnershipExpressionResult::Unary {
+                        op: UnaryOpKind::Neg,
+                        ..
+                    },
+                    ..
+                }
+            ))
+    );
+    assert!(
+        graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.events)
+            .any(|event| matches!(
+                event,
+                OwnershipFlowEvent::ExpressionResult {
+                    value: OwnershipExpressionResult::Binary {
+                        op: BinOpKind::Add,
+                        ..
+                    },
+                    ..
+                }
+            ))
+    );
+    assert!(!graph.blocks.iter().any(|block| matches!(
+        block.terminator,
+        OwnershipFlowTerminator::Opaque {
+            early_return: Some(_),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn source_control_flow_wrappers_keep_distinct_result_identities() {
+    let source =
+        "fn main() void { if !(left() && right()?) { body(); } var value = (first()? as i32); }";
+    let maps = graphs(source);
+    let graph = &maps["main"];
+    let not_start = source.find('!').unwrap();
+    assert!(graph.blocks.iter().any(|block| matches!(block.terminator,
+        OwnershipFlowTerminator::Branch { condition: OwnershipBranchCondition::Expression(span), .. } if span.start == not_start)));
+    assert!(graph.blocks.iter().flat_map(|block| &block.events).any(|event| matches!(event,
+        OwnershipFlowEvent::ExpressionResult { span, value: OwnershipExpressionResult::Unary { op: UnaryOpKind::Not, .. } } if span.start == not_start)));
+    assert!(
+        graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.events)
+            .any(|event| matches!(
+                event,
+                OwnershipFlowEvent::ExpressionResult {
+                    value: OwnershipExpressionResult::Cast(_),
+                    ..
+                }
+            ))
+    );
+    assert_eq!(
+        graph
+            .blocks
+            .iter()
+            .filter(|block| matches!(
+                block.terminator,
+                OwnershipFlowTerminator::Return {
+                    kind: OwnershipReturnKind::TryFailure,
+                    ..
+                }
+            ))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn source_control_flow_opaque_context_and_deferred_controls_stay_separate() {
+    let source =
+        "fn main() void { consume(left() && right()?); var closure = || left() || right()?; }";
+    let maps = graphs(source);
+    let graph = &maps["main"];
+    assert_eq!(graph.deferred.len(), 1);
+    assert!(
+        !graph
+            .blocks
+            .iter()
+            .any(|block| matches!(block.terminator, OwnershipFlowTerminator::Branch { .. }))
+    );
+    assert_eq!(
+        graph
+            .blocks
+            .iter()
+            .filter(|block| matches!(
+                block.terminator,
+                OwnershipFlowTerminator::Return {
+                    kind: OwnershipReturnKind::TryFailure,
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
+    let deferred = &graph.deferred[0].graph;
+    assert!(deferred.blocks.iter().any(|block| matches!(
+        block.terminator,
+        OwnershipFlowTerminator::Branch {
+            condition: OwnershipBranchCondition::TrySuccess { .. },
+            ..
+        }
+    )));
+    assert_eq!(
+        deferred
+            .blocks
+            .iter()
+            .filter(|block| matches!(
+                block.terminator,
+                OwnershipFlowTerminator::Return {
+                    kind: OwnershipReturnKind::TryFailure,
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn source_control_flow_refinement_is_iterative_bounded_and_cancellable() {
+    let source = format!(
+        "fn main() void {{ var value = {}; }}",
+        std::iter::repeat_n("1", 200).collect::<Vec<_>>().join("+")
+    );
+    let maps = graphs(&source);
+    let graph = &maps["main"];
+    assert_eq!(
+        graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.events)
+            .filter(|event| matches!(
+                event,
+                OwnershipFlowEvent::ExpressionResult {
+                    value: OwnershipExpressionResult::Binary { .. },
+                    ..
+                }
+            ))
+            .count(),
+        199
+    );
+    let program = parse(&source);
+    let mut analyzer = Analyzer::new();
+    let limited = analyzer
+        .record_ownership_control_flow_with_limits(
+            &program,
+            &mut || Ok(()),
+            FlowLimits {
+                blocks: 10,
+                ..FlowLimits::default()
+            },
+        )
+        .unwrap();
+    assert!(limited.is_empty());
+    assert!(analyzer.errors.iter().any(|error| error.code == "S14"));
+    let mut polls = 0;
+    let cancelled = analyzer.record_ownership_control_flow(&program, &mut || {
+        polls += 1;
+        if polls == 100 {
+            Err(crate::cancel::Cancelled)
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(cancelled, Err(crate::cancel::Cancelled)));
+    assert_eq!(polls, 100);
 }

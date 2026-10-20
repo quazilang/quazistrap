@@ -13,6 +13,7 @@ mod borrow;
 mod control_flow;
 pub use control_flow::{
     OwnershipBranchCondition, OwnershipControlFlow, OwnershipDeferredFlow, OwnershipEvaluationKind,
+    OwnershipExpressionResult,
     OwnershipFlowBlock, OwnershipFlowBlockId, OwnershipFlowEvent, OwnershipFlowScope,
     OwnershipFlowScopeId, OwnershipFlowScopeKind, OwnershipFlowTerminator, OwnershipIterationStage,
     OwnershipReturnKind,

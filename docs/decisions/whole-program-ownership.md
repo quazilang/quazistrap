@@ -12,7 +12,7 @@ summary format required by this decision.
 Intermediate source evidence now includes
 [argument places](../internals/ownership-call-arguments.md) and
 [statement control flow](../internals/source-control-flow.md). Expression
-regions remain opaque; neither input establishes the guarantees below.
+effects remain unverified; neither input establishes the guarantees below.
 
 ## Decision
 
