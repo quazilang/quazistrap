@@ -1,5 +1,9 @@
 # Change records
 
+- [2026-10-20: Source statement control flow](2026-10-20-source-statement-flow.md)
+- [2026-10-20: Named calls follow declaration slots](2026-10-20-named-call-slots.md)
+- [2026-10-18: Retention through raw storage and byte copies](2026-10-18-raw-storage-retention.md)
+- [2026-10-18: Declaration-backed call arguments](2026-10-18-ownership-call-arguments.md)
 - [2026-10-15: Retained borrowed aggregate roots](2026-10-15-result-retention.md)
 - [2026-10-15: Portable dynamic vtables](2026-10-15-portable-vtables.md)
 - [2026-10-14: Canonical safe-reference receiver ABI](2026-10-14-reference-receiver-abi.md)

@@ -126,7 +126,15 @@ proof is inferred. See [the argument contract](docs/internals/ownership-call-arg
 Codegen uses these declared slots to order named call operands, independent of
 short method names and emitted specialization symbols. Missing or inconsistent
 slot evidence is an emission error; this does not establish an evaluation-order
-guarantee. QZC16 invalidates older exact and reusable chunks.
+guarantee.
+
+`semantic/control_flow.rs` records source statement graphs, shared by concrete
+instances of each declaration. Structured branches, loops, abrupt transfers and
+scope exits are explicit; closure bodies have separate deferred graphs.
+Expression regions and implicit iteration effects remain opaque. Do not use
+these graphs as typed effects, loan permissions or artifact certificates. See
+[the control-flow contract](docs/internals/source-control-flow.md). QZC17
+invalidates older exact and reusable chunks for this mandatory source pass.
 
 `semantic/retention.rs` distinguishes lexical bindings, direct allocations and
 unmodeled storage while deriving source result dependencies. Explicit/implicit

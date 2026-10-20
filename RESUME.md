@@ -2,6 +2,51 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-20, source statement control flow)
+
+Added src/semantic/control_flow.rs and fourteen focused tests as the next D-014
+foundation. OwnershipCallable.control_flow shares a canonical source graph
+across concrete specializations, including leaf bodies. It records structured
+branches/loops, C-style continue/update, return/break/continue termination,
+lexical scope exits and separate deferred closure graphs. Possible ? failure
+returns are conservative; whole expression regions and iteration protocols stay
+opaque. No typed effects, alias/escape/move/drop proof or loan eligibility is
+inferred. QZI13 stays Unverified; QZC17 invalidates older exact/reusable caches.
+
+The construction is iterative/cancellable and globally budgeted. Metadata and
+work contexts count toward the limit; invalid/overflowing construction publishes
+no partial map. Structural validation checks root entry, blocks, scope chains
+and transfers. Opaque expression depth is unbounded by this pass (node budget
+still applies), avoiding an unnecessary compatibility regression on long sums.
+Scope/deferred nesting is bounded at 64. Canonical-name helpers may allocate
+before their results are charged; this is not a total frontend peak-heap bound.
+
+Verification: full offline compiler suite 849/849; fourteen focused graph tests
+and generic Arc-sharing integration pass. The 28 ownership-graph tests also
+pass after adding module/method body-presence assertions. Build and direct Clippy-driver check
+pass with existing warnings. Named-call and result-retention integrations pass
+native/QZI/Windows COFF paths. Read-only independent reviewers challenged CFG
+sequencing, nested-loop targets, scope exits, closure separation, validators and
+resource bounds; root reconciled findings and corrected three new Clippy lints.
+See docs/internals/source-control-flow.md and
+docs/changes/2026-10-20-source-statement-flow.md for exact scope and commands.
+Dynamic-vtable cold/exact/partial cache tests pass. Quazifetch source/run and
+Windows COFF pass; repeated ordinary builds hit a verified v17 cache. Six
+isolated STD memory tests pass with the matching compiler. Windows emission
+retains four existing warnings; no Windows-host runtime is claimed.
+Graphify query and AST update used. Its local AST index excludes Quazi source
+semantics and is not an ownership proof. Changed Markdown link targets and
+formatting/diff checks pass. Logs are /tmp/quazi-cfg-*.log. Existing
+Rust ELF-loader wrappers remain necessary.
+
+Next real dependency: normalize expression evaluation with lowering, attach typed
+reads/writes/call effects to occurrence identities, then compose provenance and
+recursive effects before changing ownership permissions or artifact formats.
+Structural destruction, D-015 and coherent full STD migration remain unfinished.
+The broader ../goal.md objective is still active; no full-readiness claim.
+Preserve compiler .codex/ and example35 build outputs, STD CLI changes and editor
+artifacts. No STD changes, push, PR, publication or external operations here.
+
 ## Checkpoint (2026-10-20, named calls and quazifetch RAM)
 
 Named call emission now orders supplied operands using semantic declaration

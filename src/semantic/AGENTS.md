@@ -81,6 +81,16 @@ deferred closure spans. These facts never grant loan or artifact permissions.
 Bound source bodies/projection depth and total specialized argument nodes;
 report S14 rather than silently publishing truncated success.
 
+`control_flow.rs` separately records source statement transitions before borrow
+checking and shares each canonical declaration graph across concrete callers.
+Include leaves without calls. Return/break/continue end their path and retain
+lexical scope exits; C-style continue targets the update. Closure graphs are
+deferred, never synchronous successors of creation. All expression regions and
+implicit iteration effects remain opaque. A conservative `?` failure edge must
+stop at closure boundaries. No effect/loan/artifact flags may be inferred from
+this graph. Bound aggregate construction/retained metadata, poll cancellation,
+and reject resource exhaustion with S14 instead of publishing partial success.
+
 ## Transparent alias resolution
 
 Use the shared `type_resolution` engine. Validate target-active declarations

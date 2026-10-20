@@ -97,12 +97,14 @@ destruction paths, indirect targets, or artifact bodies. They do not relax
 reference escape restrictions or enable [D-015 borrowed collection
 elements](../decisions/borrowed-elements.md). The separate concrete ownership
 call graph now retains [argument storage facts](ownership-call-arguments.md),
-but still lacks control-flow edges and effect proofs.
+and [statement control flow](source-control-flow.md). Opaque expression regions
+and unproved effects still prevent a path-sensitive ownership proof.
 
 QZI remains v13, and its ownership envelope remains Unverified. Source result
-facts are not serialized as ownership certificates. QZC v15 invalidates older
-exact hits and reusable units so previously accepted source must pass these
-checks again, including the raw-storage dependency model. Historical QZI
+facts are not serialized as ownership certificates. QZC v15 introduced cache
+invalidation for the raw-storage dependency model; the current v17 also reruns
+the mandatory statement-flow pass. Exact hits and reusable units from older
+versions cannot bypass the current source checks. Historical QZI
 artifacts have not acquired this source proof.
 
 ## Verification

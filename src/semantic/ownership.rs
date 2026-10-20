@@ -442,6 +442,7 @@ impl Analyzer {
                     id,
                     signature,
                     calls,
+                    control_flow: None,
                     source_calls_closed: false,
                 },
             );
@@ -589,6 +590,32 @@ mod tests {
             .iter()
             .find(|node| node.id == identity)
             .unwrap_or_else(|| panic!("missing {identity:?}: {:?}", report.ownership_call_graph))
+    }
+
+    #[test]
+    fn ownership_graph_retains_leaf_flow_and_shares_template_flow() {
+        let report = analyze(
+            "fn leaf[T](value: T) T { ret value; } \
+             fn ordinary() void {} fn unavailable() void; \
+             fn main() void { leaf[i32](1); leaf[bool](true); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(node(&report, "ordinary", &[]).control_flow.is_some());
+        assert!(node(&report, "unavailable", &[]).control_flow.is_none());
+        let leaves = report
+            .ownership_call_graph
+            .iter()
+            .filter(|node| node.id.callable == "leaf")
+            .collect::<Vec<_>>();
+        assert_eq!(leaves.len(), 2);
+        let first = leaves[0].control_flow.as_ref().unwrap();
+        let second = leaves[1].control_flow.as_ref().unwrap();
+        assert!(std::sync::Arc::ptr_eq(first, second));
+        for leaf in leaves {
+            assert!(leaf.source_calls_closed);
+            assert!(!leaf.signature.direct_call_eligible);
+            assert!(!leaf.signature.transitive_effects_verified);
+        }
     }
 
     #[test]
@@ -789,6 +816,7 @@ fn main() void {}
         );
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         let method = node(&report, "Holder.observe", &["Token"]);
+        method.control_flow.as_ref().unwrap().validate().unwrap();
         assert_eq!(
             method.signature.receiver,
             Some(OwnershipCapability::SharedBorrow)
@@ -962,6 +990,11 @@ fn main() void { sink(value = leaf[Count](1)); }
                 OwnershipCallTarget::Direct(id("helpers.leaf", &["i32"]))
             );
         }
+        assert!(
+            node(&report, "helpers.leaf", &["i32"])
+                .control_flow
+                .is_some()
+        );
         assert_eq!(
             node(&report, "helpers.leaf", &["i32"]).signature.parameters,
             vec![OwnershipCapability::Copy]

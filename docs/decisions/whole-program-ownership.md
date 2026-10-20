@@ -9,6 +9,11 @@ direct inherent-call consuming effects for bare `self: T`. It still lacks the
 effect solver, place-level moves, structural destruction, and QZI ownership
 summary format required by this decision.
 
+Intermediate source evidence now includes
+[argument places](../internals/ownership-call-arguments.md) and
+[statement control flow](../internals/source-control-flow.md). Expression
+regions remain opaque; neither input establishes the guarantees below.
+
 ## Decision
 
 Quazi will use whole-program ownership and escape analysis over the resolved

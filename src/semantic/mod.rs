@@ -10,6 +10,15 @@ use crate::semantic::typecheck::substitute_type_kind;
 pub mod types;
 pub use types::*;
 mod borrow;
+mod control_flow;
+pub use control_flow::{
+    OwnershipBranchCondition, OwnershipControlFlow, OwnershipDeferredFlow, OwnershipEvaluationKind,
+    OwnershipFlowBlock, OwnershipFlowBlockId, OwnershipFlowEvent, OwnershipFlowScope,
+    OwnershipFlowScopeId, OwnershipFlowScopeKind, OwnershipFlowTerminator, OwnershipIterationStage,
+    OwnershipReturnKind,
+};
+#[cfg(test)]
+mod control_flow_tests;
 mod declare;
 mod optimize;
 mod ownership;
@@ -1116,6 +1125,7 @@ impl Analyzer {
         // Compose source result dependencies before checking lexical loans.
         self.derive_result_retention(program, &mut checkpoint)?;
         self.record_ownership_argument_places(program, &mut checkpoint)?;
+        let source_control_flow = self.record_ownership_control_flow(program, &mut checkpoint)?;
 
         // Pass 7: borrow / move checker.
         checkpoint()?;
@@ -1129,8 +1139,12 @@ impl Analyzer {
         callable_ownership_summaries.sort_by(|left, right| left.callable.cmp(&right.callable));
         let callable_ownership_body_effects =
             self.derive_callable_ownership_body_effects(&callable_ownership_summaries);
-        let ownership_call_graph =
+        let mut ownership_call_graph =
             self.build_ownership_call_graph(&callable_ownership_summaries, &mut checkpoint)?;
+        for callable in &mut ownership_call_graph {
+            checkpoint()?;
+            callable.control_flow = source_control_flow.get(&callable.id.callable).cloned();
+        }
         // Source discovery retains binding context that symbolic mono spellings
         // lose. Its concrete identities may disambiguate emission dependencies,
         // while injected cleanup/intrinsic mono roots remain available too.

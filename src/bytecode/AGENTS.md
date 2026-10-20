@@ -59,7 +59,7 @@ matching artifact ownership boundary.
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. QZC v16 invalidates earlier exact and reusable caches.
+  and reserialization. QZC v17 invalidates earlier exact and reusable caches.
 
 Immutable golden fixtures from real historical writers (v2-v6) live in
 `src/bytecode/fixtures/qzi/` with provenance in their README; `golden_*` tests

@@ -501,6 +501,9 @@ pub struct OwnershipCallable {
     pub id: OwnershipCallableId,
     pub signature: CallableOwnershipSummary,
     pub calls: Vec<OwnershipCallSite>,
+    /// Source statement flow shared by concrete instances of this declaration.
+    /// Expressions and implicit effects remain unverified; never a loan proof.
+    pub control_flow: Option<std::sync::Arc<super::OwnershipControlFlow>>,
     /// Closure of the recorded source calls only. This neither verifies runtime
     /// cleanup/implicit calls nor proves provenance, escapes, or a QZI artifact.
     pub source_calls_closed: bool,

@@ -14,5 +14,9 @@ runtime ABI, ownership invariants, testing, and contribution workflows.
 
 - [Concrete source ownership call graph](ownership-call-graph.md)
   — canonical specialization identities and the boundary before D-014 effects.
+- [Declaration-backed call arguments](ownership-call-arguments.md)
+  — source storage roots, projections and declared parameter slots.
+- [Source statement control flow](source-control-flow.md)
+  — structured transfers and source scopes, with opaque expression regions.
 - [Generic storage layout and recursive destruction — implementation design](generic-storage-layout.md)
   — the approved D-001/D-002/D-003 route for sound generic containers.

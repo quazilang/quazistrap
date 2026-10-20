@@ -63,17 +63,20 @@ The graph does not drive the lexical temporary-loan shortcut. Its signatures
 leave `direct_call_eligible`, `source_effects_verified`, and
 `transitive_effects_verified` false. The pre-existing declaration summaries
 and source-body call facts remain the separate conservative shortcut input.
-QZI v10's ownership envelope remains unverified.
+The QZI ownership envelope remains unverified.
 
 The separate [source result-retention pass](source-result-retention.md) now
 composes conservative parameter dependencies for lexical aggregate roots.
 These facts do not make this graph an effect proof.
 
 The graph now retains [argument storage snapshots](ownership-call-arguments.md).
-It does not yet record reads/writes, alias provenance, escape paths, control
-flow, or destruction effects. Closure bodies remain conservatively attributed
+It also retains [source statement control flow](source-control-flow.md), shared
+by concrete instances of a declaration. Expressions remain opaque and no typed
+reads/writes, alias provenance, escape paths or destruction effects are proved.
+Closure calls remain conservatively attributed
 to their enclosing source callable, with deferred closure spans on argument
-snapshots; compiler-injected
+snapshots, while their statement graphs have separate deferred entries;
+compiler-injected
 cleanup, formatting, and panic calls are not complete source-site evidence.
 `source_calls_closed` must never be used as a runtime-effect or artifact proof.
 Cycle-safe, resource-bounded alias expansion is also a separate prerequisite:

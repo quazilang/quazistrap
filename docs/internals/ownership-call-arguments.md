@@ -4,8 +4,10 @@ Audience: compiler and tooling developers.
 
 `semantic/places.rs` records `OwnershipCallSite::arguments` in the concrete
 [ownership call graph](ownership-call-graph.md). This is a D-014 input, not an
-effect solver. It does not change lexical borrow eligibility, code generation,
-source result-retention semantics, or QZI ownership verification.
+effect solver. Codegen uses declared slots to order named call arguments,
+independently of short method names or emitted specialization symbols. These
+facts do not change lexical borrow eligibility, source result-retention semantics,
+or QZI ownership verification.
 
 ## Operands and slots
 
@@ -65,10 +67,12 @@ indexing, address formation, automatic reads, closure attribution, generics,
 global binder isolation, temporary projections, budget exhaustion, cancellation
 and analyzer reuse.
 
-Reads/writes, alias flow, control-flow edges, place moves, destruction effects,
+The separate [statement graph](source-control-flow.md) records structured
+control-flow edges while expressions remain opaque. Typed reads/writes, alias
+flow, complete expression control flow, place moves, destruction effects,
 recursive effect composition and retained artifact-body verification remain
 required by [D-014](../decisions/whole-program-ownership.md). These snapshots do
 not enable [D-015 element loans](../decisions/borrowed-elements.md). QZI remains
-v13 with unverified envelopes. Argument snapshots do not change emission;
-QZC v15 separately invalidates caches for the
-[raw-storage retention checks](source-result-retention.md#raw-storage-and-copying).
+v13 with unverified envelopes. QZC v17 also reruns the mandatory statement-flow
+pass; v16 introduced the
+[named-call emission correction](../changes/2026-10-20-named-call-slots.md).
