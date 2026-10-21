@@ -5,6 +5,7 @@ Audience: language users maintaining existing Quazi code.
 Compatibility-sensitive changes will receive a migration page here before they
 are treated as stable.
 
+- [Conditional owner cleanup](conditional-cleanup.md)
 - [Loop cleanup and initializer moves](loop-cleanup.md)
 - [Typed `?` failure propagation](typed-try-propagation.md)
 - [Logical integer operands and canonical bools](logical-bool-results.md)

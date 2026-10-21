@@ -2076,6 +2076,7 @@ impl<'a> Codegen<'a> {
             let sret_reg = fc.alloc_reg();
             fc.regs.insert("__quazi_sret".to_string(), sret_reg);
         }
+        let mut parameter_drops = Vec::new();
         for (index, p) in params.iter().enumerate() {
             if p.variadic {
                 fc.bind(p.name.clone());
@@ -2112,20 +2113,18 @@ impl<'a> Codegen<'a> {
                         // retains the separate aggregate allocation as an owner.
                         // A whole-receiver transfer deactivates this entry through
                         // the ordinary ownership path, without recursive free.
-                        fc.drop_scopes
-                            .last_mut()
-                            .expect("parameter scope")
-                            .push(DropLocal {
-                                name: p.name.clone(),
-                                reg,
-                                action: DropAction::ReleaseStorage,
-                                active: true,
-                            });
+                        parameter_drops.push((p.name.clone(), reg, DropAction::ReleaseStorage));
                     }
-                } else if p.name != "self" || is_bare_self {
-                    fc.register_drop_local(&p.name, reg, Some(param_ty));
+                } else if (p.name != "self" || is_bare_self)
+                    && let Some(action) = fc.drop_action_for_type(&param_ty)
+                {
+                    parameter_drops.push((p.name.clone(), reg, action));
                 }
             }
+        }
+        // Guards must follow the complete ABI prefix, including variadic slots.
+        for (parameter, reg, action) in parameter_drops {
+            fc.register_drop_action(&parameter, reg, action, true);
         }
         if attributes
             .iter()
@@ -2531,6 +2530,7 @@ struct FnCompiler<'a> {
     annotated_exprs: &'a [crate::semantic::ExprAnnotation],
     loop_stack: Vec<LoopFrame>,
     expression_depth: usize,
+    pending_consumption: HashSet<(usize, usize)>,
     expression_temporaries: Vec<ExpressionTemporary>,
     format_result_type: Option<TypeKind>,
     symbol_table: &'a crate::semantic::SymbolTable,
@@ -2556,7 +2556,7 @@ struct DropLocal {
     name: String,
     reg: u8,
     action: DropAction,
-    active: bool,
+    initialized: u8,
 }
 
 #[derive(Clone)]
@@ -2756,6 +2756,7 @@ impl<'a> FnCompiler<'a> {
             annotated_exprs,
             loop_stack: Vec::new(),
             expression_depth: 0,
+            pending_consumption: HashSet::new(),
             expression_temporaries: Vec::new(),
             format_result_type,
             symbol_table,
@@ -3694,8 +3695,7 @@ impl<'a> FnCompiler<'a> {
                 if dst != src {
                     self.chunk.emit(rrr(Opcode::Mov, dst, src, 0));
                 }
-                let local_ty = self.type_of_span((target.span.start, target.span.end));
-                self.reactivate_drop_local(name, dst, local_ty);
+                self.reactivate_drop_local(name);
                 dst
             }
             ExprKind::Unary {
@@ -4008,14 +4008,13 @@ impl<'a> FnCompiler<'a> {
     /// Store `src` into an lvalue address.
     fn store_lvalue(&mut self, addr: &LvalueAddr, src: u8) {
         match addr {
-            LvalueAddr::Ident { name, span } => {
+            LvalueAddr::Ident { name, .. } => {
                 self.drop_local_now(name);
                 let dst = self.reg_of(name);
                 if dst != src {
                     self.chunk.emit(rrr(Opcode::Mov, dst, src, 0));
                 }
-                let local_ty = self.type_of_span((span.start, span.end));
-                self.reactivate_drop_local(name, dst, local_ty);
+                self.reactivate_drop_local(name);
             }
             LvalueAddr::Deref { ptr, width, .. } => {
                 self.chunk.emit(mem_store_w(*ptr, src, 0, *width));
@@ -4758,71 +4757,67 @@ impl<'a> FnCompiler<'a> {
         )
     }
 
-    fn register_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
-        let Some(action) = ty.as_ref().and_then(|t| self.drop_action_for_type(t)) else {
-            return;
-        };
+    fn register_drop_action(&mut self, name: &str, reg: u8, action: DropAction, initialized: bool) {
+        let guard = self.alloc_reg();
+        self.chunk
+            .emit(ri16(Opcode::MovI, guard, u16::from(initialized)));
         if let Some(scope) = self.drop_scopes.last_mut() {
             scope.push(DropLocal {
                 name: name.to_string(),
                 reg,
                 action,
-                active: true,
+                initialized: guard,
             });
+        }
+    }
+
+    fn register_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
+        if let Some(action) = ty.as_ref().and_then(|ty| self.drop_action_for_type(ty)) {
+            self.register_drop_action(name, reg, action, true);
         }
     }
 
     fn register_uninitialized_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
-        let Some(action) = ty.as_ref().and_then(|t| self.drop_action_for_type(t)) else {
-            return;
-        };
-        if let Some(scope) = self.drop_scopes.last_mut() {
-            scope.push(DropLocal {
-                name: name.to_string(),
-                reg,
-                action,
-                active: false,
-            });
+        if let Some(action) = ty.as_ref().and_then(|ty| self.drop_action_for_type(ty)) {
+            self.register_drop_action(name, reg, action, false);
         }
+    }
+
+    fn drop_local(&self, name: &str) -> Option<&DropLocal> {
+        let reg = self.regs.get(name)?;
+        self.drop_scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.iter().rev())
+            .find(|local| local.name == name && local.reg == *reg)
     }
 
     fn deactivate_drop_local(&mut self, name: &str) {
-        for scope in self.drop_scopes.iter_mut().rev() {
-            if let Some(local) = scope.iter_mut().rev().find(|local| local.name == name) {
-                local.active = false;
-                return;
-            }
+        if let Some(local) = self.drop_local(name) {
+            let guard = local.initialized;
+            self.chunk.emit(ri16(Opcode::MovI, guard, 0));
         }
     }
 
-    fn reactivate_drop_local(&mut self, name: &str, reg: u8, ty: Option<TypeKind>) {
-        let Some(action) = ty.as_ref().and_then(|t| self.drop_action_for_type(t)) else {
-            return;
-        };
-        for scope in self.drop_scopes.iter_mut().rev() {
-            if let Some(local) = scope.iter_mut().rev().find(|local| local.name == name) {
-                local.reg = reg;
-                local.action = action;
-                local.active = true;
-                return;
-            }
+    fn reactivate_drop_local(&mut self, name: &str) {
+        if let Some(local) = self.drop_local(name) {
+            let guard = local.initialized;
+            self.chunk.emit(ri16(Opcode::MovI, guard, 1));
         }
     }
 
     fn drop_local_now(&mut self, name: &str) {
-        let mut to_drop: Option<(u8, DropAction)> = None;
-        for scope in self.drop_scopes.iter_mut().rev() {
-            if let Some(local) = scope.iter_mut().rev().find(|local| local.name == name) {
-                if local.active {
-                    local.active = false;
-                    to_drop = Some((local.reg, local.action.clone()));
-                }
-                break;
-            }
+        if let Some(local) = self.drop_local(name).cloned() {
+            let action = local.action.clone();
+            self.emit_guarded_local_drop(&local, action);
         }
-        if let Some((reg, action)) = to_drop {
-            self.emit_drop_action(reg, action);
-        }
+    }
+
+    fn emit_guarded_local_drop(&mut self, local: &DropLocal, action: DropAction) {
+        let empty = self.chunk.emit(ri16(Opcode::Jz, local.initialized, 0));
+        self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
+        self.emit_drop_action(local.reg, action);
+        self.chunk.patch_jump(empty, self.chunk.len() as u16);
     }
 
     fn emit_drop_action(&mut self, reg: u8, action: DropAction) {
@@ -5400,19 +5395,16 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn mark_consumed_expr(&mut self, expr: &Expr) {
+        self.pending_consumption
+            .insert((expr.span.start, expr.span.end));
         if let Some(temp) = self
             .expression_temporaries
             .iter_mut()
             .find(|temp| !temp.synthetic_format && temp.span == (expr.span.start, expr.span.end))
         {
             temp.consumed = true;
-            if temp.produced {
-                self.chunk.emit(ri16(Opcode::MovI, temp.slot, 0));
-                temp.produced = false;
-            }
         }
         match &expr.node {
-            ExprKind::Ident(name) => self.deactivate_drop_local(name),
             ExprKind::Group(inner)
             | ExprKind::Try { expr: inner }
             | ExprKind::Cast { expr: inner, .. } => self.mark_consumed_expr(inner),
@@ -5426,30 +5418,52 @@ impl<'a> FnCompiler<'a> {
                     self.mark_consumed_expr(&arm.expr);
                 }
             }
-            // Constructor fields transfer only after all initializers succeed.
-            ExprKind::StructInit { .. } => {}
+            _ => {}
+        }
+    }
+
+    fn mark_consumed_value(&mut self, expr: &Expr, value: u8) {
+        self.transfer_expression_temporary(value);
+        self.mark_consumed_binding(expr, value);
+    }
+
+    fn mark_consumed_binding(&mut self, expr: &Expr, value: u8) {
+        match &expr.node {
+            ExprKind::Ident(name) => {
+                if let Some(local) = self.drop_local(name).cloned() {
+                    if local.reg == value {
+                        self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
+                    } else {
+                        // The other match arm may hold an uninitialized or moved
+                        // binding. Do not read its value unless its guard is set.
+                        let empty = self.chunk.emit(ri16(Opcode::Jz, local.initialized, 0));
+                        self.chunk.emit(rrr(Opcode::Cmp, 0, local.reg, value));
+                        let different = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
+                        self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
+                        let end = self.chunk.len() as u16;
+                        self.chunk.patch_jump(empty, end);
+                        self.chunk.patch_jump(different, end);
+                    }
+                }
+            }
+            ExprKind::Group(inner)
+            | ExprKind::Try { expr: inner }
+            | ExprKind::Cast { expr: inner, .. } => self.mark_consumed_binding(inner, value),
+            ExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    self.mark_consumed_binding(&arm.expr, value);
+                }
+            }
             _ => {}
         }
     }
 
     fn emit_scope_cleanup(&mut self) {
-        let Some(scope) = self.drop_scopes.last_mut() else {
+        let Some(scope) = self.drop_scopes.last().cloned() else {
             return;
         };
-        let drops = scope
-            .iter_mut()
-            .rev()
-            .filter_map(|local| {
-                if local.active {
-                    local.active = false;
-                    Some((local.reg, local.action.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        for (reg, action) in drops {
-            self.emit_drop_action(reg, action);
+        for local in scope.iter().rev() {
+            self.emit_guarded_local_drop(local, local.action.clone());
         }
     }
 
@@ -5458,68 +5472,42 @@ impl<'a> FnCompiler<'a> {
         self.emit_cleanup_from_depth(0);
     }
 
-    /// An abrupt edge cleans only exited scopes. Keep compile-time state intact
-    /// so alternate paths still emit their own cleanup.
+    /// Runtime guards carry branch-local initialization and transfer state.
     fn emit_cleanup_from_depth(&mut self, first: usize) {
         debug_assert!(first <= self.drop_scopes.len());
         for depth in (first..self.drop_scopes.len()).rev() {
-            let drops = self.drop_scopes[depth]
-                .iter()
-                .rev()
-                .filter_map(|local| {
-                    if local.active {
-                        Some((local.reg, local.action.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-            for (reg, action) in drops {
-                self.emit_drop_action(reg, action);
+            let locals = self.drop_scopes[depth].clone();
+            for local in locals.iter().rev() {
+                self.emit_guarded_local_drop(local, local.action.clone());
             }
         }
     }
 
-    /// Emit the normal return cleanup while preserving one field that is being
-    /// returned from a consumed receiver.  This is intentionally a one-shot
-    /// view of the cleanup action: mutating `DropLocal` would make a later
-    /// return branch leak that field.
     fn emit_all_cleanup_except_structural_field(&mut self, local_name: &str, offset: u16) {
         self.emit_expression_temporary_cleanup(None);
+        let returned_binding = self.drop_local(local_name).map(|local| local.reg);
         for depth in (0..self.drop_scopes.len()).rev() {
-            let drops = self.drop_scopes[depth]
-                .iter()
-                .rev()
-                .filter_map(|local| {
-                    if !local.active {
-                        return None;
-                    }
-                    if local.name != local_name {
-                        return Some((local.reg, local.action.clone()));
-                    }
+            for local in self.drop_scopes[depth].clone().iter().rev() {
+                let action = if local.name == local_name && Some(local.reg) == returned_binding {
                     let DropAction::Structural(fields) = &local.action else {
                         self.codegen_error.get_or_insert_with(|| {
-                            format!(
-                                "returning `{local_name}` field requires structural receiver cleanup"
-                            )
+                            format!("returning `{local_name}` field requires structural receiver cleanup")
                         });
-                        return Some((local.reg, local.action.clone()));
+                        continue;
                     };
                     let mut remaining = fields.clone();
                     let before = remaining.len();
                     remaining.retain(|field| field.offset != offset);
                     if remaining.len() == before {
                         self.codegen_error.get_or_insert_with(|| {
-                            format!(
-                                "returned field of `{local_name}` is absent from its structural cleanup"
-                            )
+                            format!("returned field of `{local_name}` is absent from its structural cleanup")
                         });
                     }
-                    Some((local.reg, DropAction::Structural(remaining)))
-                })
-                .collect::<Vec<_>>();
-            for (reg, action) in drops {
-                self.emit_drop_action(reg, action);
+                    DropAction::Structural(remaining)
+                } else {
+                    local.action.clone()
+                };
+                self.emit_guarded_local_drop(local, action);
             }
         }
     }
@@ -5531,14 +5519,7 @@ impl<'a> FnCompiler<'a> {
         let ExprKind::Ident(local_name) = &object.node else {
             return None;
         };
-        if !self
-            .drop_scopes
-            .iter()
-            .flatten()
-            .any(|local| local.active && local.name == *local_name)
-        {
-            return None;
-        }
+        self.drop_local(local_name)?;
         let key = (object.span.start, object.span.end);
         let Some(TypeKind::Named {
             name: struct_name, ..
@@ -5566,8 +5547,8 @@ impl<'a> FnCompiler<'a> {
             .flatten()
             .rev()
             .find(|local| {
-                local.active
-                    && local.name == *local_name
+                local.name == *local_name
+                    && self.regs.get(local_name) == Some(&local.reg)
                     && matches!(
                         &local.action,
                         DropAction::Structural(fields)
@@ -5577,10 +5558,8 @@ impl<'a> FnCompiler<'a> {
             .map(|_| (local_name.clone(), offset))
     }
 
-    fn has_active_drops(&self) -> bool {
-        self.drop_scopes
-            .iter()
-            .any(|scope| scope.iter().any(|local| local.active))
+    fn has_cleanup_bindings(&self) -> bool {
+        self.drop_scopes.iter().any(|scope| !scope.is_empty())
     }
 
     /// Emit an indirect call through a register, dispatching via env-wrapper convention
@@ -5808,7 +5787,6 @@ impl<'a> FnCompiler<'a> {
                 false
             }
             StmtKind::Return(expr) => {
-                let previous_drops = self.drop_scopes.clone();
                 let result_slots = self.result_slot_count();
                 let result_base = self.result_base_reg();
                 if let Some(expr) = expr {
@@ -5816,7 +5794,7 @@ impl<'a> FnCompiler<'a> {
                     self.mark_consumed_expr(expr);
                     let src = self.compile_expr(expr);
                     if result_slots > 1 {
-                        if self.has_active_drops() {
+                        if self.has_cleanup_bindings() {
                             let tmp_base = self.reserve_reg_block(result_slots);
                             self.emit_block_copy(tmp_base, src, result_slots);
                             if let Some((local_name, offset)) = returned_field.as_ref() {
@@ -5828,7 +5806,7 @@ impl<'a> FnCompiler<'a> {
                         } else if src != result_base {
                             self.emit_block_copy(result_base, src, result_slots);
                         }
-                    } else if self.has_active_drops() {
+                    } else if self.has_cleanup_bindings() {
                         let tmp = self.alloc_reg();
                         self.chunk.emit(rrr(Opcode::Mov, tmp, src, 0));
                         if let Some((local_name, offset)) = returned_field.as_ref() {
@@ -5849,9 +5827,6 @@ impl<'a> FnCompiler<'a> {
                 let mut ret = rrr(Opcode::Ret, 0, 0, 0);
                 ret.flags = result_slots as u8;
                 self.chunk.emit(ret);
-                // A transfer on this terminated path must not deactivate an
-                // owner on another path, including a zero-iteration loop exit.
-                self.drop_scopes = previous_drops;
                 true
             }
             StmtKind::ExprStmt(expr) => {
@@ -7198,6 +7173,11 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> u8 {
+        // A zero-argument call may share its span with its callee identifier.
+        // Claim the request before descending, then transfer only its result.
+        let consumed = self
+            .pending_consumption
+            .remove(&(expr.span.start, expr.span.end));
         let root = self.expression_depth == 0;
         if root {
             self.begin_expression_temporaries(expr);
@@ -7205,6 +7185,11 @@ impl<'a> FnCompiler<'a> {
         self.expression_depth += 1;
         let reg = self.compile_expr_inner(expr);
         let reg = self.emit_autoderef_load(expr.span, reg);
+        if consumed {
+            // Pending argument ownership remains in a full-expression slot
+            // until the call commits, including through groups and match arms.
+            self.mark_consumed_binding(expr, reg);
+        }
         if matches!(expr.node, ExprKind::Assign { .. }) {
             self.transfer_expression_temporary(reg);
         }
@@ -7212,7 +7197,7 @@ impl<'a> FnCompiler<'a> {
             .expression_temporaries
             .iter_mut()
             .find(|temp| !temp.synthetic_format && temp.span == (expr.span.start, expr.span.end))
-            && (temp.producer || temp.consumed)
+            && (temp.producer || temp.consumed || consumed)
         {
             self.chunk.emit(rrr(Opcode::Mov, temp.slot, reg, 0));
             temp.produced = true;
@@ -7227,6 +7212,7 @@ impl<'a> FnCompiler<'a> {
                 .map(|_| reg);
             self.emit_expression_temporary_cleanup(retained);
             self.expression_temporaries.clear();
+            self.pending_consumption.clear();
         }
         reg
     }
@@ -7565,8 +7551,7 @@ impl<'a> FnCompiler<'a> {
                     } else if dst != src {
                         self.chunk.emit(rrr(Opcode::Mov, dst, src, 0));
                     }
-                    let local_ty = self.type_of_span((value.span.start, value.span.end));
-                    self.reactivate_drop_local(name, dst, local_ty);
+                    self.reactivate_drop_local(name);
                     self.transfer_expression_temporary(src);
                     return dst;
                 }
@@ -7749,8 +7734,7 @@ impl<'a> FnCompiler<'a> {
 
                 // Compile and store each field in declaration order using computed offsets
                 for (field_name, fval, val) in initialized {
-                    self.mark_consumed_expr(fval);
-                    self.transfer_expression_temporary(val);
+                    self.mark_consumed_value(fval, val);
                     {
                         if let Some(layout) = self.bit_field_layout_by_name(name, &field_name) {
                             self.emit_bit_field_store(dst, val, layout);
@@ -8385,7 +8369,7 @@ impl<'a> FnCompiler<'a> {
                             | DropAction::UnsupportedContiguousRelease { .. }
                     )
                 {
-                    self.mark_consumed_expr(object);
+                    self.mark_consumed_value(object, obj);
                     self.emit_drop_action(obj, action);
                     return self.alloc_reg();
                 }
@@ -8435,7 +8419,7 @@ impl<'a> FnCompiler<'a> {
                             .collect();
                         let result_dst = self.alloc_result_block(&call_target);
                         if consuming_receiver {
-                            self.mark_consumed_expr(object);
+                            self.mark_consumed_value(object, obj);
                         }
                         let mut all_args = vec![receiver];
                         all_args.extend_from_slice(&arg_regs);
@@ -8566,7 +8550,7 @@ impl<'a> FnCompiler<'a> {
                             .collect();
                         let result_dst = self.alloc_result_block(&call_target);
                         if self.has_consuming_receiver(&call_target) {
-                            self.mark_consumed_expr(object);
+                            self.mark_consumed_value(object, obj);
                         }
                         let mut all_args = vec![receiver];
                         all_args.extend_from_slice(&arg_regs);
@@ -10170,6 +10154,46 @@ mod tests {
             .expect("code generation should succeed")
     }
 
+    // Constant propagation folds guards but deliberately leaves unreachable
+    // instructions in the chunk. Count cleanup on reachable paths only.
+    fn reachable_instructions(chunk: &Chunk) -> Vec<&crate::bytecode::instruction::Instruction> {
+        let mut seen = vec![false; chunk.code.len()];
+        let mut pending = vec![0];
+        while let Some(index) = pending.pop() {
+            if index >= chunk.code.len() || seen[index] {
+                continue;
+            }
+            seen[index] = true;
+            let instruction = &chunk.code[index];
+            match instruction.opcode() {
+                Some(Opcode::Ret | Opcode::Trap) => {}
+                Some(Opcode::Jmp) => pending.push(instruction.ri16().1 as usize),
+                Some(
+                    Opcode::Je
+                    | Opcode::Jne
+                    | Opcode::Jl
+                    | Opcode::Jle
+                    | Opcode::Jg
+                    | Opcode::Jge
+                    | Opcode::Ja
+                    | Opcode::Jb
+                    | Opcode::Jz
+                    | Opcode::Jnz,
+                ) => {
+                    pending.push(instruction.ri16().1 as usize);
+                    pending.push(index + 1);
+                }
+                _ => pending.push(index + 1),
+            }
+        }
+        chunk
+            .code
+            .iter()
+            .zip(seen)
+            .filter_map(|(instruction, reachable)| reachable.then_some(instruction))
+            .collect()
+    }
+
     fn compile_namespaced_module(module_src: &str, main_src: &str) -> Vec<Chunk> {
         let merged = format!("{module_src}\n{main_src}");
         let module_len = module_src.chars().count();
@@ -10309,15 +10333,21 @@ unsafe fn invoke(base: *u8) void { insert[Token](base, Token { value: 7 }); }
             .iter()
             .find(|chunk| chunk.name == "insert<Token>")
             .unwrap();
-        assert!(insert.code.iter().any(|instruction| {
-            instruction.opcode() == Some(Opcode::CallIdx)
-                && chunks[instruction.ri16().1 as usize].name == "store"
-        }));
         assert!(
-            !insert.code.iter().any(|instruction| {
-                instruction.opcode() == Some(Opcode::CallIdx)
-                    && chunks[instruction.ri16().1 as usize].name == "Token.free"
-            }),
+            reachable_instructions(insert)
+                .into_iter()
+                .any(|instruction| {
+                    instruction.opcode() == Some(Opcode::CallIdx)
+                        && chunks[instruction.ri16().1 as usize].name == "store"
+                })
+        );
+        assert!(
+            !reachable_instructions(insert)
+                .into_iter()
+                .any(|instruction| {
+                    instruction.opcode() == Some(Opcode::CallIdx)
+                        && chunks[instruction.ri16().1 as usize].name == "Token.free"
+                }),
             "the stored argument must not receive caller cleanup: {:?}",
             insert.code
         );
@@ -11602,17 +11632,15 @@ fn dispose(value: Buffer[Token]) void { value.free(); }
         );
         let dispose = chunks.iter().find(|chunk| chunk.name == "dispose").unwrap();
         assert!(
-            dispose
-                .code
-                .iter()
+            reachable_instructions(dispose)
+                .into_iter()
                 .any(|instruction| instruction.opcode == Opcode::ArrayLoad as u8),
             "direct free must not bypass generated element cleanup: {:?}",
             dispose.code
         );
         assert_eq!(
-            dispose
-                .code
-                .iter()
+            reachable_instructions(dispose)
+                .into_iter()
                 .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
                 .count(),
             2,
@@ -11790,8 +11818,8 @@ fn take(value: Outer) void {}
         );
         let pass = chunks.iter().find(|chunk| chunk.name == "pass").unwrap();
         assert!(
-            pass.code
-                .iter()
+            reachable_instructions(pass)
+                .into_iter()
                 .all(|instruction| instruction.opcode != Opcode::CallIdx as u8),
             "a returned parameter must not be destroyed by its former owner"
         );
@@ -11810,9 +11838,8 @@ fn take(value: Outer) void {}
         );
         let assign = chunks.iter().find(|chunk| chunk.name == "assign").unwrap();
         assert_eq!(
-            assign
-                .code
-                .iter()
+            reachable_instructions(assign)
+                .into_iter()
                 .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
                 .count(),
             1,
@@ -11904,9 +11931,8 @@ fn take(value: Outer) void {}
         );
         let choose = chunks.iter().find(|chunk| chunk.name == "choose").unwrap();
         assert_eq!(
-            choose
-                .code
-                .iter()
+            reachable_instructions(choose)
+                .into_iter()
                 .filter(|op| op.opcode == Opcode::CallIdx as u8)
                 .count(),
             1,
@@ -13008,8 +13034,8 @@ fn main() i32 {
         );
         let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
         assert_eq!(
-            main.code
-                .iter()
+            reachable_instructions(main)
+                .into_iter()
                 .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
                 .count(),
             1,
@@ -13369,9 +13395,8 @@ fn main() i32 {
             }"#,
         );
         let free_count = |chunk: &Chunk| {
-            chunk
-                .code
-                .iter()
+            reachable_instructions(chunk)
+                .into_iter()
                 .filter(|instruction| {
                     instruction.opcode() == Some(Opcode::Intrinsic)
                         && instruction.ri16().1 == 4
@@ -13383,6 +13408,26 @@ fn main() i32 {
             chunks.iter().map(free_count).sum::<usize>(),
             2,
             "the transferred parameter and immediately-called temporary are each freed once"
+        );
+    }
+
+    #[test]
+    fn zero_argument_call_result_preserves_callee_environment_cleanup() {
+        let chunks = compile(
+            "fn main() void { var factory = || 7; var first = factory(); var second = factory(); }",
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert_eq!(
+            reachable_instructions(main)
+                .into_iter()
+                .filter(|instruction| {
+                    instruction.opcode() == Some(Opcode::Intrinsic)
+                        && instruction.ri16().1 == 4
+                        && instruction.flags == 1
+                })
+                .count(),
+            1,
+            "consuming a zero-argument result must leave its borrowed callee owned by the binding"
         );
     }
 

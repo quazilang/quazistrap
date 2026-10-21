@@ -26,11 +26,15 @@ Completion of unfinished plan items:
 | qz doc | 0/1 | 0.0% | 100.0% |
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
-Revalidated on 2026-10-20 for the
-[loop-cleanup checkpoint](docs/changes/2026-10-20-loop-cleanup.md), using the
+Revalidated on 2026-10-21 for the
+[conditional-cleanup checkpoint](docs/changes/2026-10-21-conditional-cleanup.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 872 tests pass, including the 60 contained-LSP tests. Loop exits now clean
-supported owners; complete flow-sensitive destruction remains unfinished.
+All 873 tests pass, including the 60 contained-LSP tests. Runtime cleanup flags
+now follow executed initialization and moves; 31 native/QZI cases verify
+conditional owners, selected match transfers and pending argument failures.
+Quazifetch builds without S10 and reports Linux RAM using `MemAvailable`,
+including reclaimable cache, like fastfetch. Complete flow-sensitive destruction
+and definite-initialization proof remain unfinished.
 Ownership stays 9/16, and the four previously blocked LSP gates remain counted.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those

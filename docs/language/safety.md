@@ -101,9 +101,12 @@ This applies on:
 A loop initializer and any compiler-owned iterable have a scope lasting until
 loop exit. `continue` keeps those owners alive; `break` or condition exhaustion
 destroys them before the next statement. Body locals are destroyed before a
-C-style update runs. This covers supported initialized owners; complete
-path-dependent initialization and recursive destruction remain part of
-[D-014](../decisions/whole-program-ownership.md).
+C-style update runs. Supported locals carry runtime cleanup flags: skipped
+initialization leaves cleanup disabled, successful assignment enables it, and
+movement or destruction disables it on the executed path. A `match` result
+transfers only its selected owner. These flags protect cleanup; proving ordinary
+reads definitely initialized remains separate work, along with complete
+recursive destruction in [D-014](../decisions/whole-program-ownership.md).
 
 `String.clear()` takes an exclusive receiver and releases an owned allocation
 while retaining an empty, reusable `String`. A direct `String.free()` call

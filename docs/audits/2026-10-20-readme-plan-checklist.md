@@ -1,7 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
-Audited compiler source: the [loop-cleanup checkpoint](../changes/2026-10-20-loop-cleanup.md).
-Previous committed source: `7e151aad105bf4d9ccf460cb24cb7a867b92138b`.
+Revalidated on 2026-10-21 against the
+[conditional-cleanup checkpoint](../changes/2026-10-21-conditional-cleanup.md).
+Previous committed source: `7d391a56a924ebfcf4e0bfd20fb4448f4c20d253`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
@@ -41,6 +42,14 @@ item. The subsequent loop-cleanup/CFG checkpoint passes 872 tests, including
 strengthen existing lexical-cleanup and loop-move coverage; they do not complete
 a new Ownership requirement. See the [typed-propagation change record](../changes/2026-10-20-typed-try-propagation.md)
 and [loop-cleanup verification](../changes/2026-10-20-loop-cleanup.md).
+
+The 2026-10-21 conditional-cleanup checkpoint passes 873 tests and 31 additional
+native/QZI cases. Runtime flags fix skipped initialization, untaken movement
+and selected match transfer; pending argument failures retain their owners.
+These strengthen the existing lexical-cleanup requirement. Ordinary-read
+definite initialization, complete structural destruction and interprocedural
+ownership proof remain open, so all 33 item weights and 78 requirements retain
+the same credit: **73.2% complete, 26.8% remaining; Ownership 9/16, LSP 16/20**.
 
 ## Summary
 
@@ -333,10 +342,10 @@ Checks use the existing stable toolchain through `/tmp/quazi-named-rust-bin`
 ELF-loader wrappers, with `RUSTC=/tmp/quazi-named-rust-bin/rustc` and
 `RUSTFLAGS='-C link-arg=-fuse-ld=bfd'`:
 
-- `cargo test --offline -q`: **872 passed**, zero failed/ignored. This includes
+- `cargo test --offline -q`: **873 passed**, zero failed/ignored. This includes
   the current compiler, backend, semantic and contained-LSP regression suite.
 - `cargo test --offline -q lsp::`: **60 passed**, zero failed at the initial
-  `d72a1c5` refresh; all 60 also pass inside the latest full 872-test run.
+  `d72a1c5` refresh; all 60 also pass inside the latest full 873-test run.
   The three earlier
   failures — `indexes_only_parseable_local_quazi_sources`,
   `loaded_definition_uses_unsaved_importer_and_target_overlays`, and
@@ -355,6 +364,10 @@ ELF-loader wrappers, with `RUSTC=/tmp/quazi-named-rust-bin/rustc` and
   in [its verification record](../changes/2026-10-20-typed-try-propagation.md).
   The loop-cleanup checkpoint adds 23 native/QZI destructor-trace cases,
   Windows COFF emission, and old-source-cache invalidation; all pass.
+  Conditional cleanup adds 31 native/source-removed-QZI cases, Windows COFF
+  emission, an old-cache leak reproducer and correct subsequent exact hit.
+  Six isolated STD memory tests and ordinary quazifetch build/run also pass;
+  its Linux RAM reporting follows installed fastfetch through `MemAvailable`.
 
 LSP implementation is inspected in
 [`workspace.rs`](../../src/lsp/workspace.rs),
@@ -374,10 +387,11 @@ selected expression controls and raw-storage retention are prerequisites of
 D-014; they do not complete flow-sensitive interprocedural loans, recursive
 call effects, structural destruction or verified artifacts. The existing
 lexical-cleanup point now has native regression coverage for abrupt loop exits
-as well as fallthrough and explicit return. Scope/return snapshots and terminal
-CFG corrections pass the corresponding before/after regressions. Complete
-path-dependent initialization and general structural destruction remain
-unverified; this is not a general destruction guarantee.
+as well as fallthrough and explicit return. Runtime flags now replace the
+compile-time return snapshot and preserve executed-path initialization/movement;
+the earlier terminal-CFG corrections remain covered. Definite initialization of
+ordinary reads and general structural destruction remain unverified; this is
+not a general destruction guarantee.
 
 The other checklist item counts retain their listed scope. This score excludes
 workspace-wide documentation/editor production-readiness milestones, full STD

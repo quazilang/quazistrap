@@ -59,7 +59,7 @@ matching artifact ownership boundary.
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. QZC v20 invalidates earlier exact and reusable caches for loop cleanup and terminal-aware constant propagation.
+  and reserialization. QZC v21 invalidates earlier exact and reusable caches for runtime local-owner guards and selected-path transfers; v20 introduced loop cleanup and terminal-aware constant propagation.
 
 Immutable golden fixtures from real historical writers (v2-v6) live in
 `src/bytecode/fixtures/qzi/` with provenance in their README; `golden_*` tests
@@ -249,8 +249,8 @@ content-bound ownership-artifact envelope.
 
 - Codegen tracks local variables with a consuming `free(self)` hook and emits destructor calls at block exits, before returns, and on break/continue for exited body scopes. It also has a constrained structural fallback for acyclic, non-generic, non-C-layout structs without a source hook: eligible fields are cleaned in reverse declaration order. Arrays, enums, recursive/generic layouts, remain deferred; supported source-hook and structural owners release parent storage after resource/field teardown.
 - Destructor roots are forced reachable so tree-shaking keeps `Type.free` and its dependencies.
-- Values moved into returns/call args are deactivated to avoid double-free; explicit by-value receivers consume; shared and exclusive receivers borrow. Consuming `free(self)` hooks return void. Full-expression named-owner temporaries use zero-initialized guarded slots so skipped branches and early exits release only produced, untransferred owners.
-- Block and loop exit restore lexical register/type bindings so destroyed shadows cannot replace outer owners. A return restores its compile-time cleanup snapshot after emission, preserving cleanup for sibling paths. This does not establish path-dependent initialization proof.
+- Each supported local owner has a runtime Boolean cleanup flag, reset at declaration, set after initialization/replacement and cleared on executed moves/destruction. Cleanup tests and clears it before reading/destroying the value. Parameter flags are allocated after the entire ABI prefix. Explicit by-value receivers consume; shared and exclusive receivers borrow. Consuming `free(self)` hooks return void. Full-expression named-owner temporaries retain pending argument ownership through groups/casts/match arms until the call commits, including later `?` failures.
+- Block and loop exit restore lexical register/type bindings so destroyed shadows cannot replace outer owners. Cleanup lookup checks the current register as well as the name. Consumption is applied after evaluation on the selected path; post-evaluation transfers compare guarded candidate handles. A zero-argument call claims its pending span before compiling its callee. Cleanup no longer mutates compile-time active flags or needs a return snapshot. This does not prove ordinary reads definitely initialized.
 - `Array[T]` and `String` locals are auto-cleaned at scope exit.
 - Named source calls without a concrete layout transfer full-expression owners
   only when the callee's fixed declared capability consumes and the actual

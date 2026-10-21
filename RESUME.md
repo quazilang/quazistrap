@@ -2,6 +2,62 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-21, runtime conditional cleanup)
+
+Implemented runtime cleanup flags in src/bytecode/codegen.rs, replacing
+DropLocal.active. Each declaration resets its flag; initialization/replacement
+sets it; executed moves/destruction clear it. Cleanup guards payload reads and
+clears before teardown. Parameters reserve the complete ABI prefix before flags.
+Lookup uses current name/register identity, protecting scalar shadows. Cleanup
+metadata is immutable across branches, so the old Return snapshot is removed.
+
+Consumption requests are claimed on compile_expr entry and applied after
+selected-path evaluation. This handles match-selected returns/bindings/calls and
+self-replacement without clearing other owners. Zero-argument Call/callee spans
+can coincide; the call must claim the request before descending. Post-evaluation
+field/receiver commits compare guarded candidate handles. Full-expression slots
+retain pending arguments through Group/Cast/Match until actual call commitment;
+a later ? failure cleans them. Independent read-only review reproduced a draft
+wrapper leak and an invalid owner-return closure fixture; both are corrected.
+No remaining blocking implementation finding was identified by that review.
+
+QZC21 rejects older exact/reusable caches; QZI13 remains Unverified, ABI unchanged.
+Rebuild older QZI bodies from source. See docs/changes/2026-10-21-conditional-cleanup.md
+and docs/migrations/conditional-cleanup.md.
+
+Verification: full offline tests 873/873 including new callee-env cleanup test;
+seven existing cleanup tests count reachable instructions, since folded guards
+leave dead destructor instructions in chunks. Build and direct Clippy-driver
+check pass with existing warnings. New scripts/check_conditional_cleanup.py
+passes 31 native/source-removed-QZI cases and Windows COFF. Baseline compiler
+/tmp/quazi-conditional-drop-before builds isolated untaken-consumption fixture
+but exits 7; current compiler invalidates that cache, runs correctly and produces
+a correct exact hit. Existing loop 23, typed-propagation 9 invalid/8 valid,
+expression 36, retention 12 invalid/7 valid, named-call and dyn/cache runners pass.
+Six isolated STD memory fixtures and matching-compiler quazifetch build/run pass;
+RAM tracks installed fastfetch within live sampling variation (about 9.9 GiB now).
+Logs: /tmp/quazi-guard-*.log. Toolchain still needs /tmp/quazi-named-rust-bin
+ELF-loader wrappers, RUSTC pointing to its rustc and bfd RUSTFLAGS.
+
+README statuses and audit are refreshed BEFORE committing, per latest user
+instruction. The unchanged 33-item/78-requirement rubric remains 73.2% complete,
+26.8% remaining, Ownership 9/16, LSP 16/20. Runtime cleanup does not complete a new
+requirement. Changed-region formatting/links, graphify query/AST update and
+scoped diff checks pass. Preserve STD CLI dirt, compiler .codex/ and example 35
+build artifacts. No push or external publication.
+
+NEXT: source definite initialization remains a confirmed separate gap.
+Symbol.initialized currently mutates across branches/loops; runtime teardown
+flags do NOT prove ordinary payload reads initialized. Design by declaration
+identity: snapshot/restore only initialized state, intersect normal-fallthrough
+successors, preserve once-run init/condition effects but not skipped body/update,
+restore deferred closure outer state. Handle return/break/continue and &&/||/?
+explicitly; do not erase used/type/import/diagnostic facts. C-style update is
+currently checked before body and can pollute initialization. Then resume
+normalized place/call/aggregate/match schedules, typed effects/provenance,
+structural destruction, verified artifacts and D-015. The broad ../goal.md
+objective stays active and incomplete.
+
 ## Checkpoint (2026-10-20, abrupt-loop cleanup and terminal CFG)
 
 Confirmed the pending native destructor audit. Baseline
