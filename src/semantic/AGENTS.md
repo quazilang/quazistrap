@@ -312,10 +312,12 @@ trap; Void matches retain fallthrough. Constant result knowledge cannot erase
 executed effects; only elidable expressions publish foldable annotations, and
 unknown floating multiplication by zero is not absorbing.
 
-Current source cache is **QZC22**, invalidating previous exact and reusable
+The initialization checkpoint introduced **QZC22**, invalidating previous exact
+and reusable
 chunks for these checks and corrected execution. QZI13 remains Unverified and
-unchanged; rebuild old bodies from source. General operand value snapshots,
-canonical Boolean storage/equality, partial-place initialization, typed effects,
+unchanged; rebuild old bodies from source. Stable operand values are covered
+by the subsequent QZC23 checkpoint below. Canonical Boolean storage/equality,
+partial-place initialization, typed effects,
 recursive destruction and verified artifacts remain open. See
 [the initialization contract](../../docs/internals/source-initialization.md).
 
@@ -323,3 +325,16 @@ Constant propagation treats every slot in a Lea-addressed block as runtime
 memory in both dataflow and rewrite. Aliased stores, calls and intrinsics
 cannot leave a stale local constant. This is conservative alias handling;
 non-addressable register values can still fold normally.
+
+## Stable operand checkpoint (2026-10-22)
+
+QZC23 rebuilds previous exact/reusable source chunks for eager value captures,
+computed places and pending allocation storage. QZI13 remains Unverified.
+`compile_value` freezes complete value blocks; `compile_expr` preserves actual
+place storage. Adapt borrowed receivers before capture. Pending owner transfers
+begin at operand evaluation and commit only at call/store. Slice pointer/length
+travel together; match results retain full width. Preserve C typed access flags
+when sharing place paths. Borrow checking follows declared named-argument/field
+slots and scopes allocation pins separately from shared view loans. Scalar field
+writes do not release a pinned aggregate. No normalized alias/effect/artifact
+proof follows. See [the contract](../../docs/internals/operand-snapshots.md).

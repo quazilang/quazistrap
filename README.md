@@ -27,14 +27,17 @@ Completion of unfinished plan items:
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
 Revalidated on 2026-10-22 for the
-[source-initialization checkpoint](docs/changes/2026-10-22-source-initialization.md), using the
+[stable-operand checkpoint](docs/changes/2026-10-22-operand-snapshots.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 897 tests pass, including the 60 contained-LSP tests. Source initialization
-now joins normal branch, loop, short-circuit and guarded-match paths. Another
-39 invalid programs are rejected; 57 native/QZI/COFF checks cover emitted
-schedules, match snapshots, side effects and aliased local writes.
+All 904 tests pass, including the 60 contained-LSP tests. Eager operands and
+computed destinations now retain evaluated values across sibling mutations;
+slice descriptors and match results preserve their full physical shape.
+Scoped storage pins and pending transfers prevent premature owner release.
+Another 27 native/source-removed-QZI/COFF checks and 6 rejected lifetime cases
+cover these changes; earlier initialization and cleanup regressions also pass.
 Quazifetch builds without S10 and reports Linux used RAM from `MemAvailable`,
 counting reclaimable cache as available; six isolated STD memory tests pass.
+QZC23 rebuilds older source caches; QZI13 remains Unverified.
 General place/effect proof and complete recursive destruction remain open.
 Ownership stays 9/16, and LSP stays 16/20. The 33-item, 78-requirement rubric
 is unchanged: these correctness fixes strengthen existing requirements.

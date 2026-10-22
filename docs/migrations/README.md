@@ -1,5 +1,7 @@
 # Migration guides
 
+- [Stable operands and destination evaluation](operand-snapshots.md)
+
 - [Source initialization and checked match execution](source-initialization.md)
 
 Audience: language users maintaining existing Quazi code.

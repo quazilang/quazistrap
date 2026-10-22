@@ -25,6 +25,9 @@ struct OwnedVar {
     shared_borrow: Option<Loan>,
     /// First live exclusive loan of this root.
     exclusive_borrow: Option<Loan>,
+    /// An evaluated handle/place still needs this allocation until its
+    /// surrounding operation commits. Scalar projection writes remain valid.
+    pending_storage: Option<Loan>,
     /// Conservative roots of a string view or a reference used to derive one.
     view_origins: BTreeSet<ViewOrigin>,
 }
@@ -95,6 +98,8 @@ struct MoveEnv {
     scopes: Vec<HashMap<String, OwnedVar>>,
     loop_depth: usize,
     control_depth: usize,
+    /// Storage-retention regions do not shorten explicit reference lifetimes.
+    observation_scopes: BTreeSet<usize>,
     /// Variables currently being re-assigned (`x = f(x)`). Move-in-loop is
     /// suppressed for these because the assignment immediately re-owns the value.
     reassign_targets: std::collections::HashSet<String>,
@@ -119,6 +124,7 @@ impl MoveEnv {
             scopes: vec![HashMap::new()],
             loop_depth: 0,
             control_depth: 0,
+            observation_scopes: BTreeSet::new(),
             reassign_targets: std::collections::HashSet::new(),
             destructor_receiver: None,
             consuming_receiver: None,
@@ -161,8 +167,39 @@ impl MoveEnv {
         self.scopes.push(HashMap::new());
     }
 
+    fn enter_observation_scope(&mut self) {
+        self.enter_scope();
+        self.observation_scopes
+            .insert(self.scopes.len().saturating_sub(1));
+    }
+
+    fn mark_reference_borrowed(&mut self, name: &str, at: Span, exclusive: bool) {
+        let mut depth = self.scopes.len().saturating_sub(1);
+        while self.observation_scopes.contains(&depth) {
+            depth = depth.saturating_sub(1);
+        }
+        if exclusive {
+            self.mark_exclusive_borrowed(name, at);
+        } else {
+            self.mark_shared_borrowed(name, at);
+        }
+        if let Some(root) = self.owner_root(name)
+            && let Some(variable) = self.root_mut(&root)
+        {
+            let loan = if exclusive {
+                &mut variable.exclusive_borrow
+            } else {
+                &mut variable.shared_borrow
+            };
+            if let Some(loan) = loan {
+                loan.scope_depth = loan.scope_depth.min(depth);
+            }
+        }
+    }
+
     fn exit_scope(&mut self) {
         let exiting_depth = self.scopes.len().saturating_sub(1);
+        self.observation_scopes.remove(&exiting_depth);
         self.scopes.pop();
         for scope in &mut self.scopes {
             for variable in scope.values_mut() {
@@ -177,6 +214,12 @@ impl MoveEnv {
                     .is_some_and(|loan| loan.scope_depth >= exiting_depth)
                 {
                     variable.exclusive_borrow = None;
+                }
+                if variable
+                    .pending_storage
+                    .is_some_and(|loan| loan.scope_depth >= exiting_depth)
+                {
+                    variable.pending_storage = None;
                 }
             }
         }
@@ -200,6 +243,7 @@ impl MoveEnv {
                     control_depth_at_decl: control_depth,
                     shared_borrow: None,
                     exclusive_borrow: None,
+                    pending_storage: None,
                     view_origins: BTreeSet::new(),
                 },
             );
@@ -315,6 +359,7 @@ impl MoveEnv {
                 for (current_loan, branch_loan) in [
                     (&mut current.shared_borrow, var.shared_borrow),
                     (&mut current.exclusive_borrow, var.exclusive_borrow),
+                    (&mut current.pending_storage, var.pending_storage),
                 ] {
                     if let Some(loan) = branch_loan {
                         match current_loan {
@@ -1081,6 +1126,109 @@ impl Analyzer {
         }
     }
 
+    /// Retain storage needed by an evaluated operand until its surrounding
+    /// operation commits. The caller supplies a synthetic evaluation scope;
+    /// these loans do not imply that an opaque callee retains no references.
+    fn bc_loan_observation(&self, value: &Expr, env: &mut MoveEnv) {
+        if self.bc_annotated_type(value).is_some_and(|ty| {
+            let ty = self.resolve_type_aliases(&ty);
+            !matches!(
+                ty,
+                TypeKind::Str
+                    | TypeKind::Bytes
+                    | TypeKind::Ref { .. }
+                    | TypeKind::MutRef { .. }
+                    | TypeKind::Slice { .. }
+            ) && crate::runtime_layout::runtime_move_kind(&ty)
+                == crate::runtime_layout::MoveKind::Plain
+        }) {
+            return; // Loaded scalars and plain blocks no longer need their owner.
+        }
+        self.bc_loan_view_argument(value, env);
+        let mut origins = self.bc_owner_origins(value, env);
+        if let Some(name) = assignment_root_ident(value)
+            && env
+                .lookup(name)
+                .and_then(|var| var.ty.as_ref())
+                .is_some_and(|ty| {
+                    crate::runtime_layout::runtime_move_kind(&self.resolve_type_aliases(ty))
+                        == crate::runtime_layout::MoveKind::Owned
+                        && self.bc_is_move_type(ty)
+                })
+            && let Some(root) = env.owner_root(name)
+        {
+            origins.insert(ViewOrigin::Owner(root));
+        }
+        let observes_string = self.bc_annotated_type(value).is_some_and(|ty| {
+            matches!(self.resolve_type_aliases(&ty), TypeKind::Named { name, .. }
+                if name == "String")
+        });
+        let depth = env.scopes.len().saturating_sub(1);
+        for origin in origins {
+            if let Some(root) = origin.storage_root()
+                && let Some(var) = env.root_mut(root)
+            {
+                let pending = if observes_string {
+                    &mut var.shared_borrow
+                } else {
+                    &mut var.pending_storage
+                };
+                match pending {
+                    Some(loan) => loan.scope_depth = loan.scope_depth.min(depth),
+                    loan @ None => {
+                        *loan = Some(Loan {
+                            at: value.span,
+                            scope_depth: depth,
+                        })
+                    }
+                }
+            }
+        }
+        // A selected callable is still a read of one of these bindings. Unlike
+        // view provenance, callable handles do not otherwise publish roots.
+        match &value.node {
+            ExprKind::Group(inner)
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::Try { expr: inner } => self.bc_loan_observation(inner, env),
+            ExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    self.bc_loan_observation(&arm.expr, env);
+                }
+            }
+            ExprKind::Assign { target, .. } => self.bc_loan_observation(target, env),
+            _ => {}
+        }
+    }
+
+    /// Evaluate destination operands in source order without reading its old
+    /// value. A fixed-array slot remains real storage; only heap-dependent
+    /// bases/views are loaned, so scalar updates within that array stay valid.
+    fn bc_place_observation(&mut self, target: &Expr, env: &mut MoveEnv) {
+        match &target.node {
+            ExprKind::Group(inner) => self.bc_place_observation(inner, env),
+            ExprKind::Ident(_) => {}
+            ExprKind::Field { object, .. } => {
+                self.bc_expr(object, env, false);
+                self.bc_loan_observation(object, env);
+            }
+            ExprKind::Index { object, indices } => {
+                self.bc_expr(object, env, false);
+                self.bc_loan_observation(object, env);
+                for index in indices {
+                    self.bc_expr(index, env, false);
+                }
+            }
+            ExprKind::Unary {
+                op: UnaryOpKind::Deref,
+                expr,
+            } => {
+                self.bc_expr(expr, env, false);
+                self.bc_loan_observation(expr, env);
+            }
+            _ => self.bc_expr(target, env, false),
+        }
+    }
+
     fn bc_reject_view_escape(&mut self, value: &Expr, env: &MoveEnv, destination: &str) {
         // Parameter slots remain symbolic in source helpers. Their callers
         // instantiate retained slots with actual roots and extend lexical loans.
@@ -1385,6 +1533,12 @@ impl Analyzer {
                 }
 
                 if consumed {
+                    if let Some(loan) = var.pending_storage {
+                        self.push_error(expr.span, "S10", format!(
+                            "cannot move `{name}` while an evaluated operand needs its storage (observed at {})",
+                            self.span_label(loan.at)));
+                        return;
+                    }
                     if matches!(
                         var.ty.as_ref().map(|ty| self.resolve_type_aliases(ty)),
                         Some(TypeKind::Fn { .. })
@@ -1459,40 +1613,78 @@ impl Analyzer {
                     );
                 }
                 self.bc_reject_borrowed_write(target, env);
+                let projected = assignment_target_ident(target).is_none();
+                if projected {
+                    env.enter_observation_scope();
+                    self.bc_place_observation(target, env);
+                }
                 // Mark target as being re-assigned so move-in-loop is suppressed
                 // for `x = f(x)` patterns (value is immediately re-owned).
+                let enclosing_reassignment = assignment_target_ident(target)
+                    .is_some_and(|name| env.reassign_targets.contains(name));
                 if let Some(name) = assignment_target_ident(target) {
                     env.reassign_targets.insert(name.to_string());
                 }
                 self.bc_expr(value, env, true);
                 if let Some(name) = assignment_target_ident(target) {
-                    env.reassign_targets.remove(name);
+                    if !enclosing_reassignment {
+                        env.reassign_targets.remove(name);
+                    }
                     env.reinit(name);
                     if env.lookup(name).is_some() {
                         self.bc_bind_view(name, value, env);
+                        let transfers_result = consumed
+                            && env
+                                .lookup(name)
+                                .and_then(|var| var.ty.as_ref())
+                                .is_some_and(|ty| {
+                                    self.bc_is_move_type(ty)
+                                        && !matches!(
+                                            self.resolve_type_aliases(ty),
+                                            TypeKind::Fn { .. }
+                                        )
+                                });
+                        if transfers_result {
+                            // The assignment value is the newly stored owner,
+                            // so transferring it also consumes its destination.
+                            // This write reinitialized the owner on this path,
+                            // including when its declaration precedes a loop.
+                            env.reassign_targets.insert(name.to_string());
+                            self.bc_expr(target, env, true);
+                            if !enclosing_reassignment {
+                                env.reassign_targets.remove(name);
+                            }
+                        }
                     } else {
                         self.bc_reject_view_escape(value, env, "store");
                     }
                 } else {
                     self.bc_reject_view_escape(value, env, "store");
-                    // Indexed replacement evaluates the storage and index,
-                    // but does not materialize the old element as a value.
-                    if let ExprKind::Index { object, indices } = &target.node {
-                        self.bc_expr(object, env, false);
-                        for index in indices {
-                            self.bc_expr(index, env, false);
-                        }
-                    } else {
-                        self.bc_expr(target, env, false);
+                    if consumed && self.bc_receiver_is_move_type(target) {
+                        // Moving that value back out needs a normalized place
+                        // transfer; do not re-evaluate the destination here.
+                        self.bc_reject_partial_move(target);
                     }
+                }
+                if projected {
+                    env.exit_scope();
                 }
             }
 
             ExprKind::CompoundAssign { target, value, .. } => {
                 // Read-modify-write: no ownership transfer.
                 self.bc_reject_borrowed_write(target, env);
-                self.bc_expr(target, env, false);
+                let projected = assignment_target_ident(target).is_none();
+                if projected {
+                    env.enter_observation_scope();
+                    self.bc_place_observation(target, env);
+                } else {
+                    self.bc_expr(target, env, false);
+                }
                 self.bc_expr(value, env, false);
+                if projected {
+                    env.exit_scope();
+                }
             }
 
             ExprKind::IncDec { expr: inner, .. } => {
@@ -1531,24 +1723,27 @@ impl Analyzer {
                     .chain(named_args.iter().map(|(_, arg)| arg))
                     .any(|argument| !self.bc_view_origins(argument, env).is_empty())
                     || self.bc_is_display_variadic_call(expr);
-                if direct_call || view_arguments {
-                    env.enter_scope();
+                let owned_callee = self.bc_annotated_type(callee).is_some_and(|ty| {
+                    matches!(self.resolve_type_aliases(&ty), TypeKind::Fn { .. })
+                });
+                if direct_call || view_arguments || owned_callee {
+                    if direct_call || view_arguments {
+                        env.enter_scope();
+                    } else {
+                        env.enter_observation_scope();
+                    }
+                    if owned_callee {
+                        self.bc_loan_observation(callee, env);
+                    }
                 }
-                for (index, arg) in args.iter().enumerate() {
+                for (index, name, arg) in self.bc_argument_schedule(expr) {
                     self.bc_call_argument(
                         arg,
-                        self.bc_call_argument_effect(expr, index, None),
+                        self.bc_call_argument_effect(expr, index, name),
                         env,
                     );
                 }
-                for (name, arg) in named_args {
-                    self.bc_call_argument(
-                        arg,
-                        self.bc_call_argument_effect(expr, args.len(), Some(name)),
-                        env,
-                    );
-                }
-                if direct_call || view_arguments {
+                if direct_call || view_arguments || owned_callee {
                     env.exit_scope();
                 }
             }
@@ -1580,20 +1775,35 @@ impl Analyzer {
                     self.bc_reject_borrowed_write(object, env);
                 }
                 self.bc_expr(object, env, consuming_receiver);
-                if shared_receiver || exclusive_receiver || view_receiver || view_arguments {
-                    env.enter_scope();
+                let pending_receiver = !consuming_receiver
+                    && !exclusive_receiver
+                    && self.bc_receiver_is_move_type(object);
+                if shared_receiver
+                    || exclusive_receiver
+                    || view_receiver
+                    || view_arguments
+                    || pending_receiver
+                {
+                    if shared_receiver || exclusive_receiver || view_receiver || view_arguments {
+                        env.enter_scope();
+                    } else {
+                        env.enter_observation_scope();
+                    }
                     if shared_receiver {
                         self.bc_mark_shared_receiver_loan(object, env, expr.span);
                     } else if exclusive_receiver {
                         self.bc_mark_exclusive_receiver_loan(object, env, expr.span);
                     }
                     self.bc_loan_view_argument(object, env);
+                    if pending_receiver {
+                        self.bc_loan_observation(object, env);
+                    }
                 }
-                for (index, arg) in args.iter().enumerate() {
+                for (index, name, arg) in self.bc_argument_schedule(expr) {
                     if self.bc_is_display_variadic_call(expr) {
                         self.bc_call_argument(
                             arg,
-                            self.bc_call_argument_effect(expr, index, None),
+                            self.bc_call_argument_effect(expr, index, name),
                             env,
                         );
                     } else {
@@ -1601,11 +1811,12 @@ impl Analyzer {
                         self.bc_loan_view_argument(arg, env);
                     }
                 }
-                for (_, arg) in named_args {
-                    self.bc_expr(arg, env, true);
-                    self.bc_loan_view_argument(arg, env);
-                }
-                if shared_receiver || exclusive_receiver || view_receiver || view_arguments {
+                if shared_receiver
+                    || exclusive_receiver
+                    || view_receiver
+                    || view_arguments
+                    || pending_receiver
+                {
                     env.exit_scope();
                 }
             }
@@ -1619,7 +1830,10 @@ impl Analyzer {
                     self.bc_expr(right, &mut right_env, false);
                     env.apply_branch_moves(&right_env);
                 } else {
+                    env.enter_observation_scope();
+                    self.bc_loan_observation(left, env);
                     self.bc_expr(right, env, false);
+                    env.exit_scope();
                 }
             }
 
@@ -1661,6 +1875,10 @@ impl Analyzer {
                                 || existing
                                     .as_ref()
                                     .and_then(|value| value.exclusive_borrow)
+                                    .is_some()
+                                || existing
+                                    .as_ref()
+                                    .and_then(|value| value.pending_storage)
                                     .is_some() =>
                         {
                             let borrowed_at = existing
@@ -1673,6 +1891,12 @@ impl Analyzer {
                                         .and_then(|value| value.shared_borrow)
                                         .map(|loan| loan.at)
                                 })
+                                .or_else(|| {
+                                    existing
+                                        .as_ref()
+                                        .and_then(|value| value.pending_storage)
+                                        .map(|loan| loan.at)
+                                })
                                 .expect("conflicting loan was checked");
                             self.push_error(
                                 expr.span,
@@ -1680,8 +1904,8 @@ impl Analyzer {
                                 format!("cannot exclusively borrow `{name}` while it is already borrowed (borrowed at {})", self.span_label(borrowed_at)),
                             );
                         }
-                        UnaryOpKind::Ref => env.mark_shared_borrowed(name, expr.span),
-                        UnaryOpKind::RefMut => env.mark_exclusive_borrowed(name, expr.span),
+                        UnaryOpKind::Ref => env.mark_reference_borrowed(name, expr.span, false),
+                        UnaryOpKind::RefMut => env.mark_reference_borrowed(name, expr.span, true),
                         _ => unreachable!("borrow expression has a reference operator"),
                     }
                 }
@@ -1735,9 +1959,12 @@ impl Analyzer {
                     self.bc_reject_partial_move(expr);
                 }
                 self.bc_expr(object, env, false);
+                env.enter_observation_scope();
+                self.bc_loan_observation(object, env);
                 for idx in indices {
                     self.bc_expr(idx, env, false);
                 }
+                env.exit_scope();
             }
 
             ExprKind::ArrayLit(elems) => {
@@ -1751,6 +1978,8 @@ impl Analyzer {
             ExprKind::Match { scrutinee, arms } => {
                 // Scrutinee is consumed (matched/destructured).
                 self.bc_expr(scrutinee, env, true);
+                env.enter_observation_scope();
+                self.bc_loan_observation(scrutinee, env);
                 // Each arm body is checked in an independent clone; then merge.
                 let base_env = env.clone();
                 for arm in arms {
@@ -1763,13 +1992,23 @@ impl Analyzer {
                     arm_env.exit_scope();
                     env.apply_branch_moves(&arm_env);
                 }
+                env.exit_scope();
             }
 
             ExprKind::Literal(_) => {}
 
-            ExprKind::StructInit { fields, .. } => {
-                // Struct construction consumes each field value.
-                for (_, fval) in fields {
+            ExprKind::StructInit { name, fields } => {
+                // Fields execute in declaration order, including move effects.
+                let mut schedule = fields.iter().collect::<Vec<_>>();
+                if let Some(definition) = self.struct_defs.get(name) {
+                    schedule.sort_by_key(|(field, _)| {
+                        definition
+                            .iter()
+                            .position(|(declared, _)| declared == field)
+                            .unwrap_or(usize::MAX)
+                    });
+                }
+                for (_, fval) in schedule {
                     self.bc_reject_view_escape(fval, env, "store in an aggregate");
                     self.bc_expr(fval, env, true);
                 }
@@ -1831,6 +2070,42 @@ impl Analyzer {
                 .get(name)
                 .is_some_and(|summary| summary.direct_call_eligible)
         })
+    }
+
+    /// Preserve each lexical argument's capability identity while executing
+    /// the declaration-slot schedule shared with type checking and emission.
+    fn bc_argument_schedule<'a>(&self, call: &'a Expr) -> Vec<(usize, Option<&'a str>, &'a Expr)> {
+        let (args, named_args) = match &call.node {
+            ExprKind::Call {
+                args, named_args, ..
+            }
+            | ExprKind::MethodCall {
+                args, named_args, ..
+            } => (args, named_args),
+            _ => return Vec::new(),
+        };
+        let mut schedule = args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| (index, None, arg))
+            .chain(
+                named_args
+                    .iter()
+                    .map(|(name, arg)| (args.len(), Some(name.as_str()), arg)),
+            )
+            .collect::<Vec<_>>();
+        if let Some(slots) = self
+            .bc_resolved_call_name(call)
+            .and_then(|callee| self.ownership_call_argument_slots(call, callee))
+        {
+            schedule.sort_by_key(|(_, _, argument)| {
+                slots
+                    .iter()
+                    .position(|slot| slot.iter().any(|value| std::ptr::eq(*value, *argument)))
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        schedule
     }
 
     fn bc_call_argument(&mut self, argument: &Expr, effect: CallArgumentEffect, env: &mut MoveEnv) {
@@ -2383,6 +2658,17 @@ impl Analyzer {
                 }
             }
         }
+        let replaces_storage = assignment_target_ident(target).is_some()
+            || self.bc_annotated_type(target).is_some_and(|ty| {
+                crate::runtime_layout::runtime_move_kind(&self.resolve_type_aliases(&ty))
+                    == crate::runtime_layout::MoveKind::Owned
+            });
+        if replaces_storage && let Some(loan) = env.lookup(name).and_then(|var| var.pending_storage)
+        {
+            self.push_error(target.span, "S10", format!(
+                "cannot replace `{name}` while an evaluated operand needs its storage (observed at {})",
+                self.span_label(loan.at)));
+        }
         if let Some(borrowed_at) = env
             .lookup(name)
             .and_then(|variable| variable.shared_borrow)
@@ -2458,6 +2744,147 @@ fn borrowed(owner: &Owner) str { ret owner.view(); }
             "missing ownership diagnostic for {body}: {:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn pending_operands_keep_owner_storage_live() {
+        for body in [
+            "fn main() void { var owner=make(); var equal=owner.view()==(owner=make()).view(); }",
+            "fn main() void { var owner=make(); var text=owner.view()+(owner=make()).view(); }",
+            "fn main() i32 { var owner=make(); ret owner.view()[(owner=make()).view().len()-1]; }",
+            "fn main() void { var owner=make(); owner.text=(owner=make()).text; }",
+            "fn one(x:i32)i32{ret 1;} fn two(x:i32)i32{ret 2;} fn main()i32{var f:fn(i32)i32=one;ret f((f=two)(0));}",
+            "enum E{Value(i32),Other,} fn main()i32{var e:E=E.Value(1);ret match e{Value(x) if((e=E.Value(2))==E.Other)=>x,Value(y)=>y,_=>0,};}",
+        ] {
+            let report = analyze(body);
+            assert!(
+                report.errors.iter().any(|error| error.code == "S10"
+                    && (error.message.contains("shared-borrow")
+                        || error.message.contains("evaluated operand"))),
+                "{body}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn pending_observation_loans_end_with_the_operation() {
+        for body in [
+            "fn main()void{var owner=make();var equal=owner.view()==owner.view();owner=make();}",
+            "fn main()void{var owner=make();owner.text=\"new\";owner=make();}",
+            "fn main()i32{var a=[1,2];a[0]=(a[1]=3);ret a[0];}",
+            "struct Number{value:i32,} fn main()i32{var n=Number{value:1};n.value+=(n.value=2);ret n.value;}",
+            "struct Number{value:i32,} fn main()i32{var n=Number{value:1};n.value=(n.value=2)+1;ret n.value;}",
+            "struct Number{value:i32,} fn main()i32{var n=Number{value:1};ret n.value+(n=Number{value:2}).value;}",
+            "fn one(x:i32)i32{ret x;} fn two(x:i32)i32{ret x;} fn main()i32{var f:fn(i32)i32=one;var n=f(0);f=two;ret f(n);}",
+        ] {
+            let report = analyze(body);
+            assert!(report.errors.is_empty(), "{body}: {:?}", report.errors);
+        }
+    }
+
+    #[test]
+    fn pending_receiver_storage_allows_scalar_writes_and_consuming_reownership() {
+        let rejected = analyze(
+            "impl Owner{fn read(receiver:Owner, ignored:usize)usize{ret receiver.text.len();}} fn main()void{var owner=make();owner.read((owner=make()).text.len());}",
+        );
+        assert!(
+            rejected
+                .errors
+                .iter()
+                .any(|error| error.code == "S10" && error.message.contains("evaluated operand")),
+            "{:?}",
+            rejected.errors
+        );
+        for body in [
+            "struct Number{value:i32,} impl Number{fn read(receiver:Number, ignored:i32)i32{ret receiver.value;}} fn main()i32{var n=Number{value:1};ret n.read((n.value=2));}",
+            "impl Owner{fn consume(self:Owner, ignored:usize)usize{ret self.text.len();}} fn main()void{var owner=make();owner.consume((owner=make()).text.len());owner.free();}",
+        ] {
+            let report = analyze(body);
+            assert!(report.errors.is_empty(), "{body}: {:?}", report.errors);
+        }
+    }
+
+    #[test]
+    fn ownership_checks_follow_declared_named_and_field_slots() {
+        for body in [
+            "fn take(first:Owner,second:usize)void{first.free();} fn main()void{var owner=make();take(second=(owner=make()).text.len(),first=owner);owner.free();}",
+            "struct Pair{first:Owner,second:usize,} fn main()void{var owner=make();var pair=Pair{second:(owner=make()).text.len(),first:owner};owner.free();}",
+            "struct Reader{value:i32,} impl Reader{fn take(self:&Reader,first:Owner,second:usize)void{first.free();}} fn main()void{var reader=Reader{value:1};var owner=make();reader.take(second=(owner=make()).text.len(),first=owner);owner.free();}",
+        ] {
+            let report = analyze(body);
+            assert!(report.errors.is_empty(), "{body}: {:?}", report.errors);
+        }
+        for body in [
+            "fn take(first:usize,second:Owner)void{second.free();} fn main()void{var owner=make();take(second=owner,first=(owner=make()).text.len());owner.free();}",
+            "struct Pair{first:usize,second:Owner,} fn main()void{var owner=make();var pair=Pair{second:owner,first:(owner=make()).text.len()};owner.free();}",
+            "struct Reader{value:i32,} impl Reader{fn take(self:&Reader,first:usize,second:Owner)void{second.free();}} fn main()void{var reader=Reader{value:1};var owner=make();reader.take(second=owner,first=(owner=make()).text.len());owner.free();}",
+        ] {
+            let report = analyze(body);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.code == "S10" && error.message.contains("moved")),
+                "{body}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn consumed_assignment_results_move_the_new_destination_owner() {
+        for body in [
+            "fn take(value:Owner)void{value.free();} fn main()void{var owner=make();take((owner=make()));owner.free();}",
+            "struct Pair{first:Owner,second:Owner,} fn main()void{var owner=make();var pair=Pair{first:owner,second:(owner=make())};owner.free();}",
+        ] {
+            let report = analyze(body);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.code == "S10" && error.message.contains("moved")),
+                "{body}: {:?}",
+                report.errors
+            );
+        }
+        let report = analyze(
+            "fn take(value:Owner)void{value.free();} fn main()void{var owner=make();take((owner=make()));owner=make();owner.free();}",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let report = analyze(
+            "fn take(value:Owner)void{value.free();} fn main()void{var owner=make();var i:i32=0;for(i<2){take((owner=make()));i+=1;}}",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let report = analyze(
+            "struct Holder{inner:Owner,} fn take(value:Owner)void{value.free();} fn main()void{var holder=Holder{inner:make()};take((holder.inner=make()));}",
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.code == "S10" && error.message.contains("cannot move out")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn pending_storage_regions_do_not_shorten_opaque_reference_loans() {
+        for body in [
+            "fn opaque(value:&Owner)i32{ret 0;} fn main()void{var owner=make();var f:fn(&Owner)i32=opaque;f(&owner);owner.free();}",
+            "fn opaque(value:&Owner)i32{ret 0;} fn main()void{var owner=make();var f:fn(&Owner)i32=opaque;var n=1+f(&owner);owner.free();}",
+        ] {
+            let report = analyze(body);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.code == "S10" && error.message.contains("shared-borrow")),
+                "{body}: {:?}",
+                report.errors
+            );
+        }
     }
 
     #[test]

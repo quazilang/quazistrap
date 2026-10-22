@@ -2,6 +2,65 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-22, stable operand values and computed places)
+
+Implemented in codegen.rs: compile_value captures binding-backed complete physical
+blocks before later effects; compile_expr retains storage for places/address-of.
+Explicit structural width evidence covers untyped enum constructors/bindings,
+single-slot getter/index reads and equal-width match arms. Missing evidence and
+register overrun fail closed. Slice aliases retain ptr+len, references pin complete
+blocks, match results reserve/copy full width. Receiver adaptation precedes capture.
+
+Computed places freeze handles/pointers/indexes once before RHS; fixed arrays
+retain real storage. Compound reads snapshot old value first. Typed C fields/FAM
+preserve width/signed/f32 flags. New native FAM probe exposed baseline raw C
+aggregate deref loading word0: resolved @repr(C) pointees now retain inline storage
+address; normal Quazi nominal pointers still load their value handle.
+
+Pending field/consuming receiver transfers begin at operand evaluation; commit
+transfers pending slots without clearing a replacement binding. Snapshot metadata
+retargets produced temporary register identity without adding owners. Owned direct
+assignment results consume their newly assigned binding and have pending slots;
+projected-owned/fn assignment-result transfer gates remain. Nested reown markers
+are preserved, and immediately consumed reassignment results retain loop policy.
+Consuming receiver fallback with no early resolved target fails closed.
+
+borrow.rs adds scoped pending_storage separately from shared view loans. Pending
+binary views, heap places/indexes, indirect Fn callees, legacy receivers and match
+traversal keep allocations live. Scalar projection writes remain allowed; moves,
+root and owned projection replacement reject. Explicit &/&! loans skip guard-only
+observation scopes, preserving opaque-call lifetime restrictions. Call/field
+checking now follows declared slots while retaining lexical capability identities.
+Independent reviews found/corrected late field transfer, FAM f32 conversion and
+consuming fallback issues; final reviews found no remaining blocker in scope.
+
+QZC23 invalidates older exact/reusable chunks; QZI13 unchanged and Unverified.
+Full offline tests **904/904**, debug build and direct Clippy pass (existing
+warnings). Operand runner **27 valid** native/source-removed QZI/Windows COFF,
+**6 invalid** check/native/QZI/COFF, old wrong-result cache rebuild/new correct hit.
+Initialization39invalid/57valid+traps, loop23, conditional31, try9invalid/8valid,
+expression36, retention12invalid/7valid, named, dyn/cache pass. STD memory6 pass;
+matching quazifetch build/run/cache/Windows COFF pass. RAM ~4.1GiB/13.5GiB matches
+adjacent fastfetch samples. Logs /tmp/quazi-operands-*.log. Baseline executable
+/tmp/quazi-operands-before-87e66dc preserves 87e66dc for safe cache regression.
+
+README progress/statuses and audit refreshed BEFORE commit: unchanged33items/
+78requirements, 73.2% complete/26.8% remaining, Ownership9/16,LSP16/20. Graphify
+query and AST update pass; graph5339nodes/11968edges (no .qz semantic extraction).
+Changed-region formatting, Markdown links and scoped diffs checked. Preserve STD
+CLI dirt, compiler .codex/ and examples/35-multi-slot-arrays/build/. No push.
+Installed ~/.cargo/bin/qz is still the older Oct20 binary; validation uses
+quazistrap/target/debug/qz. Rust ELF-loader wrappers remain required as below.
+
+NEXT: broad ../goal.md objective remains active/incomplete. Continue normalized
+place/effect/provenance work, canonical Boolean storage/equality, general partial
+initialization/move state, recursive destruction and verified artifacts/D-015.
+Raw scalar *f32 conversion and whole inline C aggregate copy/nested projection
+semantics remain separate existing gaps; this checkpoint only fixes inline C
+aggregate address observation and typed field/FAM accesses. Do not infer release
+readiness, complete interprocedural lifetime proof, or QZI certificates from the
+source storage pins and regression suite.
+
 ## Checkpoint (2026-10-22, source initialization and checked match execution)
 
 This checkpoint is implemented and verified. Source initialization

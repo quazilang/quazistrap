@@ -1,8 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
 Revalidated on 2026-10-22 against the
-[source-initialization checkpoint](../changes/2026-10-22-source-initialization.md).
-Previous committed source: `46271a9218bce134d89bae044c28222a7285ae41`.
+[stable-operand checkpoint](../changes/2026-10-22-operand-snapshots.md).
+Previous committed source: `87e66dc`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
@@ -60,6 +60,14 @@ facts align analysis and execution. This strengthens existing correctness
 coverage, without completing interprocedural loans/effects, partial-place state,
 recursive destruction or verified artifacts. All 33 item weights and 78
 requirements retain the same credit: **73.2% complete, 26.8% remaining**.
+
+The subsequent stable-operand checkpoint passes **904 tests**, 27 native/QZI/COFF
+checks, 6 invalid lifetime cases, and old-cache rebuild/exact-hit execution.
+Captured value blocks, stable computed places, scoped allocation pins and pending
+receiver/field transfers strengthen existing correctness coverage. General
+projection/effect proof and recursive destruction remain incomplete; no new
+requirement receives credit. Completion remains **73.2%**, remaining **26.8%**.
+README statuses and this audit are refreshed before the commit.
 
 ## Summary
 

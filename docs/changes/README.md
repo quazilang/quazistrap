@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-10-22: Stable operands and pending storage](2026-10-22-operand-snapshots.md)
+
 - [2026-10-22: Source initialization and checked match execution](2026-10-22-source-initialization.md)
 
 - [2026-10-21: Runtime cleanup for conditional owners](2026-10-21-conditional-cleanup.md)

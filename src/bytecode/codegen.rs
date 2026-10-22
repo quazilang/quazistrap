@@ -2469,6 +2469,11 @@ struct FnCompiler<'a> {
     /// after a generic helper call, but an explicit local annotation remains
     /// authoritative for direct method dispatch.
     local_types: HashMap<String, TypeKind>,
+    /// Physical binding widths proven while lowering initializers, including
+    /// enum constructors whose semantic result annotation is not available yet.
+    /// Register identities are monotonic, so lexical restoration of `regs`
+    /// also selects the corresponding width without leaking shadow metadata.
+    binding_slots: HashMap<u8, usize>,
     /// Monotonic virtual-register counter.  Keep this wider than the QZI
     /// physical register encoding so exhaustion is diagnosed instead of
     /// silently wrapping back to r0.
@@ -2620,12 +2625,12 @@ struct LoopFrame {
 enum LvalueAddr {
     Ident {
         name: String,
-        span: Span,
     },
     Deref {
         ptr: u8,
         width: MemWidth,
         signed: bool,
+        float32: bool,
     },
     ForeignGlobal {
         ptr: u8,
@@ -2636,6 +2641,9 @@ enum LvalueAddr {
     Field {
         obj: u8,
         offset: u16,
+        width: MemWidth,
+        signed: bool,
+        float32: bool,
     },
     BitField {
         obj: u8,
@@ -2721,6 +2729,7 @@ impl<'a> FnCompiler<'a> {
             chunk: Chunk::with_params(name, param_count),
             regs: HashMap::new(),
             local_types: HashMap::new(),
+            binding_slots: HashMap::new(),
             next_reg: 0,
             codegen_error: None,
             resolution_errors,
@@ -3096,7 +3105,7 @@ impl<'a> FnCompiler<'a> {
 
     /// Return -1, 0, or 1 for lexicographic UTF-8 string comparison.
     fn emit_string_cmp(&mut self, left: &Expr, right: &Expr) -> u8 {
-        let left_value = self.compile_expr(left);
+        let left_value = self.compile_value(left);
         let left_data = self.string_data_reg(left, left_value);
         let right_value = self.compile_expr(right);
         let right_data = self.string_data_reg(right, right_value);
@@ -3593,216 +3602,6 @@ impl<'a> FnCompiler<'a> {
         0
     }
 
-    /// Load the value of an lvalue expression (identifier, deref, field, index).
-    fn emit_lvalue_load(&mut self, target: &Expr) -> u8 {
-        match &target.node {
-            ExprKind::Ident(name) => self.reg_of(name),
-            ExprKind::Unary {
-                op: UnaryOpKind::Deref,
-                expr: ptr_expr,
-            } => {
-                let ptr = self.compile_expr(ptr_expr);
-                let dst = self.alloc_reg();
-                let (width, signed) = self.raw_pointee_access(ptr_expr);
-                self.chunk.emit(mem_load_w(ptr, dst, 0, width, signed));
-                dst
-            }
-            ExprKind::Field {
-                object,
-                name: field_name,
-            } => {
-                let byte_offset = self.field_offset(object, field_name);
-                let obj = self.compile_aggregate_object(object);
-                let dst = self.alloc_reg();
-                self.chunk.emit(field_load(dst, obj, byte_offset));
-                dst
-            }
-            ExprKind::Index { object, indices } => {
-                let key = (object.span.start, object.span.end);
-                if let Some(TypeKind::Named {
-                    name: type_name,
-                    type_args,
-                }) = self.type_of_span(key)
-                {
-                    let implements_index = self
-                        .trait_impls
-                        .get(type_name.as_str())
-                        .map(|ts| ts.contains("Index"))
-                        .unwrap_or(false);
-                    if implements_index {
-                        let type_kinds: Vec<TypeKind> =
-                            type_args.iter().map(|t| t.node.clone()).collect();
-                        let mangled = if type_kinds.is_empty() {
-                            format!("{}.index", type_name)
-                        } else {
-                            crate::semantic::typecheck::mangle_monomorphized(
-                                &format!("{}.index", type_name),
-                                &type_kinds,
-                            )
-                        };
-                        if self.fn_index.contains_key(&mangled) {
-                            let obj = self.compile_method_receiver(object, &mangled);
-                            let idx_regs: Vec<u8> =
-                                indices.iter().map(|i| self.compile_expr(i)).collect();
-                            let dst = self.alloc_result_block(&mangled);
-                            let mut all_args = vec![obj];
-                            all_args.extend_from_slice(&idx_regs);
-                            self.emit_call_by_name(&mangled, &all_args, dst);
-                            return dst;
-                        }
-                    }
-                }
-                let index = indices
-                    .first()
-                    .expect("index expr must have at least one index");
-                let obj_ty = self.type_of_span(key);
-                if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
-                    let ptr = self.compile_expr(object);
-                    let idx = self.compile_expr(index);
-                    let eight = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::MovI, eight, 8));
-                    let offset = self.alloc_reg();
-                    self.chunk.emit(rrr(Opcode::Mul, offset, idx, eight));
-                    let addr = self.alloc_reg();
-                    self.chunk.emit(rrr(Opcode::Sub, addr, ptr, offset));
-                    let dst = self.alloc_reg();
-                    self.chunk.emit(mem_load(addr, dst, 0));
-                    return dst;
-                }
-                let base = self.compile_expr(object);
-                if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                    && *n <= u8::MAX as u64
-                {
-                    return base + *n as u8;
-                }
-                let idx = self.compile_expr(index);
-                let ptr = self.alloc_reg();
-                self.chunk.emit(mem_lea_block(base, ptr, 0, 1));
-                let eight = self.alloc_reg();
-                self.chunk.emit(ri16(Opcode::MovI, eight, 8));
-                let offset = self.alloc_reg();
-                self.chunk.emit(rrr(Opcode::Mul, offset, idx, eight));
-                self.chunk.emit(rrr(Opcode::Sub, ptr, ptr, offset));
-                let dst = self.alloc_reg();
-                self.chunk.emit(mem_load(ptr, dst, 0));
-                dst
-            }
-            _ => self.compile_expr(target),
-        }
-    }
-
-    /// Store `src` into an lvalue expression (identifier, deref, field, index).
-    fn emit_lvalue_store(&mut self, target: &Expr, src: u8) -> u8 {
-        match &target.node {
-            ExprKind::Ident(name) => {
-                self.drop_local_now(name);
-                let dst = self.reg_of(name);
-                if dst != src {
-                    self.chunk.emit(rrr(Opcode::Mov, dst, src, 0));
-                }
-                self.reactivate_drop_local(name);
-                dst
-            }
-            ExprKind::Unary {
-                op: UnaryOpKind::Deref,
-                expr: ptr_expr,
-            } => {
-                let ptr = self.compile_expr(ptr_expr);
-                let (width, _) = self.raw_pointee_access(ptr_expr);
-                self.chunk.emit(mem_store_w(ptr, src, 0, width));
-                src
-            }
-            ExprKind::Field {
-                object,
-                name: field_name,
-            } => {
-                let byte_offset = self.field_offset(object, field_name);
-                let obj = self.compile_aggregate_object(object);
-                self.chunk.emit(field_store(src, obj, byte_offset));
-                src
-            }
-            ExprKind::Index { object, indices } => {
-                let obj_ty = self.receiver_value_type(object);
-                let index = indices.first().expect("index must have at least one index");
-
-                if let Some(address) = self.borrowed_fixed_array_address(object, index) {
-                    self.store_lvalue(&address, src);
-                    return src;
-                }
-
-                if let Some(TypeKind::FlexibleArray { elem_ty }) = &obj_ty {
-                    let base = self.compile_expr(object);
-                    let idx = self.compile_expr(index);
-                    let (width, _, elem_size, float32) = self.c_memory_access(&elem_ty.node);
-                    let ptr = self.emit_indexed_c_address(base, idx, elem_size);
-                    self.emit_c_store(ptr, src, width, float32);
-                    src
-                } else if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array") {
-                    let type_kinds: Vec<TypeKind> =
-                        if let Some(TypeKind::Named { type_args, .. }) = &obj_ty {
-                            type_args.iter().map(|t| t.node.clone()).collect()
-                        } else {
-                            vec![]
-                        };
-                    let set_target = if type_kinds.is_empty() {
-                        "Array.set".to_string()
-                    } else {
-                        let mangled = crate::semantic::typecheck::mangle_monomorphized(
-                            "Array.set",
-                            &type_kinds,
-                        );
-                        if self.fn_index.contains_key(&mangled) {
-                            mangled
-                        } else {
-                            "Array.set".to_string()
-                        }
-                    };
-                    let obj_reg = self.compile_expr(object);
-                    let idx_reg = self.compile_expr(index);
-                    let _dst = self.alloc_reg();
-                    let receiver = self.prepare_method_receiver(
-                        obj_reg,
-                        self.type_of_expr(object),
-                        &set_target,
-                    );
-                    self.emit_call_by_name(&set_target, &[receiver, idx_reg, src], _dst);
-                    src
-                } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
-                    let ptr = self.compile_expr(object);
-                    let idx_reg = self.compile_expr(index);
-                    let eight = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::MovI, eight, 8));
-                    let offset = self.alloc_reg();
-                    self.chunk.emit(rrr(Opcode::Mul, offset, idx_reg, eight));
-                    let addr = self.alloc_reg();
-                    self.chunk.emit(rrr(Opcode::Sub, addr, ptr, offset));
-                    self.chunk.emit(mem_store(addr, src, 0));
-                    src
-                } else {
-                    let base = self.compile_expr(object);
-                    if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                        && *n <= u8::MAX as u64
-                    {
-                        let elem_reg = base + *n as u8;
-                        self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
-                        return src;
-                    }
-                    let idx_reg = self.compile_expr(index);
-                    let ptr = self.alloc_reg();
-                    self.chunk.emit(mem_lea_block(base, ptr, 0, 1));
-                    let eight = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::MovI, eight, 8));
-                    let offset = self.alloc_reg();
-                    self.chunk.emit(rrr(Opcode::Mul, offset, idx_reg, eight));
-                    self.chunk.emit(rrr(Opcode::Sub, ptr, ptr, offset));
-                    self.chunk.emit(mem_store(ptr, src, 0));
-                    src
-                }
-            }
-            _ => src,
-        }
-    }
-
     /// Compute the address of an lvalue once so it can be loaded and stored
     /// without re-evaluating side-effect-free base/index expressions.
     fn compute_lvalue_addr(&mut self, target: &Expr) -> LvalueAddr {
@@ -3816,32 +3615,39 @@ impl<'a> FnCompiler<'a> {
                 if let Some(addr) = self.foreign_global_lvalue(target.span) {
                     addr
                 } else {
-                    LvalueAddr::Ident {
-                        name: name.clone(),
-                        span: target.span,
-                    }
+                    LvalueAddr::Ident { name: name.clone() }
                 }
             }
             ExprKind::Unary {
                 op: UnaryOpKind::Deref,
                 expr: ptr_expr,
             } => {
-                let ptr = self.compile_expr(ptr_expr);
+                let ptr = self.compile_value(ptr_expr);
                 let (width, signed) = self.raw_pointee_access(ptr_expr);
-                LvalueAddr::Deref { ptr, width, signed }
+                LvalueAddr::Deref {
+                    ptr,
+                    width,
+                    signed,
+                    float32: false,
+                }
             }
             ExprKind::Field {
                 object,
                 name: field_name,
             } => {
                 let obj = self.compile_aggregate_object(object);
+                let obj = self.snapshot_slots(obj, 1);
                 if let Some(layout) = self.bit_field_layout(object, field_name) {
                     LvalueAddr::BitField { obj, layout }
                 } else {
                     let byte_offset = self.field_offset(object, field_name);
+                    let (width, signed, float32) = self.ffi_field_access(object, field_name);
                     LvalueAddr::Field {
                         obj,
                         offset: byte_offset,
+                        width,
+                        signed,
+                        float32,
                     }
                 }
             }
@@ -3854,11 +3660,16 @@ impl<'a> FnCompiler<'a> {
                 }
 
                 if let Some(TypeKind::FlexibleArray { elem_ty }) = &obj_ty {
-                    let base = self.compile_expr(object);
-                    let idx = self.compile_expr(index);
-                    let (width, signed, elem_size, _) = self.c_memory_access(&elem_ty.node);
+                    let base = self.compile_value(object);
+                    let idx = self.compile_value(index);
+                    let (width, signed, elem_size, float32) = self.c_memory_access(&elem_ty.node);
                     let ptr = self.emit_indexed_c_address(base, idx, elem_size);
-                    LvalueAddr::Deref { ptr, width, signed }
+                    LvalueAddr::Deref {
+                        ptr,
+                        width,
+                        signed,
+                        float32,
+                    }
                 } else if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array") {
                     let type_kinds: Vec<TypeKind> =
                         if let Some(TypeKind::Named { type_args, .. }) = &obj_ty {
@@ -3892,7 +3703,7 @@ impl<'a> FnCompiler<'a> {
                     let obj = self.compile_expr(object);
                     let obj =
                         self.prepare_method_receiver(obj, self.type_of_expr(object), &set_target);
-                    let idx = self.compile_expr(index);
+                    let idx = self.compile_value(index);
                     LvalueAddr::IndexArray {
                         obj,
                         idx,
@@ -3900,9 +3711,9 @@ impl<'a> FnCompiler<'a> {
                         set_target,
                     }
                 } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
-                    let ptr = self.compile_expr(object);
-                    let idx = self.compile_expr(index);
-                    let length = self.slice_length_register(object, ptr);
+                    let ptr = self.compile_value(object);
+                    let idx = self.compile_value(index);
+                    let length = ptr + 1;
                     self.emit_bounds_guard(idx, length, index.span);
                     LvalueAddr::IndexSlice { ptr, idx }
                 } else {
@@ -3924,7 +3735,7 @@ impl<'a> FnCompiler<'a> {
                             block_length,
                         }
                     } else {
-                        let idx = self.compile_expr(index);
+                        let idx = self.compile_value(index);
                         if let Some(length) = array_length {
                             let length_reg = self.emit_length_constant(length);
                             self.emit_bounds_guard(idx, length_reg, index.span);
@@ -3940,7 +3751,6 @@ impl<'a> FnCompiler<'a> {
             }
             _ => LvalueAddr::Ident {
                 name: String::new(),
-                span: target.span,
             },
         }
     }
@@ -3949,20 +3759,29 @@ impl<'a> FnCompiler<'a> {
     fn load_lvalue(&mut self, addr: &LvalueAddr) -> u8 {
         match addr {
             LvalueAddr::Ident { name, .. } => self.reg_of(name),
-            LvalueAddr::Deref { ptr, width, signed } => {
-                let dst = self.alloc_reg();
-                self.chunk.emit(mem_load_w(*ptr, dst, 0, *width, *signed));
-                dst
-            }
+            LvalueAddr::Deref {
+                ptr,
+                width,
+                signed,
+                float32,
+            } => self.emit_c_load(*ptr, *width, *signed, *float32),
             LvalueAddr::ForeignGlobal {
                 ptr,
                 width,
                 signed,
                 float32,
             } => self.emit_c_load(*ptr, *width, *signed, *float32),
-            LvalueAddr::Field { obj, offset } => {
+            LvalueAddr::Field {
+                obj,
+                offset,
+                width,
+                signed,
+                float32,
+            } => {
                 let dst = self.alloc_reg();
-                self.chunk.emit(field_load(dst, *obj, *offset));
+                self.chunk.emit(field_load_typed(
+                    dst, *obj, *offset, *width, *signed, *float32,
+                ));
                 dst
             }
             LvalueAddr::BitField { obj, layout } => self.emit_bit_field_load(*obj, *layout),
@@ -4021,17 +3840,27 @@ impl<'a> FnCompiler<'a> {
                 }
                 self.reactivate_drop_local(name);
             }
-            LvalueAddr::Deref { ptr, width, .. } => {
-                self.chunk.emit(mem_store_w(*ptr, src, 0, *width));
-            }
+            LvalueAddr::Deref {
+                ptr,
+                width,
+                float32,
+                ..
+            } => self.emit_c_store(*ptr, src, *width, *float32),
             LvalueAddr::ForeignGlobal {
                 ptr,
                 width,
                 float32,
                 ..
             } => self.emit_c_store(*ptr, src, *width, *float32),
-            LvalueAddr::Field { obj, offset } => {
-                self.chunk.emit(field_store(src, *obj, *offset));
+            LvalueAddr::Field {
+                obj,
+                offset,
+                width,
+                float32,
+                ..
+            } => {
+                self.chunk
+                    .emit(field_store_typed(src, *obj, *offset, *width, *float32));
             }
             LvalueAddr::BitField { obj, layout } => {
                 self.emit_bit_field_store(*obj, src, *layout);
@@ -4113,6 +3942,18 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn emit_block_copy(&mut self, dst_base: u8, src_base: u8, slots: usize) {
+        if usize::from(dst_base)
+            .checked_add(slots)
+            .is_none_or(|end| end > usize::from(self.next_reg))
+            || usize::from(src_base)
+                .checked_add(slots)
+                .is_none_or(|end| end > usize::from(self.next_reg))
+        {
+            self.codegen_error.get_or_insert_with(|| {
+                "value copy exceeds its allocated QZI register block".to_string()
+            });
+            return;
+        }
         for offset in 0..slots {
             self.chunk.emit(rrr(
                 Opcode::Mov,
@@ -4121,6 +3962,113 @@ impl<'a> FnCompiler<'a> {
                 0,
             ));
         }
+    }
+
+    /// Freeze reads of addressable bindings before evaluating another operand.
+    /// Produced temporaries already have independent storage. A bit snapshot is
+    /// not another owner: existing pending-owner slots retain responsibility.
+    fn snapshot_slots(&mut self, source: u8, slots: usize) -> u8 {
+        if usize::from(source)
+            .checked_add(slots)
+            .is_none_or(|end| end > usize::from(self.next_reg))
+        {
+            self.codegen_error.get_or_insert_with(|| {
+                "value snapshot exceeds its allocated QZI register block".to_string()
+            });
+            return source;
+        }
+        if slots == 0 {
+            return source;
+        }
+        let aliases_binding = self.regs.iter().any(|(name, &base)| {
+            let count = self
+                .local_types
+                .get(name)
+                .map(|ty| self.resolve_type(ty))
+                .and_then(|ty| crate::runtime_layout::runtime_value_layout(&ty).slot_count())
+                .unwrap_or(1);
+            usize::from(source) < usize::from(base).saturating_add(count)
+                && usize::from(base) < usize::from(source).saturating_add(slots)
+        });
+        if !aliases_binding {
+            return source;
+        }
+        let snapshot = self.reserve_reg_block(slots);
+        self.emit_block_copy(snapshot, source, slots);
+        for temp in &mut self.expression_temporaries {
+            if temp.produced && temp.value_reg == Some(source) {
+                temp.value_reg = Some(snapshot);
+            }
+        }
+        snapshot
+    }
+
+    /// Physical shape of a checked expression, including the explicitly
+    /// structural constructor paths which do not yet publish a result type.
+    fn known_value_slot_count(&self, expr: &Expr) -> Option<usize> {
+        if let Some(ty) = self.type_of_expr(expr) {
+            // C flexible-array projections lower to tail addresses.
+            if matches!(ty, TypeKind::FlexibleArray { .. }) {
+                return Some(1);
+            }
+            if let Some(slots) = crate::runtime_layout::runtime_value_layout(&ty).slot_count() {
+                return Some(slots);
+            }
+        }
+        match &expr.node {
+            ExprKind::Ident(name) => self
+                .regs
+                .get(name)
+                .and_then(|reg| self.binding_slots.get(reg))
+                .copied(),
+            ExprKind::Literal(_) => Some(1),
+            ExprKind::Group(inner) | ExprKind::Cast { expr: inner, .. } => {
+                self.known_value_slot_count(inner)
+            }
+            ExprKind::MethodCall { object, method, .. }
+            | ExprKind::Field {
+                object,
+                name: method,
+            } if matches!(&object.node, ExprKind::Ident(name) if !self.regs.contains_key(name) && self.enum_defs.get(name).is_some_and(|variants| variants.contains_key(method))) => {
+                Some(1)
+            }
+            ExprKind::Call { callee, .. } if matches!(&callee.node, ExprKind::Ident(name) if !self.regs.contains_key(name) && self.enum_defs.values().any(|variants| variants.contains_key(name))) => {
+                Some(1)
+            }
+            // Every currently supported index read emits one load or calls a
+            // single-slot getter. Analysis rejects multi-slot element storage.
+            ExprKind::Index { .. } => Some(1),
+            ExprKind::Match { arms, .. } => {
+                let mut widths = arms
+                    .iter()
+                    .map(|arm| self.known_value_slot_count(&arm.expr));
+                let first = widths.next()??;
+                widths.all(|width| width == Some(first)).then_some(first)
+            }
+            ExprKind::Assign { value, .. } => self.known_value_slot_count(value),
+            _ => None,
+        }
+    }
+
+    fn value_slot_count(&mut self, expr: &Expr) -> usize {
+        if let Some(slots) = self.known_value_slot_count(expr) {
+            return slots;
+        }
+        self.codegen_error.get_or_insert_with(|| {
+            format!(
+                "cannot resolve the value layout at {}:{}",
+                expr.span.line, expr.span.col
+            )
+        });
+        0
+    }
+
+    /// Evaluate a value, preserving its effective post-autoderef slot layout.
+    /// Place evaluation and explicit address-of must continue to use storage.
+    fn compile_value(&mut self, expr: &Expr) -> u8 {
+        let value = self.compile_expr(expr);
+        let slots = self.value_slot_count(expr);
+        self.snapshot_slots(value, slots)
     }
 
     fn result_slot_count(&self) -> usize {
@@ -4211,6 +4159,18 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn prepare_method_receiver_at(
+        &mut self,
+        receiver: u8,
+        receiver_ty: Option<TypeKind>,
+        declared_target: &str,
+        place: Option<u8>,
+    ) -> u8 {
+        let prepared =
+            self.prepare_method_receiver_storage(receiver, receiver_ty, declared_target, place);
+        self.snapshot_slots(prepared, 1)
+    }
+
+    fn prepare_method_receiver_storage(
         &mut self,
         receiver: u8,
         receiver_ty: Option<TypeKind>,
@@ -4322,8 +4282,8 @@ impl<'a> FnCompiler<'a> {
         let TypeKind::Array { len, .. } = self.resolve_type(&inner.node) else {
             return None;
         };
-        let ptr = self.compile_expr(object);
-        let idx = self.compile_expr(index);
+        let ptr = self.compile_value(object);
+        let idx = self.compile_value(index);
         let length = self.emit_length_constant(len);
         self.emit_bounds_guard(idx, length, index.span);
         // Freeze the checked address before an assignment RHS can change the
@@ -4337,6 +4297,7 @@ impl<'a> FnCompiler<'a> {
             ptr: address,
             width: MemWidth::Qword,
             signed: false,
+            float32: false,
         })
     }
 
@@ -5291,7 +5252,8 @@ impl<'a> FnCompiler<'a> {
             sites.push(((expr.span.start, expr.span.end), action, true, true));
         }
         if !root
-            && (producer || (transfer && matches!(expr.node, ExprKind::Ident(_))))
+            && (producer
+                || (transfer && matches!(expr.node, ExprKind::Ident(_) | ExprKind::Assign { .. })))
             && let Some(ty @ TypeKind::Named { .. }) = self.type_of_expr(expr)
             && let Some(action) = self.drop_action_for_type(&ty)
         {
@@ -5468,6 +5430,7 @@ impl<'a> FnCompiler<'a> {
             ExprKind::Group(inner)
             | ExprKind::Try { expr: inner }
             | ExprKind::Cast { expr: inner, .. } => self.mark_consumed_binding(inner, value),
+            ExprKind::Assign { target, .. } => self.mark_consumed_binding(target, value),
             ExprKind::Match { arms, .. } => {
                 for arm in arms {
                     self.mark_consumed_binding(&arm.expr, value);
@@ -5736,22 +5699,20 @@ impl<'a> FnCompiler<'a> {
                     // value. Fixed-array literals already produce a fresh contiguous
                     // block, so the binding can take that block directly; other fixed
                     // array initializers require an element-wise block copy.
-                    let reg = if let Some(TypeKind::Array { len, .. }) = &local_ty {
+                    let slots = self.value_slot_count(expr);
+                    let reg = if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =
+                        &local_ty
+                    {
                         if matches!(expr.node, ExprKind::ArrayLit(_)) {
                             self.regs.insert(name.clone(), coerced);
                             coerced
                         } else {
-                            let block_length = self.fixed_array_block_length(*len);
-                            let base = self.reserve_reg_block(block_length as usize);
+                            let block_length = crate::runtime_layout::runtime_value_layout(ty)
+                                .slot_count()
+                                .unwrap_or(0);
+                            let base = self.reserve_reg_block(block_length);
                             self.regs.insert(name.clone(), base);
-                            for offset in 0..block_length {
-                                self.chunk.emit(rrr(
-                                    Opcode::Mov,
-                                    base + offset,
-                                    coerced + offset,
-                                    0,
-                                ));
-                            }
+                            self.emit_block_copy(base, coerced, block_length);
                             base
                         }
                     } else {
@@ -5764,12 +5725,17 @@ impl<'a> FnCompiler<'a> {
                     if let Some(local_ty) = local_ty.clone() {
                         self.local_types.insert(name.clone(), local_ty);
                     }
+                    self.binding_slots.insert(reg, slots);
                     self.register_drop_local(name, reg, local_ty);
                 } else {
                     let local_ty = ty.as_ref().map(|t| self.resolve_type(&t.node));
-                    let reg = if let Some(TypeKind::Array { len, .. }) = &local_ty {
-                        let block_length = self.fixed_array_block_length(*len);
-                        let base = self.reserve_reg_block(block_length as usize);
+                    let reg = if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =
+                        &local_ty
+                    {
+                        let block_length = crate::runtime_layout::runtime_value_layout(ty)
+                            .slot_count()
+                            .unwrap_or(0);
+                        let base = self.reserve_reg_block(block_length);
                         self.regs.insert(name.clone(), base);
                         base
                     } else {
@@ -5777,6 +5743,12 @@ impl<'a> FnCompiler<'a> {
                     };
                     if let Some(local_ty) = local_ty.clone() {
                         self.local_types.insert(name.clone(), local_ty);
+                    }
+                    if let Some(slots) = local_ty
+                        .as_ref()
+                        .and_then(|ty| crate::runtime_layout::runtime_value_layout(ty).slot_count())
+                    {
+                        self.binding_slots.insert(reg, slots);
                     }
                     self.register_uninitialized_drop_local(name, reg, local_ty);
                 }
@@ -5786,18 +5758,20 @@ impl<'a> FnCompiler<'a> {
                 self.mark_consumed_expr(value);
                 let src = self.compile_expr(value);
                 let local_ty = self.type_of_span((value.span.start, value.span.end));
-                let reg = if let Some(TypeKind::Array { len, .. }) = &local_ty {
+                let slots = self.value_slot_count(value);
+                let reg = if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =
+                    &local_ty
+                {
                     if matches!(value.node, ExprKind::ArrayLit(_)) {
                         self.regs.insert(name.clone(), src);
                         src
                     } else {
-                        let block_length = self.fixed_array_block_length(*len);
-                        let base = self.reserve_reg_block(block_length as usize);
+                        let block_length = crate::runtime_layout::runtime_value_layout(ty)
+                            .slot_count()
+                            .unwrap_or(0);
+                        let base = self.reserve_reg_block(block_length);
                         self.regs.insert(name.clone(), base);
-                        for offset in 0..block_length {
-                            self.chunk
-                                .emit(rrr(Opcode::Mov, base + offset, src + offset, 0));
-                        }
+                        self.emit_block_copy(base, src, block_length);
                         base
                     }
                 } else {
@@ -5810,6 +5784,7 @@ impl<'a> FnCompiler<'a> {
                 if let Some(local_ty) = local_ty.clone() {
                     self.local_types.insert(name.clone(), local_ty);
                 }
+                self.binding_slots.insert(reg, slots);
                 self.register_drop_local(name, reg, local_ty);
                 false
             }
@@ -5997,8 +5972,8 @@ impl<'a> FnCompiler<'a> {
                     ForLoop::Each { vars, iter } => match iter {
                         ForIter::Range { start, end } => {
                             let loop_var = vars.first().map(|s| s.as_str()).unwrap_or("_");
-                            let r_start = self.compile_expr(start);
-                            let r_end = self.compile_expr(end);
+                            let r_start = self.compile_value(start);
+                            let r_end = self.compile_value(end);
                             let r_i = self.bind(loop_var.to_string());
                             if r_start != r_i {
                                 self.chunk.emit(rrr(Opcode::Mov, r_i, r_start, 0));
@@ -6481,7 +6456,7 @@ impl<'a> FnCompiler<'a> {
                     self.chunk.emit(ri16(Opcode::MovI, zero, 0));
                     (result, zero)
                 } else {
-                    (self.compile_expr(left), self.compile_expr(right))
+                    (self.compile_value(left), self.compile_value(right))
                 };
                 let is_float = self.is_float_span((left.span.start, left.span.end));
                 let is_unsigned = self.is_unsigned_span((left.span.start, left.span.end));
@@ -6723,17 +6698,6 @@ impl<'a> FnCompiler<'a> {
         })
     }
 
-    fn slice_length_register(&self, object: &Expr, pointer: u8) -> u8 {
-        if let ExprKind::Ident(name) = &object.node {
-            self.regs
-                .get(&format!("__len_{name}"))
-                .copied()
-                .unwrap_or(pointer + 1)
-        } else {
-            pointer + 1
-        }
-    }
-
     fn emit_compound_arithmetic(
         &mut self,
         op: &CompoundAssignOp,
@@ -6786,7 +6750,7 @@ impl<'a> FnCompiler<'a> {
             .iter()
             .map(|arg| {
                 self.mark_consumed_expr(arg);
-                self.compile_expr(arg)
+                self.compile_value(arg)
             })
             .collect();
         let mut params = declaration.signature.params.clone();
@@ -6884,11 +6848,11 @@ impl<'a> FnCompiler<'a> {
                 if self.str_variadic_fns.contains(name)
                     && self.format_fixed_parameter_is_view(name, index)
                 {
-                    let reg = self.compile_expr(a);
+                    let reg = self.compile_value(a);
                     self.coerce_to_display_str(reg, a.span)
                 } else {
                     self.mark_consumed_expr(a);
-                    self.compile_expr(a)
+                    self.compile_value(a)
                 }
             })
             .collect();
@@ -6910,7 +6874,7 @@ impl<'a> FnCompiler<'a> {
                 .enumerate()
                 .map(|(index, a)| {
                     if self.str_variadic_fns.contains(name) {
-                        let reg = self.compile_expr(a);
+                        let reg = self.compile_value(a);
                         let spec = expanded
                             .as_ref()
                             .and_then(|expanded| expanded.specs.get(index))
@@ -6919,7 +6883,7 @@ impl<'a> FnCompiler<'a> {
                         self.coerce_with_spec(reg, spec, a.span)
                     } else {
                         self.mark_consumed_expr(a);
-                        self.compile_expr(a)
+                        self.compile_value(a)
                     }
                 })
                 .collect();
@@ -7358,20 +7322,26 @@ impl<'a> FnCompiler<'a> {
                             return src;
                         }
                         let dst = self.alloc_reg();
-                        if let Some(TypeKind::Array { len, .. }) =
-                            self.type_of_span((inner.span.start, inner.span.end))
-                        {
-                            let block_length = self.fixed_array_block_length(len);
-                            self.chunk.emit(mem_lea_block(src, dst, 0, block_length));
-                        } else {
-                            self.chunk.emit(mem_lea_block(src, dst, 0, 1));
-                        }
+                        let slots = self.value_slot_count(inner);
+                        let block_length = self.qzi_u8(slots, "reference value slot count");
+                        self.chunk.emit(mem_lea_block(src, dst, 0, block_length));
                         dst
                     }
                     UnaryOpKind::Deref => {
                         let ptr = self.compile_expr(inner);
-                        if matches!(self.type_of_expr(inner), Some(TypeKind::Ref { inner }) if matches!(self.resolve_type(&inner.node), TypeKind::Str))
+                        let pointer_ty = self.type_of_expr(inner);
+                        if matches!(
+                            pointer_ty,
+                            Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+                        ) {
+                            return self.load_reference_value(ptr, pointer_ty);
+                        }
+                        if let Some(TypeKind::RawPtr { inner }) = pointer_ty
+                            && let TypeKind::Named { name, .. } = self.resolve_type(&inner.node)
+                            && self.repr_c_structs.contains(&name)
                         {
+                            // A C aggregate value is represented by its inline
+                            // storage address, not by the contents of word zero.
                             return ptr;
                         }
                         let dst = self.alloc_reg();
@@ -7460,13 +7430,13 @@ impl<'a> FnCompiler<'a> {
                     self.chunk.emit(ri16(Opcode::MovI, zero, 0));
                     (result, zero)
                 } else if matches!(op, BinOpKind::Add) && is_str && right_is_str {
-                    let left_value = self.compile_expr(left);
+                    let left_value = self.compile_value(left);
                     let left_data = self.string_data_reg(left, left_value);
                     let right_value = self.compile_expr(right);
                     let right_data = self.string_data_reg(right, right_value);
                     (left_data, right_data)
                 } else {
-                    (self.compile_expr(left), self.compile_expr(right))
+                    (self.compile_value(left), self.compile_value(right))
                 };
                 let dst = self.alloc_reg();
                 let arith = if is_float { rrr_f } else { rrr };
@@ -7569,12 +7539,13 @@ impl<'a> FnCompiler<'a> {
                     }
                     self.drop_local_now(name);
                     let dst = self.reg_of(name);
-                    if let Some(TypeKind::Array { len, .. }) = self.local_types.get(name).cloned() {
-                        let block_length = self.fixed_array_block_length(len);
-                        for offset in 0..block_length {
-                            self.chunk
-                                .emit(rrr(Opcode::Mov, dst + offset, src + offset, 0));
-                        }
+                    if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =
+                        self.local_types.get(name).cloned()
+                    {
+                        let slots = crate::runtime_layout::runtime_value_layout(&ty)
+                            .slot_count()
+                            .unwrap_or(0);
+                        self.emit_block_copy(dst, src, slots);
                     } else if dst != src {
                         self.chunk.emit(rrr(Opcode::Mov, dst, src, 0));
                     }
@@ -7582,149 +7553,10 @@ impl<'a> FnCompiler<'a> {
                     self.transfer_expression_temporary(src);
                     return dst;
                 }
-                let mut place = target.as_ref();
-                while let ExprKind::Group(inner) = &place.node {
-                    place = inner;
-                }
-                match &place.node {
-                    ExprKind::Ident(_) | ExprKind::Group(_) => unreachable!(),
-                    ExprKind::Unary {
-                        op: UnaryOpKind::Deref,
-                        expr: ptr_expr,
-                    } => {
-                        let ptr = self.compile_expr(ptr_expr);
-                        let src = self.compile_expr(value);
-                        let (width, _) = self.raw_pointee_access(ptr_expr);
-                        self.chunk.emit(mem_store_w(ptr, src, 0, width));
-                        src
-                    }
-                    ExprKind::Field {
-                        object,
-                        name: field_name,
-                    } => {
-                        let obj = self.compile_aggregate_object(object);
-                        let src = self.compile_expr(value);
-                        if let Some(layout) = self.bit_field_layout(object, field_name) {
-                            self.emit_bit_field_store(obj, src, layout);
-                        } else {
-                            let byte_offset = self.field_offset(object, field_name);
-                            let (width, _, float32) = self.ffi_field_access(object, field_name);
-                            self.chunk.emit(field_store_typed(
-                                src,
-                                obj,
-                                byte_offset,
-                                width,
-                                float32,
-                            ));
-                        }
-                        src
-                    }
-                    ExprKind::Index { object, indices } => {
-                        let obj_ty = self.receiver_value_type(object);
-                        let index = indices.first().expect("index must have at least one index");
-
-                        if let Some(address) = self.borrowed_fixed_array_address(object, index) {
-                            let src = self.compile_expr(value);
-                            self.store_lvalue(&address, src);
-                            return src;
-                        }
-
-                        // Evaluate object and index first; the value register may otherwise
-                        // be overwritten before the store happens.
-                        let obj_reg = self.compile_expr(object);
-                        let idx_reg = self.compile_expr(index);
-
-                        if let Some(TypeKind::FlexibleArray { elem_ty }) = &obj_ty {
-                            let src = self.compile_expr(value);
-                            let (width, _, elem_size, float32) =
-                                self.c_memory_access(&elem_ty.node);
-                            let address = self.emit_indexed_c_address(obj_reg, idx_reg, elem_size);
-                            self.emit_c_store(address, src, width, float32);
-                            return src;
-                        }
-
-                        // Named type with Index trait → dispatch to Type.set if available.
-                        if matches!(&obj_ty, Some(TypeKind::Named { name, .. }) if name == "Array")
-                        {
-                            let type_kinds: Vec<TypeKind> =
-                                if let Some(TypeKind::Named { type_args, .. }) = &obj_ty {
-                                    type_args.iter().map(|t| t.node.clone()).collect()
-                                } else {
-                                    vec![]
-                                };
-                            let set_target = if type_kinds.is_empty() {
-                                "Array.set".to_string()
-                            } else {
-                                let mangled = crate::semantic::typecheck::mangle_monomorphized(
-                                    "Array.set",
-                                    &type_kinds,
-                                );
-                                if self.fn_index.contains_key(&mangled) {
-                                    mangled
-                                } else {
-                                    "Array.set".to_string()
-                                }
-                            };
-                            let src = self.compile_expr(value);
-                            let _dst = self.alloc_reg();
-                            let receiver = self.prepare_method_receiver(
-                                obj_reg,
-                                self.type_of_expr(object),
-                                &set_target,
-                            );
-                            self.emit_call_by_name(&set_target, &[receiver, idx_reg, src], _dst);
-                            src
-                        } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
-                            // Slice: store at stack address ptr - (idx * 8)
-                            let length = self.slice_length_register(object, obj_reg);
-                            self.emit_bounds_guard(idx_reg, length, index.span);
-                            let src = self.compile_expr(value);
-                            let eight = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, eight, 8));
-                            let offset = self.alloc_reg();
-                            self.chunk.emit(rrr(Opcode::Mul, offset, idx_reg, eight));
-                            let addr = self.alloc_reg();
-                            self.chunk.emit(rrr(Opcode::Sub, addr, obj_reg, offset));
-                            self.chunk.emit(mem_store(addr, src, 0));
-                            src
-                        } else {
-                            // Fixed-size array: store at base register or computed address.
-                            if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                                && *n <= u8::MAX as u64
-                            {
-                                let src = self.compile_expr(value);
-                                let elem_reg = obj_reg + *n as u8;
-                                self.chunk.emit(rrr(Opcode::Mov, elem_reg, src, 0));
-                                return src;
-                            }
-                            let array_length = match &obj_ty {
-                                Some(TypeKind::Array { len, .. }) => Some(*len),
-                                _ => None,
-                            };
-                            if let Some(length) = array_length {
-                                let length_reg = self.emit_length_constant(length);
-                                self.emit_bounds_guard(idx_reg, length_reg, index.span);
-                            }
-                            let src = self.compile_expr(value);
-                            let ptr = self.alloc_reg();
-                            if let Some(length) = array_length {
-                                let block_length = self.fixed_array_block_length(length);
-                                self.chunk
-                                    .emit(mem_lea_block(obj_reg, ptr, 0, block_length));
-                            } else {
-                                self.chunk.emit(mem_lea_block(obj_reg, ptr, 0, 1));
-                            }
-                            let eight = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, eight, 8));
-                            let offset = self.alloc_reg();
-                            self.chunk.emit(rrr(Opcode::Mul, offset, idx_reg, eight));
-                            self.chunk.emit(rrr(Opcode::Sub, ptr, ptr, offset));
-                            self.chunk.emit(mem_store(ptr, src, 0));
-                            src
-                        }
-                    }
-                    _ => self.compile_expr(value),
-                }
+                let address = self.compute_lvalue_addr(target);
+                let source = self.compile_expr(value);
+                self.store_lvalue(&address, source);
+                source
             }
             ExprKind::StructInit { name, fields } => {
                 // Get field order from struct_defs
@@ -7756,16 +7588,17 @@ impl<'a> FnCompiler<'a> {
                             .map(|(_, value)| (field_name.clone(), value))
                     })
                     .map(|(name, value)| {
-                        let reg = self.compile_expr(value);
-                        (name, value, reg)
+                        self.mark_consumed_expr(value);
+                        let reg = self.compile_value(value);
+                        (name, reg)
                     })
                     .collect::<Vec<_>>();
                 let dst = self.alloc_reg();
                 self.chunk.emit(ri16(Opcode::New, dst, struct_size));
 
                 // Compile and store each field in declaration order using computed offsets
-                for (field_name, fval, val) in initialized {
-                    self.mark_consumed_value(fval, val);
+                for (field_name, val) in initialized {
+                    self.transfer_expression_temporary(val);
                     {
                         if let Some(layout) = self.bit_field_layout_by_name(name, &field_name) {
                             self.emit_bit_field_store(dst, val, layout);
@@ -7784,53 +7617,22 @@ impl<'a> FnCompiler<'a> {
             ExprKind::CompoundAssign { target, op, value } => {
                 let is_float = self.is_float_span((target.span.start, target.span.end));
                 let is_unsigned = self.is_unsigned_span((target.span.start, target.span.end));
-                if let ExprKind::Ident(name) = &target.node {
-                    if self.foreign_global_for_span(target.span).is_some() {
-                        let addr = self.compute_lvalue_addr(target);
-                        let old = self.load_lvalue(&addr);
-                        let src = self.compile_expr(value);
-                        let new_val = self.alloc_reg();
-                        self.emit_compound_arithmetic(
-                            op,
-                            is_float,
-                            is_unsigned,
-                            new_val,
-                            old,
-                            src,
-                            expr.span,
-                        );
-                        self.store_lvalue(&addr, new_val);
-                        return new_val;
-                    }
-                    let src = self.compile_expr(value);
-                    let dst = self.reg_of(name);
-                    self.emit_compound_arithmetic(
-                        op,
-                        is_float,
-                        is_unsigned,
-                        dst,
-                        dst,
-                        src,
-                        expr.span,
-                    );
-                    dst
-                } else {
-                    let addr = self.compute_lvalue_addr(target);
-                    let old = self.load_lvalue(&addr);
-                    let src = self.compile_expr(value);
-                    let new_val = self.alloc_reg();
-                    self.emit_compound_arithmetic(
-                        op,
-                        is_float,
-                        is_unsigned,
-                        new_val,
-                        old,
-                        src,
-                        expr.span,
-                    );
-                    self.store_lvalue(&addr, new_val);
-                    new_val
-                }
+                let address = self.compute_lvalue_addr(target);
+                let old = self.load_lvalue(&address);
+                let old = self.snapshot_slots(old, 1);
+                let rhs = self.compile_expr(value);
+                let result = self.alloc_reg();
+                self.emit_compound_arithmetic(
+                    op,
+                    is_float,
+                    is_unsigned,
+                    result,
+                    old,
+                    rhs,
+                    expr.span,
+                );
+                self.store_lvalue(&address, result);
+                result
             }
 
             ExprKind::IncDec {
@@ -7927,7 +7729,7 @@ impl<'a> FnCompiler<'a> {
                         let mut call_regs: Vec<u8> = Vec::new();
                         // Compile msg arg (first user-provided fixed arg).
                         if !args.is_empty() {
-                            call_regs.push(self.compile_expr(&args[0]));
+                            call_regs.push(self.compile_value(&args[0]));
                         } else {
                             let r = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovI, r, 0));
@@ -7963,7 +7765,7 @@ impl<'a> FnCompiler<'a> {
                                 .iter()
                                 .map(|a| {
                                     self.mark_consumed_expr(a);
-                                    self.compile_expr(a)
+                                    self.compile_value(a)
                                 })
                                 .collect();
                             let first_slot = self.next_reg_slot();
@@ -7999,7 +7801,7 @@ impl<'a> FnCompiler<'a> {
                             .iter()
                             .map(|a| {
                                 self.mark_consumed_expr(a);
-                                self.compile_expr(a)
+                                self.compile_value(a)
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&mono_name);
@@ -8021,7 +7823,7 @@ impl<'a> FnCompiler<'a> {
 
                             let mut coerced_var: Vec<u8> = Vec::new();
                             for (i, arg) in expanded.args.iter().enumerate() {
-                                let reg = self.compile_expr(arg);
+                                let reg = self.compile_value(arg);
                                 let spec = expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
                                 coerced_var.push(self.coerce_with_spec(reg, spec, arg.span));
                             }
@@ -8076,7 +7878,7 @@ impl<'a> FnCompiler<'a> {
                             .iter()
                             .map(|a| {
                                 self.mark_consumed_expr(a);
-                                self.compile_expr(a)
+                                self.compile_value(a)
                             })
                             .collect();
                         let ptr = self.alloc_reg();
@@ -8102,12 +7904,12 @@ impl<'a> FnCompiler<'a> {
                     } else if self.regs.contains_key(call_name.as_str()) {
                         // Local variable — fn pointer or closure env pointer.
                         let callee_type = self.type_of_expr(callee);
-                        let fn_reg = self.compile_expr(callee);
+                        let fn_reg = self.compile_value(callee);
                         let arg_regs: Vec<u8> = args
                             .iter()
                             .map(|a| {
                                 self.mark_consumed_expr(a);
-                                self.compile_expr(a)
+                                self.compile_value(a)
                             })
                             .collect();
                         if let Some(signature) = callee_type
@@ -8124,7 +7926,7 @@ impl<'a> FnCompiler<'a> {
                             .iter()
                             .map(|a| {
                                 self.mark_consumed_expr(a);
-                                self.compile_expr(a)
+                                self.compile_value(a)
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&call_name);
@@ -8134,12 +7936,12 @@ impl<'a> FnCompiler<'a> {
                 } else {
                     // Indirect call: callee is an expression (variable, closure, etc.)
                     let callee_type = self.type_of_expr(callee);
-                    let fn_reg = self.compile_expr(callee);
+                    let fn_reg = self.compile_value(callee);
                     let arg_regs: Vec<u8> = args
                         .iter()
                         .map(|a| {
                             self.mark_consumed_expr(a);
-                            self.compile_expr(a)
+                            self.compile_value(a)
                         })
                         .collect();
                     if let Some(signature) = callee_type
@@ -8227,7 +8029,7 @@ impl<'a> FnCompiler<'a> {
 
                             let mut coerced = vec![template_reg];
                             for (i, arg) in expanded.args.iter().enumerate() {
-                                let reg = self.compile_expr(arg);
+                                let reg = self.compile_value(arg);
                                 let spec = expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
                                 let cr = if spec.is_empty() {
                                     self.coerce_to_display_str(reg, arg.span)
@@ -8291,7 +8093,7 @@ impl<'a> FnCompiler<'a> {
                             .iter()
                             .map(|a| {
                                 self.mark_consumed_expr(a);
-                                self.compile_expr(a)
+                                self.compile_value(a)
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&call_target);
@@ -8313,7 +8115,7 @@ impl<'a> FnCompiler<'a> {
                             .iter()
                             .map(|a| {
                                 self.mark_consumed_expr(a);
-                                self.compile_expr(a)
+                                self.compile_value(a)
                             })
                             .collect();
                         let ptr = self.alloc_reg();
@@ -8375,7 +8177,7 @@ impl<'a> FnCompiler<'a> {
                                 .iter()
                                 .map(|a| {
                                     self.mark_consumed_expr(a);
-                                    self.compile_expr(a)
+                                    self.compile_value(a)
                                 })
                                 .collect();
                             let result_dst = self.alloc_result_block(&call_target);
@@ -8385,6 +8187,12 @@ impl<'a> FnCompiler<'a> {
                     }
                 }
 
+                let consuming_receiver_prepared = self
+                    .resolved_fn_for_span(expr.span)
+                    .is_some_and(|target| self.has_consuming_receiver(&target));
+                if consuming_receiver_prepared {
+                    self.mark_consumed_expr(object);
+                }
                 let (obj, receiver_place) = self.compile_receiver_object(object);
                 let key = (object.span.start, object.span.end);
 
@@ -8447,12 +8255,12 @@ impl<'a> FnCompiler<'a> {
                             .iter()
                             .map(|arg| {
                                 self.mark_consumed_expr(arg);
-                                self.compile_expr(arg)
+                                self.compile_value(arg)
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&call_target);
                         if consuming_receiver {
-                            self.mark_consumed_value(object, obj);
+                            self.transfer_expression_temporary(receiver);
                         }
                         let mut all_args = vec![receiver];
                         all_args.extend_from_slice(&arg_regs);
@@ -8483,6 +8291,12 @@ impl<'a> FnCompiler<'a> {
                             if let Some(expanded) =
                                 crate::parser::format::expand_format_call_args(args)
                             {
+                                let receiver = self.prepare_method_receiver_at(
+                                    obj,
+                                    self.type_of_expr(object),
+                                    &mangled_check,
+                                    receiver_place,
+                                );
                                 let idx = self
                                     .chunk
                                     .add_constant(ConstPoolEntry::Str(expanded.clean_template));
@@ -8492,7 +8306,7 @@ impl<'a> FnCompiler<'a> {
                                 let fmt_reg = if !expanded.args.is_empty() {
                                     let mut coerced = vec![template_reg];
                                     for (i, arg) in expanded.args.iter().enumerate() {
-                                        let r = self.compile_expr(arg);
+                                        let r = self.compile_value(arg);
                                         let spec =
                                             expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
                                         let cr = if spec.is_empty() {
@@ -8532,12 +8346,6 @@ impl<'a> FnCompiler<'a> {
                                     template_reg
                                 };
                                 let result_dst = self.alloc_result_block(&mangled_check);
-                                let receiver = self.prepare_method_receiver_at(
-                                    obj,
-                                    self.type_of_expr(object),
-                                    &mangled_check,
-                                    receiver_place,
-                                );
                                 self.emit_call_by_name(
                                     &mangled_check,
                                     &[receiver, fmt_reg],
@@ -8568,6 +8376,11 @@ impl<'a> FnCompiler<'a> {
                         None
                     };
                     if let Some(call_target) = lookup {
+                        if self.has_consuming_receiver(&call_target) && !consuming_receiver_prepared
+                        {
+                            self.codegen_error.get_or_insert_with(|| "consuming method requires a resolved receiver target before argument evaluation".to_string());
+                            return self.alloc_reg();
+                        }
                         let receiver = self.prepare_method_receiver_at(
                             obj,
                             self.type_of_expr(object),
@@ -8578,12 +8391,12 @@ impl<'a> FnCompiler<'a> {
                             .iter()
                             .map(|a| {
                                 self.mark_consumed_expr(a);
-                                self.compile_expr(a)
+                                self.compile_value(a)
                             })
                             .collect();
                         let result_dst = self.alloc_result_block(&call_target);
                         if self.has_consuming_receiver(&call_target) {
-                            self.mark_consumed_value(object, obj);
+                            self.transfer_expression_temporary(receiver);
                         }
                         let mut all_args = vec![receiver];
                         all_args.extend_from_slice(&arg_regs);
@@ -8621,7 +8434,7 @@ impl<'a> FnCompiler<'a> {
                     let mut all_args = vec![receiver];
                     for a in args {
                         self.mark_consumed_expr(a);
-                        all_args.push(self.compile_expr(a));
+                        all_args.push(self.compile_value(a));
                     }
                     for &r in &all_args {
                         self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
@@ -8635,6 +8448,12 @@ impl<'a> FnCompiler<'a> {
                 if let Some(pm) = resolve_primitive_method(method, args, resolved_receiver.as_ref())
                 {
                     let obj = self.load_reference_value(obj, self.type_of_expr(object));
+                    let slots = if matches!(resolved_receiver, Some(TypeKind::Slice { .. })) {
+                        2
+                    } else {
+                        1
+                    };
+                    let obj = self.snapshot_slots(obj, slots);
                     match pm {
                         PrimitiveMethod::Len => {
                             if matches!(resolved_receiver.as_ref(), Some(TypeKind::Bytes)) {
@@ -8642,16 +8461,9 @@ impl<'a> FnCompiler<'a> {
                                 self.chunk.emit(mem_load(obj, dst, 0));
                                 return dst;
                             }
-                            // Slice: .len() returns the hidden __len register.
+                            // Slice pointer and length travel as one captured descriptor.
                             if matches!(resolved_receiver.as_ref(), Some(TypeKind::Slice { .. })) {
-                                let len_reg = if let ExprKind::Ident(vname) = &object.node {
-                                    self.regs
-                                        .get(&format!("__len_{}", vname))
-                                        .copied()
-                                        .unwrap_or(obj + 1)
-                                } else {
-                                    obj + 1
-                                };
+                                let len_reg = obj + 1;
                                 let dst = self.alloc_reg();
                                 self.chunk.emit(rrr(Opcode::Mov, dst, len_reg, 0));
                                 return dst;
@@ -8761,7 +8573,7 @@ impl<'a> FnCompiler<'a> {
                     .iter()
                     .map(|a| {
                         self.mark_consumed_expr(a);
-                        self.compile_expr(a)
+                        self.compile_value(a)
                     })
                     .collect();
                 for &r in &arg_regs {
@@ -8931,7 +8743,7 @@ impl<'a> FnCompiler<'a> {
                         if self.fn_index.contains_key(&index_target) {
                             let obj = self.compile_method_receiver(object, &index_target);
                             let idx_regs: Vec<u8> =
-                                indices.iter().map(|i| self.compile_expr(i)).collect();
+                                indices.iter().map(|i| self.compile_value(i)).collect();
                             let dst = self.alloc_result_block(&index_target);
                             let mut all_args = vec![obj];
                             all_args.extend_from_slice(&idx_regs);
@@ -8945,8 +8757,8 @@ impl<'a> FnCompiler<'a> {
                     .expect("index expr must have at least one index");
                 let obj_key = (object.span.start, object.span.end);
                 if matches!(self.type_of_span(obj_key), Some(TypeKind::Bytes)) {
-                    let bytes = self.compile_expr(object);
-                    let idx = self.compile_expr(index);
+                    let bytes = self.compile_value(object);
+                    let idx = self.compile_value(index);
                     let length = self.alloc_reg();
                     self.chunk.emit(mem_load(bytes, length, 0));
                     self.emit_bounds_guard(idx, length, index.span);
@@ -8962,17 +8774,17 @@ impl<'a> FnCompiler<'a> {
                     return dst;
                 }
                 if let Some(TypeKind::FlexibleArray { elem_ty }) = self.type_of_span(obj_key) {
-                    let base = self.compile_expr(object);
-                    let idx = self.compile_expr(index);
+                    let base = self.compile_value(object);
+                    let idx = self.compile_value(index);
                     let (width, signed, elem_size, float32) = self.c_memory_access(&elem_ty.node);
                     let address = self.emit_indexed_c_address(base, idx, elem_size);
                     return self.emit_c_load(address, width, signed, float32);
                 }
                 // Slice (variadic param): ptr register holds caller's stack address.
                 if matches!(self.type_of_span(obj_key), Some(TypeKind::Slice { .. })) {
-                    let ptr = self.compile_expr(object);
-                    let idx = self.compile_expr(index);
-                    let length = self.slice_length_register(object, ptr);
+                    let ptr = self.compile_value(object);
+                    let idx = self.compile_value(index);
+                    let length = ptr + 1;
                     self.emit_bounds_guard(idx, length, index.span);
                     let eight = self.alloc_reg();
                     self.chunk.emit(ri16(Opcode::MovI, eight, 8));
@@ -8996,7 +8808,7 @@ impl<'a> FnCompiler<'a> {
                     return base + *n as u8;
                 }
                 // Dynamic index: Lea + scale + Sub + Load
-                let idx = self.compile_expr(index);
+                let idx = self.compile_value(index);
                 if let Some(length) = array_length {
                     let length_reg = self.emit_length_constant(length);
                     self.emit_bounds_guard(idx, length_reg, index.span);
@@ -9019,16 +8831,16 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::Match { scrutinee, arms } => {
-                let evaluated = self.compile_expr(scrutinee);
-                // Match the value observed once, even if a guard reassigns the
-                // original binding. Coverage facts refer to this snapshot.
-                let scr = self.alloc_reg();
-                if self.match_scrutinee_needs_load(scrutinee) {
-                    self.chunk.emit(mem_load(evaluated, scr, 0));
+                let evaluated = self.compile_value(scrutinee);
+                let scr = if self.match_scrutinee_needs_load(scrutinee) {
+                    let loaded = self.alloc_reg();
+                    self.chunk.emit(mem_load(evaluated, loaded, 0));
+                    loaded
                 } else {
-                    self.chunk.emit(rrr(Opcode::Mov, scr, evaluated, 0));
-                }
-                let dst = self.alloc_reg();
+                    evaluated
+                };
+                let result_slots = self.value_slot_count(expr);
+                let dst = self.reserve_reg_block(result_slots);
                 let mut end_jumps: Vec<usize> = Vec::new();
                 let mut guard_fail_jumps: Vec<usize> = Vec::new();
                 let outer_regs = self.regs.clone();
@@ -9058,7 +8870,7 @@ impl<'a> FnCompiler<'a> {
                     // Arm body.
                     let val = self.compile_expr(&arm.expr);
                     if val != dst {
-                        self.chunk.emit(rrr(Opcode::Mov, dst, val, 0));
+                        self.emit_block_copy(dst, val, result_slots);
                     }
 
                     end_jumps.push(self.chunk.emit(ri16(Opcode::Jmp, 0, 0)));
@@ -12581,6 +12393,38 @@ unsafe fn first(packet: *Packet) u8 { ret (*packet).data[0]; }
     }
 
     #[test]
+    fn flexible_float_places_preserve_c_conversion_during_store_and_update() {
+        let chunks = compile(
+            r#"
+@repr(C) struct Packet { length: u32, data: [f32; ..] }
+unsafe fn update(packet: *Packet) void {
+    (*packet).data[0] = 1.5;
+    (*packet).data[0] += 2.5;
+}
+"#,
+        );
+        let update = chunks.iter().find(|chunk| chunk.name == "update").unwrap();
+        assert!(
+            update.code.iter().all(|instruction| {
+                instruction.opcode() != Some(Opcode::Load)
+                    || instruction.mem_width() != MemWidth::Qword
+            }),
+            "raw C aggregate dereference must retain its inline storage address"
+        );
+        for opcode in [Opcode::Store, Opcode::Load] {
+            assert!(
+                update.code.iter().any(|instruction| {
+                    instruction.opcode() == Some(opcode)
+                        && instruction.mem_width() == MemWidth::Dword
+                        && instruction.flags & FLOAT_FLAG != 0
+                }),
+                "C f32 place must convert at the memory boundary: {:?}",
+                update.code
+            );
+        }
+    }
+
+    #[test]
     fn c_function_pointers_use_export_adapters_and_c_indirect_calls() {
         let chunks = compile(
             r#"
@@ -13697,12 +13541,29 @@ fn update(index: i64) i64 {
             "#,
         );
         let update = chunks.iter().find(|chunk| chunk.name == "update").unwrap();
-        assert!(update.code.iter().any(|instruction| {
-            instruction.opcode == Opcode::Add as u8 && instruction.flags & FLOAT_FLAG != 0 && {
-                let (_, left, right) = instruction.rrr();
-                (left == 0 && right != 0) || (right == 0 && left != 0)
+        // Follow capture copies instead of requiring the parameter's original
+        // register to be used directly by the final floating-point addition.
+        let mut origins: HashMap<u8, u8> = HashMap::new();
+        let mut distinct_parameter_read = false;
+        for instruction in &update.code {
+            let (dst, left, right) = instruction.rrr();
+            let origin = |reg| origins.get(&reg).copied().unwrap_or(reg);
+            if instruction.opcode == Opcode::Add as u8 && instruction.flags & FLOAT_FLAG != 0 {
+                distinct_parameter_read |= (origin(left) == 0) != (origin(right) == 0);
             }
-        }));
+            if instruction.opcode == Opcode::Mov as u8 {
+                origins.insert(dst, origin(left));
+            } else if matches!(
+                instruction.opcode(),
+                Some(Opcode::Add | Opcode::MovI | Opcode::MovConst)
+            ) {
+                origins.insert(dst, dst);
+            }
+        }
+        assert!(
+            distinct_parameter_read,
+            "parameter and updated binding must stay distinct"
+        );
     }
 
     #[test]

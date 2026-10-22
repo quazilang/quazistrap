@@ -1,5 +1,7 @@
 # Compiler and runtime internals
 
+- [Stable operand values and computed places](operand-snapshots.md)
+
 - [Source definite initialization](source-initialization.md)
 
 Audience: language and tooling developers.

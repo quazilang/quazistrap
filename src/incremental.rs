@@ -12,8 +12,8 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Revalidate path-dependent initialization and rebuild match control lowering.
-const QZC_VERSION: u8 = 22;
+// Freeze eager operand values and computed places before sibling effects.
+const QZC_VERSION: u8 = 23;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {
@@ -639,7 +639,7 @@ mod tests {
         );
         let current = fs::read(&cache).unwrap();
         assert_eq!(&current[..4], QZC_MAGIC);
-        for version in [4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] {
+        for version in [4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22] {
             let mut legacy = current.clone();
             legacy[4] = version;
             fs::write(&cache, legacy).unwrap();
