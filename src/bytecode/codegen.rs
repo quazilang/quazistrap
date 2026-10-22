@@ -2055,6 +2055,8 @@ impl<'a> Codegen<'a> {
             &self.named_call_slots,
             &self.source_files,
             &self.report.annotated_exprs,
+            &self.report.terminal_statements,
+            &self.report.match_pattern_tags,
             Rc::clone(&self.resolution_errors),
             self.callable_bound_names(name),
             self.report
@@ -2528,6 +2530,8 @@ struct FnCompiler<'a> {
     source_files: &'a [SourceFile],
     /// Expression annotations from semantic analysis (resolved function names, types, etc.)
     annotated_exprs: &'a [crate::semantic::ExprAnnotation],
+    terminal_statements: &'a std::collections::BTreeSet<(usize, usize)>,
+    match_pattern_tags: &'a HashMap<(usize, usize), usize>,
     loop_stack: Vec<LoopFrame>,
     expression_depth: usize,
     pending_consumption: HashSet<(usize, usize)>,
@@ -2705,6 +2709,8 @@ impl<'a> FnCompiler<'a> {
         named_call_slots: &'a NamedCallSlots,
         source_files: &'a [SourceFile],
         annotated_exprs: &'a [crate::semantic::ExprAnnotation],
+        terminal_statements: &'a std::collections::BTreeSet<(usize, usize)>,
+        match_pattern_tags: &'a HashMap<(usize, usize), usize>,
         resolution_errors: Rc<RefCell<Vec<String>>>,
         bound_names: HashSet<String>,
         format_result_type: Option<TypeKind>,
@@ -2754,6 +2760,8 @@ impl<'a> FnCompiler<'a> {
             named_call_slots,
             source_files,
             annotated_exprs,
+            terminal_statements,
+            match_pattern_tags,
             loop_stack: Vec::new(),
             expression_depth: 0,
             pending_consumption: HashSet::new(),
@@ -3281,28 +3289,25 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
-    fn enum_ctor_tag(&self, name: &str) -> Option<usize> {
-        for variants in self.enum_defs.values() {
-            if let Some(&tag) = variants.get(name) {
-                return Some(tag);
-            }
-        }
-        None
-    }
-
-    fn variant_tag(&self, enum_name: Option<&str>, variant: &str) -> usize {
-        if let Some(ename) = enum_name
-            && let Some(variants) = self.enum_defs.get(ename)
-            && let Some(&tag) = variants.get(variant)
+    fn enum_ctor_tag(&mut self, name: &str, result_ty: Option<TypeKind>) -> Option<usize> {
+        if let Some(TypeKind::Named { name: target, .. }) = result_ty
+            && let Some(variants) = self.enum_defs.get(&target)
         {
-            return tag;
+            return variants.get(name).copied();
         }
-        for variants in self.enum_defs.values() {
-            if let Some(&tag) = variants.get(variant) {
-                return tag;
-            }
+        let tags: std::collections::BTreeSet<_> = self
+            .enum_defs
+            .values()
+            .filter_map(|variants| variants.get(name).copied())
+            .collect();
+        if tags.len() > 1 {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("ambiguous enum constructor `{name}`; qualify the enum namespace")
+            });
+            None
+        } else {
+            tags.first().copied()
         }
-        0
     }
 
     fn field_offset_by_name(&mut self, struct_name: &str, field_name: &str) -> u16 {
@@ -4420,16 +4425,14 @@ impl<'a> FnCompiler<'a> {
         self.consuming_receiver_methods.contains(declared_target)
     }
 
-    fn match_scrutinee_is_borrowed_enum(&self, scrutinee: &Expr) -> bool {
-        let Some(TypeKind::Ref { inner } | TypeKind::MutRef { inner }) =
-            self.type_of_expr(scrutinee)
-        else {
-            return false;
-        };
-        let TypeKind::Named { name, .. } = self.resolve_type(&inner.node) else {
-            return false;
-        };
-        self.enum_defs.contains_key(&name)
+    fn match_scrutinee_needs_load(&self, scrutinee: &Expr) -> bool {
+        match self.type_of_expr(scrutinee) {
+            Some(TypeKind::Ref { inner }) => {
+                !matches!(self.resolve_type(&inner.node), TypeKind::Str)
+            }
+            Some(TypeKind::MutRef { .. }) => true,
+            _ => false,
+        }
     }
 
     /// Recursively compile a pattern match against `value_reg`.
@@ -4464,14 +4467,22 @@ impl<'a> FnCompiler<'a> {
                         let tag_reg = self.alloc_reg();
                         let idx = self.chunk.add_constant(ConstPoolEntry::Float(*f));
                         self.chunk.emit(ri16(Opcode::MovConst, tag_reg, idx));
-                        self.chunk.emit(rrr(Opcode::Cmp, 0, value_reg, tag_reg));
-                        skip_patches.push(self.chunk.emit(ri16(Opcode::Jne, 0, 0)));
+                        self.chunk.emit(rrr_f(Opcode::Cmp, 0, value_reg, tag_reg));
+                        let mut mismatch = ri16(Opcode::Jne, 0, 0);
+                        mismatch.flags |= FLOAT_FLAG;
+                        skip_patches.push(self.chunk.emit(mismatch));
                     }
                     LiteralValue::Bool(b) => {
                         let tag_reg = self.alloc_reg();
-                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, *b as u16));
+                        // Boolean literal patterns test truth, like conditions:
+                        // compatible integer operands need not be canonical 0/1.
+                        self.chunk.emit(ri16(Opcode::MovI, tag_reg, 0));
                         self.chunk.emit(rrr(Opcode::Cmp, 0, value_reg, tag_reg));
-                        skip_patches.push(self.chunk.emit(ri16(Opcode::Jne, 0, 0)));
+                        skip_patches.push(self.chunk.emit(ri16(
+                            if *b { Opcode::Je } else { Opcode::Jne },
+                            0,
+                            0,
+                        )));
                     }
                     LiteralValue::Str(s) => {
                         // Load the literal constant.
@@ -4523,11 +4534,19 @@ impl<'a> FnCompiler<'a> {
                 }
             }
             PatternKind::Variant {
-                enum_name,
                 variant,
                 sub_patterns,
+                ..
             } => {
-                let tag = self.variant_tag(enum_name.as_deref(), variant);
+                let Some(&tag) = self
+                    .match_pattern_tags
+                    .get(&(pattern.span.start, pattern.span.end))
+                else {
+                    self.codegen_error.get_or_insert_with(|| {
+                        format!("enum pattern `{variant}` has no checked discriminant")
+                    });
+                    return;
+                };
                 let disc = self.alloc_reg();
                 self.chunk
                     .emit(rrr(Opcode::FieldLoad, disc, value_reg, ENUM_DISCRIM_OFFSET));
@@ -5676,6 +5695,14 @@ impl<'a> FnCompiler<'a> {
 
     /// Reports a known terminal transfer (return, break, or continue).
     fn compile_stmt(&mut self, stmt: &Stmt) -> bool {
+        let terminal = self.compile_stmt_inner(stmt);
+        terminal
+            || self
+                .terminal_statements
+                .contains(&(stmt.span.start, stmt.span.end))
+    }
+
+    fn compile_stmt_inner(&mut self, stmt: &Stmt) -> bool {
         match &stmt.node {
             StmtKind::Var {
                 name, ty, value, ..
@@ -5970,12 +5997,12 @@ impl<'a> FnCompiler<'a> {
                     ForLoop::Each { vars, iter } => match iter {
                         ForIter::Range { start, end } => {
                             let loop_var = vars.first().map(|s| s.as_str()).unwrap_or("_");
-                            let r_i = self.bind(loop_var.to_string());
                             let r_start = self.compile_expr(start);
+                            let r_end = self.compile_expr(end);
+                            let r_i = self.bind(loop_var.to_string());
                             if r_start != r_i {
                                 self.chunk.emit(rrr(Opcode::Mov, r_i, r_start, 0));
                             }
-                            let r_end = self.compile_expr(end);
                             let loop_top = self.chunk.len() as u16;
                             self.chunk.emit(rrr(Opcode::Cmp, 0, r_i, r_end));
                             let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
@@ -7244,7 +7271,7 @@ impl<'a> FnCompiler<'a> {
                 // Zero-arg enum variant used as a value (e.g. `None`).
                 // Only if not bound as a local variable.
                 if !self.regs.contains_key(resolved_name.as_str()) {
-                    if let Some(tag) = self.enum_ctor_tag(&resolved_name) {
+                    if let Some(tag) = self.enum_ctor_tag(&resolved_name, self.type_of_expr(expr)) {
                         let dst = self.alloc_reg();
                         let ptr = self.alloc_reg();
                         self.chunk
@@ -7555,14 +7582,18 @@ impl<'a> FnCompiler<'a> {
                     self.transfer_expression_temporary(src);
                     return dst;
                 }
-                match &target.node {
+                let mut place = target.as_ref();
+                while let ExprKind::Group(inner) = &place.node {
+                    place = inner;
+                }
+                match &place.node {
                     ExprKind::Ident(_) | ExprKind::Group(_) => unreachable!(),
                     ExprKind::Unary {
                         op: UnaryOpKind::Deref,
                         expr: ptr_expr,
                     } => {
-                        let src = self.compile_expr(value);
                         let ptr = self.compile_expr(ptr_expr);
+                        let src = self.compile_expr(value);
                         let (width, _) = self.raw_pointee_access(ptr_expr);
                         self.chunk.emit(mem_store_w(ptr, src, 0, width));
                         src
@@ -7571,8 +7602,8 @@ impl<'a> FnCompiler<'a> {
                         object,
                         name: field_name,
                     } => {
-                        let src = self.compile_expr(value);
                         let obj = self.compile_aggregate_object(object);
+                        let src = self.compile_expr(value);
                         if let Some(layout) = self.bit_field_layout(object, field_name) {
                             self.emit_bit_field_store(obj, src, layout);
                         } else {
@@ -8037,7 +8068,9 @@ impl<'a> FnCompiler<'a> {
                     }
                     if self.variadic_fn_info.contains_key(call_name.as_str()) {
                         return self.compile_variadic_call(&call_name, args);
-                    } else if let Some(tag) = self.enum_ctor_tag(&call_name) {
+                    } else if let Some(tag) =
+                        self.enum_ctor_tag(&call_name, self.type_of_expr(expr))
+                    {
                         // Enum variant constructor: allocate heap struct, store discriminant + payloads.
                         let payload_regs: Vec<u8> = args
                             .iter()
@@ -8986,19 +9019,23 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::Match { scrutinee, arms } => {
-                let mut scr = self.compile_expr(scrutinee);
-                if self.match_scrutinee_is_borrowed_enum(scrutinee) {
-                    let handle = self.alloc_reg();
-                    self.chunk.emit(mem_load(scr, handle, 0));
-                    scr = handle;
+                let evaluated = self.compile_expr(scrutinee);
+                // Match the value observed once, even if a guard reassigns the
+                // original binding. Coverage facts refer to this snapshot.
+                let scr = self.alloc_reg();
+                if self.match_scrutinee_needs_load(scrutinee) {
+                    self.chunk.emit(mem_load(evaluated, scr, 0));
+                } else {
+                    self.chunk.emit(rrr(Opcode::Mov, scr, evaluated, 0));
                 }
                 let dst = self.alloc_reg();
                 let mut end_jumps: Vec<usize> = Vec::new();
                 let mut guard_fail_jumps: Vec<usize> = Vec::new();
-                #[allow(unused_assignments)]
-                let mut _last_arm_is_full_default = false;
-
+                let outer_regs = self.regs.clone();
+                let outer_types = self.local_types.clone();
                 for arm in arms {
+                    self.regs = outer_regs.clone();
+                    self.local_types = outer_types.clone();
                     // Patch guard-fail jumps from the previous arm to this arm's start.
                     for j in &guard_fail_jumps {
                         self.chunk.patch_jump(*j, self.chunk.len() as u16);
@@ -9012,7 +9049,9 @@ impl<'a> FnCompiler<'a> {
                     // Optional guard: failed guard → try next arm.
                     if let Some(guard) = &arm.guard {
                         let guard_val = self.compile_expr(guard);
-                        self.chunk.emit(rrr(Opcode::Cmp, 0, guard_val, 0));
+                        let zero = self.alloc_reg();
+                        self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+                        self.chunk.emit(rrr(Opcode::Cmp, 0, guard_val, zero));
                         guard_fail_jumps.push(self.chunk.emit(ri16(Opcode::Je, 0, 0)));
                     }
 
@@ -9022,12 +9061,6 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.emit(rrr(Opcode::Mov, dst, val, 0));
                     }
 
-                    if arm.guard.is_none() {
-                        _last_arm_is_full_default = matches!(
-                            arm.pattern.node,
-                            PatternKind::Wildcard | PatternKind::Bind(_) | PatternKind::Literal(_)
-                        );
-                    }
                     end_jumps.push(self.chunk.emit(ri16(Opcode::Jmp, 0, 0)));
 
                     // Patch all skip_patches to the start of the next arm.
@@ -9037,10 +9070,18 @@ impl<'a> FnCompiler<'a> {
                     }
                 }
 
-                let end = self.chunk.len() as u16;
+                self.regs = outer_regs;
+                self.local_types = outer_types;
+                let unmatched = self.chunk.len() as u16;
                 for j in guard_fail_jumps {
-                    self.chunk.patch_jump(j, end);
+                    self.chunk.patch_jump(j, unmatched);
                 }
+                // Every normally produced value comes from an executed arm.
+                // Unknown/legacy enum coverage must never expose an unwritten dst.
+                if !matches!(self.type_of_expr(expr), Some(TypeKind::Void)) {
+                    self.chunk.emit(rrr(Opcode::Trap, 0, 0, 0));
+                }
+                let end = self.chunk.len() as u16;
                 for j in end_jumps {
                     self.chunk.patch_jump(j, end);
                 }
@@ -9196,6 +9237,8 @@ impl<'a> FnCompiler<'a> {
                     self.named_call_slots,
                     self.source_files,
                     self.annotated_exprs,
+                    self.terminal_statements,
+                    self.match_pattern_tags,
                     Rc::clone(&self.resolution_errors),
                     self.bound_names.clone(),
                     self.format_result_type.clone(),

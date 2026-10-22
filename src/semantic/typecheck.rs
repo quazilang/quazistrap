@@ -1974,6 +1974,20 @@ impl Analyzer {
         expected_return: Option<&TypeKind>,
         checkpoint: &mut dyn FnMut() -> Result<(), crate::cancel::Cancelled>,
     ) -> Result<bool, crate::cancel::Cancelled> {
+        let terminal = self.type_check_stmt_inner(stmt, expected_return, checkpoint)?;
+        if terminal {
+            self.terminal_statements
+                .insert((stmt.span.start, stmt.span.end));
+        }
+        Ok(terminal)
+    }
+
+    fn type_check_stmt_inner(
+        &mut self,
+        stmt: &Stmt,
+        expected_return: Option<&TypeKind>,
+        checkpoint: &mut dyn FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<bool, crate::cancel::Cancelled> {
         checkpoint()?;
         Ok(match &stmt.node {
             StmtKind::Var {
@@ -2226,74 +2240,28 @@ impl Analyzer {
                 then_block,
                 else_if,
                 else_block,
-            } => {
-                let condition_eval = self.type_check_expr(condition, true);
-                if let Some(condition_ty) = condition_eval.ty
-                    && !matches!(condition_ty, TypeKind::Bool | TypeKind::Error)
-                    && !Self::is_integer(&condition_ty)
-                {
-                    self.push_error(
-                        condition.span,
-                        "S01",
-                        format!("if condition must be bool or integer, got {}", condition_ty),
-                    );
-                }
-
-                let mut then_returns =
-                    self.type_check_block(then_block, expected_return, checkpoint)?;
-                for (else_if_cond, else_if_block) in else_if {
-                    let else_if_eval = self.type_check_expr(else_if_cond, true);
-                    if let Some(ty) = else_if_eval.ty
-                        && !matches!(ty, TypeKind::Bool | TypeKind::Error)
-                        && !Self::is_integer(&ty)
-                    {
-                        self.push_error(
-                            else_if_cond.span,
-                            "S01",
-                            format!("if condition must be bool or integer, got {}", ty),
-                        );
-                    }
-                    then_returns =
-                        self.type_check_block(else_if_block, expected_return, checkpoint)?
-                            && then_returns;
-                }
-                let else_returns = if let Some(else_block) = else_block {
-                    self.type_check_block(else_block, expected_return, checkpoint)?
-                } else {
-                    false
-                };
-
-                then_returns && else_returns
-            }
+            } => self.type_check_if_initialization(
+                condition,
+                then_block,
+                else_if,
+                else_block.as_ref(),
+                expected_return,
+                checkpoint,
+            )?,
             StmtKind::For { kind, body } => {
                 self.enter_scope();
                 match kind {
-                    ForLoop::Cond {
-                        condition: Some(cond),
-                    } => {
-                        let cond_eval = self.type_check_expr(cond, true);
-                        if let Some(cond_ty) = cond_eval.ty
-                            && !matches!(cond_ty, TypeKind::Bool | TypeKind::Error)
-                            && !Self::is_integer(&cond_ty)
-                        {
-                            self.push_error(
-                                cond.span,
-                                "S01",
-                                format!("for condition must be bool or integer, got {}", cond_ty),
-                            );
-                        }
-                        self.loop_depth += 1;
-                        let _ = self.type_check_block(body, expected_return, checkpoint)?;
-                        self.loop_depth -= 1;
+                    ForLoop::Cond { condition } => {
+                        let terminal = self.type_check_loop_initialization(
+                            body,
+                            condition.as_ref(),
+                            None,
+                            false,
+                            expected_return,
+                            checkpoint,
+                        )?;
                         self.exit_scope_collect();
-                        return Ok(false);
-                    }
-                    ForLoop::Cond { condition: None } => {
-                        self.loop_depth += 1;
-                        let _ = self.type_check_block(body, expected_return, checkpoint)?;
-                        self.loop_depth -= 1;
-                        self.exit_scope_collect();
-                        return Ok(false);
+                        return Ok(terminal);
                     }
                     ForLoop::CStyle {
                         init,
@@ -2303,30 +2271,16 @@ impl Analyzer {
                         if let Some(init_stmt) = init {
                             self.type_check_stmt(init_stmt, expected_return, checkpoint)?;
                         }
-                        if let Some(cond) = condition {
-                            let cond_eval = self.type_check_expr(cond, true);
-                            if let Some(cond_ty) = cond_eval.ty
-                                && !matches!(cond_ty, TypeKind::Bool | TypeKind::Error)
-                                && !Self::is_integer(&cond_ty)
-                            {
-                                self.push_error(
-                                    cond.span,
-                                    "S01",
-                                    format!(
-                                        "for condition must be bool or integer, got {}",
-                                        cond_ty
-                                    ),
-                                );
-                            }
-                        }
-                        if let Some(upd) = update {
-                            self.type_check_expr(upd, true);
-                        }
-                        self.loop_depth += 1;
-                        let _ = self.type_check_block(body, expected_return, checkpoint)?;
-                        self.loop_depth -= 1;
+                        let terminal = self.type_check_loop_initialization(
+                            body,
+                            condition.as_ref(),
+                            update.as_ref(),
+                            false,
+                            expected_return,
+                            checkpoint,
+                        )?;
                         self.exit_scope_collect();
-                        return Ok(false);
+                        return Ok(terminal);
                     }
                     ForLoop::Each { vars, iter } => {
                         let loop_var_ty = match iter {
@@ -2426,21 +2380,28 @@ impl Analyzer {
                                 },
                             );
                         }
-                        self.loop_depth += 1;
-                        let _ = self.type_check_block(body, expected_return, checkpoint)?;
-                        self.loop_depth -= 1;
+                        self.type_check_loop_initialization(
+                            body,
+                            None,
+                            None,
+                            true,
+                            expected_return,
+                            checkpoint,
+                        )?;
                         self.exit_scope_collect();
                         return Ok(false);
                     }
                 }
             }
             StmtKind::Break => {
+                self.record_initialization_loop_exit(true);
                 if self.loop_depth == 0 {
                     self.push_error(stmt.span, "S11", "break outside of loop".to_string());
                 }
                 true
             }
             StmtKind::Continue => {
+                self.record_initialization_loop_exit(false);
                 if self.loop_depth == 0 {
                     self.push_error(stmt.span, "S11", "continue outside of loop".to_string());
                 }
@@ -2448,9 +2409,9 @@ impl Analyzer {
             }
             StmtKind::UnsafeBlock { body } => {
                 self.unsafe_depth += 1;
-                let _ = self.type_check_block(body, expected_return, checkpoint)?;
+                let terminal = self.type_check_block(body, expected_return, checkpoint)?;
                 self.unsafe_depth -= 1;
-                false
+                terminal
             }
             StmtKind::ExprStmt(expr) => {
                 self.type_check_expr(expr, true);
@@ -2458,9 +2419,10 @@ impl Analyzer {
             }
             StmtKind::CfgBlock { body, condition } => {
                 if super::item_should_include(std::slice::from_ref(condition)) {
-                    let _ = self.type_check_block(body, expected_return, checkpoint)?;
+                    self.type_check_block(body, expected_return, checkpoint)?
+                } else {
+                    false
                 }
-                false
             }
         })
     }
@@ -2806,6 +2768,7 @@ impl Analyzer {
             );
         }
 
+        let outer_initialization = self.initialization_snapshot();
         self.enter_scope();
         for (index, name) in params.iter().enumerate() {
             let ty = parameter_types
@@ -2836,6 +2799,8 @@ impl Analyzer {
         let body_eval = self.type_check_expr_expected(body, reachable, Some(&expected_return));
         self.current_return_type = previous_return;
         self.exit_scope_collect();
+        self.restore_initialization(&outer_initialization);
+        self.initialization_condition = None;
 
         if let Some(actual) = &body_eval.ty
             && !matches!(expected_return, TypeKind::Error)
@@ -2882,6 +2847,8 @@ impl Analyzer {
     }
 
     pub(super) fn type_check_expr(&mut self, expr: &Expr, reachable: bool) -> ExprEval {
+        self.initialization_condition = None;
+        let mut initialization_condition = None;
         let mut resolved_method: Option<String> = None;
         let result = match &expr.node {
             ExprKind::Literal(lit) => {
@@ -2986,6 +2953,7 @@ impl Analyzer {
                             sym.kind,
                             SymbolKind::Variable { .. } | SymbolKind::Parameter
                         ) && !sym.initialized
+                            && self.initialization_reachable
                         {
                             self.push_error(
                                 expr.span,
@@ -3039,9 +3007,18 @@ impl Analyzer {
                     }
                 }
             }
-            ExprKind::Group(inner) => self.type_check_expr(inner, reachable),
+            ExprKind::Group(inner) => {
+                let eval = self.type_check_expr(inner, reachable);
+                initialization_condition = Some(self.take_initialization_condition(inner, &eval));
+                eval
+            }
             ExprKind::Unary { expr: inner, op } => {
                 let inner_eval = self.type_check_expr(inner, reachable);
+                if matches!(op, UnaryOpKind::Not) {
+                    let mut condition = self.take_initialization_condition(inner, &inner_eval);
+                    std::mem::swap(&mut condition.truthy, &mut condition.falsy);
+                    initialization_condition = Some(condition);
+                }
 
                 match op {
                     UnaryOpKind::Ref | UnaryOpKind::RefMut => {
@@ -3097,7 +3074,10 @@ impl Analyzer {
                             Some(TypeKind::Ref { inner: t })
                             | Some(TypeKind::MutRef { inner: t }) => {
                                 let pointee = self.resolve_type_aliases(&t.node);
-                                if !Self::is_autoderef_value(&pointee) {
+                                if !Self::is_autoderef_value(&pointee)
+                                    && self.place_write_target_span
+                                        != Some((expr.span.start, expr.span.end))
+                                {
                                     self.push_error(
                                         expr.span,
                                         "S10",
@@ -3180,6 +3160,12 @@ impl Analyzer {
             ExprKind::Cast { expr: inner, ty } => {
                 let inner_eval = self.type_check_expr(inner, reachable);
                 let target_ty = self.resolve_type_aliases(&ty.node);
+                if matches!(inner_eval.ty, Some(TypeKind::Bool))
+                    && matches!(target_ty, TypeKind::Bool)
+                {
+                    initialization_condition =
+                        Some(self.take_initialization_condition(inner, &inner_eval));
+                }
                 if type_contains_any(&target_ty)
                     || inner_eval.ty.as_ref().is_some_and(type_contains_any)
                 {
@@ -3269,7 +3255,45 @@ impl Analyzer {
             }
             ExprKind::Binary { left, op, right } => {
                 let left_eval = self.type_check_expr(left, reachable);
-                let right_eval = self.type_check_expr(right, reachable);
+                let right_eval = if matches!(op, BinOpKind::AndAnd | BinOpKind::OrOr) {
+                    let left_condition = self.take_initialization_condition(left, &left_eval);
+                    let fallback = self.initialization_snapshot();
+                    let input = if matches!(op, BinOpKind::AndAnd) {
+                        left_condition.truthy.as_ref()
+                    } else {
+                        left_condition.falsy.as_ref()
+                    };
+                    self.restore_initialization(input.unwrap_or(&fallback));
+                    let previous_reachable = self.initialization_reachable;
+                    self.initialization_reachable &= input.is_some();
+                    let eval = self.type_check_expr(right, reachable);
+                    let right_condition = if input.is_some() {
+                        self.take_initialization_condition(right, &eval)
+                    } else {
+                        InitializationCondition::default()
+                    };
+                    self.initialization_reachable = previous_reachable;
+                    let condition = if matches!(op, BinOpKind::AndAnd) {
+                        let mut falsy = left_condition.falsy;
+                        join_initialization(&mut falsy, right_condition.falsy);
+                        InitializationCondition {
+                            truthy: right_condition.truthy,
+                            falsy,
+                        }
+                    } else {
+                        let mut truthy = left_condition.truthy;
+                        join_initialization(&mut truthy, right_condition.truthy);
+                        InitializationCondition {
+                            truthy,
+                            falsy: right_condition.falsy,
+                        }
+                    };
+                    self.restore_initialization(condition.normal().as_ref().unwrap_or(&fallback));
+                    initialization_condition = Some(condition);
+                    eval
+                } else {
+                    self.type_check_expr(right, reachable)
+                };
 
                 let ty = self.infer_binary_type(expr.span, op, &left_eval.ty, &right_eval.ty);
                 self.mark_binary_autoderef(left, &left_eval.ty, right, &right_eval.ty);
@@ -3284,17 +3308,21 @@ impl Analyzer {
                 ExprEval { ty, const_value }
             }
             ExprKind::Assign { target, value } => {
-                let indexed_target_eval = if matches!(target.node, ExprKind::Index { .. }) {
+                let target_eval = if assignment_ident(target).is_none() {
+                    let mut place = target.as_ref();
+                    while let ExprKind::Group(inner) = &place.node {
+                        place = inner;
+                    }
                     let previous = self
-                        .index_write_target_span
-                        .replace((target.span.start, target.span.end));
+                        .place_write_target_span
+                        .replace((place.span.start, place.span.end));
                     let target_eval = self.type_check_expr(target, reachable);
-                    self.index_write_target_span = previous;
+                    self.place_write_target_span = previous;
                     Some(target_eval)
                 } else {
                     None
                 };
-                let assignment_expected = indexed_target_eval
+                let assignment_expected = target_eval
                     .as_ref()
                     .and_then(|eval| eval.ty.clone())
                     .or_else(|| {
@@ -3310,8 +3338,9 @@ impl Analyzer {
                 self.analyze_assign_target(target);
                 let value_eval =
                     self.type_check_expr_expected(value, reachable, assignment_expected.as_ref());
+                let mut value_condition = self.take_initialization_condition(value, &value_eval);
 
-                if let (Some(target_eval), Some(value_ty)) = (&indexed_target_eval, &value_eval.ty)
+                if let (Some(target_eval), Some(value_ty)) = (&target_eval, &value_eval.ty)
                     && let Some(target_ty) = &target_eval.ty
                     && !self.check_expr_compat(value, target_ty, value_ty)
                 {
@@ -3319,8 +3348,14 @@ impl Analyzer {
                         target.span,
                         "S01",
                         format!(
-                            "type mismatch in indexed assignment: expected {}, got {}",
-                            target_ty, value_ty
+                            "type mismatch in {}: expected {}, got {}",
+                            if matches!(target.node, ExprKind::Index { .. }) {
+                                "indexed assignment"
+                            } else {
+                                "assignment"
+                            },
+                            target_ty,
+                            value_ty
                         ),
                     );
                 }
@@ -3356,6 +3391,7 @@ impl Analyzer {
                     }
 
                     self.mark_initialized(name);
+                    self.initialize_condition_binding(name, &mut value_condition);
                     // Mutable assignments may occur on only one control-flow
                     // path (or in a loop that executes zero times). Treating
                     // the assigned literal as globally constant makes later
@@ -3364,6 +3400,7 @@ impl Analyzer {
                     self.set_symbol_const_value(name, None);
                 }
 
+                initialization_condition = Some(value_condition);
                 // Never propagate const_value from an assign expression — the assign
                 // has a side effect that must not be eliminated by const-folding.
                 ExprEval {
@@ -3403,6 +3440,13 @@ impl Analyzer {
                         );
                     }
                 }
+                if let ExprKind::Ident(name) = &callee.node
+                    && let Some(symbol) = self.resolve_symbol(name)
+                {
+                    self.require_initialized(name, &symbol, callee.span);
+                }
+                let indirect_callee = (!matches!(callee.node, ExprKind::Ident(_)))
+                    .then(|| self.type_check_expr(callee, reachable));
                 let contextual_signature = if let ExprKind::Ident(name) = &callee.node {
                     if let Some(resolved) = self.resolve_bare_fn_name(name) {
                         self.resolve_symbol(&resolved).map(|symbol| {
@@ -3440,32 +3484,14 @@ impl Analyzer {
                 } else {
                     None
                 };
-                let positional_evals: Vec<ExprEval> = args
-                    .iter()
-                    .enumerate()
-                    .map(|(index, arg)| {
-                        let expected = contextual_signature.as_ref().and_then(|(params, _)| {
-                            params
-                                .get(index)
-                                .or_else(|| params.last().filter(|_| index >= params.len()))
-                        });
-                        self.type_check_expr_expected(arg, reachable, expected)
-                    })
-                    .collect();
-                let named_evals: Vec<ExprEval> = named_args
-                    .iter()
-                    .map(|(name, arg)| {
-                        let expected = contextual_signature.as_ref().and_then(|(params, names)| {
-                            names
-                                .iter()
-                                .position(|parameter| parameter == name)
-                                .and_then(|index| params.get(index))
-                        });
-                        self.type_check_expr_expected(arg, reachable, expected)
-                    })
-                    .collect();
-                let arg_evals: Vec<ExprEval> =
-                    positional_evals.into_iter().chain(named_evals).collect();
+                let arg_evals = self.type_check_call_arguments(
+                    args,
+                    named_args,
+                    reachable,
+                    contextual_signature
+                        .as_ref()
+                        .map(|(params, names)| (params.as_slice(), names.as_slice())),
+                );
 
                 if let ExprKind::Ident(name) = &callee.node {
                     // Resolve the name, taking into account namespacing for the current module.
@@ -3514,6 +3540,7 @@ impl Analyzer {
                                 named_args,
                                 args.len(),
                                 &sym,
+                                &arg_evals,
                             );
                         }
                         let eval = self.check_function_call(
@@ -3624,7 +3651,7 @@ impl Analyzer {
                     return ExprEval::default();
                 } else {
                     self.record_source_call_effect(OwnershipCallEffect::Opaque);
-                    let callee_eval = self.type_check_expr(callee, reachable);
+                    let callee_eval = indirect_callee.expect("checked indirect callee");
                     match callee_eval.ty.as_ref() {
                         Some(resolved @ (TypeKind::Fn { .. } | TypeKind::CFn { .. })) => {
                             let (params, return_ty, is_c) = match resolved {
@@ -3763,25 +3790,14 @@ impl Analyzer {
                             (params, names)
                         })
                     });
-                    let mut arg_evals: Vec<ExprEval> = args
-                        .iter()
-                        .enumerate()
-                        .map(|(index, arg)| {
-                            let expected = contextual_signature
-                                .as_ref()
-                                .and_then(|(params, _)| params.get(index));
-                            self.type_check_expr_expected(arg, reachable, expected)
-                        })
-                        .collect();
-                    for (name, arg) in named_args {
-                        let expected = contextual_signature.as_ref().and_then(|(params, names)| {
-                            names
-                                .iter()
-                                .position(|parameter| parameter == name)
-                                .and_then(|index| params.get(index))
-                        });
-                        arg_evals.push(self.type_check_expr_expected(arg, reachable, expected));
-                    }
+                    let arg_evals = self.type_check_call_arguments(
+                        args,
+                        named_args,
+                        reachable,
+                        contextual_signature
+                            .as_ref()
+                            .map(|(params, names)| (params.as_slice(), names.as_slice())),
+                    );
                     if let Some(resolved) = &module_method {
                         if let Some(sym) = self.resolve_symbol(resolved) {
                             if !matches!(sym.kind, SymbolKind::Function) {
@@ -3807,6 +3823,7 @@ impl Analyzer {
                                         named_args,
                                         args.len(),
                                         &sym,
+                                        &arg_evals,
                                     );
                                 }
                                 let eval = self.check_function_call(
@@ -3854,26 +3871,18 @@ impl Analyzer {
                                 // Retain declaration identity independently of whether
                                 // this call's generic arguments have been inferred.
                                 self.record_source_call_declaration(expr.span, &method_full);
-                                let arg_evals: Vec<ExprEval> = args
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(index, arg)| {
-                                        let expected = sym.params.get(index);
-                                        self.type_check_expr_expected(arg, reachable, expected)
-                                    })
-                                    .collect();
                                 let param_names = self
                                     .fn_param_names
                                     .get(&method_full)
                                     .cloned()
                                     .unwrap_or_default();
-                                for (name, arg) in named_args {
-                                    let expected = param_names
-                                        .iter()
-                                        .position(|parameter| parameter == name)
-                                        .and_then(|index| sym.params.get(index));
-                                    self.type_check_expr_expected(arg, reachable, expected);
-                                }
+                                let all_evals = self.type_check_call_arguments(
+                                    args,
+                                    named_args,
+                                    reachable,
+                                    Some((&sym.params, &param_names)),
+                                );
+                                let arg_evals = &all_evals[..args.len()];
                                 let struct_params = self.generic_params_for_function(&method_full);
                                 let from = self
                                     .current_function
@@ -4168,7 +4177,13 @@ impl Analyzer {
                             let type_name =
                                 super::declare::type_kind_base_name(&resolved_object_ty);
                             let mangled = format!("{}.{}", type_name, method);
-                            let symbol = self.resolve_symbol(&mangled)?;
+                            let leaf = format!(
+                                "{}.{method}",
+                                type_name.rsplit('.').next().unwrap_or(&type_name)
+                            );
+                            let symbol = self
+                                .resolve_symbol(&mangled)
+                                .or_else(|| self.resolve_symbol(&leaf))?;
                             let substitution: std::collections::HashMap<String, TypeKind> =
                                 match receiver_named_type_args(&resolved_object_ty).as_slice() {
                                     type_args if !type_args.is_empty() => self
@@ -4191,35 +4206,36 @@ impl Analyzer {
                                 .collect::<Vec<_>>();
                             Some(params.get(1..).unwrap_or(&[]).to_vec())
                         });
-                    let arg_evals: Vec<ExprEval> = args
-                        .iter()
-                        .enumerate()
-                        .map(|(index, arg)| {
-                            let expected = contextual_method_signature
-                                .as_ref()
-                                .and_then(|params| params.get(index));
-                            self.type_check_expr_expected(arg, reachable, expected)
+                    let parameter_names = object_eval
+                        .ty
+                        .as_ref()
+                        .and_then(|ty| {
+                            let ty = self.resolve_type_aliases(ty);
+                            let type_name = super::declare::type_kind_base_name(&ty);
+                            let qualified = format!("{type_name}.{method}");
+                            let leaf = format!(
+                                "{}.{method}",
+                                type_name.rsplit('.').next().unwrap_or(&type_name)
+                            );
+                            self.fn_param_names
+                                .get(&qualified)
+                                .or_else(|| self.fn_param_names.get(&leaf))
+                                .cloned()
                         })
-                        .collect();
+                        .unwrap_or_default();
+                    let all_evals = self.type_check_call_arguments(
+                        args,
+                        named_args,
+                        reachable,
+                        contextual_method_signature
+                            .as_ref()
+                            .map(|params| (params.as_slice(), parameter_names.as_slice())),
+                    );
+                    let arg_evals = all_evals[..args.len()].to_vec();
                     let named_arg_evals: Vec<(String, Expr, ExprEval)> = named_args
                         .iter()
-                        .map(|(name, arg)| {
-                            let expected = object_eval.ty.as_ref().and_then(|object_ty| {
-                                let type_name = super::declare::type_kind_base_name(object_ty);
-                                let mangled = format!("{}.{}", type_name, method);
-                                let position = self
-                                    .fn_param_names
-                                    .get(&mangled)?
-                                    .iter()
-                                    .position(|parameter| parameter == name)?;
-                                contextual_method_signature.as_ref()?.get(position)
-                            });
-                            (
-                                name.clone(),
-                                arg.clone(),
-                                self.type_check_expr_expected(arg, reachable, expected),
-                            )
-                        })
+                        .zip(&all_evals[args.len()..])
+                        .map(|((name, arg), eval)| (name.clone(), arg.clone(), eval.clone()))
                         .collect();
 
                     // Library-defined impl methods take priority over compiler builtins.
@@ -4863,6 +4879,16 @@ impl Analyzer {
                         ),
                     );
                 }
+                let mut provided = std::collections::HashSet::new();
+                for (field, value) in fields {
+                    if !provided.insert(field) {
+                        self.push_error(
+                            value.span,
+                            "S07",
+                            format!("duplicate field `{field}` in `{name}` initializer"),
+                        );
+                    }
+                }
                 let generic_params = self
                     .struct_generic_params
                     .get(name)
@@ -4870,7 +4896,14 @@ impl Analyzer {
                     .unwrap_or_default();
                 let mut substitution = std::collections::HashMap::new();
                 if let Some(field_defs) = self.struct_defs.get(name).cloned() {
-                    for (fname, fval) in fields {
+                    let mut scheduled_fields: Vec<_> = fields.iter().collect();
+                    scheduled_fields.sort_by_key(|(name, _)| {
+                        field_defs
+                            .iter()
+                            .position(|(declared, _)| declared == name)
+                            .unwrap_or(usize::MAX)
+                    });
+                    for (fname, fval) in scheduled_fields {
                         let val_eval = self.type_check_expr(fval, reachable);
                         if let Some((_, expected_ty)) =
                             field_defs.iter().find(|(fn_, _)| fn_ == fname)
@@ -5008,6 +5041,8 @@ impl Analyzer {
                     };
                     self.enums.contains_key(&name)
                 });
+                let mut initialization_match =
+                    self.initialization_match(match_scrutinee_ty.as_ref(), &scrutinee_eval);
                 let mut arm_infos = Vec::new();
                 let mut result_ty: Option<TypeKind> = None;
 
@@ -5016,6 +5051,12 @@ impl Analyzer {
                 }
 
                 for arm in arms {
+                    let (coverage, input) = initialization_match.arm(&arm.pattern);
+                    self.restore_initialization(
+                        input.as_ref().unwrap_or(&initialization_match.entry),
+                    );
+                    let previous_reachable = self.initialization_reachable;
+                    self.initialization_reachable &= input.is_some();
                     let (mut arm_info, bindings) =
                         self.validate_match_pattern(&arm.pattern, &match_scrutinee_ty);
                     arm_info.span = arm.span;
@@ -5033,85 +5074,23 @@ impl Analyzer {
                     }
 
                     self.enter_scope();
-                    // Build a map: binding_name → field type for Variant patterns.
-                    let binding_types: std::collections::HashMap<String, TypeKind> =
-                        if let PatternKind::Variant {
-                            enum_name,
-                            variant,
-                            sub_patterns,
-                        } = &arm.pattern.node
-                        {
-                            let resolved_enum = enum_name.clone().or_else(|| {
-                                if let Some(TypeKind::Named { name, .. }) = &match_scrutinee_ty {
-                                    Some(name.clone())
-                                } else {
-                                    None
-                                }
-                            });
-                            if let Some(ename) = resolved_enum {
-                                let builtin_payload =
-                                    match (&match_scrutinee_ty, ename.as_str(), variant.as_str()) {
-                                        (
-                                            Some(TypeKind::Named { name, type_args }),
-                                            "Option",
-                                            "Some",
-                                        ) if name.rsplit('.').next() == Some("Option") => {
-                                            type_args.first().map(|ty| ty.node.clone())
-                                        }
-                                        (
-                                            Some(TypeKind::Named { name, type_args }),
-                                            "Result",
-                                            "Ok",
-                                        ) if name.rsplit('.').next() == Some("Result") => {
-                                            type_args.first().map(|ty| ty.node.clone())
-                                        }
-                                        (
-                                            Some(TypeKind::Named { name, type_args }),
-                                            "Result",
-                                            "Err",
-                                        ) if name.rsplit('.').next() == Some("Result") => {
-                                            type_args.get(1).map(|ty| ty.node.clone())
-                                        }
-                                        _ => None,
-                                    };
-                                if let Some(payload) = builtin_payload {
-                                    sub_patterns
-                                        .iter()
-                                        .find_map(|sub| match &sub.node {
-                                            PatternKind::Bind(name) => {
-                                                Some((name.clone(), payload.clone()))
-                                            }
-                                            _ => None,
-                                        })
-                                        .into_iter()
-                                        .collect()
-                                } else if let Some(info) = self.enums.get(&ename) {
-                                    if let Some(field_tys) = info.variant_fields.get(variant) {
-                                        let mut m = std::collections::HashMap::new();
-                                        let mut field_idx = 0;
-                                        for sub in sub_patterns {
-                                            if let PatternKind::Bind(bname) = &sub.node
-                                                && let Some(ty) = field_tys.get(field_idx)
-                                            {
-                                                m.insert(bname.clone(), ty.clone());
-                                            }
-                                            if !matches!(sub.node, PatternKind::Wildcard) {
-                                                field_idx += 1;
-                                            }
-                                        }
-                                        m
-                                    } else {
-                                        std::collections::HashMap::new()
-                                    }
-                                } else {
-                                    std::collections::HashMap::new()
-                                }
-                            } else {
-                                std::collections::HashMap::new()
+                    // Payload slots include wildcards; substitute the actual enum
+                    // arguments before assigning direct binding types.
+                    let mut binding_types = std::collections::HashMap::new();
+                    if let PatternKind::Variant {
+                        variant,
+                        sub_patterns,
+                        ..
+                    } = &arm.pattern.node
+                        && let Some(payloads) =
+                            self.match_pattern_payload_types(match_scrutinee_ty.as_ref(), variant)
+                    {
+                        for (pattern, ty) in sub_patterns.iter().zip(payloads) {
+                            if let PatternKind::Bind(name) = &pattern.node {
+                                binding_types.insert(name.clone(), ty);
                             }
-                        } else {
-                            std::collections::HashMap::new()
-                        };
+                        }
+                    }
                     for binding in bindings {
                         let ty = binding_types
                             .get(&binding)
@@ -5138,9 +5117,20 @@ impl Analyzer {
                         );
                     }
 
-                    // Type-check the optional guard expression (inside binding scope).
+                    // Guard effects flow to this body or the next matching arm,
+                    // while pattern mismatches retain their original facts.
+                    let fallback = self.initialization_snapshot();
+                    let mut guard_condition = InitializationCondition {
+                        truthy: input.clone(),
+                        falsy: None,
+                    };
                     if let Some(guard) = &arm.guard {
                         let guard_eval = self.type_check_expr(guard, reachable);
+                        guard_condition = if input.is_some() {
+                            self.take_initialization_condition(guard, &guard_eval)
+                        } else {
+                            InitializationCondition::default()
+                        };
                         if let Some(guard_ty) = guard_eval.ty
                             && !matches!(guard_ty, TypeKind::Bool | TypeKind::Error)
                             && !Self::is_integer(&guard_ty)
@@ -5153,8 +5143,19 @@ impl Analyzer {
                         }
                     }
 
+                    self.restore_initialization(
+                        guard_condition.truthy.as_ref().unwrap_or(&fallback),
+                    );
+                    self.initialization_reachable &= guard_condition.truthy.is_some();
                     let arm_eval = self.type_check_expr(&arm.expr, reachable);
+                    let output = if guard_condition.truthy.is_some() {
+                        self.take_initialization_condition(&arm.expr, &arm_eval)
+                    } else {
+                        InitializationCondition::default()
+                    };
                     self.exit_scope_collect();
+                    self.initialization_reachable = previous_reachable;
+                    initialization_match.finish_arm(&coverage, guard_condition.falsy, output);
 
                     if let Some(arm_ty) = arm_eval.ty {
                         if let Some(current) = &result_ty {
@@ -5176,6 +5177,35 @@ impl Analyzer {
                     arm_infos.push(arm_info);
                 }
 
+                let (condition, exhaustive, exhausted) = initialization_match.finish();
+                if exhausted {
+                    self.push_error(
+                        expr.span,
+                        "S14",
+                        "match initialization analysis exceeded its 1,000,000-step fact budget"
+                            .to_string(),
+                    );
+                }
+                self.restore_initialization(
+                    condition
+                        .normal()
+                        .as_ref()
+                        .unwrap_or(&self.initialization_snapshot()),
+                );
+                if !exhausted
+                    && !exhaustive
+                    && result_ty
+                        .as_ref()
+                        .is_some_and(|ty| !matches!(ty, TypeKind::Void | TypeKind::Error))
+                    && match_scrutinee_ty.as_ref().is_some_and(|ty| {
+                        matches!(ty, TypeKind::Bool | TypeKind::Str | TypeKind::Ref { .. })
+                            || Self::is_integer(ty)
+                            || Self::is_float(ty)
+                    })
+                {
+                    self.push_error(expr.span, "S09", "non-exhaustive match may leave its result uninitialized; add a catch-all arm".to_string());
+                }
+                initialization_condition = Some(condition);
                 self.match_candidates.push(MatchCandidate {
                     span: expr.span,
                     scrutinee_ty: match_scrutinee_ty,
@@ -5211,8 +5241,8 @@ impl Analyzer {
                 }
             }
             ExprKind::CompoundAssign { target, op, value } => {
-                self.analyze_assign_target(target);
                 let target_eval = self.type_check_expr(target, reachable);
+                self.analyze_assign_target(target);
                 let value_eval = self.type_check_expr(value, reachable);
 
                 let bin_op = match op {
@@ -5231,8 +5261,8 @@ impl Analyzer {
                 }
             }
             ExprKind::IncDec { expr: inner, .. } => {
-                self.analyze_assign_target(inner);
                 let inner_eval = self.type_check_expr(inner, reachable);
+                self.analyze_assign_target(inner);
 
                 if let Some(ty) = &inner_eval.ty
                     && matches!(
@@ -5334,7 +5364,7 @@ impl Analyzer {
                 };
 
                 let index_reads_value =
-                    self.index_write_target_span != Some((expr.span.start, expr.span.end));
+                    self.place_write_target_span != Some((expr.span.start, expr.span.end));
                 let elem_ty = if let Some(mangled) = maybe_index_mangled {
                     if index_reads_value {
                         resolved_method = Some(mangled.clone());
@@ -5542,6 +5572,8 @@ impl Analyzer {
             }
         };
 
+        self.initialization_condition =
+            initialization_condition.map(|condition| (expr.span, condition));
         self.reject_nested_owned_function_expression(expr, &result);
         self.annotate_expr(expr, &result, reachable, resolved_method);
         result
@@ -5681,7 +5713,7 @@ impl Analyzer {
         None
     }
 
-    fn resolve_bare_foreign_global_name(&self, name: &str) -> Option<String> {
+    pub(super) fn resolve_bare_foreign_global_name(&self, name: &str) -> Option<String> {
         for scope in self.scopes.iter().skip(1).rev() {
             if scope.contains_key(name) {
                 return None;
@@ -5756,6 +5788,40 @@ impl Analyzer {
         Some(resolved)
     }
 
+    /// Evaluate source arguments in the declared-slot schedule used by codegen,
+    /// retaining lexical positions for existing signature/ownership validation.
+    fn type_check_call_arguments(
+        &mut self,
+        args: &[Expr],
+        named_args: &[(String, Expr)],
+        reachable: bool,
+        signature: Option<(&[TypeKind], &[String])>,
+    ) -> Vec<ExprEval> {
+        let mut schedule = Vec::with_capacity(args.len() + named_args.len());
+        for (index, arg) in args.iter().enumerate() {
+            let expected =
+                signature.and_then(|(params, _)| params.get(index).or_else(|| params.last()));
+            schedule.push((index, index, arg, expected));
+        }
+        for (index, (name, arg)) in named_args.iter().enumerate() {
+            let slot = signature
+                .and_then(|(_, names)| names.iter().position(|parameter| parameter == name));
+            let expected = slot.and_then(|slot| signature?.0.get(slot));
+            schedule.push((
+                slot.unwrap_or(usize::MAX),
+                args.len() + index,
+                arg,
+                expected,
+            ));
+        }
+        schedule.sort_by_key(|(slot, _, _, _)| *slot);
+        let mut result = vec![ExprEval::default(); schedule.len()];
+        for (_, index, arg, expected) in schedule {
+            result[index] = self.type_check_expr_expected(arg, reachable, expected);
+        }
+        result
+    }
+
     fn validate_named_args(
         &mut self,
         _span: Span,
@@ -5763,6 +5829,7 @@ impl Analyzer {
         named_args: &[(String, Expr)],
         positional_count: usize,
         sym: &Symbol,
+        arg_evals: &[ExprEval],
     ) {
         let param_names = self
             .fn_param_names
@@ -5770,7 +5837,7 @@ impl Analyzer {
             .cloned()
             .unwrap_or_default();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (arg_name, arg_expr) in named_args {
+        for (index, (arg_name, arg_expr)) in named_args.iter().enumerate() {
             if !seen.insert(arg_name.clone()) {
                 self.push_error(
                     arg_expr.span,
@@ -5802,10 +5869,15 @@ impl Analyzer {
                 );
                 continue;
             }
-            // Type-check named arg against its param type.
-            let eval = self.type_check_expr_expected(arg_expr, true, sym.params.get(pos));
-            if let (Some(param_ty), Some(arg_ty)) = (sym.params.get(pos), eval.ty) {
-                if !self.check_expr_compat(arg_expr, param_ty, &arg_ty) {
+            // Reuse the evaluation at its scheduled position. Rechecking an
+            // argument here would observe later assignments and duplicate effects.
+            if let (Some(param_ty), Some(arg_ty)) = (
+                sym.params.get(pos),
+                arg_evals
+                    .get(positional_count + index)
+                    .and_then(|eval| eval.ty.as_ref()),
+            ) {
+                if !self.check_expr_compat(arg_expr, param_ty, arg_ty) {
                     self.push_error(
                         arg_expr.span,
                         "S09",
@@ -6614,11 +6686,15 @@ impl Analyzer {
                 ExprKind::Ident(name) => self.resolved_binding_for_name(name),
                 _ => None,
             });
+        let foldable = self
+            .can_elide_expression(expr)
+            .then(|| eval.const_value.clone())
+            .flatten();
         self.annotated_exprs.push(ExprAnnotation {
             span: expr.span,
             binding_span: binding_occurrence_span(expr, resolved_binding.as_ref()),
             ty: eval.ty.clone(),
-            const_value: eval.const_value.clone(),
+            const_value: foldable.clone(),
             reachable,
             resolved_fn,
             resolved_global: None,
@@ -6627,7 +6703,7 @@ impl Analyzer {
             c_abi_function: false,
         });
 
-        if let Some(value) = &eval.const_value {
+        if let Some(value) = &foldable {
             self.constant_evaluations.push(ConstantEvaluation {
                 span: expr.span,
                 value: value.clone(),
@@ -6683,11 +6759,15 @@ impl Analyzer {
                 ExprKind::Ident(name) => self.resolved_binding_for_name(name),
                 _ => None,
             });
+        let foldable = self
+            .can_elide_expression(expr)
+            .then(|| eval.const_value.clone())
+            .flatten();
         self.annotated_exprs.push(ExprAnnotation {
             span: expr.span,
             binding_span: binding_occurrence_span(expr, resolved_binding.as_ref()),
             ty,
-            const_value: eval.const_value.clone(),
+            const_value: foldable.clone(),
             reachable,
             resolved_fn,
             resolved_global: None,
@@ -6696,7 +6776,7 @@ impl Analyzer {
             c_abi_function: false,
         });
 
-        if let Some(value) = &eval.const_value {
+        if let Some(value) = &foldable {
             self.constant_evaluations.push(ConstantEvaluation {
                 span: expr.span,
                 value: value.clone(),
@@ -6868,6 +6948,25 @@ impl Analyzer {
         pattern: &Pattern,
         scrutinee_ty: &Option<TypeKind>,
     ) -> (MatchArmInfo, Vec<String>) {
+        if let PatternKind::Literal(literal) = &pattern.node {
+            let valid = scrutinee_ty.as_ref().is_some_and(|ty| {
+                matches!(ty, TypeKind::Error)
+                    || match literal {
+                        LiteralValue::Int(_) | LiteralValue::Bool(_) => {
+                            Self::is_integer(ty) || matches!(ty, TypeKind::Bool)
+                        }
+                        LiteralValue::Float(_) => Self::is_float(ty),
+                        LiteralValue::Str(_) => is_string_view_type(ty),
+                    }
+            });
+            if !valid {
+                self.push_error(
+                    pattern.span,
+                    "S01",
+                    "literal pattern is incompatible with the scrutinee type".to_string(),
+                );
+            }
+        }
         match &pattern.node {
             PatternKind::Wildcard | PatternKind::Literal(_) => (
                 MatchArmInfo {
@@ -6944,6 +7043,51 @@ impl Analyzer {
                     );
                 }
 
+                // Lowering consumes this checked discriminant instead of searching
+                // unrelated enums with the same variant spelling.
+                let target = match scrutinee_ty {
+                    Some(TypeKind::Named { name, .. }) => Some(name.as_str()),
+                    _ => enum_name.as_deref(),
+                };
+                let tags: std::collections::BTreeSet<usize> = if let Some(target) = target {
+                    self.enums
+                        .get(target)
+                        .and_then(|info| info.order.iter().position(|name| name == variant))
+                        .into_iter()
+                        .collect()
+                } else {
+                    self.enums
+                        .values()
+                        .filter_map(|info| info.order.iter().position(|name| name == variant))
+                        .collect()
+                };
+                if tags.len() == 1 {
+                    self.match_pattern_tags.insert(
+                        (pattern.span.start, pattern.span.end),
+                        *tags.first().unwrap(),
+                    );
+                } else if scrutinee_ty.is_none() {
+                    self.push_error(pattern.span, "S14", format!("variant `{variant}` has no unique discriminant; annotate the scrutinee enum type"));
+                }
+
+                let payloads = self.match_pattern_payload_types(scrutinee_ty.as_ref(), variant);
+                for (index, sub_pattern) in sub_patterns.iter().enumerate() {
+                    if matches!(
+                        sub_pattern.node,
+                        PatternKind::Wildcard | PatternKind::Bind(_)
+                    ) {
+                        continue;
+                    }
+                    if let Some(payload) =
+                        payloads.as_ref().and_then(|payloads| payloads.get(index))
+                    {
+                        let payload = self.resolve_type_aliases(payload);
+                        self.validate_match_pattern(sub_pattern, &Some(payload));
+                    } else {
+                        self.push_error(sub_pattern.span, "S14", "nested refutable pattern requires a proven enum payload type; annotate the scrutinee".to_string());
+                    }
+                }
+
                 let bindings = crate::parser::ast::collect_pattern_bindings(sub_patterns);
                 (
                     MatchArmInfo {
@@ -6960,6 +7104,43 @@ impl Analyzer {
         }
     }
 
+    /// Resolve payload representation from the actual scrutinee, never merely
+    /// from a pattern's spelling. Qualified constructors can still be untyped.
+    fn match_pattern_payload_types(
+        &self,
+        scrutinee_ty: Option<&TypeKind>,
+        variant: &str,
+    ) -> Option<Vec<TypeKind>> {
+        let TypeKind::Named { name, type_args } = scrutinee_ty? else {
+            return None;
+        };
+        let info = self.enums.get(name)?;
+        let Some(fields) = info.variant_fields.get(variant) else {
+            // These are already caller actuals. Substituting the builtin's
+            // binder again could capture a caller type also named T or E.
+            return match (name.as_str(), variant) {
+                ("Option", "Some") | ("Result", "Ok") => {
+                    type_args.first().map(|ty| vec![ty.node.clone()])
+                }
+                ("Result", "Err") => type_args.get(1).map(|ty| vec![ty.node.clone()]),
+                _ => None,
+            };
+        };
+        let subst: std::collections::HashMap<_, _> = self
+            .declared_type_parameters(name)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .zip(type_args.iter().map(|ty| ty.node.clone()))
+            .collect();
+        Some(
+            fields
+                .iter()
+                .map(|ty| substitute_type_kind(ty, &subst))
+                .collect(),
+        )
+    }
+
     /// A borrowed enum can expose its discriminant, but no payload storage. In
     /// particular, a direct wildcard is safe while bindings, literals, and
     /// nested patterns could observe or materialize a payload.
@@ -6971,6 +7152,15 @@ impl Analyzer {
                 .all(|sub_pattern| matches!(sub_pattern.node, PatternKind::Wildcard)),
             PatternKind::Bind(_) | PatternKind::Literal(_) => false,
         }
+    }
+
+    /// Assignment validation must not execute target operands a second time.
+    fn assignment_operand_type(&self, expr: &Expr) -> Option<TypeKind> {
+        self.annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| annotation.span == expr.span)
+            .and_then(|annotation| annotation.ty.clone())
     }
 
     pub(super) fn analyze_assign_target(&mut self, target: &Expr) {
@@ -7040,11 +7230,11 @@ impl Analyzer {
                 },
             },
             ExprKind::Field { object, name } => {
-                let object_eval = self.type_check_expr(object, true);
+                let object_ty = self.assignment_operand_type(object);
                 if let Some(TypeKind::Named {
                     name: aggregate_name,
                     ..
-                }) = object_eval.ty
+                }) = object_ty
                     && self.repr_c_unions.contains(&aggregate_name)
                     && self.unsafe_depth == 0
                 {
@@ -7059,8 +7249,8 @@ impl Analyzer {
                 op: UnaryOpKind::Deref,
                 expr: inner,
             } => {
-                let inner_eval = self.type_check_expr(inner, true);
-                match &inner_eval.ty {
+                let inner_ty = self.assignment_operand_type(inner);
+                match &inner_ty {
                     Some(TypeKind::RawPtr { .. }) => {
                         if self.unsafe_depth == 0 {
                             self.push_error(
@@ -7087,10 +7277,9 @@ impl Analyzer {
                 }
             }
             ExprKind::Index { object, indices } => {
-                let object_eval = self.type_check_expr(object, true);
-                self.require_exclusive_receiver(object, object_eval.ty.as_ref(), "set");
-                let object_value_ty = object_eval
-                    .ty
+                let object_ty = self.assignment_operand_type(object);
+                self.require_exclusive_receiver(object, object_ty.as_ref(), "set");
+                let object_value_ty = object_ty
                     .as_ref()
                     .map(|ty| self.resolve_type_aliases(ty))
                     .map(|ty| match ty {
@@ -7099,7 +7288,7 @@ impl Analyzer {
                         }
                         other => other,
                     });
-                if matches!(&object_eval.ty, Some(TypeKind::Bytes)) {
+                if matches!(&object_ty, Some(TypeKind::Bytes)) {
                     self.push_error(target.span, "S07", "byte strings are immutable".to_string());
                 }
                 if let Some(TypeKind::Named { name, type_args }) = &object_value_ty
@@ -7184,18 +7373,17 @@ impl Analyzer {
                 let _ = indices;
             }
             _ => {
-                self.type_check_expr(target, true);
                 self.push_error(target.span, "S07", "invalid assignment target".to_string());
             }
         }
     }
 
-    fn lvalue_contains_shared_deref(&mut self, target: &Expr) -> bool {
+    fn lvalue_contains_shared_deref(&self, target: &Expr) -> bool {
         match &target.node {
             ExprKind::Group(inner) => self.lvalue_contains_shared_deref(inner),
             ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
                 matches!(
-                    self.type_check_expr(object, true).ty,
+                    self.assignment_operand_type(object),
                     Some(TypeKind::Ref { .. })
                 ) || self.lvalue_contains_shared_deref(object)
             }
@@ -7203,7 +7391,7 @@ impl Analyzer {
                 op: UnaryOpKind::Deref,
                 expr: inner,
             } => matches!(
-                self.type_check_expr(inner, true).ty,
+                self.assignment_operand_type(inner),
                 Some(TypeKind::Ref { .. })
             ),
             _ => false,

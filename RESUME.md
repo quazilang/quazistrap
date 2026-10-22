@@ -2,6 +2,61 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-22, source initialization and checked match execution)
+
+This checkpoint is implemented and verified. Source initialization
+in semantic/initialization.rs snapshots initialized bits by declaration identity,
+joins only normal successors, tracks truth/falsy short-circuit states, loop exits
+and guarded match pending paths, and restores deferred closure outer state.
+Match work has a checked 1,000,000-step case/fact budget; exhaustion is S14.
+Semantic terminal statement spans stop codegen where analysis stopped.
+
+Typecheck/codegen schedules now agree for named calls, declared struct fields,
+indirect callee evaluation, field/deref assignment and range binder visibility.
+Duplicate fields reject. Place validation consumes annotations after one target
+evaluation; place_write_target_span keeps exclusive aggregate writes from the
+read-materialization gate. Match captures a stable value snapshot, uses checked
+pattern-span discriminants, resolves actual generic payloads, loads scalar
+references (shared &str is view-identical, &str! is a slot), and traps unmatched
+values while preserving Void fallthrough. Bool patterns use zero/nonzero truth
+classes; numeric patterns exact equality. Float signed zero/NaN and string first
+NUL coverage agree with emission. Unknown refutable payloads require annotation.
+
+Foldable annotations require elidable evaluation; known result facts alone cannot
+erase effects. Float zero multiplication is not absorbing. Bytecode constprop
+never publishes constants for any Lea-addressed VM slot, in both dataflow and
+rewrite; this prevents stale values after stores/calls/intrinsics. Three focused
+alias tests and a previous-compiler native cache reproducer cover the correction.
+Independent review found these schedule/alias/absorber gaps in drafts; final
+bounded reviews report no remaining blocker. One ownership fixture now explicitly
+types its enum, retaining S10 coverage under stricter payload proof.
+
+QZC22 invalidates older exact/reusable caches; QZI13 unchanged and Unverified.
+See docs/changes/2026-10-22-source-initialization.md and the new internal/migration
+contracts. Final full tests 897/897, build/direct Clippy pass with existing
+warnings. Initialization runner: 39 invalid check/native/QZI/COFF, 57 valid
+native/source-removed QZI/COFF, unmatched-value traps, old invalid-cache rejection,
+old wrong guard/aliased-store result rebuild and correct new exact hits. Loop23,
+conditional31, try9 invalid/8 valid, expression36, retention12 invalid/7 valid,
+named and dyn/cache integrations pass. Six STD memory fixtures pass; quazifetch
+build/run/Windows COFF pass without S10, including ordinary old-cache miss
+and new exact-hit execution. Toolchain wrappers remain required;
+logs /tmp/quazi-init-*.log. Baseline /tmp/quazi-initialization-before is 46271a9.
+
+README statuses/progress are updated BEFORE the commit. Rubric unchanged:
+33 items/78 requirements, 73.2% complete/26.8% remaining, Ownership9/16,LSP16/20.
+Preserve STD CLI dirt, compiler .codex/ and example35 build artifacts. No push.
+Graphify query/AST update pass (5,294 nodes/11,607 edges), along with final
+Markdown links, changed-region formatting and scoped diff checks.
+
+NEXT: complete normalized operand/place/call/aggregate/match value snapshots.
+Current initialization checking follows executed schedules, but live argument
+registers can still alias later mutations. Canonical Boolean storage/equality,
+general partial-place initialization, typed effects/provenance, complete
+structural destruction, verified artifacts and D-015 remain unfinished. The broad
+../goal.md objective stays active and incomplete. Do not claim general safety or
+release readiness from this checkpoint.
+
 ## Checkpoint (2026-10-21, runtime conditional cleanup)
 
 Implemented runtime cleanup flags in src/bytecode/codegen.rs, replacing

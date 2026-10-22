@@ -1,5 +1,7 @@
 # Compiler and runtime internals
 
+- [Source definite initialization](source-initialization.md)
+
 Audience: language and tooling developers.
 
 This section will document compiler phases, bootstrap constraints, QZI/QZC,

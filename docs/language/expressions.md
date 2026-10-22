@@ -195,7 +195,7 @@ const label: str = match message {
 
 Match supports:
 
-- Literal patterns: integers, strings, booleans.
+- Literal patterns: integers, floats, strings, booleans.
 - Binding patterns: `name` captures the matched value.
 - Wildcard: `_` matches anything without binding.
 - Enum variant patterns: `Variant(payload)`, `EnumName.Variant(payload)`.
@@ -204,6 +204,19 @@ Match supports:
 
 Enum matches must be exhaustive: every variant must be covered, or a `_`
 wildcard must be present.
+
+Known scalar value matches also require complete coverage or a catch-all arm.
+If a value match reaches no arm at runtime, it traps; Void matches may fall
+through. A nested refutable payload pattern requires its actual payload type;
+annotate an untyped qualified-constructor result before matching it.
+
+A match snapshots its scrutinee once before evaluating patterns and guards.
+Boolean literals test truthiness: true matches any nonzero integer or Boolean
+operand, false matches zero. Integer literals retain exact equality. Float
+patterns use IEEE equality: signed zeros compare equal and NaN does not match
+a numeric literal. String patterns use the runtime first-NUL view boundary.
+These rules do not establish canonical Boolean storage or change equality and
+bitwise operations. See [the migration guide](../migrations/source-initialization.md).
 
 A borrowed enum may be matched to inspect its variant, for example
 `match view { Some(_) => true, None => false }` where `view: &Option[T]`.

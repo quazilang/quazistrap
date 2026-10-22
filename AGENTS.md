@@ -137,8 +137,9 @@ opaque. Result identities do not prove typed accesses or aliases. Do not use
 these graphs as typed effects, loan permissions or artifact certificates. See
 [the control-flow contract](docs/internals/source-control-flow.md). The type
 checker independently validates `?` against the nearest callable return wrapper
-and invariant Result error payload; aliases resolve before checking. QZC21
-invalidates older exact/reusable chunks for runtime local-owner flags and
+and invariant Result error payload; aliases resolve before checking. QZC22
+invalidates older exact/reusable chunks for source initialization and corrected
+match/operand execution. QZC21 introduced runtime local-owner flags and
 selected-path transfers. Cleanup flags follow the complete parameter ABI prefix,
 track executed initialization/moves and guard teardown; full-expression slots
 retain pending arguments until call commitment. They do not prove ordinary reads
@@ -187,7 +188,7 @@ qualified names and other declared concrete names stay concrete.
 - QZI v13 is a sectioned executable/library bytecode container with package metadata, a public source interface, named call relocations, a mandatory canonical ownership-artifact envelope, signedness-correct integer instruction flags, affine function-value ownership, layout-query and process-runtime intrinsic IDs, retained ordered vtable layouts, and legacy chunk payloads. The current envelope content-binds metadata, interface, relocations, and bytecode but is explicitly unverified: it is not a D-014 certificate and never permits a QZI-only borrowed safe call. Readers retain compatible QZI v2-v9 bytecode as `LegacyAbsent`; v1 omitted frame metadata, parameterized v6 trait interfaces lack receiver metadata, and pre-v7 public function-value contracts or synthetic closure/forwarder chunks require a source rebuild. Immutable golden fixtures from real historical writers (`src/bytecode/fixtures/qzi/`) lock the v2-v6 reading paths, including the v2 chunk-header layout without a flags byte and v3 string-based `@api` metadata. QZI libraries work without original source; generic template bodies remain source-only for now.
 - Explicit `&T` / `&T!` method receivers use the ordinary safe-reference slot ABI. Calls borrow owned receiver storage, forward existing references, and field/dense metadata operations load the aggregate handle from the slot. Shared `str` / `&str` keeps its representation-identical view ABI. V12 rejects incompatible or unproved pre-v12 reference/aggregate artifacts and opaque outbound call boundaries with source-rebuild guidance, preserving proven closed scalar/raw-pointer/shared-string compatibility and original ABI generation. Dynamic source dispatch retains its trait target methods and uses the concrete value slot; source and QZI-only native emission share retained vtable descriptors. Layout-free historical dynamic artifacts require rebuilding; D-014 effect certification remains open.
 - Projected method receivers borrow actual source-field slots, including nested replacement. Narrow C fields, bitfields, and inline C aggregates cannot back exclusive slot-reference receivers (S14); scalar qword C fields can. Fixed-array references index their pointee slots with a checked address fixed before assignment RHS evaluation.
-- QZC v21 (`build/quazi/<target>/<artifact>/incremental.qzc` by default) stores exact-hit linked QZI plus source-hashed pre-WPO function chunks. Partial misses restore unchanged chunks, compile changed files, then rerun full-program WPO. V21 invalidates older exact hits and reusable chunks for runtime local-owner flags and selected-path transfers; earlier retention, call-slot, typed-propagation, loop-cleanup and terminal-CFG corrections remain required. Signature/type/import/config changes conservatively invalidate all chunks. Downloaded dependencies live in `<out_dir>/deps`.
+- QZC v22 (`build/quazi/<target>/<artifact>/incremental.qzc` by default) stores exact-hit linked QZI plus source-hashed pre-WPO function chunks. Partial misses restore unchanged chunks, compile changed files, then rerun full-program WPO. V22 invalidates older exact hits and reusable chunks for source initialization and checked match/operand execution; V21 introduced runtime local-owner flags and selected-path transfers; earlier retention, call-slot, typed-propagation, loop-cleanup and terminal-CFG corrections remain required. Signature/type/import/config changes conservatively invalidate all chunks. Downloaded dependencies live in `<out_dir>/deps`.
 - `bytecode/vtable.rs` owns target-neutral descriptor encoding, identity, conflict and target validation. Native tables resolve exact chunk symbols through actual backend names; WPO retains their method targets. Public QZI interfaces omit internal-only implementations of proven same-source private nominal targets/traits, whose bytecode remains internal. Explicit public methods of public targets survive as inherent declarations when the trait is private; public methods of private targets require an actionable export error. Unknown alias/binder identities never justify omission. See [the vtable contract](docs/internals/dynamic-vtable-layout.md).
 - `type = "lib"` → lib project; default entry `src/lib.qz`; default output `.qzi`.
 
@@ -520,3 +521,35 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## Source initialization checkpoint (2026-10-22)
+
+`semantic/initialization.rs` snapshots declaration-backed initialization bits and
+joins normal paths, with separate truth/falsy states, loop exits and pending
+match cases. Deferred closures restore outer state. Match case/fact work is
+bounded at 1,000,000 steps; exhaustion is S14. Terminal statement spans align
+analysis and emission. Checking follows declared named-argument/field slots;
+indirect callees and place operands precede arguments/RHS, and range bounds
+precede loop binders. Place validation consumes checked annotations once.
+
+Checked pattern discriminants are published by pattern span and used directly
+by codegen. Nested refutable patterns require substituted actual payload types.
+Match captures a stable scrutinee snapshot; borrowed scalar slots load, shared
+&str preserves its view ABI and &str! loads. Boolean literal patterns use
+zero/nonzero truthiness, while integer patterns use exact equality. Float
+comparison is IEEE, string comparison uses first-NUL views. Unmatched values
+trap; Void matches retain fallthrough. Constant result knowledge cannot erase
+executed effects; only elidable expressions publish foldable annotations, and
+unknown floating multiplication by zero is not absorbing.
+
+Current source cache is **QZC22**, invalidating previous exact and reusable
+chunks for these checks and corrected execution. QZI13 remains Unverified and
+unchanged; rebuild old bodies from source. General operand value snapshots,
+canonical Boolean storage/equality, partial-place initialization, typed effects,
+recursive destruction and verified artifacts remain open. See
+[the initialization contract](docs/internals/source-initialization.md).
+
+Constant propagation treats every slot in a Lea-addressed block as runtime
+memory in both dataflow and rewrite. Aliased stores, calls and intrinsics
+cannot leave a stale local constant. This is conservative alias handling;
+non-addressable register values can still fold normally.

@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-10-22: Source initialization and checked match execution](2026-10-22-source-initialization.md)
+
 - [2026-10-21: Runtime cleanup for conditional owners](2026-10-21-conditional-cleanup.md)
 - [2026-10-20: Lexical cleanup across loop exits](2026-10-20-loop-cleanup.md)
 - [2026-10-20: Typed failure propagation and wrapper aliases](2026-10-20-typed-try-propagation.md)

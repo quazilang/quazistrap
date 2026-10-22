@@ -2465,7 +2465,7 @@ fn borrowed(owner: &Owner) str { ret owner.view(); }
         for body in [
             "enum Wrap { Item(Owner) } fn leak(w: Wrap) str { ret match w { Wrap.Item(owner) => owner.view(), }; }",
             "enum Wrap { Item(Owner) } struct Holder { text: str } fn stash(w: Wrap) Holder { ret Holder { text: match w { Wrap.Item(owner) => owner.view(), } }; }",
-            "enum Wrap { Item(Owner) } fn main() void { const text = match Wrap.Item(make()) { Wrap.Item(owner) => owner.view(), }; sink(text); }",
+            "enum Wrap { Item(Owner) } fn main() void { const wrapped: Wrap = Wrap.Item(make()); const text = match wrapped { Wrap.Item(owner) => owner.view(), }; sink(text); }",
         ] {
             rejects_view(body);
         }

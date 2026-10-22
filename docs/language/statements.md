@@ -34,6 +34,12 @@ label = "ready";
 Type annotations may be omitted when the type can be inferred from the
 initializer.
 
+A read requires initialization on every normal path reaching it. Branches and
+match arms are checked independently and joined; returning branches do not
+contribute fallthrough. A possibly empty loop, a skipped logical operand or a
+deferred closure body cannot initialize a later read. Loop updates follow the
+body. See [initialization migration](../migrations/source-initialization.md).
+
 ## Assignment
 
 `=` assigns a value to a mutable binding:

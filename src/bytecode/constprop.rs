@@ -218,10 +218,28 @@ fn meet_states(a: &RegState, b: &RegState) -> RegState {
     out
 }
 
-fn transfer(instr: &Instruction, state: &mut RegState, constants: &[ConstPoolEntry]) {
+fn record_result(state: &mut RegState, dst: u8, result: ConstLattice, address_taken: &HashSet<u8>) {
+    // Addressable slots are memory, not immutable register values. Stores,
+    // calls and intrinsics may change them through aliases without a VM def.
+    state.insert(
+        dst,
+        if address_taken.contains(&dst) {
+            ConstLattice::Bottom
+        } else {
+            result
+        },
+    );
+}
+
+fn transfer(
+    instr: &Instruction,
+    state: &mut RegState,
+    constants: &[ConstPoolEntry],
+    address_taken: &HashSet<u8>,
+) {
     let op = instr.opcode;
     if let Some(result) = compute_result(instr, state, constants) {
-        state.insert(instr.ops[0], result);
+        record_result(state, instr.ops[0], result, address_taken);
         return;
     }
     if has_dest(op) {
@@ -454,6 +472,7 @@ fn run_dataflow(
     constants: &[ConstPoolEntry],
     reachable: &[bool],
     entry: &RegState,
+    address_taken: &HashSet<u8>,
 ) -> Vec<RegState> {
     let n = blocks.len();
     let mut out_state: Vec<RegState> = vec![RegState::new(); n];
@@ -464,7 +483,7 @@ fn run_dataflow(
 
         let mut state = block_input(bi, blocks, &out_state, reachable, entry);
         for i in bb.start..=bb.end {
-            transfer(&code[i], &mut state, constants);
+            transfer(&code[i], &mut state, constants, address_taken);
         }
 
         if state != out_state[bi] {
@@ -568,8 +587,25 @@ pub fn const_prop_fold(chunk: &mut Chunk) {
     let entry: RegState = (0..chunk.reg_count)
         .map(|reg| (reg, ConstLattice::Bottom))
         .collect();
+    let address_taken: HashSet<u8> = chunk
+        .code
+        .iter()
+        .filter(|instruction| instruction.opcode == Opcode::Lea as u8)
+        .flat_map(|instruction| {
+            let start = usize::from(instruction.ops[1]);
+            (start..start + usize::from(instruction.flags.max(1)))
+                .filter_map(|reg| u8::try_from(reg).ok())
+        })
+        .collect();
     let constants = chunk.constants.clone();
-    let out_states = run_dataflow(&blocks, &chunk.code, &constants, &reachable, &entry);
+    let out_states = run_dataflow(
+        &blocks,
+        &chunk.code,
+        &constants,
+        &reachable,
+        &entry,
+        &address_taken,
+    );
 
     let n_instrs = chunk.code.len();
     for bi in 0..blocks.len() {
@@ -596,7 +632,7 @@ pub fn const_prop_fold(chunk: &mut Chunk) {
                     }
                 }
                 if has_dest(op) {
-                    state.insert(instr.ops[0], result);
+                    record_result(&mut state, instr.ops[0], result, &address_taken);
                 }
                 continue;
             }
@@ -619,7 +655,7 @@ pub fn const_prop_fold(chunk: &mut Chunk) {
                 }
             }
 
-            transfer(&chunk.code[i], &mut state, &constants);
+            transfer(&chunk.code[i], &mut state, &constants, &address_taken);
         }
     }
 }
@@ -637,6 +673,73 @@ mod tests {
         let mut c = Chunk::new(name);
         c.code = instrs;
         c
+    }
+
+    #[test]
+    fn address_taken_slots_do_not_retain_constants_across_aliased_writes() {
+        for clobber in [
+            rrr(Opcode::Store, 2, 1, 0),
+            ri16(Opcode::CallIdx, 4, 0),
+            ri16(Opcode::Intrinsic, 4, 0),
+        ] {
+            let mut chunk = Chunk::new("aliased");
+            chunk.reg_count = 5;
+            chunk.code = vec![
+                ri16(Opcode::MovI, 0, 0),
+                ri16(Opcode::MovI, 2, 7),
+                {
+                    let mut address = rrr(Opcode::Lea, 1, 0, 0);
+                    address.flags = 1;
+                    address
+                },
+                clobber,
+                rrr(Opcode::Mov, 3, 0, 0),
+                rrr(Opcode::Ret, 3, 0, 0),
+            ];
+            const_prop_fold(&mut chunk);
+            assert_eq!(
+                chunk.code[4].opcode,
+                Opcode::Mov as u8,
+                "aliased read must remain a load from its VM slot"
+            );
+        }
+    }
+
+    #[test]
+    fn address_taken_facts_stay_unknown_across_basic_blocks() {
+        let mut chunk = Chunk::new("aliased_successor");
+        chunk.reg_count = 4;
+        let mut address = rrr(Opcode::Lea, 1, 0, 0);
+        address.flags = 1;
+        chunk.code = vec![
+            ri16(Opcode::MovI, 0, 0),
+            ri16(Opcode::MovI, 2, 7),
+            address,
+            rrr(Opcode::Store, 2, 1, 0),
+            ri16(Opcode::Jmp, 0, 5),
+            rrr(Opcode::Mov, 3, 0, 0),
+            rrr(Opcode::Ret, 3, 0, 0),
+        ];
+        const_prop_fold(&mut chunk);
+        assert_eq!(chunk.code[5].opcode, Opcode::Mov as u8);
+    }
+
+    #[test]
+    fn every_slot_in_an_addressed_block_remains_runtime_unknown() {
+        let mut chunk = Chunk::new("aliased_block");
+        chunk.reg_count = 6;
+        let mut address = rrr(Opcode::Lea, 4, 1, 0);
+        address.flags = 3;
+        chunk.code = vec![
+            ri16(Opcode::MovI, 1, 1),
+            ri16(Opcode::MovI, 2, 2),
+            ri16(Opcode::MovI, 3, 3),
+            address,
+            rrr(Opcode::Mov, 0, 3, 0),
+            rrr(Opcode::Ret, 0, 0, 0),
+        ];
+        const_prop_fold(&mut chunk);
+        assert_eq!(chunk.code[4].opcode, Opcode::Mov as u8);
     }
 
     #[test]

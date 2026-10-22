@@ -674,6 +674,10 @@ pub struct SemanticReport {
     pub used_imports_map: HashMap<String, ImportInfo>,
     pub unused_imports: Vec<String>,
     pub annotated_exprs: Vec<ExprAnnotation>,
+    /// Source statements with no normal successor after initialization checking.
+    pub terminal_statements: std::collections::BTreeSet<(usize, usize)>,
+    /// Checked enum discriminants keyed by exact source pattern spans.
+    pub match_pattern_tags: HashMap<(usize, usize), usize>,
     /// Exact source spellings of declarations that have a resolved binding.
     pub binding_declarations: Vec<BindingDeclaration>,
     /// Exact import selectors resolved during declaration analysis.

@@ -26,16 +26,18 @@ Completion of unfinished plan items:
 | qz doc | 0/1 | 0.0% | 100.0% |
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
-Revalidated on 2026-10-21 for the
-[conditional-cleanup checkpoint](docs/changes/2026-10-21-conditional-cleanup.md), using the
+Revalidated on 2026-10-22 for the
+[source-initialization checkpoint](docs/changes/2026-10-22-source-initialization.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 873 tests pass, including the 60 contained-LSP tests. Runtime cleanup flags
-now follow executed initialization and moves; 31 native/QZI cases verify
-conditional owners, selected match transfers and pending argument failures.
-Quazifetch builds without S10 and reports Linux RAM using `MemAvailable`,
-including reclaimable cache, like fastfetch. Complete flow-sensitive destruction
-and definite-initialization proof remain unfinished.
-Ownership stays 9/16, and the four previously blocked LSP gates remain counted.
+All 897 tests pass, including the 60 contained-LSP tests. Source initialization
+now joins normal branch, loop, short-circuit and guarded-match paths. Another
+39 invalid programs are rejected; 57 native/QZI/COFF checks cover emitted
+schedules, match snapshots, side effects and aliased local writes.
+Quazifetch builds without S10 and reports Linux used RAM from `MemAvailable`,
+counting reclaimable cache as available; six isolated STD memory tests pass.
+General place/effect proof and complete recursive destruction remain open.
+Ownership stays 9/16, and LSP stays 16/20. The 33-item, 78-requirement rubric
+is unchanged: these correctness fixes strengthen existing requirements.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no

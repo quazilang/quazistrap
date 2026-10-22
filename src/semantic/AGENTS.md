@@ -291,3 +291,35 @@ lowering to an unchecked numeric conversion.
 - A panic in exported code follows the existing terminating panic path. It never
   unwinds across a C frame; recoverable ABI errors must be explicit return codes
   or out parameters.
+
+## Source initialization checkpoint (2026-10-22)
+
+`semantic/initialization.rs` snapshots declaration-backed initialization bits and
+joins normal paths, with separate truth/falsy states, loop exits and pending
+match cases. Deferred closures restore outer state. Match case/fact work is
+bounded at 1,000,000 steps; exhaustion is S14. Terminal statement spans align
+analysis and emission. Checking follows declared named-argument/field slots;
+indirect callees and place operands precede arguments/RHS, and range bounds
+precede loop binders. Place validation consumes checked annotations once.
+
+Checked pattern discriminants are published by pattern span and used directly
+by codegen. Nested refutable patterns require substituted actual payload types.
+Match captures a stable scrutinee snapshot; borrowed scalar slots load, shared
+&str preserves its view ABI and &str! loads. Boolean literal patterns use
+zero/nonzero truthiness, while integer patterns use exact equality. Float
+comparison is IEEE, string comparison uses first-NUL views. Unmatched values
+trap; Void matches retain fallthrough. Constant result knowledge cannot erase
+executed effects; only elidable expressions publish foldable annotations, and
+unknown floating multiplication by zero is not absorbing.
+
+Current source cache is **QZC22**, invalidating previous exact and reusable
+chunks for these checks and corrected execution. QZI13 remains Unverified and
+unchanged; rebuild old bodies from source. General operand value snapshots,
+canonical Boolean storage/equality, partial-place initialization, typed effects,
+recursive destruction and verified artifacts remain open. See
+[the initialization contract](../../docs/internals/source-initialization.md).
+
+Constant propagation treats every slot in a Lea-addressed block as runtime
+memory in both dataflow and rewrite. Aliased stores, calls and intrinsics
+cannot leave a stale local constant. This is conservative alias handling;
+non-addressable register values can still fold normally.

@@ -21,6 +21,36 @@ impl Analyzer {
         }
     }
 
+    /// A known result is foldable only when discarding its evaluation is safe.
+    /// Calls, mutation, memory projections, allocation and trapping arithmetic
+    /// keep their executed operands, including under absorbing identities.
+    pub(super) fn can_elide_expression(&self, expr: &Expr) -> bool {
+        match &expr.node {
+            ExprKind::Literal(_) => true,
+            ExprKind::Ident(name) => self.resolve_bare_foreign_global_name(name).is_none(),
+            ExprKind::Group(inner) | ExprKind::Cast { expr: inner, .. } => {
+                self.can_elide_expression(inner)
+            }
+            ExprKind::Unary {
+                op: UnaryOpKind::Neg | UnaryOpKind::Not,
+                expr: inner,
+            } => self.can_elide_expression(inner),
+            ExprKind::Binary { op, left, right } => {
+                let safe_operation = if matches!(op, BinOpKind::Div | BinOpKind::Mod) {
+                    self.annotated_exprs.iter().rev().find(|annotation| annotation.span == right.span)
+                        .and_then(|annotation| annotation.const_value.as_ref())
+                        .is_some_and(|value| matches!(value, ConstValue::Int(divisor) if *divisor != 0 && *divisor != -1))
+                } else {
+                    true
+                };
+                safe_operation
+                    && self.can_elide_expression(left)
+                    && self.can_elide_expression(right)
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn check_math_identities(
         &mut self,
         span: Span,
@@ -28,19 +58,23 @@ impl Analyzer {
         left: &ExprEval,
         right: &ExprEval,
     ) -> Option<ConstValue> {
-        // Absorbing elements: result is constant regardless of the unknown operand.
+        let integer_operands = [&left.ty, &right.ty].into_iter().all(|ty| {
+            ty.as_ref().is_some_and(|ty| {
+                Self::is_integer(&Self::autoderef_type(self.resolve_type_aliases(ty)))
+            })
+        });
+        // Absorbing elements may determine the result, but do not authorize
+        // dropping effects. Annotation publication checks elision separately.
         let absorbed: Option<(ConstValue, &str)> = match (op, &left.const_value, &right.const_value)
         {
             (BinOpKind::Mul, _, Some(ConstValue::Int(0)))
-            | (BinOpKind::Mul, Some(ConstValue::Int(0)), _) => {
+            | (BinOpKind::Mul, Some(ConstValue::Int(0)), _)
+                if integer_operands =>
+            {
                 Some((ConstValue::Int(0), "x * 0 = 0"))
             }
-            (BinOpKind::Mul, _, Some(ConstValue::Float(f))) if *f == 0.0 => {
-                Some((ConstValue::Float(0.0), "x * 0.0 = 0.0"))
-            }
-            (BinOpKind::Mul, Some(ConstValue::Float(f)), _) if *f == 0.0 => {
-                Some((ConstValue::Float(0.0), "0.0 * x = 0.0"))
-            }
+            // IEEE multiplication by zero is not absorbing: NaN/infinity
+            // and signed zero require the actual floating operation.
             (BinOpKind::AndAnd, _, Some(ConstValue::Bool(false)))
             | (BinOpKind::AndAnd, Some(ConstValue::Bool(false)), _) => {
                 Some((ConstValue::Bool(false), "x && false = false"))

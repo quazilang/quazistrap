@@ -104,9 +104,10 @@ destroys them before the next statement. Body locals are destroyed before a
 C-style update runs. Supported locals carry runtime cleanup flags: skipped
 initialization leaves cleanup disabled, successful assignment enables it, and
 movement or destruction disables it on the executed path. A `match` result
-transfers only its selected owner. These flags protect cleanup; proving ordinary
-reads definitely initialized remains separate work, along with complete
-recursive destruction in [D-014](../decisions/whole-program-ownership.md).
+transfers only its selected owner. These flags protect cleanup. Source checks
+separately require local reads initialized on every normal path; they do not
+establish partial-place initialization or interprocedural effects. Complete
+recursive destruction remains open in [D-014](../decisions/whole-program-ownership.md).
 
 `String.clear()` takes an exclusive receiver and releases an owned allocation
 while retaining an empty, reusable `String`. A direct `String.free()` call

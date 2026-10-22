@@ -21,6 +21,12 @@ pub use control_flow::{
 #[cfg(test)]
 mod control_flow_tests;
 mod declare;
+mod initialization;
+#[cfg(test)]
+mod initialization_tests;
+use initialization::{
+    InitializationCondition, InitializationLoop, InitializationState, join_initialization,
+};
 mod optimize;
 mod ownership;
 mod places;
@@ -120,6 +126,11 @@ pub struct Analyzer {
     pub(super) unsafe_depth: usize,
     /// Nesting depth of loops (0 = outside any loop).
     pub(super) loop_depth: usize,
+    initialization_loops: Vec<InitializationLoop>,
+    initialization_condition: Option<(Span, InitializationCondition)>,
+    initialization_reachable: bool,
+    terminal_statements: BTreeSet<(usize, usize)>,
+    match_pattern_tags: HashMap<(usize, usize), usize>,
     /// Nesting depth of trait definitions (0 = outside any trait).
     /// `any` in trait method signatures is exempt from W05.
     pub(super) trait_depth: usize,
@@ -211,8 +222,8 @@ pub struct Analyzer {
     pub(super) contiguous_element_contracts: HashMap<String, ContiguousElementContract>,
     /// Generic source reads to validate after concrete specialization closure.
     pending_contiguous_value_reads: Vec<(String, Span, TypeKind)>,
-    /// The indexed place currently being typed for replacement, not a read.
-    index_write_target_span: Option<(usize, usize)>,
+    /// The place currently being typed for replacement, not a value read.
+    place_write_target_span: Option<(usize, usize)>,
     /// Internal function name → stable native symbol requested by @export.
     pub(super) exported_symbols: HashMap<String, String>,
     /// Resolved Quazi binding name → imported C data symbol metadata.
@@ -914,6 +925,11 @@ impl Analyzer {
             unreachable_functions: BTreeSet::new(),
             unsafe_depth: 0,
             loop_depth: 0,
+            initialization_loops: Vec::new(),
+            initialization_condition: None,
+            initialization_reachable: true,
+            terminal_statements: BTreeSet::new(),
+            match_pattern_tags: HashMap::new(),
             trait_depth: 0,
             main_takes_args: false,
             test_functions: Vec::new(),
@@ -953,7 +969,7 @@ impl Analyzer {
             consuming_receiver_methods: std::collections::HashSet::new(),
             contiguous_element_contracts: HashMap::new(),
             pending_contiguous_value_reads: Vec::new(),
-            index_write_target_span: None,
+            place_write_target_span: None,
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
         }
@@ -1262,6 +1278,8 @@ impl Analyzer {
             used_imports_map,
             unused_imports: unused_imports_vec,
             annotated_exprs,
+            terminal_statements: std::mem::take(&mut self.terminal_statements),
+            match_pattern_tags: std::mem::take(&mut self.match_pattern_tags),
             binding_declarations,
             binding_imports,
             annotated_program,
@@ -1478,6 +1496,12 @@ impl Analyzer {
         self.lazy_import_hints.clear();
         self.unreachable_functions.clear();
         self.unsafe_depth = 0;
+        self.loop_depth = 0;
+        self.initialization_loops.clear();
+        self.initialization_condition = None;
+        self.initialization_reachable = true;
+        self.terminal_statements.clear();
+        self.match_pattern_tags.clear();
         self.trait_depth = 0;
         self.explicitly_imported_fns.clear(); // HashMap::clear
         self.struct_defs.clear();
@@ -1503,7 +1527,7 @@ impl Analyzer {
         self.consuming_receiver_methods.clear();
         self.contiguous_element_contracts.clear();
         self.pending_contiguous_value_reads.clear();
-        self.index_write_target_span = None;
+        self.place_write_target_span = None;
         self.exported_symbols.clear();
         self.foreign_globals.clear();
         self.repr_c_structs.clear();
@@ -6097,7 +6121,7 @@ fn mul(x: i32) i32 {
     }
 
     #[test]
-    fn math_absorber_mul_zero_float_folds_in_annotated_tree() {
+    fn float_zero_does_not_absorb_an_unknown_ieee_value() {
         let report = analyze(
             r#"
 fn scale(x: f64) f64 {
@@ -6111,18 +6135,15 @@ fn scale(x: f64) f64 {
             report.errors
         );
         assert!(
-            report
-                .annotated_exprs
-                .iter()
-                .any(|a| matches!(a.const_value, Some(ConstValue::Float(f)) if f == 0.0)),
-            "0.0 * x should fold to Float(0.0) in annotated tree"
+            report.annotated_exprs.last().unwrap().const_value.is_none(),
+            "0.0 * x must preserve NaN, infinity and signed zero"
         );
         assert!(
             report
                 .optimization_hints
                 .math_optimizations
                 .iter()
-                .any(|m| m.description.contains("0.0 * x = 0.0")),
+                .all(|hint| hint.result_value.is_none())
         );
     }
 

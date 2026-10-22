@@ -1,5 +1,7 @@
 # Migration guides
 
+- [Source initialization and checked match execution](source-initialization.md)
+
 Audience: language users maintaining existing Quazi code.
 
 Compatibility-sensitive changes will receive a migration page here before they

@@ -1,8 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
-Revalidated on 2026-10-21 against the
-[conditional-cleanup checkpoint](../changes/2026-10-21-conditional-cleanup.md).
-Previous committed source: `7d391a56a924ebfcf4e0bfd20fb4448f4c20d253`.
+Revalidated on 2026-10-22 against the
+[source-initialization checkpoint](../changes/2026-10-22-source-initialization.md).
+Previous committed source: `46271a9218bce134d89bae044c28222a7285ae41`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
@@ -50,6 +50,16 @@ These strengthen the existing lexical-cleanup requirement. Ordinary-read
 definite initialization, complete structural destruction and interprocedural
 ownership proof remain open, so all 33 item weights and 78 requirements retain
 the same credit: **73.2% complete, 26.8% remaining; Ownership 9/16, LSP 16/20**.
+
+The 2026-10-22 source-initialization checkpoint passes **897 tests**, rejects
+39 invalid sources through check/native/QZI/COFF, and passes 57 native/QZI/COFF
+checks plus unmatched-value traps and old-cache rejection/rebuild/exact-hit
+execution. Declaration-based initialization joins structured normal paths;
+checked operand schedules, stable match snapshots and address-taken constant
+facts align analysis and execution. This strengthens existing correctness
+coverage, without completing interprocedural loans/effects, partial-place state,
+recursive destruction or verified artifacts. All 33 item weights and 78
+requirements retain the same credit: **73.2% complete, 26.8% remaining**.
 
 ## Summary
 
@@ -342,10 +352,10 @@ Checks use the existing stable toolchain through `/tmp/quazi-named-rust-bin`
 ELF-loader wrappers, with `RUSTC=/tmp/quazi-named-rust-bin/rustc` and
 `RUSTFLAGS='-C link-arg=-fuse-ld=bfd'`:
 
-- `cargo test --offline -q`: **873 passed**, zero failed/ignored. This includes
+- `cargo test --offline -q`: **897 passed**, zero failed/ignored. This includes
   the current compiler, backend, semantic and contained-LSP regression suite.
 - `cargo test --offline -q lsp::`: **60 passed**, zero failed at the initial
-  `d72a1c5` refresh; all 60 also pass inside the latest full 873-test run.
+  `d72a1c5` refresh; all 60 also pass inside the latest full 897-test run.
   The three earlier
   failures — `indexes_only_parseable_local_quazi_sources`,
   `loaded_definition_uses_unsaved_importer_and_target_overlays`, and
@@ -367,7 +377,10 @@ ELF-loader wrappers, with `RUSTC=/tmp/quazi-named-rust-bin/rustc` and
   Conditional cleanup adds 31 native/source-removed-QZI cases, Windows COFF
   emission, an old-cache leak reproducer and correct subsequent exact hit.
   Six isolated STD memory tests and ordinary quazifetch build/run also pass;
-  its Linux RAM reporting follows installed fastfetch through `MemAvailable`.
+  its Linux RAM reporting uses `MemAvailable` and includes reclaimable cache.
+  Source initialization adds 39 rejected programs and 57 native/QZI/COFF checks,
+  deterministic unmatched-value traps, and old-cache rebuild/exact-hit execution.
+  See [the full verification record](../changes/2026-10-22-source-initialization.md).
 
 LSP implementation is inspected in
 [`workspace.rs`](../../src/lsp/workspace.rs),
@@ -389,9 +402,10 @@ call effects, structural destruction or verified artifacts. The existing
 lexical-cleanup point now has native regression coverage for abrupt loop exits
 as well as fallthrough and explicit return. Runtime flags now replace the
 compile-time return snapshot and preserve executed-path initialization/movement;
-the earlier terminal-CFG corrections remain covered. Definite initialization of
-ordinary reads and general structural destruction remain unverified; this is
-not a general destruction guarantee.
+the earlier terminal-CFG corrections remain covered. Structured source paths now
+check local reads by declaration identity; general partial-place initialization,
+interprocedural effects and structural destruction remain open. This is not a
+general destruction guarantee.
 
 The other checklist item counts retain their listed scope. This score excludes
 workspace-wide documentation/editor production-readiness milestones, full STD
