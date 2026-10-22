@@ -2,7 +2,7 @@
 
 Audience: compiler developers.
 
-`semantic/numeric_mutation.rs` checks ++/-- and arithmetic compound assignments.
+`semantic/arithmetic.rs` checks ++/-- and arithmetic compound assignments.
 Increment requires an integer or float. Compound operations require numeric
 operands with existing directional compatibility; raw pointer +=/-= accepts an
 integer offset. Other pointer mutations, handle arithmetic and string += are
@@ -26,9 +26,10 @@ arity, bounds and element type. Codegen loads a complete borrowed slice descript
 before indexing; byte descriptors load their handle. Bounds guards remain active
 and byte strings remain immutable through shared and exclusive references.
 
-This is a mutation-specific check. General eager arithmetic, unary negation,
-bitwise operations, floating power, mixed float/integer coercion and narrow-result
-normalization remain incomplete. It establishes no complete typed-effect,
+This page describes the initial mutation checkpoint. The subsequent
+[arithmetic checkpoint](arithmetic.md) extends its facts to eager arithmetic
+and unary negation. Bitwise operations, floating power, mixed float/integer
+coercion and narrow-result normalization remain incomplete. It establishes no complete typed-effect,
 escape, recursive-destruction or artifact proof. QZC25 invalidates earlier source
 caches. QZI13 remains unchanged and Unverified; rebuild old bodies from source.
 See the [verification record](../changes/2026-10-22-numeric-mutations.md).

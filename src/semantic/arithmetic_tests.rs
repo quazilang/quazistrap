@@ -215,3 +215,154 @@ fn numeric_mutation_generic_target_loads_known_reference_rhs() {
                 && annotation.ty.as_ref().is_some_and(Analyzer::is_integer))
     );
 }
+
+#[test]
+fn arithmetic_rejects_nonnumeric_values_and_missing_types() {
+    for operator in ["+", "-", "*", "/", "%"] {
+        assert_error(
+            &format!(
+                "struct Owner{{value:i32,}}fn main()void{{var a=Owner{{value:1}};var b=Owner{{value:2}};var c=a{operator}b;}}"
+            ),
+            "S06",
+        );
+        assert_error(
+            &format!("fn main()void{{var c=true{operator}false;}}"),
+            "S06",
+        );
+        assert_error(
+            &format!("enum E{{One,}}fn main()void{{var a=E.One;var b=E.One;var c=a{operator}b;}}"),
+            "S14",
+        );
+    }
+    for source in [
+        "struct Owner{value:i32,}fn main()void{var a=Owner{value:1};var b=-a;}",
+        "fn main()void{var a=[1,2];var b=-a;}",
+        "fn main()void{var n=1;var r=&n;var b=-r;}",
+    ] {
+        assert_error(source, "S06");
+    }
+    assert_error("enum E{One,}fn main()void{var a=E.One;var b=-a;}", "S14");
+}
+
+#[test]
+fn arithmetic_concatenation_requires_views_and_addition() {
+    assert_valid("fn main()void{var text=\"a\"+\"b\";}");
+    for operator in ["-", "*", "/", "%"] {
+        assert_error(
+            &format!("fn main()void{{var a=\"a\"{operator}\"b\";}}"),
+            "S06",
+        );
+    }
+    assert_error(
+        "struct String{data:*u8,}fn main()void{var a=String{data:0};var b=String{data:0};var c=a+b;}",
+        "S06",
+    );
+}
+
+#[test]
+fn arithmetic_generic_helpers_validate_all_actual_types() {
+    for operator in ["+", "-", "*", "/", "%"] {
+        let helper = format!("fn calc[T](a:T,b:T)T{{ret a{operator}b;}}");
+        assert_valid(&format!(
+            "{helper}fn main()void{{calc[i32](5,2);calc[f64](5.0,2.0);}}"
+        ));
+        assert_error(
+            &format!("{helper}fn main()void{{calc[i32](5,2);calc[bool](true,false);}}"),
+            "S06",
+        );
+    }
+    assert_valid("fn neg[T](a:T)T{ret -a;}fn main()void{neg[i32](1);neg[f64](1.5);}");
+    assert_error(
+        "fn neg[T](a:T)T{ret -a;}fn outer[U](a:U)U{ret neg[U](a);}fn main()void{outer[i32](1);outer[bool](true);}",
+        "S06",
+    );
+    assert_valid("fn add[T](a:T,b:T)T{ret a+b;}fn main()void{add[str](\"a\",\"b\");}");
+    assert_error(
+        "struct String{data:*u8,}fn add[T](a:T,b:T)T{ret a+b;}fn main()void{add[String](String{data:0},String{data:0});}",
+        "S06",
+    );
+}
+
+#[test]
+fn arithmetic_keeps_pointer_offset_roles() {
+    assert_valid("unsafe fn main()void{var p:*u8=0;var q=p+4;var r=q-1;}");
+    for expression in ["p+p", "p-p", "1+p", "p*2", "p+1.5", "-p"] {
+        assert_error(
+            &format!("unsafe fn main()void{{var p:*u8=0;var q={expression};}}"),
+            "S06",
+        );
+    }
+    assert_valid("fn offset[T](p:T,n:i32)T{ret p+n;}unsafe fn main()void{offset[*u8](0,4);}");
+    assert_error(
+        "fn offset[T](p:T,n:i32)T{ret p*n;}unsafe fn main()void{offset[*u8](0,4);}",
+        "S06",
+    );
+}
+
+#[test]
+fn arithmetic_loads_known_reference_peers_in_generic_templates() {
+    assert_valid("fn add[T](a:T,b:&i32)T{ret a+b;}fn main()void{var b=2;add[i32](1,&b);}");
+    assert_valid("fn add[T](a:&i32,b:T)i32{ret a+b;}fn main()void{var a=1;add[i32](&a,2);}");
+    assert_error("fn add[T](a:T,b:&T)T{ret a+b;}fn main()void{}", "S06");
+}
+
+#[test]
+fn arithmetic_alias_reference_annotations_are_loaded_values() {
+    let report = analyze("type FloatRef=&f64;fn add(a:FloatRef,b:f64)f64{ret a+b;}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(
+        report
+            .annotated_exprs
+            .iter()
+            .any(|ann| ann.auto_deref && matches!(ann.ty, Some(TypeKind::Float64)))
+    );
+    assert_valid("fn main()void{var a=\"a\";var r=&a!;var result=r+\"b\";}");
+    assert_valid("fn main()void{var a=\"a\";var r=&a!;var result=*r+\"b\";}");
+}
+
+#[test]
+fn arithmetic_string_load_flags_follow_physical_reference_storage() {
+    let report = analyze("fn concat(a:&str,b:&str!)str{ret a+b;}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(
+        report
+            .annotated_exprs
+            .iter()
+            .filter(|ann| ann.auto_deref && matches!(ann.ty, Some(TypeKind::Str)))
+            .count(),
+        1
+    );
+    assert_valid("fn add[T](a:T,b:T)T{ret a+b;}fn main()void{add[&str](\"a\",\"b\");}");
+    assert_valid(
+        "unsafe fn offset[U](p:&*u8,n:U)*u8{ret p+n;}unsafe fn main()void{var p:*u8=0;offset[i32](&p,4);}",
+    );
+}
+
+#[test]
+fn arithmetic_nested_string_views_keep_their_reference_representation() {
+    assert_valid("fn main()void{var text=\"a\";var shared=&text;var result=*shared+\"b\";}");
+    assert_valid(
+        "fn main()void{var text=\"a\";var exclusive=&text!;var shared=&exclusive;var result=*shared+\"b\";}",
+    );
+    assert_error(
+        "fn add[T](a:T,b:T)T{ret a+b;}fn main()void{var a:str=\"a\";var b:str=\"b\";add[&str!](&a!,&b!);}",
+        "S06",
+    );
+}
+
+#[test]
+fn arithmetic_generic_division_retains_its_hidden_panic_dependency() {
+    for expression in ["ret a/b;", "ret a%b;", "a/=b;ret a;", "a%=b;ret a;"] {
+        let report = analyze(&format!(
+            "fn calc[T](a:T,b:T)T{{{expression}}}fn main()void{{calc[i32](4,0);}}"
+        ));
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(
+            report
+                .dependency_graph
+                .edges
+                .iter()
+                .any(|edge| edge.from == "calc" && edge.to == "panic.panic")
+        );
+    }
+}

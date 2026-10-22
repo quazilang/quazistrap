@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-//! Source numeric mutation obligations. Template parameters retain declaration
+//! Source arithmetic obligations. Template parameters retain declaration
 //! slots; only proven concrete specializations can discharge those obligations.
 
 use super::*;
@@ -12,15 +12,24 @@ const MAX_WORK: usize = 1_000_000;
 const MAX_RETAINED_TEXT: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
-pub(super) enum NumericMutationKind {
+pub(super) enum ArithmeticOp {
     Increment,
+    Negate,
+    Binary(BinOpKind),
     Compound(CompoundAssignOp),
 }
 
-impl NumericMutationKind {
+impl ArithmeticOp {
     fn name(&self) -> &'static str {
         match self {
             Self::Increment => "++ / --",
+            Self::Negate => "unary -",
+            Self::Binary(BinOpKind::Add) => "+",
+            Self::Binary(BinOpKind::Sub) => "-",
+            Self::Binary(BinOpKind::Mul) => "*",
+            Self::Binary(BinOpKind::Div) => "/",
+            Self::Binary(BinOpKind::Mod) => "%",
+            Self::Binary(_) => unreachable!("non-arithmetic operator"),
             Self::Compound(CompoundAssignOp::Add) => "+=",
             Self::Compound(CompoundAssignOp::Sub) => "-=",
             Self::Compound(CompoundAssignOp::Mul) => "*=",
@@ -33,7 +42,11 @@ impl NumericMutationKind {
         matches!(
             self,
             Self::Compound(CompoundAssignOp::Add | CompoundAssignOp::Sub)
+                | Self::Binary(BinOpKind::Add | BinOpKind::Sub)
         )
+    }
+    fn permits_string_views(&self) -> bool {
+        matches!(self, Self::Binary(BinOpKind::Add))
     }
 }
 
@@ -42,6 +55,7 @@ enum Operand {
     // Only integer/float primitive leaves are retained here, never a type tree.
     Number(TypeKind),
     Pointer,
+    StringView,
     Parameter(usize),
 }
 
@@ -50,6 +64,7 @@ impl Operand {
         match self {
             Self::Number(ty) => ty.to_string(),
             Self::Pointer => "raw pointer".into(),
+            Self::StringView => "str".into(),
             Self::Parameter(slot) => format!("type parameter slot {slot}"),
         }
     }
@@ -59,12 +74,12 @@ impl Operand {
 struct Site {
     callable: String,
     span: Span,
-    kind: NumericMutationKind,
+    kind: ArithmeticOp,
     target: Operand,
     value: Option<Operand>,
 }
 
-pub(super) struct NumericMutationFacts {
+pub(super) struct ArithmeticFacts {
     sites: Vec<Site>,
     seen: HashSet<(usize, usize)>,
     retained_text: usize,
@@ -73,7 +88,7 @@ pub(super) struct NumericMutationFacts {
     work_limit: usize,
 }
 
-impl Default for NumericMutationFacts {
+impl Default for ArithmeticFacts {
     fn default() -> Self {
         Self {
             sites: Vec::new(),
@@ -86,7 +101,7 @@ impl Default for NumericMutationFacts {
     }
 }
 
-impl NumericMutationFacts {
+impl ArithmeticFacts {
     pub(super) fn clear(&mut self) {
         self.sites.clear();
         self.seen.clear();
@@ -96,9 +111,27 @@ impl NumericMutationFacts {
 }
 
 impl Analyzer {
-    fn mutation_operand(
+    /// Shared string references preserve their view representation. An
+    /// exclusive reference adds a VM slot; implicit emission loads one slot.
+    pub(super) fn arithmetic_string_load(ty: &TypeKind) -> Option<bool> {
+        let mut cursor = ty;
+        let mut load = false;
+        loop {
+            match cursor {
+                TypeKind::Str => return Some(load),
+                TypeKind::Ref { inner } => cursor = &inner.node,
+                TypeKind::MutRef { inner } if !load => {
+                    load = true;
+                    cursor = &inner.node;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn arithmetic_operand(
         &mut self,
-        kind: &NumericMutationKind,
+        kind: &ArithmeticOp,
         ty: Option<&TypeKind>,
         span: Span,
         parameters: &[String],
@@ -116,13 +149,22 @@ impl Analyzer {
             return None;
         };
         let mut ty = self.resolve_type_aliases(ty);
-        if rhs {
-            // Match the existing checked RHS autoderef. A symbolic &T is not
+        if rhs || matches!(kind, ArithmeticOp::Binary(_)) {
+            // Match checked binary operand autoderef. A symbolic &T is not
             // an implicit numeric load until that lowering is implemented.
-            ty = Self::autoderef_type(ty);
+            ty = if matches!(kind, ArithmeticOp::Binary(_))
+                && Self::arithmetic_string_load(&ty).is_some()
+            {
+                TypeKind::Str
+            } else {
+                Self::autoderef_type(ty)
+            };
         }
         if Self::is_integer(&ty) || Self::is_float(&ty) {
             return Some(Operand::Number(ty));
+        }
+        if kind.permits_string_views() && matches!(ty, TypeKind::Str) {
+            return Some(Operand::StringView);
         }
         if matches!(ty, TypeKind::RawPtr { .. }) && !rhs && kind.permits_offset() {
             return Some(Operand::Pointer);
@@ -142,7 +184,7 @@ impl Analyzer {
                 span,
                 "S06",
                 format!(
-                    "{} not valid for {}; numeric operands are required",
+                    "{} not valid for {}; numeric operands or supported str concatenation are required",
                     kind.name(),
                     ty
                 ),
@@ -151,10 +193,10 @@ impl Analyzer {
         None
     }
 
-    pub(super) fn check_numeric_mutation(
+    pub(super) fn check_arithmetic_op(
         &mut self,
         span: Span,
-        kind: NumericMutationKind,
+        kind: ArithmeticOp,
         target: Option<&TypeKind>,
         value: Option<&TypeKind>,
     ) {
@@ -163,11 +205,11 @@ impl Analyzer {
             .last()
             .map(|callable| self.generic_params_for_function(callable))
             .unwrap_or_default();
-        let Some(target) = self.mutation_operand(&kind, target, span, &parameters, false) else {
+        let Some(target) = self.arithmetic_operand(&kind, target, span, &parameters, false) else {
             return;
         };
-        let value = if matches!(kind, NumericMutationKind::Compound(_)) {
-            let Some(value) = self.mutation_operand(&kind, value, span, &parameters, true) else {
+        let value = if matches!(kind, ArithmeticOp::Compound(_) | ArithmeticOp::Binary(_)) {
+            let Some(value) = self.arithmetic_operand(&kind, value, span, &parameters, true) else {
                 return;
             };
             Some(value)
@@ -187,6 +229,22 @@ impl Analyzer {
             );
             return;
         }
+        if (matches!(target, Operand::StringView) || matches!(value, Some(Operand::StringView)))
+            && !matches!(
+                (&target, &value),
+                (
+                    Operand::StringView | Operand::Parameter(_),
+                    Some(Operand::StringView | Operand::Parameter(_))
+                )
+            )
+        {
+            self.push_error(
+                span,
+                "S06",
+                "string concatenation requires two str views".into(),
+            );
+            return;
+        }
         if !matches!(target, Operand::Parameter(_)) && !matches!(value, Some(Operand::Parameter(_)))
         {
             // Existing inference checks concrete numeric compatibility.
@@ -196,11 +254,11 @@ impl Analyzer {
             self.push_error(
                 span,
                 "S14",
-                "numeric mutation has no source declaration context".into(),
+                "arithmetic has no source declaration context".into(),
             );
             return;
         };
-        let facts = &mut self.numeric_mutations;
+        let facts = &mut self.arithmetic;
         if facts.exhausted || facts.seen.contains(&(span.start, span.end)) {
             return;
         }
@@ -211,11 +269,7 @@ impl Analyzer {
                 .is_none_or(|size| size > MAX_RETAINED_TEXT)
         {
             facts.exhausted = true;
-            self.push_error(
-                span,
-                "S14",
-                "numeric mutation source-fact budget exceeded".into(),
-            );
+            self.push_error(span, "S14", "arithmetic source-fact budget exceeded".into());
             return;
         }
         facts.retained_text += callable.len();
@@ -229,20 +283,20 @@ impl Analyzer {
         });
     }
 
-    pub(super) fn validate_numeric_mutation_specializations(
+    pub(super) fn validate_arithmetic_specializations(
         &mut self,
         concrete: &BTreeSet<OwnershipCallableId>,
         checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
     ) -> Result<(), crate::cancel::Cancelled> {
         let mut sites: HashMap<&str, Vec<&Site>> = HashMap::new();
-        for site in &self.numeric_mutations.sites {
+        for site in &self.arithmetic.sites {
             checkpoint()?;
             sites.entry(&site.callable).or_default().push(site);
         }
         if sites.is_empty() {
             return Ok(());
         }
-        let mut work = self.numeric_mutations.work_limit;
+        let mut work = self.arithmetic.work_limit;
         let mut checked = BTreeSet::new();
         let mut rejected = HashSet::new();
         let mut diagnostics = Vec::new();
@@ -261,7 +315,7 @@ impl Analyzer {
                     diagnostics.push(SemanticError {
                         span: site.span,
                         code: "S14",
-                        message: "numeric mutation specialization work budget exceeded".into(),
+                        message: "arithmetic specialization work budget exceeded".into(),
                     });
                     break 'specializations;
                 }
@@ -272,7 +326,7 @@ impl Analyzer {
                             let actual = mono.type_args.get(*slot).ok_or_else(|| {
                                 (
                                     "S14",
-                                    "numeric mutation type-parameter slot is missing".to_string(),
+                                    "arithmetic type-parameter slot is missing".to_string(),
                                 )
                             })?;
                             let actual = crate::type_resolution::resolve_type(
@@ -285,6 +339,10 @@ impl Analyzer {
                             .map_err(|error| ("S14", error.to_string()))?;
                             if Self::is_integer(&actual) || Self::is_float(&actual) {
                                 Ok(Operand::Number(actual))
+                            } else if site.kind.permits_string_views()
+                                && Self::arithmetic_string_load(&actual) == Some(false)
+                            {
+                                Ok(Operand::StringView)
                             } else if matches!(actual, TypeKind::RawPtr { .. }) {
                                 Ok(Operand::Pointer)
                             } else {
@@ -298,6 +356,9 @@ impl Analyzer {
                 let value = site.value.as_ref().map(resolved).transpose();
                 let valid = match (&target, &value) {
                     (Ok(Operand::Number(_)), Ok(None)) => true,
+                    (Ok(Operand::StringView), Ok(Some(Operand::StringView))) => {
+                        site.kind.permits_string_views()
+                    }
                     (Ok(Operand::Number(left)), Ok(Some(Operand::Number(right)))) => {
                         self.types_compatible(left, right)
                     }
@@ -330,7 +391,7 @@ impl Analyzer {
                         Err((_, error)) => format!(" and {error}"),
                         _ => String::new(),
                     };
-                    diagnostics.push(SemanticError { span: site.span, code, message: format!("specialization `{}`: {} not valid for {target}{value}; numeric operands or a permitted pointer offset are required", mono.mangled_name, site.kind.name()) });
+                    diagnostics.push(SemanticError { span: site.span, code, message: format!("specialization `{}`: {} not valid for {target}{value}; numeric operands, str concatenation or a permitted pointer offset are required", mono.mangled_name, site.kind.name()) });
                 }
             }
         }
@@ -351,7 +412,7 @@ mod budget_tests {
     #[test]
     fn numeric_mutation_source_budget_rejects_and_resets() {
         let mut analyzer = Analyzer::new();
-        analyzer.numeric_mutations.site_limit = 0;
+        analyzer.arithmetic.site_limit = 0;
         let report = analyzer.analyze_program(&program("fn bump[T](value:T)T{value++;ret value;}"));
         assert!(
             report
@@ -370,7 +431,7 @@ mod budget_tests {
     #[test]
     fn numeric_mutation_specialization_work_budget_rejects() {
         let mut analyzer = Analyzer::new();
-        analyzer.numeric_mutations.work_limit = 0;
+        analyzer.arithmetic.work_limit = 0;
         let report = analyzer.analyze_program(&program(
             "fn bump[T](value:T)T{value++;ret value;}fn main()void{bump[i32](1);}",
         ));
@@ -396,7 +457,7 @@ mod budget_tests {
             .collect();
         analyzer.monomorphizations = report.monomorphizations;
         let mut polls = 0;
-        let result = analyzer.validate_numeric_mutation_specializations(&concrete, &mut || {
+        let result = analyzer.validate_arithmetic_specializations(&concrete, &mut || {
             polls += 1;
             if polls >= 2 {
                 Err(crate::cancel::Cancelled)

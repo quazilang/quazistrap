@@ -106,3 +106,14 @@ the actual native function-symbol table. Hex-encoded identity components avoid
 punctuation collisions; marker tables reserve one word. Table relocation errors
 propagate as BackendError. Historical layout-free addresses require a source
 rebuild. No ownership/effect proof follows from a retained table.
+
+## Arithmetic checkpoint (2026-10-22)
+
+QZC26 supersedes QZC25; QZI13 remains Unverified. `semantic/arithmetic.rs`
+shares mutation, eager arithmetic and negation requirements over declaration
+slots and every concrete identity. Only view Add and pointer-left byte offsets
+are special cases. Auto-deref flags describe physical loads; shared string
+wrappers preserve views and one exclusive wrapper loads once. Aliases normalize
+before collapse. Floating Mod uses guarded FPREM reduction with balanced x87
+stack; constprop agrees. General bitwise/Pow, coercion and effect proof remain
+open. See [the contract](../../../docs/internals/arithmetic.md).

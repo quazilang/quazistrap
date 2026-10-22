@@ -1,5 +1,7 @@
 # Audits
 
+- [2026-10-22: Remaining operator and shared-library findings](2026-10-22-arithmetic-followups.md)
+
 - [2026-10-20: README roadmap requirement checklist](2026-10-20-readme-plan-checklist.md)
 - [2026-10-13: README roadmap requirement checklist](2026-10-13-readme-plan-checklist.md)
 - [2026-09-16: Plan-progress audit](2026-09-16-plan-progress.md)

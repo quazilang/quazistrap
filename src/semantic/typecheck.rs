@@ -3131,22 +3131,12 @@ impl Analyzer {
                         }
                     }
                     UnaryOpKind::Neg => {
-                        if let Some(t) = &inner_eval.ty
-                            && matches!(
-                                t,
-                                TypeKind::Str
-                                    | TypeKind::Bool
-                                    | TypeKind::Ref { .. }
-                                    | TypeKind::MutRef { .. }
-                                    | TypeKind::RawPtr { .. }
-                            )
-                        {
-                            self.push_error(
-                                inner.span,
-                                "S06",
-                                format!("unary - not valid for {}", t),
-                            );
-                        }
+                        self.check_arithmetic_op(
+                            expr.span,
+                            ArithmeticOp::Negate,
+                            inner_eval.ty.as_ref(),
+                            None,
+                        );
                     }
                 }
 
@@ -3295,6 +3285,23 @@ impl Analyzer {
                     self.type_check_expr(right, reachable)
                 };
 
+                if matches!(
+                    op,
+                    BinOpKind::Add
+                        | BinOpKind::Sub
+                        | BinOpKind::Mul
+                        | BinOpKind::Div
+                        | BinOpKind::Mod
+                ) {
+                    self.check_arithmetic_op(
+                        expr.span,
+                        ArithmeticOp::Binary(op.clone()),
+                        left_eval.ty.as_ref(),
+                        right_eval.ty.as_ref(),
+                    );
+                    self.mark_arithmetic_operand_autoderef(left, left_eval.ty.as_ref());
+                    self.mark_arithmetic_operand_autoderef(right, right_eval.ty.as_ref());
+                }
                 let ty = self.infer_binary_type(expr.span, op, &left_eval.ty, &right_eval.ty);
                 self.mark_binary_autoderef(left, &left_eval.ty, right, &right_eval.ty);
                 let const_value = if let (Some(lhs), Some(rhs)) =
@@ -5252,25 +5259,15 @@ impl Analyzer {
                     CompoundAssignOp::Div => BinOpKind::Div,
                     CompoundAssignOp::Mod => BinOpKind::Mod,
                 };
-                self.check_numeric_mutation(
+                self.check_arithmetic_op(
                     expr.span,
-                    NumericMutationKind::Compound(op.clone()),
+                    ArithmeticOp::Compound(op.clone()),
                     target_eval.ty.as_ref(),
                     value_eval.ty.as_ref(),
                 );
                 let ty =
                     self.infer_binary_type(expr.span, &bin_op, &target_eval.ty, &value_eval.ty);
-                // A numeric mutation requires a loaded numeric RHS even when
-                // the destination is still a declaration generic parameter.
-                if let Some(value_ty) = value_eval.ty.as_ref() {
-                    let resolved = self.resolve_type_aliases(value_ty);
-                    if matches!(resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. }) {
-                        let loaded = Self::autoderef_type(resolved);
-                        if Self::is_integer(&loaded) || Self::is_float(&loaded) {
-                            self.mark_auto_deref(value);
-                        }
-                    }
-                }
+                self.mark_arithmetic_operand_autoderef(value, value_eval.ty.as_ref());
                 self.mark_binary_autoderef(target, &target_eval.ty, value, &value_eval.ty);
                 ExprEval {
                     ty,
@@ -5281,9 +5278,9 @@ impl Analyzer {
                 let inner_eval = self.type_check_expr(inner, reachable);
                 self.analyze_assign_target(inner);
 
-                self.check_numeric_mutation(
+                self.check_arithmetic_op(
                     expr.span,
-                    NumericMutationKind::Increment,
+                    ArithmeticOp::Increment,
                     inner_eval.ty.as_ref(),
                     None,
                 );
@@ -6373,9 +6370,21 @@ impl Analyzer {
         left: &Option<TypeKind>,
         right: &Option<TypeKind>,
     ) -> Option<TypeKind> {
-        // Auto-deref references for binary operations: &T op U becomes T op U.
-        let left = left.clone().map(Self::autoderef_type);
-        let right = right.clone().map(Self::autoderef_type);
+        // Resolve aliases before interpreting reference representation.
+        let mut operand_type = |ty: &TypeKind| {
+            let ty = self.resolve_type_aliases(ty);
+            if matches!(
+                op,
+                BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div | BinOpKind::Mod
+            ) && Self::arithmetic_string_load(&ty).is_some()
+            {
+                TypeKind::Str
+            } else {
+                Self::autoderef_type(ty)
+            }
+        };
+        let left = left.as_ref().map(&mut operand_type);
+        let right = right.as_ref().map(operand_type);
         match op {
             BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div | BinOpKind::Mod => {
                 match (&left, &right) {
@@ -6383,7 +6392,8 @@ impl Analyzer {
                         // Integer division and remainder lower to an implicit panic guard.
                         // Record that hidden call so whole-program dead-code elimination keeps
                         // the prelude panic path reachable from the current function.
-                        if matches!(op, BinOpKind::Div | BinOpKind::Mod) && Self::is_integer(l) {
+                        // A symbolic numeric parameter can specialize to an integer.
+                        if matches!(op, BinOpKind::Div | BinOpKind::Mod) && !Self::is_float(l) {
                             let from = self
                                 .current_function
                                 .last()
@@ -6762,7 +6772,7 @@ impl Analyzer {
         reachable: bool,
         resolved_fn: Option<String>,
     ) {
-        let ty = eval.ty.clone().map(Self::autoderef_type);
+        let ty = eval.ty.clone();
         let resolved_binding = resolved_fn
             .as_deref()
             .and_then(|name| self.resolved_binding_for_name(name))
@@ -6783,9 +6793,11 @@ impl Analyzer {
             resolved_fn,
             resolved_global: None,
             resolved_binding,
-            auto_deref: true,
+            auto_deref: false,
             c_abi_function: false,
         });
+
+        self.mark_auto_deref(expr);
 
         if let Some(value) = &foldable {
             self.constant_evaluations.push(ConstantEvaluation {
@@ -6795,16 +6807,44 @@ impl Analyzer {
         }
     }
 
+    /// Known arithmetic reference operands load independently of a symbolic peer.
+    fn mark_arithmetic_operand_autoderef(&mut self, expr: &Expr, ty: Option<&TypeKind>) {
+        if let Some(ty) = ty {
+            let resolved = self.resolve_type_aliases(ty);
+            if matches!(resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. }) {
+                let loaded = Self::autoderef_type(resolved.clone());
+                if Self::is_integer(&loaded)
+                    || Self::is_float(&loaded)
+                    || matches!(loaded, TypeKind::Str | TypeKind::RawPtr { .. })
+                    || Self::arithmetic_string_load(&resolved).is_some()
+                {
+                    self.mark_auto_deref(expr);
+                }
+            }
+        }
+    }
+
     /// Update the most recent annotation for `expr` to enable codegen auto-deref.
     /// The stored type is collapsed to the value type so codegen loads the right size.
     fn mark_auto_deref(&mut self, expr: &Expr) {
-        for ann in self.annotated_exprs.iter_mut().rev() {
-            if ann.span.start == expr.span.start && ann.span.end == expr.span.end {
-                ann.auto_deref = true;
-                if let Some(ty) = ann.ty.clone() {
-                    ann.ty = Some(Self::autoderef_type(ty));
-                }
-                break;
+        if let Some(index) = self
+            .annotated_exprs
+            .iter()
+            .rposition(|ann| ann.span == expr.span)
+        {
+            if self.annotated_exprs[index].auto_deref {
+                return;
+            }
+            if let Some(ty) = self.annotated_exprs[index].ty.clone() {
+                let resolved = self.resolve_type_aliases(&ty);
+                let (ty, load) = if let Some(load) = Self::arithmetic_string_load(&resolved) {
+                    (TypeKind::Str, load)
+                } else {
+                    let load = matches!(resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. });
+                    (Self::autoderef_type(resolved), load)
+                };
+                self.annotated_exprs[index].ty = Some(ty);
+                self.annotated_exprs[index].auto_deref = load;
             }
         }
     }

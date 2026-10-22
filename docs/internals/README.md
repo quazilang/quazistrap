@@ -1,5 +1,7 @@
 # Compiler and runtime internals
 
+- [Arithmetic operand and reference contracts](arithmetic.md)
+
 - [Numeric mutation obligations](numeric-mutations.md)
 
 - [Scalar memory conversions and numeric updates](scalar-memory.md)

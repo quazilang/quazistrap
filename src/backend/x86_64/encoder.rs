@@ -1752,26 +1752,67 @@ impl<'a> FnEncoder<'a> {
 
             Some(Opcode::Mod) => {
                 let (dst, s1, s2) = instr.rrr();
-                emit!(asm.mov(rax, slot(s1)));
-                if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
-                    emit!(asm.xor(edx, edx));
-                    emit!(asm.div(slot(s2)));
+                if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
+                    // FPREM uses a quotient truncated toward zero, matching
+                    // source floating %. Guard invalid operands so C2 is
+                    // defined on every iteration of the reduction loop.
+                    let mut invalid = asm.create_label();
+                    let mut dividend = asm.create_label();
+                    let mut reduce = asm.create_label();
+                    let mut done = asm.create_label();
+                    emit!(asm.mov(rax, slot(s1)));
+                    emit!(asm.mov(rcx, slot(s2)));
+                    emit!(asm.mov(rdx, 0x7fff_ffff_ffff_ffff_u64));
+                    emit!(asm.and(rax, rdx));
+                    emit!(asm.and(rcx, rdx));
+                    emit!(asm.mov(rdx, 0x7ff0_0000_0000_0000_u64));
+                    emit!(asm.cmp(rax, rdx));
+                    emit!(asm.jae(invalid));
+                    emit!(asm.test(rcx, rcx));
+                    emit!(asm.jz(invalid));
+                    emit!(asm.cmp(rcx, rdx));
+                    emit!(asm.ja(invalid));
+                    emit!(asm.je(dividend));
+                    emit!(asm.fld(slot(s2)));
+                    emit!(asm.fld(slot(s1)));
+                    emit!(asm.set_label(&mut reduce));
+                    emit!(asm.fprem());
+                    emit!(asm.fnstsw(ax));
+                    emit!(asm.test(ax, 0x0400i32));
+                    emit!(asm.jnz(reduce));
+                    emit!(asm.fstp(slot(dst)));
+                    emit!(asm.fstp(st0));
+                    emit!(asm.jmp(done));
+                    emit!(asm.set_label(&mut invalid));
+                    emit!(asm.mov(rax, f64::NAN.to_bits()));
+                    emit!(asm.mov(slot(dst), rax));
+                    emit!(asm.jmp(done));
+                    emit!(asm.set_label(&mut dividend));
+                    emit!(asm.mov(rax, slot(s1)));
+                    emit!(asm.mov(slot(dst), rax));
+                    emit!(asm.set_label(&mut done));
                 } else {
-                    let mut normal_division = asm.create_label();
-                    let mut division_done = asm.create_label();
-                    emit!(asm.mov(rcx, i64::MIN));
-                    emit!(asm.cmp(rax, rcx));
-                    emit!(asm.jne(normal_division));
-                    emit!(asm.cmp(slot(s2), -1i32));
-                    emit!(asm.jne(normal_division));
-                    emit!(asm.xor(edx, edx));
-                    emit!(asm.jmp(division_done));
-                    emit!(asm.set_label(&mut normal_division));
-                    emit!(asm.cqo());
-                    emit!(asm.idiv(slot(s2)));
-                    emit!(asm.set_label(&mut division_done));
+                    emit!(asm.mov(rax, slot(s1)));
+                    if instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0 {
+                        emit!(asm.xor(edx, edx));
+                        emit!(asm.div(slot(s2)));
+                    } else {
+                        let mut normal_division = asm.create_label();
+                        let mut division_done = asm.create_label();
+                        emit!(asm.mov(rcx, i64::MIN));
+                        emit!(asm.cmp(rax, rcx));
+                        emit!(asm.jne(normal_division));
+                        emit!(asm.cmp(slot(s2), -1i32));
+                        emit!(asm.jne(normal_division));
+                        emit!(asm.xor(edx, edx));
+                        emit!(asm.jmp(division_done));
+                        emit!(asm.set_label(&mut normal_division));
+                        emit!(asm.cqo());
+                        emit!(asm.idiv(slot(s2)));
+                        emit!(asm.set_label(&mut division_done));
+                    }
+                    emit!(asm.mov(slot(dst), rdx));
                 }
-                emit!(asm.mov(slot(dst), rdx));
             }
 
             Some(Opcode::Neg) => {
@@ -4581,6 +4622,27 @@ mod tests {
         }
 
         assert_eq!(displacements, vec![0, -8, -16]);
+    }
+
+    #[test]
+    fn floating_remainder_reduces_until_complete_and_balances_x87_stack() {
+        for abi in [Abi::SysV, Abi::Win64] {
+            let mut chunk = Chunk::with_params("float_remainder", 2);
+            chunk.emit(crate::bytecode::instruction::rrr_f(Opcode::Mod, 2, 0, 1));
+            chunk.emit(rrr(Opcode::Ret, 2, 0, 0));
+            let (bytes, relocations) = encode(&chunk, abi);
+            let decoded = mnemonics(&bytes);
+            assert!(relocations.is_empty());
+            assert_eq!(decoded.iter().filter(|op| **op == Mnemonic::Fld).count(), 2);
+            assert_eq!(
+                decoded.iter().filter(|op| **op == Mnemonic::Fstp).count(),
+                2
+            );
+            assert!(decoded.contains(&Mnemonic::Fprem));
+            assert!(decoded.contains(&Mnemonic::Fnstsw));
+            assert!(decoded.contains(&Mnemonic::Jne));
+            assert!(!decoded.contains(&Mnemonic::Idiv));
+        }
     }
 
     #[test]

@@ -27,10 +27,10 @@ mod initialization_tests;
 use initialization::{
     InitializationCondition, InitializationLoop, InitializationState, join_initialization,
 };
-mod numeric_mutation;
+mod arithmetic;
 #[cfg(test)]
-mod numeric_mutation_tests;
-use numeric_mutation::{NumericMutationFacts, NumericMutationKind};
+mod arithmetic_tests;
+use arithmetic::{ArithmeticFacts, ArithmeticOp};
 mod optimize;
 mod ownership;
 mod places;
@@ -226,7 +226,7 @@ pub struct Analyzer {
     pub(super) contiguous_element_contracts: HashMap<String, ContiguousElementContract>,
     /// Generic source reads to validate after concrete specialization closure.
     pending_contiguous_value_reads: Vec<(String, Span, TypeKind)>,
-    numeric_mutations: NumericMutationFacts,
+    arithmetic: ArithmeticFacts,
     /// The place currently being typed for replacement, not a value read.
     place_write_target_span: Option<(usize, usize)>,
     /// Internal function name → stable native symbol requested by @export.
@@ -974,7 +974,7 @@ impl Analyzer {
             consuming_receiver_methods: std::collections::HashSet::new(),
             contiguous_element_contracts: HashMap::new(),
             pending_contiguous_value_reads: Vec::new(),
-            numeric_mutations: NumericMutationFacts::default(),
+            arithmetic: ArithmeticFacts::default(),
             place_write_target_span: None,
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
@@ -1215,7 +1215,7 @@ impl Analyzer {
             &mut checkpoint,
         )?;
 
-        self.validate_numeric_mutation_specializations(&concrete_specializations, &mut checkpoint)?;
+        self.validate_arithmetic_specializations(&concrete_specializations, &mut checkpoint)?;
 
         // A successful analysis must leave no representation-less inference
         // sentinels for code generation. Error recovery may still use them
@@ -1535,7 +1535,7 @@ impl Analyzer {
         self.consuming_receiver_methods.clear();
         self.contiguous_element_contracts.clear();
         self.pending_contiguous_value_reads.clear();
-        self.numeric_mutations.clear();
+        self.arithmetic.clear();
         self.place_write_target_span = None;
         self.exported_symbols.clear();
         self.foreign_globals.clear();

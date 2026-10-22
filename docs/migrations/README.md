@@ -1,5 +1,7 @@
 # Migration guides
 
+- [Arithmetic operand validation](arithmetic.md)
+
 - [Stable operands and destination evaluation](operand-snapshots.md)
 
 - [Source initialization and checked match execution](source-initialization.md)

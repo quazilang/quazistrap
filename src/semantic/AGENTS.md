@@ -357,3 +357,14 @@ builtin indexing preserves element types and loads complete descriptors; Bytes
 remains immutable. Known numeric reference RHS operands load even with generic
 targets. General arithmetic/coercion/effect proof is still incomplete. See
 [the contract](../../docs/internals/numeric-mutations.md).
+
+## Arithmetic checkpoint (2026-10-22)
+
+QZC26 supersedes QZC25; QZI13 remains Unverified. `semantic/arithmetic.rs`
+shares mutation, eager arithmetic and negation requirements over declaration
+slots and every concrete identity. Only view Add and pointer-left byte offsets
+are special cases. Auto-deref flags describe physical loads; shared string
+wrappers preserve views and one exclusive wrapper loads once. Aliases normalize
+before collapse. Floating Mod uses guarded FPREM reduction with balanced x87
+stack; constprop agrees. General bitwise/Pow, coercion and effect proof remain
+open. See [the contract](../../docs/internals/arithmetic.md).

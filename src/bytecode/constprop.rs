@@ -288,6 +288,7 @@ fn compute_result(
             Some(Opcode::Sub) => Some(|a, b| a - b),
             Some(Opcode::Mul) => Some(|a, b| a * b),
             Some(Opcode::Div) => Some(|a, b| a / b),
+            Some(Opcode::Mod) => Some(|a, b| a % b),
             _ => None,
         };
         if let Some(f) = float_binop {
@@ -983,6 +984,44 @@ mod tests {
             assert!((v - 4.0).abs() < 1e-10);
         } else {
             panic!("expected Float in const pool");
+        }
+    }
+
+    #[test]
+    fn folds_float_remainder_with_signed_zero_and_invalid_values() {
+        for (a, b) in [
+            (5.5_f64, 2.0_f64),
+            (-5.5, 2.0),
+            (-0.0, 2.0),
+            (1.0e300, 7.0),
+            (1.0, 0.0),
+            (f64::INFINITY, 2.0),
+            (2.5, f64::INFINITY),
+        ] {
+            let mut chunk = make_chunk("float_remainder", vec![]);
+            let left = chunk.add_constant(ConstPoolEntry::Float(a)) as u16;
+            let right = chunk.add_constant(ConstPoolEntry::Float(b)) as u16;
+            chunk.code = vec![
+                ri16(Opcode::MovConst, 0, left),
+                ri16(Opcode::MovConst, 1, right),
+                rrr_f(Opcode::Mod, 2, 0, 1),
+                rrr(Opcode::Ret, 2, 0, 0),
+            ];
+            const_prop_fold(&mut chunk);
+            assert_eq!(chunk.code[2].opcode, Opcode::MovConst as u8);
+            let (_, index) = chunk.code[2].ri16();
+            let ConstPoolEntry::Float(actual) = chunk.constants[index as usize] else {
+                panic!("missing float remainder");
+            };
+            let expected = a % b;
+            assert!(
+                if expected.is_nan() {
+                    actual.is_nan()
+                } else {
+                    actual.to_bits() == expected.to_bits()
+                },
+                "{a} % {b}: {actual} vs {expected}"
+            );
         }
     }
 

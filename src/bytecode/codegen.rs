@@ -3041,16 +3041,8 @@ impl<'a> FnCompiler<'a> {
         if !self.should_autoderef(span) {
             return ptr_reg;
         }
-        let key = (span.start, span.end);
-        let Some(ty) = self.type_of_span(key) else {
-            return ptr_reg;
-        };
-        // The VM Load instruction reads one 8-byte slot. Value-like types that fit
-        // in a single slot can be auto-dereferenced; `str` is currently a thin null-terminated pointer
-        // and must be passed/stored as a reference.
-        if matches!(ty, TypeKind::Str) {
-            return ptr_reg;
-        }
+        // Analysis marks physical VM-slot loads. Shared &str views need no
+        // load, while exclusive &str! references address the view's slot.
         let dst = self.alloc_reg();
         self.chunk.emit(mem_load(ptr_reg, dst, 0));
         dst
@@ -4300,7 +4292,7 @@ impl<'a> FnCompiler<'a> {
     fn load_reference_value(&mut self, reference: u8, ty: Option<TypeKind>) -> u8 {
         let inner = match ty {
             Some(TypeKind::Ref { inner })
-                if !matches!(self.resolve_type(&inner.node), TypeKind::Str) =>
+                if !is_string_view_type(&self.resolve_type(&inner.node)) =>
             {
                 inner
             }

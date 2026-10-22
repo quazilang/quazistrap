@@ -2,6 +2,64 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-22, arithmetic/reference/remainder)
+
+QZC26, QZI13 unchanged/Unverified. numeric_mutation.rs/tests renamed to
+arithmetic.rs/arithmetic_tests.rs and extended: eager + - * / % and Negate
+share declaration-slot requirements with mutations, validating every concrete
+identity. Numeric primitives, pointer-left +/- integer bytes, and str-view Add
+are supported. Owned String Add is rejected (old rawview/ownedresult mismatch).
+Shared string generic actuals have view representation; exclusive string generic
+actuals need absent template loads and are rejected. Symbolic &T needs explicit
+Deref. Distinct T/U inference unchanged. Alias resolution precedes operand types.
+
+mark_auto_deref is idempotent and flags physical loads: numeric/pointer refs
+load, shared string wrappers keep view bits, one exclusive string wrapper loads
+once. Shared explicit Deref uses recursive string-view exception matching Ref
+construction. Known reference operands mark independently of a generic peer.
+Review found pointer-ref generic peers and nested shared/exclusive explicit
+string Deref gaps; fixed and covered native/QZI tests. Deep implicit exclusive
+string chains are rejected. No full effect/loan/artifact proof follows.
+
+FLOAT_FLAG Mod previously ran integerIDIV. It now classifies operand magnitudes
+before any x87 use, guards NaN/nonfinitea/zerob, copies finitea for infiniteb,
+loads b thena, loopsFPREM untilC2clear, stores/popsboth. Constprop usesa%b.
+Generic Div/Mod templates now conservatively retain hidden panic dependencies
+(!is_float left), covering /,% andcompoundforms; 4native/QZI zero cases exit101
+insteadofoldSIGILL. No controlword changes; custom unmaskedFP environments/NaNpayloads unpromised.
+Independent backend review reconciled guards/stack/ABI/tests.
+
+Final serial offline934/934tests; initialparallel931pass1 ETXTBSY in existing
+librarytest runner, subsequentserialpass inclfinalnewtests. Build/directClippy
+pass existingwarnings. arithmeticrunner34invalid check/native/QZI/COFF,
+7validgroups native/source-removedQZI/COFF, 1019host bit comparisons perpath
+native/QZI dynamicCexport againstmath.fmod inclsignedzero/subnormals/extremegap,
+NaNs/infinity/zerob. Cachetestoldownercompileonly/newreject; safe oldfinite
+remainder wrongresult/newmiss/correctexacthit. Exploratory oldaliasrefsource
+faulted despitevalidscalarinputs; removedfromoldexecutioncoverage. Never rerun
+oldowner/string/refexecutables. Baseline/tmp/quazi-arithmetic-before-5ae615b.
+
+All earlier numeric24+7+3bounds, scalar13, operands27+6, initialization39+57+traps,
+loop23, conditional31, propagation9+8, expression36, retention12+7, named,dyncache
+runners pass. Relevantoperand/named/retention rerun aftersharedDeref correction.
+Installedrelease updated andpasses arithmetic/host/cache. STD memory6 and
+quazifetchbuild/run/cache/WindowsCOFFpass. MigrationStringpush_str smokeexecpass.
+Graphifyquery/AST5453nodes12248edges, no.qzsemantics. Logs/tmp/quazi-arithmetic-*.
+Formatting, Markdownlinks anddiffchecked. README/auditupdatedBEFOREcommit,
+unchanged73.2/26.8%,33items/78requirements,Ownership9/16,LSP16/20. No push.
+PreserveSTDCLI dirt, compiler.codex/,example35buildartifacts.
+
+NEXT: bitwise/shift/Pow still acceptcompatibleowners; genericordering checks
+onlytemplate categories. Extend operation-specific constraints; Boolbitwise
+semantics may require explicit maintainer decision. Mixed float/integer numeric
+coercion is accepted but lacks conversions; narrow-result normalization and
+physicalf16memory also open. Full ownership/effect/artifactproof remains open.
+A host shared-library test also found missing GNU_STACK metadata: default
+externalshared output triggersloader executable-stack rejection. Fixture uses
+explicit -z noexecstack; production default needs separate investigation. See
+/tmp/quazi-arithmetic-contract-audit-n0oqszf0/stack/lib.so (no GNU_STACK).
+Full workspace goal remains active; previous NEXT arithmetic item superseded.
+
 ## Checkpoint (2026-10-22, numeric mutations)
 
 QZC25, QZI13 unchanged/Unverified. Numeric mutation requirements now reject

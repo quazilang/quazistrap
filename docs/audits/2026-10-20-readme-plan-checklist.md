@@ -1,8 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
 Revalidated on 2026-10-22 against the
-[numeric-mutation checkpoint](../changes/2026-10-22-numeric-mutations.md).
-Previous committed source: `5bb6c53`.
+[arithmetic checkpoint](../changes/2026-10-22-arithmetic.md).
+Previous committed source: `5ae615b`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
@@ -86,6 +86,16 @@ strengthen existing correctness coverage. General arithmetic/coercion and
 ownership/effect proof remain incomplete. No requirement changes credit:
 **73.2% complete, 26.8% remaining; Ownership9/16, LSP16/20**. README statuses
 are refreshed before this commit; installed-release and STD memory6 pass.
+
+The arithmetic checkpoint passes **934 tests**, rejects 34 invalid sources
+through check/native/QZI/COFF and passes 7 native/source-removed-QZI/COFF groups.
+A dynamic C-export remainder passes 1,019 host bit comparisons per native/QZI
+path. Declaration-slot arithmetic constraints, reference representation and
+floating remainder strengthen correctness. Bitwise/Pow constraints, coercion,
+normalization and complete ownership/effect proof remain open. Credit remains
+**73.2% complete / 26.8% remaining**, Ownership9/16,LSP16/20. Installed release,
+STD memory6 and ordinary quazifetch build/run/cache/COFF pass. README statuses
+are updated before this commit.
 
 ## Summary
 

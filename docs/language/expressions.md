@@ -38,6 +38,20 @@ const remainder: i32 = 17 % 5;
 Integer division by zero panics. Floating-point division by zero produces
 signed infinity; `0.0 / 0.0` produces NaN.
 
+Eager `+ - * / %` and unary minus require numeric values. Concrete generic
+instantiations satisfy the same requirements. Unary minus on references requires
+explicit dereference. Known numeric reference binary operands load their values.
+Only `+` supports str-view concatenation; owned String operands use explicit
+String operations. Raw pointer `+`/`-` integer uses byte offsets with the pointer
+on the left; pointer differences are unsupported.
+
+Floating `%` uses a quotient truncated toward zero, preserves the dividend's
+zero sign, yields NaN for infinite dividends or zero divisors, and returns a
+finite dividend unchanged for infinite divisors. Mixed integer/float coercion,
+narrow-result normalization and `**`/bitwise constraints remain incomplete;
+these checks do not establish general numeric correctness. See
+[upgrade guidance](../migrations/arithmetic.md).
+
 ## Compound assignment
 
 Mutable lvalues support `+=`, `-=`, `*=`, `/=`, `%=`:
