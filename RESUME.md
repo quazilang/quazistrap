@@ -49,8 +49,15 @@ README progress/statuses and audit refreshed BEFORE commit: unchanged33items/
 query and AST update pass; graph5339nodes/11968edges (no .qz semantic extraction).
 Changed-region formatting, Markdown links and scoped diffs checked. Preserve STD
 CLI dirt, compiler .codex/ and examples/35-multi-slot-arrays/build/. No push.
-Installed ~/.cargo/bin/qz is still the older Oct20 binary; validation uses
-quazistrap/target/debug/qz. Rust ELF-loader wrappers remain required as below.
+After code checkpoint **594e1ae**, installed ~/.cargo/bin/qz was upgraded with
+`cargo install --path . --offline --force` using the same Rust wrappers/bfd flags.
+Release build passes (existing warnings). Installed qz passes the 27 valid/6
+invalid operand runner and all 6 STD memory tests. Ordinary qz build/run in
+quazifetch pass; latest RAM8825MiB/13867MiB matches adjacent fastfetch8.61GiB/
+13.54GiB. Prior installed executable backed up at
+/tmp/quazi-installed-before-594e1ae. Debug compiler remains target/debug/qz;
+Rust ELF-loader wrappers remain required as below. README status/progress is
+refreshed before the follow-up installed-verification docs commit too.
 
 NEXT: broad ../goal.md objective remains active/incomplete. Continue normalized
 place/effect/provenance work, canonical Boolean storage/equality, general partial

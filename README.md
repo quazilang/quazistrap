@@ -37,6 +37,8 @@ Another 27 native/source-removed-QZI/COFF checks and 6 rejected lifetime cases
 cover these changes; earlier initialization and cleanup regressions also pass.
 Quazifetch builds without S10 and reports Linux used RAM from `MemAvailable`,
 counting reclaimable cache as available; six isolated STD memory tests pass.
+The installed release `qz` also passes these checks and ordinary quazifetch
+`qz build`/`qz run`, with RAM comparable to adjacent fastfetch samples.
 QZC23 rebuilds older source caches; QZI13 remains Unverified.
 General place/effect proof and complete recursive destruction remain open.
 Ownership stays 9/16, and LSP stays 16/20. The 33-item, 78-requirement rubric

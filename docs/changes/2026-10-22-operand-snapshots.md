@@ -51,6 +51,13 @@ Verification (toolchain via `/tmp/quazi-named-rust-bin`, explicit `RUSTC` and
   `qz build --no-incremental --silent -c --target x86_64-windows -o /tmp/quazi-operands-quazifetch.obj`
   passes. RAM is comparable to installed fastfetch in adjacent live samples.
 
+After code commit `594e1ae`, `cargo install --path . --offline --force` passes
+with the same toolchain wrappers and installs the optimized compiler locally.
+The installed `qz` passes all 27 operand checks/6 invalid cases, all six STD memory
+tests and ordinary quazifetch build/run. Adjacent RAM samples show 8825 MiB in
+quazifetch and 8.61 GiB in fastfetch. The previous installed executable is backed
+up at `/tmp/quazi-installed-before-594e1ae`. No remote publication occurs.
+
 Independent reviews, changed-region formatting, local Markdown links, scoped
 Git diffs, and Graphify query/AST update pass. Logs: `/tmp/quazi-operands-*.log`.
 No Windows-host execution or complete STD validation is claimed.
