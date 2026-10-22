@@ -1,5 +1,7 @@
 # Compiler and runtime internals
 
+- [Numeric mutation obligations](numeric-mutations.md)
+
 - [Scalar memory conversions and numeric updates](scalar-memory.md)
 
 - [Stable operand values and computed places](operand-snapshots.md)

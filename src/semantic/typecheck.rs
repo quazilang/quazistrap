@@ -5252,8 +5252,25 @@ impl Analyzer {
                     CompoundAssignOp::Div => BinOpKind::Div,
                     CompoundAssignOp::Mod => BinOpKind::Mod,
                 };
+                self.check_numeric_mutation(
+                    expr.span,
+                    NumericMutationKind::Compound(op.clone()),
+                    target_eval.ty.as_ref(),
+                    value_eval.ty.as_ref(),
+                );
                 let ty =
                     self.infer_binary_type(expr.span, &bin_op, &target_eval.ty, &value_eval.ty);
+                // A numeric mutation requires a loaded numeric RHS even when
+                // the destination is still a declaration generic parameter.
+                if let Some(value_ty) = value_eval.ty.as_ref() {
+                    let resolved = self.resolve_type_aliases(value_ty);
+                    if matches!(resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. }) {
+                        let loaded = Self::autoderef_type(resolved);
+                        if Self::is_integer(&loaded) || Self::is_float(&loaded) {
+                            self.mark_auto_deref(value);
+                        }
+                    }
+                }
                 self.mark_binary_autoderef(target, &target_eval.ty, value, &value_eval.ty);
                 ExprEval {
                     ty,
@@ -5264,18 +5281,12 @@ impl Analyzer {
                 let inner_eval = self.type_check_expr(inner, reachable);
                 self.analyze_assign_target(inner);
 
-                if let Some(ty) = &inner_eval.ty
-                    && matches!(
-                        ty,
-                        TypeKind::Str
-                            | TypeKind::Bool
-                            | TypeKind::Void
-                            | TypeKind::Ref { .. }
-                            | TypeKind::RawPtr { .. }
-                    )
-                {
-                    self.push_error(inner.span, "S06", format!("++ / -- not valid for {}", ty));
-                }
+                self.check_numeric_mutation(
+                    expr.span,
+                    NumericMutationKind::Increment,
+                    inner_eval.ty.as_ref(),
+                    None,
+                );
                 ExprEval {
                     ty: inner_eval.ty,
                     const_value: None,
@@ -5460,7 +5471,7 @@ impl Analyzer {
                     }
                 } else {
                     let builtin_index = matches!(
-                        &obj_eval.ty,
+                        &object_value_ty,
                         Some(
                             TypeKind::Array { .. }
                                 | TypeKind::Slice { .. }
@@ -5480,7 +5491,7 @@ impl Analyzer {
                     }
 
                     if let (Some(TypeKind::Array { len, .. }), Some(first_eval)) =
-                        (&obj_eval.ty, idx_evals.first())
+                        (&object_value_ty, idx_evals.first())
                         && let Some(ConstValue::Int(index)) = first_eval.const_value
                         && (index < 0 || index as u64 >= *len)
                     {
@@ -5506,7 +5517,7 @@ impl Analyzer {
                     }
 
                     if matches!(
-                        &obj_eval.ty,
+                        &object_value_ty,
                         Some(TypeKind::Array { .. } | TypeKind::Slice { .. } | TypeKind::Bytes)
                     ) {
                         let from = self
@@ -5541,7 +5552,7 @@ impl Analyzer {
                             format!("array index must be an integer, got {}", idx_ty),
                         );
                     }
-                    match &obj_eval.ty {
+                    match &object_value_ty {
                         Some(TypeKind::Array { elem_ty, .. }) => Some(elem_ty.node.clone()),
                         Some(TypeKind::Slice { elem_ty }) => Some(elem_ty.node.clone()),
                         Some(TypeKind::FlexibleArray { elem_ty }) => {
@@ -7288,7 +7299,7 @@ impl Analyzer {
                         }
                         other => other,
                     });
-                if matches!(&object_ty, Some(TypeKind::Bytes)) {
+                if matches!(&object_value_ty, Some(TypeKind::Bytes)) {
                     self.push_error(target.span, "S07", "byte strings are immutable".to_string());
                 }
                 if let Some(TypeKind::Named { name, type_args }) = &object_value_ty

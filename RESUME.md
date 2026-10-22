@@ -2,6 +2,47 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-22, numeric mutations)
+
+QZC25, QZI13 unchanged/Unverified. Numeric mutation requirements now reject
+non-numeric updates (S06), missing operand types (S14), and incompatible
+concrete numeric instantiations (S01). Declaration generic slots defer facts
+until proven concrete specialization closure; checked aliases, reset,
+cancellation and budgets are covered. No full effect/artifact proof follows.
+Borrowed builtin Index inference now uses referenced value type, preserving
+float array/slice element types. Codegen loads borrowed Slice pointer+length
+and Bytes handles; immutable Bytes writes fail S07. Known numeric reference
+RHS operands load even when the mutation target is generic. Symbolic &T
+implicit loading remains unsupported; use explicit dereference.
+
+923/923 offline Rust tests pass. Numeric runner24invalid/7valid native/QZI/COFF,
+3bounds traps and oldcache rejection/wrong-result rebuild/newhit pass. Other
+scalar13, operand27+6, initialization39+57+traps, loop23, conditional31,
+propagation9+8, expression36, retention12+7, named and dyn/cache runners pass.
+Build/directClippy pass with existing warnings. Installed release updated;
+its numeric runner, STD memory6, quazifetch ordinary build/run/cache and Windows
+COFF pass. Graphify AST5407nodes12129edges; no .qz semantic extraction.
+Independent read-only review reconciled descriptor and numeric-reference RHS
+findings. Changed-region formatting, links and scoped diff pass. Logs
+/tmp/quazi-numeric-*.log. Baseline /tmp/quazi-numeric-before-5bb6c53.
+
+README statuses/progress and audit refreshed BEFORE commit, unchanged
+73.2%/26.8%, 33items/78requirements, Ownership9/16,LSP16/20. No push. Preserve
+STD CLI dirt, compiler.codex/ and example35build artifacts. User quazifetch
+S10/available-RAM fixes remain verified; RAM includes reclaimable cache.
+
+NEXT: general eager arithmetic/unary negation/bitwise/Pow still lack normalized
+operator obligations and can accept compatible owning handles. Extend the
+mutation-specific foundation without claiming coercion/effect completeness.
+Owned String+String lowering is also suspect (raw str result vs owned type).
+Existing mixed float/integer arithmetic is accepted but lacks complete conversion;
+float Pow, narrow-result normalization and physical f16 memory remain open.
+Preserve valid symbolic numeric helpers; avoid blanket Named rejection.
+Full workspace goal remains active; this is a correctness checkpoint only.
+
+Older checkpoint text below is historical; its NEXT numeric mutation item is
+superseded by this checkpoint.
+
 ## Checkpoint (2026-10-22, raw scalar memory and floating updates)
 
 Implemented raw *f32 conversion via raw_pointee_access using shared

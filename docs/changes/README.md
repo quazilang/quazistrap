@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-10-22: Numeric mutation checks and borrowed indexing](2026-10-22-numeric-mutations.md)
+
 - [2026-10-22: Raw f32 memory and floating updates](2026-10-22-scalar-memory.md)
 
 - [2026-10-22: Stable operands and pending storage](2026-10-22-operand-snapshots.md)

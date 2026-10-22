@@ -25,9 +25,9 @@ This checkpoint proves the corrected memory footprint and arithmetic selection.
 It does not define general f32 intermediate rounding, narrow integer overflow,
 or normalization of assignment/compound/prefix expression results after a
 narrow store. Those existing value-model questions need a consistent contract.
-Native f16 memory conversion is also unimplemented. Non-numeric `++`/`--` acceptance
-and generic numeric obligations remain a confirmed semantic-checking gap; no
-ownership/effect certificate follows from these emission corrections.
+Native f16 memory conversion is also unimplemented. The subsequent [numeric-mutation checkpoint](numeric-mutations.md) rejects
+non-numeric updates and validates concrete generic obligations. General
+operator typing remains incomplete; no ownership/effect certificate follows.
 
 QZC24 invalidates old exact and reusable source chunks. QZI13 representation is
 unchanged and Unverified. Old QZI bodies must be rebuilt from source to receive

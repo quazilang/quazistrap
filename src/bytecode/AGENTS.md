@@ -362,3 +362,13 @@ float references retain qword VM slots. Float ++/-- uses floating 1.0 plus
 flagged Add/Sub, with a captured old value for postfix. Integer local fast paths
 remain. General narrow-result normalization, f16 memory and numeric type
 obligations remain separate work. See [the contract](../../docs/internals/scalar-memory.md).
+
+## Numeric mutation checkpoint (2026-10-22)
+
+Current source cache is **QZC25**; QZI13 remains Unverified. Numeric mutations
+retain declaration-backed generic obligations and validate every proven concrete
+identity after closure. Missing types/budget exhaustion fail closed. Borrowed
+builtin indexing preserves element types and loads complete descriptors; Bytes
+remains immutable. Known numeric reference RHS operands load even with generic
+targets. General arithmetic/coercion/effect proof is still incomplete. See
+[the contract](../../docs/internals/numeric-mutations.md).

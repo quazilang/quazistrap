@@ -3704,6 +3704,7 @@ impl<'a> FnCompiler<'a> {
                     }
                 } else if matches!(obj_ty, Some(TypeKind::Slice { .. })) {
                     let ptr = self.compile_value(object);
+                    let ptr = self.load_reference_value(ptr, self.type_of_expr(object));
                     let idx = self.compile_value(index);
                     let length = ptr + 1;
                     self.emit_bounds_guard(idx, length, index.span);
@@ -8738,9 +8739,10 @@ impl<'a> FnCompiler<'a> {
                 let index = indices
                     .first()
                     .expect("index expr must have at least one index");
-                let obj_key = (object.span.start, object.span.end);
-                if matches!(self.type_of_span(obj_key), Some(TypeKind::Bytes)) {
+                let object_value_ty = self.receiver_value_type(object);
+                if matches!(object_value_ty.as_ref(), Some(TypeKind::Bytes)) {
                     let bytes = self.compile_value(object);
+                    let bytes = self.load_reference_value(bytes, self.type_of_expr(object));
                     let idx = self.compile_value(index);
                     let length = self.alloc_reg();
                     self.chunk.emit(mem_load(bytes, length, 0));
@@ -8756,7 +8758,7 @@ impl<'a> FnCompiler<'a> {
                         .emit(mem_load_w(addr, dst, 0, MemWidth::Byte, false));
                     return dst;
                 }
-                if let Some(TypeKind::FlexibleArray { elem_ty }) = self.type_of_span(obj_key) {
+                if let Some(TypeKind::FlexibleArray { elem_ty }) = object_value_ty.as_ref() {
                     let base = self.compile_value(object);
                     let idx = self.compile_value(index);
                     let (width, signed, elem_size, float32) = self.c_memory_access(&elem_ty.node);
@@ -8764,8 +8766,9 @@ impl<'a> FnCompiler<'a> {
                     return self.emit_c_load(address, width, signed, float32);
                 }
                 // Slice (variadic param): ptr register holds caller's stack address.
-                if matches!(self.type_of_span(obj_key), Some(TypeKind::Slice { .. })) {
+                if matches!(object_value_ty.as_ref(), Some(TypeKind::Slice { .. })) {
                     let ptr = self.compile_value(object);
+                    let ptr = self.load_reference_value(ptr, self.type_of_expr(object));
                     let idx = self.compile_value(index);
                     let length = ptr + 1;
                     self.emit_bounds_guard(idx, length, index.span);
@@ -8780,7 +8783,7 @@ impl<'a> FnCompiler<'a> {
                     return dst;
                 }
                 // Fallback: raw static-array register arithmetic (single index only).
-                let array_length = match self.type_of_span(obj_key) {
+                let array_length = match object_value_ty {
                     Some(TypeKind::Array { len, .. }) => Some(len),
                     _ => None,
                 };

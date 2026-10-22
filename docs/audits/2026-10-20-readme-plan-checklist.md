@@ -1,8 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
 Revalidated on 2026-10-22 against the
-[scalar-memory checkpoint](../changes/2026-10-22-scalar-memory.md).
-Previous committed source: `838cd8f`.
+[numeric-mutation checkpoint](../changes/2026-10-22-numeric-mutations.md).
+Previous committed source: `5bb6c53`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
@@ -77,6 +77,15 @@ roadmap requirement credit: general numeric result normalization, ownership
 place/effect proof and recursive destruction remain incomplete. The unchanged
 rubric stays **73.2% complete, 26.8% remaining**. README statuses are refreshed
 before this commit too.
+
+The numeric-mutation checkpoint passes **923 tests**, rejecting 24 invalid
+programs across check/native/QZI/COFF and passing 7 native/source-removed-QZI/COFF
+checks plus 3 borrowed descriptor bounds traps. Concrete generic mutation
+obligations, numeric reference loads and referenced builtin element types
+strengthen existing correctness coverage. General arithmetic/coercion and
+ownership/effect proof remain incomplete. No requirement changes credit:
+**73.2% complete, 26.8% remaining; Ownership9/16, LSP16/20**. README statuses
+are refreshed before this commit; installed-release and STD memory6 pass.
 
 ## Summary
 
