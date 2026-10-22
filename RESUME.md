@@ -2,6 +2,63 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-22, operator requirements)
+
+QZC27, QZI13 unchanged/Unverified. arithmetic.rs now covers bitwiseinteger/Bool
+pairs, integershifts and Ordering same-familyinteger/float/recognizedstring
+pairs. Neverreuse numericcompatibility for mixedfloat/int ordering. Sourcefacts
+deferbothdeclslots; resultalwaysBool allowsorderingbetweenexplicitT/Uactuals.
+KnownBoolreferences markphysicalloadindependentlyofsymbolicpeer. Binderidentity
+precedesnominalStringrecognition; sourceOwnedStringmarkeralso requiresNamed
+likeconcretepath. Reviewfoundbothbypasses; testscoverString-namedgenericbinders
+withbool/Owneractualsrejected,i32accepted, nestedexclusiveviewchainsrejected.
+
+939/939serialofflineRusttests. Build/directClippypass existingwarnings.
+Newscriptcheck_operator_requirements.py37invalid check/native/QZI/COFF,
+5valuegroups+2ownedStringcomparisons native/source-removedQZI/COFF; prelude-loaded
+Stringbinder shadowingcontrolalsoexecutes. OldunsafeOwnerAndcompileonly/newcache
+reject; safeoldBoolreferencewrongvalue/newmiss/correctexacthit. Baseline
+/tmp/quazi-operators-before-40b1c2a. Installedrelease updated andoperatorrunner
+passes. All arithmetic34+7+4panics+1019hostbits, numeric24+7+3bounds, scalar13,
+operand27+6, init39+57+traps, loop23, conditional31, propagation9+8, expr36,
+retention12+7,named,dyncacherunnerspass. STDmemory6,quazifetchbuild/run/cache/
+WindowsCOFFpass. Graphifyquery/AST5474nodes12308edges,no.qzsemantics.
+Logs/tmp/quazi-operators-*.log. README/auditupdatedBEFOREcommit: unchanged
+73.2/26.8%,33items/78requirements,Ownership9/16,LSP16/20. PreserveSTDCLI dirt,
+compiler.codex/,example35buildartifacts. No push. Fullgoalactive.
+
+ACTIVE USER STEERING: afterinitialUItruncationanswer, userexplicitlycorrected:
+D-016 docs/decisions/power-operator.md accepted. Integer** must beexactchecked
+exponentiationbysquaring, noCpow; knownnegativeexponent=>compileerror;
+runtimeintegernegative=>languagepanic;2**0=>1;2.0**-2=>0.25. Resulttypecannot
+varybyruntimesign; fractionalexponentf64overloadendorsed. Earliertruncation
+choiceisrevoked. Finishcurrentbitwise/ordercommitthenimplementPowerseparately.
+Do NOT askthesamequestionagain. Approvedoverflowchecksapplyintegerresulttype.
+Powerimplementationstilloldandunsafe: sourceacceptsowners,encoderalwayssigned
+Int->Double->externalpow->Int; precision/u64/float/libmlinkagebroken. Need
+source/concrete constraints, knownnegativeconstant checks, runtimepanicdeps,
+exactcheckedmul withdeclaredwidth/signedness, allnative/QZI/COFFregressions.
+Mutable runtimevariablevsconstantnegative distinctionshouldmatchusertable;
+literal/constnegativecompileerror,runtimeparamnegativepanic. Genericresultfamily
+andknownrefloadsneedproof; don'tadmitfloatthroughuncheckedoldPowlowering.
+
+NEXT independent bugs: runtimeStringidentity stillname-basedunsafe. CHECKONLY
+/tmp/quazi-string-identity-audit-59q4dx22/source definesString{value:i32} then
+ordering,accepted;noexecutablesbuilt/run. Agentdesign: loaderknowsselectedprelude
+butSourceFileonlypath/module/spanlosesrole. Carryexplicitruntimeorigin,resolve
+exportStringtoactualdeclarationidentity,validateABI once,recordCheckedStringAbi
+nominalID+datafieldoffsetinSemanticReport; bothsemantic+codegenconsumeexactproof,
+neverpaths/suffix/.field0. Alternativelyvalidateas_strreceiver->str andemit
+resolvedordinarycallwithimplicitdependency/provenance. No extraattribute needed.
+Customstd=falseStringordinary; malformedselectedruntimeStringactionableS14.
+QZIinterfacesmustnotgainruntimeidentityfromspelling;loweredchunksneednoreplay.
+AlsoELFobjectwriter lacks.note.GNU-stack; externalsharedloaderfails. Agentrootfix:
+emptyunallocatednonexecuteSHT_PROGBITSSectionKind::Other (notNote) inELFwriter.
+BuiltinlinkeralreadyhardcodesRWGNU_STACK; don'tforceuserexecstackoverrideflags.
+Verify source/QZIobjects,builtin/externalexe,defaultsharedctypesload; remove
+arithmeticfixture-znoexecstackworkaroundoncefixed. NoQZI/QZCbumponlymetadata.
+Generalnumericcoercion/narrowing,equalitygenericconsistency,effects remainopen.
+
 ## Checkpoint (2026-10-22, arithmetic/reference/remainder)
 
 QZC26, QZI13 unchanged/Unverified. numeric_mutation.rs/tests renamed to

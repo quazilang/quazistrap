@@ -118,3 +118,10 @@ Accepted 2026-09-16: [generic dense-container element borrows use a
 compiler-validated provenance contract](borrowed-elements.md). The required
 address operation and QZI/QZC compatibility update land together with D-014
 ownership summaries; no `Array`-specific compiler exception is permitted.
+
+## D-016: typed power operator
+
+Accepted 2026-10-22: [typed power with exact checked integer arithmetic](power-operator.md).
+Known negative integer exponents are compile-time errors; runtime negative
+integer exponents panic. Floating-base negative powers remain fractional.
+Implementation is pending.

@@ -1,5 +1,7 @@
 # Compiler and runtime internals
 
+- [Bitwise, shift and ordering requirements](operator-requirements.md)
+
 - [Arithmetic operand and reference contracts](arithmetic.md)
 
 - [Numeric mutation obligations](numeric-mutations.md)

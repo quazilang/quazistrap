@@ -1,8 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
 Revalidated on 2026-10-22 against the
-[arithmetic checkpoint](../changes/2026-10-22-arithmetic.md).
-Previous committed source: `5ae615b`.
+[operator-requirement checkpoint](../changes/2026-10-22-operator-requirements.md).
+Previous committed source: `40b1c2a`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
@@ -96,6 +96,15 @@ normalization and complete ownership/effect proof remain open. Credit remains
 **73.2% complete / 26.8% remaining**, Ownership9/16,LSP16/20. Installed release,
 STD memory6 and ordinary quazifetch build/run/cache/COFF pass. README statuses
 are updated before this commit.
+
+The operator-requirement checkpoint passes **939 tests**, rejects 37 invalid
+programs through check/native/QZI/COFF, and passes 5 value groups plus 2 real
+String comparisons through native/source-removed QZI/COFF. Known Boolean
+reference loads and declaration-slot category checks strengthen correctness.
+Power, String runtime identity and complete effects remain open. No requirement
+credit changes: **73.2% complete / 26.8% remaining**, Ownership9/16,LSP16/20.
+Installed release, STD memory6 and quazifetch build/run/cache/COFF pass. README
+statuses are updated before this commit.
 
 ## Summary
 

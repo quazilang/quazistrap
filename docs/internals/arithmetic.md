@@ -45,8 +45,10 @@ No implicit libc/libm dependency is added to ordinary programs.
 
 QZC26 rebuilds previous source caches. QZI13 remains unchanged and Unverified;
 rebuild old QZI bodies from source for corrected typing/reference instructions.
-New native Mod emission interprets existing FLOAT_FLAG correctly. Bitwise/Pow
-constraints, generic ordering proof, mixed float/integer coercion, narrow-result
-normalization and complete ownership/effect/artifact proof remain incomplete.
+New native Mod emission interprets existing FLOAT_FLAG correctly. The subsequent
+[operator checkpoint](operator-requirements.md) extends category checks to
+bitwise/shift operations and concrete ordering. Pow, String ABI identity,
+mixed float/integer coercion, narrow-result normalization and complete
+ownership/effect/artifact proof remain incomplete.
 See [verification](../changes/2026-10-22-arithmetic.md) and
 [migration guidance](../migrations/arithmetic.md).

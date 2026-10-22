@@ -366,3 +366,128 @@ fn arithmetic_generic_division_retains_its_hidden_panic_dependency() {
         );
     }
 }
+
+#[test]
+fn operator_requirements_reject_handles_floats_and_untyped_operands_in_bits() {
+    for operator in ["&", "|", "^", "<<", ">>"] {
+        assert_error(
+            &format!(
+                "struct Owner{{value:i32,}}fn main()void{{var a=Owner{{value:1}};var b=Owner{{value:2}};var c=a{operator}b;}}"
+            ),
+            "S06",
+        );
+        assert_error(
+            &format!("fn main()void{{var a=1.5;var b=a{operator}a;}}"),
+            "S06",
+        );
+        assert_error(
+            &format!("enum E{{One,}}fn main()void{{var a=E.One;var b=a{operator}a;}}"),
+            "S14",
+        );
+        assert_valid(&format!(
+            "fn calc[T](a:T,b:T)T{{ret a{operator}b;}}fn main()void{{calc[i32](5,2);}}"
+        ));
+        assert_error(
+            &format!(
+                "fn calc[T](a:T,b:T)T{{ret a{operator}b;}}fn outer[U](a:U,b:U)U{{ret calc[U](a,b);}}fn main()void{{outer[i32](5,2);outer[f64](1.5,2.5);}}"
+            ),
+            "S06",
+        );
+    }
+}
+
+#[test]
+fn operator_requirements_preserve_bool_bitwise_pairs_only() {
+    for operator in ["&", "|", "^"] {
+        assert_valid(&format!(
+            "fn calc[T](a:T,b:T)T{{ret a{operator}b;}}fn main()void{{calc[bool](true,false);}}"
+        ));
+        assert_valid(&format!(
+            "fn calc[T](a:&bool,b:T)bool{{ret a{operator}b;}}fn main()void{{var a=true;calc[bool](&a,false);}}"
+        ));
+    }
+    for operator in ["<<", ">>"] {
+        assert_error(
+            &format!(
+                "fn calc[T](a:T,b:T)T{{ret a{operator}b;}}fn main()void{{calc[bool](true,false);}}"
+            ),
+            "S06",
+        );
+    }
+}
+
+#[test]
+fn operator_requirements_close_generic_ordering_categories() {
+    for operator in ["<", "<=", ">", ">="] {
+        let helper = format!("fn compare[T](a:T,b:T)bool{{ret a{operator}b;}}");
+        assert_valid(&format!(
+            "{helper}fn main()void{{compare[i32](1,2);compare[f64](1.5,2.5);compare[str](\"a\",\"b\");}}"
+        ));
+        assert_error(
+            &format!(
+                "struct Owner{{value:i32,}}{helper}fn main()void{{compare[i32](1,2);compare[Owner](Owner{{value:1}},Owner{{value:2}});}}"
+            ),
+            "S06",
+        );
+        assert_error(
+            &format!("{helper}fn main()void{{compare[bool](true,false);}}"),
+            "S06",
+        );
+        assert_error(
+            &format!("{helper}fn main()void{{compare[[i32;2]]([1,2],[3,4]);}}"),
+            "S06",
+        );
+    }
+    assert_error(
+        "fn compare[T](a:f64,b:T)bool{ret a<b;}fn main()void{compare[i32](1.5,2);}",
+        "S06",
+    );
+    assert_valid(
+        "fn compare[A,B](a:A,b:B)bool{ret a<b;}fn main()void{compare[i32,u64](1,2);compare[f32,f64](1.5,2.5);}",
+    );
+    assert_error(
+        "fn compare[A,B](a:A,b:B)bool{ret a<b;}fn main()void{compare[i32,f64](1,2.5);}",
+        "S06",
+    );
+}
+
+#[test]
+fn operator_requirements_use_declaration_slots_and_reset() {
+    let mut analyzer = Analyzer::new();
+    let source = "type Item=bool;fn bits[Unused,Item](a:Item,b:Item)Item{ret a&b;}fn main()void{bits[bool,i32](1,2);bits[i32,bool](true,false);}";
+    assert!(analyzer.analyze_program(&parse(source)).errors.is_empty());
+    assert!(
+        analyzer
+            .analyze_program(&parse("fn main()void{}"))
+            .errors
+            .is_empty()
+    );
+    assert_error(
+        "type Item=f64;fn bits[Item](a:Item,b:Item)Item{ret a&b;}fn outer[T](a:T,b:T)T{ret bits[T](a,b);}fn main()void{outer[Item](1.5,2.5);}",
+        "S06",
+    );
+}
+
+#[test]
+fn operator_ordering_nominal_string_checks_preserve_binder_identity() {
+    for argument in ["bool", "Owner"] {
+        let value = if argument == "bool" {
+            "true"
+        } else {
+            "Owner{value:1}"
+        };
+        assert_error(
+            &format!(
+                "struct Owner{{value:i32,}}fn compare[String](a:String,b:String)bool{{ret a<b;}}fn main()void{{compare[{argument}]({value},{value});}}"
+            ),
+            "S06",
+        );
+    }
+    assert_valid(
+        "fn compare[String](a:String,b:String)bool{ret a<b;}fn main()void{compare[i32](1,2);}",
+    );
+    assert_error(
+        "fn main()void{var text:str=\"a\";var first=&text!;var second=&first!;var result=second<\"b\";}",
+        "S06",
+    );
+}

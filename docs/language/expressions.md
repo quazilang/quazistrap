@@ -48,7 +48,7 @@ on the left; pointer differences are unsupported.
 Floating `%` uses a quotient truncated toward zero, preserves the dividend's
 zero sign, yields NaN for infinite dividends or zero divisors, and returns a
 finite dividend unchanged for infinite divisors. Mixed integer/float coercion,
-narrow-result normalization and `**`/bitwise constraints remain incomplete;
+narrow-result normalization and `**` lowering remain incomplete;
 these checks do not establish general numeric correctness. See
 [upgrade guidance](../migrations/arithmetic.md).
 
@@ -74,7 +74,10 @@ count--;
 
 `==`, `!=`, `<`, `<=`, `>`, `>=` compare values. String comparisons compare
 contents lexicographically, not addresses. Signedness affects integer
-comparisons.
+comparisons. Ordering accepts integer pairs, float pairs or recognized strings,
+including through generic helpers; mixed integer/float ordering is rejected.
+Use explicit comparison methods for other structured values. Runtime String
+identity validation remains incomplete; see [the implementation boundary](../internals/operator-requirements.md).
 
 ## Logical operators
 
@@ -94,6 +97,10 @@ ok = !ok;
 ## Bitwise operators
 
 `&` (AND), `|` (OR), `^` (XOR), `<<` (left shift), `>>` (right shift).
+`&`, `|` and `^` also accept two Boolean operands and return Bool. Shifts require
+integer operands. These constraints apply to concrete generic instantiations;
+floats and arbitrary owning values are rejected. This does not define normalization
+of noncanonical Bool values created through casts or foreign code.
 Right shift is sign-preserving for signed integers and zero-extending for
 unsigned integers. Results preserve the integer type:
 

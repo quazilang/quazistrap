@@ -609,3 +609,12 @@ wrappers preserve views and one exclusive wrapper loads once. Aliases normalize
 before collapse. Floating Mod uses guarded FPREM reduction with balanced x87
 stack; constprop agrees. General bitwise/Pow, coercion and effect proof remain
 open. See [the contract](docs/internals/arithmetic.md).
+
+## Operator requirement checkpoint (2026-10-22)
+
+QZC27 supersedes QZC26; QZI13 remains Unverified. Shared arithmetic facts now
+check bitwise integer/Bool pairs, integer shifts, and same-family numeric/string
+ordering across every concrete identity. Declaration binders precede nominal
+classification, and nominal String markers require Named. Known Bool reference
+operands load beside generic peers. Pow and String identity/runtime ABI validation
+remain open. See [the contract](docs/internals/operator-requirements.md).

@@ -5,6 +5,7 @@
 //! Source arithmetic obligations. Template parameters retain declaration
 //! slots; only proven concrete specializations can discharge those obligations.
 
+use super::typecheck::is_string_type;
 use super::*;
 
 const MAX_SITES: usize = 65_536;
@@ -16,6 +17,7 @@ pub(super) enum ArithmeticOp {
     Increment,
     Negate,
     Binary(BinOpKind),
+    Ordering(BinOpKind),
     Compound(CompoundAssignOp),
 }
 
@@ -29,7 +31,16 @@ impl ArithmeticOp {
             Self::Binary(BinOpKind::Mul) => "*",
             Self::Binary(BinOpKind::Div) => "/",
             Self::Binary(BinOpKind::Mod) => "%",
-            Self::Binary(_) => unreachable!("non-arithmetic operator"),
+            Self::Binary(BinOpKind::BitAnd) => "&",
+            Self::Binary(BinOpKind::BitOr) => "|",
+            Self::Binary(BinOpKind::BitXor) => "^",
+            Self::Binary(BinOpKind::Shl) => "<<",
+            Self::Binary(BinOpKind::Shr) => ">>",
+            Self::Ordering(BinOpKind::Lt) => "<",
+            Self::Ordering(BinOpKind::LtEq) => "<=",
+            Self::Ordering(BinOpKind::Gt) => ">",
+            Self::Ordering(BinOpKind::GtEq) => ">=",
+            Self::Binary(_) | Self::Ordering(_) => unreachable!("unsupported operator"),
             Self::Compound(CompoundAssignOp::Add) => "+=",
             Self::Compound(CompoundAssignOp::Sub) => "-=",
             Self::Compound(CompoundAssignOp::Mul) => "*=",
@@ -46,7 +57,39 @@ impl ArithmeticOp {
         )
     }
     fn permits_string_views(&self) -> bool {
-        matches!(self, Self::Binary(BinOpKind::Add))
+        matches!(self, Self::Binary(BinOpKind::Add) | Self::Ordering(_))
+    }
+    fn permits_bool(&self) -> bool {
+        matches!(
+            self,
+            Self::Binary(BinOpKind::BitAnd | BinOpKind::BitOr | BinOpKind::BitXor)
+        )
+    }
+    fn permits_float(&self) -> bool {
+        !matches!(
+            self,
+            Self::Binary(
+                BinOpKind::BitAnd
+                    | BinOpKind::BitOr
+                    | BinOpKind::BitXor
+                    | BinOpKind::Shl
+                    | BinOpKind::Shr
+            )
+        )
+    }
+    fn is_ordering(&self) -> bool {
+        matches!(self, Self::Ordering(_))
+    }
+    fn requirements(&self) -> &'static str {
+        if self.is_ordering() {
+            "integer pairs, float pairs or supported strings"
+        } else if self.permits_bool() {
+            "integer pairs or bool pairs"
+        } else if !self.permits_float() {
+            "integer operands"
+        } else {
+            "numeric operands, str concatenation or a permitted pointer offset"
+        }
     }
 }
 
@@ -56,6 +99,8 @@ enum Operand {
     Number(TypeKind),
     Pointer,
     StringView,
+    OwnedString,
+    Bool,
     Parameter(usize),
 }
 
@@ -65,6 +110,8 @@ impl Operand {
             Self::Number(ty) => ty.to_string(),
             Self::Pointer => "raw pointer".into(),
             Self::StringView => "str".into(),
+            Self::OwnedString => "String".into(),
+            Self::Bool => "bool".into(),
             Self::Parameter(slot) => format!("type parameter slot {slot}"),
         }
     }
@@ -149,25 +196,16 @@ impl Analyzer {
             return None;
         };
         let mut ty = self.resolve_type_aliases(ty);
-        if rhs || matches!(kind, ArithmeticOp::Binary(_)) {
+        if rhs || matches!(kind, ArithmeticOp::Binary(_) | ArithmeticOp::Ordering(_)) {
             // Match checked binary operand autoderef. A symbolic &T is not
             // an implicit numeric load until that lowering is implemented.
-            ty = if matches!(kind, ArithmeticOp::Binary(_))
+            ty = if matches!(kind, ArithmeticOp::Binary(_) | ArithmeticOp::Ordering(_))
                 && Self::arithmetic_string_load(&ty).is_some()
             {
                 TypeKind::Str
             } else {
                 Self::autoderef_type(ty)
             };
-        }
-        if Self::is_integer(&ty) || Self::is_float(&ty) {
-            return Some(Operand::Number(ty));
-        }
-        if kind.permits_string_views() && matches!(ty, TypeKind::Str) {
-            return Some(Operand::StringView);
-        }
-        if matches!(ty, TypeKind::RawPtr { .. }) && !rhs && kind.permits_offset() {
-            return Some(Operand::Pointer);
         }
         if let TypeKind::Named { name, type_args } = &ty
             && type_args.is_empty()
@@ -179,18 +217,38 @@ impl Analyzer {
         {
             return Some(Operand::Parameter(slot));
         }
+        if Self::is_integer(&ty) || (kind.permits_float() && Self::is_float(&ty)) {
+            return Some(Operand::Number(ty));
+        }
+        if kind.permits_string_views() && matches!(ty, TypeKind::Str) {
+            return Some(Operand::StringView);
+        }
+        if kind.is_ordering() && matches!(ty, TypeKind::Named { .. }) && is_string_type(&ty) {
+            return Some(Operand::OwnedString);
+        }
+        if kind.permits_bool() && matches!(ty, TypeKind::Bool) {
+            return Some(Operand::Bool);
+        }
+        if matches!(ty, TypeKind::RawPtr { .. }) && !rhs && kind.permits_offset() {
+            return Some(Operand::Pointer);
+        }
         if !matches!(ty, TypeKind::Error) {
             self.push_error(
                 span,
                 "S06",
                 format!(
-                    "{} not valid for {}; numeric operands or supported str concatenation are required",
+                    "{} not valid for {}; {} are required",
                     kind.name(),
-                    ty
+                    ty,
+                    kind.requirements()
                 ),
             );
         }
         None
+    }
+
+    pub(super) fn arithmetic_op_is_deferred(&self, span: Span) -> bool {
+        self.arithmetic.seen.contains(&(span.start, span.end))
     }
 
     pub(super) fn check_arithmetic_op(
@@ -208,7 +266,10 @@ impl Analyzer {
         let Some(target) = self.arithmetic_operand(&kind, target, span, &parameters, false) else {
             return;
         };
-        let value = if matches!(kind, ArithmeticOp::Compound(_) | ArithmeticOp::Binary(_)) {
+        let value = if matches!(
+            kind,
+            ArithmeticOp::Compound(_) | ArithmeticOp::Binary(_) | ArithmeticOp::Ordering(_)
+        ) {
             let Some(value) = self.arithmetic_operand(&kind, value, span, &parameters, true) else {
                 return;
             };
@@ -229,19 +290,20 @@ impl Analyzer {
             );
             return;
         }
-        if (matches!(target, Operand::StringView) || matches!(value, Some(Operand::StringView)))
+        if (matches!(target, Operand::StringView | Operand::OwnedString)
+            || matches!(value, Some(Operand::StringView | Operand::OwnedString)))
             && !matches!(
                 (&target, &value),
                 (
-                    Operand::StringView | Operand::Parameter(_),
-                    Some(Operand::StringView | Operand::Parameter(_))
+                    Operand::StringView | Operand::OwnedString | Operand::Parameter(_),
+                    Some(Operand::StringView | Operand::OwnedString | Operand::Parameter(_))
                 )
             )
         {
             self.push_error(
                 span,
                 "S06",
-                "string concatenation requires two str views".into(),
+                "string operations require two supported strings".into(),
             );
             return;
         }
@@ -337,16 +399,25 @@ impl Analyzer {
                                 |_| None,
                             )
                             .map_err(|error| ("S14", error.to_string()))?;
-                            if Self::is_integer(&actual) || Self::is_float(&actual) {
+                            if Self::is_integer(&actual)
+                                || (site.kind.permits_float() && Self::is_float(&actual))
+                            {
                                 Ok(Operand::Number(actual))
                             } else if site.kind.permits_string_views()
                                 && Self::arithmetic_string_load(&actual) == Some(false)
                             {
                                 Ok(Operand::StringView)
+                            } else if site.kind.is_ordering()
+                                && is_string_type(&actual)
+                                && matches!(actual, TypeKind::Named { .. })
+                            {
+                                Ok(Operand::OwnedString)
+                            } else if site.kind.permits_bool() && matches!(actual, TypeKind::Bool) {
+                                Ok(Operand::Bool)
                             } else if matches!(actual, TypeKind::RawPtr { .. }) {
                                 Ok(Operand::Pointer)
                             } else {
-                                Err(("S06", format!("non-numeric type `{actual}`")))
+                                Err(("S06", format!("unsupported operand type `{actual}`")))
                             }
                         }
                         other => Ok(other.clone()),
@@ -356,11 +427,18 @@ impl Analyzer {
                 let value = site.value.as_ref().map(resolved).transpose();
                 let valid = match (&target, &value) {
                     (Ok(Operand::Number(_)), Ok(None)) => true,
-                    (Ok(Operand::StringView), Ok(Some(Operand::StringView))) => {
-                        site.kind.permits_string_views()
-                    }
+                    (
+                        Ok(Operand::StringView | Operand::OwnedString),
+                        Ok(Some(Operand::StringView | Operand::OwnedString)),
+                    ) => site.kind.permits_string_views(),
+                    (Ok(Operand::Bool), Ok(Some(Operand::Bool))) => site.kind.permits_bool(),
                     (Ok(Operand::Number(left)), Ok(Some(Operand::Number(right)))) => {
-                        self.types_compatible(left, right)
+                        if site.kind.is_ordering() {
+                            (Self::is_integer(left) && Self::is_integer(right))
+                                || (Self::is_float(left) && Self::is_float(right))
+                        } else {
+                            self.types_compatible(left, right)
+                        }
                     }
                     (Ok(Operand::Pointer), Ok(Some(Operand::Number(right)))) => {
                         site.kind.permits_offset() && Self::is_integer(right)
@@ -380,7 +458,8 @@ impl Analyzer {
                     } else if matches!(
                         (&target, &value),
                         (Ok(Operand::Number(_)), Ok(Some(Operand::Number(_))))
-                    ) {
+                    ) && !site.kind.is_ordering()
+                    {
                         "S01"
                     } else {
                         "S06"
@@ -391,7 +470,7 @@ impl Analyzer {
                         Err((_, error)) => format!(" and {error}"),
                         _ => String::new(),
                     };
-                    diagnostics.push(SemanticError { span: site.span, code, message: format!("specialization `{}`: {} not valid for {target}{value}; numeric operands, str concatenation or a permitted pointer offset are required", mono.mangled_name, site.kind.name()) });
+                    diagnostics.push(SemanticError { span: site.span, code, message: format!("specialization `{}`: {} not valid for {target}{value}; {} are required", mono.mangled_name, site.kind.name(), site.kind.requirements()) });
                 }
             }
         }

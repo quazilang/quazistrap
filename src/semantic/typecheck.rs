@@ -3285,17 +3285,26 @@ impl Analyzer {
                     self.type_check_expr(right, reachable)
                 };
 
-                if matches!(
-                    op,
+                let requirement = match op {
                     BinOpKind::Add
-                        | BinOpKind::Sub
-                        | BinOpKind::Mul
-                        | BinOpKind::Div
-                        | BinOpKind::Mod
-                ) {
+                    | BinOpKind::Sub
+                    | BinOpKind::Mul
+                    | BinOpKind::Div
+                    | BinOpKind::Mod
+                    | BinOpKind::BitAnd
+                    | BinOpKind::BitOr
+                    | BinOpKind::BitXor
+                    | BinOpKind::Shl
+                    | BinOpKind::Shr => Some(ArithmeticOp::Binary(op.clone())),
+                    BinOpKind::Lt | BinOpKind::LtEq | BinOpKind::Gt | BinOpKind::GtEq => {
+                        Some(ArithmeticOp::Ordering(op.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some(requirement) = requirement {
                     self.check_arithmetic_op(
                         expr.span,
-                        ArithmeticOp::Binary(op.clone()),
+                        requirement,
                         left_eval.ty.as_ref(),
                         right_eval.ty.as_ref(),
                     );
@@ -6433,30 +6442,10 @@ impl Analyzer {
             }
             BinOpKind::Lt | BinOpKind::Gt | BinOpKind::LtEq | BinOpKind::GtEq => {
                 if let (Some(l), Some(r)) = (&left, &right) {
-                    let generic_ordering = match (l, r) {
-                        (
-                            TypeKind::Named {
-                                name: left_name,
-                                type_args: left_args,
-                            },
-                            TypeKind::Named {
-                                name: right_name,
-                                type_args: right_args,
-                            },
-                        ) if left_args.is_empty()
-                            && right_args.is_empty()
-                            && left_name == right_name =>
-                        {
-                            self.current_generic_params
-                                .last()
-                                .is_some_and(|params| params.contains(left_name))
-                        }
-                        _ => false,
-                    };
                     let ordered = (Self::is_integer(l) && Self::is_integer(r))
                         || (Self::is_float(l) && Self::is_float(r))
                         || (is_string_type(l) && is_string_type(r))
-                        || generic_ordering;
+                        || self.arithmetic_op_is_deferred(span);
                     if !ordered {
                         self.push_error(
                             span,
@@ -6815,7 +6804,10 @@ impl Analyzer {
                 let loaded = Self::autoderef_type(resolved.clone());
                 if Self::is_integer(&loaded)
                     || Self::is_float(&loaded)
-                    || matches!(loaded, TypeKind::Str | TypeKind::RawPtr { .. })
+                    || matches!(
+                        loaded,
+                        TypeKind::Str | TypeKind::Bool | TypeKind::RawPtr { .. }
+                    )
                     || Self::arithmetic_string_load(&resolved).is_some()
                 {
                     self.mark_auto_deref(expr);
@@ -8077,7 +8069,7 @@ fn is_string_view_type(ty: &TypeKind) -> bool {
     }
 }
 
-fn is_string_type(ty: &TypeKind) -> bool {
+pub(super) fn is_string_type(ty: &TypeKind) -> bool {
     is_string_view_type(ty)
         || matches!(ty, TypeKind::Named { name, .. } if name == "String" || name.ends_with(".String"))
 }

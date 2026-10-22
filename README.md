@@ -27,24 +27,21 @@ Completion of unfinished plan items:
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
 Revalidated on 2026-10-22 for the
-[arithmetic checkpoint](docs/changes/2026-10-22-arithmetic.md), using the
+[operator-requirement checkpoint](docs/changes/2026-10-22-operator-requirements.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 934 tests pass, including the 60 contained-LSP tests. Eager arithmetic and
-negation now reject unsupported operands and validate concrete generic types.
-Alias/reference loads preserve numeric and string-view representations; floating
-remainder uses floating arithmetic. Thirty-four invalid sources are rejected by
-check/native/QZI/COFF; seven valid groups pass native/source-removed QZI/COFF.
-Dynamic C-export tests compare 1,019 remainder results per native/QZI path with
-host fmod, including signed zeros, subnormals and nonfinite values. Old-cache
-rejection/rebuild and correct new exact hits pass, alongside earlier runners.
+All 939 tests pass, including the 60 contained-LSP tests. Bitwise/shift and
+generic ordering operands now satisfy operation-specific categories; Boolean
+reference operands load correctly. Thirty-seven invalid sources are rejected
+by check/native/QZI/COFF. Five value groups and two real String comparisons,
+with a generic-binder shadowing control, pass native/source-removed QZI/COFF.
+Old-cache rejection/rebuild and new exact hits pass, alongside earlier runners.
 The installed release `qz` passes these checks. Quazifetch builds/runs without
 S10 and reports Linux used RAM from `MemAvailable`, counting reclaimable cache
-as available; six isolated STD memory tests pass. QZC26 rebuilds older source
-caches; QZI13 remains Unverified. General bitwise/Pow constraints, numeric
-coercion/normalization, place/effect proof and complete recursive destruction
-remain open. Ownership stays 9/16, and LSP stays 16/20. The 33-item,
-78-requirement rubric is unchanged: these fixes strengthen existing requirements.
-Statuses and percentages are refreshed before committing.
+as available; six isolated STD memory tests pass. QZC27 rebuilds older source
+caches; QZI13 remains Unverified. Power lowering and String runtime identity,
+numeric coercion/normalization, effects and recursive destruction remain open.
+Ownership stays 9/16; LSP stays 16/20. The 33-item, 78-requirement rubric remains
+unchanged. Statuses and percentages are refreshed before committing.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no
