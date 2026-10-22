@@ -2855,23 +2855,15 @@ impl<'a> FnCompiler<'a> {
     }
 
     /// Resolve the physical access required by an explicit raw-pointer
-    /// dereference. Other memory paths intentionally retain the VM's 8-byte
-    /// slot layout.
-    fn raw_pointee_access(&self, ptr_expr: &Expr) -> (MemWidth, bool) {
-        let Some(TypeKind::RawPtr { inner }) =
-            self.type_of_span((ptr_expr.span.start, ptr_expr.span.end))
-        else {
-            return (MemWidth::Qword, false);
+    /// dereference, sharing C scalar conversion rules with fields and globals.
+    /// Safe-reference accesses retain the VM's 8-byte slot layout.
+    fn raw_pointee_access(&self, ptr_expr: &Expr) -> (MemWidth, bool, bool) {
+        let Some(TypeKind::RawPtr { inner }) = self.type_of_expr(ptr_expr) else {
+            // Safe references point at VM slots, including internal f32 values.
+            return (MemWidth::Qword, false, false);
         };
-        match self.resolve_type(&inner.node) {
-            TypeKind::Int8 => (MemWidth::Byte, true),
-            TypeKind::Int16 => (MemWidth::Word, true),
-            TypeKind::Int32 => (MemWidth::Dword, true),
-            TypeKind::Uint8 | TypeKind::Bool => (MemWidth::Byte, false),
-            TypeKind::Uint16 => (MemWidth::Word, false),
-            TypeKind::Uint32 => (MemWidth::Dword, false),
-            _ => (MemWidth::Qword, false),
-        }
+        let (width, signed, _, float32) = self.c_memory_access(&inner.node);
+        (width, signed, float32)
     }
 
     fn c_memory_access(&self, ty: &TypeKind) -> (MemWidth, bool, u64, bool) {
@@ -3623,12 +3615,12 @@ impl<'a> FnCompiler<'a> {
                 expr: ptr_expr,
             } => {
                 let ptr = self.compile_value(ptr_expr);
-                let (width, signed) = self.raw_pointee_access(ptr_expr);
+                let (width, signed, float32) = self.raw_pointee_access(ptr_expr);
                 LvalueAddr::Deref {
                     ptr,
                     width,
                     signed,
-                    float32: false,
+                    float32,
                 }
             }
             ExprKind::Field {
@@ -7344,10 +7336,8 @@ impl<'a> FnCompiler<'a> {
                             // storage address, not by the contents of word zero.
                             return ptr;
                         }
-                        let dst = self.alloc_reg();
-                        let (width, signed) = self.raw_pointee_access(inner);
-                        self.chunk.emit(mem_load_w(ptr, dst, 0, width, signed));
-                        dst
+                        let (width, signed, float32) = self.raw_pointee_access(inner);
+                        self.emit_c_load(ptr, width, signed, float32)
                     }
                     UnaryOpKind::Neg => {
                         let src = self.compile_expr(inner);
@@ -7640,51 +7630,44 @@ impl<'a> FnCompiler<'a> {
                 op,
                 prefix,
             } => {
-                if let ExprKind::Ident(name) = &inner.node {
-                    if self.foreign_global_for_span(inner.span).is_some() {
-                        let addr = self.compute_lvalue_addr(inner);
-                        let old = self.load_lvalue(&addr);
-                        let opcode = match op {
-                            IncDecOp::Inc => Opcode::Add,
-                            IncDecOp::Dec => Opcode::Sub,
-                        };
-                        let one = self.alloc_reg();
-                        self.chunk.emit(ri16(Opcode::MovI, one, 1));
-                        let new_val = self.alloc_reg();
-                        self.chunk.emit(rrr(opcode, new_val, old, one));
-                        self.store_lvalue(&addr, new_val);
-                        return if *prefix { new_val } else { old };
-                    }
-                    let r = self.reg_of(name);
+                let is_float = self.is_float_span((inner.span.start, inner.span.end));
+                if !is_float
+                    && let ExprKind::Ident(name) = &inner.node
+                    && self.foreign_global_for_span(inner.span).is_none()
+                {
+                    let register = self.reg_of(name);
                     let opcode = match op {
                         IncDecOp::Inc => Opcode::Inc,
                         IncDecOp::Dec => Opcode::Dec,
                     };
-                    if *prefix {
-                        // ++n / --n: modify in place and return the new value.
-                        self.chunk.emit(rrr(opcode, r, r, 0));
-                        r
+                    let result = if *prefix {
+                        register
                     } else {
-                        // n++ / n--: return the old value, then modify.
-                        let dst = self.alloc_reg();
-                        self.chunk.emit(rrr(Opcode::Mov, dst, r, 0));
-                        self.chunk.emit(rrr(opcode, r, r, 0));
-                        dst
-                    }
-                } else {
-                    let addr = self.compute_lvalue_addr(inner);
-                    let old = self.load_lvalue(&addr);
-                    let opcode = match op {
-                        IncDecOp::Inc => Opcode::Add,
-                        IncDecOp::Dec => Opcode::Sub,
+                        let copy = self.alloc_reg();
+                        self.chunk.emit(rrr(Opcode::Mov, copy, register, 0));
+                        copy
                     };
-                    let one = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::MovI, one, 1));
-                    let new_val = self.alloc_reg();
-                    self.chunk.emit(rrr(opcode, new_val, old, one));
-                    self.store_lvalue(&addr, new_val);
-                    if *prefix { new_val } else { old }
+                    self.chunk.emit(rrr(opcode, register, register, 0));
+                    return result;
                 }
+                let address = self.compute_lvalue_addr(inner);
+                let old = self.load_lvalue(&address);
+                // A local postfix result must survive storing the new value.
+                let old = self.snapshot_slots(old, 1);
+                let one = if is_float {
+                    self.emit_const_value(ConstValue::Float(1.0))
+                } else {
+                    self.emit_u64_constant(1)
+                };
+                let opcode = match op {
+                    IncDecOp::Inc => Opcode::Add,
+                    IncDecOp::Dec => Opcode::Sub,
+                };
+                let result = self.alloc_reg();
+                let arithmetic = if is_float { rrr_f } else { rrr };
+                self.chunk.emit(arithmetic(opcode, result, old, one));
+                self.store_lvalue(&address, result);
+                if *prefix { result } else { old }
             }
 
             ExprKind::Call {
@@ -12050,6 +12033,79 @@ fn take(value: Outer) void {}
             chunks[0].code.iter().any(|i| i.opcode == Opcode::Add as u8),
             "arr[0] += n should emit Add when n is not constant"
         );
+    }
+
+    #[test]
+    fn raw_f32_converts_but_safe_float_references_keep_vm_slots() {
+        let chunks = compile(
+            r#"
+type Scalar = f32;
+unsafe fn read(pointer: *Scalar) f32 { ret *(pointer as *Scalar); }
+unsafe fn write(pointer: *Scalar, value: f32) void { *pointer = value; }
+fn reference(pointer: &f32!) f32 { (*pointer)++; ret *pointer; }
+"#,
+        );
+        for (name, opcode) in [("read", Opcode::Load), ("write", Opcode::Store)] {
+            let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+            let access = chunk
+                .code
+                .iter()
+                .find(|instruction| instruction.opcode() == Some(opcode))
+                .unwrap();
+            assert_eq!(access.mem_width(), MemWidth::Dword);
+            assert_ne!(access.flags & FLOAT_FLAG, 0);
+        }
+        let reference = chunks
+            .iter()
+            .find(|chunk| chunk.name == "reference")
+            .unwrap();
+        for access in reference.code.iter().filter(|instruction| {
+            matches!(instruction.opcode(), Some(Opcode::Load | Opcode::Store))
+        }) {
+            assert_eq!(access.mem_width(), MemWidth::Qword);
+            assert_eq!(access.flags & FLOAT_FLAG, 0);
+        }
+        assert!(
+            reference
+                .code
+                .iter()
+                .any(|instruction| instruction.opcode() == Some(Opcode::Add)
+                    && instruction.flags & FLOAT_FLAG != 0)
+        );
+    }
+
+    #[test]
+    fn floating_increment_uses_float_arithmetic_for_each_storage_kind() {
+        let chunks = compile(
+            r#"
+@api("native_value") var external: f32;
+@repr(C) struct Cell { value: f32 }
+fn local(input: f64) f64 { var value = input; var old = value++; ret old + value; }
+unsafe fn raw(pointer: *f32) f32 { ret --(*pointer); }
+unsafe fn global() f32 { ret ++external; }
+fn field(cell: Cell) f32 { ret cell.value--; }
+"#,
+        );
+        for name in ["local", "raw", "global", "field"] {
+            let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+            assert!(
+                chunk.code.iter().any(|instruction| matches!(
+                    instruction.opcode(),
+                    Some(Opcode::Add | Opcode::Sub)
+                ) && instruction.flags & FLOAT_FLAG != 0),
+                "{name}: {:?}",
+                chunk.code
+            );
+            assert!(
+                chunk.constants.iter().any(
+                    |constant| matches!(constant, ConstPoolEntry::Float(value) if *value == 1.0)
+                )
+            );
+            assert!(!chunk.code.iter().any(|instruction| matches!(
+                instruction.opcode(),
+                Some(Opcode::Inc | Opcode::Dec)
+            )));
+        }
     }
 
     #[test]

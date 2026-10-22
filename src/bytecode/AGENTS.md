@@ -22,7 +22,9 @@ For `Load`/`Store`, flags bits 1–2 encode `MemWidth` (`00=qword`,
 `01=byte`, `10=word`, `11=dword`) and bit 3 marks a signed sub-word
 `Load`. Bit 0 remains `FLOAT_FLAG`. A zero flags byte therefore preserves the
 legacy qword access. Explicit raw-pointer dereferences use the pointee width;
-VM slot, aggregate, field, array, slice, and reference accesses remain qword.
+VM slots and safe-reference accesses remain qword. C fields and flexible tails
+use their declared C widths; dword FLOAT_FLAG loads/stores convert native f32
+and internal f64 slot values. Raw *f32 shares these C conversion rules.
 For integer `Div`, `Mod`, and relational jumps, bit 2 is `UNSIGNED_FLAG`.
 Zero retains signed behavior for historical bytecode. Signed `>>` lowers to
 `Sar`; unsigned `>>` lowers to `Shr`.
@@ -59,7 +61,7 @@ matching artifact ownership boundary.
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. QZC v22 invalidates earlier exact/reusable caches for source initialization and checked execution; v21 introduced runtime local-owner guards and selected-path transfers; v20 introduced loop cleanup and terminal-aware constant propagation.
+  and reserialization. QZC v24 invalidates earlier exact/reusable caches for raw f32 conversion and floating updates; v23 introduced eager operand captures; v22 introduced source initialization and checked execution; v21 introduced runtime local-owner guards and selected-path transfers; v20 introduced loop cleanup and terminal-aware constant propagation.
 
 Immutable golden fixtures from real historical writers (v2-v6) live in
 `src/bytecode/fixtures/qzi/` with provenance in their README; `golden_*` tests
@@ -351,3 +353,12 @@ when sharing place paths. Borrow checking follows declared named-argument/field
 slots and scopes allocation pins separately from shared view loans. Scalar field
 writes do not release a pinned aggregate. No normalized alias/effect/artifact
 proof follows. See [the contract](../../docs/internals/operand-snapshots.md).
+
+## Scalar memory checkpoint (2026-10-22)
+
+Current source cache is **QZC24**; QZI13 remains unchanged and Unverified.
+Raw f32 accesses share the C scalar descriptor and native conversion flag; safe
+float references retain qword VM slots. Float ++/-- uses floating 1.0 plus
+flagged Add/Sub, with a captured old value for postfix. Integer local fast paths
+remain. General narrow-result normalization, f16 memory and numeric type
+obligations remain separate work. See [the contract](../../docs/internals/scalar-memory.md).

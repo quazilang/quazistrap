@@ -27,22 +27,21 @@ Completion of unfinished plan items:
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
 Revalidated on 2026-10-22 for the
-[stable-operand checkpoint](docs/changes/2026-10-22-operand-snapshots.md), using the
+[scalar-memory checkpoint](docs/changes/2026-10-22-scalar-memory.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 904 tests pass, including the 60 contained-LSP tests. Eager operands and
-computed destinations now retain evaluated values across sibling mutations;
-slice descriptors and match results preserve their full physical shape.
-Scoped storage pins and pending transfers prevent premature owner release.
-Another 27 native/source-removed-QZI/COFF checks and 6 rejected lifetime cases
-cover these changes; earlier initialization and cleanup regressions also pass.
-Quazifetch builds without S10 and reports Linux used RAM from `MemAvailable`,
-counting reclaimable cache as available; six isolated STD memory tests pass.
-The installed release `qz` also passes these checks and ordinary quazifetch
-`qz build`/`qz run`, with RAM comparable to adjacent fastfetch samples.
-QZC23 rebuilds older source caches; QZI13 remains Unverified.
-General place/effect proof and complete recursive destruction remain open.
-Ownership stays 9/16, and LSP stays 16/20. The 33-item, 78-requirement rubric
-is unchanged: these correctness fixes strengthen existing requirements.
+All 906 tests pass, including the 60 contained-LSP tests. Raw f32 accesses now
+use native four-byte conversions; floating ++/-- performs floating arithmetic
+across scalar storage kinds. Thirteen native/source-removed-QZI/COFF checks cover
+neighbor sentinels, aliases, generic pointees, VM references and numeric updates,
+with old-cache rebuild and correct new exact hits. Earlier operand, lifetime,
+initialization and cleanup regressions also pass.
+The installed release `qz` passes these checks. Quazifetch builds/runs without
+S10 and reports Linux used RAM from `MemAvailable`, counting reclaimable cache
+as available; six isolated STD memory tests pass. RAM is comparable to adjacent
+fastfetch samples. QZC24 rebuilds older source caches; QZI13 remains Unverified.
+General numeric normalization, place/effect proof and complete recursive
+destruction remain open. Ownership stays 9/16, and LSP stays 16/20. The 33-item,
+78-requirement rubric is unchanged: these fixes strengthen existing requirements.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no

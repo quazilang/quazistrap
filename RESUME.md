@@ -2,6 +2,64 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-22, raw scalar memory and floating updates)
+
+Implemented raw *f32 conversion via raw_pointee_access using shared
+c_memory_access, with type_of_expr/alias/concrete-generic resolution. Explicit
+raw reads call emit_c_load; computed Deref retains width/signed/float32 through
+load/store. Safe Ref/MutRef still uses qword VM slots; inline C aggregate raw
+pointers still retain their inline-storage address.
+
+IncDec now keeps the integer-local fast path, otherwise computes its place once,
+captures old value, chooses floating1.0+rrr_f Add/Sub for float targets, and stores
+with the typed descriptor. Old local postfix values survive store. This fixes
+raw, local, field/reference and foreign-global float increment/decrement. Two
+focused Rust tests lock native-vs-VM flags and arithmetic across storage kinds.
+Independent read-only design+implementation review found no blocker, and called
+out the existing narrowed-result normalization contract below.
+
+QZC24 invalidates older exact/reusable caches; QZI13 remains Unverified/unchanged.
+Full offline tests **906/906**, debug build/direct Clippy pass (existing warnings).
+New scripts/check_scalar_memory.py passes13 native/source-removed QZI/Windows
+COFF cases and previous wrong-result/cache rebuild/new exact-hit. Buffers are
+16byte allocations with initialized read regions, and adjacent sentinels catch
+oversized writes; no invalid pointer executed. Controls include aliases/generic
+pointees, signed byte, safe f32 references, fields and f32/f64 generic/local math.
+Baseline /tmp/quazi-raw-access-before-838cd8f is the previous installed release.
+
+All existing operand27valid/6invalid, expression36, initialization39invalid/
+57valid+traps, loop23, conditional31, try9invalid/8valid, retention12invalid/7valid,
+named, dyn/cache regressions pass. Installed optimized qz updated using the same
+Rust wrappers and cargo install --path . --offline --force; its scalar/cache
+runner and STD memory6 pass. Ordinary quazifetch qzbuild/run and Windows COFF pass,
+with oldcachemiss and newexacthit. Logs /tmp/quazi-raw-access-*.log. Graphify
+query/AST update pass:5353nodes/11997edges, no .qz semantic extraction. Formatting,
+Markdown links and scoped diff checks pass before commit.
+
+README and audit refreshed BEFORE committing, per user: unchanged33items/
+78requirements, 73.2% complete/26.8% remaining, Ownership9/16,LSP16/20. No push.
+Preserve existing STD CLI dirt, compiler .codex/ and example35 build artifacts.
+
+NEXT PRIORITY: numeric mutation type obligations are still unsafe/incomplete.
+CHECK ONLY fixture /tmp/quazi-incdec-type-audit-40hrrgyd/main.qz is accepted:
+struct Owner{value:i32,} fn main()void{var owner=Owner{value:1};owner++;}
+No binary was built or executed. IncDec typecheck currently only excludes
+Str/Bool/Void/Ref/RawPtr. Require integer/float operands, preserving symbolic
+numeric generic helpers and validating their concrete specializations. Do not
+just reject all Named types (would reject valid generic increment[f32/f64]);
+use declaration/binder-backed obligations and concrete closure validation, with
+S06/S14 diagnostics and reset/cancellation/budget coverage like dense-read facts.
+Also audit compound operators and other numeric place effects for owning-handle
+arithmetic. This belongs to the normalized typed-access/effect foundation.
+
+General narrow-result normalization remains unresolved: assignment/compound/
+prefix results may retain the unrounded intermediate despite a narrower store.
+Canonical f32 arithmetic/overflow and f16 native memory need a consistent
+language contract and regressions. Whole inline C aggregate copies/nested
+projections, canonical Bool storage/equality, partial-place state, recursive
+destruction, interprocedural ownership and verified artifacts/D-015 remain open.
+The full ../goal.md stays active/incomplete; do not claim release readiness.
+
 ## Checkpoint (2026-10-22, stable operand values and computed places)
 
 Implemented in codegen.rs: compile_value captures binding-backed complete physical

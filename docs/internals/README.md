@@ -1,5 +1,7 @@
 # Compiler and runtime internals
 
+- [Scalar memory conversions and numeric updates](scalar-memory.md)
+
 - [Stable operand values and computed places](operand-snapshots.md)
 
 - [Source definite initialization](source-initialization.md)

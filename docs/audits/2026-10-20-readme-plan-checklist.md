@@ -1,8 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
 Revalidated on 2026-10-22 against the
-[stable-operand checkpoint](../changes/2026-10-22-operand-snapshots.md).
-Previous committed source: `87e66dc`.
+[scalar-memory checkpoint](../changes/2026-10-22-scalar-memory.md).
+Previous committed source: `838cd8f`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
@@ -68,6 +68,15 @@ receiver/field transfers strengthen existing correctness coverage. General
 projection/effect proof and recursive destruction remain incomplete; no new
 requirement receives credit. Completion remains **73.2%**, remaining **26.8%**.
 README statuses and this audit are refreshed before the commit.
+
+The scalar-memory checkpoint passes **906 tests** and **13 native/QZI/COFF**
+checks, with safe previous-compiler wrong-result/cache coverage. Raw f32 access
+width/conversion and floating increment/decrement now agree with the scalar
+storage model. Generic/alias and VM-reference controls pass. This adds no new
+roadmap requirement credit: general numeric result normalization, ownership
+place/effect proof and recursive destruction remain incomplete. The unchanged
+rubric stays **73.2% complete, 26.8% remaining**. README statuses are refreshed
+before this commit too.
 
 ## Summary
 

@@ -338,3 +338,12 @@ when sharing place paths. Borrow checking follows declared named-argument/field
 slots and scopes allocation pins separately from shared view loans. Scalar field
 writes do not release a pinned aggregate. No normalized alias/effect/artifact
 proof follows. See [the contract](../../docs/internals/operand-snapshots.md).
+
+## Scalar memory checkpoint (2026-10-22)
+
+Current source cache is **QZC24**; QZI13 remains unchanged and Unverified.
+Raw f32 accesses share the C scalar descriptor and native conversion flag; safe
+float references retain qword VM slots. Float ++/-- uses floating 1.0 plus
+flagged Add/Sub, with a captured old value for postfix. Integer local fast paths
+remain. General narrow-result normalization, f16 memory and numeric type
+obligations remain separate work. See [the contract](../../docs/internals/scalar-memory.md).
