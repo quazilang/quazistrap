@@ -3311,17 +3311,22 @@ impl Analyzer {
                     self.mark_arithmetic_operand_autoderef(left, left_eval.ty.as_ref());
                     self.mark_arithmetic_operand_autoderef(right, right_eval.ty.as_ref());
                 }
-                let ty = self.infer_binary_type(expr.span, op, &left_eval.ty, &right_eval.ty);
-                self.mark_binary_autoderef(left, &left_eval.ty, right, &right_eval.ty);
-                let const_value = if let (Some(lhs), Some(rhs)) =
-                    (&left_eval.const_value, &right_eval.const_value)
-                {
-                    Self::const_from_binary(op, lhs, rhs, left_eval.ty.as_ref())
+                if matches!(op, BinOpKind::Pow) {
+                    self.mark_arithmetic_operand_autoderef(left, left_eval.ty.as_ref());
+                    self.mark_arithmetic_operand_autoderef(right, right_eval.ty.as_ref());
+                    self.check_power_expression(expr.span, left, right, &left_eval, &right_eval)
                 } else {
-                    self.check_math_identities(expr.span, op, &left_eval, &right_eval)
-                };
-
-                ExprEval { ty, const_value }
+                    let ty = self.infer_binary_type(expr.span, op, &left_eval.ty, &right_eval.ty);
+                    self.mark_binary_autoderef(left, &left_eval.ty, right, &right_eval.ty);
+                    let const_value = if let (Some(lhs), Some(rhs)) =
+                        (&left_eval.const_value, &right_eval.const_value)
+                    {
+                        Self::const_from_binary(op, lhs, rhs, left_eval.ty.as_ref())
+                    } else {
+                        self.check_math_identities(expr.span, op, &left_eval, &right_eval)
+                    };
+                    ExprEval { ty, const_value }
+                }
             }
             ExprKind::Assign { target, value } => {
                 let target_eval = if assignment_ident(target).is_none() {
@@ -6510,10 +6515,8 @@ impl Analyzer {
                 (None, None) => None,
             },
             BinOpKind::Pow => match (&left, &right) {
-                (Some(l), Some(r)) if self.types_compatible(l, r) => Some(l.clone()),
-                (Some(l), _) => Some(l.clone()),
-                (None, Some(r)) => Some(r.clone()),
-                (None, None) => None,
+                (Some(base), Some(exponent)) => power_result_type(base, exponent),
+                _ => None,
             },
         }
     }

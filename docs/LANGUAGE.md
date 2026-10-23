@@ -82,6 +82,12 @@ Mutable lvalues support `+=`, `-=`, `*=`, `/=`, `%=`, prefix/postfix `++` and
 `--`. Logical operations short-circuit. Integer bitwise operations preserve
 their integer type.
 
+Integer `**` preserves the base type and checks overflow. Known negative integer
+exponents fail compilation; runtime negative exponents and overflow panic.
+`2 ** 0` is 1; `2.0 ** -2` is floating 0.25. Either floating operand selects f64.
+Fractional powers use a self-contained approximation. See
+[power semantics and migration](migrations/power.md).
+
 ## Functions and closures
 
 Functions may call themselves directly or through other functions. Recursion

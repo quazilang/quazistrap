@@ -759,6 +759,13 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
                     chunk.name, instruction_index, message
                 ))
             };
+            if opcode == Opcode::Pow
+                && !super::instruction::valid_float_power_flags(instruction.flags)
+            {
+                return fail(
+                    "Power requires typed floating operand flags; rebuild this artifact from source with the current compiler",
+                );
+            }
             if opcode == Opcode::Lea
                 && instruction.flags != 0
                 && instruction.ops[1]
@@ -858,7 +865,7 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 13;
+pub const QZI_VERSION: u8 = 14;
 const QZI_LEGACY_VERSION: u8 = 5;
 const QZI_FIRST_SECTIONED_VERSION: u8 = 6;
 const QZI_OWNERSHIP_SCHEMA_VERSION: u16 = 1;
@@ -1298,6 +1305,7 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
     let version = bytes[4];
     if version <= QZI_LEGACY_VERSION {
         let chunks = deserialize_qzi_legacy(bytes, false)?;
+        reject_legacy_power(version, &chunks)?;
         reject_implicit_lea_metadata(version, &chunks)?;
         if chunks_use_preownership_function_values(&chunks) {
             return Err(format!(
@@ -1461,6 +1469,7 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
     }
     let call_relocations = decode_call_relocations(relocation_payload)?;
     let chunks = deserialize_qzi_legacy(bytecode_payload, version >= 13)?;
+    reject_legacy_power(version, &chunks)?;
     reject_implicit_lea_metadata(version, &chunks)?;
     if version < 7 && chunks_use_preownership_function_values(&chunks) {
         return Err(
@@ -1639,6 +1648,20 @@ fn legacy_interface_has_ambiguous_ownership(
         }
     }
     Ok(requires_callable && !has_callable)
+}
+
+fn reject_legacy_power(version: u8, chunks: &[Chunk]) -> Result<(), String> {
+    if version < 14
+        && chunks
+            .iter()
+            .flat_map(|chunk| &chunk.code)
+            .any(|instruction| instruction.opcode() == Some(Opcode::Pow))
+    {
+        return Err(format!(
+            "QZI v{version} Power predates typed floating operands and checked integer power; rebuild this artifact from source with the current compiler"
+        ));
+    }
+    Ok(())
 }
 
 fn reject_implicit_lea_metadata(version: u8, chunks: &[Chunk]) -> Result<(), String> {
@@ -3012,6 +3035,99 @@ mod tests {
             .expect_err("legacy implicit address metadata must require a source rebuild");
         assert!(error.contains("QZI v5"));
         assert!(error.contains("without address-taken register metadata"));
+    }
+
+    fn floating_power_chunk(flags: u8) -> Chunk {
+        let mut chunk = Chunk::new("power");
+        chunk.param_count = 2;
+        chunk.reg_count = 3;
+        let mut power = rrr(Opcode::Pow, 2, 0, 1);
+        power.flags = flags;
+        chunk.emit(power);
+        chunk.emit(rrr(Opcode::Ret, 2, 0, 0));
+        chunk
+    }
+
+    #[test]
+    fn qzi_typed_floating_power_roundtrips_all_operand_representations() {
+        // f64/signed, f64/unsigned, signed/f64, unsigned/f64, f64/f64.
+        for flags in [0x03, 0x13, 0x09, 0x0d, 0x0b] {
+            let chunk = floating_power_chunk(flags);
+            let encoded = serialize_qzi(std::slice::from_ref(&chunk)).unwrap();
+            assert_eq!(encoded[4], 14);
+            let decoded = deserialize_qzi_module(&encoded).unwrap();
+            assert_eq!(decoded.chunks[0].code, chunk.code);
+            assert!(matches!(
+                decoded.ownership,
+                QziOwnershipArtifact::Unverified { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn qzi_power_rejects_untyped_and_malformed_flags_on_write_and_read() {
+        for flags in 0..=u8::MAX {
+            if [0x03, 0x13, 0x09, 0x0d, 0x0b].contains(&flags) {
+                continue;
+            }
+            let error = serialize_qzi(&[floating_power_chunk(flags)]).unwrap_err();
+            assert!(
+                error.contains("typed floating operand flags"),
+                "{flags:#x}: {error}"
+            );
+            assert!(error.contains("rebuild this artifact from source"));
+
+            // Legacy payloads have no content envelope. Changing their actual
+            // instruction bytes reaches reader validation, rather than failing
+            // only the current container's content digest.
+            let mut encoded = serialize_qzi_legacy(&[floating_power_chunk(0x03)]).unwrap();
+            let instruction = [Opcode::Pow as u8, 2, 0, 1, 0, 0x03];
+            let offset = encoded
+                .windows(Instruction::SIZE)
+                .position(|window| window == instruction)
+                .unwrap();
+            encoded[offset + 5] = flags;
+            let error = deserialize_qzi_module(&encoded).unwrap_err();
+            assert!(
+                error.contains("typed floating operand flags"),
+                "{flags:#x}: {error}"
+            );
+            assert!(error.contains("rebuild this artifact from source"));
+        }
+    }
+
+    #[test]
+    fn qzi_pre_v14_power_requires_source_rebuild_even_with_new_flags() {
+        let mut encoded = serialize_qzi(&[floating_power_chunk(0x03)]).unwrap();
+        encoded[4] = 13;
+        let error = deserialize_qzi_module(&encoded).unwrap_err();
+        assert!(error.contains("QZI v13 Power"), "{error}");
+        assert!(error.contains("rebuild this artifact from source"));
+    }
+
+    #[test]
+    fn qzi_v13_without_power_preserves_ownership_origin_on_migration() {
+        let mut chunk = Chunk::new("answer");
+        chunk.reg_count = 1;
+        chunk.emit(ri16(Opcode::MovI, 0, 42));
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+        let mut module = QziModule::from_chunks(vec![chunk]);
+        module.ownership_abi_version = 13;
+        let mut encoded = serialize_qzi_module(&module).unwrap();
+        // V13 and V14 share the section and chunk layouts. The difference is
+        // the interpretation of Pow, absent in this compatible scalar module.
+        encoded[4] = 13;
+        let decoded = deserialize_qzi_module(&encoded).unwrap();
+        assert_eq!(decoded.ownership_abi_version, 13);
+        decoded.validate_current_ownership_abi().unwrap();
+        let migrated = serialize_qzi_module(&decoded).unwrap();
+        assert_eq!(migrated[4], 14);
+        let restored = deserialize_qzi_module(&migrated).unwrap();
+        assert_eq!(restored.ownership_abi_version, 13);
+        assert!(matches!(
+            restored.ownership,
+            QziOwnershipArtifact::Unverified { .. }
+        ));
     }
 
     #[test]

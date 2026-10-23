@@ -2,6 +2,53 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-23, typed power)
+
+Authoritative current work implements D-016, superseding the earlier truncation
+selection. QZC28 / QZI14. `semantic/power.rs` numeric declaration-slot facts,
+constant negative/overflow S06, mutable runtime inputs, concrete closure checks,
+known numeric reference loads and retained panic dependencies. Integer/integer
+power preserves base type; either float gives f64. Generic substitutions that
+change provisional integer result family to float fail S14 (use explicitfloat).
+`bytecode/power.rs` exact checked unsigned-magnitude squaring, declared width
+limits, signedMIN and u64MAX, runtime negative/overflow language panic. Lastunused
+square skipped. Symbolic helper chunks trap; concretization selects numeric code.
+Floating Pow flags in instruction.rs: result1,basefloat2,baseunsigned4,expfloat8,
+expunsigned16. Shared validator/read/write rejects malformed flags/legacyPow;
+pre14Pow requires source rebuild. Compatible older nonPow preserves origin;
+QZI remains Unverified. Selfcontained float_power.rs uses SSE integer-exponent
+squaring (reciprocal base first), guarded approximate x87 fractional powers,
+no externalpow/libm. Not correctlyrounded libm; no effects/ownership certificate.
+
+953/953 serialoffline Rust tests. Build/directClippy pass existingwarnings.
+`python3 scripts/check_power.py --before-qz /tmp/quazi-power-before-64b2760`:
+12invalid check/native/QZI/WindowsCOFF;8valuegroups native/source-removedQZI/COFF;
+13paniccases exit101 source/QZI;204unsigned+203signed exactexportcases and209
+approxfloatcases pernative/QZI sharedlib; exactparity>2^53,MIN,2^-1074 controls.
+Hostsharedfixtures explicitlynoexecstack (independent ELFmetadata followup below).
+All256Powflagbytes tested. Backend768finite samples+specialvalues/x87balance,
+bothABI no-call/no-reloc checks. OldhandlePow compiledbytecodeonly,neverrun;
+newcachedsource rejects; validoldcachemiss/newexacthit execute exactlargeinteger.
+Baseline /tmp/quazi-power-before-64b2760. Installedoptimizedqz updated andfull
+Pow/cache runner passes. Earlier arithmetic/operator/numeric/scalar/operand/init/
+loop/conditional/try/expression/retention/named/dyn-cache runners allpass.
+Dynamicrunner bumped its currentwriter expectation toQZI14. STDmemory6 and
+ordinaryquazifetch build/run/cachemiss/hit/WindowsCOFF pass. Graphifyquery/AST
+update5578nodes12584edges,no.qzsemantic extraction. Logs/tmp/quazi-power-*.log.
+README/audit statuses updated BEFOREcommit unchanged73.2/26.8%,33items/78reqs,
+Ownership9/16,LSP16/20. Independent reviews reconciled; added runtimewidth,
+u64MAXsquarepanic,zero-hugeexponent,sequencing,signeddifferential coverage.
+
+Preserve compiler.codex/,example35build artifacts and unrelatedSTDCLI changes.
+WorkspaceAGENTS nowrequires READMEstatus/progress BEFOREsamecommit and verifies
+RESUME/liveworktree onresume. Compiler/subtreeAGENTS updated with Powercontract.
+No push. Fullworkspace goal remains active, not achieved by this checkpoint.
+
+NEXT: confirmed runtimeStringidentity ABI gap and missingELFGNU-stackmetadata
+from operatorcheckpoint below remain open. Do not run counterfeitString programs.
+General numericcoercion/narrow normalization/f16, genericEq/referenceconsistency,
+complete effects/loans, recursiveDrop and verifiedartifacts remain open too.
+
 ## Checkpoint (2026-10-22, operator requirements)
 
 QZC27, QZI13 unchanged/Unverified. arithmetic.rs now covers bitwiseinteger/Bool

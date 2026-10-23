@@ -16,6 +16,8 @@
 use std::collections::HashMap;
 
 use iced_x86::code_asm::*;
+#[path = "float_power.rs"]
+mod float_power;
 
 use crate::abi::{AbiSignature, AbiType, ForeignSymbol};
 use crate::backend::{BackendError, TargetSpec, target::Abi};
@@ -1891,12 +1893,7 @@ impl<'a> FnEncoder<'a> {
 
             Some(Opcode::Pow) => {
                 let (dst, s1, s2) = instr.rrr();
-                // Both SysV and Win64 pass floating-point args in xmm0/xmm1.
-                emit!(asm.cvtsi2sd(xmm0, slot(s1)));
-                emit!(asm.cvtsi2sd(xmm1, slot(s2)));
-                call_ext!("pow".into(), RelocKind::Plt32);
-                emit!(asm.cvttsd2si(rax, xmm0));
-                emit!(asm.mov(slot(dst), rax));
+                float_power::emit(asm, slot(dst), slot(s1), slot(s2), instr.flags)?;
             }
 
             Some(Opcode::Cmp) => {
@@ -4622,6 +4619,40 @@ mod tests {
         }
 
         assert_eq!(displacements, vec![0, -8, -16]);
+    }
+
+    #[test]
+    fn typed_floating_power_is_self_contained_on_both_native_abis() {
+        use crate::bytecode::instruction::{
+            FLOAT_FLAG, POW_BASE_FLOAT_FLAG, POW_BASE_UNSIGNED_FLAG, POW_EXP_FLOAT_FLAG,
+            POW_EXP_UNSIGNED_FLAG,
+        };
+        for flags in [
+            FLOAT_FLAG | POW_BASE_FLOAT_FLAG,
+            FLOAT_FLAG | POW_BASE_FLOAT_FLAG | POW_EXP_UNSIGNED_FLAG,
+            FLOAT_FLAG | POW_EXP_FLOAT_FLAG,
+            FLOAT_FLAG | POW_BASE_UNSIGNED_FLAG | POW_EXP_FLOAT_FLAG,
+            FLOAT_FLAG | POW_BASE_FLOAT_FLAG | POW_EXP_FLOAT_FLAG,
+        ] {
+            let mut chunk = Chunk::with_params("floating_power", 2);
+            let mut power = rrr(Opcode::Pow, 2, 0, 1);
+            power.flags = flags;
+            chunk.emit(power);
+            chunk.emit(rrr(Opcode::Ret, 2, 0, 0));
+            for abi in [Abi::SysV, Abi::Win64] {
+                let (bytes, relocs) = encode(&chunk, abi);
+                assert!(relocs.is_empty(), "power must not depend on libm");
+                let decoded = mnemonics(&bytes);
+                assert!(!decoded.contains(&Mnemonic::Call));
+                if flags & POW_EXP_FLOAT_FLAG != 0 {
+                    assert!(decoded.contains(&Mnemonic::Fyl2x));
+                    assert!(decoded.contains(&Mnemonic::F2xm1));
+                    assert!(decoded.contains(&Mnemonic::Fscale));
+                } else {
+                    assert!(decoded.contains(&Mnemonic::Mulsd));
+                }
+            }
+        }
     }
 
     #[test]

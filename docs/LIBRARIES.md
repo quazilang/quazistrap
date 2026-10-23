@@ -83,10 +83,10 @@ Build dependency trees show logical import names such as `std.io` and
 Git's reported percentage as an accurate progress bar followed by the same green
 status diamond as build stages; failures use a red diamond.
 
-## QZI v13
+## QZI v14
 
 QZI is both the portable bytecode container and compiled-library format. It is
-not a package-manager archive. A v13 file contains:
+not a package-manager archive. A v14 file contains:
 
 1. package name, version, `executable`/`library` kind, and entry signature;
 2. a source-visible public interface;
@@ -105,7 +105,11 @@ V10 adds a canonical, content-bound ownership-artifact envelope covering the
 metadata, public interface, relocations, and bytecode. Its current state is
 explicitly unverified: it detects stale or malformed artifacts but does not yet
 prove D-014 effects or permit borrowed values through a QZI-only dependency.
-The current reader decodes supported v2-v12 files; link compatibility is checked
+V14 adds explicit floating Pow operand representations; integer power lowers
+to checked portable instruction loops. Pre-v14 artifacts containing Pow require
+a source rebuild. See [the power migration](migrations/power.md). QZC28 rebuilds
+older source caches for the new checks and lowering.
+The current reader decodes supported v2-v13 files without legacy Pow; link compatibility is checked
 separately. V1
 requires a source rebuild because it omitted frame metadata, and legacy files
 with implicit `Lea` metadata, parameterized v6 trait interfaces, or v6 public

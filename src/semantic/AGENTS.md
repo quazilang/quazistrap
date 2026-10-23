@@ -377,3 +377,13 @@ ordering across every concrete identity. Declaration binders precede nominal
 classification, and nominal String markers require Named. Known Bool reference
 operands load beside generic peers. Pow and String identity/runtime ABI validation
 remain open. See [the contract](../../docs/internals/operator-requirements.md).
+
+## Typed-power checkpoint (2026-10-23)
+
+QZC28 / QZI14 implement the [typed-power contract](../../docs/internals/power.md).
+Numeric declaration-slot requirements and known constant checks are separate
+from runtime checked integer squaring. Integer/integer power emits portable
+loops, not Pow; floating Pow requires explicit operand representation flags.
+Legacy Pow artifacts require source rebuilding. Floating lowering imports no
+libm and retains integer exponent parity; fractional power is approximate.
+Artifacts remain Unverified; general coercion, String ABI and effects stay open.

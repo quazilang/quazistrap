@@ -2,9 +2,10 @@
 
 Audience: language users and compiler developers.
 
-Accepted by the maintainer on 2026-10-22. This is the approved target contract;
-implementation is pending. The final clarification supersedes an earlier UI
-selection requesting truncation of fractional results.
+Accepted by the maintainer on 2026-10-22. The approved target contract is
+implemented by the [typed-power checkpoint](../changes/2026-10-23-typed-power.md).
+The final clarification supersedes an earlier UI selection requesting truncation
+of fractional results.
 
 | Expression | Required behavior |
 | --- | --- |
@@ -25,9 +26,10 @@ A floating exponent may use a separate f64-result overload. Floating-base power
 supports negative exponents. Floating conversion/lowering must preserve the
 operand representation rather than reinterpret integer/floating slot bits.
 
-The current Opcode::Pow backend does not implement this contract: it always
-performs signed-integer-to-double conversion, calls external pow, then truncates
-the result to an integer. It loses precision and mishandles unsigned/floating
+The previous Opcode::Pow backend did not implement this contract: it always
+performed signed-integer-to-double conversion, called external pow, then truncated
+the result to an integer. It lost precision and mishandled unsigned/floating
 operands. General bytecode/artifact compatibility and runtime panic dependencies
-must be covered when replacing it. Do not claim this decision implemented until
-source, native, source-removed QZI and target-object regressions establish it.
+are covered by source, native, source-removed QZI and target-object regressions.
+See [the implemented contract](../internals/power.md) for approximation and generic
+inference limits; ownership/effect certification remains separate.

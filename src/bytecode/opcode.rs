@@ -27,7 +27,7 @@ pub enum Opcode {
     Shl = 0x1C,
     Shr = 0x1D, // logical right shift
     Sar = 0x1E, // arithmetic right shift
-    Pow = 0x1F, // dst = src1 ** src2 (calls pow/powi at AOT)
+    Pow = 0x1F, // f64 power with typed operand flags; integer power lowers to checked loops
 
     // 0x20–0x2F  Memory & ownership
     Load = 0x20,       // dst = *(base + offset16)

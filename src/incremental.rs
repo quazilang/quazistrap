@@ -12,8 +12,8 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Recheck bitwise, shift and ordering operand specializations.
-const QZC_VERSION: u8 = 27;
+// Recheck Power operands and rebuild exact checked integer / typed floating lowering.
+const QZC_VERSION: u8 = 28;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {
@@ -640,7 +640,7 @@ mod tests {
         let current = fs::read(&cache).unwrap();
         assert_eq!(&current[..4], QZC_MAGIC);
         for version in [
-            4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+            4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
         ] {
             let mut legacy = current.clone();
             legacy[4] = version;

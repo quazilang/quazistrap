@@ -22,6 +22,9 @@ use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
 use crate::semantic::{ConstValue, OwnershipArgumentRole, SemanticReport};
 
+#[path = "power.rs"]
+mod power;
+
 fn chunk_requires_owned_callable_companions(chunk: &Chunk) -> bool {
     chunk.constants.iter().any(|constant| {
         matches!(constant, ConstPoolEntry::FnAddr(name) if name.starts_with("__quazi_closure_") || name.starts_with("__quazi_fwd_"))
@@ -7482,7 +7485,7 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.patch_jump(skip, self.chunk.len() as u16);
                     }
                     BinOpKind::Pow => {
-                        self.chunk.emit(rrr(Opcode::Pow, dst, r1, r2));
+                        self.emit_power(dst, r1, r2, left, right, expr.span);
                     }
                     BinOpKind::BitAnd => {
                         self.chunk.emit(rrr(Opcode::And, dst, r1, r2));

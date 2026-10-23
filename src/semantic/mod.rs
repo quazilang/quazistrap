@@ -31,6 +31,11 @@ mod arithmetic;
 #[cfg(test)]
 mod arithmetic_tests;
 use arithmetic::{ArithmeticFacts, ArithmeticOp};
+mod power;
+#[cfg(test)]
+mod power_tests;
+use power::PowerFacts;
+pub(crate) use power::power_result_type;
 mod optimize;
 mod ownership;
 mod places;
@@ -227,6 +232,7 @@ pub struct Analyzer {
     /// Generic source reads to validate after concrete specialization closure.
     pending_contiguous_value_reads: Vec<(String, Span, TypeKind)>,
     arithmetic: ArithmeticFacts,
+    power: PowerFacts,
     /// The place currently being typed for replacement, not a value read.
     place_write_target_span: Option<(usize, usize)>,
     /// Internal function name → stable native symbol requested by @export.
@@ -975,6 +981,7 @@ impl Analyzer {
             contiguous_element_contracts: HashMap::new(),
             pending_contiguous_value_reads: Vec::new(),
             arithmetic: ArithmeticFacts::default(),
+            power: PowerFacts::default(),
             place_write_target_span: None,
             exported_symbols: HashMap::new(),
             foreign_globals: HashMap::new(),
@@ -1216,6 +1223,7 @@ impl Analyzer {
         )?;
 
         self.validate_arithmetic_specializations(&concrete_specializations, &mut checkpoint)?;
+        self.validate_power_specializations(&concrete_specializations, &mut checkpoint)?;
 
         // A successful analysis must leave no representation-less inference
         // sentinels for code generation. Error recovery may still use them
@@ -1536,6 +1544,7 @@ impl Analyzer {
         self.contiguous_element_contracts.clear();
         self.pending_contiguous_value_reads.clear();
         self.arithmetic.clear();
+        self.power.clear();
         self.place_write_target_span = None;
         self.exported_symbols.clear();
         self.foreign_globals.clear();

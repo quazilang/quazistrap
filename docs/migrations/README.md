@@ -1,5 +1,7 @@
 # Migration guides
 
+- [Typed power and QZI14](power.md)
+
 - [Arithmetic operand validation](arithmetic.md)
 
 - [Stable operands and destination evaluation](operand-snapshots.md)

@@ -26,22 +26,24 @@ Completion of unfinished plan items:
 | qz doc | 0/1 | 0.0% | 100.0% |
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
-Revalidated on 2026-10-22 for the
-[operator-requirement checkpoint](docs/changes/2026-10-22-operator-requirements.md), using the
+Revalidated on 2026-10-23 for the
+[typed-power checkpoint](docs/changes/2026-10-23-typed-power.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 939 tests pass, including the 60 contained-LSP tests. Bitwise/shift and
-generic ordering operands now satisfy operation-specific categories; Boolean
-reference operands load correctly. Thirty-seven invalid sources are rejected
-by check/native/QZI/COFF. Five value groups and two real String comparisons,
-with a generic-binder shadowing control, pass native/source-removed QZI/COFF.
-Old-cache rejection/rebuild and new exact hits pass, alongside earlier runners.
-The installed release `qz` passes these checks. Quazifetch builds/runs without
-S10 and reports Linux used RAM from `MemAvailable`, counting reclaimable cache
-as available; six isolated STD memory tests pass. QZC27 rebuilds older source
-caches; QZI13 remains Unverified. Power lowering and String runtime identity,
-numeric coercion/normalization, effects and recursive destruction remain open.
-Ownership stays 9/16; LSP stays 16/20. The 33-item, 78-requirement rubric remains
-unchanged. Statuses and percentages are refreshed before committing.
+All 953 tests pass, including the 60 contained-LSP tests. Integer power now uses
+exact checked arithmetic; known negative integer exponents fail compilation,
+runtime negatives/overflow panic, and floating operands produce f64. Twelve
+invalid programs are rejected by check/native/QZI/COFF; eight value groups and
+thirteen panic scenarios pass native/source-removed QZI. Dynamic exports verify
+large exact integers and approximate floating results, without implicit libm.
+The installed release passes power/cache checks and earlier regression runners
+pass. Quazifetch builds/runs without S10 and reports Linux used RAM from
+`MemAvailable`, counting reclaimable cache as available; six isolated STD memory
+tests pass. QZC28 rebuilds older source caches. QZI14 adds typed floating Pow;
+older Pow artifacts require rebuilding, and ownership remains Unverified.
+String runtime identity, numeric coercion/normalization, effects and recursive
+destruction remain open. Ownership stays 9/16; LSP stays 16/20. The 33-item,
+78-requirement rubric remains unchanged. Statuses and percentages are refreshed
+before committing.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no

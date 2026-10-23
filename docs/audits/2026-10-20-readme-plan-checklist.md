@@ -1,8 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
-Revalidated on 2026-10-22 against the
-[operator-requirement checkpoint](../changes/2026-10-22-operator-requirements.md).
-Previous committed source: `40b1c2a`.
+Revalidated on 2026-10-23 against the
+[typed-power checkpoint](../changes/2026-10-23-typed-power.md).
+Previous committed source: `64b2760`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
@@ -105,6 +105,17 @@ Power, String runtime identity and complete effects remain open. No requirement
 credit changes: **73.2% complete / 26.8% remaining**, Ownership9/16,LSP16/20.
 Installed release, STD memory6 and quazifetch build/run/cache/COFF pass. README
 statuses are updated before this commit.
+
+The typed-power checkpoint passes **953 tests**, rejects 12 invalid programs
+through check/native/QZI/COFF, and passes 8 value groups plus 13 native/QZI
+language panic scenarios. Dynamic signed/unsigned integer exports remain exact;
+floating results use the documented approximation. Old source caches rebuild
+under QZC28; QZI14 validates floating operand metadata. This strengthens existing
+operator correctness without completing another roadmap requirement. String
+runtime identity, general coercion/normalization and full ownership/effect proof
+remain open. Credit remains **73.2% complete / 26.8% remaining**, Ownership9/16,
+LSP16/20. Installed release, STD memory6 and quazifetch build/run/cache/COFF pass.
+README statuses are updated before this commit.
 
 ## Summary
 

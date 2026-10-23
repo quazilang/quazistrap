@@ -41,6 +41,11 @@ Rust edition 2024.
 
 ## Coding Rules
 
+Before each requested commit, update README statuses and progress percentages
+using the documented acceptance criteria and completed verification. Include
+that update in the same commit; correctness fixes alone do not earn progress
+credit. Keep approved target contracts distinct from implemented behavior.
+
 1. Write clean, maintainable, performant code.
 2. Do not hardcode behavior that can be implemented directly in Quazilang.
 3. Do not create useless attributes that contribute nothing — code that works without them is better.
@@ -51,6 +56,27 @@ Rust edition 2024.
 8. No band-aid fixes. If a fix feels hacky, step back and redesign.
 9. Keep the AST immutable after parsing; semantic analysis resolves meaning via annotations, not source mutation.
 10. When fixing warnings, fix the root cause, not the symptom.
+
+### Approved power operator contract (implemented 2026-10-23)
+
+[D-016](docs/decisions/power-operator.md) records the maintainer's final decision
+for `**`, superseding the earlier request to truncate fractional results:
+
+- Integer power preserves the integer result type and uses exact exponentiation
+  by squaring with overflow checks against that type, without C `pow` conversion.
+- A compile-time known negative integer exponent is a compile error; a runtime
+  negative integer exponent causes a language panic. A mutable local initialized
+  to a negative value still follows the runtime rule.
+- Integer overflow must not wrap silently; diagnose known invalid constant
+  expressions before executable emission and panic for runtime overflow.
+- `2 ** 0` yields integer `1`; `2.0 ** -2` yields floating `0.25`.
+- Result type never depends on the runtime sign. A floating exponent may use an
+  `f64` result overload.
+
+Semantic checks, native execution, source-removed QZI and target-object
+regressions verify this contract; see [the implementation](docs/internals/power.md). Preserve
+runtime panic dependencies and validate artifact/cache compatibility when
+changing lowering. Do not ask the maintainer to choose these rules again.
 
 ---
 
@@ -618,3 +644,17 @@ ordering across every concrete identity. Declaration binders precede nominal
 classification, and nominal String markers require Named. Known Bool reference
 operands load beside generic peers. Pow and String identity/runtime ABI validation
 remain open. See [the contract](docs/internals/operator-requirements.md).
+
+## Typed-power checkpoint (2026-10-23)
+
+QZC28 supersedes QZC27; QZI14 adds typed floating Pow flags and rejects legacy
+Pow artifacts with rebuild guidance. `semantic/power.rs` retains bounded numeric
+and constant requirements per declaration slot; `bytecode/power.rs` lowers exact
+checked integer squaring through portable instructions. Symbolic helper chunks
+trap; concrete dependency closure selects numeric implementations. Runtime
+negative integer exponents/overflow use retained language panic dependencies.
+The floating backend is self-contained: exact integer exponent bits, reciprocal
+base first for negative exponents, approximate guarded x87 fractional power.
+No implicit pow import or ownership/effect proof follows. See
+[the contract](docs/internals/power.md) and
+[verification](docs/changes/2026-10-23-typed-power.md).

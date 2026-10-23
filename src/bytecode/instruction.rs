@@ -488,6 +488,22 @@ pub const NEGATED_COMPARE_FLAG: u8 = 0x02;
 /// A zero flags byte retains the signed behavior used by older QZI files.
 pub const UNSIGNED_FLAG: u8 = 0x04;
 
+/// Typed floating Pow operand representations (QZI v14).
+pub const POW_BASE_FLOAT_FLAG: u8 = 0x02;
+pub const POW_BASE_UNSIGNED_FLAG: u8 = UNSIGNED_FLAG;
+pub const POW_EXP_FLOAT_FLAG: u8 = 0x08;
+pub const POW_EXP_UNSIGNED_FLAG: u8 = 0x10;
+
+pub fn valid_float_power_flags(flags: u8) -> bool {
+    flags & !0x1f == 0
+        && flags & FLOAT_FLAG != 0
+        && flags & (POW_BASE_FLOAT_FLAG | POW_EXP_FLOAT_FLAG) != 0
+        && flags & (POW_BASE_FLOAT_FLAG | POW_BASE_UNSIGNED_FLAG)
+            != POW_BASE_FLOAT_FLAG | POW_BASE_UNSIGNED_FLAG
+        && flags & (POW_EXP_FLOAT_FLAG | POW_EXP_UNSIGNED_FLAG)
+            != POW_EXP_FLOAT_FLAG | POW_EXP_UNSIGNED_FLAG
+}
+
 const MEM_WIDTH_SHIFT: u8 = 1;
 const MEM_WIDTH_MASK: u8 = 0x06;
 const MEM_SIGNED_FLAG: u8 = 0x08;
