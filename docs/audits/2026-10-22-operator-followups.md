@@ -9,7 +9,7 @@ following findings were recorded at that checkpoint; no production-readiness cla
 | Priority | Finding | Evidence and impact | Next action |
 | --- | --- | --- | --- |
 | Resolved 2026-10-23 | Pow emission misinterprets numeric values and needs an external pow symbol | encoder Opcode::Pow always converts signed slots to doubles and back, ignoring unsigned/floating representation; source permits nonnumeric handles too | Implement the [approved typed-power contract](../decisions/power-operator.md), including checked integer arithmetic and negative-exponent diagnostics. Preserve exact integer arithmetic without hidden libc/libm linkage. |
-| P0 | String recognition accepts counterfeit layouts | Check-only `/tmp/quazi-string-identity-audit-59q4dx22/source`: `struct String{value:i32,}` plus generic ordering is accepted; existing lowering interprets its first field as text | Establish shared, validated String identity/runtime ABI evidence for semantic analysis and lowering. No counterfeit executable was built or run. |
+| Resolved 2026-10-23 | String recognition accepts counterfeit layouts | Check-only `/tmp/quazi-string-identity-audit-59q4dx22/source`: `struct String{value:i32,}` plus generic ordering is accepted; existing lowering interprets its first field as text | Implemented selected declaration/layout evidence; [native/QZI/COFF and negative verification](../changes/2026-10-23-runtime-string-abi.md) passes. No unsafe counterfeit executable was run. |
 | Resolved 2026-10-23 | External shared output lacks stack metadata | [previous audit](2026-10-22-arithmetic-followups.md), readelf and host-loader rejection | Implemented empty nonallocated PROGBITS marker; [source/QZI/archive/link/load verification](../changes/2026-10-23-elf-stack-metadata.md) passes without noexecstack workarounds. |
 
 The maintainer approved [D-016](../decisions/power-operator.md): known negative
@@ -34,3 +34,8 @@ cover these paths and preserve actual import/declaration provenance; replacing
 suffix matching after that normalization would not establish identity. See the
 compiler RESUME checkpoint for concrete next steps. No counterfeit executable
 was built or run.
+
+The [runtime String checkpoint](../changes/2026-10-23-runtime-string-abi.md)
+now closes those unsafe layout/view coercions. A separate confirmed private
+namespace-alias visibility leak remains; see
+[the follow-up audit](2026-10-23-string-followups.md).

@@ -228,9 +228,13 @@ impl<F: Fn(&str) -> Option<String>> Resolver<'_, F> {
                         return self.atom(name);
                     }
                 }
+                // Qualified aliases require the same declaration evidence as
+                // qualified nominals. A matching leaf alone is not identity.
+                let canonical = (self.canonical_name)(name);
                 let entry = self.aliases.get_key_value(name).or_else(|| {
-                    name.rsplit_once('.')
-                        .and_then(|(_, leaf)| self.aliases.get_key_value(leaf))
+                    canonical
+                        .as_ref()
+                        .and_then(|name| self.aliases.get_key_value(name))
                 });
                 if let Some((alias, (names, body))) = entry {
                     if names.len() != type_args.len() {
@@ -693,7 +697,15 @@ mod tests {
     fn qualified_aliases_and_nominals_share_canonical_lookup() {
         let definitions = aliases("type Scalar = i32; type Pointer = *module.Record;");
         assert_eq!(
-            resolve("module.Scalar", &definitions).unwrap().to_string(),
+            resolve_type(
+                &parse_type("module.Scalar"),
+                &definitions,
+                &HashMap::new(),
+                &HashSet::new(),
+                |name| (name == "module.Scalar").then(|| "Scalar".to_string())
+            )
+            .unwrap()
+            .to_string(),
             "i32"
         );
         let result = resolve_type(

@@ -1,8 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
 Revalidated on 2026-10-23 against the
-[ELF stack checkpoint](../changes/2026-10-23-elf-stack-metadata.md).
-Previous committed source: `bc317fd`.
+[runtime String checkpoint](../changes/2026-10-23-runtime-string-abi.md).
+Previous committed source: `07e3049`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
@@ -125,6 +125,16 @@ passes the same regression and reuses an old exact cache while emitting the
 correct metadata. This strengthens an existing linker output requirement, with
 no new checklist credit: **73.2% complete / 26.8% remaining**, Ownership9/16,
 LSP16/20. README statuses are refreshed before committing.
+
+The runtime String checkpoint passes **969 tests**, rejects 25 invalid programs
+through check/native/QZI/COFF, and verifies real String operations and selected
+custom layouts through native/source-removed QZI/COFF. Exact defining-file and
+layout evidence replaces unsafe spelling assumptions. QZC29 rebuilds older
+source caches and includes selected builtin roots in cache identity. Installed
+release/String cache controls, STD memory6 and quazifetch build/run/hit/COFF pass.
+Private cross-file namespace alias leakage remains open, alongside full effects
+and recursive destruction. No requirement credit changes: **73.2% complete /
+26.8% remaining**, Ownership9/16, LSP16/20. README is refreshed before committing.
 
 ## Summary
 

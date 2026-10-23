@@ -667,3 +667,17 @@ QZI and cached bodies without changing QZI14/QZC28. COFF has no ELF marker.
 Builtin linking already emits RW PT_GNU_STACK; external native inputs and explicit
 user flags may request executable stacks. See
 [verification](docs/changes/2026-10-23-elf-stack-metadata.md).
+
+## Runtime String declaration and layout (2026-10-23)
+
+QZC29 requires source String ABI evidence; QZI14 stays Unverified. Loader-selected
+prelude export identity and SourceTypeImport full target paths/spans reach semantic
+analysis. CheckedStringAbi records the actual ResolvedBinding and validated data
+offset. Bind declaration parameters before imported aliases; never restore a
+qualified leaf fallback. Semantic ordering/parse/borrows/format obligations and
+codegen extraction share this identity. Constructor aliases use defining layouts.
+Nested owner references and unsupported implicit UTF-8 coercions fail closed.
+Builtin root identities participate in cache identity. Global source alias
+visibility remains incomplete; this proof is not module isolation or artifact
+ownership certification. See [the contract](docs/internals/runtime-string-abi.md)
+and [remaining findings](docs/audits/2026-10-23-string-followups.md).

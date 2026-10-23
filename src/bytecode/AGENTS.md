@@ -55,8 +55,9 @@ matching artifact ownership boundary.
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x0D` (v13). Readers retain compatible v2-v12 bytecode, but
-  decoding does not prove current link compatibility. Pre-v12 safe-reference
+- Version: `0x0E` (v14). Readers retain compatible v2-v13 bytecode without
+  legacy Pow; pre-v14 Pow requires a source rebuild. Decoding
+  does not prove current link compatibility. Pre-v12 safe-reference
   receiver/aggregate contracts and opaque outbound calls require a source
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
@@ -393,3 +394,16 @@ loops, not Pow; floating Pow requires explicit operand representation flags.
 Legacy Pow artifacts require source rebuilding. Floating lowering imports no
 libm and retains integer exponent parity; fractional power is approximate.
 Artifacts remain Unverified; general coercion, String ABI and effects stay open.
+
+## Runtime String checkpoint (2026-10-23)
+
+QZC29 / QZI14: [runtime String contract](../../docs/internals/runtime-string-abi.md). SourceFile retains selected
+runtime declaration role and full-path SourceTypeImport provenance. Every selector
+must authenticate itself; aliases cannot replace existing declaration identities.
+CheckedStringAbi ties a validated str data offset to the actual declaration/span.
+Do not infer String from spelling, suffix, field shape or a QZI interface. Protect
+binders first. Source/concrete display constraints and backend guards reject
+unproven UTF-8 coercions; nested owner references cannot collapse two loads into
+one. Constructor aliases resolve before layout. Builtin root switches invalidate
+source caches. Source aliases still use global tables: module visibility and
+whole-program ownership/effect/artifact certification remain separate work.

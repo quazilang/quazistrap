@@ -90,6 +90,7 @@ fn abi_type_from_layout(
     bit_field_layouts: &HashMap<String, HashMap<String, crate::semantic::BitFieldLayout>>,
     repr_c_structs: &HashSet<String>,
     type_aliases: &HashMap<String, (Vec<String>, TypeKind)>,
+    type_name_bindings: &HashMap<String, crate::semantic::ResolvedBinding>,
     resolution_errors: &RefCell<Vec<String>>,
 ) -> Option<AbiType> {
     let resolved = match crate::type_resolution::resolve_type(
@@ -98,8 +99,9 @@ fn abi_type_from_layout(
         &HashMap::new(),
         &HashSet::new(),
         |name| {
-            name.rsplit_once('.')
-                .and_then(|(_, leaf)| struct_defs.contains_key(leaf).then(|| leaf.to_string()))
+            type_name_bindings
+                .get(name)
+                .map(|binding| binding.name.clone())
         },
     ) {
         Ok(resolved) => resolved,
@@ -133,6 +135,7 @@ fn abi_type_from_layout(
                 bit_field_layouts,
                 repr_c_structs,
                 type_aliases,
+                type_name_bindings,
                 resolution_errors,
             )?;
             let elem_size = elem.size();
@@ -188,6 +191,7 @@ fn abi_type_from_layout(
                     bit_field_layouts,
                     repr_c_structs,
                     type_aliases,
+                    type_name_bindings,
                     resolution_errors,
                 )?;
                 fields.push(AbiField {
@@ -635,6 +639,7 @@ impl<'a> Codegen<'a> {
             &self.report.bit_field_layouts,
             &self.report.repr_c_structs,
             &self.report.type_aliases,
+            &self.report.type_name_bindings,
             &self.resolution_errors,
         )
     }
@@ -2071,6 +2076,8 @@ impl<'a> Codegen<'a> {
                 .map(|ty| self.resolve_type_for_layout(ty, &HashMap::new())),
             &self.report.symbol_table,
             &self.report.impl_generic_params,
+            &self.report.checked_string_abi,
+            &self.report.type_name_bindings,
         );
         // The function owns ordinary by-value parameters. A bare inherent
         // receiver is likewise owned, except in its `.free` destructor: that
@@ -2348,18 +2355,10 @@ impl<'a> Codegen<'a> {
             type_subst,
             &type_subst.keys().cloned().collect(),
             |name| {
-                name.rsplit_once('.').and_then(|(_, leaf)| {
-                    self.report
-                        .symbol_table
-                        .entries
-                        .iter()
-                        .any(|entry| {
-                            entry.scope_depth == 0
-                                && entry.name == leaf
-                                && entry.symbol.kind == SymbolKind::TypeName
-                        })
-                        .then(|| leaf.to_string())
-                })
+                self.report
+                    .type_name_bindings
+                    .get(name)
+                    .map(|binding| binding.name.clone())
             },
         ) {
             Ok(resolved) => resolved,
@@ -2547,6 +2546,8 @@ struct FnCompiler<'a> {
     format_result_type: Option<TypeKind>,
     symbol_table: &'a crate::semantic::SymbolTable,
     impl_generic_params: &'a HashMap<String, Vec<String>>,
+    checked_string_abi: &'a Option<crate::semantic::CheckedStringAbi>,
+    type_name_bindings: &'a HashMap<String, crate::semantic::ResolvedBinding>,
 }
 
 /// One guarded owner in the current full expression. A local identifier only
@@ -2727,6 +2728,8 @@ impl<'a> FnCompiler<'a> {
         format_result_type: Option<TypeKind>,
         symbol_table: &'a crate::semantic::SymbolTable,
         impl_generic_params: &'a HashMap<String, Vec<String>>,
+        checked_string_abi: &'a Option<crate::semantic::CheckedStringAbi>,
+        type_name_bindings: &'a HashMap<String, crate::semantic::ResolvedBinding>,
     ) -> Self {
         Self {
             chunk: Chunk::with_params(name, param_count),
@@ -2781,6 +2784,8 @@ impl<'a> FnCompiler<'a> {
             format_result_type,
             symbol_table,
             impl_generic_params,
+            checked_string_abi,
+            type_name_bindings,
         }
     }
 
@@ -2806,10 +2811,9 @@ impl<'a> FnCompiler<'a> {
             &self.type_subst,
             &self.bound_names,
             |name| {
-                name.rsplit_once('.').and_then(|(_, leaf)| {
-                    (self.struct_defs.contains_key(leaf) || self.enum_defs.contains_key(leaf))
-                        .then(|| leaf.to_string())
-                })
+                self.type_name_bindings
+                    .get(name)
+                    .map(|binding| binding.name.clone())
             },
         ) {
             Ok(resolved) => resolved,
@@ -2951,6 +2955,7 @@ impl<'a> FnCompiler<'a> {
             self.bit_field_layouts,
             self.repr_c_structs,
             self.type_aliases,
+            self.type_name_bindings,
             &self.resolution_errors,
         ) else {
             self.codegen_error.get_or_insert_with(|| {
@@ -3011,6 +3016,7 @@ impl<'a> FnCompiler<'a> {
                         self.bit_field_layouts,
                         self.repr_c_structs,
                         self.type_aliases,
+                        self.type_name_bindings,
                         &self.resolution_errors,
                     )
                 })
@@ -3024,6 +3030,7 @@ impl<'a> FnCompiler<'a> {
                 self.bit_field_layouts,
                 self.repr_c_structs,
                 self.type_aliases,
+                self.type_name_bindings,
                 &self.resolution_errors,
             )?,
             variadic: false,
@@ -3072,18 +3079,50 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn is_str_span(&self, key: (usize, usize)) -> bool {
-        self.type_of_span(key).as_ref().is_some_and(is_string_type)
+        self.type_of_span(key)
+            .as_ref()
+            .is_some_and(|ty| self.is_string_type(ty))
+    }
+
+    fn is_string_type(&self, ty: &TypeKind) -> bool {
+        is_string_view_type(ty) || self.owned_string_data_offset(ty).is_some()
+    }
+
+    /// Only the selected runtime declaration can supply the owned-string ABI.
+    /// The semantic proof records the checked layout; spelling and field names
+    /// at an individual use never establish a representation.
+    fn owned_string_data_offset(&self, ty: &TypeKind) -> Option<u16> {
+        let proof = self.checked_string_abi.as_ref()?;
+        if let TypeKind::Named { name, .. } = ty
+            && self.bound_names.contains(name)
+            && !self.type_subst.contains_key(name)
+        {
+            return None;
+        }
+        if !proof.matches_type(ty) {
+            return None;
+        }
+        self.symbol_table
+            .entries
+            .iter()
+            .any(|entry| {
+                entry.scope_depth == 0
+                    && entry.name == proof.declaration.name
+                    && entry.symbol.span == proof.declaration.span
+                    && entry.symbol.kind == proof.declaration.kind
+            })
+            .then_some(proof.data_offset)
     }
 
     fn string_data_reg(&mut self, expr: &Expr, value: u8) -> u8 {
-        if self
+        if let Some(offset) = self
             .receiver_value_type(expr)
             .as_ref()
-            .is_some_and(is_owned_string_type)
+            .and_then(|ty| self.owned_string_data_offset(ty))
         {
             let value = self.aggregate_handle(value, self.type_of_expr(expr));
             let data = self.alloc_reg();
-            self.chunk.emit(field_load(data, value, 0));
+            self.chunk.emit(field_load(data, value, offset));
             data
         } else {
             value
@@ -5276,9 +5315,16 @@ impl<'a> FnCompiler<'a> {
         let Some(ty) = self.format_result_type.clone() else {
             return owner;
         };
-        if self.drop_action_for_resolved_type(&ty).is_none() {
+        if is_string_view_type(&ty) {
             return owner;
         }
+        let Some(offset) = self.owned_string_data_offset(&ty) else {
+            self.codegen_error.get_or_insert_with(|| {
+                "injected formatter result must have the checked runtime String representation"
+                    .to_string()
+            });
+            return owner;
+        };
         let Some(temp) = self
             .expression_temporaries
             .iter_mut()
@@ -5292,11 +5338,7 @@ impl<'a> FnCompiler<'a> {
         self.chunk.emit(rrr(Opcode::Mov, temp.slot, owner, 0));
         temp.produced = true;
         temp.value_reg = Some(owner);
-        let TypeKind::Named { name, .. } = ty else {
-            return owner;
-        };
         let data = self.alloc_reg();
-        let offset = self.field_offset_by_name(&name, "data");
         self.chunk.emit(field_load(data, owner, offset));
         data
     }
@@ -6433,11 +6475,11 @@ impl<'a> FnCompiler<'a> {
                 let string_comparison = self
                     .type_of_span((left.span.start, left.span.end))
                     .as_ref()
-                    .is_some_and(is_string_type)
+                    .is_some_and(|ty| self.is_string_type(ty))
                     && self
                         .type_of_span((right.span.start, right.span.end))
                         .as_ref()
-                        .is_some_and(is_string_type);
+                        .is_some_and(|ty| self.is_string_type(ty));
                 let (r1, r2) = if string_comparison {
                     let result = self.emit_string_cmp(left, right);
                     let zero = self.alloc_reg();
@@ -6755,6 +6797,7 @@ impl<'a> FnCompiler<'a> {
                         self.bit_field_layouts,
                         self.repr_c_structs,
                         self.type_aliases,
+                        self.type_name_bindings,
                         &self.resolution_errors,
                     )
                 })
@@ -6986,9 +7029,11 @@ impl<'a> FnCompiler<'a> {
             TypeKind::Ref { inner } | TypeKind::MutRef { inner } => self.resolve_type(&inner.node),
             other => other,
         });
-        if value_ty.as_ref().is_some_and(is_owned_string_type) {
+        if let Some(offset) = value_ty
+            .as_ref()
+            .and_then(|ty| self.owned_string_data_offset(ty))
+        {
             let data = self.alloc_reg();
-            let offset = self.field_offset_by_name("String", "data");
             self.chunk.emit(field_load(data, reg, offset));
             return data;
         }
@@ -7017,20 +7062,32 @@ impl<'a> FnCompiler<'a> {
             ) => Some(0), // int
             Some(TypeKind::Float16 | TypeKind::Float32 | TypeKind::Float64) => Some(1), // float
             Some(TypeKind::Bool) => Some(2),                                            // bool
-            Some(TypeKind::Str) | Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. }) => None, // str/&str — already a pointer
-            // Known struct/enum Named types: pass as-is (pointer to heap object).
-            // Unresolved generic type params (T, U, etc.) not in struct/enum defs: default to int.
-            Some(TypeKind::Named { name, .. }) => {
-                if self.struct_defs.contains_key(name.as_str())
-                    || self.enum_defs.contains_key(name.as_str())
-                {
-                    None
-                } else {
-                    Some(0)
-                }
+            Some(ref ty) if is_string_view_type(ty) => None,
+            // Unemitted generic helper chunks still need a representation.
+            // Only an actual unspecialized declaration binder can use the
+            // provisional integer formatting path; an unknown nominal name
+            // never establishes a string representation.
+            Some(TypeKind::Named {
+                ref name,
+                ref type_args,
+            }) if type_args.is_empty()
+                && self.bound_names.contains(name)
+                && !self.type_subst.contains_key(name) =>
+            {
+                Some(0)
             }
-            // RawPtr/Slice: pass as-is (caller formats explicitly)
-            Some(TypeKind::RawPtr { .. } | TypeKind::Slice { .. }) => None,
+            Some(
+                TypeKind::Named { .. }
+                | TypeKind::Ref { .. }
+                | TypeKind::MutRef { .. }
+                | TypeKind::RawPtr { .. }
+                | TypeKind::Slice { .. },
+            ) => {
+                self.codegen_error.get_or_insert_with(|| format!(
+                    "unsupported implicit display at {}:{}; an explicit string conversion is required",
+                    span.line, span.col));
+                return reg;
+            }
             Some(TypeKind::Any | TypeKind::Error) => {
                 self.codegen_error.get_or_insert_with(|| {
                     format!(
@@ -7545,6 +7602,21 @@ impl<'a> FnCompiler<'a> {
                 source
             }
             ExprKind::StructInit { name, fields } => {
+                let resolved = self.resolve_type(&TypeKind::Named {
+                    name: name.clone(),
+                    type_args: Vec::new(),
+                });
+                let TypeKind::Named {
+                    name: resolved_name,
+                    ..
+                } = resolved
+                else {
+                    self.codegen_error.get_or_insert_with(|| {
+                        format!("struct initializer `{name}` has no resolved nominal declaration")
+                    });
+                    return self.alloc_reg();
+                };
+                let name = &resolved_name;
                 // Get field order from struct_defs
                 let field_order: Vec<String> = if let Some(defs) = self.struct_defs.get(name) {
                     defs.iter().map(|(fn_, _)| fn_.clone()).collect()
@@ -8126,9 +8198,19 @@ impl<'a> FnCompiler<'a> {
                 // For generic structs, the typecheck pass annotates this call expression with
                 // the concrete return type (e.g. Box[i32]), so we use that to pick the
                 // monomorphized version (Box.new<i32>) when available.
-                if let ExprKind::Ident(type_name) = &object.node {
+                if let ExprKind::Ident(source_name) = &object.node {
+                    let canonical = self.resolve_type(&TypeKind::Named {
+                        name: source_name.clone(),
+                        type_args: vec![],
+                    });
+                    let type_name = match &canonical {
+                        TypeKind::Named { name, .. } => name,
+                        _ => source_name,
+                    };
                     let is_type_ns = self.struct_defs.contains_key(type_name.as_str())
-                        && !self.regs.contains_key(type_name.as_str());
+                        && !(self.bound_names.contains(source_name)
+                            && !self.type_subst.contains_key(source_name))
+                        && !self.regs.contains_key(source_name.as_str());
                     if is_type_ns {
                         let base_mangled = format!("{}.{}", type_name, method);
                         let expr_key = (expr.span.start, expr.span.end);
@@ -8492,12 +8574,22 @@ impl<'a> FnCompiler<'a> {
                             let suffix = type_args
                                 .first()
                                 .and_then(|ty| parse_method_suffix(&ty.node));
-                            let prefix =
-                                if resolved_receiver.as_ref().is_some_and(is_owned_string_type) {
-                                    "String"
-                                } else {
-                                    "str"
-                                };
+                            let prefix = if let Some(ty) = resolved_receiver.as_ref()
+                                && self.owned_string_data_offset(ty).is_some()
+                            {
+                                self.checked_string_abi
+                                    .as_ref()
+                                    .unwrap()
+                                    .declaration
+                                    .name
+                                    .as_str()
+                            } else if resolved_receiver.as_ref().is_some_and(is_string_view_type) {
+                                "str"
+                            } else {
+                                self.codegen_error.get_or_insert_with(||
+                                    "primitive parse receiver has no checked string representation".to_string());
+                                return dst;
+                            };
                             if let Some(suffix) = suffix {
                                 let target = format!("{prefix}.parse_{suffix}");
                                 let receiver = self.prepare_method_receiver(
@@ -9037,6 +9129,8 @@ impl<'a> FnCompiler<'a> {
                     self.format_result_type.clone(),
                     self.symbol_table,
                     self.impl_generic_params,
+                    self.checked_string_abi,
+                    self.type_name_bindings,
                 );
                 // Reserve the complete incoming ABI frame before allocating
                 // capture locals or expression temporaries. r0 is the hidden
@@ -9402,14 +9496,16 @@ fn resolve_primitive_method(
             Some(PrimitiveMethod::Len)
         }
         "to_str" if args.is_empty() => match receiver_ty {
-            Some(TypeKind::Str) | Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. }) => {
-                Some(PrimitiveMethod::AsStr)
-            }
+            Some(ty) if is_string_view_type(ty) => Some(PrimitiveMethod::AsStr),
             _ => Some(PrimitiveMethod::PrimToStr {
                 tag: prim_to_str_tag(receiver_ty),
             }),
         },
-        "as_string" | "as_str" if args.is_empty() => Some(PrimitiveMethod::AsStr),
+        "as_string" | "as_str"
+            if args.is_empty() && receiver_ty.is_some_and(is_string_view_type) =>
+        {
+            Some(PrimitiveMethod::AsStr)
+        }
         "as_ptr" if args.is_empty() && matches!(receiver_ty, Some(TypeKind::Bytes)) => {
             Some(PrimitiveMethod::BytesAsPtr)
         }
@@ -9740,14 +9836,6 @@ fn is_string_view_type(ty: &TypeKind) -> bool {
     }
 }
 
-fn is_owned_string_type(ty: &TypeKind) -> bool {
-    matches!(ty, TypeKind::Named { name, .. } if name == "String" || name.ends_with(".String"))
-}
-
-fn is_string_type(ty: &TypeKind) -> bool {
-    is_string_view_type(ty) || is_owned_string_type(ty)
-}
-
 fn parse_method_suffix(ty: &TypeKind) -> Option<&'static str> {
     match ty {
         TypeKind::Int8 => Some("i8"),
@@ -10033,10 +10121,42 @@ mod tests {
     fn compile_namespaced_module(module_src: &str, main_src: &str) -> Vec<Chunk> {
         let merged = format!("{module_src}\n{main_src}");
         let module_len = module_src.chars().count();
+        let module_program = Parser::new(Lexer::new(module_src).tokenize())
+            .parse()
+            .unwrap();
+        let type_imports: Vec<_> = module_program
+            .items
+            .iter()
+            .filter_map(|item| {
+                let name = match &item.node {
+                    ItemKind::Struct {
+                        name, public: true, ..
+                    }
+                    | ItemKind::Enum {
+                        name, public: true, ..
+                    }
+                    | ItemKind::Trait {
+                        name, public: true, ..
+                    }
+                    | ItemKind::TypeAlias {
+                        name, public: true, ..
+                    } => name,
+                    _ => return None,
+                };
+                Some(crate::semantic::SourceTypeImport {
+                    selector_span: Span::new(module_len + 1, module_len + 1, 1, 1),
+                    source_name: format!("helpers.{name}"),
+                    target_path: "helpers.qz".into(),
+                    target_name: name.clone(),
+                })
+            })
+            .collect();
         let source_files = vec![
             SourceFile {
                 path: "helpers.qz".to_string(),
                 module_name: Some("helpers".to_string()),
+                runtime_string: None,
+                type_imports: Vec::new(),
                 start: 0,
                 end: module_len,
                 line_start: 1,
@@ -10044,6 +10164,8 @@ mod tests {
             SourceFile {
                 path: "main.qz".to_string(),
                 module_name: None,
+                runtime_string: None,
+                type_imports,
                 start: module_len + 1,
                 end: merged.chars().count(),
                 line_start: module_src.lines().count() + 1,
@@ -10415,13 +10537,12 @@ fn main() void { pending(); }
 
     #[test]
     fn injected_owned_formatter_and_argument_share_full_expression_cleanup() {
-        let module =
-            "pub fn format(template: str, ...args: str) String { ret String { data: template }; }";
+        let module = "pub fn format(template: str, ...args: str) String { ret String { prefix: 7, data: template }; }";
         let main = r#"
 import fmt;
-struct String { data: str }
+pub struct String { prefix: i32, data: str }
 impl String { fn free(self: String) void {} }
-fn make_text() String { ret String { data: "owned" }; }
+fn make_text() String { ret String { prefix: 9, data: "owned" }; }
 @format fn show(template: str, ...args: any) void {}
 fn main() void { show("{}", make_text()); }
 "#;
@@ -10430,6 +10551,8 @@ fn main() void { show("{}", make_text()); }
             SourceFile {
                 path: "fmt.qz".to_string(),
                 module_name: Some("fmt".to_string()),
+                runtime_string: None,
+                type_imports: Vec::new(),
                 start: 0,
                 end: module.len(),
                 line_start: 1,
@@ -10437,6 +10560,8 @@ fn main() void { show("{}", make_text()); }
             SourceFile {
                 path: "main.qz".to_string(),
                 module_name: None,
+                runtime_string: Some("String".to_string()),
+                type_imports: Vec::new(),
                 start: module.len() + 1,
                 end: merged.len(),
                 line_start: 2,
@@ -10449,8 +10574,22 @@ fn main() void { show("{}", make_text()); }
         let mut analyzer = Analyzer::new();
         analyzer.set_source_files(files.clone());
         analyzer.set_namespaced_paths(HashSet::from(["fmt.qz".to_string()]));
-        let report = analyzer.analyze_program(&program);
+        let mut report = analyzer.analyze_program(&program);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let proof = report
+            .checked_string_abi
+            .take()
+            .expect("selected runtime String proof");
+        assert_eq!(proof.data_offset, 8);
+        let error = Codegen::new(&report)
+            .compile_program(&program, &files)
+            .unwrap_err();
+        assert!(
+            error.contains("checked runtime String representation")
+                || error.contains("unsupported implicit display"),
+            "{error}"
+        );
+        report.checked_string_abi = Some(proof);
         let chunks = Codegen::new(&report)
             .compile_program(&program, &files)
             .unwrap();
@@ -10470,11 +10609,78 @@ fn main() void { show("{}", make_text()); }
             main.code
                 .iter()
                 .filter(|instruction| instruction.opcode == Opcode::FieldLoad as u8
-                    && instruction.ops[2] == 0)
+                    && u16::from_le_bytes([instruction.ops[2], instruction.ops[3]]) == 8)
                 .count()
                 >= 2,
             "format arguments and formatter results must expose their data, not their header"
         );
+    }
+
+    #[test]
+    fn implicit_display_rejects_unproved_pointer_representations() {
+        let source = r#"struct Owner { value: i32 }
+@format fn show(template: str, ...args: any) void {}
+fn main() void { show("{}", 1); }"#;
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let report = Analyzer::new().analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let start = source.rfind('1').unwrap();
+        let span = Span::new(3, 27, start, start + 1);
+        let owner = TypeKind::Named {
+            name: "Owner".to_string(),
+            type_args: vec![],
+        };
+        let view = |ty| Box::new(Spanned::new(ty, span));
+        for ty in [
+            owner.clone(),
+            TypeKind::Named {
+                name: "Unknown".to_string(),
+                type_args: vec![],
+            },
+            TypeKind::Ref {
+                inner: view(owner.clone()),
+            },
+            TypeKind::MutRef { inner: view(owner) },
+            TypeKind::RawPtr {
+                inner: view(TypeKind::Uint8),
+            },
+            TypeKind::Ref {
+                inner: view(TypeKind::Ref {
+                    inner: view(TypeKind::Int32),
+                }),
+            },
+        ] {
+            // Deliberately challenge the consumer with a bad annotation even
+            // when source semantic checks would already reject the operand.
+            let mut generator = Codegen::new(&report);
+            generator.type_map.insert((start, start + 1), ty.clone());
+            let error = generator.compile_program(&program, &[]).unwrap_err();
+            assert!(
+                error.contains("unsupported implicit display"),
+                "{ty:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn implicit_display_rejects_slice_views() {
+        let source = r#"@format fn show(template: str, ...args: any) void {}
+fn main() void { show("{}", [1, 2]); }"#;
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let report = Analyzer::new().analyze_program(&program);
+        let start = source.rfind("[1, 2]").unwrap();
+        let mut generator = Codegen::new(&report);
+        generator.type_map.insert(
+            (start, start + 6),
+            TypeKind::Slice {
+                elem_ty: Box::new(Spanned::new(
+                    TypeKind::Int32,
+                    Span::new(2, 27, start, start + 6),
+                )),
+            },
+        );
+        let error = generator.compile_program(&program, &[]).unwrap_err();
+        assert!(error.contains("unsupported implicit display"), "{error}");
     }
 
     #[test]
@@ -10670,6 +10876,8 @@ fn main() void { outer[Word](7); }
         let source_files = vec![SourceFile {
             path: path.clone(),
             module_name: None,
+            runtime_string: None,
+            type_imports: Vec::new(),
             start: 0,
             end: source.chars().count(),
             line_start: 1,
@@ -10721,6 +10929,8 @@ fn main() void { outer[Word](7); }
         let source_files = vec![SourceFile {
             path: "cache-test.qz".to_string(),
             module_name: None,
+            runtime_string: None,
+            type_imports: Vec::new(),
             start: 0,
             end: source.chars().count(),
             line_start: 1,

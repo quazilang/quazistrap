@@ -2,6 +2,86 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-23, checked runtime String ABI)
+
+QZC29 / QZI14 (Unverified). Current source changes replace String spelling and
+field-zero assumptions with loader-selected declaration identity plus checked
+layout. See docs/internals/runtime-string-abi.md and the matching change record.
+
+- SourceFile.runtime_string marks the actual defining file/original name exported
+  as String by the selected prelude. SourceFile.type_imports contains
+  SourceTypeImport { selector_span, source_name, target_path, target_name }.
+  Loader export traversal honors aliases, wildcards, namespaces, overlays, cfg,
+  cycles, ambiguity and cancellation. Canonical full paths matter; basenames do
+  not authenticate selectors. Nested public namespace requests come from actual
+  qualified source spellings. Parsed source snapshots and export queries cache
+  within collection; queries/steps have operational bounds.
+- semantic/string_abi.rs authenticates public imports against actual declaration
+  spans. Every explicit selector discharges its own proof, even if another
+  selector already introduced the same name. Aliases cannot replace an existing
+  declaration/import. CheckedStringAbi { declaration:ResolvedBinding,
+  data_offset:u16 } requires a public nongeneric nonunion ordinary struct, one
+  alias-resolved str data field, and bounded whole allocation/field offsets.
+- Shared type_resolution.rs no longer expands arbitrary qualified alias leaves.
+  Declaration binders precede canonical name lookup. Source/concrete arithmetic,
+  parse, borrow observation and formatting use checked String identity. Deferred
+  display facts are bounded/cancellable and validate every proven concrete caller.
+  Known arbitrary refs/raw pointers/slices/owners cannot become implicit UTF-8.
+- Codegen checks the exact declaration span and data offset, including injected
+  formatter results. Constructor and associated-call aliases resolve defining
+  layouts/names. A generic namespace binder cannot impersonate a global runtime
+  type. One reference to an owner is loaded once; nested owner refs fail rather
+  than collapsing two loads into one. Shared view wrappers retain representation.
+- Source cache identity now also hashes canonical builtin std/prelude roots.
+  Runtime-root/layout switches require misses and new hits use selected methods.
+  Old source QZC bodies rebuild; old QZI bodies need source rebuilding to acquire
+  these source checks. No QZI ownership/effect certification was added.
+
+Verification: 969/969 serial offline Rust tests; debug build and direct Clippy
+check pass with existing23 compiler warnings. scripts/check_string_abi.py rejects
+25 programs across check/native/QZI/Windows COFF, plus old counterfeit cache
+compiled-only/new rejection (never execute legacy counterfeit bodies). Real String
+comparison/generic aliases/sharedrefs/format/parse pass native/source-removedQZI/
+COFF. Two selected custom runtimes cover dataoffset8, Text re-exported asString,
+constructor and static method routing. Runtime roots alternate methods/fieldorder:
+miss then correct exact hit. Valid gateway control passes. Installed optimizedqz
+updated and full String runner/cache controls pass. Earlier arithmetic/operator/
+mutation/scalar/operand/init/loop/conditional/try/expression/retention/named/dyn/
+ELFstack/Power runners pass. STDmemory6, ordinaryquazifetch build/run/hit/COFFpass;
+its installed exact hit still reports131functions/1ms. Logs/tmp/quazi-string-*.log.
+Graphifyquery/AST update5653nodes12848edges; no.qzsemantic extraction. README and
+roadmap audit updated BEFOREcommit: unchanged73.2/26.8%,33items/78requirements,
+Ownership9/16,LSP16/20. Full goal remains active, not completed by this checkpoint.
+
+NEXT confirmed P1: private namespace aliases leak across source files because
+source type/import tables remain global. See docs/audits/2026-10-23-string-followups.md.
+Check-only fixture /tmp/qz-string-crossfile-review-qn2t5qyp/case: helper imports
+prelude.text as ns privately; main imports only helper and ns.String comparison
+passes. Revalidated installed compiler; log/tmp/quazi-string-followup-private-alias.log.
+Wrong second namespace alias is rejectedS05, so review did not demonstrate another
+counterfeit layout execution. No executable emitted/run for this audit.
+
+Proper next design: key source type spellings by source-file identity; resolve
+alias bodies in their declaration file and concrete type arguments at callsite.
+Canonicalize declaration signature/struct-field/alias-body types in owner context
+before context-free deferred use, protecting own binders first. Publish canonical
+annotations/layout types or retain explicit source context into specialization
+and codegen. A mutable current-file cursor alone is insufficient for recursive
+aliases. Autoloaded prelude exports need an explicit trusted global environment,
+not basename inference; inferred return types can carry canonical declaration
+identity without exposing another file's private aliases. Codegen raw constructor/
+static namespace spellings also need the same source context. Do not restore
+leaf fallback or reject every qualified type as a shortcut. Verify loader-backed
+LSP rename/navigation, headers, source/QZI/COFF, aliases/cfg and generic shadowing.
+
+Additional cache audit needed: logical import/symlink redirection below an
+unchanged canonical runtime root. New root identity is not a proof of all logical
+lookup targets; this boundary is noted, not yet a verified symlink reproducer.
+General numeric narrowing/coercion, genericEq/ref consistency, f16, complete
+loans/effects, recursiveDrop/artifactcertification and full workspace docs/tooling
+milestones remain open. Preserve compiler.codex/, example35build and generated
+scripts/__pycache__; preserve unrelated STD CLI changes. No push or publication.
+
 ## Checkpoint (2026-10-23, ELF stack metadata)
 
 `SectionAccumulator::new` now emits empty .note.GNU-stack only for ELF, using

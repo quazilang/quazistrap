@@ -5,7 +5,6 @@
 //! Source arithmetic obligations. Template parameters retain declaration
 //! slots; only proven concrete specializations can discharge those obligations.
 
-use super::typecheck::is_string_type;
 use super::*;
 
 const MAX_SITES: usize = 65_536;
@@ -204,7 +203,7 @@ impl Analyzer {
             {
                 TypeKind::Str
             } else {
-                Self::autoderef_type(ty)
+                self.checked_string_operand_type(ty)
             };
         }
         if let TypeKind::Named { name, type_args } = &ty
@@ -223,7 +222,10 @@ impl Analyzer {
         if kind.permits_string_views() && matches!(ty, TypeKind::Str) {
             return Some(Operand::StringView);
         }
-        if kind.is_ordering() && matches!(ty, TypeKind::Named { .. }) && is_string_type(&ty) {
+        if kind.is_ordering()
+            && matches!(ty, TypeKind::Named { .. })
+            && self.is_checked_owned_string(&ty)
+        {
             return Some(Operand::OwnedString);
         }
         if kind.permits_bool() && matches!(ty, TypeKind::Bool) {
@@ -408,7 +410,7 @@ impl Analyzer {
                             {
                                 Ok(Operand::StringView)
                             } else if site.kind.is_ordering()
-                                && is_string_type(&actual)
+                                && self.is_checked_owned_string(&actual)
                                 && matches!(actual, TypeKind::Named { .. })
                             {
                                 Ok(Operand::OwnedString)

@@ -27,26 +27,22 @@ Completion of unfinished plan items:
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
 Revalidated on 2026-10-23 for the
-[ELF stack checkpoint](docs/changes/2026-10-23-elf-stack-metadata.md), using the
+[runtime String checkpoint](docs/changes/2026-10-23-runtime-string-abi.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 954 tests pass, including the 60 contained-LSP tests. Integer power now uses
-exact checked arithmetic; known negative integer exponents fail compilation,
-runtime negatives/overflow panic, and floating operands produce f64. Twelve
-invalid programs are rejected by check/native/QZI/COFF; eight value groups and
-thirteen panic scenarios pass native/source-removed QZI. Dynamic exports verify
-large exact integers and approximate floating results, without implicit libm.
-ELF objects now declare non-executable stack requirements; default shared
-libraries load successfully from source and source-removed QZI. Object/archive
-metadata, builtin/external executables, explicit execstack overrides and COFF
-controls pass. Arithmetic/power shared-library runners pass without linker
-workarounds. The installed release passes the stack/cache regression. Quazifetch builds/runs without S10 and reports Linux used RAM from
-`MemAvailable`, counting reclaimable cache as available; six isolated STD memory
-tests pass. QZC28 rebuilds older source caches. QZI14 adds typed floating Pow;
-older Pow artifacts require rebuilding, and ownership remains Unverified.
-String runtime identity, numeric coercion/normalization, effects and recursive
-destruction remain open. Ownership stays 9/16; LSP stays 16/20. The 33-item,
-78-requirement rubric remains unchanged. Statuses and percentages are refreshed
-before committing.
+All 969 tests pass, including the 60 contained-LSP tests. Owned-string operations
+now require the selected runtime declaration and checked data offset. Full import
+paths, aliases and concrete formatting arguments are checked; 25 invalid programs
+are rejected by check/native/QZI/COFF. Real String comparisons, references,
+formatting, parse and custom runtime layouts pass native/source-removed QZI/COFF.
+Runtime-root/cache switches execute the selected code. Earlier operator, power,
+ELF stack, ownership/control and artifact runners pass. The installed release
+passes the String/cache runner. Quazifetch builds/runs without S10 and reports
+Linux used RAM from `MemAvailable`; six isolated STD memory tests pass.
+QZC29 rebuilds older source caches; QZI14 remains Unverified. Private namespace
+aliases still leak across files. Numeric coercion/normalization, effects,
+recursive destruction and artifact certification remain open. Ownership stays
+9/16; LSP stays 16/20. The 33-item, 78-requirement rubric remains unchanged.
+Statuses and percentages are refreshed before committing.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no

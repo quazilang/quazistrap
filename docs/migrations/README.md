@@ -1,5 +1,7 @@
 # Migration guides
 
+- [Runtime String identity and formatting](runtime-string-abi.md)
+
 - [Typed power and QZI14](power.md)
 
 - [Arithmetic operand validation](arithmetic.md)

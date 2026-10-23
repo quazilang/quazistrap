@@ -6,11 +6,25 @@ use std::collections::HashMap;
 
 use crate::parser::ast::{Span, TypeKind};
 
+/// Loader evidence for an imported type spelling, in merged-source coordinates.
+#[derive(Debug, Clone)]
+pub struct SourceTypeImport {
+    pub selector_span: Span,
+    pub source_name: String,
+    pub target_path: String,
+    pub target_name: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct SourceFile {
     pub path: String,
     /// Logical package/module namespace when it cannot be derived from the file name.
     pub module_name: Option<String>,
+    /// Original declaration exported as String by the loader-selected prelude.
+    /// Present only on the defining source file; never inferred from its path.
+    pub runtime_string: Option<String>,
+    /// Import selectors and namespace members resolved to defining sources.
+    pub type_imports: Vec<SourceTypeImport>,
     pub start: usize,
     pub end: usize,
     pub line_start: usize,
@@ -214,6 +228,20 @@ fn render_diag_at(
 pub struct SemanticSuggestion {
     pub message: String,
     pub span: Option<Span>,
+}
+
+/// Validated runtime String layout tied to the loader-selected declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedStringAbi {
+    pub declaration: ResolvedBinding,
+    pub data_offset: u16,
+}
+
+impl CheckedStringAbi {
+    pub fn matches_type(&self, ty: &TypeKind) -> bool {
+        matches!(ty, TypeKind::Named { name, type_args }
+            if name == &self.declaration.name && type_args.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -667,6 +695,8 @@ pub struct SerializationDeriveMetadata {
 
 #[derive(Debug, Clone)]
 pub struct SemanticReport {
+    pub checked_string_abi: Option<CheckedStringAbi>,
+    pub type_name_bindings: HashMap<String, ResolvedBinding>,
     pub errors: Vec<SemanticError>,
     pub warnings: Vec<SemanticWarning>,
     pub suggestions: Vec<SemanticSuggestion>,

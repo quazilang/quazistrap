@@ -11,7 +11,7 @@ use crate::lexer::Lexer;
 use crate::lexer::token::TokenKind;
 use crate::parser::Parser;
 use crate::parser::ast::{ItemKind, Program};
-use crate::semantic::{SourceFile, item_should_include_for};
+use crate::semantic::{SourceFile, SourceTypeImport, item_should_include_for};
 
 /// Compilation target used while resolving conditional imports.
 #[derive(Debug, Clone, Copy)]
@@ -274,6 +274,8 @@ struct SourceCollection {
     /// Canonicalized paths of the original entry files; everything else is a
     /// dependency and gets namespaced/mangled.
     entry_paths: HashSet<PathBuf>,
+    runtime_string: Option<(PathBuf, String)>,
+    type_imports: HashMap<PathBuf, Vec<SourceTypeImport>>,
 }
 
 fn collect_sources_with_prelude(
@@ -362,6 +364,21 @@ fn collect_sources_with_prelude(
         )?;
     }
 
+    let runtime_string = match prelude {
+        Some(path) => resolve_runtime_string_export(path, resolver, target, overrides, checkpoint)?,
+        None => None,
+    };
+    if let Some((path, _)) = &runtime_string {
+        if !visited.contains(path) {
+            return Err("selected prelude String declaration was not loaded"
+                .to_string()
+                .into());
+        }
+    }
+
+    let type_imports =
+        collect_type_import_provenance(&sources, resolver, target, overrides, checkpoint)?;
+
     Ok(SourceCollection {
         sources,
         library_paths,
@@ -369,7 +386,441 @@ fn collect_sources_with_prelude(
         module_name_overrides,
         module_specs,
         entry_paths,
+        runtime_string,
+        type_imports,
     })
+}
+
+/// Authenticate a runtime role from the selected prelude's export graph, never
+/// from a basename or an arbitrary declaration spelling. The bounded worklist
+/// also handles cyclic public gateways without recursive stack growth.
+fn resolve_runtime_string_export(
+    prelude: &Path,
+    resolver: Option<&ModuleResolver>,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<Option<(PathBuf, String)>, CancellableLoadError> {
+    resolve_public_export(prelude, "String", resolver, target, overrides, checkpoint)
+}
+
+fn resolve_public_export(
+    entry: &Path,
+    exported_name: &str,
+    resolver: Option<&ModuleResolver>,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<Option<(PathBuf, String)>, CancellableLoadError> {
+    resolve_public_export_with_budget(
+        entry,
+        exported_name,
+        resolver,
+        target,
+        overrides,
+        &mut 4096,
+        &mut HashMap::new(),
+        checkpoint,
+    )
+}
+
+fn resolve_public_export_with_budget(
+    entry: &Path,
+    exported_name: &str,
+    resolver: Option<&ModuleResolver>,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    remaining: &mut usize,
+    parsed: &mut HashMap<PathBuf, (String, Program)>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<Option<(PathBuf, String)>, CancellableLoadError> {
+    use crate::parser::ast::ImportItems;
+    let mut pending = vec![(entry.to_path_buf(), exported_name.to_string())];
+    let mut seen = HashSet::new();
+    let mut found = None;
+    let mut work = 0usize;
+    while let Some((path, name)) = pending.pop() {
+        checkpoint()?;
+        work += 1;
+        if *remaining == 0 || work > 4096 {
+            return Err("public export resolution exceeded its work budget"
+                .to_string()
+                .into());
+        }
+        *remaining -= 1;
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve '{}': {error}", path.display()))?;
+        if !seen.insert((path.clone(), name.clone())) {
+            continue;
+        }
+        if !parsed.contains_key(&path) {
+            let source = source_for_path_with_checkpoint(&path, overrides, checkpoint)?;
+            let Ok(program) = parse_source_with_checkpoint(&source, checkpoint)? else {
+                continue;
+            };
+            parsed.insert(path.clone(), (source, program));
+        }
+        let (source, program) = parsed.get(&path).unwrap();
+        for item in &program.items {
+            checkpoint()?;
+            work += 1;
+            if *remaining == 0 || work > 4096 {
+                return Err("public export resolution exceeded its work budget"
+                    .to_string()
+                    .into());
+            }
+            *remaining -= 1;
+            if !item_is_enabled(item, target) {
+                continue;
+            }
+            let public_name = match &item.node {
+                ItemKind::Struct {
+                    name, public: true, ..
+                }
+                | ItemKind::Enum {
+                    name, public: true, ..
+                }
+                | ItemKind::Trait {
+                    name, public: true, ..
+                }
+                | ItemKind::TypeAlias {
+                    name, public: true, ..
+                }
+                | ItemKind::ForeignGlobal {
+                    name, public: true, ..
+                }
+                | ItemKind::Fn {
+                    name, pub_fn: true, ..
+                } => Some(name),
+                _ => None,
+            };
+            if public_name == Some(&name) {
+                let identity = (path.clone(), name.clone());
+                if found.as_ref().is_some_and(|previous| previous != &identity) {
+                    return Err("ambiguous public exports".to_string().into());
+                }
+                found = Some(identity);
+            }
+            let ItemKind::Import(import) = &item.node else {
+                continue;
+            };
+            if !import.pub_import {
+                continue;
+            }
+            if let Some((head, tail)) = name.split_once('.') {
+                let original = match &import.items {
+                    ImportItems::Single(original) if original == head => Some(original),
+                    ImportItems::Aliased(original, alias) if alias == head => Some(original),
+                    ImportItems::Multiple(names) => names.iter().find(|name| name.as_str() == head),
+                    _ => None,
+                };
+                if let Some(original) = original {
+                    if let Some(namespace) =
+                        imported_namespace_entry(&path, import, original, resolver)
+                    {
+                        pending.push((namespace, tail.to_string()));
+                    }
+                }
+            }
+            let original = match &import.items {
+                ImportItems::Single(original) if original == &name => original,
+                ImportItems::Aliased(original, alias) if alias == &name => original,
+                ImportItems::Multiple(names) if names.contains(&name) => &name,
+                ImportItems::All => &name,
+                _ => continue,
+            };
+            for dependency in import_export_entries(
+                &path, import, item.span, &source, resolver, target, overrides, checkpoint,
+            )? {
+                pending.push((dependency, original.clone()));
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn imported_namespace_entry(
+    file: &Path,
+    import: &crate::parser::ast::ImportPath,
+    name: &str,
+    resolver: Option<&ModuleResolver>,
+) -> Option<PathBuf> {
+    let mut module = file.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let mut segments = import.path.clone();
+    segments.push(name.to_string());
+    if !import.relative {
+        if let Some(spec) = segments
+            .first()
+            .and_then(|base| resolver.and_then(|resolver| resolver.modules.get(base)))
+        {
+            module = spec.src_dir.clone();
+            segments.remove(0);
+            if segments.is_empty() {
+                return Some(spec.entry.clone());
+            }
+        }
+    }
+    for segment in segments {
+        module.push(segment);
+    }
+    if module.with_extension("qz").is_file() {
+        Some(module.with_extension("qz"))
+    } else if module.join("mod.qz").is_file() {
+        Some(module.join("mod.qz"))
+    } else {
+        None
+    }
+}
+
+/// Keep the actual imported gateway instead of reducing its path to a module
+/// basename or skipping an intermediate public alias.
+fn import_export_entries(
+    file: &Path,
+    import: &crate::parser::ast::ImportPath,
+    span: crate::parser::ast::Span,
+    source: &str,
+    resolver: Option<&ModuleResolver>,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<Vec<PathBuf>, CancellableLoadError> {
+    checkpoint()?;
+    let mut module = file.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let mut segments = import.path.as_slice();
+    if !import.relative {
+        if let Some(spec) = segments
+            .first()
+            .and_then(|base| resolver.and_then(|r| r.modules.get(base)))
+        {
+            module = spec.src_dir.clone();
+            segments = &segments[1..];
+            if segments.is_empty() {
+                return Ok(vec![spec.entry.clone()]);
+            }
+        }
+    }
+    for segment in segments {
+        module.push(segment);
+    }
+    if !segments.is_empty() && module.with_extension("qz").is_file() {
+        return Ok(vec![module.with_extension("qz")]);
+    }
+    if !segments.is_empty() && module.join("mod.qz").is_file() {
+        return Ok(vec![module.join("mod.qz")]);
+    }
+    let import_source: String = source
+        .chars()
+        .skip(span.start)
+        .take(span.end - span.start)
+        .collect();
+    Ok(local_import_paths(
+        file,
+        &import_source,
+        resolver,
+        false,
+        target,
+        overrides,
+        checkpoint,
+    )?
+    .into_iter()
+    .map(|(path, _)| path)
+    .collect())
+}
+
+fn collect_type_import_provenance(
+    sources: &[(PathBuf, String)],
+    resolver: Option<&ModuleResolver>,
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<HashMap<PathBuf, Vec<SourceTypeImport>>, CancellableLoadError> {
+    use crate::parser::ast::ImportItems;
+    let mut programs = Vec::new();
+    let mut candidates = std::collections::BTreeSet::new();
+    let mut declarations = HashSet::new();
+    for (file, source) in sources {
+        checkpoint()?;
+        let Ok(program) = parse_source_with_checkpoint(source, checkpoint)? else {
+            continue;
+        };
+        for item in &program.items {
+            checkpoint()?;
+            if !item_is_enabled(item, target) {
+                continue;
+            }
+            match &item.node {
+                ItemKind::Struct {
+                    name, public: true, ..
+                }
+                | ItemKind::Enum {
+                    name, public: true, ..
+                }
+                | ItemKind::Trait {
+                    name, public: true, ..
+                }
+                | ItemKind::TypeAlias {
+                    name, public: true, ..
+                } => {
+                    candidates.insert(name.clone());
+                    declarations.insert((file.clone(), name.clone()));
+                }
+                ItemKind::Import(import) if import.pub_import => match &import.items {
+                    ImportItems::Single(name) | ImportItems::Aliased(_, name) => {
+                        candidates.insert(name.clone());
+                    }
+                    ImportItems::Multiple(names) => candidates.extend(names.iter().cloned()),
+                    ImportItems::All => {}
+                },
+                _ => {}
+            }
+        }
+        programs.push((file, source, program));
+    }
+    let mut result = HashMap::new();
+    let mut cache: HashMap<(PathBuf, String), Option<(PathBuf, String)>> = HashMap::new();
+    let mut parsed: HashMap<_, _> = programs
+        .iter()
+        .map(|(file, source, program)| ((*file).clone(), ((*source).clone(), program.clone())))
+        .collect();
+    let mut sites = 0usize;
+    let mut remaining = 1_000_000usize;
+    for (file, source, program) in programs {
+        checkpoint()?;
+        // Include actual source-qualified requests through nested public
+        // namespaces without enumerating an unbounded namespace product.
+        let tokens = Lexer::new(source).tokenize();
+        let mut qualified = std::collections::BTreeSet::new();
+        for start in 0..tokens.len() {
+            checkpoint()?;
+            let TokenKind::Ident(first) = &tokens[start].kind else {
+                continue;
+            };
+            let mut spelling = first.clone();
+            let mut cursor = start;
+            for _ in 0..64 {
+                if !matches!(
+                    tokens.get(cursor + 1).map(|token| &token.kind),
+                    Some(TokenKind::Dot)
+                ) {
+                    break;
+                }
+                let Some(TokenKind::Ident(next)) = tokens.get(cursor + 2).map(|token| &token.kind)
+                else {
+                    break;
+                };
+                spelling.push('.');
+                spelling.push_str(next);
+                qualified.insert(spelling.clone());
+                cursor += 2;
+                if qualified.len() > 65_536 {
+                    return Err("qualified source type request budget exceeded"
+                        .to_string()
+                        .into());
+                }
+            }
+        }
+        let mut proofs = Vec::new();
+        for item in &program.items {
+            checkpoint()?;
+            let ItemKind::Import(import) = &item.node else {
+                continue;
+            };
+            if !item_is_enabled(item, target) {
+                continue;
+            }
+            let selected: Vec<_> = match &import.items {
+                ImportItems::Single(name) => vec![(name, name)],
+                ImportItems::Aliased(name, alias) => vec![(name, alias)],
+                ImportItems::Multiple(names) => names.iter().map(|name| (name, name)).collect(),
+                ImportItems::All => candidates.iter().map(|name| (name, name)).collect(),
+            };
+            let selector_spans = if matches!(import.items, ImportItems::All) {
+                vec![item.span; selected.len()]
+            } else {
+                import.selector_spans.clone()
+            };
+            for ((name, local), selector_span) in selected.into_iter().zip(&selector_spans) {
+                checkpoint()?;
+                let mut queries = Vec::new();
+                for entry in import_export_entries(
+                    file, import, item.span, source, resolver, target, overrides, checkpoint,
+                )? {
+                    queries.push((entry, name.clone(), local.clone()));
+                }
+                // A selector can denote a namespace rather than a declaration.
+                // Resolve the full source path, including its final segment.
+                let namespace = imported_namespace_entry(file, import, name, resolver);
+                if !matches!(import.items, ImportItems::All) {
+                    if let Some(entry) = namespace {
+                        let prefix = format!("{local}.");
+                        for spelling in &qualified {
+                            if let Some(suffix) = spelling.strip_prefix(&prefix) {
+                                queries.push((entry.clone(), suffix.to_string(), spelling.clone()));
+                            }
+                        }
+                        for candidate in &candidates {
+                            queries.push((
+                                entry.clone(),
+                                candidate.clone(),
+                                format!("{local}.{candidate}"),
+                            ));
+                        }
+                    }
+                }
+                for (entry, exported, source_name) in queries {
+                    checkpoint()?;
+                    sites += 1;
+                    if sites > 65_536 {
+                        return Err("source import provenance query budget exceeded"
+                            .to_string()
+                            .into());
+                    }
+                    let entry = entry.canonicalize().map_err(|error| {
+                        format!("cannot resolve '{}': {error}", entry.display())
+                    })?;
+                    let key = (entry.clone(), exported.clone());
+                    let identity = if let Some(identity) = cache.get(&key) {
+                        identity.clone()
+                    } else {
+                        let identity = resolve_public_export_with_budget(
+                            &entry,
+                            &exported,
+                            resolver,
+                            target,
+                            overrides,
+                            &mut remaining,
+                            &mut parsed,
+                            checkpoint,
+                        )?;
+                        cache.insert(key, identity.clone());
+                        identity
+                    };
+                    let Some((path, name)) = identity else {
+                        continue;
+                    };
+                    if !declarations.contains(&(path.clone(), name.clone())) {
+                        continue;
+                    }
+                    if proofs.iter().any(|proof: &SourceTypeImport| {
+                        proof.source_name == source_name
+                            && (proof.target_path != path.to_string_lossy()
+                                || proof.target_name != name)
+                    }) {
+                        return Err(format!("ambiguous import source for `{source_name}`").into());
+                    }
+                    proofs.push(SourceTypeImport {
+                        selector_span: *selector_span,
+                        source_name,
+                        target_path: path.to_string_lossy().into_owned(),
+                        target_name: name,
+                    });
+                }
+            }
+        }
+        result.insert(file.clone(), proofs);
+    }
+    Ok(result)
 }
 
 fn finalize_sources(
@@ -384,6 +835,8 @@ fn finalize_sources(
         module_name_overrides,
         module_specs,
         entry_paths,
+        runtime_string,
+        type_imports,
     } = collection;
 
     // Capture exactly what was read from disk before compatibility filtering
@@ -455,6 +908,21 @@ fn finalize_sources(
         source_files.push(SourceFile {
             path: path.to_string_lossy().into_owned(),
             module_name: module_name_overrides.get(path).cloned(),
+            runtime_string: runtime_string
+                .as_ref()
+                .and_then(|(defining_path, name)| (defining_path == path).then(|| name.clone())),
+            type_imports: type_imports
+                .get(path)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .map(|mut import| {
+                    import.selector_span.start += char_pos;
+                    import.selector_span.end += char_pos;
+                    import.selector_span.line += line_pos - 1;
+                    import
+                })
+                .collect(),
             start: char_pos,
             end: char_pos + src_char_len,
             line_start: line_pos,
@@ -828,6 +1296,28 @@ fn builtin_std_module_spec() -> Option<ModuleSpec> {
         entry_is_package_root: false,
         version: None,
     })
+}
+
+/// Cache identity for the selected builtin source roots. Hash actual canonical
+/// paths, so changing an override or redirecting a symlink cannot reuse bodies
+/// that were checked against another runtime. Source contents are hashed by QZC.
+pub(crate) fn builtin_source_roots_identity() -> String {
+    let mut hash = Sha256::new();
+    for (role, root) in [
+        (b"std".as_slice(), find_builtin_std_root()),
+        (b"prelude".as_slice(), find_builtin_prelude_root()),
+    ] {
+        hash.update(role);
+        if let Some(root) = root {
+            let canonical = root.canonicalize().unwrap_or(root);
+            let bytes = canonical.as_os_str().as_encoded_bytes();
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        } else {
+            hash.update(0_u64.to_le_bytes());
+        }
+    }
+    format!("{:x}", hash.finalize())
 }
 
 fn builtin_prelude_module_spec() -> Option<ModuleSpec> {
@@ -1663,6 +2153,246 @@ mod tests {
         dir.push(format!("{}_{}_{}", prefix, std::process::id(), nanos));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[test]
+    fn selected_prelude_string_tracks_defining_file_and_original_name() {
+        let root = temp_dir("quazi_runtime_string_identity");
+        let gateway = root.join("mod.qz");
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(&gateway, "pub import ./nested.*;").unwrap();
+        fs::write(nested.join("mod.qz"), "pub import ./value.Text as String;").unwrap();
+        let value = nested.join("value.qz");
+        fs::write(&value, "pub struct Text { data: str, }").unwrap();
+        let main = root.join("main.qz");
+        fs::write(&main, "struct String { value: i32, } fn main() void {}").unwrap();
+        let mut checkpoint = || Ok(());
+        let collection = collect_sources_with_prelude(
+            std::slice::from_ref(&main),
+            None,
+            Some(&gateway),
+            &[],
+            false,
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut checkpoint,
+        )
+        .unwrap();
+        assert_eq!(
+            collection.runtime_string,
+            Some((value.canonicalize().unwrap(), "Text".into()))
+        );
+        let loaded = finalize_sources(collection, &mut checkpoint).unwrap();
+        let marked: Vec<_> = loaded
+            .source_files
+            .iter()
+            .filter(|file| file.runtime_string.is_some())
+            .collect();
+        assert_eq!(marked.len(), 1);
+        assert_eq!(
+            marked[0].path,
+            value.canonicalize().unwrap().to_string_lossy()
+        );
+        assert_eq!(marked[0].runtime_string.as_deref(), Some("Text"));
+        let no_std = collect_sources_with_prelude(
+            &[main],
+            None,
+            None,
+            &[],
+            false,
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut checkpoint,
+        )
+        .unwrap();
+        assert!(no_std.runtime_string.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_string_export_obeys_overlays_cfg_and_cancellation() {
+        let root = temp_dir("quazi_runtime_string_overlay");
+        let gateway = root.join("mod.qz");
+        let value = root.join("value.qz");
+        fs::write(&gateway, "pub import ./value.String;").unwrap();
+        fs::write(&value, "pub struct String { data: str, }").unwrap();
+        let overrides = HashMap::from([
+            (
+                gateway.canonicalize().unwrap(),
+                r#"@cfg(target_os = "linux") pub import ./value.Text as String;"#.into(),
+            ),
+            (
+                value.canonicalize().unwrap(),
+                "pub struct Text { data: str, }".into(),
+            ),
+        ]);
+        let linux = CfgTarget {
+            os: "linux",
+            arch: "x86_64",
+            abi: "sysv",
+        };
+        let windows = CfgTarget {
+            os: "windows",
+            arch: "x86_64",
+            abi: "win64",
+        };
+        let mut checkpoint = || Ok(());
+        assert_eq!(
+            resolve_runtime_string_export(&gateway, None, linux, &overrides, &mut checkpoint)
+                .unwrap(),
+            Some((value.canonicalize().unwrap(), "Text".into()))
+        );
+        assert!(
+            resolve_runtime_string_export(&gateway, None, windows, &overrides, &mut checkpoint)
+                .unwrap()
+                .is_none()
+        );
+        let mut checks = 0;
+        let result = resolve_runtime_string_export(&gateway, None, linux, &overrides, &mut || {
+            checks += 1;
+            if checks > 4 {
+                Err(CancellableLoadError::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(result, Err(CancellableLoadError::Cancelled)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_string_export_cycles_terminate_and_conflicts_fail_closed() {
+        let root = temp_dir("quazi_runtime_string_cycles");
+        let gateway = root.join("mod.qz");
+        let other = root.join("other.qz");
+        fs::write(&gateway, "pub import ./other.*;").unwrap();
+        fs::write(&other, "pub import ./mod.*;").unwrap();
+        let mut checkpoint = || Ok(());
+        assert!(
+            resolve_runtime_string_export(
+                &gateway,
+                None,
+                host_cfg_target(),
+                &HashMap::new(),
+                &mut checkpoint,
+            )
+            .unwrap()
+            .is_none()
+        );
+        fs::write(
+            &gateway,
+            "pub import ./first.String; pub import ./second.String;",
+        )
+        .unwrap();
+        for name in ["first", "second"] {
+            fs::write(
+                root.join(format!("{name}.qz")),
+                "pub struct String { data: str, }",
+            )
+            .unwrap();
+        }
+        assert!(matches!(resolve_runtime_string_export(
+            &gateway, None, host_cfg_target(), &HashMap::new(), &mut checkpoint,
+        ), Err(CancellableLoadError::Load(message)) if message.contains("ambiguous")));
+        // Direct declarations need no imported file; the semantic layer checks
+        // the selected declaration's actual kind and ABI, including aliases.
+        fs::write(&gateway, "pub type String = i32;").unwrap();
+        assert_eq!(
+            resolve_runtime_string_export(
+                &gateway,
+                None,
+                host_cfg_target(),
+                &HashMap::new(),
+                &mut checkpoint,
+            )
+            .unwrap(),
+            Some((gateway.canonicalize().unwrap(), "String".into()))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn import_provenance_uses_actual_paths_for_selectors_and_namespaces() {
+        let root = temp_dir("quazi_import_source_identity");
+        fs::create_dir_all(root.join("fake")).unwrap();
+        fs::write(root.join("fake/string.qz"), "pub struct Marker{value:i32,}").unwrap();
+        fs::write(root.join("real.qz"), "pub struct String{data:str,}").unwrap();
+        fs::write(
+            root.join("gateway.qz"),
+            "pub import ./real.String as Alias;",
+        )
+        .unwrap();
+        fs::write(root.join("private.qz"), "struct Hidden{value:i32,}").unwrap();
+        fs::write(root.join("outer.qz"), "pub import ./real as child;").unwrap();
+        let main = root.join("main.qz");
+        fs::write(&main, "import ./fake.string.String as Forged;\nimport ./real.String as Real;\nimport ./gateway.Alias as Via;\nimport ./fake.string as pretend;\nimport ./real as actual;\nimport ./gateway as bridge;\nimport ./private.*;\nimport ./outer as top;\nfn nested(value:top.child.String)void{}\nfn main()void{}").unwrap();
+        let mut checkpoint = || Ok(());
+        let collection = collect_sources_with_prelude(
+            &[main.clone()],
+            None,
+            None,
+            &[],
+            false,
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut checkpoint,
+        )
+        .unwrap();
+        let loaded = finalize_sources(collection, &mut checkpoint).unwrap();
+        let file = loaded
+            .source_files
+            .iter()
+            .find(|file| file.path == main.canonicalize().unwrap().to_string_lossy())
+            .unwrap();
+        let real = root
+            .join("real.qz")
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        for spelling in [
+            "Real",
+            "Via",
+            "actual.String",
+            "bridge.Alias",
+            "top.child.String",
+        ] {
+            let proof = file
+                .type_imports
+                .iter()
+                .find(|proof| proof.source_name == spelling)
+                .unwrap_or_else(|| panic!("missing proof for {spelling}: {:?}", file.type_imports));
+            assert_eq!(proof.target_path, real);
+            assert_eq!(proof.target_name, "String");
+            assert!(file.contains(proof.selector_span));
+        }
+        for spelling in ["Forged", "pretend.String", "Hidden"] {
+            assert!(
+                file.type_imports
+                    .iter()
+                    .all(|proof| proof.source_name != spelling),
+                "counterfeit/private proof for {spelling}"
+            );
+        }
+        assert!(
+            file.type_imports
+                .iter()
+                .any(|proof| proof.source_name == "pretend.Marker")
+        );
+        let selected = file
+            .type_imports
+            .iter()
+            .find(|proof| proof.source_name == "Real")
+            .unwrap();
+        let selected_text: String = loaded
+            .merged_source
+            .chars()
+            .skip(selected.selector_span.start)
+            .take(selected.selector_span.end - selected.selector_span.start)
+            .collect();
+        assert_eq!(selected_text, "String");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

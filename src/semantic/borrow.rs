@@ -1159,10 +1159,9 @@ impl Analyzer {
         {
             origins.insert(ViewOrigin::Owner(root));
         }
-        let observes_string = self.bc_annotated_type(value).is_some_and(|ty| {
-            matches!(self.resolve_type_aliases(&ty), TypeKind::Named { name, .. }
-                if name == "String")
-        });
+        let observes_string = self
+            .bc_annotated_type(value)
+            .is_some_and(|ty| self.is_checked_owned_string(&self.resolve_type_aliases(&ty)));
         let depth = env.scopes.len().saturating_sub(1);
         for origin in origins {
             if let Some(root) = origin.storage_root()
@@ -2119,7 +2118,7 @@ impl Analyzer {
                 self.bc_expr(argument, env, false);
                 if effect == CallArgumentEffect::SharedBorrow
                     && self.bc_annotated_type(argument).is_some_and(|ty| {
-                        matches!(self.resolve_type_aliases(&ty), TypeKind::Named { name, .. } if name == "String")
+                        self.is_checked_owned_string(&self.resolve_type_aliases(&ty))
                     })
                 {
                     self.bc_mark_shared_receiver_loan(argument, env, argument.span);

@@ -12,8 +12,8 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Recheck Power operands and rebuild exact checked integer / typed floating lowering.
-const QZC_VERSION: u8 = 28;
+// Require selected runtime String declaration/layout evidence and checked format operands.
+const QZC_VERSION: u8 = 29;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {
@@ -264,7 +264,7 @@ pub fn store(
 
 fn compiler_identity() -> String {
     format!(
-        "{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::ARCH,
         std::env::consts::OS,
@@ -272,7 +272,8 @@ fn compiler_identity() -> String {
             "debug"
         } else {
             "release"
-        }
+        },
+        crate::loader::builtin_source_roots_identity(),
     )
 }
 
@@ -640,7 +641,7 @@ mod tests {
         let current = fs::read(&cache).unwrap();
         assert_eq!(&current[..4], QZC_MAGIC);
         for version in [
-            4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+            4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
         ] {
             let mut legacy = current.clone();
             legacy[4] = version;

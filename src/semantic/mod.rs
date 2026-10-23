@@ -34,6 +34,9 @@ use arithmetic::{ArithmeticFacts, ArithmeticOp};
 mod power;
 #[cfg(test)]
 mod power_tests;
+mod string_abi;
+#[cfg(test)]
+mod string_abi_tests;
 use power::PowerFacts;
 pub(crate) use power::power_result_type;
 mod optimize;
@@ -87,6 +90,11 @@ pub(super) struct MatchCandidate {
 
 pub struct Analyzer {
     pub(super) scopes: Vec<HashMap<String, Symbol>>,
+    checked_string_abi: Option<CheckedStringAbi>,
+    type_name_bindings: HashMap<String, ResolvedBinding>,
+    pending_type_imports: Vec<(String, String, Option<Span>, Option<Span>, Span)>,
+    display_requirements: Vec<(String, Span, TypeKind)>,
+    display_requirement_bytes: usize,
     pub(super) finished_scopes: Vec<Vec<(String, Symbol)>>,
     pub(super) errors: Vec<SemanticError>,
     alias_resolution_errors: std::cell::RefCell<std::collections::BTreeMap<String, Span>>,
@@ -946,6 +954,11 @@ impl Analyzer {
             test_functions: Vec::new(),
             library_char_ranges: Vec::new(),
             source_files: Vec::new(),
+            checked_string_abi: None,
+            type_name_bindings: HashMap::new(),
+            pending_type_imports: Vec::new(),
+            display_requirements: Vec::new(),
+            display_requirement_bytes: 0,
             namespaced_paths: std::collections::HashSet::new(),
             library_fn_names: std::collections::HashSet::new(),
             library_symbols: Vec::new(),
@@ -1093,6 +1106,8 @@ impl Analyzer {
             checkpoint()?;
             self.declare_top_level_item(item);
         }
+        self.register_source_type_bindings(program, &mut checkpoint)?;
+        self.validate_runtime_string(program, &mut checkpoint)?;
         // Implicit impl binders are unresolved target names, not concrete
         // declared types/aliases. Resolve this after all forward declarations.
         self.impl_generic_params = self
@@ -1222,6 +1237,7 @@ impl Analyzer {
             &mut checkpoint,
         )?;
 
+        self.validate_display_specializations(&concrete_specializations, &mut checkpoint)?;
         self.validate_arithmetic_specializations(&concrete_specializations, &mut checkpoint)?;
         self.validate_power_specializations(&concrete_specializations, &mut checkpoint)?;
 
@@ -1287,6 +1303,8 @@ impl Analyzer {
         checkpoint()?;
         self.flush_alias_resolution_errors();
         Ok(SemanticReport {
+            checked_string_abi: self.checked_string_abi.clone(),
+            type_name_bindings: self.type_name_bindings.clone(),
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
             suggestions: std::mem::take(&mut self.suggestions),
@@ -1478,6 +1496,11 @@ impl Analyzer {
         self.finished_scopes.clear();
 
         self.errors.clear();
+        self.checked_string_abi = None;
+        self.type_name_bindings.clear();
+        self.pending_type_imports.clear();
+        self.display_requirements.clear();
+        self.display_requirement_bytes = 0;
         self.alias_resolution_errors.get_mut().clear();
         self.symbolic_specialization_names.clear();
         self.concrete_specialization_ids.clear();
@@ -2397,13 +2420,9 @@ impl Analyzer {
             &HashMap::new(),
             &bound_names,
             |name| {
-                name.rsplit_once('.').and_then(|(_, leaf)| {
-                    self.scopes
-                        .first()?
-                        .get(leaf)
-                        .filter(|symbol| symbol.kind == SymbolKind::TypeName)
-                        .map(|_| leaf.to_string())
-                })
+                self.type_name_bindings
+                    .get(name)
+                    .map(|binding| binding.name.clone())
             },
         ) {
             Ok(ty) => ty,
@@ -2801,22 +2820,36 @@ mod tests {
 
     #[test]
     fn display_variadic_arguments_borrow_owned_strings_through_the_call() {
-        let declarations = "struct String { value: i32, } impl String { fn free(self: String) void {} fn len(self: &String) i32 { ret self.value; } } fn emit(template: str, ...args: str) void {} fn consume(value: String) i32 { ret 0; }";
-        let report = analyze(&format!(
-            "{declarations} fn main() void {{ const value = String {{ value: 1 }}; emit(\"{{}}\", value); value.len(); }}"
+        let analyze_runtime = |source: &str| {
+            let mut analyzer = Analyzer::new();
+            analyzer.set_source_files(vec![super::SourceFile {
+                path: "runtime.qz".into(),
+                module_name: None,
+                runtime_string: Some("String".into()),
+                type_imports: Vec::new(),
+                start: 0,
+                end: source.chars().count(),
+                line_start: 1,
+            }]);
+            analyzer.analyze_program(&parse_program(source))
+        };
+        let declarations = "pub struct String { value: i32, data: str, } impl String { fn free(self: String) void {} fn len(self: &String) i32 { ret self.value; } } fn emit(template: str, ...args: str) void {} fn consume(value: String) i32 { ret 0; }";
+        let report = analyze_runtime(&format!(
+            "{declarations} fn main() void {{ const value = String {{ value: 1, data: \"\" }}; emit(\"{{}}\", value); value.len(); }}"
         ));
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-        let report = analyze(&format!(
-            "{declarations} fn main() void {{ const value = String {{ value: 1 }}; emit(\"{{}}{{}}\", value, consume(value)); }}"
+        let report = analyze_runtime(&format!(
+            "{declarations} fn main() void {{ const value = String {{ value: 1, data: \"\" }}; emit(\"{{}}{{}}\", value, consume(value)); }}"
         ));
         assert!(
             report.errors.iter().any(|error| error.code == "S10"),
             "{:?}",
             report.errors
         );
-        let report = analyze_module_pair(
+        let report = analyze_module_pair_with_runtime(
             "pub fn apply(template: str, ...args: str) void {}",
-            "import helpers; struct String { value: i32, } impl String { fn free(self: String) void {} fn len(self: &String) i32 { ret self.value; } } fn main() void { const value = String { value: 1 }; helpers.apply(\"{}\", value); value.len(); }",
+            "import helpers; pub struct String { value: i32, data: str, } impl String { fn free(self: String) void {} fn len(self: &String) i32 { ret self.value; } } fn main() void { const value = String { value: 1, data: \"\" }; helpers.apply(\"{}\", value); value.len(); }",
+            Some("String"),
         );
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(
@@ -3778,12 +3811,49 @@ fn main() void {}
     }
 
     fn analyze_module_pair(module_src: &str, main_src: &str) -> SemanticReport {
+        analyze_module_pair_with_runtime(module_src, main_src, None)
+    }
+
+    fn analyze_module_pair_with_runtime(
+        module_src: &str,
+        main_src: &str,
+        runtime: Option<&str>,
+    ) -> SemanticReport {
         let merged = format!("{module_src}\n{main_src}");
         let module_len = module_src.chars().count();
+        let type_imports: Vec<_> = parse_program(module_src)
+            .items
+            .iter()
+            .filter_map(|item| {
+                let name = match &item.node {
+                    ItemKind::Struct {
+                        name, public: true, ..
+                    }
+                    | ItemKind::Enum {
+                        name, public: true, ..
+                    }
+                    | ItemKind::Trait {
+                        name, public: true, ..
+                    }
+                    | ItemKind::TypeAlias {
+                        name, public: true, ..
+                    } => name,
+                    _ => return None,
+                };
+                Some(super::SourceTypeImport {
+                    selector_span: Span::new(module_len + 1, module_len + 1, 1, 1),
+                    source_name: format!("helpers.{name}"),
+                    target_path: "helpers.qz".into(),
+                    target_name: name.clone(),
+                })
+            })
+            .collect();
         let source_files = vec![
             super::SourceFile {
                 path: "helpers.qz".to_string(),
                 module_name: Some("helpers".to_string()),
+                runtime_string: None,
+                type_imports: Vec::new(),
                 start: 0,
                 end: module_len,
                 line_start: 1,
@@ -3791,6 +3861,8 @@ fn main() void {}
             super::SourceFile {
                 path: "main.qz".to_string(),
                 module_name: None,
+                runtime_string: runtime.map(str::to_owned),
+                type_imports,
                 start: module_len + 1,
                 end: merged.chars().count(),
                 line_start: module_src.lines().count() + 1,

@@ -3880,10 +3880,36 @@ impl Analyzer {
                     // Object is a struct type name used as namespace, not a value.
                     // Infer concrete type args from actual arg types so the return type
                     // propagates correctly (e.g. `Box.new(42)` → `Box[i32]`).
-                    if let ExprKind::Ident(struct_name) = &object.node {
+                    if let ExprKind::Ident(source_name) = &object.node {
+                        if self
+                            .current_generic_params
+                            .iter()
+                            .any(|scope| scope.contains(source_name))
+                            && !self.resolve_symbol(source_name).is_some_and(|symbol| {
+                                matches!(
+                                    symbol.kind,
+                                    SymbolKind::Variable { .. } | SymbolKind::Parameter
+                                )
+                            })
+                        {
+                            self.push_error(object.span, "S14", "associated calls through a type parameter require a concrete declared namespace".into());
+                            return ExprEval::default();
+                        }
+                        let canonical = self.resolve_type_aliases(&TypeKind::Named {
+                            name: source_name.clone(),
+                            type_args: vec![],
+                        });
+                        let struct_name = match &canonical {
+                            TypeKind::Named { name, .. } => name,
+                            _ => source_name,
+                        };
                         let is_struct_ns = self.struct_defs.contains_key(struct_name.as_str())
+                            && !self
+                                .current_generic_params
+                                .iter()
+                                .any(|scope| scope.contains(source_name))
                             && !matches!(
-                                self.resolve_symbol(struct_name).map(|s| s.kind),
+                                self.resolve_symbol(source_name).map(|s| s.kind),
                                 Some(SymbolKind::Variable { .. }) | Some(SymbolKind::Parameter)
                             );
                         if is_struct_ns {
@@ -4682,10 +4708,7 @@ impl Analyzer {
                                 None
                             }
                             "as_string" | "as_str" => match &object_eval.ty {
-                                Some(t)
-                                    if matches!(t, TypeKind::Str | TypeKind::Ref { .. })
-                                        || matches!(t, TypeKind::Named { name, .. } if name == "String") =>
-                                {
+                                Some(t) if is_string_view_type(&self.resolve_type_aliases(t)) => {
                                     Some(ref_str.clone())
                                 }
                                 Some(other) => {
@@ -4874,6 +4897,12 @@ impl Analyzer {
                 }
             }
             ExprKind::StructInit { name, fields } => {
+                let canonical = self
+                    .type_name_bindings
+                    .get(name)
+                    .map(|binding| binding.name.clone())
+                    .unwrap_or_else(|| name.clone());
+                let name = &canonical;
                 if self
                     .resolve_symbol(name)
                     .is_some_and(|symbol| symbol.attributes.iter().any(|attr| attr == "opaque"))
@@ -6092,6 +6121,21 @@ impl Analyzer {
         // the signature were panic(msg: str, ...args: str).
         let is_panic = name.rsplit('.').next() == Some("panic");
         let effective_non_variadic_count = if is_panic { 1 } else { non_variadic_count };
+        if sym
+            .attributes
+            .iter()
+            .any(|attribute| attribute == "str_variadic")
+        {
+            for (index, value) in arg_evals
+                .iter()
+                .enumerate()
+                .skip(effective_non_variadic_count)
+            {
+                if let Some(argument) = args.get(index) {
+                    self.check_display_argument(value.ty.as_ref(), argument.span);
+                }
+            }
+        }
         let effective_variadic_elem = if is_panic {
             substituted_params.first()
         } else {
@@ -6349,9 +6393,13 @@ impl Analyzer {
                 other => other,
             });
         let prefix = match &receiver_value_ty {
-            Some(TypeKind::Named { name, .. }) if name == "String" || name.ends_with(".String") => {
-                "String"
-            }
+            Some(ty) if self.is_checked_owned_string(ty) => self
+                .checked_string_abi
+                .as_ref()
+                .unwrap()
+                .declaration
+                .name
+                .as_str(),
             Some(ty) if is_string_view_type(ty) => "str",
             Some(ty) => {
                 self.push_error(span, "S06", format!("parse is not available on {}", ty));
@@ -6394,7 +6442,7 @@ impl Analyzer {
             {
                 TypeKind::Str
             } else {
-                Self::autoderef_type(ty)
+                self.checked_string_operand_type(ty)
             }
         };
         let left = left.as_ref().map(&mut operand_type);
@@ -6435,7 +6483,8 @@ impl Analyzer {
             }
             BinOpKind::EqEq | BinOpKind::NotEq => {
                 if let (Some(l), Some(r)) = (&left, &right)
-                    && ((!self.types_compatible(l, r)) || (is_string_type(l) != is_string_type(r)))
+                    && ((!self.types_compatible(l, r))
+                        || (self.is_checked_string(l) != self.is_checked_string(r)))
                 {
                     self.push_error(
                         span,
@@ -6449,7 +6498,7 @@ impl Analyzer {
                 if let (Some(l), Some(r)) = (&left, &right) {
                     let ordered = (Self::is_integer(l) && Self::is_integer(r))
                         || (Self::is_float(l) && Self::is_float(r))
-                        || (is_string_type(l) && is_string_type(r))
+                        || (self.is_checked_string(l) && self.is_checked_string(r))
                         || self.arithmetic_op_is_deferred(span);
                     if !ordered {
                         self.push_error(
@@ -6804,13 +6853,14 @@ impl Analyzer {
         if let Some(ty) = ty {
             let resolved = self.resolve_type_aliases(ty);
             if matches!(resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. }) {
-                let loaded = Self::autoderef_type(resolved.clone());
+                let loaded = self.checked_string_operand_type(resolved.clone());
                 if Self::is_integer(&loaded)
                     || Self::is_float(&loaded)
                     || matches!(
                         loaded,
                         TypeKind::Str | TypeKind::Bool | TypeKind::RawPtr { .. }
                     )
+                    || self.is_checked_owned_string(&loaded)
                     || Self::arithmetic_string_load(&resolved).is_some()
                 {
                     self.mark_auto_deref(expr);
@@ -6836,7 +6886,7 @@ impl Analyzer {
                     (TypeKind::Str, load)
                 } else {
                     let load = matches!(resolved, TypeKind::Ref { .. } | TypeKind::MutRef { .. });
-                    (Self::autoderef_type(resolved), load)
+                    (self.checked_string_operand_type(resolved), load)
                 };
                 self.annotated_exprs[index].ty = Some(ty);
                 self.annotated_exprs[index].auto_deref = load;
@@ -8064,17 +8114,12 @@ pub(super) fn substitute_type_kind(
 
 /// Infer a type substitution by matching a param type (possibly containing generic params)
 /// against a concrete arg type. Binds generic param names → concrete types in `subst`.
-fn is_string_view_type(ty: &TypeKind) -> bool {
+pub(super) fn is_string_view_type(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Str => true,
         TypeKind::Ref { inner } | TypeKind::MutRef { inner } => is_string_view_type(&inner.node),
         _ => false,
     }
-}
-
-pub(super) fn is_string_type(ty: &TypeKind) -> bool {
-    is_string_view_type(ty)
-        || matches!(ty, TypeKind::Named { name, .. } if name == "String" || name.ends_with(".String"))
 }
 
 fn parse_method_suffix(ty: &TypeKind) -> Option<&'static str> {

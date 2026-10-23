@@ -1062,9 +1062,14 @@ impl Analyzer {
                     );
                     return;
                 }
-                if local_name == leaf {
-                    return;
-                }
+                self.pending_type_imports.push((
+                    local_name,
+                    mangled_target,
+                    selector_span,
+                    alias_span,
+                    span,
+                ));
+                return;
             }
             // Not a function import — treat as namespace/variable reference.
             self.declare(
