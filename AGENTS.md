@@ -658,3 +658,12 @@ base first for negative exponents, approximate guarded x87 fractional power.
 No implicit pow import or ownership/effect proof follows. See
 [the contract](docs/internals/power.md) and
 [verification](docs/changes/2026-10-23-typed-power.md).
+
+## ELF object stack requirements (2026-10-23)
+
+The ELF SectionAccumulator adds one empty, nonallocated SHT_PROGBITS
+.note.GNU-stack marker with zero flags. This producer declaration covers source,
+QZI and cached bodies without changing QZI14/QZC28. COFF has no ELF marker.
+Builtin linking already emits RW PT_GNU_STACK; external native inputs and explicit
+user flags may request executable stacks. See
+[verification](docs/changes/2026-10-23-elf-stack-metadata.md).

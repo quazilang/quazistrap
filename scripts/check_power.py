@@ -86,9 +86,6 @@ def check_exports(qz, root):
 @export("quazi_test_float_power")pub fn float_power(a:f64,b:f64)f64{ret a**b;}
 @export("quazi_test_float_integer_power")pub fn float_integer_power(a:f64,b:i64)f64{ret a**b;}
 fn main()void{}''')
-    manifest = work / 'quazi.toml'
-    # Existing ELF metadata follow-up is independent of the power contract.
-    manifest.write_text(manifest.read_text() + '\n[link]\nflags=["-z","noexecstack"]\n')
     artifact = work / 'exports.qzi'
     run([str(qz), 'build', *COMMON, '-i', '-o', str(artifact)], work)
     source_lib = work / 'source.so'
@@ -99,7 +96,7 @@ fn main()void{}''')
     obj = emission / 'portable.o'
     run([str(qz), 'build', str(artifact), *COMMON, '-c', '-o', str(obj)], emission)
     portable_lib = work / 'portable.so'
-    run(['ld', '-shared', '-z', 'noexecstack', '-o', str(portable_lib), str(obj)], work)
+    run(['ld', '-shared', '-o', str(portable_lib), str(obj)], work)
     assert ' pow' not in run(['nm', '-u', str(obj)], work)
     rng = random.Random(16)
     integers = [(0, 0), (2**64-1, 1), (3, 40), (1, 2**64-1)]

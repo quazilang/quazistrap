@@ -70,9 +70,6 @@ fn main()i32{if !integers(){ret 1;}if !floats(){ret 2;}if !references(){ret 3;}i
 def check_remainder_bits(qz, root):
     work = root / "remainder_library"
     project(work, '@export("quazi_test_remainder")pub fn remainder(a:f64,b:f64)f64{ret a%b;}fn main()void{}')
-    # Request an ordinary non-executable stack explicitly for the host loader.
-    manifest = work / "quazi.toml"
-    manifest.write_text(manifest.read_text() + '\n[link]\nflags=["-z","noexecstack"]\n')
     artifact = work / "remainder.qzi"
     common = ["--no-incremental", "--silent"]
     run([str(qz), "build", *common, "-i", "-o", str(artifact)], work)
@@ -84,7 +81,7 @@ def check_remainder_bits(qz, root):
     portable = emission / "portable.so"
     obj = emission / "remainder.o"
     run([str(qz), "build", str(artifact), *common, "-c", "-o", str(obj)], emission)
-    run(["ld", "-shared", "-z", "noexecstack", "-o", str(portable), str(obj)], emission)
+    run(["ld", "-shared", "-o", str(portable), str(obj)], emission)
     cases = [(5.5, 2.0), (-5.5, 2.0), (5.5, -2.0), (-5.5, -2.0),
              (6.0, 2.0), (-6.0, 2.0), (0.0, 2.0), (-0.0, 2.0),
              (1.0e300, 7.0), (sys.float_info.max, math.ulp(0.0)),

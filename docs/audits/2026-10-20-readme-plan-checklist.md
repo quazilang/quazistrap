@@ -1,8 +1,8 @@
 # Compiler roadmap checklist — 2026-10-20
 
 Revalidated on 2026-10-23 against the
-[typed-power checkpoint](../changes/2026-10-23-typed-power.md).
-Previous committed source: `64b2760`.
+[ELF stack checkpoint](../changes/2026-10-23-elf-stack-metadata.md).
+Previous committed source: `bc317fd`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
@@ -116,6 +116,15 @@ runtime identity, general coercion/normalization and full ownership/effect proof
 remain open. Credit remains **73.2% complete / 26.8% remaining**, Ownership9/16,
 LSP16/20. Installed release, STD memory6 and quazifetch build/run/cache/COFF pass.
 README statuses are updated before this commit.
+
+The ELF stack checkpoint passes **954 tests**. Empty nonallocated PROGBITS
+markers now declare generated ELF objects' non-executable stack requirements.
+Source/QZI/shared/static/native output and explicit user overrides pass; ordinary
+shared-library host loading needs no fixture workaround. Installed release
+passes the same regression and reuses an old exact cache while emitting the
+correct metadata. This strengthens an existing linker output requirement, with
+no new checklist credit: **73.2% complete / 26.8% remaining**, Ownership9/16,
+LSP16/20. README statuses are refreshed before committing.
 
 ## Summary
 

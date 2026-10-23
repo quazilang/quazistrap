@@ -127,3 +127,14 @@ loops, not Pow; floating Pow requires explicit operand representation flags.
 Legacy Pow artifacts require source rebuilding. Floating lowering imports no
 libm and retains integer exponent parity; fractional power is approximate.
 Artifacts remain Unverified; general coercion, String ABI and effects stay open.
+
+## ELF stack declaration (2026-10-23)
+
+`SectionAccumulator::new` adds an empty `.note.GNU-stack` only for ELF, using
+SectionKind::Other (SHT_PROGBITS) and explicit zero ELF flags. Do not use Note:
+this marker is not an ELF note payload. Source/QZI/cached object production
+shares this path, including startup/no-start and archive/shared output. COFF
+stays marker-free. External linker options/native inputs retain their stack
+policy; the builtin linker already emits RW PT_GNU_STACK. No cache/wire version
+change is needed. Regression: `scripts/check_elf_stack.py`; see
+[verification](../../../docs/changes/2026-10-23-elf-stack-metadata.md).

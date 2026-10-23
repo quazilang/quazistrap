@@ -39,6 +39,16 @@ pub struct SectionAccumulator {
 
 impl SectionAccumulator {
     pub fn new(obj: &mut Object<'_>) -> Self {
+        if obj.format() == object::BinaryFormat::Elf {
+            // This conventional marker is empty PROGBITS, not an ELF note
+            // record. Quazi does not generate executable stack trampolines.
+            let stack = obj.add_section(
+                Vec::new(),
+                b".note.GNU-stack".to_vec(),
+                object::SectionKind::Other,
+            );
+            obj.section_mut(stack).flags = object::SectionFlags::Elf { sh_flags: 0 };
+        }
         Self {
             text_id: obj.section_id(StandardSection::Text),
             rodata_id: obj.section_id(StandardSection::ReadOnlyData),

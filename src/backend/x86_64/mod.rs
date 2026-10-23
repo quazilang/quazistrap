@@ -337,6 +337,35 @@ mod tests {
     }
 
     #[test]
+    fn elf_objects_declare_non_executable_stack_without_affecting_coff() {
+        use object::ObjectSection as _;
+        let original = vec![returning_main()];
+        let bytes = crate::bytecode::chunk::serialize_qzi(&original).unwrap();
+        let restored = crate::bytecode::chunk::deserialize_qzi(&bytes).unwrap();
+        for chunks in [&original, &restored] {
+            for start in [true, false] {
+                let mut target = TargetSpec::x86_64_linux();
+                target.emit_start = start;
+                let output = ElfBackend.compile(chunks, &target, None, false).unwrap();
+                let file = object::File::parse(output.bytes.as_slice()).unwrap();
+                let marker = file
+                    .section_by_name(".note.GNU-stack")
+                    .expect("ELF producers must declare their stack requirement");
+                assert_eq!(marker.size(), 0);
+                assert_eq!(marker.flags(), object::SectionFlags::Elf { sh_flags: 0 });
+                // Despite its conventional name, this is PROGBITS, not an
+                // ELF note record with an owner/type/descriptor payload.
+                assert_eq!(marker.kind(), object::SectionKind::Other);
+                let mut target = TargetSpec::x86_64_windows();
+                target.emit_start = start;
+                let output = PeBackend.compile(chunks, &target, None, false).unwrap();
+                let file = object::File::parse(output.bytes.as_slice()).unwrap();
+                assert!(file.section_by_name(".note.GNU-stack").is_none());
+            }
+        }
+    }
+
+    #[test]
     fn portable_vtables_resolve_actual_native_names_without_source_report() {
         use crate::bytecode::ConstPoolEntry;
         use crate::bytecode::vtable::VtableLayout;

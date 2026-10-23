@@ -129,6 +129,13 @@ strong symbol, or unresolved non-weak symbol stops the build with a diagnostic.
 The linker does not guess, truncate, or silently import a library.
 
 Metadata and non-loaded debugging sections do not appear in the final image.
+Quazi's ELF object producer emits an empty, nonallocated SHT_PROGBITS
+`.note.GNU-stack` section with zero flags. External linkers use this declaration
+when deriving stack requirements; COFF objects contain no ELF marker. Native
+objects linked alongside Quazi output and explicit external `-z execstack`
+options may still request executable stacks. Existing objects/archives need a
+rebuild to acquire the marker; QZI and cached bodies receive it on native emission.
+See [verification](changes/2026-10-23-elf-stack-metadata.md).
 GNU property notes (`.note.gnu.property`) and `.eh_frame` unwind metadata are
 also omitted: Quazi's freestanding output has neither a dynamic loader nor an
 unwinder. Other allocated section types remain rejected.

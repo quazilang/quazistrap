@@ -27,16 +27,19 @@ Completion of unfinished plan items:
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
 Revalidated on 2026-10-23 for the
-[typed-power checkpoint](docs/changes/2026-10-23-typed-power.md), using the
+[ELF stack checkpoint](docs/changes/2026-10-23-elf-stack-metadata.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 953 tests pass, including the 60 contained-LSP tests. Integer power now uses
+All 954 tests pass, including the 60 contained-LSP tests. Integer power now uses
 exact checked arithmetic; known negative integer exponents fail compilation,
 runtime negatives/overflow panic, and floating operands produce f64. Twelve
 invalid programs are rejected by check/native/QZI/COFF; eight value groups and
 thirteen panic scenarios pass native/source-removed QZI. Dynamic exports verify
 large exact integers and approximate floating results, without implicit libm.
-The installed release passes power/cache checks and earlier regression runners
-pass. Quazifetch builds/runs without S10 and reports Linux used RAM from
+ELF objects now declare non-executable stack requirements; default shared
+libraries load successfully from source and source-removed QZI. Object/archive
+metadata, builtin/external executables, explicit execstack overrides and COFF
+controls pass. Arithmetic/power shared-library runners pass without linker
+workarounds. The installed release passes the stack/cache regression. Quazifetch builds/runs without S10 and reports Linux used RAM from
 `MemAvailable`, counting reclaimable cache as available; six isolated STD memory
 tests pass. QZC28 rebuilds older source caches. QZI14 adds typed floating Pow;
 older Pow artifacts require rebuilding, and ownership remains Unverified.

@@ -2,6 +2,56 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-23, ELF stack metadata)
+
+`SectionAccumulator::new` now emits empty .note.GNU-stack only for ELF, using
+SectionKind::Other => SHT_PROGBITS and explicit zero flags. Not SectionKind::Note.
+All source/QZI/cached native objects share producer, including startup/no-start,
+archive/shared output. COFF unchanged. Builtinlinker already RW PT_GNU_STACK;
+external nativeinputs/explicit-zexecstack retain policy. QZI14/QZC28 unchanged.
+New Rustregression failsbefore missingmarker, passesafter bothOS/startupmodes/
+QZIroundtrip.954/954serialofflineRusttests;build/directClippy pass existingwarnings.
+`python3 scripts/check_elf_stack.py --before-qz /tmp/quazi-stack-before-bc317fd`
+raw ELFuniqueemptyPROGBITS/noalloc/noexec flags, source/QZIobjs/staticarchive,
+builtin/ld executablesrun/RWstack, defaultsharedsource/QZI ctypesanswer42,
+explicitexecstack RWE inspectednotloaded, COFFabsence pass. Installedoptimized
+qz updated, samecommand adds --qz /home/amapekibert/.cargo/bin/qz
+--expect-old-cache-hit and proves oldexactcachehit emitsnewmarker/loadablelib.
+Debug/release compileridentities intentionally differ;debugrunner permitsfirst
+miss,thenrequiresnewhit. Arithmetic/power fixtures remove all noexecstack
+workarounds; both fullrunnerspass incl1019remainderbitcases and signed/unsigned/
+floatpowerdynamicexports/native/source-removedQZI/COFF/panics. Independentreview
+andrunner pass; reviewer startupmatrixnit fixed andfocusedtest rerun.
+Graphifyquery/AST5592nodes12626edges,no.qzsemantics.
+Logs/tmp/quazi-stack-*.log. README/audit BEFOREcommit unchanged73.2/26.8%,
+33items/78reqs,Ownership9/16,LSP16/20. No push/fullgoalstillactive.
+
+NEXT P0Stringruntimeidentity: read-only agentverified additional unsafepaths.
+loader.rs selectedprelude source role lost throughSourceCollection/SourceFile;
+resolve actual exportString to sourcepath+originaldeclname+mergeddeclspan,
+publishCheckedStringAbi{ResolvedBinding,data_offset:u16} after validating actual
+publicnongenericnonunionordinaryownedstruct/data:str andcheckedlayout. Need
+actualtypeimportprovenance: semanticmod resolve_type_with_parameters callback
+strips arbitrarydottedname to globalleaf, so postnormalization name+spansalone
+canstillauthenticatefake.String. declare_import_binding TypeName sameleafreturn
+currentlydropsBindingImport; preserve actualimportbinding. SameABIproof mustfeed
+semantic/source/concrete arithmetic andcodegen matching, notsuffixes orfield0.
+Additionalpaths: typecheck builtin as_str/as_string fallback acceptsANYRef;
+restricttoactualstringviews, realStringusesresolvedordinarysourcemethod.
+codegen injected_format_view extracts.data fromANYownedNamed formatterresult;
+requirecheckedstringresultcontract. string_data_reg hardcodesfield0,
+coerce_to_display_str literalString.data offsetfallback0; replacewithcheckedoffset.
+infer_parse_method/codegen parse routing andborrow Stringobservation handling
+mustshareidentity. Alternativevalidatedas_str-call designlarger: needsimplicit
+call/dependency/closure/retention/receiverfacts, notbackendonlycalls.
+TestsfakeString value:i32/rawdata/validlookalike/qualified/aliases/binders checkonly;
+neverrununsafelegacy; &Owner.as_strreject; realStringcompare/format/parse/ref/
+genericnative/QZI/COFF;nonzerooffsetcorrect;malformedselectedruntimeS14;loader
+reexports/cfg/cancellation/reuse;oldsourcecacheinvalidated,QZIUnverified.
+Do not run counterfeit String programs. Generalnumericnormalization/coercion,
+Eq/refconsistency,f16,effects/loans,recursiveDrop/artifactcertification remainopen.
+Preserve compiler.codex/example35build and unrelatedSTDCLI dirt.
+
 ## Checkpoint (2026-10-23, typed power)
 
 Authoritative current work implements D-016, superseding the earlier truncation
