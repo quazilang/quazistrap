@@ -9,9 +9,9 @@ The primary reference for the Quazilang compiler (`qz`) — covers architecture,
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test               # run all 152+ unit tests
+cargo test               # run the inline Rust test suite
 cargo clippy             # lint
-cargo fmt                # format
+cargo fmt --check        # inspect formatting; preserve unrelated formatting
 ```
 
 CLI (dep: `clap 4.6`):
@@ -114,8 +114,9 @@ enums, `String`, `fn`, and `dyn` are indirect handles with separate ownership
 requirements (`MoveKind`). Concrete functions and generic specializations
 record their parameter, variadic-element, and result layouts into
 `SemanticReport::fn_value_layouts` (keyed by canonical resolved type
-arguments) during analysis, and until the multi-slot ABI lands, storage
-positions that still hold one slot per value — function signatures, enum
+arguments) during analysis. Function parameters/results and concrete generic
+specializations support register blocks; codegen preserves their complete
+widths. Remaining single-slot storage positions — variadic elements, enum
 payloads, struct fields outside `@repr(C)`, and fixed-array elements — reject
 multi-register shapes with `S14`. Qualified enum constructor calls
 (`Option.Some(x)`) are validated in analysis (variant, arity, payload
@@ -681,3 +682,22 @@ Builtin root identities participate in cache identity. Global source alias
 visibility remains incomplete; this proof is not module isolation or artifact
 ownership certification. See [the contract](docs/internals/runtime-string-abi.md)
 and [remaining findings](docs/audits/2026-10-23-string-followups.md).
+
+## Source type context: required follow-up (2026-10-24)
+
+Current formats are QZC29 and QZI14; the latter remains Unverified. Earlier
+dated cache/ABI checkpoints describe their own revisions, not current versions.
+
+Private namespace aliases still leak across files through global binding tables.
+This defect is confirmed and remains unfixed. When replacing those tables,
+resolve raw source type spellings in their originating file, alias bodies in
+their declaration file, and generic actuals at their call site. Protect declaration
+binders before imported-name lookup. Keep canonical report types distinct from
+raw AST types: recursive layout/substitution must not remap an already resolved
+declaration through a caller's imports. Autoloaded public prelude exports need an
+explicit trusted environment. A mutable current-file cursor or qualified-leaf
+fallback cannot establish these invariants. Preserve the immutable parsed AST.
+
+Verify semantic analysis, deferred generic closure, raw constructor/static-call
+codegen, headers and loader-backed LSP against the same identities. See
+[the confirmed reproducer and regression requirements](docs/audits/2026-10-23-string-followups.md).

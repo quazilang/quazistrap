@@ -45,16 +45,14 @@ The separate closure-result ownership gate remains enforced.
 
 ## Value-Shape Gates
 
-One slot per value is the current internal storage contract outside register
-blocks. While the multi-slot ABI is unimplemented, analysis rejects
-multi-register shapes with `S14` in every storage position: function
-parameters and results (concrete and specialized), enum payload declarations
-and constructor payloads (bare, contextual, and qualified paths), struct
-fields outside `@repr(C)` (which has a real layout solver), generic struct
-instantiations, and fixed-array literals with multi-slot elements. Ordinary
-functions and specializations record their resolved parameter, variadic
-element, result, and plain-copy/owner kinds into
-`SemanticReport::fn_value_layouts` for the phase-2 ABI work, keyed by
+Function parameters/results and concrete generic specializations support
+register-block values. Analysis still rejects multi-register shapes with `S14`
+in single-slot storage: variadic elements, enum payload declarations and
+constructor payloads (bare, contextual, and qualified paths), struct fields
+outside `@repr(C)` (which has a real layout solver), generic struct fields,
+and fixed-array literals with multi-slot elements. Ordinary functions and
+specializations record resolved parameter, variadic-element, result, and
+plain-copy/owner kinds into `SemanticReport::fn_value_layouts`, keyed by
 canonical resolved type arguments (mangling is not injective).
 
 After all semantic passes, generic template call edges are instantiated for
@@ -400,3 +398,12 @@ unproven UTF-8 coercions; nested owner references cannot collapse two loads into
 one. Constructor aliases resolve before layout. Builtin root switches invalidate
 source caches. Source aliases still use global tables: module visibility and
 whole-program ownership/effect/artifact certification remain separate work.
+
+For the pending source-scope fix, imported type spellings need their source-file
+identity. Alias bodies belong to their defining file; explicit generic actuals
+belong to the call site. Canonicalize declaration signatures/fields/alias bodies
+in their defining context before deferred use, protecting declaration binders.
+Do not reuse a caller's import lookup when recursively expanding an already
+canonical alias or report type. Public implicit prelude exports require explicit
+loader provenance. See the parent AGENTS.md source-context follow-up and
+[the open regression matrix](../../docs/audits/2026-10-23-string-followups.md).

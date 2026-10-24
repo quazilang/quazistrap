@@ -2,6 +2,30 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-24, contributor instruction refresh)
+
+Updated workspace/compiler/semantic/bytecode AGENTS.md instructions. Removed
+the stale claim that function register-block ABI is unimplemented and refreshed
+the current cache version to QZC29 (QZI14 stays Unverified). Historical dated
+checkpoints retain their historical versions. Source-context guidance explicitly
+separates raw AST names from canonical report types, declaration alias contexts,
+call-site generic actuals and trusted public prelude exports. This guidance is
+required follow-up design, not an implemented namespace fix.
+
+Verification: `cargo test --offline -q multi_slot -- --test-threads=1` using
+PATH/RUSTC=/tmp/quazi-named-rust-bin wrappers and
+RUSTFLAGS='-C link-arg=-fuse-ld=bfd' passes 12/12 (957 filtered out).
+QZC_VERSION=29 and QZI_VERSION=14 verified in source. The installed compiler
+still incorrectly accepts the private namespace fixture below with
+`QUAZI_PRELUDE_ROOT=/tmp/qz-string-crossfile-review-qn2t5qyp/prelude qz check`
+from its case directory. No executable emitted/run. Graphify query of source
+type binding/alias/codegen relationships used the existing 5653-node AST index;
+no code changed, so no graph rebuild was needed. README/checklist refreshed
+before commit: unchanged 73.2% complete / 26.8% remaining. The broader goal
+remains active; continue the source-scope fix described below. Preserve all
+unrelated compiler/STD dirt. Workspace AGENTS.md is outside the compiler repo
+and its update remains local to the workspace.
+
 ## Checkpoint (2026-10-23, checked runtime String ABI)
 
 QZC29 / QZI14 (Unverified). Current source changes replace String spelling and

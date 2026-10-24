@@ -7,6 +7,13 @@ README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
 
+Instruction refresh on 2026-10-24: source versions QZC29/QZI14 and all 12
+focused `multi_slot` tests confirm the register-block ABI guidance. The
+private namespace alias fixture remains incorrectly accepted. No additional
+requirement is completed; the 33-item, 78-requirement rubric and percentages
+remain unchanged. README statuses were refreshed before this documentation
+commit.
+
 Scope: all 33 P0–P5 roadmap items in `AGENTS.md`. The 22 implemented
 items retain their existing scope; partial items are expanded below.
 The outdated formatting/FFI labels are reconciled against current

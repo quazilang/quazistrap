@@ -43,6 +43,11 @@ aliases still leak across files. Numeric coercion/normalization, effects,
 recursive destruction and artifact certification remain open. Ownership stays
 9/16; LSP stays 16/20. The 33-item, 78-requirement rubric remains unchanged.
 Statuses and percentages are refreshed before committing.
+Instructions revalidated on 2026-10-24 against QZC29/QZI14 and all 12 focused
+`multi_slot` tests. The private namespace alias reproducer still passes check
+incorrectly; that defect remains open. This instruction refresh completes no
+additional checklist requirement, so completion remains 73.2% and remaining
+work 26.8%.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no

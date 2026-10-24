@@ -62,7 +62,10 @@ matching artifact ownership boundary.
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. QZC v24 invalidates earlier exact/reusable caches for raw f32 conversion and floating updates; v23 introduced eager operand captures; v22 introduced source initialization and checked execution; v21 introduced runtime local-owner guards and selected-path transfers; v20 introduced loop cleanup and terminal-aware constant propagation.
+  and reserialization. Current source cache is QZC29, requiring checked runtime
+  String identity/layout. QZC28 introduced typed power; v27 operator requirements;
+  v26 arithmetic requirements; v25 numeric mutations; v24 raw f32 conversion and
+  floating updates. Earlier dated checkpoints below describe historical versions.
 
 Immutable golden fixtures from real historical writers (v2-v6) live in
 `src/bytecode/fixtures/qzi/` with provenance in their README; `golden_*` tests
@@ -407,3 +410,12 @@ unproven UTF-8 coercions; nested owner references cannot collapse two loads into
 one. Constructor aliases resolve before layout. Builtin root switches invalidate
 source caches. Source aliases still use global tables: module visibility and
 whole-program ownership/effect/artifact certification remain separate work.
+
+For the pending source-scope fix, distinguish raw AST type resolution from
+canonical report-type substitution/layout. Raw parameter annotations, casts,
+let annotations, explicit type arguments, constructors and static calls need
+their source context and declaration binders. Canonical signatures and fields
+must retain their defining identity through recursive ABI layout; do not remap
+them through caller imports. Deferred closures inherit their source context.
+Preserve the same identities in source-removed QZI and native/COFF checks. See
+[the open visibility defect](../../docs/audits/2026-10-23-string-followups.md).
