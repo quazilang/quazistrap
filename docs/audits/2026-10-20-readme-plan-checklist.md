@@ -7,6 +7,14 @@ README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
 
+The 2026-10-24 alias-definition context prerequisite passes 975 Rust tests,
+the strengthened wildcard/reexport regression, String native/QZI/COFF and
+cache controls, and six STD memory tests. Stored aliases now preserve their
+defining imports and public implicit prelude exports. The raw source namespace
+leak remains confirmed; this does not complete module isolation or another
+roadmap requirement. QZC30 / QZI14 (Unverified). README refreshed before commit;
+all 33 items and 78 requirements retain the same credit.
+
 Instruction refresh on 2026-10-24: source versions QZC29/QZI14 and all 12
 focused `multi_slot` tests confirm the register-block ABI guidance. The
 private namespace alias fixture remains incorrectly accepted. No additional

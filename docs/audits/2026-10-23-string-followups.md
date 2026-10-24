@@ -35,6 +35,13 @@ qualified leaf names or merely rejecting all qualified types.
 
 ## Remaining audit work
 
+The 2026-10-24 [alias-definition prerequisite](../internals/source-type-context.md)
+canonicalizes stored alias bodies in their defining file, preserves public
+implicit prelude exports and stops caller-import remapping during expansion.
+The global raw source tables remain: this is progress toward the fix, not
+closure of the P1 finding above. QZC30 invalidates earlier source chunks;
+QZI14 remains Unverified.
+
 Logical import redirection, including symlinks below an unchanged runtime root,
 needs a dedicated cache audit. The new root identity hashes selected canonical
 roots; it is not a certificate of every logical import lookup. This is an audit

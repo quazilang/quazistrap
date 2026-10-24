@@ -961,6 +961,7 @@ fn main() void { sink(value = leaf[Count](1)); }
             SourceFile {
                 path: "helpers.qz".to_string(),
                 module_name: Some("helpers".to_string()),
+                implicit_prelude: false,
                 runtime_string: None,
                 type_imports: Vec::new(),
                 start: 0,
@@ -970,6 +971,7 @@ fn main() void { sink(value = leaf[Count](1)); }
             SourceFile {
                 path: "main.qz".to_string(),
                 module_name: None,
+                implicit_prelude: false,
                 runtime_string: None,
                 type_imports: Vec::new(),
                 start: module.len() + 1,
@@ -1256,6 +1258,7 @@ fn main() void {
             SourceFile {
                 path: "helpers.qz".to_string(),
                 module_name: Some("helpers".to_string()),
+                implicit_prelude: false,
                 runtime_string: None,
                 type_imports: Vec::new(),
                 start: 0,
@@ -1265,6 +1268,7 @@ fn main() void {
             SourceFile {
                 path: "main.qz".to_string(),
                 module_name: None,
+                implicit_prelude: false,
                 runtime_string: None,
                 type_imports: Vec::new(),
                 start: module.len() + 1,

@@ -9,6 +9,7 @@ fn analyze(source: &str, runtime: Option<&str>) -> SemanticReport {
     let files = vec![SourceFile {
         path: "runtime.qz".into(),
         module_name: None,
+        implicit_prelude: false,
         runtime_string: runtime.map(str::to_owned),
         type_imports: Vec::new(),
         start: 0,
@@ -125,6 +126,7 @@ fn analyzer_reuse_does_not_retain_selected_runtime_role() {
         let files = vec![SourceFile {
             path: "runtime.qz".into(),
             module_name: None,
+            implicit_prelude: false,
             runtime_string: runtime.map(str::to_owned),
             type_imports: Vec::new(),
             start: 0,

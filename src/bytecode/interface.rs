@@ -858,6 +858,7 @@ mod tests {
         let files = vec![SourceFile {
             path: "src/lib.qz".to_string(),
             module_name: None,
+            implicit_prelude: false,
             runtime_string: None,
             type_imports: Vec::new(),
             start: 0,
@@ -981,6 +982,7 @@ pub fn answer(seed: i32) i32 { ret seed; }
             SourceFile {
                 path: "private.qz".into(),
                 module_name: Some("private".into()),
+                implicit_prelude: false,
                 runtime_string: None,
                 type_imports: Vec::new(),
                 start: 0,
@@ -990,6 +992,7 @@ pub fn answer(seed: i32) i32 { ret seed; }
             SourceFile {
                 path: "public.qz".into(),
                 module_name: Some("public".into()),
+                implicit_prelude: false,
                 runtime_string: None,
                 type_imports: Vec::new(),
                 start: offset,
@@ -1031,6 +1034,7 @@ pub type Coordinate = i32;
         let files = vec![SourceFile {
             path: "src/types.qz".to_string(),
             module_name: None,
+            implicit_prelude: false,
             runtime_string: None,
             type_imports: Vec::new(),
             start: 0,
@@ -1186,6 +1190,7 @@ impl Printer {
         let files = vec![SourceFile {
             path: path.to_string_lossy().into_owned(),
             module_name: None,
+            implicit_prelude: false,
             runtime_string: None,
             type_imports: Vec::new(),
             start: 0,

@@ -126,6 +126,7 @@ fn argument_places_keep_module_and_import_alias_out_of_actuals() {
         SourceFile {
             path: "helpers.qz".into(),
             module_name: Some("helpers".into()),
+            implicit_prelude: false,
             runtime_string: None,
             type_imports: Vec::new(),
             start: 0,
@@ -135,6 +136,7 @@ fn argument_places_keep_module_and_import_alias_out_of_actuals() {
         SourceFile {
             path: "main.qz".into(),
             module_name: None,
+            implicit_prelude: false,
             runtime_string: None,
             type_imports: Vec::new(),
             start: module.len() + 1,

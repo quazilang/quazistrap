@@ -2,6 +2,56 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-24, defining-source alias bodies)
+
+QZC30 / QZI14 (Unverified). Alias-definition prerequisite implemented; full
+private namespace isolation remains open. Previous committed source: b312afd.
+See docs/internals/source-type-context.md and
+docs/changes/2026-10-24-alias-definition-context.md.
+
+- Loader preserves canonical selected prelude entry through collection and
+  finalization, publishing SourceFile.implicit_prelude only on that entry.
+  All synthetic SourceFile clients explicitly default false.
+- New semantic/type_context.rs runs after import authentication and before
+  runtime String/declaration/layout consumers. Empty-alias traversal canonicalizes
+  stored alias bodies in their declaring file, preserving own binders and CFn
+  conversion. Alias Symbol.ty is synchronized. AST is unchanged.
+- Only public selectors in the selected prelude contribute implicit bindings.
+  Private imports stay local to alias definitions in that file. Paths and owning
+  spans are indexed; selectors must belong to their source; multiple prelude
+  markers reject S14. Selector/alias site budget 1M, shared per-type limits,
+  cooperative checkpoints and operational cancellation remain enforced.
+- Shared type_resolution callback applies to source queries/substitution values,
+  never canonical alias bodies; caller actuals normalize before the alias frame.
+  Dyn trait aliases also canonicalize names. Parser-only bare aliases remain.
+
+Verification: 975/975 serial offline Rust tests; strengthened wildcard/reexport
+alias fixture rerun1/1 after review. A focused mutation restoring previous caller
+remapping makes the new canonical-alias regression fail; corrected version passes.
+This was not a full old compiler rebuild. Build/direct Clippy pass with existing
+warnings (release build23). Debug String runner covers invalid check/native/QZI/
+COFF plus valid source-removedQZI/custom roots/layouts/cache switches. Installed
+optimizedqz updated and same full String runner passes. STDmemory6 pass, preserving
+its unrelated CLI dirt. Quazifetch debug/release build/run/cachehit131fns pass;
+installed exact hit1ms, debugWindowsCOFF emits. Arithmetic/Power/named runners
+also verified; logs/tmp/quazi-type-context-*.log. Graphify query and final AST
+update5673nodes12895edges; no.qzsemantic extraction. README/checklist refreshed
+BEFOREcommit unchanged73.2/26.8%,33items/78requirements,Ownership9/16,LSP16/20.
+
+NEXT: replace global raw source tables with source-keyed type/import lookup;
+canonicalize declaration signatures/fields under defining context and generic
+actuals at callsite before deferred use. Codegen must distinguish raw AST names
+from canonical report/layout types, including constructors, static calls and
+closures. Keep the explicit public-prelude environment; do not restore leaf
+fallback. Alias bodies are now canonicalized, so preserve that prerequisite.
+The direct check-only private namespace fixture below STILL ACCEPTS incorrectly
+with the new debug compiler. Unused unresolved aliases also remain a visibility
+gap. This checkpoint does not close that P1 or the full workspace goal.
+
+Preserve compiler .codex/, example35build, generated scripts/__pycache__, and all
+unrelated STD changes. Keep work local; no push/publication. The active full goal
+continues beyond this checkpoint.
+
 ## Checkpoint (2026-10-24, contributor instruction refresh)
 
 Updated workspace/compiler/semantic/bytecode AGENTS.md instructions. Removed

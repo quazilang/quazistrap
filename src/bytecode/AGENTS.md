@@ -62,8 +62,9 @@ matching artifact ownership boundary.
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. Current source cache is QZC29, requiring checked runtime
-  String identity/layout. QZC28 introduced typed power; v27 operator requirements;
+  and reserialization. Current source cache is QZC30, requiring defining-source
+  alias bodies; QZC29 introduced checked runtime String identity/layout.
+  QZC28 introduced typed power; v27 operator requirements;
   v26 arithmetic requirements; v25 numeric mutations; v24 raw f32 conversion and
   floating updates. Earlier dated checkpoints below describe historical versions.
 
@@ -419,3 +420,7 @@ must retain their defining identity through recursive ABI layout; do not remap
 them through caller imports. Deferred closures inherit their source context.
 Preserve the same identities in source-removed QZI and native/COFF checks. See
 [the open visibility defect](../../docs/audits/2026-10-23-string-followups.md).
+Stored semantic alias bodies now carry their defining-source names; preserve
+them during layout and substitution. The shared resolver applies caller name
+mapping only to source queries/actuals. See
+[the alias contract](../../docs/internals/source-type-context.md).

@@ -274,6 +274,7 @@ struct SourceCollection {
     /// Canonicalized paths of the original entry files; everything else is a
     /// dependency and gets namespaced/mangled.
     entry_paths: HashSet<PathBuf>,
+    prelude_entry: Option<PathBuf>,
     runtime_string: Option<(PathBuf, String)>,
     type_imports: HashMap<PathBuf, Vec<SourceTypeImport>>,
 }
@@ -378,6 +379,12 @@ fn collect_sources_with_prelude(
 
     let type_imports =
         collect_type_import_provenance(&sources, resolver, target, overrides, checkpoint)?;
+    let prelude_entry = prelude
+        .map(|path| {
+            path.canonicalize()
+                .map_err(|error| format!("cannot resolve prelude '{}': {error}", path.display()))
+        })
+        .transpose()?;
 
     Ok(SourceCollection {
         sources,
@@ -386,6 +393,7 @@ fn collect_sources_with_prelude(
         module_name_overrides,
         module_specs,
         entry_paths,
+        prelude_entry,
         runtime_string,
         type_imports,
     })
@@ -835,6 +843,7 @@ fn finalize_sources(
         module_name_overrides,
         module_specs,
         entry_paths,
+        prelude_entry,
         runtime_string,
         type_imports,
     } = collection;
@@ -908,6 +917,7 @@ fn finalize_sources(
         source_files.push(SourceFile {
             path: path.to_string_lossy().into_owned(),
             module_name: module_name_overrides.get(path).cloned(),
+            implicit_prelude: prelude_entry.as_ref() == Some(path),
             runtime_string: runtime_string
                 .as_ref()
                 .and_then(|(defining_path, name)| (defining_path == path).then(|| name.clone())),
@@ -2195,6 +2205,16 @@ mod tests {
             value.canonicalize().unwrap().to_string_lossy()
         );
         assert_eq!(marked[0].runtime_string.as_deref(), Some("Text"));
+        let implicit: Vec<_> = loaded
+            .source_files
+            .iter()
+            .filter(|file| file.implicit_prelude)
+            .collect();
+        assert_eq!(implicit.len(), 1);
+        assert_eq!(
+            implicit[0].path,
+            gateway.canonicalize().unwrap().to_string_lossy()
+        );
         let no_std = collect_sources_with_prelude(
             &[main],
             None,
@@ -2207,6 +2227,129 @@ mod tests {
         )
         .unwrap();
         assert!(no_std.runtime_string.is_none());
+        let no_std = finalize_sources(no_std, &mut checkpoint).unwrap();
+        assert!(
+            no_std
+                .source_files
+                .iter()
+                .all(|file| !file.implicit_prelude)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn aliases_keep_defining_source_and_implicit_public_prelude_context() {
+        use crate::parser::ast::TypeKind;
+        let root = temp_dir("quazi_alias_source_context");
+        let real = root.join("real.qz");
+        let gateway = root.join("mod.qz");
+        let main = root.join("main.qz");
+        fs::write(
+            root.join("helper.qz"),
+            "import ./real as own; pub type Kept = own.Text;",
+        )
+        .unwrap();
+        fs::write(
+            &real,
+            "pub struct Text { pad:u64, data:str, } pub trait View { fn view(self:&Self) str; }",
+        )
+        .unwrap();
+        fs::write(&gateway, "pub import ./real.Text as String; import ./real.Text as Hidden; pub import ./real as ns; pub import ./real.View as Face;").unwrap();
+        fs::write(&main, "import ./helper; type Owned = String; type Qualified = ns.Text; type Private = Hidden; type CannotBorrow = own.Text; type Erased = dyn Face; type Identity[String] = fn(String, ns.Text) ns.Text; @repr(C) type Callback = fn(*ns.Text) *ns.Text; fn main()void{}").unwrap();
+        let mut checkpoint = || Ok(());
+        let collection = collect_sources_with_prelude(
+            std::slice::from_ref(&main),
+            None,
+            Some(&gateway),
+            &[],
+            false,
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut checkpoint,
+        )
+        .unwrap();
+        let loaded = finalize_sources(collection, &mut checkpoint).unwrap();
+        assert!(loaded.parse_error.is_none(), "{:?}", loaded.parse_error);
+        let ast_before = format!("{:?}", loaded.program);
+        let report = crate::analysis::analyze_program_with_source_files(
+            &loaded.merged_source,
+            &loaded.program,
+            loaded.library_fn_names,
+            loaded.library_char_ranges,
+            loaded.source_files,
+            HashSet::new(),
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(format!("{:?}", loaded.program), ast_before);
+        assert_eq!(report.type_aliases["Owned"].1.to_string(), "Text");
+        assert_eq!(report.type_aliases["Qualified"].1.to_string(), "Text");
+        // This unused alias remains unresolved; private-import rejection in all
+        // source positions is separate work. It must not acquire Text identity.
+        assert_eq!(report.type_aliases["Private"].1.to_string(), "Hidden");
+        assert_eq!(report.type_aliases["Kept"].1.to_string(), "Text");
+        assert_eq!(
+            report.type_aliases["CannotBorrow"].1.to_string(),
+            "own.Text"
+        );
+        assert_eq!(report.type_aliases["Erased"].1.to_string(), "dyn View");
+        let TypeKind::CFn { params, return_ty } = &report.type_aliases["Callback"].1 else {
+            panic!("@repr(C) alias lost its C calling convention");
+        };
+        assert_eq!(params[0].node.to_string(), "*Text");
+        assert_eq!(return_ty.node.to_string(), "*Text");
+        let TypeKind::Fn { params, return_ty } = &report.type_aliases["Identity"].1 else {
+            panic!("ordinary function alias");
+        };
+        assert_eq!(params[0].node.to_string(), "String");
+        assert_eq!(params[1].node.to_string(), "Text");
+        assert_eq!(return_ty.node.to_string(), "Text");
+        let callback = report
+            .symbol_table
+            .entries
+            .iter()
+            .find(|entry| entry.name == "Callback")
+            .unwrap();
+        assert!(matches!(callback.symbol.ty, Some(TypeKind::CFn { .. })));
+        assert_eq!(
+            callback.symbol.ty.as_ref().unwrap().to_string(),
+            report.type_aliases["Callback"].1.to_string()
+        );
+        assert_eq!(report.checked_string_abi.unwrap().data_offset, 8);
+        fs::write(root.join("exports.qz"), "pub import ./real.View as Face;").unwrap();
+        fs::write(
+            &gateway,
+            "pub import ./exports.*; pub import ./real.Text as String;",
+        )
+        .unwrap();
+        fs::write(
+            &main,
+            "type Owned = String; type Erased = dyn Face; fn main()void{}",
+        )
+        .unwrap();
+        let collection = collect_sources_with_prelude(
+            std::slice::from_ref(&main),
+            None,
+            Some(&gateway),
+            &[],
+            false,
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut checkpoint,
+        )
+        .unwrap();
+        let loaded = finalize_sources(collection, &mut checkpoint).unwrap();
+        assert!(loaded.parse_error.is_none(), "{:?}", loaded.parse_error);
+        let report = crate::analysis::analyze_program_with_source_files(
+            &loaded.merged_source,
+            &loaded.program,
+            loaded.library_fn_names,
+            loaded.library_char_ranges,
+            loaded.source_files,
+            HashSet::new(),
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.type_aliases["Owned"].1.to_string(), "Text");
+        assert_eq!(report.type_aliases["Erased"].1.to_string(), "dyn View");
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -685,7 +685,7 @@ and [remaining findings](docs/audits/2026-10-23-string-followups.md).
 
 ## Source type context: required follow-up (2026-10-24)
 
-Current formats are QZC29 and QZI14; the latter remains Unverified. Earlier
+Current formats are QZC30 and QZI14; the latter remains Unverified. Earlier
 dated cache/ABI checkpoints describe their own revisions, not current versions.
 
 Private namespace aliases still leak across files through global binding tables.
@@ -697,6 +697,13 @@ raw AST types: recursive layout/substitution must not remap an already resolved
 declaration through a caller's imports. Autoloaded public prelude exports need an
 explicit trusted environment. A mutable current-file cursor or qualified-leaf
 fallback cannot establish these invariants. Preserve the immutable parsed AST.
+
+The alias-definition prerequisite is implemented: `semantic/type_context.rs`
+canonicalizes stored alias bodies and alias symbols in their defining source,
+with protected binders and the explicitly selected prelude's public exports.
+The resolver never reapplies caller imports inside those canonical bodies.
+Raw signatures/fields/call-site types and source codegen still need coordinated
+scope migration. See [the implemented boundary](docs/internals/source-type-context.md).
 
 Verify semantic analysis, deferred generic closure, raw constructor/static-call
 codegen, headers and loader-backed LSP against the same identities. See

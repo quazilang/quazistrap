@@ -35,6 +35,7 @@ mod power;
 #[cfg(test)]
 mod power_tests;
 mod string_abi;
+mod type_context;
 #[cfg(test)]
 mod string_abi_tests;
 use power::PowerFacts;
@@ -1107,6 +1108,7 @@ impl Analyzer {
             self.declare_top_level_item(item);
         }
         self.register_source_type_bindings(program, &mut checkpoint)?;
+        self.canonicalize_source_aliases(program, &mut checkpoint)?;
         self.validate_runtime_string(program, &mut checkpoint)?;
         // Implicit impl binders are unresolved target names, not concrete
         // declared types/aliases. Resolve this after all forward declarations.
@@ -2825,6 +2827,7 @@ mod tests {
             analyzer.set_source_files(vec![super::SourceFile {
                 path: "runtime.qz".into(),
                 module_name: None,
+                implicit_prelude: false,
                 runtime_string: Some("String".into()),
                 type_imports: Vec::new(),
                 start: 0,
@@ -3852,6 +3855,7 @@ fn main() void {}
             super::SourceFile {
                 path: "helpers.qz".to_string(),
                 module_name: Some("helpers".to_string()),
+                implicit_prelude: false,
                 runtime_string: None,
                 type_imports: Vec::new(),
                 start: 0,
@@ -3861,6 +3865,7 @@ fn main() void {}
             super::SourceFile {
                 path: "main.qz".to_string(),
                 module_name: None,
+                implicit_prelude: false,
                 runtime_string: runtime.map(str::to_owned),
                 type_imports,
                 start: module_len + 1,

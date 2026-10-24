@@ -10155,6 +10155,7 @@ mod tests {
             SourceFile {
                 path: "helpers.qz".to_string(),
                 module_name: Some("helpers".to_string()),
+                implicit_prelude: false,
                 runtime_string: None,
                 type_imports: Vec::new(),
                 start: 0,
@@ -10164,6 +10165,7 @@ mod tests {
             SourceFile {
                 path: "main.qz".to_string(),
                 module_name: None,
+                implicit_prelude: false,
                 runtime_string: None,
                 type_imports,
                 start: module_len + 1,
@@ -10551,6 +10553,7 @@ fn main() void { show("{}", make_text()); }
             SourceFile {
                 path: "fmt.qz".to_string(),
                 module_name: Some("fmt".to_string()),
+                implicit_prelude: false,
                 runtime_string: None,
                 type_imports: Vec::new(),
                 start: 0,
@@ -10560,6 +10563,7 @@ fn main() void { show("{}", make_text()); }
             SourceFile {
                 path: "main.qz".to_string(),
                 module_name: None,
+                implicit_prelude: false,
                 runtime_string: Some("String".to_string()),
                 type_imports: Vec::new(),
                 start: module.len() + 1,
@@ -10876,6 +10880,7 @@ fn main() void { outer[Word](7); }
         let source_files = vec![SourceFile {
             path: path.clone(),
             module_name: None,
+            implicit_prelude: false,
             runtime_string: None,
             type_imports: Vec::new(),
             start: 0,
@@ -10929,6 +10934,7 @@ fn main() void { outer[Word](7); }
         let source_files = vec![SourceFile {
             path: "cache-test.qz".to_string(),
             module_name: None,
+            implicit_prelude: false,
             runtime_string: None,
             type_imports: Vec::new(),
             start: 0,

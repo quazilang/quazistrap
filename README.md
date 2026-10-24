@@ -26,10 +26,11 @@ Completion of unfinished plan items:
 | qz doc | 0/1 | 0.0% | 100.0% |
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
-Revalidated on 2026-10-23 for the
+Revalidated on 2026-10-24 for the
+[alias-definition context prerequisite](docs/changes/2026-10-24-alias-definition-context.md) and
 [runtime String checkpoint](docs/changes/2026-10-23-runtime-string-abi.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 969 tests pass, including the 60 contained-LSP tests. Owned-string operations
+All 975 tests pass, including the 60 contained-LSP tests. Owned-string operations
 now require the selected runtime declaration and checked data offset. Full import
 paths, aliases and concrete formatting arguments are checked; 25 invalid programs
 are rejected by check/native/QZI/COFF. Real String comparisons, references,
@@ -38,16 +39,15 @@ Runtime-root/cache switches execute the selected code. Earlier operator, power,
 ELF stack, ownership/control and artifact runners pass. The installed release
 passes the String/cache runner. Quazifetch builds/runs without S10 and reports
 Linux used RAM from `MemAvailable`; six isolated STD memory tests pass.
-QZC29 rebuilds older source caches; QZI14 remains Unverified. Private namespace
+Alias bodies now preserve their defining source's imported identities and public
+implicit prelude exports; caller imports cannot remap them during expansion.
+QZC30 rebuilds older source caches; QZI14 remains Unverified. Private namespace
 aliases still leak across files. Numeric coercion/normalization, effects,
 recursive destruction and artifact certification remain open. Ownership stays
 9/16; LSP stays 16/20. The 33-item, 78-requirement rubric remains unchanged.
 Statuses and percentages are refreshed before committing.
-Instructions revalidated on 2026-10-24 against QZC29/QZI14 and all 12 focused
-`multi_slot` tests. The private namespace alias reproducer still passes check
-incorrectly; that defect remains open. This instruction refresh completes no
-additional checklist requirement, so completion remains 73.2% and remaining
-work 26.8%.
+The alias-definition prerequisite completes no additional checklist requirement,
+so completion remains 73.2% and remaining work 26.8%.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no

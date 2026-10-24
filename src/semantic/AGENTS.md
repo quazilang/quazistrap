@@ -399,10 +399,15 @@ one. Constructor aliases resolve before layout. Builtin root switches invalidate
 source caches. Source aliases still use global tables: module visibility and
 whole-program ownership/effect/artifact certification remain separate work.
 
-For the pending source-scope fix, imported type spellings need their source-file
-identity. Alias bodies belong to their defining file; explicit generic actuals
-belong to the call site. Canonicalize declaration signatures/fields/alias bodies
-in their defining context before deferred use, protecting declaration binders.
+`type_context.rs` canonicalizes stored alias bodies and alias symbols using their
+defining source's imports and explicit public implicit-prelude provenance.
+Alias expansion never remaps those canonical bodies through caller imports.
+QZC30 supersedes QZC29; QZI14 remains Unverified.
+
+For the pending source-scope fix, other imported type spellings still need their
+source-file identity. Explicit generic actuals belong to the call site.
+Canonicalize declaration signatures/fields in their defining context before
+deferred use, protecting declaration binders.
 Do not reuse a caller's import lookup when recursively expanding an already
 canonical alias or report type. Public implicit prelude exports require explicit
 loader provenance. See the parent AGENTS.md source-context follow-up and

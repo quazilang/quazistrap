@@ -20,6 +20,8 @@ pub struct SourceFile {
     pub path: String,
     /// Logical package/module namespace when it cannot be derived from the file name.
     pub module_name: Option<String>,
+    /// True only on the canonical loader-selected implicit prelude entry.
+    pub implicit_prelude: bool,
     /// Original declaration exported as String by the loader-selected prelude.
     /// Present only on the defining source file; never inferred from its path.
     pub runtime_string: Option<String>,

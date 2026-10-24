@@ -81,7 +81,10 @@ impl std::error::Error for AliasResolutionError {}
 
 /// Resolve aliases, lexical parameters, and concrete substitutions. Nominal
 /// aggregates remain nominal; `canonical_name` optionally resolves qualified
-/// source spellings to their declarations. No parsed AST is mutated.
+/// source spellings to their declarations. Stored alias bodies must already be
+/// canonicalized in their defining source context: the caller's name mapping
+/// applies to the query and substitution values, never to an alias body.
+/// No parsed AST is mutated.
 pub fn resolve_type(
     ty: &TypeKind,
     aliases: &HashMap<String, (Vec<String>, TypeKind)>,
@@ -230,7 +233,9 @@ impl<F: Fn(&str) -> Option<String>> Resolver<'_, F> {
                 }
                 // Qualified aliases require the same declaration evidence as
                 // qualified nominals. A matching leaf alone is not identity.
-                let canonical = (self.canonical_name)(name);
+                let canonical = source_context
+                    .then(|| (self.canonical_name)(name))
+                    .flatten();
                 let entry = self.aliases.get_key_value(name).or_else(|| {
                     canonical
                         .as_ref()
@@ -314,6 +319,23 @@ impl<F: Fn(&str) -> Option<String>> Resolver<'_, F> {
             TypeKind::CFn { params, return_ty } => {
                 self.function(params, return_ty, parameters, source_context, depth, true)
             }
+            TypeKind::Dyn { trait_name } => {
+                if trait_name.len() > MAX_TYPE_TEXT_BYTES {
+                    return Err(self.limit("expanded type-name bytes", MAX_TYPE_TEXT_BYTES));
+                }
+                let name = (source_context && !self.bound_names.contains(trait_name))
+                    .then(|| (self.canonical_name)(trait_name))
+                    .flatten()
+                    .unwrap_or_else(|| trait_name.clone());
+                let (nodes, depth, text) = self.costs(&[], name.len())?;
+                self.charge(0, text)?;
+                Ok(Resolved {
+                    ty: TypeKind::Dyn { trait_name: name },
+                    nodes,
+                    depth,
+                    text,
+                })
+            }
             _ => {
                 let text = if let TypeKind::Dyn { trait_name } = ty {
                     trait_name.len()
@@ -345,7 +367,10 @@ impl<F: Fn(&str) -> Option<String>> Resolver<'_, F> {
         }
         // The caller's canonicalization callback may produce a new declaration
         // name. Validate it before copying any child into the output.
-        let name = (self.canonical_name)(name).unwrap_or_else(|| name.to_string());
+        let name = source
+            .then(|| (self.canonical_name)(name))
+            .flatten()
+            .unwrap_or_else(|| name.to_string());
         let mut costs = self.costs(&[], name.len())?;
         self.charge(0, name.len())?;
         let mut children = Vec::with_capacity(args.len());
@@ -695,7 +720,7 @@ mod tests {
 
     #[test]
     fn qualified_aliases_and_nominals_share_canonical_lookup() {
-        let definitions = aliases("type Scalar = i32; type Pointer = *module.Record;");
+        let definitions = aliases("type Scalar = i32; type Pointer = *Record;");
         assert_eq!(
             resolve_type(
                 &parse_type("module.Scalar"),
@@ -717,6 +742,68 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.to_string(), "*Record");
+        let direct = resolve_type(
+            &parse_type("*module.Record"),
+            &definitions,
+            &HashMap::new(),
+            &HashSet::new(),
+            |name| (name == "module.Record").then(|| "Record".to_string()),
+        )
+        .unwrap();
+        assert_eq!(direct.to_string(), "*Record");
+    }
+
+    #[test]
+    fn canonical_alias_bodies_do_not_borrow_caller_imports() {
+        let definitions = aliases("type Keep = *Record; type Wrap[T] = Pair[T, Keep];");
+        let result = resolve_type(
+            &parse_type("Wrap[caller.Raw]"),
+            &definitions,
+            &HashMap::new(),
+            &HashSet::new(),
+            |name| match name {
+                "caller.Raw" => Some("Actual".into()),
+                "Record" | "Pair" => panic!("canonical alias body consulted caller imports"),
+                _ => None,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.to_string(), "Pair[Actual, *Record]");
+    }
+
+    #[test]
+    fn dynamic_trait_names_obey_source_and_canonical_alias_contexts() {
+        let definitions = aliases("type Erased = dyn Record;");
+        let source = resolve_type(
+            &parse_type("dyn Record"),
+            &definitions,
+            &HashMap::new(),
+            &HashSet::new(),
+            |name| (name == "Record").then(|| "Actual".into()),
+        )
+        .unwrap();
+        assert_eq!(source.to_string(), "dyn Actual");
+        let canonical = resolve_type(
+            &parse_type("Erased"),
+            &definitions,
+            &HashMap::new(),
+            &HashSet::new(),
+            |name| {
+                assert_ne!(name, "Record", "alias body borrowed caller context");
+                None
+            },
+        )
+        .unwrap();
+        assert_eq!(canonical.to_string(), "dyn Record");
+        let bound = resolve_type(
+            &parse_type("dyn Record"),
+            &definitions,
+            &HashMap::new(),
+            &HashSet::from(["Record".to_string()]),
+            |_| panic!("bound dynamic trait name borrowed imports"),
+        )
+        .unwrap();
+        assert_eq!(bound.to_string(), "dyn Record");
     }
 
     #[test]
