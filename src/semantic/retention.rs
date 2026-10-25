@@ -264,7 +264,7 @@ impl Environment {
 
 struct Declaration<'a> {
     params: &'a [Param],
-    return_ty: &'a TypeKind,
+    return_ty: &'a Type,
     body: &'a Block,
     mutable_parameters: Vec<bool>,
 }
@@ -423,7 +423,7 @@ impl Analyzer {
                         name,
                         Declaration {
                             params,
-                            return_ty: &return_ty.node,
+                            return_ty,
                             body,
                             mutable_parameters,
                         },
@@ -453,7 +453,7 @@ impl Analyzer {
                                 canonical,
                                 Declaration {
                                     params,
-                                    return_ty: &return_ty.node,
+                                    return_ty,
                                     body,
                                     mutable_parameters,
                                 },
@@ -504,7 +504,9 @@ impl Analyzer {
                                 parameters: BTreeSet::from([slot]),
                                 unknown_pointee: evaluation
                                     .analyzer
-                                    .retention_type_may_contain_storage(&parameter.ty.node),
+                                    .retention_type_may_contain_storage(
+                                        &evaluation.analyzer.source_type(&parameter.ty),
+                                    ),
                                 ..Value::default()
                             },
                         );
@@ -512,10 +514,9 @@ impl Analyzer {
                     evaluation.block(declaration.body, &mut environment)?;
                     if evaluation.saturated {
                         Ok(evaluation.all_parameters)
-                    } else if evaluation
-                        .analyzer
-                        .retention_value_has_dependencies(declaration.return_ty)
-                    {
+                    } else if evaluation.analyzer.retention_value_has_dependencies(
+                        &evaluation.analyzer.source_type(declaration.return_ty),
+                    ) {
                         Ok(evaluation.returned)
                     } else {
                         Ok(Dependencies::new())
@@ -567,7 +568,7 @@ impl Analyzer {
             .iter()
             .map(|param| {
                 matches!(
-                    self.resolve_type_aliases(&param.ty.node),
+                    self.resolve_type_aliases(&self.source_type(&param.ty)),
                     TypeKind::MutRef { .. } | TypeKind::RawPtr { .. }
                 )
             })

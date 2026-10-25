@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-10-24: Defining context for stored declaration types](2026-10-24-declaration-type-context.md)
+
 - [2026-10-22: Bitwise, shift and concrete ordering checks](2026-10-22-operator-requirements.md)
 
 - [2026-10-22: Arithmetic requirements and floating remainder](2026-10-22-arithmetic.md)

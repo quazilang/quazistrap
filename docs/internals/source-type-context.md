@@ -1,4 +1,4 @@
-# Source context for transparent aliases
+# Source context for declaration types
 
 Audience: compiler and tooling developers.
 
@@ -11,9 +11,14 @@ canonicalizes each stored alias body using its source's authenticated type
 imports and the selected prelude's public implicit imports. It uses an empty
 alias table, preserving forward applications, recursive definitions and lexical
 alias parameters for the normal bounded expansion pass. The parsed AST stays
-immutable. Both the alias table and declaration symbol receive the canonical
-body; an already converted `@repr(C)` callback retains its `CFn` representation.
-Named types and dynamic trait names participate in canonicalization.
+immutable. Stored alias formals are alpha-renamed to private, dot-free keys that
+cannot be spelled in source. This prevents an imported nominal from becoming a
+same-named formal after its qualifier is removed. Declaration symbols retain
+readable formals; semantic alias expressions expand through the authoritative
+alias table and enforce arity rather than consuming display metadata. An already
+converted `@repr(C)` callback retains its `CFn` representation. Named types and
+dynamic trait names participate in canonicalization and parameter substitution;
+a dynamic trait actual must be a plain named type.
 
 The loader marks exactly its canonical selected prelude entry with
 `SourceFile.implicit_prelude`. Its public selectors, including wildcard and
@@ -35,13 +40,30 @@ selectors and updates. It caps selector/alias sites at one million; individual
 type traversals retain the shared depth, node, text and expansion budgets.
 Cancellation is operational: callers discard partial analysis.
 
-This is an alias-definition prerequisite for source isolation. Raw function
-annotations, expression types, constructors and static calls still use global
-source binding tables. The known private namespace visibility defect remains
-open, including unused unresolved aliases. Declaration signatures, fields,
-call-site generic actuals, deferred checks and codegen still need a coordinated
-source-scope migration. Do not infer module isolation from canonical alias bodies.
-See [the open findings](../audits/2026-10-23-string-followups.md).
+`semantic/declaration_types.rs` then normalizes original function/global symbols,
+struct/serialization fields, enum payloads and trait signatures under their
+source context and declaration binders. Authenticated import targets refresh
+function/global copies, including legacy bare-name loading. Source lookup and
+alias expansion share one resolver traversal: an imported `own.Word` cannot
+become a lexical `Word` binder between two passes. Function parameter/return
+checking and retention seed their types from source spans; trait conformance
+protects method binders through the final runtime-shape comparisons.
 
-QZC30 rebuilds previous exact/reusable source chunks. QZI14 is unchanged and
-Unverified; no ownership or effect certificate follows from type name resolution.
+Declaration normalization caps aggregate sites and type nodes at one million
+and copied type-name text at 16 MiB. Repeated binder materialization is charged
+before allocation. Exhaustion latches, records S14 and cannot publish success;
+item, method, field and imported-record loops poll operational cancellation.
+Alias preparation separately bounds parameter counts and mapping text.
+
+Full source isolation remains incomplete. Raw local annotations, casts,
+call-site generic actuals, parts of declaration validation and source codegen
+still use global source binding tables. The known private namespace visibility
+defect remains open, including unused unresolved aliases. Canonical nominal
+names are not yet a complete declaration-identity IR. Do not infer module
+isolation or general binder hygiene from this migration. See
+[the open findings](../audits/2026-10-23-string-followups.md).
+
+QZC31 rebuilds previous exact/reusable source chunks (the earlier alias-only
+checkpoint used QZC30). QZI14 is unchanged and Unverified; no ownership or effect
+certificate follows from type name resolution. See
+[verification and compatibility](../changes/2026-10-24-declaration-type-context.md).

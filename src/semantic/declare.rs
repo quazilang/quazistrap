@@ -1032,8 +1032,8 @@ impl Analyzer {
                     );
                     return;
                 }
-                self.declare(
-                    local_name,
+                let declared = self.declare(
+                    local_name.clone(),
                     Symbol {
                         kind: original.kind,
                         ty: original.ty,
@@ -1051,6 +1051,18 @@ impl Analyzer {
                         generic_params: vec![],
                     },
                 );
+                if declared && let Some(selector_span) = selector_span {
+                    self.binding_imports.push(BindingImport {
+                        binding: ResolvedBinding {
+                            name: resolved_target,
+                            span: original.span,
+                            kind: original.kind,
+                        },
+                        selector_span,
+                        alias_span,
+                        local_name,
+                    });
+                }
                 return;
             }
             if matches!(original.kind, SymbolKind::TypeName) {

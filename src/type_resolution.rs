@@ -26,6 +26,7 @@ pub enum AliasResolutionError {
         actual: usize,
     },
     ParameterArguments(String),
+    DynamicArgument(String),
     SubstitutionCycle(String),
     Limit {
         context: Option<String>,
@@ -40,6 +41,7 @@ impl AliasResolutionError {
             Self::Cycle(path) => path.first().map(String::as_str),
             Self::Arity { alias, .. }
             | Self::ParameterArguments(alias)
+            | Self::DynamicArgument(alias)
             | Self::SubstitutionCycle(alias) => Some(alias),
             Self::Limit { context, .. } => context.as_deref(),
         }
@@ -61,6 +63,10 @@ impl std::fmt::Display for AliasResolutionError {
             Self::ParameterArguments(name) => {
                 write!(f, "type parameter `{name}` cannot take type arguments")
             }
+            Self::DynamicArgument(name) => write!(
+                f,
+                "dynamic trait argument must be a named trait, got `{name}`"
+            ),
             Self::SubstitutionCycle(name) => write!(f, "cyclic type substitution for `{name}`"),
             Self::Limit {
                 context,
@@ -322,6 +328,35 @@ impl<F: Fn(&str) -> Option<String>> Resolver<'_, F> {
             TypeKind::Dyn { trait_name } => {
                 if trait_name.len() > MAX_TYPE_TEXT_BYTES {
                     return Err(self.limit("expanded type-name bytes", MAX_TYPE_TEXT_BYTES));
+                }
+                // Dynamic trait parameters share the same lexical identity as
+                // ordinary type parameters, including hygienic alias formals.
+                if parameters.contains_key(trait_name)
+                    || (source_context && self.substitutions.contains_key(trait_name))
+                {
+                    let value = self.visit(
+                        &TypeKind::Named {
+                            name: trait_name.clone(),
+                            type_args: Vec::new(),
+                        },
+                        parameters,
+                        source_context,
+                        depth + 1,
+                    )?;
+                    let TypeKind::Named { name, type_args } = value.ty else {
+                        return Err(AliasResolutionError::DynamicArgument(value.ty.to_string()));
+                    };
+                    if !type_args.is_empty() {
+                        return Err(AliasResolutionError::DynamicArgument(name));
+                    }
+                    let (nodes, depth, text) = self.costs(&[], name.len())?;
+                    self.charge(0, text)?;
+                    return Ok(Resolved {
+                        ty: TypeKind::Dyn { trait_name: name },
+                        nodes,
+                        depth,
+                        text,
+                    });
                 }
                 let name = (source_context && !self.bound_names.contains(trait_name))
                     .then(|| (self.canonical_name)(trait_name))

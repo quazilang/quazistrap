@@ -1,11 +1,23 @@
 # Compiler roadmap checklist — 2026-10-20
 
-Revalidated on 2026-10-23 against the
-[runtime String checkpoint](../changes/2026-10-23-runtime-string-abi.md).
-Previous committed source: `07e3049`.
+Revalidated on 2026-10-25 against the
+[declaration-type context checkpoint](../changes/2026-10-24-declaration-type-context.md).
+Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 73.2%. Remaining: 26.8%.**
+
+The declaration-context checkpoint passes 981 Rust tests, including the 60
+contained-LSP tests. Stored declaration/import signatures retain defining types;
+private alias formal identities prevent nominal capture. The CLI regression
+rejects a previously accepted invalid trait in check/native/QZI/COFF and executes
+valid qualified/generic/alias signatures natively and from source-removed QZI.
+String, arithmetic, power, named-argument, retention and dynamic-vtable runners
+pass; six STD memory tests pass. QZC31 / QZI14 (Unverified). Full namespace
+isolation, raw source/codegen migration and ownership/effect proofs remain open.
+No additional requirement completes: **73.2% complete / 26.8% remaining**,
+Ownership9/16, LSP16/20, all33items/78requirements unchanged. README statuses
+and percentages are refreshed BEFORE this commit.
 
 The 2026-10-24 alias-definition context prerequisite passes 975 Rust tests,
 the strengthened wildcard/reexport regression, String native/QZI/COFF and

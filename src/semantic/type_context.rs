@@ -5,7 +5,74 @@
 //! Establish defining-source identity before transparent alias expansion.
 use super::*;
 
+#[derive(Default)]
+pub(super) struct SourceTypeContexts {
+    sources: Vec<(usize, usize, HashMap<String, String>)>,
+    implicit: HashMap<String, String>,
+}
+
+impl SourceTypeContexts {
+    pub(super) fn canonical_name(&self, name: &str, span: Span) -> Option<String> {
+        self.sources
+            .partition_point(|(start, _, _)| *start <= span.start)
+            .checked_sub(1)
+            .and_then(|index| self.sources.get(index))
+            .filter(|(_, end, _)| span.start < *end)
+            .and_then(|(_, _, names)| names.get(name))
+            .or_else(|| self.implicit.get(name))
+            .cloned()
+    }
+
+    pub(super) fn resolve(
+        &self,
+        ty: &TypeKind,
+        aliases: &HashMap<String, (Vec<String>, TypeKind)>,
+        binders: &HashSet<String>,
+        span: Span,
+    ) -> Result<TypeKind, crate::type_resolution::AliasResolutionError> {
+        crate::type_resolution::resolve_type(ty, aliases, &HashMap::new(), binders, |name| {
+            self.canonical_name(name, span)
+        })
+    }
+}
+
 impl Analyzer {
+    pub(super) fn source_type(&self, ty: &Type) -> TypeKind {
+        self.source_type_at(&ty.node, ty.span)
+    }
+
+    pub(super) fn source_type_at(&self, ty: &TypeKind, span: Span) -> TypeKind {
+        let binders = self
+            .current_generic_params
+            .iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        self.canonical_source_type(ty, &binders, span)
+    }
+
+    pub(super) fn canonical_source_type(
+        &self,
+        ty: &TypeKind,
+        parameters: &[String],
+        span: Span,
+    ) -> TypeKind {
+        let binders = parameters.iter().cloned().collect();
+        let result = self
+            .source_type_contexts
+            .resolve(ty, &self.type_aliases, &binders, span);
+        match result {
+            Ok(ty) => ty,
+            Err(error) => {
+                self.alias_resolution_errors
+                    .borrow_mut()
+                    .entry(error.to_string())
+                    .or_insert(span);
+                TypeKind::Error
+            }
+        }
+    }
+
     pub(super) fn canonicalize_source_aliases(
         &mut self,
         program: &Program,
@@ -26,8 +93,6 @@ impl Analyzer {
             }
         }
         public_imports.sort_unstable_by_key(|span| span.start);
-        let mut source_intervals: Vec<_> = self.source_files.iter().enumerate().collect();
-        source_intervals.sort_unstable_by_key(|(_, source)| source.start);
         let source_paths: HashMap<_, _> = self
             .source_files
             .iter()
@@ -47,8 +112,7 @@ impl Analyzer {
             );
             return Ok(());
         }
-        let mut implicit = HashMap::new();
-        let mut by_source = Vec::new();
+        let mut contexts = SourceTypeContexts::default();
         let mut work = 1_000_000usize;
         for source in &self.source_files {
             checkpoint()?;
@@ -81,7 +145,7 @@ impl Analyzer {
                 else {
                     continue;
                 };
-                bindings.insert(import.source_name.as_str(), binding.name.as_str());
+                bindings.insert(import.source_name.clone(), binding.name.clone());
                 if source.implicit_prelude
                     && public_imports
                         .partition_point(|span| span.start <= import.selector_span.start)
@@ -89,16 +153,23 @@ impl Analyzer {
                         .and_then(|index| public_imports.get(index))
                         .is_some_and(|span| import.selector_span.end <= span.end)
                 {
-                    implicit.insert(import.source_name.as_str(), binding.name.as_str());
+                    contexts
+                        .implicit
+                        .insert(import.source_name.clone(), binding.name.clone());
                 }
             }
-            by_source.push(bindings);
+            contexts.sources.push((source.start, source.end, bindings));
         }
+        contexts
+            .sources
+            .sort_unstable_by_key(|(start, _, _)| *start);
+        self.source_type_contexts = contexts;
         // Resolve with an empty alias table: retain alias applications and their
         // own binders, while converting only source names to declaration names.
         // Forward aliases and recursive aliases are checked by normal expansion.
         let mut updates = Vec::new();
-        for item in &program.items {
+        let mut parameter_text = 16 * 1024 * 1024usize;
+        for (item_index, item) in program.items.iter().enumerate() {
             checkpoint()?;
             let ItemKind::TypeAlias {
                 name, attributes, ..
@@ -121,26 +192,99 @@ impl Analyzer {
             let Some((parameters, body)) = self.type_aliases.get(name) else {
                 continue;
             };
-            let source = source_intervals
-                .partition_point(|(_, source)| source.start <= item.span.start)
-                .checked_sub(1)
-                .and_then(|index| source_intervals.get(index))
-                .and_then(|(index, source)| source.contains(item.span).then_some(*index));
+            // Alpha-rename formals before removing import qualifiers. Otherwise
+            // `type Pick[Record] = own.Record` would capture the nominal Record.
+            // These keys cannot be spelled in source and contain no namespace dot.
+            if parameters.len() > crate::type_resolution::MAX_TYPE_NODES
+                || parameters.len() > work
+                || parameters
+                    .iter()
+                    .try_fold(0usize, |sum, name| sum.checked_add(name.len()))
+                    .is_none_or(|bytes| bytes > 1024 * 1024)
+            {
+                self.push_error(
+                    item.span,
+                    "S14",
+                    "alias parameter count exceeds type-node limit".into(),
+                );
+                continue;
+            }
+            work -= parameters.len();
+            let internal: Vec<_> = parameters
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format!("$alias_{}_{}_{}", item.span.start, item_index, index))
+                .collect();
+            // Account for both directions of the readable/private mapping and
+            // its binder sets before materializing their owned strings.
+            let copied_text =
+                parameters
+                    .iter()
+                    .zip(&internal)
+                    .try_fold(0usize, |sum, (source, key)| {
+                        source
+                            .len()
+                            .checked_add(key.len())
+                            .and_then(|bytes| bytes.checked_mul(4))
+                            .and_then(|bytes| sum.checked_add(bytes))
+                    });
+            let Some(remaining) = copied_text.and_then(|bytes| parameter_text.checked_sub(bytes))
+            else {
+                self.push_error(
+                    item.span,
+                    "S14",
+                    "alias parameter text exceeds aggregate work budget".into(),
+                );
+                return Ok(());
+            };
+            parameter_text = remaining;
+            let substitutions = parameters
+                .iter()
+                .zip(&internal)
+                .map(|(source, key)| {
+                    (
+                        source.clone(),
+                        TypeKind::Named {
+                            name: key.clone(),
+                            type_args: Vec::new(),
+                        },
+                    )
+                })
+                .collect();
             let result = crate::type_resolution::resolve_type(
                 body,
                 &HashMap::new(),
-                &HashMap::new(),
-                &parameters.iter().cloned().collect(),
-                |name| {
-                    source
-                        .and_then(|index| by_source[index].get(name))
-                        .or_else(|| implicit.get(name))
-                        .map(|name| (*name).to_owned())
-                },
+                &substitutions,
+                &internal.iter().cloned().collect(),
+                |name| self.source_type_contexts.canonical_name(name, item.span),
             );
-            updates.push((name.clone(), item.span, result));
+            // Symbol metadata remains readable; only the expansion template uses
+            // private binder keys. The parsed declaration is never rewritten.
+            let display = result.as_ref().ok().map(|body| {
+                let substitutions = internal
+                    .iter()
+                    .zip(parameters)
+                    .map(|(key, source)| {
+                        (
+                            key.clone(),
+                            TypeKind::Named {
+                                name: source.clone(),
+                                type_args: Vec::new(),
+                            },
+                        )
+                    })
+                    .collect();
+                crate::type_resolution::resolve_type(
+                    body,
+                    &HashMap::new(),
+                    &substitutions,
+                    &parameters.iter().cloned().collect(),
+                    |_| None,
+                )
+            });
+            updates.push((name.clone(), item.span, internal, result, display));
         }
-        for (name, span, result) in updates {
+        for (name, span, parameters, result, display) in updates {
             checkpoint()?;
             let body = match result {
                 Ok(body) => body,
@@ -149,8 +293,17 @@ impl Analyzer {
                     TypeKind::Error
                 }
             };
-            if let Some((_, stored)) = self.type_aliases.get_mut(&name) {
-                *stored = body.clone();
+            let display = match display {
+                Some(Ok(body)) => body,
+                Some(Err(error)) => {
+                    self.push_error(span, "S14", error.to_string());
+                    TypeKind::Error
+                }
+                None => TypeKind::Error,
+            };
+            if let Some((stored_parameters, stored)) = self.type_aliases.get_mut(&name) {
+                *stored_parameters = parameters;
+                *stored = body;
             }
             if let Some(symbol) = self
                 .scopes
@@ -159,7 +312,7 @@ impl Analyzer {
                 && symbol.span == span
                 && symbol.kind == SymbolKind::TypeName
             {
-                symbol.ty = Some(body);
+                symbol.ty = Some(display);
             }
         }
         Ok(())
@@ -181,6 +334,72 @@ mod tests {
             end: source.chars().count(),
             line_start: 1,
         }
+    }
+
+    #[test]
+    fn hygienic_dynamic_alias_parameters_and_symbol_names() {
+        let source = "trait View { fn view(self:&Self) i32; } type Erased[T] = dyn T;";
+        let program = crate::parser::Parser::new(crate::lexer::Lexer::new(source).tokenize())
+            .parse()
+            .unwrap();
+        let mut analyzer = Analyzer::new();
+        analyzer.set_source_files(vec![source_file(source)]);
+        for item in &program.items {
+            analyzer.declare_top_level_item(item);
+        }
+        analyzer
+            .canonicalize_source_aliases(&program, &mut || Ok(()))
+            .unwrap();
+        let apply = |actual| TypeKind::Named {
+            name: "Erased".into(),
+            type_args: vec![Spanned::new(actual, Span::new(0, 0, 0, 0))],
+        };
+        let named = TypeKind::Named {
+            name: "View".into(),
+            type_args: Vec::new(),
+        };
+        assert_eq!(
+            analyzer.resolve_type_aliases(&apply(named)).to_string(),
+            "dyn View"
+        );
+        let symbol = analyzer.resolve_symbol("Erased").unwrap();
+        assert_eq!(symbol.generic_params, vec!["T"]);
+        assert_eq!(symbol.ty.unwrap().to_string(), "dyn T");
+        assert!(matches!(
+            analyzer.resolve_type_aliases(&apply(TypeKind::Int32)),
+            TypeKind::Error
+        ));
+        assert!(
+            analyzer
+                .alias_resolution_errors
+                .borrow()
+                .keys()
+                .any(|error| error.contains("named trait") && !error.contains("$alias"))
+        );
+    }
+
+    #[test]
+    fn bare_generic_alias_expression_requires_type_arguments() {
+        let source = "type Identity[T] = T; fn main()void { var value = Identity; }";
+        let program = crate::parser::Parser::new(crate::lexer::Lexer::new(source).tokenize())
+            .parse()
+            .unwrap();
+        let mut analyzer = Analyzer::new();
+        analyzer.set_source_files(vec![source_file(source)]);
+        let report = analyzer.analyze_program(&program);
+        assert!(
+            report.errors.iter().any(|error| error.code == "S14"
+                && error.message.contains("Identity")
+                && error.message.contains("expects 1")),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            !report
+                .errors
+                .iter()
+                .any(|error| error.message.contains("$alias"))
+        );
     }
 
     #[test]

@@ -2,6 +2,74 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-10-25, defining-source declaration records)
+
+Prepared verified checkpoint, previous committed source `5f0d284`.
+QZC31 / QZI14 (Unverified). Full production-readiness goal remains ACTIVE;
+private namespace isolation is still incomplete. Canonical implementation and
+compatibility: docs/internals/source-type-context.md and
+ docs/changes/2026-10-24-declaration-type-context.md.
+
+- semantic/declaration_types.rs normalizes original function/global signatures,
+  struct/serialization fields, enum payloads and trait methods in defining-source
+  context. Authenticated import identities refresh copies after originals;
+  foreign-global imports now retain target bindings, including legacy bare names.
+- Source contexts persist across passes. Function parameter/return expectations,
+  physical layout checks, local bindings and retention seeds use source spans.
+  Trait conformance protects method binders through shape comparison: a private
+  import named T no longer lets a generic T implementation satisfy i32.
+- Source lookup and alias expansion share one resolver traversal. Generic alias
+  formals are alpha-renamed to private dot-free keys containing span/item/slot;
+  own.Record cannot capture formal Record after namespace removal. Symbol names
+  remain readable. TypeName expressions use authoritative alias expansion and
+  enforce arity. Dyn parameters substitute through the same lexical frames;
+  non-named actuals reject explicitly. AST remains immutable.
+- Declaration work caps sites/nodes at1M and text16MiB, accounts repeated binder
+  materialization before cloning, latches exhaustion, and polls cancellation.
+  Alias preparation bounds parameter counts and mapping text separately.
+
+Verification commands (compiler cwd; each completed successfully):
+- PATH=/tmp/quazi-named-rust-bin:$PATH RUSTC=/tmp/quazi-named-rust-bin/rustc
+  RUSTFLAGS='-C link-arg=-fuse-ld=bfd' cargo test --offline -q -- --test-threads=1
+  passes981/981; cargo build --offline -q and direct Clippy wrapper cargo check
+  --offline -q pass with pre-existing warnings. Logs /tmp/quazi-declaration-final-*.
+- python3 scripts/check_declaration_context.py --before-qz
+  /tmp/quazi-declaration-context-before-qz: old check wrongly accepts invalid
+  trait; new check/native/QZI/COFF reject. Qualified/generic/alias signatures
+  execute natively and from QZI after all3fixture sources removed; COFF emits.
+  This proves program replay, not public generic QZI interface support.
+- python3 scripts/check_string_abi.py, check_arithmetic.py, check_power.py,
+  check_named_arguments.py; check_result_retention.py target/debug/qz and
+  check_dynamic_vtables.py target/debug/qz all pass. Arithmetic includes1019
+  bit cases pernative/QZI; power204integer+209floating exports perlibrary path.
+- STD: python3 scripts/check_os_memory.py <compiler>/target/debug/qz passes6.
+  STD README/RESUME/mod/cli dirt unchanged. Quazifetch debug build/run/hit131fns
+  and Windows COFF pass; Linux RAM uses MemAvailable.
+- Installed release updated via cargo install --path . --offline --force,
+  23existing warnings. Same declaration and full String runners pass release.
+  Installed quazifetch build/run/exacthit131fns1ms pass.
+- Graphify query plus AST update:5703nodes12976edges. No .qz semantic extraction.
+  Independent core review found/fixed binder-capture and alias-symbol consumer
+  issues, then found no blockers. Artifact reviewer confirmed executable replay
+  scope; its final follow-up was interrupted by provider usage limit.
+- A separate temp library probe confirms public generic alias QZI interfaces
+  remain rejected explicitly (existing unsupported export contract), before any
+  source removal/execution. No claim of public generic interface support.
+
+README/checklist updated BEFOREcommit. Unchanged73.2%/26.8%, all33items and
+78requirements, Ownership9/16,LSP16/20: this prerequisite earns no new credit.
+Workspace AGENTS update remains outside compiler Git; no cross-repository stage.
+
+NEXT: source-keyed resolution for remaining raw declaration validation, local
+annotations/casts/call-site actuals and codegen. Canonical nominal names are still
+not a complete declaration-identity IR. Keep raw AST contexts separate from
+canonical report/layout types and preserve hygienic alias frames. Do not restore
+qualified leaf fallback or caller remapping inside aliases. The private namespace
+fixture remains a confirmed open P1; recheck after the next coordinated migration.
+Unused unresolved aliases remain a visibility gap. Do not mark the full goal done.
+Preserve .codex/, example35build, scripts/__pycache__ and unrelated STD dirt.
+Keep all work local; no push/publication/deployment.
+
 ## Checkpoint (2026-10-24, defining-source alias bodies)
 
 QZC30 / QZI14 (Unverified). Alias-definition prerequisite implemented; full

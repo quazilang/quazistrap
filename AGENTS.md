@@ -685,8 +685,10 @@ and [remaining findings](docs/audits/2026-10-23-string-followups.md).
 
 ## Source type context: required follow-up (2026-10-24)
 
-Current formats are QZC30 and QZI14; the latter remains Unverified. Earlier
-dated cache/ABI checkpoints describe their own revisions, not current versions.
+Current source formats are QZC31 and QZI14; the latter remains Unverified.
+Verify constants in source and the installed binary separately before reporting
+artifact compatibility. Earlier dated cache/ABI checkpoints describe their own
+revisions, including QZC30 for the alias-definition prerequisite.
 
 Private namespace aliases still leak across files through global binding tables.
 This defect is confirmed and remains unfixed. When replacing those tables,
@@ -702,8 +704,23 @@ The alias-definition prerequisite is implemented: `semantic/type_context.rs`
 canonicalizes stored alias bodies and alias symbols in their defining source,
 with protected binders and the explicitly selected prelude's public exports.
 The resolver never reapplies caller imports inside those canonical bodies.
-Raw signatures/fields/call-site types and source codegen still need coordinated
-scope migration. See [the implemented boundary](docs/internals/source-type-context.md).
+`semantic/declaration_types.rs` normalizes stored signatures, fields, payloads
+and trait methods in their defining context, then refreshes imported copies.
+Function parameter/return and retention seeds use source spans. This prerequisite
+does not close namespace isolation.
+Call-site types and source codegen still need coordinated scope migration. See
+[the committed boundary](docs/internals/source-type-context.md) and `RESUME.md`
+for verification limits and unfinished work.
+
+Preserve binder identity throughout name resolution. A qualified imported type
+such as `own.Word` must not become the lexical generic parameter `Word` merely
+because canonicalization removes its qualifier. Resolve source lookup and alias
+expansion without reclassifying canonical names as caller binders. Stored generic
+alias bodies must also distinguish their formal parameters from declarations
+with the same spelling. Stored alias formals now use private, unspellable keys;
+user-facing symbols retain readable names. Alias expressions must expand through
+the authoritative table, not the display body. Preserve regressions for qualified
+imports, nominal collisions, dynamic substitution and bare-alias arity.
 
 Verify semantic analysis, deferred generic closure, raw constructor/static-call
 codegen, headers and loader-backed LSP against the same identities. See

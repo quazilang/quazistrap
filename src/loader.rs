@@ -2300,7 +2300,10 @@ mod tests {
         let TypeKind::Fn { params, return_ty } = &report.type_aliases["Identity"].1 else {
             panic!("ordinary function alias");
         };
-        assert_eq!(params[0].node.to_string(), "String");
+        assert_eq!(
+            params[0].node.to_string(),
+            report.type_aliases["Identity"].0[0]
+        );
         assert_eq!(params[1].node.to_string(), "Text");
         assert_eq!(return_ty.node.to_string(), "Text");
         let callback = report

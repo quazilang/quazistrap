@@ -51,3 +51,14 @@ General numeric normalization/coercion, generic equality/reference consistency,
 physical f16 storage, complete loans/effects, recursive structural destruction,
 artifact certification and the wider tooling/documentation milestones remain
 open. This checkpoint does not establish full production readiness.
+
+## Declaration-context prerequisite (2026-10-24)
+
+[Stored declaration normalization](../changes/2026-10-24-declaration-type-context.md)
+now preserves defining-source signatures, fields, payloads, trait methods and
+imported copies. Generic alias formals have private identities, and function
+parameter/return/retention seeds use source spans. 981 Rust tests and the focused
+native/source-removed-QZI/COFF regression pass. QZC31 supersedes QZC30;
+QZI14 remains Unverified. This does not close the P1 namespace leak above:
+remaining raw annotations, validation, deferred call-site actuals and source
+codegen still require coordinated migration.

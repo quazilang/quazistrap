@@ -12,8 +12,8 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Require alias bodies canonicalized in their defining source context.
-const QZC_VERSION: u8 = 30;
+// Require declaration types and imported signatures normalized in defining context.
+const QZC_VERSION: u8 = 31;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {

@@ -26,11 +26,11 @@ Completion of unfinished plan items:
 | qz doc | 0/1 | 0.0% | 100.0% |
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
-Revalidated on 2026-10-24 for the
-[alias-definition context prerequisite](docs/changes/2026-10-24-alias-definition-context.md) and
+Revalidated on 2026-10-25 for the
+[declaration-type context prerequisite](docs/changes/2026-10-24-declaration-type-context.md) and
 [runtime String checkpoint](docs/changes/2026-10-23-runtime-string-abi.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 975 tests pass, including the 60 contained-LSP tests. Owned-string operations
+All 981 tests pass, including the 60 contained-LSP tests. Owned-string operations
 now require the selected runtime declaration and checked data offset. Full import
 paths, aliases and concrete formatting arguments are checked; 25 invalid programs
 are rejected by check/native/QZI/COFF. Real String comparisons, references,
@@ -39,14 +39,18 @@ Runtime-root/cache switches execute the selected code. Earlier operator, power,
 ELF stack, ownership/control and artifact runners pass. The installed release
 passes the String/cache runner. Quazifetch builds/runs without S10 and reports
 Linux used RAM from `MemAvailable`; six isolated STD memory tests pass.
-Alias bodies now preserve their defining source's imported identities and public
-implicit prelude exports; caller imports cannot remap them during expansion.
-QZC30 rebuilds older source caches; QZI14 remains Unverified. Private namespace
+Stored signatures, fields, payloads and trait methods now preserve defining-source
+types; imported copies inherit those records. Alias formals have private identities
+that prevent collisions with imported nominal names, while symbols retain readable
+parameters. The declaration runner rejects invalid trait implementations in all
+four modes and executes qualified/generic/alias signatures natively and from QZI
+with all fixture source files removed. Windows COFF emission also passes.
+QZC31 rebuilds older source caches; QZI14 remains Unverified. Private namespace
 aliases still leak across files. Numeric coercion/normalization, effects,
 recursive destruction and artifact certification remain open. Ownership stays
 9/16; LSP stays 16/20. The 33-item, 78-requirement rubric remains unchanged.
 Statuses and percentages are refreshed before committing.
-The alias-definition prerequisite completes no additional checklist requirement,
+The declaration-context prerequisite completes no additional checklist requirement,
 so completion remains 73.2% and remaining work 26.8%.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those

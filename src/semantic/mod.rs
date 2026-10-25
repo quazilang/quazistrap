@@ -21,6 +21,7 @@ pub use control_flow::{
 #[cfg(test)]
 mod control_flow_tests;
 mod declare;
+mod declaration_types;
 mod initialization;
 #[cfg(test)]
 mod initialization_tests;
@@ -93,6 +94,7 @@ pub struct Analyzer {
     pub(super) scopes: Vec<HashMap<String, Symbol>>,
     checked_string_abi: Option<CheckedStringAbi>,
     type_name_bindings: HashMap<String, ResolvedBinding>,
+    source_type_contexts: type_context::SourceTypeContexts,
     pending_type_imports: Vec<(String, String, Option<Span>, Option<Span>, Span)>,
     display_requirements: Vec<(String, Span, TypeKind)>,
     display_requirement_bytes: usize,
@@ -957,6 +959,7 @@ impl Analyzer {
             source_files: Vec::new(),
             checked_string_abi: None,
             type_name_bindings: HashMap::new(),
+            source_type_contexts: type_context::SourceTypeContexts::default(),
             pending_type_imports: Vec::new(),
             display_requirements: Vec::new(),
             display_requirement_bytes: 0,
@@ -1126,6 +1129,7 @@ impl Analyzer {
                 )
             })
             .collect();
+        self.canonicalize_declaration_types(program, &mut checkpoint)?;
         // Validate declaration types before any layout or ownership consumer.
         for item in &program.items {
             checkpoint()?;
@@ -1500,6 +1504,7 @@ impl Analyzer {
         self.errors.clear();
         self.checked_string_abi = None;
         self.type_name_bindings.clear();
+        self.source_type_contexts = type_context::SourceTypeContexts::default();
         self.pending_type_imports.clear();
         self.display_requirements.clear();
         self.display_requirement_bytes = 0;
@@ -2422,9 +2427,13 @@ impl Analyzer {
             &HashMap::new(),
             &bound_names,
             |name| {
-                self.type_name_bindings
-                    .get(name)
-                    .map(|binding| binding.name.clone())
+                if span.start == 0 && span.end == 0 {
+                    self.type_name_bindings
+                        .get(name)
+                        .map(|binding| binding.name.clone())
+                } else {
+                    self.source_type_contexts.canonical_name(name, span)
+                }
             },
         ) {
             Ok(ty) => ty,

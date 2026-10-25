@@ -165,7 +165,7 @@ impl Analyzer {
                         );
                     }
                     if contains_nested_owned_function_value(
-                        &self.resolve_type_aliases(&param.ty.node),
+                        &self.resolve_type_aliases(&self.source_type(&param.ty)),
                     ) {
                         self.push_error(
                             param.ty.span,
@@ -186,7 +186,9 @@ impl Analyzer {
                         ),
                     );
                 }
-                if contains_non_string_reference(&self.resolve_type_aliases(&return_ty.node)) {
+                if contains_non_string_reference(
+                    &self.resolve_type_aliases(&self.source_type(return_ty)),
+                ) {
                     self.push_error(
                         return_ty.span,
                         "S10",
@@ -195,8 +197,9 @@ impl Analyzer {
                         ),
                     );
                 }
-                if contains_nested_owned_function_value(&self.resolve_type_aliases(&return_ty.node))
-                {
+                if contains_nested_owned_function_value(
+                    &self.resolve_type_aliases(&self.source_type(return_ty)),
+                ) {
                     self.push_error(
                         return_ty.span,
                         "S10",
@@ -227,7 +230,7 @@ impl Analyzer {
                         if !param.variadic {
                             continue;
                         }
-                        let resolved = self.resolve_type_aliases(&param.ty.node);
+                        let resolved = self.resolve_type_aliases(&self.source_type(&param.ty));
                         let erased_format_param =
                             erased_format_variadic && matches!(resolved, TypeKind::Any);
                         if !erased_format_param
@@ -301,17 +304,18 @@ impl Analyzer {
                             .iter()
                             .map(|param| {
                                 crate::runtime_layout::runtime_layout_info(
-                                    &self.resolve_type_aliases(&param.ty.node),
+                                    &self.resolve_type_aliases(&self.source_type(&param.ty)),
                                 )
                             })
                             .collect(),
                         variadic_element: variadic_element.map(|element| {
                             crate::runtime_layout::runtime_layout_info(
-                                &self.resolve_type_aliases(element),
+                                &self
+                                    .resolve_type_aliases(&self.source_type_at(element, item.span)),
                             )
                         }),
                         result: crate::runtime_layout::runtime_layout_info(
-                            &self.resolve_type_aliases(&return_ty.node),
+                            &self.resolve_type_aliases(&self.source_type(return_ty)),
                         ),
                     };
                     self.fn_value_layouts.insert(fn_name.clone(), record);
@@ -334,7 +338,7 @@ impl Analyzer {
                         // pseudo-parameter is intentionally unavailable to the body.
                         continue;
                     }
-                    let ty = unwrap_type(&p.ty);
+                    let ty = self.source_type(&p.ty);
                     let ty = if p.variadic {
                         TypeKind::Slice {
                             elem_ty: Box::new(Spanned::new(ty, p.ty.span)),
@@ -373,7 +377,7 @@ impl Analyzer {
                     );
                 }
 
-                let expected = unwrap_type(return_ty);
+                let expected = self.source_type(return_ty);
 
                 if name == "main" {
                     if !matches!(
@@ -393,7 +397,7 @@ impl Analyzer {
                     let valid_args = match params.as_slice() {
                         [] => true,
                         [p] => {
-                            let ty = unwrap_type(&p.ty);
+                            let ty = self.source_type(&p.ty);
                             matches!(
                                 ty,
                                 TypeKind::Named {
@@ -1232,6 +1236,10 @@ impl Analyzer {
         methods: &[Item],
         impl_span: Span,
     ) {
+        let canonical_trait = Spanned::new(self.source_type(trait_ty), trait_ty.span);
+        let trait_ty = &canonical_trait;
+        let canonical_target = Spanned::new(self.source_type(for_ty), for_ty.span);
+        let for_ty = &canonical_target;
         let trait_name = crate::semantic::declare::type_kind_base_name(&trait_ty.node);
         let Some(signatures) = self.trait_method_signatures.get(&trait_name).cloned() else {
             self.push_error(
@@ -1295,6 +1303,7 @@ impl Analyzer {
             else {
                 unreachable!();
             };
+            self.current_generic_params.push(generic_params.clone());
 
             if *unsafe_fn {
                 self.push_error(
@@ -1331,9 +1340,18 @@ impl Analyzer {
                     .last()
                     .is_some_and(|param| param.variadic && matches!(param.ty.node, TypeKind::Any));
             let runtime_param_count = params.len() - usize::from(erased_format_tail);
+            let method_binders = self
+                .current_generic_params
+                .iter()
+                .flatten()
+                .chain(generic_params)
+                .cloned()
+                .collect::<Vec<_>>();
             let actual_params: Vec<TypeKind> = params[..runtime_param_count]
                 .iter()
-                .map(|param| param.ty.node.clone())
+                .map(|param| {
+                    self.canonical_source_type(&param.ty.node, &method_binders, param.ty.span)
+                })
                 .collect();
             if expected_params.len() != actual_params.len() {
                 self.push_error(
@@ -1366,7 +1384,9 @@ impl Analyzer {
                 &substitute_type_kind(&signature.return_ty, &substitution),
                 &for_ty.node,
             );
-            if !self.types_have_same_runtime_shape(&expected_return, &return_ty.node) {
+            let actual_return =
+                self.canonical_source_type(&return_ty.node, &method_binders, return_ty.span);
+            if !self.types_have_same_runtime_shape(&expected_return, &actual_return) {
                 self.push_error(
                     return_ty.span,
                     "S14",
@@ -1376,6 +1396,7 @@ impl Analyzer {
                     ),
                 );
             }
+            self.current_generic_params.pop();
         }
     }
 
@@ -2966,12 +2987,18 @@ impl Analyzer {
                             }
                         } else if matches!(sym.kind, SymbolKind::TypeName) {
                             // Type name used as expression (e.g. Array.new(), Array.from(...)).
-                            // For type aliases, return the aliased type.
-                            // For structs/enums/traits, return Named so static method dispatch works.
-                            let resolved = sym.ty.clone().unwrap_or(TypeKind::Named {
+                            // Alias symbol bodies retain display parameter names;
+                            // expansion must use the hygienic authoritative table.
+                            // Bare generic aliases must also satisfy their arity.
+                            let nominal = TypeKind::Named {
                                 name: name.clone(),
                                 type_args: vec![],
-                            });
+                            };
+                            let resolved = if sym.ty.is_some() {
+                                self.source_type_at(&nominal, expr.span)
+                            } else {
+                                nominal
+                            };
                             ExprEval {
                                 ty: Some(resolved),
                                 const_value: None,
