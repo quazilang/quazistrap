@@ -2,86 +2,138 @@ import std.core;
 import std.fs;
 import std.io;
 import std.os;
+import std.ffi.CString;
 
-@cfg(target_os = "linux")
-fn starts_at_bounded(
-    text: str, offset: usize, needle: str, text_len: usize, needle_len: usize
-) bool {
-    if (offset + needle_len > text_len) { ret false; }
-    var i: usize = 0;
-    for (i < needle_len) {
-        if (core.str_byte_at(text, offset + i) != core.str_byte_at(needle, i)) {
-            ret false;
-        }
-        i++;
-    }
-    ret true;
-}
+// Optional NetBSD process discovery uses libc + the base-system ps utility.
+// No guesses from TERM=xterm: it only names a terminal capability profile.
+// If ps/popen is unavailable, retain the existing environment-based fallback.
+@cfg(target_os = "netbsd")
+@api("popen") unsafe fn nb_popen(command: *u8, mode: *u8) *u8;
+@cfg(target_os = "netbsd")
+@api("fgets") unsafe fn nb_fgets(buffer: *u8, capacity: i32, file: *u8) *u8;
+@cfg(target_os = "netbsd")
+@api("pclose") unsafe fn nb_pclose(file: *u8) i32;
 
-@cfg(target_os = "linux")
-fn starts_at(text: str, offset: usize, needle: str) bool {
-    ret starts_at_bounded(
-        text, offset, needle, core.strlen(text), core.strlen(needle)
-    );
-}
-
-@cfg(target_os = "linux")
-fn find_byte(text: str, start: usize, target: u8) usize {
-    const length: usize = core.strlen(text);
-    var i: usize = start;
-    for (i < length) {
-        if (core.str_byte_at(text, i) == target) { ret i; }
-        i++;
-    }
-    ret length;
-}
-
-@cfg(target_os = "linux")
-fn skip_byte(text: str, start: usize, target: u8) usize {
-    if (start >= core.strlen(text)) { ret start; }
-    if (core.str_byte_at(text, start) != target) { ret start; }
-    ret skip_byte(text, start + 1, target);
-}
-
-// Copy trusted UTF-8 into an owned String. The raw allocation is immediately
-// transferred to String, so application code never needs a matching free call.
-@cfg(target_os = "linux")
-fn copy_range(text: str, start: usize, end: usize) String {
-    if (end <= start) { ret String.new(); }
-    const length: usize = end - start;
-    var data: *u8 = 0;
-    unsafe { data = core.malloc(length + 1); }
-    if (data == 0) { ret String.new(); }
+@cfg(target_os = "netbsd")
+fn netbsd_ps(command: str) String {
+    const encoded = CString.try_from_str(command);
+    if (encoded.is_err()) { ret String.new(); }
+    const cmd = encoded.unwrap();
+    var stream: *u8 = 0;
+    var buffer: *u8 = 0;
     unsafe {
-        core.memcpy(data, core.str_as_ptr(text) + start, length);
-        *(data + length) = 0;
-    }
-    var result: String = String.new();
-    unsafe { result = String.from_raw(data, length, length + 1); }
-    ret result;
-}
-
-@cfg(target_os = "linux")
-fn value_after_key(text: str, key: str) String {
-    const length: usize = core.strlen(text);
-    const key_len: usize = core.strlen(key);
-    var i: usize = 0;
-    for (i + key_len <= length) {
-        if (starts_at(text, i, key)) {
-            const colon: usize = find_byte(text, i + key_len, 58);
-            if (colon >= length) { ret String.from("unknown"); }
-            var start: usize = skip_byte(text, colon + 1, 9);
-            start = skip_byte(text, start, 32);
-            var end: usize = find_byte(text, start, 10);
-            if (end > start && core.str_byte_at(text, end - 1) == 13) { end--; }
-            ret copy_range(text, start, end);
+        stream = nb_popen(cmd.as_ptr(), core.str_as_ptr("r"));
+        if (stream == 0) { ret String.new(); }
+        buffer = core.malloc(512);
+        if (buffer == 0) {
+            nb_pclose(stream);
+            ret String.new();
         }
-        i++;
     }
-    ret String.from("unknown");
+    var output = String.new();
+    var loops: usize = 0;
+    for (loops < 64) {
+        var read: *u8 = 0;
+        unsafe { read = nb_fgets(buffer, 512, stream); }
+        if (read == 0) { break; }
+        var chunk = String.new();
+        unsafe { chunk = String.from(core.str_from_ptr(buffer)); }
+        output = output.push_str(chunk.as_str());
+        loops++;
+    }
+    unsafe {
+        core.free(buffer);
+        nb_pclose(stream);
+    }
+    ret output;
 }
 
-@cfg(target_os = "linux")
+// Exact whole-line matching avoids e.g. mistaking 'xterm' for a WM.
+@cfg(target_os = "netbsd")
+fn netbsd_has_process(output: str, program: str) bool {
+    const len = core.strlen(output);
+    var start: usize = 0;
+    var pos: usize = 0;
+    for (pos <= len) {
+        if (pos == len || core.str_byte_at(output, pos) == 10) {
+            if (pos > start) {
+                const raw = output[start as isize:pos as isize];
+                const line = raw.trim();
+                if (line.as_str() == program) { ret true; }
+            }
+            start = pos + 1;
+        }
+        pos++;
+    }
+    ret false;
+}
+
+@cfg(target_os = "netbsd")
+fn netbsd_window_manager() String {
+    const list = netbsd_ps("ps -ax -o ucomm= 2>/dev/null");
+    if (netbsd_has_process(list.as_str(), "vxwm")) { ret String.from("vxwm"); }
+    if (netbsd_has_process(list.as_str(), "dwm")) { ret String.from("dwm"); }
+    if (netbsd_has_process(list.as_str(), "i3")) { ret String.from("i3"); }
+    if (netbsd_has_process(list.as_str(), "bspwm")) { ret String.from("bspwm"); }
+    if (netbsd_has_process(list.as_str(), "openbox")) { ret String.from("openbox"); }
+    if (netbsd_has_process(list.as_str(), "xfwm4")) { ret String.from("xfwm4"); }
+    if (netbsd_has_process(list.as_str(), "awesome")) { ret String.from("awesome"); }
+    if (netbsd_has_process(list.as_str(), "xmonad")) { ret String.from("xmonad"); }
+    if (netbsd_has_process(list.as_str(), "fluxbox")) { ret String.from("fluxbox"); }
+    if (netbsd_has_process(list.as_str(), "icewm")) { ret String.from("icewm"); }
+    if (netbsd_has_process(list.as_str(), "cwm")) { ret String.from("cwm"); }
+    if (netbsd_has_process(list.as_str(), "ctwm")) { ret String.from("ctwm"); }
+    if (netbsd_has_process(list.as_str(), "sway")) { ret String.from("sway"); }
+    if (netbsd_has_process(list.as_str(), "Hyprland")) { ret String.from("Hyprland"); }
+    if (netbsd_has_process(list.as_str(), "kwin_x11")) { ret String.from("KWin"); }
+    if (netbsd_has_process(list.as_str(), "mutter")) { ret String.from("Mutter"); }
+    ret String.new();
+}
+
+// Discover the terminal by walking the parent PID chain, rather than reading
+// the generic TERM=xterm terminfo name. Uses only numeric PIDs from the kernel.
+@cfg(target_os = "netbsd")
+fn netbsd_ps_pid_field(pid: i32, field: str) String {
+    if (pid <= 1) { ret String.new(); }
+    const pid_text = pid.to_string();
+    var command = String.from("ps -p ");
+    command = command.push_str(pid_text.as_str());
+    command = command.push_str(" -o ");
+    command = command.push_str(field);
+    command = command.push_str("= 2>/dev/null");
+    const raw = netbsd_ps(command.as_str());
+    const trimmed: String = raw.trim();
+    ret String.from(trimmed.as_str());
+}
+
+@cfg(target_os = "netbsd")
+fn netbsd_terminal_process() String {
+    var pid: i32 = os.getppid();
+    var hops: usize = 0;
+    for (pid > 1 && hops < 10) {
+        const proc_name = netbsd_ps_pid_field(pid, "comm");
+        const executable = basename_of(proc_name);
+        if (executable.as_str() == "alacritty") { ret String.from("alacritty"); }
+        if (executable.as_str() == "kitty") { ret String.from("kitty"); }
+        if (executable.as_str() == "wezterm-gui") { ret String.from("WezTerm"); }
+        if (executable.as_str() == "foot") { ret String.from("foot"); }
+        if (executable.as_str() == "xterm") { ret String.from("xterm"); }
+        if (executable.as_str() == "urxvt") { ret String.from("urxvt"); }
+        if (executable.as_str() == "konsole") { ret String.from("Konsole"); }
+        if (executable.as_str() == "gnome-terminal-") { ret String.from("GNOME Terminal"); }
+        const raw_parent = netbsd_ps_pid_field(pid, "ppid");
+        const parsed = raw_parent.parse[i32]();
+        if (parsed.is_err()) { break; }
+        const next = parsed.unwrap();
+        if (next <= 1 || next == pid) { break; }
+        pid = next;
+        hops++;
+    }
+    ret String.new();
+}
+
+// Path formatting only; OS discovery is delegated to std.os.
+@ignore(dead_code)
 fn basename_of(path: String) String {
     const text: str = path.as_str();
     const length: usize = path.len();
@@ -92,7 +144,18 @@ fn basename_of(path: String) String {
         if (byte == 47 || byte == 92) { start = i + 1; }
         i++;
     }
-    ret copy_range(text, start, length);
+    // Copy the basename into separately owned storage; no escaping view.
+    const byte_count: usize = length - start;
+    var copy: *u8 = 0;
+    unsafe { copy = core.malloc(byte_count + 1); }
+    if (copy == 0) { ret String.new(); }
+    unsafe {
+        core.memcpy(copy, core.str_as_ptr(text) + start, byte_count);
+        *(copy + byte_count) = 0;
+    }
+    var result: String = String.new();
+    unsafe { result = String.from_raw(copy, byte_count, byte_count + 1); }
+    ret result;
 }
 
 // Formatting produces a complete String owner and transfers it to the caller.
@@ -100,37 +163,28 @@ fn owned_u64(value: u64) String {
     ret value.to_string();
 }
 
-@cfg(target_os = "linux")
+// The platform-independent surface is std.os. Linux retains its existing
+// /proc release and CPU-model detail; NetBSD uses the portable OS/CPU API.
 fn get_os() String {
-    const read: Result[String, fs.FsError] = fs.read_to_string("/proc/sys/kernel/osrelease");
-    if (read.is_ok()) {
-        const raw_release: String = read.unwrap();
-        const release: String = raw_release.trim();
-        var result: String = String.from(os.name());
-        result = result.push_str(" ");
-        result = result.push_str(release.as_str());
-        ret result;
+    @cfg(target_os = "windows") { ret os.version(); }
+    @cfg(target_os = "netbsd") { ret os.version(); }
+    @cfg(target_os = "linux") {
+        const read: Result[String, fs.FsError] = fs.read_to_string("/proc/sys/kernel/osrelease");
+        if (read.is_ok()) {
+            const raw_release: String = read.unwrap();
+            const release: String = raw_release.trim();
+            var result: String = String.from(os.name());
+            result = result.push_str(" ");
+            result = result.push_str(release.as_str());
+            ret result;
+        }
+        ret String.from(os.name());
     }
-    ret String.from(os.name());
 }
 
-@cfg(target_os = "windows")
-fn get_os() String { ret os.version(); }
-
-@cfg(target_os = "windows")
 fn get_cpu() String {
+    // The same CPU brand source is used on Linux, NetBSD and Windows.
     ret os.cpu_name();
-}
-
-@cfg(target_os = "linux")
-fn get_cpu() String {
-    const read: Result[String, fs.FsError] = fs.read_to_string("/proc/cpuinfo");
-    if (read.is_ok()) {
-        const info: String = read.unwrap();
-        const model: String = value_after_key(info.as_str(), "model name");
-        ret model;
-    }
-    ret String.from("unknown");
 }
 
 fn get_memory() String {
@@ -148,36 +202,76 @@ fn get_memory() String {
     ret result;
 }
 
-@cfg(target_os = "windows")
 fn get_shell() String {
-    ret os.shell();
+    var shell: String = String.new();
+    @cfg(target_os = "windows") { shell = os.shell(); }
+    @cfg(target_os = "linux") { shell = basename_of(os.shell()); }
+    @cfg(target_os = "netbsd") { shell = basename_of(os.shell()); }
+    ret shell;
 }
 
-@cfg(target_os = "linux")
-fn get_shell() String {
-    ret basename_of(os.env("SHELL", "unknown"));
-}
-
-@cfg(target_os = "windows")
-fn get_desktop() String {
-    ret String.from("Explorer");
-}
-
-@cfg(target_os = "linux")
-fn get_desktop() String {
+// Shared XDG/window-manager detection for Unix hosts. The WM name is not
+// guessed when a minimal X11 session provides no discovery metadata.
+@ignore(dead_code)
+fn detect_unix_desktop() String {
+    // Prefer explicit desktop/session declarations on both Linux and NetBSD.
     const desktop: String = os.env("XDG_CURRENT_DESKTOP", "");
     const session: String = os.env("XDG_SESSION_TYPE", "");
-    if (desktop.is_empty() && session.is_empty()) { ret String.from("Unknown"); }
-    var result: String = String.from(desktop.as_str());
-    if (!session.is_empty()) {
-        const display_session: String = session.capitalize();
-        if (!result.is_empty()) { result = result.push_str(" ("); }
-        result = result.push_str(display_session.as_str());
-        if (!desktop.is_empty()) { result = result.push_str(")"); }
+    const named_session: String = os.env("XDG_SESSION_DESKTOP", "");
+    const desktop_session: String = os.env("DESKTOP_SESSION", "");
+    const gdm_session: String = os.env("GDMSESSION", "");
+    const wm: String = os.env("WINDOWMANAGER", "");
+    const user_wm: String = os.env("WM", "");
+
+    var display: String = String.new();
+    if (!desktop.is_empty()) {
+        display = String.from(desktop.as_str());
+    } else if (!named_session.is_empty()) {
+        display = String.from(named_session.as_str());
+    } else if (!desktop_session.is_empty()) {
+        display = String.from(desktop_session.as_str());
+    } else if (!gdm_session.is_empty()) {
+        display = String.from(gdm_session.as_str());
+    } else if (!wm.is_empty()) {
+        display = basename_of(wm);
+    } else if (!user_wm.is_empty()) {
+        display = basename_of(user_wm);
     }
+
+    if (!display.is_empty()) {
+        if (!session.is_empty()) {
+            display = display.push_str(" (");
+            display = display.push_str(session.as_str());
+            display = display.push_str(")");
+        }
+        ret display;
+    }
+    @cfg(target_os = "netbsd") {
+        const process_wm = netbsd_window_manager();
+        if (!process_wm.is_empty()) {
+            var detected = String.from(process_wm.as_str());
+            detected = detected.push_str(" (X11)");
+            ret detected;
+        }
+    }
+    if (!os.env("WAYLAND_DISPLAY", "").is_empty()) {
+        ret String.from("Wayland (compositor not detected)");
+    }
+    if (!os.env("DISPLAY", "").is_empty()) {
+        ret String.from("X11 (WM not detected)");
+    }
+    ret String.from("Console (no graphical session)");
+}
+
+fn get_desktop() String {
+    var result: String = String.new();
+    @cfg(target_os = "windows") { result = String.from("Explorer"); }
+    @cfg(target_os = "linux") { result = detect_unix_desktop(); }
+    @cfg(target_os = "netbsd") { result = detect_unix_desktop(); }
     ret result;
 }
 
+@ignore(dead_code)
 fn normalized_terminal(value: String) String {
     if (value.as_str() == "kgx") { ret String.from("GNOME Console"); }
     if (value.as_str() == "iTerm.app") { ret String.from("iTerm2"); }
@@ -190,13 +284,23 @@ fn normalized_terminal(value: String) String {
     ret value;
 }
 
-fn get_terminal() String {
-    @cfg(target_os = "windows") {
-        ret os.terminal();
-    }
+@ignore(dead_code)
+fn detect_unix_terminal() String {
     const program: String = os.env("TERM_PROGRAM", "");
     if (!program.is_empty()) { ret normalized_terminal(program); }
+    @cfg(target_os = "netbsd") {
+        const detected = netbsd_terminal_process();
+        if (!detected.is_empty()) { ret detected; }
+    }
     ret normalized_terminal(os.env("TERM", "unknown"));
+}
+
+fn get_terminal() String {
+    var terminal: String = String.new();
+    @cfg(target_os = "windows") { terminal = os.terminal(); }
+    @cfg(target_os = "linux") { terminal = detect_unix_terminal(); }
+    @cfg(target_os = "netbsd") { terminal = detect_unix_terminal(); }
+    ret terminal;
 }
 
 fn append_count(result: String, tag: str, count: usize) String {
@@ -214,6 +318,21 @@ fn append_directory_count(result: String, path: str, tag: str) String {
     const counted: Result[usize, fs.FsError] = fs.count_entries(path);
     if (counted.is_err()) { ret result; }
     ret append_count(result, tag, counted.unwrap());
+}
+
+@cfg(target_os = "linux")
+fn starts_at_bounded(
+    text: str, offset: usize, needle: str, text_len: usize, needle_len: usize
+) bool {
+    if (offset + needle_len > text_len) { ret false; }
+    var i: usize = 0;
+    for (i < needle_len) {
+        if (core.str_byte_at(text, offset + i) != core.str_byte_at(needle, i)) {
+            ret false;
+        }
+        i++;
+    }
+    ret true;
 }
 
 @cfg(target_os = "linux")
@@ -255,6 +374,31 @@ fn get_packages() String {
         result = append_directory_count(result, "/var/db/xbps", "xbps");
         result = append_directory_count(result, "/nix/store", "nix");
         result = append_directory_count(result, "/var/lib/flatpak/app", "flatpak");
+    }
+    @cfg(target_os = "netbsd") {
+        // Since 2020 the NetBSD pkgsrc default database is /usr/pkg/pkgdb.
+        // Respect overrides, then try modern, legacy and unprivileged layouts.
+        const override_db: String = os.env("PKG_DBDIR", "");
+        if (!override_db.is_empty()) {
+            result = append_directory_count(result, override_db.as_str(), "pkgsrc");
+        }
+        if (result.is_empty()) {
+            result = append_directory_count(result, "/usr/pkg/pkgdb", "pkgsrc");
+        }
+        if (result.is_empty()) {
+            result = append_directory_count(result, "/var/db/pkg", "pkgsrc");
+        }
+        if (result.is_empty()) {
+            const home: String = os.env("HOME", "");
+            if (!home.is_empty()) {
+                var user_db: String = String.from(home.as_str());
+                user_db = user_db.push_str("/pkg/pkgdb");
+                result = append_directory_count(result, user_db.as_str(), "pkgsrc");
+            }
+        }
+        if (result.is_empty()) {
+            result = append_directory_count(result, "/nix/store", "nix");
+        }
     }
     @cfg(target_os = "windows") {
         const chocolatey: String = os.env("ChocolateyInstall", "");
@@ -307,7 +451,7 @@ fn get_packages() String {
             );
         }
     }
-    if (result.is_empty()) { ret String.from("unknown"); }
+    if (result.is_empty()) { ret String.from("not detected"); }
     ret result;
 }
 

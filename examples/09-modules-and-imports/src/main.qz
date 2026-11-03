@@ -7,6 +7,8 @@ fn main() i32 {
         name: "QuaziBoard",
         price: 120,
     };
-    io.println("{} costs ${} after discount", keyboard.name, discounted_price(keyboard, 15));
+    const display_name: String = String.from(keyboard.name);
+    const price = discounted_price(keyboard, 15);
+    io.println("{} costs ${} after discount", display_name.as_str(), price);
     ret 0;
 }

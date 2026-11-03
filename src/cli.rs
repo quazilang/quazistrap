@@ -18,6 +18,8 @@ pub enum TargetTriple {
     X86_64Linux,
     #[value(name = "x86_64-windows")]
     X86_64Windows,
+    #[value(name = "x86_64-netbsd")]
+    X86_64NetBsd,
 }
 
 pub type HeaderTarget = TargetTriple;

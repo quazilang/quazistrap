@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: 0BSD
 
 pub mod builtin_linker;
+pub mod builtin_netbsd_linker;
 pub mod builtin_pe_linker;
 pub mod linker;
 pub mod target;

@@ -1574,6 +1574,7 @@ impl<'a> FnEncoder<'a> {
         fn_start: CodeLabel,
     ) -> Result<(), BackendError> {
         let is_win64 = self.target.abi == Abi::Win64;
+        let is_netbsd = self.target.os == crate::backend::target::Os::NetBsd;
         let err = |e: IcedError| BackendError(e.to_string());
 
         macro_rules! emit {
@@ -2198,9 +2199,9 @@ impl<'a> FnEncoder<'a> {
 
             Some(Opcode::Syscall) => {
                 let (dst, idx) = instr.ri16();
-                if is_win64 {
+                if self.target.os != crate::backend::target::Os::Linux {
                     return Err(BackendError(
-                        "@syscall is unsupported by the Win64 backend".to_string(),
+                        "@syscall is Linux-only; use NetBSD libc bindings for x86_64-netbsd".to_string(),
                     ));
                 } else {
                     let syscall_num = match chunk.constants.get(idx as usize) {
@@ -2273,8 +2274,12 @@ impl<'a> FnEncoder<'a> {
                             if arg_count > 2 {
                                 emit!(asm.mov(rdx, slot(dst + 2)));
                             }
-                            emit!(asm.mov(rax, 1i64));
-                            emit!(asm.syscall());
+                            if is_netbsd {
+                                call_ext!("write".into(), RelocKind::Plt32);
+                            } else {
+                                emit!(asm.mov(rax, 1i64));
+                                emit!(asm.syscall());
+                            }
                         }
                         emit!(asm.mov(slot(dst), rax));
                     }
@@ -2315,8 +2320,12 @@ impl<'a> FnEncoder<'a> {
                             if arg_count > 2 {
                                 emit!(asm.mov(rdx, slot(dst + 2)));
                             }
-                            emit!(asm.mov(rax, 0i64));
-                            emit!(asm.syscall());
+                            if is_netbsd {
+                                call_ext!("read".into(), RelocKind::Plt32);
+                            } else {
+                                emit!(asm.mov(rax, 0i64));
+                                emit!(asm.syscall());
+                            }
                         }
                         emit!(asm.mov(slot(dst), rax));
                     }
@@ -2331,8 +2340,12 @@ impl<'a> FnEncoder<'a> {
                             if arg_count > 0 {
                                 emit!(asm.mov(rdi, slot(dst)));
                             }
-                            emit!(asm.mov(rax, 60i64));
-                            emit!(asm.syscall());
+                            if is_netbsd {
+                                call_ext!("exit".into(), RelocKind::Plt32);
+                            } else {
+                                emit!(asm.mov(rax, 60i64));
+                                emit!(asm.syscall());
+                            }
                         }
                         emit!(asm.xor(rax, rax));
                         emit!(asm.mov(slot(dst), rax));
@@ -2488,8 +2501,12 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdi, 2i64));
                             emit!(asm.mov(rsi, slot(dst)));
                             emit!(asm.mov(rdx, slot(dst + 1)));
-                            emit!(asm.mov(rax, 1i64));
-                            emit!(asm.syscall());
+                            if is_netbsd {
+                                call_ext!("write".into(), RelocKind::Plt32);
+                            } else {
+                                emit!(asm.mov(rax, 1i64));
+                                emit!(asm.syscall());
+                            }
                             emit!(asm.mov(slot(dst), rax));
                         }
                     }
@@ -2537,8 +2554,12 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(qword_ptr(rsp + 8i32), rdx));
                             emit!(asm.mov(rdi, rsp));
                             emit!(asm.xor(esi, esi));
-                            emit!(asm.mov(rax, 35i64));
-                            emit!(asm.syscall());
+                            if is_netbsd {
+                                call_ext!("nanosleep".into(), RelocKind::Plt32);
+                            } else {
+                                emit!(asm.mov(rax, 35i64));
+                                emit!(asm.syscall());
+                            }
                             emit!(asm.add(rsp, 16i32));
                         }
                         emit!(asm.xor(rax, rax));
@@ -2548,6 +2569,10 @@ impl<'a> FnEncoder<'a> {
                         // quazi.getenv(name) → usize (char*)
                         if is_win64 {
                             emit!(asm.mov(rcx, slot(dst)));
+                            call_ext!("getenv".into(), RelocKind::Plt32);
+                        } else if is_netbsd {
+                            // NetBSD libc uses SysV: first argument in RDI.
+                            emit!(asm.mov(rdi, slot(dst)));
                             call_ext!("getenv".into(), RelocKind::Plt32);
                         } else {
                             let mut env_loop = asm.create_label();
@@ -2824,7 +2849,7 @@ impl<'a> FnEncoder<'a> {
                         } else {
                             emit!(asm.mov(qword_ptr(rsp), rax));
                             emit!(asm.mov(qword_ptr(rsp + 8i32), rax));
-                            emit!(asm.mov(word_ptr(rsp), 2i32));
+                            emit!(asm.mov(word_ptr(rsp), if is_netbsd { 0x0210i32 } else { 2i32 }));
                         }
                         // port: host→big-endian byte swap
                         emit!(asm.mov(rax, slot(dst + 1)));
@@ -2851,8 +2876,12 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdi, slot(dst))); // sockfd
                             emit!(asm.lea(rsi, qword_ptr(rsp))); // &sockaddr_in
                             emit!(asm.mov(edx, 16i32)); // addrlen
-                            emit!(asm.mov(rax, 49i64)); // bind syscall
-                            emit!(asm.syscall());
+                            if is_netbsd {
+                                call_ext!("bind".into(), RelocKind::Plt32);
+                            } else {
+                                emit!(asm.mov(rax, 49i64)); // Linux bind
+                                emit!(asm.syscall());
+                            }
                         }
                         if is_win64 {
                             emit!(asm.add(rsp, 48i32));
@@ -2883,7 +2912,7 @@ impl<'a> FnEncoder<'a> {
                         } else {
                             emit!(asm.mov(qword_ptr(rsp), rax));
                             emit!(asm.mov(qword_ptr(rsp + 8i32), rax));
-                            emit!(asm.mov(word_ptr(rsp), 2i32));
+                            emit!(asm.mov(word_ptr(rsp), if is_netbsd { 0x0210i32 } else { 2i32 }));
                         }
                         emit!(asm.mov(rax, slot(dst + 2)));
                         emit!(asm.rol(ax, 8u32));
@@ -2926,8 +2955,12 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdi, slot(dst)));
                             emit!(asm.lea(rsi, qword_ptr(rsp)));
                             emit!(asm.mov(edx, 16i32));
-                            emit!(asm.mov(rax, 42i64)); // connect syscall
-                            emit!(asm.syscall());
+                            if is_netbsd {
+                                call_ext!("connect".into(), RelocKind::Plt32);
+                            } else {
+                                emit!(asm.mov(rax, 42i64)); // Linux connect
+                                emit!(asm.syscall());
+                            }
                         }
                         if is_win64 {
                             emit!(asm.add(rsp, 48i32));
@@ -3005,6 +3038,54 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.xor(eax, eax));
                             emit!(asm.set_label(&mut finished));
                             emit!(asm.add(rsp, 96i32));
+                        } else if is_netbsd {
+                            // NetBSD 11.0: query libc sysctlbyname instead of Linux syscalls.
+                            // hw.physmem64: u64 physical RAM, in bytes.
+                            // vm.uvmexp2: struct uvmexp_sysctl (all leading fields int64_t):
+                            //   pagesize @ 0, free @ 32, inactive @ 48.
+                            // Available RAM is the conservative free+inactive estimate.
+                            let mut failed = asm.create_label();
+                            let mut finished = asm.create_label();
+                            // Maintain the existing SysV stack alignment. Scratch space
+                            // holds the sysctl name, result buffer, and size_t length.
+                            emit!(asm.sub(rsp, 1024i32));
+                            let query: &[u8] = if id == 26 {
+                                b"hw.physmem64\0"
+                            } else {
+                                b"vm.uvmexp2\0"
+                            };
+                            for (i, word) in query.chunks(8).enumerate() {
+                                let mut bytes = [0u8; 8];
+                                bytes[..word.len()].copy_from_slice(word);
+                                emit!(asm.mov(r10, u64::from_le_bytes(bytes)));
+                                emit!(asm.mov(qword_ptr(rsp + (i * 8) as i32), r10));
+                            }
+                            // sysctlbyname(name, oldp, oldlenp, NULL, 0)
+                            emit!(asm.mov(qword_ptr(rsp + 992i32), if id == 26 { 8i32 } else { 928i32 }));
+                            emit!(asm.lea(rdi, qword_ptr(rsp)));
+                            emit!(asm.lea(rsi, qword_ptr(rsp + 64i32)));
+                            emit!(asm.lea(rdx, qword_ptr(rsp + 992i32)));
+                            emit!(asm.xor(ecx, ecx));
+                            emit!(asm.xor(r8d, r8d));
+                            call_ext!("sysctlbyname".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failed));
+                            if id == 26 {
+                                emit!(asm.cmp(qword_ptr(rsp + 992i32), 8i32));
+                                emit!(asm.jb(failed));
+                                emit!(asm.mov(rax, qword_ptr(rsp + 64i32)));
+                            } else {
+                                emit!(asm.cmp(qword_ptr(rsp + 992i32), 56i32));
+                                emit!(asm.jb(failed));
+                                emit!(asm.mov(rax, qword_ptr(rsp + 96i32))); // free
+                                emit!(asm.add(rax, qword_ptr(rsp + 112i32))); // inactive
+                                emit!(asm.imul_2(rax, qword_ptr(rsp + 64i32))); // pagesize
+                            }
+                            emit!(asm.jmp(finished));
+                            emit!(asm.set_label(&mut failed));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.set_label(&mut finished));
+                            emit!(asm.add(rsp, 1024i32));
                         } else {
                             let mut failed = asm.create_label();
                             let mut finished = asm.create_label();
@@ -3040,6 +3121,31 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.jz(finished));
                             emit!(asm.mov(eax, dword_ptr(rsp + 32i32)));
                             emit!(asm.set_label(&mut finished));
+                        } else if is_netbsd {
+                            let mut failed = asm.create_label();
+                            let mut scan = asm.create_label();
+                            let mut finish = asm.create_label();
+                            emit!(asm.mov(rdi, slot(dst)));
+                            emit!(asm.mov(rsi, slot(dst + 1)));
+                            emit!(asm.test(rsi, rsi));
+                            emit!(asm.jz(failed));
+                            call_ext!("gethostname".into(), RelocKind::Plt32);
+                            emit!(asm.test(eax, eax));
+                            emit!(asm.jne(failed));
+                            emit!(asm.mov(rdi, slot(dst)));
+                            emit!(asm.mov(rsi, slot(dst + 1)));
+                            emit!(asm.xor(eax, eax));
+                            emit!(asm.set_label(&mut scan));
+                            emit!(asm.cmp(rax, rsi));
+                            emit!(asm.jae(failed));
+                            emit!(asm.cmp(byte_ptr(rdi + rax), 0i32));
+                            emit!(asm.je(finish));
+                            emit!(asm.inc(rax));
+                            emit!(asm.jmp(scan));
+                            emit!(asm.set_label(&mut failed));
+                            emit!(asm.mov(rax, -1i64));
+                            emit!(asm.jmp(finish));
+                            emit!(asm.set_label(&mut finish));
                         } else {
                             let mut invalid = asm.create_label();
                             let mut failed = asm.create_label();
@@ -3235,6 +3341,11 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.test(eax, eax));
                             emit!(asm.sete(al));
                             emit!(asm.movzx(eax, al));
+                        } else if is_netbsd {
+                            emit!(asm.mov(rdi, slot(dst)));
+                            emit!(asm.mov(rsi, 8i64));
+                            call_ext!("arc4random_buf".into(), RelocKind::Plt32);
+                            emit!(asm.mov(eax, 1i32));
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
                             emit!(asm.mov(esi, 8i32));
@@ -3259,6 +3370,11 @@ impl<'a> FnEncoder<'a> {
                             call_ext!("BCryptGenRandom".into(), RelocKind::Plt32);
                             emit!(asm.test(eax, eax));
                             emit!(asm.jne(failure));
+                        } else if is_netbsd {
+                            emit!(asm.mov(rdi, slot(dst)));
+                            emit!(asm.mov(rsi, 8i64));
+                            call_ext!("arc4random_buf".into(), RelocKind::Plt32);
+                            emit!(asm.mov(eax, 1i32));
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
                             emit!(asm.mov(esi, 8i32));
@@ -3284,6 +3400,10 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(slot(dst), rax));
                     }
                     37 => {
+                        if is_netbsd {
+                            return Err(BackendError("NetBSD process intrinsics need a libc-backed implementation; refusing Linux syscalls".to_string()));
+                        }
+
                         // quazi.process.spawn(program, args_ptr, args_len, handle_out,
                         // error_out) -> 0/-1. Linux uses a CLOEXEC error pipe so a
                         // failed execve is never reported as a successful spawn.
@@ -3532,6 +3652,10 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     38 => {
+                        if is_netbsd {
+                            return Err(BackendError("NetBSD process intrinsics need a libc-backed implementation; refusing Linux syscalls".to_string()));
+                        }
+
                         // quazi.process.wait(handle, kind_out, value_out, error_out) -> 0/-1
                         // kind_out is 0 for an exit code and 1 for a signal.
                         emit!(asm.push(rbx));
@@ -3629,6 +3753,10 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     40 => {
+                        if is_netbsd {
+                            return Err(BackendError("NetBSD process intrinsics need a libc-backed implementation; refusing Linux syscalls".to_string()));
+                        }
+
                         // quazi.process.terminate(handle, error_out) -> 0/-1.
                         // This is deliberately non-consuming; wait/close own reaping.
                         emit!(asm.push(rbx));
@@ -3675,6 +3803,10 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     41 => {
+                        if is_netbsd {
+                            return Err(BackendError("NetBSD process intrinsics need a libc-backed implementation; refusing Linux syscalls".to_string()));
+                        }
+
                         // quazi.process.close(handle, error_out) -> 0/-1.
                         // A live child is killed and reaped before its handle is released.
                         emit!(asm.push(rbx));
@@ -3779,6 +3911,10 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rbx));
                     }
                     39 => {
+                        if is_netbsd {
+                            return Err(BackendError("NetBSD process intrinsics need a libc-backed implementation; refusing Linux syscalls".to_string()));
+                        }
+
                         // quazi.process.try_wait(handle, exited_out, kind_out, value_out,
                         // error_out) -> 0/-1. A live child sets exited_out to zero.
                         emit!(asm.push(rbx));
@@ -4725,6 +4861,35 @@ mod tests {
             let (bytes, _) = encode(&chunk, abi);
             assert!(mnemonics(&bytes).contains(&Mnemonic::Ud2));
         }
+    }
+
+    #[test]
+    fn netbsd_hostname_intrinsic_encodes_with_one_label_per_instruction() {
+        // NetBSD os.hostname() uses intrinsic 28. It previously emitted two
+        // consecutive labels (done/finish) on the same instruction, which
+        // iced-x86 rejects during assembly.
+        let mut chunk = Chunk::with_params("netbsd_hostname", 2);
+        let mut hostname = ri16(Opcode::Intrinsic, 0, 28);
+        hostname.flags = 2;
+        chunk.emit(hostname);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+
+        let fn_table = vec![chunk.name.clone()];
+        let str_syms = vec![None; chunk.constants.len()];
+        let bss_syms = vec![None; chunk.code.len()];
+        let (bytes, relocs) = FnEncoder {
+            chunk: &chunk,
+            fn_table: &fn_table,
+            fn_offset: 0,
+            str_syms: &str_syms,
+            bss_syms: &bss_syms,
+            target: &TargetSpec::x86_64_netbsd(),
+        }
+        .encode()
+        .expect("NetBSD hostname intrinsic must assemble");
+
+        assert!(!bytes.is_empty());
+        assert!(relocs.iter().any(|reloc| reloc.symbol == "gethostname"));
     }
 
     #[test]

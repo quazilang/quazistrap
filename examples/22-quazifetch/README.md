@@ -1,6 +1,6 @@
 # 22-quazifetch
 
-A Windows/Linux system-information example built on Quazi's cross-platform
+A NetBSD/Windows/Linux system-information example built on Quazi's cross-platform
 standard library. It avoids shell commands, `popen`, libc-specific bindings,
 and application-level `free()` calls.
 
@@ -20,20 +20,20 @@ drawing support:
 # Windows: .\system-information.exe -a
 ```
 
-Run `qz check` (or `qz build -c`) on both Windows and Linux when validating a
+Run `qz check` (or `qz build -c`) on NetBSD, Windows, and Linux when validating a
 cross-platform change. The current command targets the host and has no
 cross-target flag.
 
-| Value | Linux | Windows |
-|---|---|---|
-| Hostname | `uname(2)` intrinsic, normalized lowercase | `GetComputerNameA` intrinsic, normalized lowercase |
-| Memory | Total from `sysinfo(2)`, available from `/proc/meminfo` (`MemAvailable`) | `GlobalMemoryStatusEx` intrinsic |
-| CPU | `/proc/cpuinfo` via `std.fs` | CPUID processor brand leaves |
-| OS release | Kernel release | shared kernel build number plus `GetProductInfo` edition |
-| Shell | `$SHELL` | Toolhelp parent-process ancestry |
-| Terminal | `$TERM_PROGRAM` / `$TERM` | `WT_SESSION` plus parent-process ancestry |
-| Packages | Package databases and package directories | Package-manager-owned package directories |
-| Files | Linux syscalls via `std.fs.File` | Win32 handles via `std.fs.File` |
+| Value | Linux | Windows | NetBSD |
+|---|---|---|---|
+| Hostname | `uname(2)` intrinsic, normalized lowercase | `GetComputerNameA` intrinsic, normalized lowercase | `std.os.hostname()` |
+| Memory | Total from `sysinfo(2)`, available from `/proc/meminfo` (`MemAvailable`) | `GlobalMemoryStatusEx` intrinsic | `std.os` memory intrinsics (availability may be platform-limited) |
+| CPU | `std.os.cpu_name()` / CPUID brand | `std.os.cpu_name()` / CPUID brand | `std.os.cpu_name()` / CPUID brand |
+| OS release | Kernel release | shared kernel build number plus `GetProductInfo` edition | `std.os.version()` (currently NetBSD name without detailed release) |
+| Shell | `$SHELL` basename | Toolhelp parent-process ancestry | `$SHELL` basename |
+| Terminal | `$TERM_PROGRAM` / `$TERM` | `WT_SESSION` plus parent-process ancestry | `$TERM_PROGRAM` / `$TERM` |
+| Packages | Package databases and package directories | Package-manager-owned package directories | `/var/db/pkg` (pkgsrc/pkgin), optional Nix fallback |
+| Files | Linux syscalls via `std.fs.File` | Win32 handles via `std.fs.File` | NetBSD libc via `std.fs.File` |
 
 RAM displays `(total - available) / total` in MiB. Linux availability includes
 reclaimable cache, so the used counter follows the usual fastfetch accounting.
@@ -65,3 +65,7 @@ example contains no manual `.free()` calls.
 Explicit lifetime syntax is not implemented yet. The current model is lexical
 automatic destruction plus move checking; raw pointers remain an unsafe escape
 hatch confined here to ownership-transfer helpers and standard-library internals.
+
+## NetBSD note
+
+The NetBSD build uses cross-platform `std.os` for host/CPU/memory/shell, and `std.fs.count_entries` for pkgsrc. Its `kernel` row currently reports `NetBSD` until `std.os.version()` can supply a verified NetBSD release; no `/proc` or Linux syscalls are used.

@@ -9,7 +9,9 @@ pub enum IniError { EmptySection(usize), InvalidSection(usize), MissingSeparator
 fn section_name(line: str) String {
     const text = line.trim();
     if text.len() < 2 || !text.starts_with("[") || !text.ends_with("]") { ret String.new(); }
-    ret text[1:-1].trim();
+    const middle: String = text[1:-1];
+    const normalized: String = middle.trim();
+    ret String.from(normalized.as_str());
 }
 
 fn ignored(line: str) bool {
@@ -31,7 +33,13 @@ fn validate(content: str) Result[bool, IniError] {
                 const closes_section = text.ends_with("]");
                 if opens_section || closes_section {
                     if !opens_section || !closes_section { ret Err(IniError.InvalidSection(line_number)); }
-                    const name = text.as_str()[1:-1].trim();
+                    // "[]" has no inner characters. Handle it without making
+                    // a zero-length owned substring and immediately trimming it.
+                    if text.len() == 2 {
+                        ret Err(IniError.EmptySection(line_number));
+                    }
+                    const middle: String = text.as_str()[1:-1];
+                    const name: String = middle.trim();
                     if name.is_empty() { ret Err(IniError.EmptySection(line_number)); }
                 } else {
                     const equal = text.as_str().find("=");
@@ -62,7 +70,7 @@ fn lookup(content: str, wanted_section: str, wanted_key: str) Option[String] {
                 const next_section = section_name(line.as_str());
                 if !next_section.is_empty() {
                     section.clear();
-                    section = next_section;
+                    section = String.from(next_section.as_str());
                 } else if section.as_str() == wanted_section {
                     const equal = line.as_str().find("=");
                     if equal.is_some() {
@@ -71,7 +79,7 @@ fn lookup(content: str, wanted_section: str, wanted_key: str) Option[String] {
                         if key.as_str() == wanted_key {
                             const value = line.as_str()[at as isize + 1:].trim();
                             result.clear();
-                            result = value;
+                            result = String.from(value.as_str());
                             found = true;
                         }
                     }
@@ -99,7 +107,7 @@ fn has_key_in(content: str, wanted_section: str, wanted_key: str) bool {
                 const next_section = section_name(line.as_str());
                 if !next_section.is_empty() {
                     section.clear();
-                    section = next_section;
+                    section = String.from(next_section.as_str());
                 } else if section.as_str() == wanted_section {
                     const equal = line.as_str().find("=");
                     if equal.is_some() {
@@ -141,7 +149,11 @@ impl IniDocument {
     pub fn free(self: IniDocument) void { self.content.free(); self.content = String.new(); }
     pub fn parse_string(self: &IniDocument!, content: str) Result[bool, IniError] {
         const checked = validate(content);
-        if checked.is_err() { ret Err(checked.unwrap_err()); }
+        // Preserve the original Result on validation failure. Do not unwrap an
+        // owned error payload just to wrap it again in the same Result type.
+        if checked.is_err() {
+            ret checked;
+        }
         self.content.clear();
         self.content = String.from(content);
         ret Ok(true);
@@ -187,14 +199,22 @@ fn rejects_invalid_input_without_replacing_the_document() void {
 @test
 fn reports_each_invalid_form_with_its_line() void {
     var config = IniDocument.new();
-    const empty_section = config.parse_string("\n[]\n");
-    const missing_separator = config.parse_string("[app]\nvalue\n");
-    const empty_key = config.parse_string("[app]\n = value\n");
-    const stray_bracket = config.parse_string("[app]\nvalue]\n");
-    const empty_section_line = match empty_section.unwrap_err() { IniError.EmptySection(line) => line, _ => 0, };
-    const missing_separator_line = match missing_separator.unwrap_err() { IniError.MissingSeparator(line) => line, _ => 0, };
-    const empty_key_line = match empty_key.unwrap_err() { IniError.EmptyKey(line) => line, _ => 0, };
-    const stray_bracket_line = match stray_bracket.unwrap_err() { IniError.InvalidSection(line) => line, _ => 0, };
+    const empty_section_line: usize = match config.parse_string("\n[]\n") {
+        Err(error) => match error { IniError.EmptySection(line) => line, _ => 0, },
+        _ => 0,
+    };
+    const missing_separator_line: usize = match config.parse_string("[app]\nvalue\n") {
+        Err(error) => match error { IniError.MissingSeparator(line) => line, _ => 0, },
+        _ => 0,
+    };
+    const empty_key_line: usize = match config.parse_string("[app]\n = value\n") {
+        Err(error) => match error { IniError.EmptyKey(line) => line, _ => 0, },
+        _ => 0,
+    };
+    const stray_bracket_line: usize = match config.parse_string("[app]\nvalue]\n") {
+        Err(error) => match error { IniError.InvalidSection(line) => line, _ => 0, },
+        _ => 0,
+    };
     if empty_section_line != 2 { panic("empty section error or line was wrong"); }
     if missing_separator_line != 2 { panic("missing separator error or line was wrong"); }
     if empty_key_line != 2 { panic("empty key error or line was wrong"); }

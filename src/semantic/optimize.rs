@@ -4,7 +4,6 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use crate::parser::ast::*;
 
 use super::*;
 

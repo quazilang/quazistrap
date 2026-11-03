@@ -5,11 +5,20 @@ fn main() i32 {
     io.println("-- Guess the number game --");
     io.println("You'll have to guess the number 0-100");
     var attempts: usize = 1;
-    var number: u8 = random.range(0..=100)?;
+    const selected = random.range(0..=100);
+    if (selected.is_err()) {
+        io.errln("Unable to generate a random number");
+        ret 1;
+    }
+    const number: isize = selected.unwrap() as isize;
     var guessed = false;
     for !guessed {
       io.print("> ");
-      const guess = io.readln()?.parse[isize]()?;
+      const entered = io.readln();
+      if (entered.is_err()) { io.errln("Unable to read input"); ret 1; }
+      const parsed = entered.unwrap().parse[isize]();
+      if (parsed.is_err()) { io.println("Please enter a number"); continue; }
+      const guess: isize = parsed.unwrap();
       if guess > number {
         io.println("{guess} is more than ? ; {attempts} attempts");
       } else if guess < number {
