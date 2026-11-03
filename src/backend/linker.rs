@@ -30,7 +30,7 @@ pub fn link_object(
         .iter()
         .all(|flag| is_object_path(flag, target.os));
     let use_builtin = requests_builtin
-        || (matches!(target.os, Os::Linux | Os::Windows)
+        || (matches!(target.os, Os::Linux | Os::Windows | Os::NetBsd)
             && requested_linker.is_none()
             && objects_only);
 
@@ -54,6 +54,7 @@ pub fn link_object(
         objects.extend(native_objects.iter().map(Vec::as_slice));
         return match target.os {
             Os::Linux => super::builtin_linker::link_elf_objects(&objects, output),
+            Os::NetBsd => super::builtin_netbsd_linker::link_netbsd_objects(&objects, output),
             Os::Windows => super::builtin_pe_linker::link_coff_objects(&objects, output),
             _ => Err("the built-in linker does not support this target".into()),
         };
@@ -219,6 +220,21 @@ impl LinkerInvocation {
                 args.push("noseparate-code".into());
                 args.push("-z".into());
                 args.push("max-page-size=0x1000".into()); // 4KB instead of default 2MB
+            }
+            Os::NetBsd => {
+                args.push("--gc-sections".into());
+                args.push("-o".into());
+                args.push(self.output.as_os_str().into());
+                // This external-linker path is for native NetBSD toolchains.
+                // Cross-linking can use QUAZI_NETBSD_SYSROOT to locate libc.
+                if let Some(root) = std::env::var_os("QUAZI_NETBSD_SYSROOT") {
+                    args.push(format!("-L{}/usr/lib", PathBuf::from(root).display()).into());
+                }
+                args.push("-dynamic-linker".into());
+                args.push("/usr/libexec/ld.elf_so".into());
+                args.push(self.object.as_os_str().into());
+                for flag in &self.extra_flags { args.push(flag.into()); }
+                args.push("-lc".into());
             }
             Os::MacOs => {
                 args.push("-o".into());

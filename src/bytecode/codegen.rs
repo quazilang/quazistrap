@@ -4753,15 +4753,20 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn type_requires_structural_drop(&self, ty: &TypeKind) -> bool {
-        matches!(
-            self.resolve_type(ty),
+        match self.resolve_type(ty) {
+            // A fixed array of Plain elements is itself Plain: releasing an
+            // owning contiguous container needs to free its backing storage,
+            // but must not demand destructor glue for every integer slot.
+            // Arrays containing owned elements still fail closed until
+            // recursive element drop is supported by codegen.
+            TypeKind::Array { elem_ty, .. } => self.type_requires_structural_drop(&elem_ty.node),
             TypeKind::Named { .. }
-                | TypeKind::Fn { .. }
-                | TypeKind::Dyn { .. }
-                | TypeKind::Array { .. }
-                | TypeKind::Slice { .. }
-                | TypeKind::FlexibleArray { .. }
-        )
+            | TypeKind::Fn { .. }
+            | TypeKind::Dyn { .. }
+            | TypeKind::Slice { .. }
+            | TypeKind::FlexibleArray { .. } => true,
+            _ => false,
+        }
     }
 
     fn register_drop_action(&mut self, name: &str, reg: u8, action: DropAction, initialized: bool) {

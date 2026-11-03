@@ -490,6 +490,7 @@ pub fn codegen_stats(chunks: &[crate::bytecode::Chunk], is_tty: bool) -> String 
 pub fn arch_label(target: &TargetSpec) -> &'static str {
     match target.os {
         Os::Linux => "x86_64·linux",
+        Os::NetBsd => "x86_64·netbsd",
         Os::Windows => "x86_64·windows",
         Os::MacOs => "x86_64·macos",
     }

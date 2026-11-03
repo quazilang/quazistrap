@@ -7,6 +7,9 @@ type ProcessId = fn() i32;
 fn main() i32 {
     var library_name: str = "libc.so.6";
     var symbol_name: str = "getpid";
+    @cfg(target_os = "netbsd") {
+        library_name = "libc.so.12";
+    }
     @cfg(target_os = "windows") {
         library_name = "kernel32.dll";
         symbol_name = "GetCurrentProcessId";

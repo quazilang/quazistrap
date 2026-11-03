@@ -34,6 +34,106 @@ impl StartStub {
         }
     }
 
+    /// NetBSD/amd64 dynamic ELF entry. NetBSD's rtld passes `ps_strings` in
+    /// rbx (argv pointer at +0, argc at +8, envp at +16). This is *not*
+    /// Linux's initial stack ABI. libc's startup hook is invoked before
+    /// any Quazi allocation or stdlib operations.
+    ///
+    /// The NetBSD crash handler still needs platform-specific sigaction and
+    /// ucontext support; the backtrace symbol is a deliberate no-op here.
+    pub fn generate_netbsd(fn_offset: usize, main_takes_args: bool) -> Self {
+        use iced_x86::code_asm::*;
+
+        let mut asm = CodeAssembler::new(64).expect("asm");
+        let mut placeholder = asm.create_label();
+        let mut pending: Vec<(usize, usize, RelocKind, String, i64)> = Vec::new();
+        macro_rules! call_external {
+            ($name:expr) => {{
+                let index = asm.instructions().len();
+                asm.call(placeholder).expect("emit NetBSD call");
+                pending.push((index, 1, RelocKind::Plt32, $name.into(), -4));
+            }};
+        }
+
+        // This hook remains safe to call from Quazi's panic handler. A
+        // NetBSD-specific symbolizer can replace it in a later revision.
+        let bt_idx = asm.instructions().len();
+        asm.ret().expect("emit backtrace stub");
+        let start_idx = asm.instructions().len();
+        asm.xor(ebp, ebp).expect("emit");
+        asm.mov(r12, rbx).expect("keep NetBSD ps_strings");
+        asm.and(rsp, -16i32).expect("align stack before C calls");
+        call_external!("_libc_init");
+
+        if main_takes_args {
+            asm.mov(r13, qword_ptr(r12)).expect("argv");
+            asm.mov(r14d, dword_ptr(r12 + 8)).expect("argc");
+            asm.mov(rdi, 24i64).expect("Array[str] header size");
+            call_external!("malloc");
+            asm.test(rax, rax).expect("allocation check");
+            let mut header_ok = asm.create_label();
+            asm.jnz(header_ok).expect("branch");
+            asm.ud2().expect("abort allocation failure");
+            asm.set_label(&mut header_ok).expect("NetBSD header_ok label");
+            asm.mov(r15, rax).expect("array header");
+            asm.mov(rdi, r14).expect("argc");
+            asm.shl(rdi, 3i32).expect("arg pointer array bytes");
+            call_external!("malloc");
+            asm.test(rax, rax).expect("allocation check");
+            let mut args_ok = asm.create_label();
+            asm.jnz(args_ok).expect("branch");
+            asm.ud2().expect("abort allocation failure");
+            asm.set_label(&mut args_ok).expect("NetBSD args_ok label");
+            asm.mov(qword_ptr(r15), rax).expect("array data");
+            asm.mov(qword_ptr(r15 + 8), r14).expect("array length");
+            asm.mov(qword_ptr(r15 + 16), r14).expect("array capacity");
+            asm.xor(esi, esi).expect("arg index");
+            let mut loop_label = asm.create_label();
+            let mut loop_end = asm.create_label();
+            asm.set_label(&mut loop_label).expect("NetBSD args loop label");
+            asm.cmp(rsi, r14).expect("arg count");
+            asm.jae(loop_end).expect("branch");
+            asm.mov(rdx, qword_ptr(r13 + rsi * 8)).expect("argv[i]");
+            asm.mov(qword_ptr(rax + rsi * 8), rdx).expect("args.data[i]");
+            asm.inc(rsi).expect("next arg");
+            asm.jmp(loop_label).expect("loop");
+            asm.set_label(&mut loop_end).expect("NetBSD args loop end label");
+            asm.mov(rdi, r15).expect("pass Array[str]");
+        }
+        call_external!("main");
+        asm.mov(edi, eax).expect("exit status");
+        call_external!("exit");
+        // Define the local call target so iced-x86 can assemble the code.
+        // Each CALL's disp32 is replaced with an ELF relocation below.
+        asm.set_label(&mut placeholder).expect("set NetBSD relocation label");
+        asm.ud2().expect("exit must not return");
+
+        let mut bytes = asm.assemble(0).expect("assemble NetBSD startup");
+        let mut offsets = Vec::new();
+        let mut decoder = iced_x86::Decoder::with_ip(64, &bytes, 0, iced_x86::DecoderOptions::NONE);
+        while decoder.can_decode() {
+            offsets.push(decoder.ip() as usize);
+            let _ = decoder.decode();
+        }
+        let mut relocs = Vec::new();
+        for (idx, displacement_offset, kind, symbol, addend) in pending {
+            let position = offsets[idx] + displacement_offset;
+            bytes[position..position + 4].fill(0);
+            relocs.push(PendingReloc {
+                offset_in_text: fn_offset + position,
+                kind,
+                symbol,
+                addend,
+            });
+        }
+        Self {
+            bytes,
+            relocs,
+            extra_symbols: vec![("__quazi_print_backtrace".into(), offsets[bt_idx], 1)],
+            start_offset: offsets[start_idx],
+        }
+    }
+
     pub fn generate_windows(fn_offset: usize, no_crash: bool, main_takes_args: bool) -> Self {
         if no_crash {
             Self::generate_minimal_windows(fn_offset, main_takes_args)

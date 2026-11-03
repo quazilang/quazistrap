@@ -238,6 +238,7 @@ fn run_project(
     let (target_os, target_abi) = match target.os {
         crate::backend::target::Os::Windows => ("windows", "win64"),
         crate::backend::target::Os::Linux => ("linux", "sysv"),
+        crate::backend::target::Os::NetBsd => ("netbsd", "sysv"),
         crate::backend::target::Os::MacOs => ("macos", "sysv"),
     };
     let program = crate::semantic::strip_cfg_for(&loaded.program, target_os, "x86_64", target_abi);

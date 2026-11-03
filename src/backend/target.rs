@@ -11,6 +11,7 @@ pub enum Arch {
 pub enum Os {
     Linux,
     Windows,
+    NetBsd,
     MacOs,
 }
 
@@ -43,6 +44,16 @@ impl TargetSpec {
         }
     }
 
+    pub fn x86_64_netbsd() -> Self {
+        Self {
+            arch: Arch::X86_64,
+            os: Os::NetBsd,
+            abi: Abi::SysV,
+            emit_start: true,
+            no_crash: false,
+        }
+    }
+
     pub fn x86_64_windows() -> Self {
         Self {
             arch: Arch::X86_64,
@@ -57,6 +68,7 @@ impl TargetSpec {
         match self.os {
             Os::Linux => "x86_64-linux",
             Os::Windows => "x86_64-windows",
+            Os::NetBsd => "x86_64-netbsd",
             Os::MacOs => "x86_64-macos",
         }
     }
@@ -70,6 +82,9 @@ impl TargetSpec {
             emit_start: true,
             no_crash: false,
         };
+
+        #[cfg(target_os = "netbsd")]
+        return Self::x86_64_netbsd();
 
         #[cfg(target_os = "macos")]
         return Self {
@@ -89,7 +104,7 @@ impl TargetSpec {
             no_crash: false,
         };
 
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "netbsd", target_os = "windows")))]
         return Self {
             arch: Arch::X86_64,
             os: Os::Linux,
@@ -101,7 +116,7 @@ impl TargetSpec {
 
     pub fn binary_format(&self) -> object::BinaryFormat {
         match self.os {
-            Os::Linux | Os::MacOs => object::BinaryFormat::Elf,
+            Os::Linux | Os::NetBsd | Os::MacOs => object::BinaryFormat::Elf,
             Os::Windows => object::BinaryFormat::Coff,
         }
     }

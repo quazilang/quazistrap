@@ -26,7 +26,7 @@ mod initialization;
 #[cfg(test)]
 mod initialization_tests;
 use initialization::{
-    InitializationCondition, InitializationLoop, InitializationState, join_initialization,
+    InitializationCondition, InitializationLoop, join_initialization,
 };
 mod arithmetic;
 #[cfg(test)]

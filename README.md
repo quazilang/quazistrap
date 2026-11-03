@@ -72,7 +72,21 @@ or production readiness.
 - **Modules and libraries** — dotted imports, `pub import`, downloadable dependencies, and compiled QZI libraries
 - **Native test runner** — `@test` discovery with isolated `qz test` execution
 - **LSP support** — hover, diagnostics, go-to-definition, completion, formatting
-- **Cross-platform** — Linux (ELF) and Windows (PE) targets
+- **Cross-platform** — Linux (ELF), Windows (PE), and experimental NetBSD 11.0/amd64 (ELF with `libc.so.12`) targets
+
+---
+
+## NetBSD 11.0 port (experimental)
+
+Native x86-64 NetBSD 11.0 builds are supported via the built-in ELF linker
+(`libc.so.12`) or an external linker when native dependencies require one.
+On an actual NetBSD 11.0/amd64 host, the 2026-11-03 example audit reported
+**33/39 QZI compilations**, **31/39 native executable builds**, and
+**32/32 attempted runtime checks passing** (including the INI library test
+suite). This is an experimental port, **not** a claim that every example or
+standard-library API works on all three operating systems.
+
+See [NetBSD 11.0 port status, known bugs, and next steps](docs/changes/2026-11-03-netbsd11-port.md).
 
 ---
 

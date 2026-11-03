@@ -36,9 +36,10 @@ impl Result[T, E] {
     }
 
     pub fn unwrap_err(self: Result[T, E]) E {
+        // Evaluate the payload-producing branch before the diverging panic arm.
         ret match self {
-            Ok(_) => panic("called unwrap_err() on an Ok value"),
             Err(e) => e,
+            Ok(_) => panic("called unwrap_err() on an Ok value"),
         };
     }
 

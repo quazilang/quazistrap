@@ -4,7 +4,7 @@ import std.net.{NetError, UdpDatagram, UdpSocket};
 fn main() i32 {
     const opened: Result[UdpSocket, NetError] = UdpSocket.bind(8081);
     if (opened.is_err()) { io.errln("UDP bind failed"); ret 1; }
-    const socket: UdpSocket = opened.unwrap();
+    var socket: UdpSocket = opened.unwrap();
     const received: Result[UdpDatagram, NetError] = socket.receive_from(4096);
     if (received.is_err()) { io.errln("UDP receive failed"); ret 1; }
     const datagram: UdpDatagram = received.unwrap();

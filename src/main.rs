@@ -490,7 +490,7 @@ fn target_output_name(name: &str, emit: EmitType, target: &TargetSpec) -> String
 fn shared_library_name(name: &str, target: &TargetSpec) -> String {
     match target.os {
         backend::target::Os::Windows => format!("{name}.dll"),
-        backend::target::Os::Linux => format!("lib{name}.so"),
+        backend::target::Os::Linux | backend::target::Os::NetBsd => format!("lib{name}.so"),
         backend::target::Os::MacOs => format!("lib{name}.dylib"),
     }
 }
@@ -546,6 +546,11 @@ fn cfg_target_for_spec(target: &TargetSpec) -> loader::CfgTarget<'static> {
             os: "windows",
             arch: "x86_64",
             abi: "win64",
+        },
+        backend::target::Os::NetBsd => loader::CfgTarget {
+            os: "netbsd",
+            arch: "x86_64",
+            abi: "sysv",
         },
         backend::target::Os::Linux => loader::CfgTarget {
             os: "linux",
@@ -1070,6 +1075,7 @@ fn build_with_progress(
     let (target_os, target_abi) = match target.os {
         backend::target::Os::Windows => ("windows", "win64"),
         backend::target::Os::Linux => ("linux", "sysv"),
+                backend::target::Os::NetBsd => ("netbsd", "sysv"),
         backend::target::Os::MacOs => ("macos", "sysv"),
     };
     let target_program = semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
@@ -1486,6 +1492,7 @@ fn main() {
             let target = match target {
                 Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
                 Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
+                Some(cli::TargetTriple::X86_64NetBsd) => TargetSpec::x86_64_netbsd(),
                 None => TargetSpec::host(),
             };
             if run && target.triple() != TargetSpec::host().triple() {
@@ -2002,6 +2009,7 @@ fn main() {
             let loader_target = match target {
                 cli::HeaderTarget::X86_64Linux => TargetSpec::x86_64_linux(),
                 cli::HeaderTarget::X86_64Windows => TargetSpec::x86_64_windows(),
+                cli::HeaderTarget::X86_64NetBsd => TargetSpec::x86_64_netbsd(),
             };
             let result = if files.is_empty() {
                 let ctx = load_project_context();
@@ -2031,6 +2039,7 @@ fn main() {
             let (target_os, target_abi) = match target {
                 cli::HeaderTarget::X86_64Linux => ("linux", "sysv"),
                 cli::HeaderTarget::X86_64Windows => ("windows", "win64"),
+                cli::HeaderTarget::X86_64NetBsd => ("netbsd", "sysv"),
             };
             let target_program =
                 semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
@@ -2081,6 +2090,7 @@ fn main() {
             let target = match target {
                 Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
                 Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
+                Some(cli::TargetTriple::X86_64NetBsd) => TargetSpec::x86_64_netbsd(),
                 None => TargetSpec::host(),
             };
             let result = loader::load_programs_configured_for_target(
@@ -2106,6 +2116,7 @@ fn main() {
             let (target_os, target_abi) = match target.os {
                 backend::target::Os::Windows => ("windows", "win64"),
                 backend::target::Os::Linux => ("linux", "sysv"),
+                backend::target::Os::NetBsd => ("netbsd", "sysv"),
                 backend::target::Os::MacOs => ("macos", "sysv"),
             };
             let target_program =

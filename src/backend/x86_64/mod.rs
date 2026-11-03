@@ -60,6 +60,24 @@ fn emit_native_object(
     let mut sym_table = SymbolTable::new();
     let section_acc = SectionAccumulator::new(&mut obj);
 
+    // NetBSD's exec loader requires a recognized allocated PT_NOTE, including
+    // on binaries built by an external linker. The built-in linker also emits
+    // the note itself; it intentionally ignores this input section.
+    // Linux and Windows object layouts remain unchanged.
+    if target.os == target::Os::NetBsd {
+        let note = obj.add_section(
+            Vec::new(),
+            b".note.netbsd.ident".to_vec(),
+            object::SectionKind::Note,
+        );
+        obj.section_mut(note).flags = object::SectionFlags::Elf { sh_flags: 0x2 };
+        obj.append_section_data(
+            note,
+            &super::builtin_netbsd_linker::NETBSD_NOTE,
+            4,
+        );
+    }
+
     let str_syms_per_chunk = section_acc.build_rodata(&mut obj, &mut sym_table, chunks);
     let bss_syms_per_chunk = section_acc.build_bss(&mut obj, &mut sym_table, chunks);
 
@@ -162,6 +180,8 @@ fn emit_native_object(
         let no_crash = target.no_crash;
         let stub = if target.os == target::Os::Windows {
             StartStub::generate_windows(stub_offset, no_crash, main_takes_args)
+        } else if target.os == target::Os::NetBsd {
+            StartStub::generate_netbsd(stub_offset, main_takes_args)
         } else {
             StartStub::generate(stub_offset, no_crash, main_takes_args)
         };
@@ -366,6 +386,28 @@ mod tests {
     }
 
     #[test]
+    fn netbsd_object_carries_allocated_abi_note_for_external_ld() {
+        use object::ObjectSection as _;
+        let source = vec![returning_main()];
+        let output = ElfBackend
+            .compile(&source, &TargetSpec::x86_64_netbsd(), None, false)
+            .expect("emit NetBSD object");
+        let file = object::File::parse(output.bytes.as_slice()).expect("parse ELF object");
+        let note = file.section_by_name(".note.netbsd.ident").expect("NetBSD ABI note");
+        assert_eq!(note.kind(), object::SectionKind::Note);
+        assert_eq!(note.flags(), object::SectionFlags::Elf { sh_flags: 0x2 });
+        assert_eq!(note.align(), 4);
+        assert_eq!(note.data().unwrap(), &super::super::builtin_netbsd_linker::NETBSD_NOTE[..]);
+
+        // An ELF note must not leak into Linux objects.
+        let linux = ElfBackend
+            .compile(&source, &TargetSpec::x86_64_linux(), None, false)
+            .expect("emit Linux object");
+        let linux = object::File::parse(linux.bytes.as_slice()).expect("parse Linux object");
+        assert!(linux.section_by_name(".note.netbsd.ident").is_none());
+    }
+
+    #[test]
     fn portable_vtables_resolve_actual_native_names_without_source_report() {
         use crate::bytecode::ConstPoolEntry;
         use crate::bytecode::vtable::VtableLayout;
@@ -442,7 +484,7 @@ mod tests {
             let output = match target.os {
                 Os::Linux => ElfBackend.compile(&[returning_main()], &target, None, false),
                 Os::Windows => PeBackend.compile(&[returning_main()], &target, None, false),
-                Os::MacOs => unreachable!("test only covers supported native backends"),
+                Os::MacOs | Os::NetBsd => unreachable!("test only covers supported native backends"),
             }
             .expect("executable object should compile");
             let object = object::File::parse(output.bytes.as_slice()).expect("valid object");
@@ -463,7 +505,7 @@ mod tests {
             let output = match target.os {
                 Os::Linux => ElfBackend.compile(&[returning_main()], &target, None, false),
                 Os::Windows => PeBackend.compile(&[returning_main()], &target, None, false),
-                Os::MacOs => unreachable!("test only covers supported native backends"),
+                Os::MacOs | Os::NetBsd => unreachable!("test only covers supported native backends"),
             }
             .expect("shared-library object should compile");
             let object = object::File::parse(output.bytes.as_slice()).expect("valid object");

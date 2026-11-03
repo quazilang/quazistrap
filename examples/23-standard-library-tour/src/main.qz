@@ -3,7 +3,8 @@ import std.math;
 
 fn main() i32 {
     const raw_title: str = "  quazi developer report  ";
-    const title: String = raw_title.trim().capitalize();
+    const trimmed_title: String = raw_title.trim();
+    const title: String = trimmed_title.capitalize();
     const language: str = "Quazi λ🙂";
     const parsed_port: Result[u16, ParseError] = "8080".parse[u16]();
 
