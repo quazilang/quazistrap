@@ -491,6 +491,7 @@ pub fn arch_label(target: &TargetSpec) -> &'static str {
     match target.os {
         Os::Linux => "x86_64·linux",
         Os::NetBsd => "x86_64·netbsd",
+        Os::None => "x86_64·none",
         Os::Windows => "x86_64·windows",
         Os::MacOs => "x86_64·macos",
     }

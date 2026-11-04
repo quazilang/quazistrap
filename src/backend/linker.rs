@@ -35,6 +35,9 @@ pub fn link_object(
             && objects_only);
 
     if use_builtin {
+        if target.os == Os::None {
+            return Err("x86_64-none requires an external ELF linker (ld or ld.lld); use [link].script to control the layout".into());
+        }
         if !objects_only {
             return Err(format!(
                 "the built-in linker accepts target-compatible `.o`/`.obj` inputs but not these native flags: {}\n\
@@ -135,6 +138,7 @@ impl LinkerInvocation {
         use super::target::Os;
         let candidates: &[&str] = match target.os {
             Os::Windows => &["lld-link", "link"],
+            Os::None => &["ld.lld", "ld"],
             _ => &["ld.lld", "mold", "ld"],
         };
         for candidate in candidates {
@@ -185,6 +189,16 @@ impl LinkerInvocation {
         let mut args: Vec<OsString> = Vec::new();
         let is_shared = self.extra_flags.iter().any(|flag| flag == "-shared");
         match self.target.os {
+            Os::None => {
+                // Freestanding ELF. No dynamic interpreter, CRT, libc, or implicit
+                // entry symbol. A linker script or explicit flags define the layout.
+                args.push("-o".into());
+                args.push(self.output.as_os_str().into());
+                args.push(self.object.as_os_str().into());
+                for flag in &self.extra_flags {
+                    args.push(flag.into());
+                }
+            }
             Os::Linux => {
                 args.push("--gc-sections".into());
                 args.push("--build-id=none".into());
@@ -336,6 +350,24 @@ pub fn remove_temp(path: &Path) {
 mod tests {
     use super::*;
     use crate::backend::target::{Abi, Arch, Os};
+
+    #[test]
+    fn freestanding_linker_receives_script_without_crt_or_dynamic_loader() {
+        let inv = LinkerInvocation {
+            output: PathBuf::from("firmware.elf"),
+            object: PathBuf::from("quazi.o"),
+            linker: PathBuf::from("ld"),
+            extra_flags: vec![
+                "entry.o".to_string(),
+                "-T".to_string(),
+                "firmware.ld".to_string(),
+            ],
+            target: TargetSpec::x86_64_none(),
+        };
+        let args: Vec<String> = inv.build_args().iter()
+            .map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(args.join(" "), "-o firmware.elf quazi.o entry.o -T firmware.ld");
+    }
 
     #[test]
     fn linux_external_link_args_do_not_add_implicit_libc() {

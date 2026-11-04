@@ -484,7 +484,7 @@ mod tests {
             let output = match target.os {
                 Os::Linux => ElfBackend.compile(&[returning_main()], &target, None, false),
                 Os::Windows => PeBackend.compile(&[returning_main()], &target, None, false),
-                Os::MacOs | Os::NetBsd => unreachable!("test only covers supported native backends"),
+                Os::MacOs | Os::NetBsd | Os::None => unreachable!("test only covers supported native backends"),
             }
             .expect("executable object should compile");
             let object = object::File::parse(output.bytes.as_slice()).expect("valid object");
@@ -505,7 +505,7 @@ mod tests {
             let output = match target.os {
                 Os::Linux => ElfBackend.compile(&[returning_main()], &target, None, false),
                 Os::Windows => PeBackend.compile(&[returning_main()], &target, None, false),
-                Os::MacOs | Os::NetBsd => unreachable!("test only covers supported native backends"),
+                Os::MacOs | Os::NetBsd | Os::None => unreachable!("test only covers supported native backends"),
             }
             .expect("shared-library object should compile");
             let object = object::File::parse(output.bytes.as_slice()).expect("valid object");
@@ -624,6 +624,22 @@ mod tests {
                 .symbols()
                 .all(|symbol| symbol.name() != Ok("sprintf"))
         );
+    }
+
+    #[test]
+    fn freestanding_target_emits_elf_object_without_os_start() {
+        let target = TargetSpec::x86_64_none();
+        assert!(!target.emit_start);
+        assert!(target.no_crash);
+        assert_eq!(target.triple(), "x86_64-none");
+        let output = ElfBackend
+            .compile(&[returning_main()], &target, None, false)
+            .expect("freestanding ELF output should compile");
+        let object = object::File::parse(output.bytes.as_slice()).expect("valid ELF object");
+        assert_eq!(object.format(), object::BinaryFormat::Elf);
+        assert!(!object.symbols().any(|symbol| symbol.name() == Ok("_start")));
+        assert!(object.symbols().any(|symbol| symbol.name() == Ok("main")));
+        assert!(!object.symbols().any(|symbol| symbol.name() == Ok("malloc")));
     }
 
     #[test]

@@ -20,6 +20,8 @@ pub enum TargetTriple {
     X86_64Windows,
     #[value(name = "x86_64-netbsd")]
     X86_64NetBsd,
+    #[value(name = "x86_64-none")]
+    X86_64None,
 }
 
 pub type HeaderTarget = TargetTriple;
@@ -64,6 +66,9 @@ pub enum Command {
         /// external linker path, or `builtin` for the experimental in-process linker
         #[arg(long = "linker")]
         linker: Option<PathBuf>,
+        /// GNU ld/lld linker script, especially useful with --target x86_64-none
+        #[arg(long = "linker-script", value_name = "FILE")]
+        linker_script: Option<PathBuf>,
         /// strip debug symbols from the output binary
         #[arg(short = 's', long = "strip")]
         strip: bool,
@@ -111,6 +116,9 @@ pub enum Command {
         /// external linker path, or `builtin` for the experimental in-process linker
         #[arg(long = "linker")]
         linker: Option<PathBuf>,
+        /// GNU ld/lld linker script
+        #[arg(long = "linker-script", value_name = "FILE")]
+        linker_script: Option<PathBuf>,
         /// strip debug symbols from the output binary
         #[arg(short = 's', long = "strip")]
         strip: bool,
@@ -313,6 +321,22 @@ mod tests {
         let args = Args::try_parse_from(["qz", "build", "-r"])
             .expect("build --run shorthand should parse");
         assert!(matches!(args.command, Command::Build { run: true, .. }));
+    }
+
+    #[test]
+    fn build_accepts_baremetal_asm_and_linker_script() {
+        let args = Args::try_parse_from([
+            "qz", "build", "src/main.qz", "src/entry.S",
+            "--target", "x86_64-none", "--linker-script", "linker.ld",
+        ]).expect("freestanding build flags should parse");
+        match args.command {
+            Command::Build { files, target, linker_script, .. } => {
+                assert_eq!(files, [PathBuf::from("src/main.qz"), PathBuf::from("src/entry.S")]);
+                assert_eq!(target, Some(super::TargetTriple::X86_64None));
+                assert_eq!(linker_script, Some(PathBuf::from("linker.ld")));
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
     }
 
     #[test]

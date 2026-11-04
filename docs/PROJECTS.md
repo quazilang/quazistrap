@@ -67,3 +67,26 @@ V6 rejects caches created before phase-2 layout intrinsic lowering and the
 current layout ABI boundary.
 `quazi.lock` alone stores dependency resolution. QZC is always safe to delete.
 `[package].out_dir` changes the `build` root; it must remain inside the project.
+
+## Freestanding images and assembler sources
+
+`qz build --target x86_64-none` selects freestanding ELF object generation,
+without a hosted `_start` or an implicit C runtime. Configure raw assembler
+and a linker script in `quazi.toml`:
+
+```toml
+[package]
+std = false
+mangling = false
+
+[asm]
+sources = ["src/entry.S"]
+
+[target.x86_64-none.link]
+script = "linker.ld"
+```
+
+`.S` is preprocessed assembly, `.s` is plain assembly; `ASM_CC` or
+`[asm].assembler` selects the GCC/Clang-compatible assembler driver. CLI
+sources also accept `.S` and `.s`, and `--linker-script` selects an external
+linker script. See [BARE_METAL.md](BARE_METAL.md).

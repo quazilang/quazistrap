@@ -39,6 +39,7 @@ pub struct ProjectConfig {
     pub dependencies: Vec<ResolvedDependency>,
     pub qzi_dependencies: Vec<PathBuf>,
     pub cc: CcConfig,
+    pub asm: AsmConfig,
     pub link: LinkConfig,
     pub artifacts: Vec<ProjectArtifact>,
     pub target_links: BTreeMap<String, LinkConfigOverride>,
@@ -69,9 +70,20 @@ pub struct CcConfig {
     pub flags: Vec<String>,
 }
 
+/// Preprocessed GNU assembler files (.S), or plain assembler (.s).
+#[derive(Debug, Clone, Default)]
+pub struct AsmConfig {
+    pub sources: Vec<PathBuf>,
+    pub assembler: Option<String>,
+    pub include_paths: Vec<PathBuf>,
+    pub defines: Vec<String>,
+    pub flags: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LinkConfig {
     pub linker: Option<String>,
+    pub script: Option<PathBuf>,
     pub libc: bool,
     pub objects: Vec<PathBuf>,
     pub libraries: Vec<String>,
@@ -82,6 +94,7 @@ pub struct LinkConfig {
 #[derive(Debug, Clone, Default)]
 pub struct LinkConfigOverride {
     pub linker: Option<String>,
+    pub script: Option<PathBuf>,
     pub libc: Option<bool>,
     pub objects: Vec<PathBuf>,
     pub libraries: Vec<String>,
@@ -337,6 +350,7 @@ struct RawConfig {
     build: Option<RawBuild>,
     dependencies: Option<BTreeMap<String, RawDependency>>,
     cc: Option<RawCc>,
+    asm: Option<RawAsm>,
     link: Option<RawLink>,
     lib: Option<RawArtifact>,
     #[serde(rename = "bin")]
@@ -366,8 +380,19 @@ struct RawCc {
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
+struct RawAsm {
+    sources: Option<Vec<String>>,
+    assembler: Option<String>,
+    include_paths: Option<Vec<String>>,
+    defines: Option<Vec<String>>,
+    flags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
 struct RawLink {
     linker: Option<String>,
+    script: Option<String>,
     libc: Option<bool>,
     objects: Option<Vec<String>>,
     libraries: Option<Vec<String>>,
@@ -421,6 +446,7 @@ struct ProjectMeta {
     flags: Vec<String>,
     dependencies: Vec<DependencySpec>,
     cc: CcConfig,
+    asm: AsmConfig,
     link: LinkConfig,
     artifacts: Vec<ProjectArtifact>,
     target_links: BTreeMap<String, LinkConfigOverride>,
@@ -539,6 +565,9 @@ impl ProjectContext {
             if override_.linker.is_some() {
                 link.linker = override_.linker.clone();
             }
+            if override_.script.is_some() {
+                link.script = override_.script.clone();
+            }
             if let Some(libc) = override_.libc {
                 link.libc = libc;
             }
@@ -562,6 +591,14 @@ impl ProjectContext {
 
     pub fn incremental_inputs(&self) -> Vec<PathBuf> {
         let mut inputs = vec![self.config.root.join("quazi.toml")];
+        // Native inputs do not become QZI instructions, but changing them
+        // must still invalidate the project's build fingerprint.
+        inputs.extend(self.config.cc.sources.iter().cloned());
+        inputs.extend(self.config.asm.sources.iter().cloned());
+        inputs.extend(self.config.link.objects.iter().cloned());
+        if let Some(script) = &self.config.link.script {
+            inputs.push(script.clone());
+        }
         let lock = self.config.root.join("quazi.lock");
         if lock.exists() {
             inputs.push(lock);
@@ -594,6 +631,7 @@ impl ProjectContext {
             dependencies: Vec::new(),
             qzi_dependencies: Vec::new(),
             cc: meta.cc.clone(),
+            asm: meta.asm.clone(),
             link: meta.link.clone(),
             artifacts: meta.artifacts.clone(),
             target_links: meta.target_links.clone(),
@@ -731,8 +769,17 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         defines: raw_cc.defines.unwrap_or_default(),
         flags: raw_cc.flags.unwrap_or_default(),
     };
+    let raw_asm = raw.asm.unwrap_or_default();
+    let asm = AsmConfig {
+        sources: raw_asm.sources.unwrap_or_default().into_iter().map(|path| root.join(path)).collect(),
+        assembler: raw_asm.assembler,
+        include_paths: raw_asm.include_paths.unwrap_or_default().into_iter().map(|path| root.join(path)).collect(),
+        defines: raw_asm.defines.unwrap_or_default(),
+        flags: raw_asm.flags.unwrap_or_default(),
+    };
     let make_link = |raw_link: RawLink| LinkConfigOverride {
         linker: raw_link.linker,
+        script: raw_link.script.map(|path| root.join(path)),
         libc: raw_link.libc,
         objects: raw_link
             .objects
@@ -753,6 +800,7 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
     let base = make_link(raw.link.unwrap_or_default());
     let link = LinkConfig {
         linker: base.linker,
+        script: base.script,
         libc: base.libc.unwrap_or(false),
         objects: base.objects,
         libraries: base.libraries,
@@ -895,6 +943,7 @@ fn load_project_meta(root: &Path) -> Result<ProjectMeta, String> {
         flags: build.flags.unwrap_or_default(),
         dependencies,
         cc,
+        asm,
         link,
         artifacts,
         target_links,
@@ -1274,6 +1323,18 @@ fn write_lockfile(path: &Path, dependencies: &[ResolvedDependency]) -> Result<()
 mod tests {
     use super::*;
     use crate::analysis::analyze_program_with_source_files;
+
+    #[test]
+    fn freestanding_example_resolves_assembly_and_target_linker_script() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/36-freestanding-asm");
+        let project = ProjectContext::load_from_root(&root).expect("load baremetal manifest");
+        assert!(!project.config.package.std);
+        assert_eq!(project.config.asm.sources, [root.join("src/entry.S")]);
+        let link = project.link_for_target("x86_64-none");
+        assert_eq!(link.script, Some(root.join("linker.ld")));
+        assert!(!link.libc);
+    }
 
     #[test]
     fn infers_dependency_identifier_from_url() {

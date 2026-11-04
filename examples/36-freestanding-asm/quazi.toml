@@ -1,0 +1,18 @@
+[package]
+name = "freestanding-asm"
+version = "0.1.0"
+out_dir = "build"
+std = false
+crash_handler = false
+mangling = false
+
+[build]
+entry = "src/main.qz"
+
+[asm]
+sources = ["src/entry.S"]
+
+[target.x86_64-none.link]
+linker = "auto" # ld.lld or GNU ld, selected automatically
+script = "linker.ld"
+libc = false

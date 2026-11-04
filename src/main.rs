@@ -489,6 +489,7 @@ fn target_output_name(name: &str, emit: EmitType, target: &TargetSpec) -> String
 
 fn shared_library_name(name: &str, target: &TargetSpec) -> String {
     match target.os {
+        backend::target::Os::None => format!("lib{name}.so"),
         backend::target::Os::Windows => format!("{name}.dll"),
         backend::target::Os::Linux | backend::target::Os::NetBsd => format!("lib{name}.so"),
         backend::target::Os::MacOs => format!("lib{name}.dylib"),
@@ -542,6 +543,11 @@ fn load_with_optional_project_for_target(
 
 fn cfg_target_for_spec(target: &TargetSpec) -> loader::CfgTarget<'static> {
     match target.os {
+        backend::target::Os::None => loader::CfgTarget {
+            os: "none",
+            arch: "x86_64",
+            abi: "sysv",
+        },
         backend::target::Os::Windows => loader::CfgTarget {
             os: "windows",
             arch: "x86_64",
@@ -639,6 +645,43 @@ fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
         flags.push(external_tool_path(&object).to_string_lossy().into_owned());
     }
 
+    if !ctx.config.asm.sources.is_empty() {
+        std::fs::create_dir_all(&object_dir).map_err(|e| {
+            format!("cannot create assembly object directory {}: {e}", object_dir.display())
+        })?;
+    }
+    let assembler = ctx.config.asm.assembler.as_deref()
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("ASM_CC"))
+        .or_else(|| std::env::var_os("CC"))
+        .unwrap_or_else(|| "cc".into());
+    for (index, source) in ctx.config.asm.sources.iter().enumerate() {
+        let dialect = asm_dialect(source)?;
+        let stem = source.file_stem().and_then(|name| name.to_str())
+            .ok_or_else(|| format!("invalid assembly source path: {}", source.display()))?;
+        let object = object_dir.join(format!("asm_{index}_{stem}.o"));
+        let mut cmd = std::process::Command::new(&assembler);
+        cmd.arg("-x").arg(dialect).arg("-c")
+            .arg(external_tool_path(source))
+            .arg("-o").arg(external_tool_path(&object));
+        for include in &ctx.config.asm.include_paths {
+            cmd.arg(format!("-I{}", external_tool_path(include).display()));
+        }
+        for define in &ctx.config.asm.defines {
+            cmd.arg(format!("-D{define}"));
+        }
+        cmd.args(&ctx.config.asm.flags);
+        let result = cmd.output().map_err(|e| format!(
+            "failed to run assembler {:?} for {}: {e}", assembler, source.display()
+        ))?;
+        if !result.status.success() {
+            return Err(format!("assembler failed for {}\n{}{}", source.display(),
+                String::from_utf8_lossy(&result.stderr),
+                String::from_utf8_lossy(&result.stdout)));
+        }
+        flags.push(external_tool_path(&object).to_string_lossy().into_owned());
+    }
+
     flags.extend(
         ctx.config
             .link
@@ -661,10 +704,26 @@ fn native_link_flags(ctx: &ProjectContext) -> Result<Vec<String>, String> {
             .map(|name| format!("-l{name}")),
     );
     flags.extend(ctx.config.link.flags.iter().cloned());
+    if let Some(script) = &ctx.config.link.script {
+        if !script.is_file() {
+            return Err(format!("linker script does not exist: {}", script.display()));
+        }
+        flags.push("-T".into());
+        flags.push(external_tool_path(script).to_string_lossy().into_owned());
+    }
     if ctx.config.link.libc {
         flags.push("-lc".into());
     }
     Ok(flags)
+}
+
+/// .S is preprocessed with CPP; .s passes directly to GAS via the compiler driver.
+fn asm_dialect(path: &Path) -> Result<&'static str, String> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("S") => Ok("assembler-with-cpp"),
+        Some("s") => Ok("assembler"),
+        _ => Err(format!("expected .S or .s assembler source: {}", path.display())),
+    }
 }
 
 fn compile_direct_c_sources(sources: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
@@ -673,6 +732,9 @@ fn compile_direct_c_sources(sources: &[PathBuf]) -> Result<Vec<PathBuf>, String>
     for (index, source) in sources.iter().enumerate() {
         let object = std::env::temp_dir().join(format!("qz_cc_{}_{}.o", std::process::id(), index));
         let mut command = std::process::Command::new(&cc);
+        if source.extension().and_then(|ext| ext.to_str()) != Some("c") {
+            command.arg("-x").arg(asm_dialect(source)?);
+        }
         command
             .arg("-c")
             .arg(external_tool_path(source))
@@ -1075,7 +1137,8 @@ fn build_with_progress(
     let (target_os, target_abi) = match target.os {
         backend::target::Os::Windows => ("windows", "win64"),
         backend::target::Os::Linux => ("linux", "sysv"),
-                backend::target::Os::NetBsd => ("netbsd", "sysv"),
+        backend::target::Os::NetBsd => ("netbsd", "sysv"),
+        backend::target::Os::None => ("none", "sysv"),
         backend::target::Os::MacOs => ("macos", "sysv"),
     };
     let target_program = semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
@@ -1429,6 +1492,7 @@ fn main() {
         CliCmd::Run {
             files,
             linker,
+            linker_script,
             strip,
             library_paths,
             libraries,
@@ -1448,6 +1512,7 @@ fn main() {
             run: true,
             debug: false,
             linker,
+            linker_script,
             strip,
             library_paths,
             libraries,
@@ -1474,6 +1539,7 @@ fn main() {
             run,
             debug,
             linker,
+            linker_script,
             strip,
             library_paths,
             libraries,
@@ -1493,6 +1559,7 @@ fn main() {
                 Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
                 Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
                 Some(cli::TargetTriple::X86_64NetBsd) => TargetSpec::x86_64_netbsd(),
+                Some(cli::TargetTriple::X86_64None) => TargetSpec::x86_64_none(),
                 None => TargetSpec::host(),
             };
             if run && target.triple() != TargetSpec::host().triple() {
@@ -1501,6 +1568,10 @@ fn main() {
                     target.triple(),
                     TargetSpec::host().triple()
                 );
+                std::process::exit(1);
+            }
+            if target.os == backend::target::Os::None && shared_lib {
+                eprintln!("error: x86_64-none does not support hosted shared-library output");
                 std::process::exit(1);
             }
             let emit = if emit_bytecode {
@@ -1569,6 +1640,13 @@ fn main() {
                     .map(PathBuf::from);
                 let explicit_linker = cli_linker.or(manifest_linker.as_deref());
                 ctx.config.link = manifest_link;
+                if let Some(script) = &linker_script {
+                    ctx.config.link.script = Some(script.clone());
+                }
+                if target.os == backend::target::Os::None && ctx.config.package.std {
+                    eprintln!("error: freestanding x86_64-none projects require [package] std = false");
+                    std::process::exit(1);
+                }
                 ctx.ensure_lockfile().unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                     std::process::exit(1);
@@ -1678,10 +1756,10 @@ fn main() {
                 // ELF objects may be supplied alongside it for final linking.
                 for input in &files {
                     if !input.extension().is_some_and(|extension| {
-                        matches!(extension.to_str(), Some("qzi" | "o" | "obj"))
+                        matches!(extension.to_str(), Some("qzi" | "o" | "obj" | "c" | "s" | "S"))
                     }) {
                         eprintln!(
-                            "\x1b[31;1merror:\x1b[0m .qzi builds accept only .qzi and .o inputs: {}",
+                            "\x1b[31;1merror:\x1b[0m .qzi builds accept .qzi, .o, .c, .s and .S inputs: {}",
                             input.display()
                         );
                         std::process::exit(1);
@@ -1736,6 +1814,19 @@ fn main() {
                     target_output_name(&stem, emit.clone(), &target)
                 });
 
+                let asm_and_c_sources: Vec<PathBuf> = files.iter()
+                    .filter(|path| path.extension().is_some_and(|extension| {
+                        matches!(extension.to_str(), Some("c" | "s" | "S"))
+                    }))
+                    .cloned().collect();
+                let compiled_native_objects = if matches!(emit, EmitType::Binary) {
+                    compile_direct_c_sources(&asm_and_c_sources).unwrap_or_else(|error| {
+                        eprintln!("error: {error}");
+                        std::process::exit(1);
+                    })
+                } else {
+                    Vec::new()
+                };
                 let mut qzi_link_flags: Vec<String> = files
                     .iter()
                     .filter(|path| {
@@ -1745,6 +1836,7 @@ fn main() {
                     })
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
+                qzi_link_flags.extend(compiled_native_objects.iter().map(|p| p.to_string_lossy().into_owned()));
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let qzi_context = ProjectContext::discover(&cwd).unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {e}");
@@ -1768,6 +1860,14 @@ fn main() {
                             .map(|path| format!("-L{}", path.display())),
                     );
                     qzi_link_flags.extend(libraries.iter().map(|name| format!("-l{name}")));
+                    if let Some(script) = &linker_script {
+                        if !script.is_file() {
+                            eprintln!("error: linker script does not exist: {}", script.display());
+                            std::process::exit(1);
+                        }
+                        qzi_link_flags.push("-T".into());
+                        qzi_link_flags.push(script.to_string_lossy().into_owned());
+                    }
                 }
                 let mut seen_objects = HashSet::new();
                 qzi_link_flags.retain(|flag| {
@@ -1791,6 +1891,9 @@ fn main() {
                     &target,
                 );
 
+                for object in &compiled_native_objects {
+                    remove_temp(object);
+                }
                 if do_strip {
                     strip_binary(Path::new(&out));
                 }
@@ -1823,7 +1926,9 @@ fn main() {
                     .collect();
                 let c_sources: Vec<PathBuf> = files
                     .iter()
-                    .filter(|path| path.extension().is_some_and(|ext| ext == "c"))
+                    .filter(|path| path.extension().is_some_and(|ext| {
+                        matches!(ext.to_str(), Some("c" | "S" | "s"))
+                    }))
                     .cloned()
                     .collect();
                 let compiled_c_objects = compile_direct_c_sources(&c_sources).unwrap_or_else(|e| {
@@ -1869,6 +1974,14 @@ fn main() {
                             .map(|path| format!("-L{}", path.display())),
                     );
                     objects.extend(libraries.iter().map(|name| format!("-l{name}")));
+                    if let Some(script) = &linker_script {
+                        if !script.is_file() {
+                            eprintln!("error: linker script does not exist: {}", script.display());
+                            std::process::exit(1);
+                        }
+                        objects.push("-T".into());
+                        objects.push(script.to_string_lossy().into_owned());
+                    }
                     let out = output.clone().unwrap_or_else(|| {
                         let stem = Path::new(&primary)
                             .file_stem()
@@ -1952,13 +2065,25 @@ fn main() {
                         .map(|path| format!("-L{}", path.display())),
                 );
                 link_flags.extend(libraries.iter().map(|name| format!("-l{name}")));
-                let package_settings = ProjectContext::discover(&source_files[0])
+                if let Some(script) = &linker_script {
+                    if !script.is_file() {
+                        eprintln!("error: linker script does not exist: {}", script.display());
+                        std::process::exit(1);
+                    }
+                    link_flags.push("-T".into());
+                    link_flags.push(script.to_string_lossy().into_owned());
+                }
+                let mut package_settings = ProjectContext::discover(&source_files[0])
                     .unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
                         std::process::exit(1);
                     })
                     .map(|context| context.config.package)
                     .unwrap_or_default();
+                if target.os == backend::target::Os::None {
+                    package_settings.std = false;
+                    package_settings.crash_handler = false;
+                }
                 let target = apply_package_settings(target, package_settings);
                 build_with_progress(
                     &source_files,
@@ -2010,6 +2135,7 @@ fn main() {
                 cli::HeaderTarget::X86_64Linux => TargetSpec::x86_64_linux(),
                 cli::HeaderTarget::X86_64Windows => TargetSpec::x86_64_windows(),
                 cli::HeaderTarget::X86_64NetBsd => TargetSpec::x86_64_netbsd(),
+                cli::HeaderTarget::X86_64None => TargetSpec::x86_64_none(),
             };
             let result = if files.is_empty() {
                 let ctx = load_project_context();
@@ -2040,6 +2166,7 @@ fn main() {
                 cli::HeaderTarget::X86_64Linux => ("linux", "sysv"),
                 cli::HeaderTarget::X86_64Windows => ("windows", "win64"),
                 cli::HeaderTarget::X86_64NetBsd => ("netbsd", "sysv"),
+                cli::HeaderTarget::X86_64None => ("none", "sysv"),
             };
             let target_program =
                 semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
@@ -2091,6 +2218,7 @@ fn main() {
                 Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
                 Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
                 Some(cli::TargetTriple::X86_64NetBsd) => TargetSpec::x86_64_netbsd(),
+                Some(cli::TargetTriple::X86_64None) => TargetSpec::x86_64_none(),
                 None => TargetSpec::host(),
             };
             let result = loader::load_programs_configured_for_target(
@@ -2117,6 +2245,7 @@ fn main() {
                 backend::target::Os::Windows => ("windows", "win64"),
                 backend::target::Os::Linux => ("linux", "sysv"),
                 backend::target::Os::NetBsd => ("netbsd", "sysv"),
+                backend::target::Os::None => ("none", "sysv"),
                 backend::target::Os::MacOs => ("macos", "sysv"),
             };
             let target_program =

@@ -137,6 +137,7 @@ pub fn generate(
     let target_name = match target {
         HeaderTarget::X86_64Linux => "x86_64-linux",
         HeaderTarget::X86_64NetBsd => "x86_64-netbsd",
+        HeaderTarget::X86_64None => "x86_64-none",
         HeaderTarget::X86_64Windows => "x86_64-windows",
     };
     let mut out = format!(
@@ -399,7 +400,7 @@ fn emit_aggregate(
         out.push_str("#pragma pack(push, 1)\n");
     }
     let modifier = match context.target {
-        HeaderTarget::X86_64Linux | HeaderTarget::X86_64NetBsd => {
+        HeaderTarget::X86_64Linux | HeaderTarget::X86_64NetBsd | HeaderTarget::X86_64None => {
             let mut values = Vec::new();
             if packed {
                 values.push("packed".to_string());
@@ -513,14 +514,14 @@ fn c_base_type(
             TypeKind::Named { name, type_args } if type_args.is_empty() => {
                 if name == "c_long" {
                     return Ok(match context.target {
-                        HeaderTarget::X86_64Linux | HeaderTarget::X86_64NetBsd => "int64_t",
+                        HeaderTarget::X86_64Linux | HeaderTarget::X86_64NetBsd | HeaderTarget::X86_64None => "int64_t",
                         HeaderTarget::X86_64Windows => "int32_t",
                     }
                     .to_string());
                 }
                 if name == "c_ulong" {
                     return Ok(match context.target {
-                        HeaderTarget::X86_64Linux | HeaderTarget::X86_64NetBsd => "uint64_t",
+                        HeaderTarget::X86_64Linux | HeaderTarget::X86_64NetBsd | HeaderTarget::X86_64None => "uint64_t",
                         HeaderTarget::X86_64Windows => "uint32_t",
                     }
                     .to_string());
@@ -656,11 +657,12 @@ fn cfg_active(attributes: &[Attribute], target: HeaderTarget) -> bool {
                     "target_os" => match target {
                         HeaderTarget::X86_64Linux => value == "linux",
                         HeaderTarget::X86_64NetBsd => value == "netbsd",
+                        HeaderTarget::X86_64None => value == "none",
                         HeaderTarget::X86_64Windows => value == "windows",
                     },
                     "target_arch" => value == "x86_64",
                     "target_abi" => match target {
-                        HeaderTarget::X86_64Linux | HeaderTarget::X86_64NetBsd => value == "sysv",
+                        HeaderTarget::X86_64Linux | HeaderTarget::X86_64NetBsd | HeaderTarget::X86_64None => value == "sysv",
                         HeaderTarget::X86_64Windows => value == "win64",
                     },
                     _ => false,

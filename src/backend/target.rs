@@ -10,6 +10,7 @@ pub enum Arch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
     Linux,
+    None,
     Windows,
     NetBsd,
     MacOs,
@@ -44,6 +45,18 @@ impl TargetSpec {
         }
     }
 
+    /// Freestanding x86-64 ELF: no OS startup, syscall ABI, or implicit runtime.
+    /// The project supplies its own entry point (typically from an assembly file).
+    pub fn x86_64_none() -> Self {
+        Self {
+            arch: Arch::X86_64,
+            os: Os::None,
+            abi: Abi::SysV,
+            emit_start: false,
+            no_crash: true,
+        }
+    }
+
     pub fn x86_64_netbsd() -> Self {
         Self {
             arch: Arch::X86_64,
@@ -67,6 +80,7 @@ impl TargetSpec {
     pub fn triple(&self) -> &'static str {
         match self.os {
             Os::Linux => "x86_64-linux",
+            Os::None => "x86_64-none",
             Os::Windows => "x86_64-windows",
             Os::NetBsd => "x86_64-netbsd",
             Os::MacOs => "x86_64-macos",
@@ -116,7 +130,7 @@ impl TargetSpec {
 
     pub fn binary_format(&self) -> object::BinaryFormat {
         match self.os {
-            Os::Linux | Os::NetBsd | Os::MacOs => object::BinaryFormat::Elf,
+            Os::Linux | Os::None | Os::NetBsd | Os::MacOs => object::BinaryFormat::Elf,
             Os::Windows => object::BinaryFormat::Coff,
         }
     }

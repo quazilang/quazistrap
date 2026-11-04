@@ -1,0 +1,5 @@
+// This is ordinary Quazi code, entered from src/entry.S under the SysV ABI.
+// package.mangling = false makes the ELF symbol name `main`.
+fn main() i32 {
+    ret 42;
+}
