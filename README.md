@@ -30,7 +30,7 @@ Revalidated on 2026-10-25 for the
 [declaration-type context prerequisite](docs/changes/2026-10-24-declaration-type-context.md) and
 [runtime String checkpoint](docs/changes/2026-10-23-runtime-string-abi.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 999 tests pass, including the 60 contained-LSP tests. Owned-string operations
+All 1000 tests pass, including the 60 contained-LSP tests. Owned-string operations
 now require the selected runtime declaration and checked data offset. Full import
 paths, aliases and concrete formatting arguments are checked; 25 invalid programs
 are rejected by check/native/QZI/COFF. Real String comparisons, references,
@@ -228,7 +228,7 @@ qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
          [--silent|--no-progress] [--no-color] [--no-unicode]
 qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
-qz check                  # type-check without compiling
+qz check                  # type-check every artifact without compiling
 qz test [filter]          # run @test functions from src/ and tests/
 qz fetch                  # download, verify, and lock dependencies
 qz deps                   # show resolved dependency sources

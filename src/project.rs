@@ -45,6 +45,23 @@ pub struct ProjectConfig {
     pub target_links: BTreeMap<String, LinkConfigOverride>,
 }
 
+impl ProjectConfig {
+    /// Distinct entry files of every artifact, in manifest order, falling back
+    /// to the configured entry. `qz check` analyzes each of them.
+    pub fn artifact_entries(&self) -> Vec<PathBuf> {
+        let mut entries: Vec<PathBuf> = Vec::new();
+        for artifact in &self.artifacts {
+            if !entries.contains(&artifact.entry) {
+                entries.push(artifact.entry.clone());
+            }
+        }
+        if entries.is_empty() {
+            entries.push(self.entry.clone());
+        }
+        entries
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageSettings {
     pub std: bool,
@@ -1334,6 +1351,19 @@ mod tests {
         let link = project.link_for_target("x86_64-none");
         assert_eq!(link.script, Some(root.join("linker.ld")));
         assert!(!link.libc);
+    }
+
+    #[test]
+    fn check_covers_every_artifact_entry_once() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/26-http-client-server");
+        let project = ProjectContext::load_from_root(&root).expect("load multi-binary manifest");
+        let entries = project.config.artifact_entries();
+        assert_eq!(
+            entries,
+            ["main.qz", "server.qz", "client.qz", "url_client.qz"]
+                .map(|file| root.join("src").join(file))
+        );
     }
 
     #[test]

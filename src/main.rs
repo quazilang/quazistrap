@@ -453,26 +453,47 @@ fn emit_chunks(
     }
 }
 
-fn run_check(
-    src: &str,
-    program: &parser::ast::Program,
-    library_fn_names: HashSet<String>,
-    library_char_ranges: Vec<std::ops::Range<usize>>,
-    source_files: Vec<semantic::types::SourceFile>,
-    namespaced_paths: HashSet<String>,
-) {
-    let program = &semantic::strip_cfg(program);
+/// Load and analyze one project entry for `target`; report whether it passed.
+fn check_project_entry(ctx: &ProjectContext, entry: PathBuf, target: &TargetSpec) -> bool {
+    let result = match loader::load_programs_configured_for_target(
+        &[entry],
+        Some(&ctx.resolver),
+        ctx.config.package.std,
+        &[],
+        cfg_target_for_spec(target),
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("\x1b[31;1merror:\x1b[0m {}", error);
+            return false;
+        }
+    };
+    if let Some(error) = &result.parse_error {
+        eprintln!("{}", error);
+        return false;
+    }
+    let namespaced_paths: HashSet<String> = result
+        .namespaced_paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let (target_os, target_abi) = match target.os {
+        backend::target::Os::Windows => ("windows", "win64"),
+        backend::target::Os::Linux => ("linux", "sysv"),
+        backend::target::Os::NetBsd => ("netbsd", "sysv"),
+        backend::target::Os::None => ("none", "sysv"),
+        backend::target::Os::MacOs => ("macos", "sysv"),
+    };
+    let program = semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
     let report = analyze_program_with_source_files(
-        src,
-        program,
-        library_fn_names,
-        library_char_ranges,
-        source_files.clone(),
+        &result.merged_source,
+        &program,
+        result.library_fn_names,
+        result.library_char_ranges,
+        result.source_files.clone(),
         namespaced_paths,
     );
-    if !report_diagnostics(&report, src, &source_files) {
-        std::process::exit(1);
-    }
+    report_diagnostics(&report, &result.merged_source, &result.source_files)
 }
 
 fn target_output_name(name: &str, emit: EmitType, target: &TargetSpec) -> String {
@@ -2210,12 +2231,6 @@ fn main() {
 
         CliCmd::Check { bin, lib, target } => {
             let mut ctx = load_project_context();
-            ctx.select_artifact(bin.as_deref(), lib)
-                .unwrap_or_else(|error| {
-                    eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                    std::process::exit(1);
-                });
-            let entry = ctx.config.entry.clone();
             let target = match target {
                 Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
                 Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
@@ -2223,43 +2238,26 @@ fn main() {
                 Some(cli::TargetTriple::X86_64None) => TargetSpec::x86_64_none(),
                 None => TargetSpec::host(),
             };
-            let result = loader::load_programs_configured_for_target(
-                &[entry],
-                Some(&ctx.resolver),
-                ctx.config.package.std,
-                &[],
-                cfg_target_for_spec(&target),
-            )
-                .unwrap_or_else(|e| {
-                    eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                    std::process::exit(1);
-                });
-            if let Some(e) = &result.parse_error {
-                eprintln!("{}", e);
+            // Without --bin/--lib, check every artifact: a binary may load
+            // modules that the default entry never imports.
+            let mut entries = Vec::new();
+            if bin.is_some() || lib {
+                ctx.select_artifact(bin.as_deref(), lib)
+                    .unwrap_or_else(|error| {
+                        eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+                        std::process::exit(1);
+                    });
+                entries.push(ctx.config.entry.clone());
+            } else {
+                entries = ctx.config.artifact_entries();
+            }
+            let mut success = true;
+            for entry in entries {
+                success &= check_project_entry(&ctx, entry, &target);
+            }
+            if !success {
                 std::process::exit(1);
             }
-            let namespaced_paths: HashSet<String> = result
-                .namespaced_paths
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect();
-            let (target_os, target_abi) = match target.os {
-                backend::target::Os::Windows => ("windows", "win64"),
-                backend::target::Os::Linux => ("linux", "sysv"),
-                backend::target::Os::NetBsd => ("netbsd", "sysv"),
-                backend::target::Os::None => ("none", "sysv"),
-                backend::target::Os::MacOs => ("macos", "sysv"),
-            };
-            let target_program =
-                semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
-            run_check(
-                &result.merged_source,
-                &target_program,
-                result.library_fn_names,
-                result.library_char_ranges,
-                result.source_files,
-                namespaced_paths,
-            );
         }
 
         CliCmd::Test {

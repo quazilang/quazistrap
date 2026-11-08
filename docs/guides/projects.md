@@ -101,7 +101,7 @@ This is for bare-metal or minimal programs.
 | `qz build -i` | Compile to QZI bytecode only |
 | `qz build -s` | Strip debug symbols from a native artifact |
 | `qz run` | Build and execute |
-| `qz check` | Parse and analyze without building |
+| `qz check` | Parse and analyze every `[lib]`/`[[bin]]` entry without building; `--bin <name>` or `--lib` selects one |
 | `qz clean` | Remove the output directory |
 
 There is no release-profile flag yet. In particular, `-r` is the short form
