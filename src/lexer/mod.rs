@@ -326,6 +326,26 @@ impl Lexer {
     }
 
     fn read_number(&mut self, first: char, start: usize, line: usize, col: usize) -> Token {
+        // Hexadecimal integers: `0x` followed by at least one hex digit.
+        if first == '0'
+            && matches!(self.peek(), Some('x' | 'X'))
+            && self.peek_next().is_some_and(|ch| ch.is_ascii_hexdigit())
+        {
+            self.advance();
+            let mut digits = String::new();
+            while let Some(ch) = self.peek().filter(char::is_ascii_hexdigit) {
+                digits.push(ch);
+                self.advance();
+            }
+            let kind = match u64::from_str_radix(&digits, 16) {
+                Ok(value) => TokenKind::Int(value),
+                Err(_) => TokenKind::Error(format!(
+                    "integer literal `0x{digits}` is outside the u64 range"
+                )),
+            };
+            let span = self.make_span(start, self.pos, line, col);
+            return Token::new(kind, span);
+        }
         let mut s = String::from(first);
         let mut is_float = false;
 
@@ -344,6 +364,21 @@ impl Lexer {
                 }
             } else {
                 break;
+            }
+        }
+        // Exponent: `e`/`E`, an optional sign, then at least one digit.
+        if matches!(self.peek(), Some('e' | 'E')) {
+            let sign = matches!(self.peek_next(), Some('+' | '-'));
+            let digit_at = if sign { self.pos + 2 } else { self.pos + 1 };
+            if self.input.get(digit_at).is_some_and(|ch| ch.is_ascii_digit()) {
+                is_float = true;
+                for _ in self.pos..digit_at {
+                    s.push(self.advance().expect("exponent marker"));
+                }
+                while let Some(ch) = self.peek().filter(char::is_ascii_digit) {
+                    s.push(ch);
+                    self.advance();
+                }
             }
         }
 
@@ -635,6 +670,22 @@ impl Lexer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hexadecimal_and_exponent_literals_follow_the_specification() {
+        let tokens = Lexer::new("0xFF 0x0f 6.022e23 1.5e-10 2E+3 1e5 0x 7.e1").tokenize();
+        let kinds: Vec<_> = tokens.iter().map(|token| token.kind.clone()).collect();
+        assert!(matches!(kinds[0], TokenKind::Int(255)));
+        assert!(matches!(kinds[1], TokenKind::Int(15)));
+        assert!(matches!(kinds[2], TokenKind::Float(value) if value == 6.022e23));
+        assert!(matches!(kinds[3], TokenKind::Float(value) if value == 1.5e-10));
+        assert!(matches!(kinds[4], TokenKind::Float(value) if value == 2000.0));
+        assert!(matches!(kinds[5], TokenKind::Float(value) if value == 100000.0));
+        // `0x` without digits stays `0` then an identifier; `7.e1` is a method-like access.
+        assert!(matches!(kinds[6], TokenKind::Int(0)));
+        assert!(matches!(&kinds[7], TokenKind::Ident(name) if name == "x"));
+        assert!(matches!(kinds[8], TokenKind::Int(7)));
+    }
 
     #[test]
     fn emits_at_token_for_at_sign() {
