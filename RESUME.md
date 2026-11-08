@@ -18,7 +18,21 @@ fixes, NetBSD fs undeclared-type fix. std plan 59.5%.
 
 Concurrency syntax/semantics still wait for answers in asks.txt (see PENDING).
 
-## PENDING: std.threading / std.qroutines (waiting for answers in asks.txt)
+## PENDING: concurrency per D-019 (round-2 questions in asks.txt)
+
+Maintainers answered round 1 (2026-11-08): keyword `qo f(args)`, method
+channels (no `<-`), no select yet, M:N scheduler, preemption, `join()`
+handles, program exits with main, owned values movable, keep `std.thread`
+(JoinHandle, Mutex, AtomicI64, channels), built-in `Qoroutine[T]`/`Channel[T]`.
+Recorded in quazistrap docs/decisions/qoroutines.md (D-019) with proposals:
+qo/scheduler/types in the compiler prelude/runtime (no std dependency, no
+duplicate std API), one thread-safe Channel[T], safe-point preemption first,
+panic aborts the program. asks.txt round 2 asks: type spelling, panic policy,
+preemption staging, `qo ||` closures, JIT scope (in-memory `qz run x.qzi` vs
+runtime loading via .so + std.dylib vs drop), single Channel type.
+Done since: std `e8ed3d8` AtomicI64 + Mutex (+views), contention-tested.
+
+Earlier note (round 0):
 
 Maintainer request (2026-11-08): split concurrency into `std.threading` (real
 OS threads) and `std.qroutines` (green threads, goroutine-like, e.g.
