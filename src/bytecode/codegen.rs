@@ -9337,11 +9337,10 @@ pub(crate) fn remap_instr_regs(
             instr.ops[0] = remap(instr.ops[0]);
         }
 
-        // Jz/Jnz: ops[0] may be a register (or 0 for flag-only)
+        // Jz/Jnz always test the register in ops[0], including r0; there is
+        // no flag-only form (the backend compares slot(ops[0]) with zero).
         Opcode::Jz | Opcode::Jnz => {
-            if instr.ops[0] != 0 {
-                instr.ops[0] = remap(instr.ops[0]);
-            }
+            instr.ops[0] = remap(instr.ops[0]);
         }
 
         // CallArg / Drop — single reg
@@ -10098,6 +10097,14 @@ mod tests {
         Codegen::new(&report)
             .compile_program(&program, &[])
             .expect("code generation should succeed")
+    }
+
+    #[test]
+    fn register_remapping_moves_a_jump_condition_in_r0() {
+        let mut jump = ri16(Opcode::Jz, 0, 7);
+        remap_instr_regs(&mut jump, |register| register + 5);
+        assert_eq!(jump.ops[0], 5, "Jz r0 must follow its register when remapped");
+        assert_eq!(jump.ri16().1, 7, "the jump target is not a register");
     }
 
     #[test]

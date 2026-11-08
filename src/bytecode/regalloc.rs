@@ -466,10 +466,9 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
             (0..instr.flags as usize).map(|i| instr.ops[0].wrapping_add(i as u8)).collect()
         }
 
-        // Jz/Jnz: ops[0] is condition register when nonzero.
-        Opcode::Jz | Opcode::Jnz => {
-            if instr.ops[0] != 0 { vec![instr.ops[0]] } else { vec![] }
-        }
+        // Jz/Jnz always test the register in ops[0]; the backend compares
+        // slot(ops[0]) with zero, so r0 is a real condition register too.
+        Opcode::Jz | Opcode::Jnz => vec![instr.ops[0]],
 
         // Single source: ops[0] is the register.
         Opcode::CallArg | Opcode::Drop => vec![instr.ops[0]],
@@ -630,6 +629,32 @@ fn is_side_effect_free(op: Opcode) -> bool {
 mod tests {
     use super::*;
     use crate::bytecode::instruction::{mem_lea_block, mem_load, ri16, rrr};
+
+    #[test]
+    fn a_condition_in_r0_keeps_its_definition_and_slot() {
+        // r0 = 1; r1 = 7 (unrelated); if r0 == 0 skip; ret r1.
+        let mut chunk = Chunk::new("condition_r0");
+        chunk.reg_count = 2;
+        chunk.emit(ri16(Opcode::MovI, 0, 1));
+        chunk.emit(ri16(Opcode::MovI, 1, 7));
+        chunk.emit(ri16(Opcode::Jz, 0, 4));
+        chunk.emit(ri16(Opcode::MovI, 1, 9));
+        chunk.emit(rrr(Opcode::Ret, 1, 0, 0));
+        assert_eq!(instr_uses(&chunk.code[2]), [0]);
+        elim_dead_regs(&mut chunk);
+        linear_scan_alloc(&mut chunk);
+        let condition_def = chunk
+            .code
+            .iter()
+            .find(|instruction| instruction.opcode() == Some(Opcode::MovI) && instruction.ri16().1 == 1)
+            .expect("the condition definition must survive dead-register elimination");
+        let jump = chunk
+            .code
+            .iter()
+            .find(|instruction| instruction.opcode() == Some(Opcode::Jz))
+            .expect("jump");
+        assert_eq!(condition_def.ops[0], jump.ops[0], "the jump must test the condition's slot");
+    }
 
     #[test]
     fn atomic_cas_reads_and_writes_its_expected_register() {
