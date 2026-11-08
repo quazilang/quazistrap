@@ -134,3 +134,8 @@ position extends into final `if`/`else` branches and `unsafe` blocks. `if` with
 a mandatory `else` and single-expression branches is a value expression,
 defined as a two-arm Boolean `match`. `ret` stays the only early exit. General
 block expressions are deferred until value-carrying block scopes exist.
+
+## D-018: module-qualified type identities
+
+Proposed 2026-11-08: [give types module identities like functions](module-type-identity.md)
+so same-named types in different modules stop colliding (`S05`). Not implemented.

@@ -120,6 +120,10 @@ import helper.make;
 fn area(p: shapes.Point) i32 { ret 0; } // S04: not imported into this file
 ```
 
+Limitation: type declarations still share one program-wide namespace, so two
+files cannot declare the same type name (`S05`), even when neither imports the
+other; see [D-018](../decisions/module-type-identity.md).
+
 Limitation: types supplied only by precompiled QZI libraries have no source
 declaration. They are currently visible in every file of a program that links
 the library; per-file selector checking for them is not implemented yet.
