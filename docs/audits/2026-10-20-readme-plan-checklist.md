@@ -5,7 +5,11 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 73.2%. Remaining: 26.8%.**
+**Complete: 75.4%. Remaining: 24.6%.**
+
+On 2026-11-08 the maintainer removed the macOS Mach-O backend (0/3) from the
+plan. The rubric now has 32 items and 75 requirements; no other credit changed.
+Earlier dated entries below keep their historical 73.2% figures.
 
 The declaration-context checkpoint passes 981 Rust tests, including the 60
 contained-LSP tests. Stored declaration/import signatures retain defining types;
@@ -191,7 +195,6 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Threshold-based auto-inline | 1/1 | 100.0% | 0.0% |
 | Cross-basic-block const folding | 1/1 | 100.0% | 0.0% |
 | Strength reduction | 0/1 | 0.0% | 100.0% |
-| macOS Mach-O backend | 0/3 | 0.0% | 100.0% |
 | Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
 | Atomic opcodes | 0/2 | 0.0% | 100.0% |
 | Format string literals | 0/1 | 0.0% | 100.0% |
@@ -354,14 +357,6 @@ Evidence: [src/bytecode/constprop.rs](../../src/bytecode/constprop.rs).
 Evidence: [src/bytecode/constprop.rs](../../src/bytecode/constprop.rs).
 
 - [ ] Replace expensive operations with equivalent cheaper instructions.
-
-### macOS Mach-O backend
-
-Evidence: [src/backend/AGENTS.md](../../src/backend/AGENTS.md).
-
-- [ ] Mach-O output.
-- [ ] macOS executable startup.
-- [ ] Mach-O relocations.
 
 ### Ownership / RAII bytecode
 

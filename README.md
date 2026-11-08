@@ -4,9 +4,9 @@
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
 
-**Plan completion: 73.2%.**
+**Plan completion: 75.4%.**
 
-**Remaining work: 26.8%.**
+**Remaining work: 24.6%.**
 
 Completion of unfinished plan items:
 
@@ -14,7 +14,6 @@ Completion of unfinished plan items:
 | --- | --- | --- | --- |
 | Built-in linker | 7/9 | 77.8% | 22.2% |
 | Strength reduction | 0/1 | 0.0% | 100.0% |
-| macOS Mach-O backend | 0/3 | 0.0% | 100.0% |
 | Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
 | Atomic opcodes | 0/2 | 0.0% | 100.0% |
 | Format string literals | 0/1 | 0.0% | 100.0% |
@@ -54,10 +53,11 @@ Functions may end with a tail value and `if` with `else` is an expression
 the existing `ret`/`match` forms and pass native, source-removed QZI and COFF runs.
 QZC33 rebuilds older source caches; QZI14 remains Unverified. Numeric coercion/normalization, effects,
 recursive destruction and artifact certification remain open. Ownership stays
-9/16; LSP stays 16/20. The 33-item, 78-requirement rubric remains unchanged.
+9/16; LSP stays 16/20. On 2026-11-08 the maintainer removed the macOS Mach-O
+backend from the plan, leaving a 32-item, 75-requirement rubric.
 Statuses and percentages are refreshed before committing.
 The declaration-context prerequisite completes no additional checklist requirement,
-so completion remains 73.2% and remaining work 26.8%.
+so completion is 75.4% and remaining work 24.6% after that removal.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no
