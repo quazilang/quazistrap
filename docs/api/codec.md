@@ -23,7 +23,10 @@ fn main() i32 {
 }
 ```
 
-The current implementations cover `bool`, `i64`, `str`, and owned `String`.
+The current implementations cover `bool`, `i64`, `str`, owned `String`, and
+`time.SystemTime`, which encodes as an RFC 3339 UTC JSON string such as
+`"2000-02-29T12:34:56Z"`; `codec.decode_system_time(source)` decodes it
+(numeric offsets are normalized to UTC, malformed text is `InvalidValue`).
 `i64` uses its exact base-10 representation. Text is escaped through
 `std.json.quote`; encoding a `String` produces a new JSON token and does not
 expose mutable aliases. Current scalar encoders do not fail.
