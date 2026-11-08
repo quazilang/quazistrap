@@ -2753,8 +2753,10 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(rax));
                         emit!(asm.pop(rbx));
                     }
-                    18 => {
+                    18 | 43 => {
                         // quazi.thread.spawn(f: ThreadCallback) → usize (thread handle)
+                        // quazi.thread.spawn_arg(f, arg: *u8) also passes `arg`
+                        // as the callback's argument (18 passes NULL).
                         // slot(dst) = function pointer (address)
                         emit!(asm.push(rbx));
                         emit!(asm.push(rax)); // align rsp to 16
@@ -2764,7 +2766,11 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.xor(rcx, rcx));
                             emit!(asm.xor(rdx, rdx));
                             emit!(asm.mov(r8, slot(dst)));
-                            emit!(asm.xor(r9, r9));
+                            if id == 43 {
+                                emit!(asm.mov(r9, slot(dst + 1)));
+                            } else {
+                                emit!(asm.xor(r9, r9));
+                            }
                             emit!(asm.mov(qword_ptr(rsp + 32i32), 0i32)); // flags
                             emit!(asm.mov(qword_ptr(rsp + 40i32), 0i32)); // thread_id
                             call_ext!("CreateThread".into(), RelocKind::Plt32);
@@ -2783,7 +2789,11 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdi, rbx));
                             emit!(asm.xor(rsi, rsi));
                             emit!(asm.mov(rdx, slot(dst)));
-                            emit!(asm.xor(rcx, rcx));
+                            if id == 43 {
+                                emit!(asm.mov(rcx, slot(dst + 1)));
+                            } else {
+                                emit!(asm.xor(rcx, rcx));
+                            }
                             call_ext!("pthread_create".into(), RelocKind::Plt32);
                             emit!(asm.test(eax, eax));
                             emit!(asm.jne(create_failed));

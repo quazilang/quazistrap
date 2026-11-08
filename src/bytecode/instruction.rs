@@ -433,6 +433,7 @@ impl Instruction {
                     40 => "quazi.process.terminate",
                     41 => "quazi.process.close",
                     42 => "quazi.context.switch",
+                    43 => "quazi.thread.spawn_arg",
                     _ => "?",
                 };
                 format!(
