@@ -13,7 +13,6 @@ points are marked **decided**, design proposals are marked **proposed**.
 | 2 | Channel operations | **decided**: methods `channel.send(value)` / `channel.receive()`. No `<-` / `->` operators. |
 | 3 | `select` | **decided** (leaning): not in the first version. |
 | 4 | Scheduler | **decided**: M:N — qoroutines run on a pool of OS worker threads. |
-| 5 | Preemption | **decided** (tentative): preemptive, see the proposal below. |
 | 6 | Waiting | **decided**: `qo` yields a handle; `handle.join()` waits and returns the result. |
 | 7 | `main` returns while qoroutines run | **decided**: the program exits; running qoroutines stop (as in Go). |
 | 9 | Passing data | **decided**: owned values can be moved into a qoroutine. |
