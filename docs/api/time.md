@@ -87,6 +87,15 @@ const stamp = time.SystemTime.parse_rfc3339("2000-02-29T14:34:56.5+02:00").unwra
 const text: String = stamp.format_rfc3339(); // "2000-02-29T12:34:56.500000000Z"
 ```
 
+## `UtcOffset`
+
+`UtcOffset.utc()` and `UtcOffset.from_hours_minutes(hours, minutes)` (hours
+carry the sign, `-23..23`; minutes `0..59`; otherwise `None`) describe a fixed
+offset, not a time zone. `SystemTime.to_offset(&offset)` returns the wall-clock
+`DateTime` fields at that offset and `format_rfc3339_at(&offset)` returns text
+such as `2000-02-29T07:04:56-05:30` (`Z` for a zero offset); both return `None`
+when the local fields leave years 0001-9999.
+
 ## `DateTime`
 
 `DateTime.new(year, month, day, hour, minute, second, nanosecond)` validates
