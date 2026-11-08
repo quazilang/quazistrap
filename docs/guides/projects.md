@@ -102,6 +102,7 @@ This is for bare-metal or minimal programs.
 | `qz build -s` | Strip debug symbols from a native artifact |
 | `qz run` | Build and execute |
 | `qz check` | Parse and analyze every `[lib]`/`[[bin]]` entry without building; `--bin <name>` or `--lib` selects one |
+| `qz doc [-o DIR]` | Write Markdown reference pages for public declarations (default `<out_dir>/doc`) |
 | `qz clean` | Remove the output directory |
 
 There is no release-profile flag yet. In particular, `-r` is the short form

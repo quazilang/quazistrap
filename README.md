@@ -4,9 +4,9 @@
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
 
-**Plan completion: 78.6%.**
+**Plan completion: 81.7%.**
 
-**Remaining work: 21.4%.**
+**Remaining work: 18.3%.**
 
 Completion of unfinished plan items:
 
@@ -19,14 +19,13 @@ Completion of unfinished plan items:
 | Nested struct patterns | 0/1 | 0.0% | 100.0% |
 | async / await | 0/1 | 0.0% | 100.0% |
 | LSP improvements | 16/20 | 80.0% | 20.0% |
-| qz doc | 0/1 | 0.0% | 100.0% |
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
 Revalidated on 2026-10-25 for the
 [declaration-type context prerequisite](docs/changes/2026-10-24-declaration-type-context.md) and
 [runtime String checkpoint](docs/changes/2026-10-23-runtime-string-abi.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 1007 tests pass, including the 60 contained-LSP tests. Owned-string operations
+All 1009 tests pass, including the 60 contained-LSP tests. Owned-string operations
 now require the selected runtime declaration and checked data offset. Full import
 paths, aliases and concrete formatting arguments are checked; 25 invalid programs
 are rejected by check/native/QZI/COFF. Real String comparisons, references,
@@ -56,7 +55,7 @@ recursive destruction and artifact certification remain open. Ownership stays
 backend from the plan, leaving a 32-item, 75-requirement rubric.
 Statuses and percentages are refreshed before committing.
 The declaration-context prerequisite completes no additional checklist requirement,
-so completion was 75.4% after that removal; native atomics then raised it to 78.6%.
+so completion was 75.4% after that removal; native atomics and `qz doc` then raised it to 81.7%.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no
@@ -226,6 +225,7 @@ qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
 qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz check                  # type-check every artifact without compiling
+qz doc                    # Markdown API pages for public declarations (build/doc)
 qz test [filter]          # run @test functions from src/ and tests/
 qz fetch                  # download, verify, and lock dependencies
 qz deps                   # show resolved dependency sources

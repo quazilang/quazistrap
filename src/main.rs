@@ -4,6 +4,7 @@
 
 mod abi;
 pub mod analysis;
+mod apidoc;
 mod backend;
 pub mod bytecode;
 pub mod cancel;
@@ -953,6 +954,47 @@ fn collect_quazi_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String>
         }
     }
     Ok(())
+}
+
+/// Write one Markdown reference page per project source plus an index.
+fn generate_project_docs(output: Option<&str>) {
+    let ctx = load_project_context();
+    let out_dir = output.map_or_else(|| ctx.config.out_dir.join("doc"), PathBuf::from);
+    let mut files = Vec::new();
+    collect_quazi_files(&ctx.config.src_dir, &mut files).unwrap_or_else(|e| {
+        eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
+        std::process::exit(1);
+    });
+    files.sort();
+    let mut index = format!("# `{}` API reference\n\n", ctx.config.name);
+    for path in &files {
+        let relative = path.strip_prefix(&ctx.config.src_dir).unwrap_or(path);
+        let module = relative.with_extension("").to_string_lossy().replace(['/', '\\'], ".");
+        let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot read {}: {}", path.display(), e);
+            std::process::exit(1);
+        });
+        let page = apidoc::render_module(&module, &source).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+        let page_path = out_dir.join(relative).with_extension("md");
+        if let Some(parent) = page_path.parent() {
+            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {}", parent.display(), e);
+                std::process::exit(1);
+            });
+        }
+        write_file(&page_path, &page);
+        let link = relative.with_extension("md").to_string_lossy().replace('\\', "/");
+        index.push_str(&format!("- [`{module}`]({link})\n"));
+    }
+    write_file(&out_dir.join("README.md"), &index);
+    println!(
+        "\x1b[1;32mdocumented\x1b[0m  {} modules  \x1b[2m→ {}\x1b[0m",
+        files.len(),
+        out_dir.display()
+    );
 }
 
 fn format_project_sources() {
@@ -2443,6 +2485,10 @@ fn main() {
 
         CliCmd::Fmt => {
             format_project_sources();
+        }
+
+        CliCmd::Doc { output } => {
+            generate_project_docs(output.as_deref());
         }
 
         CliCmd::Clean => {

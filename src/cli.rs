@@ -218,6 +218,12 @@ pub enum Command {
     },
     /// Format project source files
     Fmt,
+    /// Generate Markdown API reference pages for the project's public declarations
+    Doc {
+        /// output directory (default: <out_dir>/doc)
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
+    },
     /// Remove project build artifacts
     Clean,
     /// Run the compiler's internal debug program

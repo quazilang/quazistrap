@@ -5,7 +5,7 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 78.6%. Remaining: 21.4%.**
+**Complete: 81.7%. Remaining: 18.3%.**
 
 On 2026-11-08 the maintainer removed the macOS Mach-O backend (0/3) from the
 plan. The rubric now has 32 items and 75 requirements; no other credit changed.
@@ -201,7 +201,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Nested struct patterns | 0/1 | 0.0% | 100.0% |
 | async / await | 0/1 | 0.0% | 100.0% |
 | LSP improvements | 16/20 | 80.0% | 20.0% |
-| qz doc | 0/1 | 0.0% | 100.0% |
+| qz doc | 1/1 | 100.0% | 0.0% |
 | JIT VM | 0/1 | 0.0% | 100.0% |
 
 ## Requirements
@@ -431,9 +431,9 @@ Evidence: [docs/tooling/lsp.md](../tooling/lsp.md).
 
 ### qz doc
 
-Evidence: [src/main.rs](../../src/main.rs).
+Evidence: [src/apidoc.rs](../../src/apidoc.rs).
 
-- [ ] Documentation generation command.
+- [x] Documentation generation command.
 
 ### JIT VM
 
