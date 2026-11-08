@@ -2,6 +2,35 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-08, per-file visibility, ownership fixes, D-017)
+
+Commits on `dev`: `1e53e63` (type visibility), `72452a5` (plain diagnostics),
+`24312ff` (retention Read intrinsics, diverging-branch moves, module-local
+calls), `c3a7f31` (D-017 tail values and `if` expressions). QZC32 / QZI14
+(Unverified). Coordinated std commit `78db826` repairs std.net/json ownership.
+
+- `semantic/type_visibility.rs` checks every type spelling/value head in its
+  source file; another file's private aliases and unknown types fail S04. An
+  independent review found namespace-value, scoped-local, `Self` and duplicate
+  cases; all fixed with regressions. Test helpers had swapped `Span::new`
+  arguments (line, col, start, end) and passed only through the leak.
+- D-017: parser-only lowering (tail -> `ret`, value `if` -> boolean `match`).
+  See docs/decisions/expression-oriented-blocks.md.
+
+Verification (compiler cwd, rustup cargo 1.99.1, RUSTFLAGS='-C link-arg=-fuse-ld=bfd'):
+- `cargo test --offline -q -- --test-threads=4`: 999 passed.
+- All `scripts/check_*.py --qz target/debug/qz` (18 incl. check_tail_expressions)
+  pass; check_initialization needed the plain-diagnostics fix.
+- Every example `[[bin]]` builds; 26 HTTP server/client/url-client and 31 UDP
+  run end to end locally. Example 36 builds with `--target x86_64-none`.
+- std: `qz test` with tests/os_memory.qz excluded: 32 passed;
+  check_os_memory 6; check_net_receivers 10 + probes + QZI/COFF.
+- Each commit's staged tree was exported and tested in isolation (992, 995).
+
+NEXT: global type table across modules (S05 for same-named types in different
+modules), `qz check` covering all bins, std root `qz test` fixture isolation.
+Installed release binary not updated in this checkpoint.
+
 ## Checkpoint (2026-10-25, defining-source declaration records)
 
 Prepared verified checkpoint, previous committed source `5f0d284`.
