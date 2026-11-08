@@ -3,14 +3,18 @@ import std.net.{HttpMethod, HttpRequest, HttpResponse, NetError, Url};
 
 // Regression client for HttpRequest.send_url: the constructor's deliberately
 // wrong host and target must not determine the connection or request line.
-fn main() i32 {
+// Each check is its own function to stay within the QZI register-slot limit.
+fn check_query_target() i32 {
     const query_url: Url = Url.parse("http://localhost:8080?mode=test").unwrap();
     if (query_url.path() != "/?mode=test") { ret 5; }
     const query_request: HttpRequest = HttpRequest.from_url(HttpMethod.Get, query_url);
     if (query_request.encode().find("GET /?mode=test HTTP/1.1").is_none()) { ret 6; }
+    ret 0;
+}
 
-    // `localhost` exercises the getaddrinfo path; the wrong constructor
-    // address verifies that send_url replaces the actual routing target.
+// `localhost` exercises the getaddrinfo path; the wrong constructor
+// address verifies that send_url replaces the actual routing target.
+fn check_routed_request() i32 {
     const url: Url = Url.parse("http://localhost:8080/url-routed").unwrap();
     const request: HttpRequest = HttpRequest.with_method(HttpMethod.Get, "/wrong-target", "127.0.0.2");
     const response: Result[HttpResponse, NetError] = request.send_url(url);
@@ -19,6 +23,10 @@ fn main() i32 {
         ret 1;
     }
     if (response.unwrap().status() != 200) { ret 2; }
+    ret 0;
+}
+
+fn check_https_rejected() i32 {
     const secure_url: Url = Url.parse("https://localhost:8080/never-connect").unwrap();
     const secure_request: HttpRequest = HttpRequest.with_method(HttpMethod.Get, "/wrong", "127.0.0.2");
     const rejected: Result[HttpResponse, NetError] = secure_request.send_url(secure_url);
@@ -27,4 +35,12 @@ fn main() i32 {
         NetError.TlsUnavailable => 0,
         _ => 4,
     };
+}
+
+fn main() i32 {
+    const query: i32 = check_query_target();
+    if (query != 0) { ret query; }
+    const routed: i32 = check_routed_request();
+    if (routed != 0) { ret routed; }
+    ret check_https_rejected();
 }

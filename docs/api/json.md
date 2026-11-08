@@ -49,6 +49,8 @@ It returns `ObjectLengthMismatch` for unequal arrays, `DuplicateKey` for
 repeated keys, `OutputLimit` for oversized output, and the validation error for
 an invalid value token. `object_with_limits(keys, values, max_output,
 max_depth)` lets callers select the aggregate output and nested-value policy.
+Both functions consume `values` and take each element in order, so the
+caller's array is no longer usable afterwards.
 This is the composition boundary intended for compiler-generated struct
 encoders; it does not parse into or expose a dynamic JSON value tree.
 

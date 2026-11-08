@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-08: Usable std.net HTTP and UDP under ownership checking](2026-11-08-std-net-ownership.md)
+
 - [2026-11-08: Plain diagnostics outside terminals](2026-11-08-plain-diagnostics-off-terminal.md)
 
 - [2026-11-08: Per-file type name visibility](2026-11-08-source-type-visibility.md)

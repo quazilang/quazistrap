@@ -30,7 +30,7 @@ Revalidated on 2026-10-25 for the
 [declaration-type context prerequisite](docs/changes/2026-10-24-declaration-type-context.md) and
 [runtime String checkpoint](docs/changes/2026-10-23-runtime-string-abi.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 992 tests pass, including the 60 contained-LSP tests. Owned-string operations
+All 995 tests pass, including the 60 contained-LSP tests. Owned-string operations
 now require the selected runtime declaration and checked data offset. Full import
 paths, aliases and concrete formatting arguments are checked; 25 invalid programs
 are rejected by check/native/QZI/COFF. Real String comparisons, references,
@@ -48,6 +48,9 @@ with all fixture source files removed. Windows COFF emission also passes.
 Type names now resolve per source file: unknown types, unimported types and
 another file's private namespace aliases fail with S04 in every source position
 ([change record](docs/changes/2026-11-08-source-type-visibility.md)).
+Every `std` module now passes ownership analysis: examples 26 (HTTP) and 31 (UDP)
+build and run end to end after retention, diverging-branch move and module-local
+call fixes ([change record](docs/changes/2026-11-08-std-net-ownership.md)).
 QZC32 rebuilds older source caches; QZI14 remains Unverified. Numeric coercion/normalization, effects,
 recursive destruction and artifact certification remain open. Ownership stays
 9/16; LSP stays 16/20. The 33-item, 78-requirement rubric remains unchanged.

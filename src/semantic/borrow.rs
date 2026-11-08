@@ -497,6 +497,47 @@ impl Analyzer {
         env.exit_scope();
     }
 
+    /// Whether control leaves the function before reaching the end of `block`.
+    /// `break` and `continue` still reach later loop code, so only returns and
+    /// calls typed `!` (such as `panic`) count.
+    fn bc_block_exits_function(&self, block: &Block) -> bool {
+        for stmt in &block.stmts {
+            match &stmt.node {
+                StmtKind::Break | StmtKind::Continue => return false,
+                _ if self.bc_stmt_exits_function(stmt) => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn bc_stmt_exits_function(&self, stmt: &Stmt) -> bool {
+        match &stmt.node {
+            StmtKind::Return(_) => true,
+            StmtKind::If {
+                then_block,
+                else_if,
+                else_block: Some(else_block),
+                ..
+            } => {
+                self.bc_block_exits_function(then_block)
+                    && else_if
+                        .iter()
+                        .all(|(_, block)| self.bc_block_exits_function(block))
+                    && self.bc_block_exits_function(else_block)
+            }
+            StmtKind::UnsafeBlock { body } => self.bc_block_exits_function(body),
+            StmtKind::CfgBlock { condition, body } => {
+                super::item_should_include(std::slice::from_ref(condition))
+                    && self.bc_block_exits_function(body)
+            }
+            StmtKind::ExprStmt(expr) => {
+                matches!(self.bc_annotated_type(expr), Some(TypeKind::Never))
+            }
+            _ => false,
+        }
+    }
+
     fn bc_is_string_view(&self, ty: &TypeKind) -> bool {
         match self.resolve_type_aliases(ty) {
             TypeKind::Str => true,
@@ -1317,23 +1358,31 @@ impl Analyzer {
                 let mut then_env = env.clone();
                 then_env.control_depth += 1;
                 self.bc_block(then_block, &mut then_env);
-                let mut all_envs = vec![then_env];
+                let mut all_envs = vec![(then_env, self.bc_block_exits_function(then_block))];
+                // Later conditions are evaluated on the fall-through path of
+                // the earlier ones, so their own moves carry forward.
+                // They run only when earlier conditions fail, so they are
+                // conditional code themselves.
+                let mut condition_env = env.clone();
+                condition_env.control_depth += 1;
                 for (else_if_cond, else_if_block) in else_if {
-                    let mut ei_env = env.clone();
-                    ei_env.control_depth += 1;
-                    self.bc_expr(else_if_cond, &mut ei_env, false);
+                    self.bc_expr(else_if_cond, &mut condition_env, false);
+                    let mut ei_env = condition_env.clone();
                     self.bc_block(else_if_block, &mut ei_env);
-                    all_envs.push(ei_env);
+                    all_envs.push((ei_env, self.bc_block_exits_function(else_if_block)));
                 }
+                env.apply_branch_moves(&condition_env);
                 if let Some(eb) = else_block {
-                    let mut else_env = env.clone();
-                    else_env.control_depth += 1;
+                    let mut else_env = condition_env.clone();
                     self.bc_block(eb, &mut else_env);
-                    all_envs.push(else_env);
+                    all_envs.push((else_env, self.bc_block_exits_function(eb)));
                 }
-                // Conservative: moved in any branch → moved after.
-                for branch_env in &all_envs {
-                    env.apply_branch_moves(branch_env);
+                // Moved in any branch that can fall through → moved after. A
+                // branch that leaves the function never reaches later code.
+                for (branch_env, exits) in &all_envs {
+                    if !exits {
+                        env.apply_branch_moves(branch_env);
+                    }
                 }
             }
             StmtKind::For { kind, body } => {

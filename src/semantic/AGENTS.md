@@ -138,6 +138,10 @@ Applied in: declare pass, typecheck CfgBlock, unused CfgBlock.
 
 - Move semantics for all non-primitive, non-reference types (structs, enums, arrays, slices, dyn Trait, etc.).
 - S10 = use-after-move / move-in-loop.
+- Moves/loans from an `if` branch that leaves the function (`ret` or a call
+  typed `!`) are not merged into the following code. `break`/`continue`
+  branches still merge because later loop code runs. `else if` conditions are
+  conditional code (control depth + 1) and see earlier conditions' moves.
 - `reassign_targets` set suppresses move-in-loop for `x = x.method()` patterns (value immediately re-owned).
 - `for x : iterable` **moves** the iterable (like Rust's `for x in collection`); borrow with `for x : &collection`.
 - The iterable is consumed before the loop body so it does not trigger move-in-loop.
@@ -256,6 +260,8 @@ lowering to an unchecked numeric conversion.
 ## `pub` Visibility
 
 - **Functions**: enforced. Private fn imported cross-module emits S04 error.
+  A function may call any function of its own module unqualified, whether or
+  not either is public; entry code needs an import for library functions.
 - **Types**: `type_visibility.rs` checks every type spelling in its source file
   (declared there, imported there, public prelude type, builtin/library, or
   lexical binder). Another file's imports and private types fail with S04.

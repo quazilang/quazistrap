@@ -17,6 +17,8 @@ type Dependencies = BTreeSet<usize>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RetentionIntrinsic {
     Allocate,
+    /// Reads its inputs and writes no storage reachable by the caller.
+    Read,
     Copy,
     Fill,
     StringPointer,
@@ -32,6 +34,7 @@ fn retention_intrinsic(attributes: &[Attribute]) -> Option<RetentionIntrinsic> {
     };
     match name.as_str() {
         "quazi.malloc" => Some(RetentionIntrinsic::Allocate),
+        "quazi.str.byte_at" | "quazi.strlen" | "quazi.memcmp" => Some(RetentionIntrinsic::Read),
         "quazi.memcpy" | "quazi.memmove" => Some(RetentionIntrinsic::Copy),
         "quazi.memset" => Some(RetentionIntrinsic::Fill),
         "quazi.str.as_ptr" => Some(RetentionIntrinsic::StringPointer),
@@ -1031,10 +1034,10 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
             all.extend(value.clone());
             named.insert(name.as_str(), value);
         }
-        if let Some(effect) = resolved
+        let effect = resolved
             .and_then(|name| self.analyzer.retention_intrinsics.get(name))
-            .copied()
-        {
+            .copied();
+        if let Some(effect) = effect {
             let slots =
                 resolved.and_then(|name| self.analyzer.ownership_call_argument_slots(expr, name));
             if let Some(slots) = slots {
@@ -1090,7 +1093,10 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
         }
         let fresh_allocation =
             resolved.is_some_and(|name| self.analyzer.fresh_result_intrinsics.contains(name));
-        if declaration.is_none() && !fresh_allocation {
+        // A read-only intrinsic cannot store its inputs anywhere. Its result
+        // still follows the ordinary declared-type rules below.
+        let writes_nothing = effect == Some(RetentionIntrinsic::Read);
+        if declaration.is_none() && !fresh_allocation && !writes_nothing {
             // Unavailable effects cannot establish that incoming storage was
             // left untouched. In particular, a void opaque pointer store may
             // populate an aggregate that the caller returns afterwards.
@@ -1232,6 +1238,25 @@ fn shadowed(source: str) str { var fresh = |value| value; ret fresh(source); }
         assert_eq!(slots(&analyzer, "borrowed"), [0]);
         assert_eq!(slots(&analyzer, "opaque"), [0]);
         assert_eq!(slots(&analyzer, "shadowed"), [0]);
+    }
+
+    #[test]
+    fn retention_read_intrinsics_do_not_publish_borrowed_inputs() {
+        let analyzer = analyze(
+            r#"
+@intrinsic("quazi.str.byte_at")
+fn byte_at(text: str, index: usize) u8;
+@intrinsic("quazi.str_concat")
+fn fresh(left: str, right: str) str;
+fn copy_after_read(source: str) str {
+    var output: str = fresh("", "");
+    if (byte_at(source, 0) == 0) { ret output; }
+    output = fresh(output, "x");
+    ret output;
+}
+"#,
+        );
+        assert!(slots(&analyzer, "copy_after_read").is_empty());
     }
 
     #[test]

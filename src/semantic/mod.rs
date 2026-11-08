@@ -6458,6 +6458,53 @@ fn main() void {
     }
 
     #[test]
+    fn moves_in_branches_that_leave_the_function_do_not_reach_later_code() {
+        let prefix = "struct Point { x: i32, }\nfn consume(p: Point) i32 { ret p.x; }\n@intrinsic(\"quazi.exit\") fn halt(code: i32) !;\n";
+        for body in [
+            "if (flag) { consume(p); ret 1; } ret consume(p);",
+            "if (flag) { consume(p); halt(1); } ret consume(p);",
+            "if (flag) { ret 2; } else if (!flag) { consume(p); ret 1; } ret consume(p);",
+        ] {
+            let source =
+                format!("{prefix}fn run(flag: bool) i32 {{ const p = Point {{ x: 1 }}; {body} }}");
+            let report = analyze(&source);
+            assert!(
+                !report.errors.iter().any(|e| e.message.contains("use of moved value")),
+                "{body}: {:?}",
+                report.errors
+            );
+        }
+        // Falling through, or leaving only the loop, still keeps the move.
+        for body in [
+            "if (flag) { consume(p); } ret consume(p);",
+            "for (flag) { if (flag) { consume(p); break; } break; } ret consume(p);",
+        ] {
+            let source =
+                format!("{prefix}fn run(flag: bool) i32 {{ const p = Point {{ x: 1 }}; {body} }}");
+            let report = analyze(&source);
+            assert!(
+                report.errors.iter().any(|e| e.message.contains("use of moved value 'p'")),
+                "{body}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn private_module_functions_call_public_siblings_without_import() {
+        let report = analyze_module_pair(
+            "pub fn apply(x: i32) i32 { ret x * 2; }\nfn helper(x: i32) i32 { ret apply(x) + 1; }\npub fn run(x: i32) i32 { ret helper(x); }\n",
+            "import helpers;\nfn main() i32 { ret helpers.run(3); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let report = analyze_module_pair(
+            "pub fn apply(x: i32) i32 { ret x * 2; }\n",
+            "fn main() i32 { ret apply(3); }",
+        );
+        assert!(!report.errors.is_empty(), "entry code needs an import");
+    }
+
+    #[test]
     fn function_owner_moves_are_affine_through_calls_assignments_and_casts() {
         for source in [
             "fn one() i32 { ret 1; } fn main() void { var first: fn() i32 = one; var second: fn() i32 = first; first(); }",

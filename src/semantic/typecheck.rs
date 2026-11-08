@@ -3565,9 +3565,16 @@ impl Analyzer {
                             .last()
                             .map(|f| self.library_fn_names.contains(f.as_str()))
                             .unwrap_or(false);
+                        // Any function of a module may call its own siblings,
+                        // whether or not the caller itself is public.
+                        let same_module = self
+                            .current_module_path
+                            .as_ref()
+                            .is_some_and(|module| *resolved == format!("{module}.{name}"));
                         if self.library_fn_names.contains(resolved.as_str())
                             && !self.explicitly_imported_fns.contains_key(name.as_str())
                             && !caller_is_library
+                            && !same_module
                         {
                             self.push_error(
                                 callee.span,

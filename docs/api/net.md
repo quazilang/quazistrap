@@ -69,7 +69,8 @@ currently public.
 
 `receive(limit)` returns one UTF-8 datagram payload. `receive_from(limit)` also
 returns a `UdpDatagram`, whose `text()` borrows the payload and `address()`
-returns the source address. A zero `receive_from` limit returns
+returns an owned copy of the source address; both use shared receivers, so
+`socket.send_to(datagram.text(), datagram.address())` echoes a datagram. A zero `receive_from` limit returns
 `MessageTooLarge`. A too-small nonzero buffer follows platform datagram
 semantics; callers should choose a limit large enough for the protocol’s maximum
 payload. UDP send/receive operations and `close()` use exclusive receivers,
@@ -78,11 +79,10 @@ close and automatic consuming `free` behavior as TCP.
 
 ## HTTP/1.1 helpers
 
-Current integration limitation: the full module still fails ownership analysis
-in `Headers` and the HTTP codecs. The following describes its declared API;
-receiver fixes are independently verified, while end-to-end HTTP use awaits
-checked element loans and ownership provenance. See the
-[receiver change record](../changes/2026-10-13-http-receiver-ownership.md).
+The HTTP surface passes ownership analysis and is exercised end to end by
+`examples/26-http-client-server`. See the
+[receiver change record](../changes/2026-10-13-http-receiver-ownership.md) and the
+[2026-11-08 ownership repair](../changes/2026-11-08-std-net-ownership.md).
 
 `HttpMethod` supplies `Get`, `Head`, `Post`, `Put`, `Patch`, `Delete`,
 `Options`, `Connect`, and `Trace`; `name()` returns the wire spelling.
@@ -94,9 +94,13 @@ preserved as a `/?query` request target. `scheme()`, `host()`, `port()`, and
 `path()` return the parsed components as borrowed text or the numeric port;
 they use shared receivers.
 
-`Headers.new`, `append`, `set`, `get`, `contains`, `len`, `get_at`, and `encode`
-manage ordered headers. Lookup and replacement are case-insensitive; encoding
-preserves inserted spelling and order. Header names and values are not validated
+`Headers.new`, `append`, `set`, `get`, `contains`, `len`, `get_at`, `copy`, and
+`encode` manage ordered headers. Lookup and replacement are case-insensitive;
+encoding preserves inserted spelling and order. `append` and `set` take an
+exclusive receiver; the others are shared. `get(name)` returns
+`Option[String]`, an owned copy of the first matching value, and `get_at(index)`
+returns an owned `Header` copy and panics when `index >= len()`. Fields are
+stored in their wire encoding, so lookups are linear in the encoded size. Header names and values are not validated
 against HTTP control-character rules, so callers must not pass untrusted text
 without their own validation.
 
@@ -112,7 +116,8 @@ headers, and response limit. A caller-supplied `Host` header remains an
 intentional virtual-host override; otherwise it adds the URL authority,
 including a non-default HTTP port. It rejects HTTPS with `TlsUnavailable` and
 does not silently downgrade transport security. `parse(raw)` parses an owned
-request text. `method`, `target`, `host`, and `body_text` use shared receivers.
+request text. `method`, `target`, `host`, `body_text`, `headers`, and `encode`
+use shared receivers; `headers()` returns an owned copy.
 
 `HttpResponse.new`, `text`, `header`, `status`, `reason`, `headers`, `body`,
 `encode`, and `parse` provide the matching response surface. `text` supplies a
@@ -120,8 +125,8 @@ small conventional reason phrase table and a UTF-8 text content type. Parsing
 recognizes HTTP/1.0 and HTTP/1.1, validates basic framing, and decodes chunked
 bodies with a fixed 16 MiB limit. It is not a hardened general HTTP parser:
 there is no header-count/line-size policy, trailer API, compression, redirect,
-cookie, or authentication support. `status`, `reason`, and `body` use shared
-receivers.
+cookie, or authentication support. `status`, `reason`, `body`, `headers`, and
+`encode` use shared receivers; `headers()` returns an owned copy.
 
 `HttpServer.bind(port)` wraps a `TcpListener`; `accept()` returns one owning
 `HttpConnection`. A connection can `read(limit)` into `HttpRequest`,
