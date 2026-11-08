@@ -2,6 +2,22 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-08 night, groundwork while waiting for asks.txt)
+
+quazistrap (all verified: 1012 Rust tests, 21 e2e scripts incl. new
+check_context_switch / check_thread_atomics / check_float_format, every example
+binary, std 59/59): atomics `d645107`, context switch `c5e6e6e`, spawn_arg,
+export-body symbols `bcf8b51`, plain stdout `aed9f40`, `qz doc` `c831095`,
+macOS removed from plan `f7932ff`, hex/exponent literals `d5224e9`, f64
+printing >= 1e18 `8aad5cb`, IEEE min/max/abs `ae00e1f`, Jz r0 miscompilation
+`505448c` (QZC34), statement register reuse `d5af365` (the 255-register limit
+now only bounds simultaneously live values). Compiler plan 81.7%.
+std: core atomics/context switch, thread_spawn_arg, socket timeouts and real
+shutdown modes, cwd, bounded reads, UTC offsets, time serialization, IEEE math
+fixes, NetBSD fs undeclared-type fix. std plan 59.5%.
+
+Concurrency syntax/semantics still wait for answers in asks.txt (see PENDING).
+
 ## PENDING: std.threading / std.qroutines (waiting for answers in asks.txt)
 
 Maintainer request (2026-11-08): split concurrency into `std.threading` (real
