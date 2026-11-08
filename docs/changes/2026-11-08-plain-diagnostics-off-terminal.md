@@ -13,3 +13,7 @@ Diagnostics now keep colors only when stderr is a terminal. `NO_COLOR` and
 Verification: `python3 scripts/check_initialization.py --qz target/debug/qz`
 fails with the previous compiler and passes with this change (57 checks);
 `qz check 2>&1 | cat -v` shows no escape sequences.
+
+Follow-up: `qz test` printed colored `ok`/`FAILED` results to a piped stdout
+as well. Its results are now colored only when stdout is a terminal and
+`NO_COLOR`/`--no-color` are absent.

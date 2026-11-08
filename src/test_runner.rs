@@ -157,7 +157,11 @@ fn run_test_binary(
 }
 
 pub fn run(filter: Option<&str>, no_color: bool, no_unicode: bool) -> Result<bool, String> {
+    use std::io::IsTerminal;
     let cwd = std::env::current_dir().map_err(|error| format!("cannot read cwd: {error}"))?;
+    // Results go to stdout; color only an interactive terminal.
+    let no_color =
+        no_color || std::env::var_os("NO_COLOR").is_some() || !std::io::stdout().is_terminal();
     run_project(&cwd, filter, no_color, no_unicode)
 }
 
