@@ -183,4 +183,5 @@ dependencies; `qz deps` inspects the result.
 ## Deduplication and circular imports
 
 The loader deduplicates imports via canonical-path tracking. Circular imports
-are safe — each file is loaded at most once.
+are safe — each file is loaded at most once. A file whose import resolves to itself (for example
+`import ./x;` inside `x.qz`) is rejected with `'<path>' imports itself`.

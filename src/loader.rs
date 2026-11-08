@@ -1482,6 +1482,11 @@ fn collect(
         &canonical, &src, resolver, strict, target, overrides, checkpoint,
     )? {
         checkpoint()?;
+        // A module that resolves an import to itself (for example `import ./x;`
+        // inside x.qz) otherwise reports confusing missing-export errors.
+        if dep.canonicalize().is_ok_and(|dep| dep == canonical) {
+            return Err(format!("'{}' imports itself", canonical.display()).into());
+        }
         dep_edges.push((canonical.clone(), dep.clone()));
         collect(
             &dep,
@@ -2235,6 +2240,27 @@ mod tests {
                 .all(|file| !file.implicit_prelude)
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn self_import_is_reported() {
+        let root = temp_dir("quazi_self_import");
+        let module = root.join("a.qz");
+        fs::write(&module, "import ./a;\npub fn f() i32 { ret 1; }\n").unwrap();
+        let mut checkpoint = || Ok(());
+        let error = collect_sources_with_prelude(
+            std::slice::from_ref(&module),
+            None,
+            None,
+            &[],
+            false,
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut checkpoint,
+        )
+        .err()
+        .expect("self import must fail");
+        assert!(format!("{error:?}").contains("imports itself"), "{error:?}");
     }
 
     #[test]
