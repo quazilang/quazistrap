@@ -30,7 +30,7 @@ Revalidated on 2026-10-25 for the
 [declaration-type context prerequisite](docs/changes/2026-10-24-declaration-type-context.md) and
 [runtime String checkpoint](docs/changes/2026-10-23-runtime-string-abi.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 1001 tests pass, including the 60 contained-LSP tests. Owned-string operations
+All 1002 tests pass, including the 60 contained-LSP tests. Owned-string operations
 now require the selected runtime declaration and checked data offset. Full import
 paths, aliases and concrete formatting arguments are checked; 25 invalid programs
 are rejected by check/native/QZI/COFF. Real String comparisons, references,
@@ -54,7 +54,7 @@ call fixes ([change record](docs/changes/2026-11-08-std-net-ownership.md)).
 Functions may end with a tail value and `if` with `else` is an expression
 ([D-017](docs/decisions/expression-oriented-blocks.md)); both are parsed into
 the existing `ret`/`match` forms and pass native, source-removed QZI and COFF runs.
-QZC32 rebuilds older source caches; QZI14 remains Unverified. Numeric coercion/normalization, effects,
+QZC33 rebuilds older source caches; QZI14 remains Unverified. Numeric coercion/normalization, effects,
 recursive destruction and artifact certification remain open. Ownership stays
 9/16; LSP stays 16/20. The 33-item, 78-requirement rubric remains unchanged.
 Statuses and percentages are refreshed before committing.

@@ -6505,6 +6505,30 @@ fn main() void {
     }
 
     #[test]
+    fn integer_literals_above_i64_fold_as_unsigned() {
+        let report = analyze(
+            "fn main() i32 { const a: u64 = 18446744073709551614 / 2; const b: bool = 9223372036854775808 > 1; const c: i64 = 9223372036854775807 + 1; ret 0; }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let folded = |value: i64| {
+            report
+                .annotated_exprs
+                .iter()
+                .any(|annotation| annotation.const_value == Some(ConstValue::Int(value)))
+        };
+        assert!(folded(9223372036854775807), "u64 division folded as signed");
+        assert!(
+            report
+                .annotated_exprs
+                .iter()
+                .any(|annotation| annotation.const_value == Some(ConstValue::Bool(true))),
+            "u64 comparison folded as signed"
+        );
+        // Signed overflow wraps instead of aborting the compiler.
+        assert!(folded(i64::MIN));
+    }
+
+    #[test]
     fn function_owner_moves_are_affine_through_calls_assignments_and_casts() {
         for source in [
             "fn one() i32 { ret 1; } fn main() void { var first: fn() i32 = one; var second: fn() i32 = first; first(); }",

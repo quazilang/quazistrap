@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-08: Integer literals above i64::MAX fold as unsigned](2026-11-08-unsigned-literal-folding.md)
+
 - [2026-11-08: qz check analyzes every artifact](2026-11-08-check-all-artifacts.md)
 
 - [2026-11-08: Tail values and if expressions](2026-11-08-tail-and-if-expressions.md)

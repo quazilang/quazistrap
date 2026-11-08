@@ -2873,6 +2873,10 @@ impl Analyzer {
         let result = match &expr.node {
             ExprKind::Literal(lit) => {
                 let ty = match lit {
+                    // A literal above i64::MAX can only be a u64 value; typing
+                    // it as i32 made constant folding and codegen treat it as a
+                    // negative signed operand.
+                    Literal::Int(value) if *value > i64::MAX as u64 => TypeKind::Uint64,
                     Literal::Int(_) => TypeKind::Int32,
                     Literal::Float(_) => TypeKind::Float64,
                     Literal::String(_) => TypeKind::Ref {
@@ -6640,13 +6644,13 @@ impl Analyzer {
         });
         match (op, left, right) {
             (BinOpKind::Add, ConstValue::Int(a), ConstValue::Int(b)) => {
-                Some(ConstValue::Int(a + b))
+                Some(ConstValue::Int(a.wrapping_add(*b)))
             }
             (BinOpKind::Sub, ConstValue::Int(a), ConstValue::Int(b)) => {
-                Some(ConstValue::Int(a - b))
+                Some(ConstValue::Int(a.wrapping_sub(*b)))
             }
             (BinOpKind::Mul, ConstValue::Int(a), ConstValue::Int(b)) => {
-                Some(ConstValue::Int(a * b))
+                Some(ConstValue::Int(a.wrapping_mul(*b)))
             }
             (BinOpKind::Div, ConstValue::Int(a), ConstValue::Int(b)) if *b != 0 => {
                 if unsigned {
