@@ -2,6 +2,34 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## PENDING: std.threading / std.qroutines (waiting for answers in asks.txt)
+
+Maintainer request (2026-11-08): split concurrency into `std.threading` (real
+OS threads) and `std.qroutines` (green threads, goroutine-like, e.g.
+`qroutines.spawn(...)`), with good syntax; syntax/semantics questions go to
+`asks.txt` (Russian, for a friend) instead of the user. Defaults marked
+"(по умолчанию)" in asks.txt are what to implement if an answer is missing.
+
+Done so far (independent of the answers):
+- quazistrap `d645107` AtomicAdd/AtomicCas lowering (`lock xadd`/`lock cmpxchg`)
+  via `quazi.atomic.add`/`quazi.atomic.cas`; `c5e6e6e` `quazi.context.switch`
+  (id 42, 272-byte context, see src/backend/x86_64/AGENTS.md) with
+  scripts/check_context_switch.py; `bcf8b51` `@export` body/adapter symbols.
+- std `c794d95` core.atomic_add / atomic_cas / context_switch + test.
+
+Next once answers arrive:
+1. std.qroutines runtime: per-task malloc'd stack, context, run queue,
+   `spawn(fn() T)` -> Task[T], `yield_now`, `sleep`, `Channel[T]`
+   (send/receive/close), join; an `@export` entry trampoline reads the current
+   task and calls its Quazi closure, then switches back to the scheduler.
+   M:1 cooperative by default (4А/5А).
+2. std.threading: rename/alias std.thread, JoinHandle, Mutex/AtomicI64 on core
+   atomics; thread_spawn currently passes NULL as the callback argument, so an
+   argument-carrying spawn intrinsic is needed for safe data passing.
+3. Optional syntax (1Б/В/Г `spawn` keyword, 2Б `<-` token, 3Б `select`):
+   parser + Tree-sitter + docs + D-019 decision record.
+4. Closure capture of owned values (9Б) is compiler work in ownership/closures.
+
 ## Checkpoint (2026-11-08 evening, correctness fixes and std.time)
 
 Compiler commits after `c684b3c`: `8b89730` self-import error, `748ae03` D-018
