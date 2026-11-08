@@ -27,9 +27,13 @@ Verification (compiler cwd, rustup cargo 1.99.1, RUSTFLAGS='-C link-arg=-fuse-ld
   check_os_memory 6; check_net_receivers 10 + probes + QZI/COFF.
 - Each commit's staged tree was exported and tested in isolation (992, 995).
 
+Follow-up commits: `d789b70` `qz check` analyzes every artifact
+(`ProjectConfig::artifact_entries`, 1000 tests); `89d5a16` documents std
+SO_REUSEADDR (std `b168431`); std `4b003a7` makes root `qz test` pass 38/38.
+
 NEXT: global type table across modules (S05 for same-named types in different
-modules), `qz check` covering all bins, std root `qz test` fixture isolation.
-Installed release binary not updated in this checkpoint.
+modules) via declaration identities in typecheck/codegen; self-import
+diagnostics; then milestones 6-11. Installed release binary not updated.
 
 ## Checkpoint (2026-10-25, defining-source declaration records)
 
