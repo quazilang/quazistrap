@@ -5751,10 +5751,19 @@ impl Analyzer {
         // its module name (`thread.thread_spawn()`). This is not an import, but
         // it resolves to the same mangled symbol and must not be rejected merely
         // because a module never imports itself.
+        if self.is_local_binding(&base) {
+            return false;
+        }
         if self.current_module_path.as_deref() == Some(base.as_str()) {
             return true;
         }
         self.resolve_symbol(&base).is_some_and(|sym| sym.is_import)
+    }
+
+    /// Locals and parameters shadow module namespaces, including the current
+    /// module's own name (`const time = ...; time.method()` inside `time`).
+    fn is_local_binding(&self, name: &str) -> bool {
+        self.scopes.iter().skip(1).any(|scope| scope.contains_key(name))
     }
 
     /// Resolve a bare function name used in the current function body.
@@ -5840,6 +5849,9 @@ impl Analyzer {
     /// actual source file module).
     fn resolve_module_method(&self, object: &Expr, method: &str) -> Option<String> {
         let (base, path) = Self::extract_field_chain(object)?;
+        if self.is_local_binding(&base) {
+            return None;
+        }
         if self.current_module_path.as_deref() == Some(base.as_str()) && path.is_empty() {
             return Some(format!("{}.{}", base, method));
         }

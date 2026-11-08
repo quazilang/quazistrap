@@ -6491,6 +6491,15 @@ fn main() void {
     }
 
     #[test]
+    fn locals_shadow_the_current_module_namespace() {
+        let report = analyze_module_pair(
+            "pub struct Cell { v: i32, }\nimpl Cell { pub fn value(self: &Cell) i32 { ret self.v; } }\npub fn read() i32 { const helpers = Cell { v: 4 }; ret helpers.value(); }\n",
+            "import helpers;\nfn main() i32 { ret helpers.read(); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
     fn private_module_functions_call_public_siblings_without_import() {
         let report = analyze_module_pair(
             "pub fn apply(x: i32) i32 { ret x * 2; }\nfn helper(x: i32) i32 { ret apply(x) + 1; }\npub fn run(x: i32) i32 { ret helper(x); }\n",
