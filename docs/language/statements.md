@@ -58,13 +58,61 @@ value before storing the new one.
 ## Return
 
 `ret expression;` returns a value from a function. `ret;` returns from a
-`void` function. Every non-void function path must reach a `ret`:
+`void` function. Every non-void function path must reach a `ret` or a tail
+value:
 
 ```quazi
 fn double(x: i32) i32 {
     ret x * 2;
 }
 ```
+
+### Tail values
+
+The final element of a function body may be an expression without `;`. In a
+function that returns a value it is the result, exactly as if written with
+`ret`; in a `void` or `!` function it is evaluated and discarded:
+
+```quazi
+fn double(x: i32) i32 {
+    x * 2
+}
+
+fn clamp(x: i32, low: i32, high: i32) i32 {
+    if (x < low) {
+        ret low;
+    }
+    if (x > high) {
+        ret high;
+    }
+    x
+}
+```
+
+Tail position extends into every branch of a final `if` / `else if` / `else`
+statement and into a final `unsafe` block, so each branch may end with its own
+tail value:
+
+```quazi
+fn max(a: i32, b: i32) i32 {
+    if (a > b) {
+        a
+    } else {
+        b
+    }
+}
+```
+
+Rules:
+
+- Only these tails may omit `;`. A value expression without `;` anywhere else,
+  for example at the end of a loop body or of an `if` that is followed by more
+  statements, is error `E02`.
+- A final `if` without `else` cannot supply a function's value (`E02`); use an
+  `else` branch or `ret`.
+- `ret` remains the only way to leave a function early.
+- `{ ... }` blocks are not expressions; see
+  [D-017](../decisions/expression-oriented-blocks.md).
 
 ## Conditional statements
 
@@ -81,6 +129,10 @@ if (temperature < 0) {
 ```
 
 The condition is always parenthesized. Braces are required for the body.
+A condition may be `bool` or an integer, which is true when nonzero.
+
+`if` can also produce a value; see
+[`if` expressions](expressions.md#if-expressions).
 
 ## Loops
 
@@ -174,7 +226,8 @@ permits specific unsafe operations within its scope.
 
 ## Expression statements
 
-Any expression followed by `;` is a statement. The result is discarded:
+Any expression followed by `;` is a statement. The result is discarded. The
+semicolon may be omitted only for a function's [tail value](#tail-values):
 
 ```quazi
 compute(42);

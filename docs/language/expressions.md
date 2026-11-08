@@ -244,6 +244,36 @@ A borrowed enum may be matched to inspect its variant, for example
 Payload bindings such as `Some(value)` remain unavailable through a borrowed
 enum because they would require aggregate projection semantics.
 
+## `if` expressions
+
+`if` produces a value when it appears where an expression is expected:
+
+```quazi
+fn abs(x: i32) i32 {
+    const result: i32 = if (x < 0) { -x } else { x };
+    result
+}
+
+fn sign(x: i32) i32 {
+    ret if (x < 0) { -1 } else if (x == 0) { 0 } else { 1 };
+}
+```
+
+- `else` is required; `else if` chains are allowed.
+- Each branch contains exactly one expression with no `;`. Use an `if`
+  statement, a function tail, or a helper function when a branch needs
+  statements.
+- The condition follows `if` statement rules: `bool`, or an integer that is
+  true when nonzero.
+- Branch types must be compatible like `match` arms. A branch of type `!`, such
+  as `panic(...)`, is compatible with any type.
+- Only the selected branch is evaluated, and its value (including an owned
+  value) is moved out of it exactly once.
+
+An `if` expression is equivalent to `match condition { true => then, _ => else }`,
+so its diagnostics report match arm mismatches. Design and alternatives:
+[D-017](../decisions/expression-oriented-blocks.md).
+
 ## Range expressions
 
 `start..end` creates an exclusive-upper-bound `Range`. `start..=end` creates

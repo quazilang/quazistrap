@@ -131,6 +131,10 @@ impl Parser {
         self.render_diagnostic(code, msg, s)
     }
 
+    pub(crate) fn render_ast_diagnostic(&self, code: &str, msg: String, span: ast::Span) -> String {
+        self.render_diagnostic(code, msg, TokenSpan::new(span.line, span.col, span.start, span.end))
+    }
+
     fn render_diagnostic(&self, code: &str, msg: String, span: TokenSpan) -> String {
         // Resolve merged-source line to file:line:col when source_files are available.
         let (display_loc, file_rel_line) = if let Some(sf) = self

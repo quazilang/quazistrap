@@ -37,7 +37,22 @@ assign → logical-or → logical-and → equality → comparison → term → f
   `__slice(start, end, step, start_omitted, end_omitted)` method. Bounds and step
   remain ordinary expressions; omitted-bound flags preserve dynamic-step semantics.
 
-## Missing / Planned
+## Tail values and `if` expressions (D-017)
 
-- **`break` / `continue`**: No lexer tokens or AST nodes exist yet. Need `TokenKind::Break` / `TokenKind::Continue` and new `StmtKind` variants.
-- **`else if` chains**: Currently parsed as `else { if cond { ... } }` (nested `If` inside `else_block`). A dedicated `else_if: Vec<(Expr, Block)>` field on `If` would flatten the AST and improve codegen. See P1 roadmap in `DOCS.md`.
+- `parse_expr_stmt` accepts an expression closed by `}` without `;` and records
+  it in `unterminated_tails` with its would-be `E02` error.
+  `parse_function_body` consumes only the function tail, recursing into the
+  branches of a final `if` statement and a final `unsafe` block: it becomes
+  `StmtKind::Return(Some(expr))` unless the declared return type is `void` or
+  `!`. Any other recorded tail is reported. A tail `if` without `else` cannot
+  supply a value.
+- `if` in primary position (`parse_if_expr`) requires `else`, allows `else if`,
+  takes exactly one expression per branch, and is produced as
+  `match cond { true => a, _ => b }` (boolean literal patterns share `if`
+  truthiness). Statement-position `if` stays `StmtKind::If`.
+- These are the only producers; every later pass sees ordinary `Return`/`Match`
+  nodes. Do not add a separate AST node without a design for value-carrying
+  block scopes (general block expressions are deferred in D-017).
+
+`break`/`continue` and flat `else if` (`StmtKind::If { else_if }`) are
+implemented.

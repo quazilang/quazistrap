@@ -25,6 +25,9 @@ pub struct Parser {
     pos: usize,
     source: Option<String>,
     source_files: Vec<crate::semantic::types::SourceFile>,
+    /// Expression statements closed by `}` without `;`, with the error to report
+    /// unless the enclosing function body consumes them as its tail (D-017).
+    unterminated_tails: Vec<(Span, String)>,
 }
 
 impl Parser {
@@ -34,6 +37,7 @@ impl Parser {
             pos: 0,
             source: None,
             source_files: Vec::new(),
+            unterminated_tails: Vec::new(),
         }
     }
 
@@ -43,6 +47,7 @@ impl Parser {
             pos: 0,
             source: Some(source.to_string()),
             source_files: Vec::new(),
+            unterminated_tails: Vec::new(),
         }
     }
 
@@ -56,6 +61,7 @@ impl Parser {
             pos: 0,
             source: Some(source.to_string()),
             source_files,
+            unterminated_tails: Vec::new(),
         }
     }
 
@@ -311,6 +317,95 @@ impl Parser {
             stmts,
             span: to_ast_span(merge_token_spans(lbrace, rbrace)),
         })
+    }
+
+    /// Parse a function body whose final expression may omit `;` (D-017).
+    /// In a function returning a value that expression becomes `ret expr;`;
+    /// in a `void` or `!` function it stays an expression statement.
+    pub(crate) fn parse_function_body(&mut self, returns_value: bool) -> Result<Block, String> {
+        let outer = std::mem::take(&mut self.unterminated_tails);
+        let parsed = self.parse_block().and_then(|mut body| {
+            self.finalize_tail(&mut body, returns_value)?;
+            match self.unterminated_tails.first() {
+                Some((_, error)) => Err(error.clone()),
+                None => Ok(body),
+            }
+        });
+        self.unterminated_tails = outer;
+        parsed
+    }
+
+    /// Consume the unterminated expression ending `block` and, recursively,
+    /// the branches of a final `if` statement or `unsafe` block.
+    fn finalize_tail(&mut self, block: &mut Block, returns_value: bool) -> Result<(), String> {
+        let Some(last) = block.stmts.last_mut() else {
+            return Ok(());
+        };
+        match &mut last.node {
+            StmtKind::ExprStmt(expr) => {
+                let Some(index) = self
+                    .unterminated_tails
+                    .iter()
+                    .position(|(span, _)| *span == expr.span)
+                else {
+                    return Ok(());
+                };
+                self.unterminated_tails.remove(index);
+                if returns_value {
+                    let span = expr.span;
+                    let StmtKind::ExprStmt(expr) =
+                        std::mem::replace(&mut last.node, StmtKind::Return(None))
+                    else {
+                        unreachable!("matched an expression statement");
+                    };
+                    *last = Spanned::new(StmtKind::Return(Some(expr)), span);
+                }
+            }
+            StmtKind::If {
+                then_block,
+                else_if,
+                else_block,
+                ..
+            } => {
+                if returns_value
+                    && else_block.is_none()
+                    && let Some(span) = std::iter::once(&*then_block)
+                        .chain(else_if.iter().map(|(_, block)| block))
+                        .find_map(|block| self.unterminated_tail_of(block))
+                {
+                    return Err(self.render_ast_diagnostic(
+                        "E02",
+                        "an `if` without `else` cannot produce the function's value; add an `else` branch or use `ret`"
+                            .to_string(),
+                        span,
+                    ));
+                }
+                self.finalize_tail(then_block, returns_value)?;
+                for (_, block) in else_if {
+                    self.finalize_tail(block, returns_value)?;
+                }
+                if let Some(block) = else_block {
+                    self.finalize_tail(block, returns_value)?;
+                }
+            }
+            StmtKind::UnsafeBlock { body } => self.finalize_tail(body, returns_value)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn unterminated_tail_of(&self, block: &Block) -> Option<Span> {
+        let Some(Spanned {
+            node: StmtKind::ExprStmt(expr),
+            ..
+        }) = block.stmts.last()
+        else {
+            return None;
+        };
+        self.unterminated_tails
+            .iter()
+            .any(|(span, _)| *span == expr.span)
+            .then_some(expr.span)
     }
 
     fn parse_var_stmt(&mut self) -> Result<Stmt, String> {
@@ -708,6 +803,17 @@ impl Parser {
 
     fn parse_expr_stmt(&mut self) -> Result<Stmt, String> {
         let expr = self.parse_expr()?;
+        if self.at(TokenKind::RBrace) {
+            // Possibly a function-body tail; `parse_function_body` decides.
+            let error = self.err_here_with_code(
+                "E02",
+                "expected ;, found } (only the final expression of a function body may omit `;`)"
+                    .to_string(),
+            );
+            self.unterminated_tails.push((expr.span, error));
+            let span = expr.span;
+            return Ok(Spanned::new(StmtKind::ExprStmt(expr), span));
+        }
         let semi = self.expect(TokenKind::Semicolon)?.span;
         let span = Span::merge(expr.span, to_ast_span(semi));
         Ok(Spanned::new(StmtKind::ExprStmt(expr), span))
@@ -1460,6 +1566,95 @@ impl Parser {
         Ok((args, named_args))
     }
 
+    /// Parse a value-producing `if` (D-017) after its `if` keyword. It is the
+    /// two-arm match `match cond { true => then, _ => else }`, so it keeps `if`
+    /// truthiness and shares match typing, ownership and lowering.
+    fn parse_if_expr(&mut self, if_span: crate::lexer::token::Span) -> Result<Expr, String> {
+        let condition = if self.at(TokenKind::LParen) {
+            self.advance();
+            let condition = self.parse_expr()?;
+            self.expect(TokenKind::RParen)?;
+            condition
+        } else {
+            self.parse_expr()?
+        };
+        let (then_expr, then_span) = self.parse_if_expr_branch()?;
+        if !self.at(TokenKind::Else) {
+            return Err(self.err_here_with_code(
+                "E02",
+                format!(
+                    "an `if` expression requires an `else` branch, found {}",
+                    self.peek_kind()
+                ),
+            ));
+        }
+        let else_token = self.advance().span;
+        let else_expr = if self.at(TokenKind::If) {
+            let nested = self.advance().span;
+            self.parse_if_expr(nested)?
+        } else {
+            self.parse_if_expr_branch()?.0
+        };
+        let else_span = Span::merge(to_ast_span(else_token), else_expr.span);
+        let span = Span::merge(to_ast_span(if_span), else_expr.span);
+        let arms = vec![
+            MatchArm {
+                pattern: Spanned::new(PatternKind::Literal(LiteralValue::Bool(true)), then_span),
+                guard: None,
+                span: then_span,
+                expr: then_expr,
+            },
+            MatchArm {
+                pattern: Spanned::new(PatternKind::Wildcard, else_span),
+                guard: None,
+                span: else_span,
+                expr: else_expr,
+            },
+        ];
+        Ok(Spanned::new(
+            ExprKind::Match {
+                scrutinee: Box::new(condition),
+                arms,
+            },
+            span,
+        ))
+    }
+
+    /// `{ expr }`: an `if` expression branch holds exactly one expression.
+    fn parse_if_expr_branch(&mut self) -> Result<(Expr, Span), String> {
+        let lbrace = self.expect(TokenKind::LBrace)?.span;
+        if matches!(
+            self.peek_kind(),
+            TokenKind::Var
+                | TokenKind::Const
+                | TokenKind::Return
+                | TokenKind::For
+                | TokenKind::Break
+                | TokenKind::Continue
+                | TokenKind::RBrace
+        ) {
+            return Err(self.err_here_with_code(
+                "E02",
+                format!(
+                    "an `if` expression branch must contain exactly one expression, found {}; use an `if` statement or a helper function",
+                    self.peek_kind()
+                ),
+            ));
+        }
+        let expr = self.parse_expr()?;
+        if !self.at(TokenKind::RBrace) {
+            return Err(self.err_here_with_code(
+                "E02",
+                format!(
+                    "an `if` expression branch must contain exactly one expression without `;`, found {}",
+                    self.peek_kind()
+                ),
+            ));
+        }
+        let rbrace = self.advance().span;
+        Ok((expr, to_ast_span(merge_token_spans(lbrace, rbrace))))
+    }
+
     fn parse_match_expr(&mut self, match_span: crate::lexer::token::Span) -> Result<Expr, String> {
         let scrutinee = self.parse_expr()?;
         self.expect(TokenKind::LBrace)?;
@@ -1710,6 +1905,7 @@ impl Parser {
                 Ok(Spanned::new(ExprKind::Group(Box::new(expr)), span))
             }
             TokenKind::Match => self.parse_match_expr(tok.span),
+            TokenKind::If => self.parse_if_expr(tok.span),
             TokenKind::LBracket => {
                 let mut elems = Vec::new();
                 if !self.at(TokenKind::RBracket) {
@@ -2063,6 +2259,85 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new_with_source(tokens, src);
         parser.parse().expect_err("source should fail to parse")
+    }
+
+    fn body(program: &Program, index: usize) -> &Block {
+        match &program.items[index].node {
+            ItemKind::Fn { body: Some(body), .. } => body,
+            other => panic!("expected a function with a body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_tail_becomes_return_or_statement_by_return_type() {
+        let program = parse_program(
+            "fn add(a: i32, b: i32) i32 { a + b }\nfn act() void { add(1, 2) }\nfn stop() ! { act() }",
+        );
+        assert!(matches!(
+            body(&program, 0).stmts.last().unwrap().node,
+            StmtKind::Return(Some(_))
+        ));
+        for index in [1, 2] {
+            assert!(matches!(
+                body(&program, index).stmts.last().unwrap().node,
+                StmtKind::ExprStmt(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn tail_if_and_unsafe_branches_return_their_values() {
+        let program = parse_program(
+            "fn pick(x: i32) i32 { if (x > 0) { x } else if (x < 0) { ret 0; } else { unsafe { 1 } } }",
+        );
+        let StmtKind::If {
+            then_block,
+            else_if,
+            else_block: Some(else_block),
+            ..
+        } = &body(&program, 0).stmts[0].node
+        else {
+            panic!("expected a tail if statement");
+        };
+        assert!(matches!(then_block.stmts[0].node, StmtKind::Return(Some(_))));
+        assert!(matches!(else_if[0].1.stmts[0].node, StmtKind::Return(Some(_))));
+        let StmtKind::UnsafeBlock { body } = &else_block.stmts[0].node else {
+            panic!("expected an unsafe tail");
+        };
+        assert!(matches!(body.stmts[0].node, StmtKind::Return(Some(_))));
+    }
+
+    #[test]
+    fn if_expression_is_a_two_arm_boolean_match() {
+        let program =
+            parse_program("fn sign(x: i32) i32 { ret if (x < 0) { -1 } else if (x == 0) { 0 } else { 1 }; }");
+        let StmtKind::Return(Some(expr)) = &body(&program, 0).stmts[0].node else {
+            panic!("expected a return");
+        };
+        let ExprKind::Match { arms, .. } = &expr.node else {
+            panic!("an if expression lowers to match");
+        };
+        assert!(matches!(
+            arms[0].pattern.node,
+            PatternKind::Literal(LiteralValue::Bool(true))
+        ));
+        assert!(matches!(arms[1].pattern.node, PatternKind::Wildcard));
+        assert!(matches!(arms[1].expr.node, ExprKind::Match { .. }), "else if nests");
+    }
+
+    #[test]
+    fn misplaced_tails_and_incomplete_if_expressions_are_rejected() {
+        for (source, message) in [
+            ("fn f() i32 { for (true) { 1 } ret 0; }", "only the final expression"),
+            ("fn f(x: i32) i32 { if (x > 0) { 1 } else { 2 } ret 3; }", "only the final expression"),
+            ("fn f(x: i32) i32 { if (x > 0) { 1 } }", "cannot produce the function's value"),
+            ("fn f(x: i32) i32 { ret if (x > 0) { 1 }; }", "requires an `else` branch"),
+            ("fn f(x: i32) i32 { ret if (x > 0) { var y = 1; y } else { 0 }; }", "exactly one expression"),
+            ("fn f(x: i32) i32 { ret if (x > 0) { 1; } else { 0 }; }", "exactly one expression"),
+        ] {
+            let error = parse_program_err(source);
+            assert!(error.contains(message), "{source}: {error}");
+        }
     }
 
     #[test]

@@ -125,3 +125,12 @@ Accepted 2026-10-22: [typed power with exact checked integer arithmetic](power-o
 Known negative integer exponents are compile-time errors; runtime negative
 integer exponents panic. Floating-base negative powers remain fractional.
 Implementation is pending.
+
+## D-017: tail values and `if` expressions
+
+Assessed and implemented 2026-11-08: [adopt with modifications](expression-oriented-blocks.md).
+A function body's final expression may omit `;` and supplies its value; tail
+position extends into final `if`/`else` branches and `unsafe` blocks. `if` with
+a mandatory `else` and single-expression branches is a value expression,
+defined as a two-arm Boolean `match`. `ret` stays the only early exit. General
+block expressions are deferred until value-carrying block scopes exist.

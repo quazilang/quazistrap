@@ -31,6 +31,26 @@ fn main() i32 {
 
 Conditions are always parenthesized. Braces are required.
 
+### `if` as an expression
+
+With an `else` branch, `if` can produce a value. Each branch holds one
+expression without `;`:
+
+```quazi
+// tutorial: runnable
+import std.io;
+
+fn main() i32 {
+    const temp: i32 = 28;
+    const advice: str = if (temp > 25) { "wear a hat" } else { "bring a jacket" };
+    const fahrenheit: i32 = temp * 9 / 5 + 32;
+    io.println("{} ({}°F)", advice, fahrenheit);
+    ret 0;
+}
+```
+
+When a branch needs several statements, use an `if` statement instead.
+
 ## Loops
 
 Quazi uses `for` for all loop forms.

@@ -251,6 +251,10 @@ pub fn name[T](param: Type, ...rest: str) ReturnType {
     var arr = [1, 2, 3]; arr[0];
     ret expr;
 }
+fn tail(x: i32) i32 {
+    const y = if (x < 0) { -x } else { x };   // if expression: else required
+    y + 1                                       // final expression = result (D-017)
+}
 unsafe fn ptr_fn(p: *u8) *u8 { ret p; }
 unsafe { var x = ptr_fn(p); *x = 1; }
 

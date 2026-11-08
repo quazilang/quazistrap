@@ -83,7 +83,9 @@ impl Parser {
             let end = self.expect(TokenKind::Semicolon)?.span;
             (None, to_ast_span(end))
         } else {
-            let block = self.parse_block()?;
+            // A `void` or `!` function has no value for its tail to supply.
+            let returns_value = !matches!(return_ty.node, TypeKind::Void | TypeKind::Never);
+            let block = self.parse_function_body(returns_value)?;
             let s = block.span;
             (Some(block), s)
         };

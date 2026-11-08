@@ -20,6 +20,42 @@ Parameters are typed. Functions return a value with `ret expression;` or
 return nothing with `ret;` from a `void` function. Every non-void code path
 must reach a `ret`.
 
+### Tail values
+
+The last expression of a function body may leave out `;`; it then becomes the
+function's result. Keep `ret` for returning early:
+
+```quazi
+// tutorial: runnable
+import std.io;
+
+fn clamp(x: i32, low: i32, high: i32) i32 {
+    if (x < low) {
+        ret low;
+    }
+    if (x > high) {
+        ret high;
+    }
+    x
+}
+
+fn max(a: i32, b: i32) i32 {
+    if (a > b) {
+        a
+    } else {
+        b
+    }
+}
+
+fn main() i32 {
+    io.println("{} {}", clamp(42, 0, 10), max(3, 8));
+    0
+}
+```
+
+Only a function's final expression (including the final expression of each
+branch of a final `if`/`else`) may omit `;`.
+
 ## Named arguments
 
 Positional arguments must come before named arguments:
