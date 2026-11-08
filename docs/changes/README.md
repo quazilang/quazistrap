@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-08: Numeric literals, float printing and IEEE edge cases](2026-11-08-numeric-edge-cases.md)
+
 - [2026-11-08: qz doc](2026-11-08-qz-doc.md)
 
 - [2026-11-08: == on struct and enum values is rejected](2026-11-08-handle-equality.md)

@@ -21,28 +21,36 @@ portable convenience layer, not a correctly rounded numerical library.
 ## Basic floating-point operations
 
 `abs`, `min`, `max`, `clamp`, `trunc`, `floor`, `ceil`, `round`, `fract`, and
-`sign` operate on `f64`. `round` rounds half values away from zero. `lerp` does
+`sign` operate on `f64`. `min` and `max` follow IEEE minNum/maxNum: a NaN
+operand yields the other operand. `abs(-0.0)` is `+0.0`. `round` rounds half
+values away from zero. `lerp` does
 not constrain its interpolation amount; `map_range` divides by
 `from_high - from_low`, so a zero-width source range follows IEEE division
 behavior. `radians` and `degrees` convert angular units.
 
 ## Roots, trigonometry, and logarithms
 
-`sqrt` returns NaN for negative inputs; `cbrt` preserves a negative sign;
-`hypot` scales its inputs before squaring to reduce avoidable overflow.
+`sqrt` returns NaN for negative inputs and keeps the sign of zero; `cbrt`
+preserves a negative sign; `hypot` scales its inputs before squaring to reduce
+avoidable overflow and returns infinity if either input is infinite, even when
+the other is NaN.
 
 `sin`, `cos`, `tan`, `atan`/`arctan`, `atan2`/`arctan2`, `asin`, and `acos`
 use finite polynomial or series approximations after range reduction. `asin`
-returns NaN outside `[-1, 1]`; `acos` follows from it. Very large finite angle
-inputs can lose precision during reduction, and `tan` grows without a special
-pole error.
+returns NaN outside `[-1, 1]` and for NaN; `acos` follows from it. `atan2`
+follows C99 Annex F for signed zeros and infinities (`atan2(-0.0, -1.0)` is
+`-pi`, `atan2(inf, inf)` is `pi/4`). Range reduction subtracts a three-part
+2*pi, so `sin`/`cos` stay accurate to about `1e-9` for `|x|` up to `1e6` and
+`1e-6` up to `1e9`; larger arguments lose accuracy. `tan` grows without a
+special pole error.
 
 `exp`, `ln`, `log2`, and `log10` provide IEEE-style NaN/infinite boundary
 handling where implemented: `exp` saturates to infinity/zero beyond its
 documented reduction thresholds, and `ln(0)` is negative infinity while
 negative inputs produce NaN. `sinh`, `cosh`, and `tanh` are derived from
 `exp`; `tanh` clamps beyond ±20. `pow` supports integral exponents for negative
-bases and returns NaN for a negative base with a non-integral exponent.
+bases and returns NaN for a negative base with a non-integral exponent;
+`pow(x, 0)` and `pow(1, y)` are 1 even for NaN operands.
 
 ```quazi
 import std.math;
