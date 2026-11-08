@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-08: std.time wall-clock time, UTC calendar and RFC 3339](2026-11-08-std-time-wall-clock.md)
+
 - [2026-11-08: Integer literals above i64::MAX fold as unsigned](2026-11-08-unsigned-literal-folding.md)
 
 - [2026-11-08: qz check analyzes every artifact](2026-11-08-check-all-artifacts.md)
