@@ -397,6 +397,8 @@ fn has_dest(op: u8) -> bool {
                 | Opcode::Shr
                 | Opcode::Sar
                 | Opcode::Pow
+                | Opcode::AtomicAdd
+                | Opcode::AtomicCas
                 | Opcode::Cmp
                 | Opcode::Load
                 | Opcode::Lea

@@ -5,7 +5,7 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 75.4%. Remaining: 24.6%.**
+**Complete: 78.6%. Remaining: 21.4%.**
 
 On 2026-11-08 the maintainer removed the macOS Mach-O backend (0/3) from the
 plan. The rubric now has 32 items and 75 requirements; no other credit changed.
@@ -196,7 +196,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Cross-basic-block const folding | 1/1 | 100.0% | 0.0% |
 | Strength reduction | 0/1 | 0.0% | 100.0% |
 | Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
-| Atomic opcodes | 0/2 | 0.0% | 100.0% |
+| Atomic opcodes | 2/2 | 100.0% | 0.0% |
 | Format string literals | 0/1 | 0.0% | 100.0% |
 | Nested struct patterns | 0/1 | 0.0% | 100.0% |
 | async / await | 0/1 | 0.0% | 100.0% |
@@ -383,8 +383,8 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
 
 Evidence: [src/backend/x86_64/AGENTS.md](../../src/backend/x86_64/AGENTS.md).
 
-- [ ] Native AtomicAdd lowering.
-- [ ] Native AtomicCas lowering.
+- [x] Native AtomicAdd lowering.
+- [x] Native AtomicCas lowering.
 
 ### Format string literals
 

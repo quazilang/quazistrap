@@ -4250,6 +4250,25 @@ impl<'a> FnEncoder<'a> {
                 emit!(asm.mfence());
             }
 
+            // Locked x86-64 read-modify-write instructions are sequentially
+            // consistent; `target` must be 8-byte aligned.
+            Some(Opcode::AtomicAdd) => {
+                let (dst, target, delta) = instr.rrr();
+                emit!(asm.mov(rcx, slot(target)));
+                emit!(asm.mov(rax, slot(delta)));
+                emit!(asm.lock().xadd(qword_ptr(rcx), rax));
+                emit!(asm.mov(slot(dst), rax));
+            }
+
+            Some(Opcode::AtomicCas) => {
+                let (observed, target, desired) = instr.rrr();
+                emit!(asm.mov(rcx, slot(target)));
+                emit!(asm.mov(rdx, slot(desired)));
+                emit!(asm.mov(rax, slot(observed)));
+                emit!(asm.lock().cmpxchg(qword_ptr(rcx), rdx));
+                emit!(asm.mov(slot(observed), rax));
+            }
+
             Some(Opcode::FieldLoad) => {
                 let (dst, obj, byte_off) = instr.field();
                 emit!(asm.mov(rax, slot(obj)));

@@ -138,3 +138,13 @@ stays marker-free. External linker options/native inputs retain their stack
 policy; the builtin linker already emits RW PT_GNU_STACK. No cache/wire version
 change is needed. Regression: `scripts/check_elf_stack.py`; see
 [verification](../../../docs/changes/2026-10-23-elf-stack-metadata.md).
+
+## Atomic opcodes (2026-11-08)
+
+`AtomicAdd dst, target, delta` lowers to `lock xadd qword [target], delta` and
+returns the previous value. `AtomicCas observed, target, desired` uses
+`observed` as the expected value on entry and leaves the value found in memory
+(`lock cmpxchg`). Both are sequentially consistent and require an 8-byte
+aligned `*i64`. Regalloc treats `AtomicCas` ops[0] as used and defined;
+constprop treats both destinations as runtime values. Source access is through
+`@intrinsic("quazi.atomic.add")` / `@intrinsic("quazi.atomic.cas")`.

@@ -549,11 +549,13 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
         | Opcode::Sar
         | Opcode::StrConcat
         | Opcode::AtomicAdd
-        | Opcode::AtomicCas
         | Opcode::IntMin
         | Opcode::IntMax
         | Opcode::FloatMin
         | Opcode::FloatMax => vec![instr.ops[1], instr.ops[2]],
+        // ops[0] holds the expected value on entry and the observed value on
+        // exit, so it is both used and defined.
+        Opcode::AtomicCas => vec![instr.ops[0], instr.ops[1], instr.ops[2]],
     }
 }
 
@@ -628,6 +630,16 @@ fn is_side_effect_free(op: Opcode) -> bool {
 mod tests {
     use super::*;
     use crate::bytecode::instruction::{mem_lea_block, mem_load, ri16, rrr};
+
+    #[test]
+    fn atomic_cas_reads_and_writes_its_expected_register() {
+        let cas = rrr(Opcode::AtomicCas, 1, 0, 2);
+        assert_eq!(instr_uses(&cas), [1, 0, 2]);
+        assert_eq!(instr_def(&cas), Some(1));
+        let add = rrr(Opcode::AtomicAdd, 3, 0, 1);
+        assert_eq!(instr_uses(&add), [0, 1]);
+        assert_eq!(instr_def(&add), Some(3));
+    }
 
     #[test]
     fn scalar_address_taken_slot_is_never_reused() {

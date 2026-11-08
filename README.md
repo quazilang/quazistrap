@@ -4,9 +4,9 @@
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
 
-**Plan completion: 75.4%.**
+**Plan completion: 78.6%.**
 
-**Remaining work: 24.6%.**
+**Remaining work: 21.4%.**
 
 Completion of unfinished plan items:
 
@@ -15,7 +15,6 @@ Completion of unfinished plan items:
 | Built-in linker | 7/9 | 77.8% | 22.2% |
 | Strength reduction | 0/1 | 0.0% | 100.0% |
 | Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
-| Atomic opcodes | 0/2 | 0.0% | 100.0% |
 | Format string literals | 0/1 | 0.0% | 100.0% |
 | Nested struct patterns | 0/1 | 0.0% | 100.0% |
 | async / await | 0/1 | 0.0% | 100.0% |
@@ -27,7 +26,7 @@ Revalidated on 2026-10-25 for the
 [declaration-type context prerequisite](docs/changes/2026-10-24-declaration-type-context.md) and
 [runtime String checkpoint](docs/changes/2026-10-23-runtime-string-abi.md), using the
 [requirement checklist](docs/audits/2026-10-20-readme-plan-checklist.md).
-All 1004 tests pass, including the 60 contained-LSP tests. Owned-string operations
+All 1006 tests pass, including the 60 contained-LSP tests. Owned-string operations
 now require the selected runtime declaration and checked data offset. Full import
 paths, aliases and concrete formatting arguments are checked; 25 invalid programs
 are rejected by check/native/QZI/COFF. Real String comparisons, references,
@@ -57,7 +56,7 @@ recursive destruction and artifact certification remain open. Ownership stays
 backend from the plan, leaving a 32-item, 75-requirement rubric.
 Statuses and percentages are refreshed before committing.
 The declaration-context prerequisite completes no additional checklist requirement,
-so completion is 75.4% and remaining work 24.6% after that removal.
+so completion was 75.4% after that removal; native atomics then raised it to 78.6%.
 Each item has equal weight; its percentage is implemented requirements
 divided by listed requirements. The overall percentage averages those
 fractions before rounding. Pending or failing requirements receive no

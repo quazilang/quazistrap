@@ -2231,6 +2231,8 @@ impl<'a> Codegen<'a> {
                     m.insert("quazi.array.store", Opcode::ArrayStore);
                     m.insert("quazi.array.load", Opcode::ArrayLoad);
                     m.insert("quazi.str.from_ptr", Opcode::StrAsStr);
+                    m.insert("quazi.atomic.add", Opcode::AtomicAdd);
+                    m.insert("quazi.atomic.cas", Opcode::AtomicCas);
                     m
                 });
             if let Some(&op) = INTRINSIC_OPCODE_MAP.get(instr_name) {
@@ -2261,6 +2263,19 @@ impl<'a> Codegen<'a> {
                         instr.flags = element_slots as u8;
                         chunk.emit(instr);
                         chunk.reg_count = if element_slots > 1 { 3 } else { 2 };
+                    }
+                    Opcode::AtomicAdd => {
+                        // fn add(target: *i64, delta: i64) i64: returns the
+                        // previous value of a sequentially consistent add.
+                        chunk.emit(rrr(op, 0, 0, 1));
+                        chunk.reg_count = 2;
+                    }
+                    Opcode::AtomicCas => {
+                        // fn cas(target: *i64, expected: i64, desired: i64) i64:
+                        // r1 enters as `expected` and leaves as the observed value.
+                        chunk.emit(rrr(op, 1, 0, 2));
+                        chunk.emit(rrr(Opcode::Mov, 0, 1, 0));
+                        chunk.reg_count = 3;
                     }
                     _ => {
                         chunk.emit(rrr(op, 0, 0, 0));
@@ -10081,6 +10096,32 @@ mod tests {
         Codegen::new(&report)
             .compile_program(&program, &[])
             .expect("code generation should succeed")
+    }
+
+    #[test]
+    fn atomic_intrinsics_lower_to_dedicated_opcodes() {
+        let chunks = compile(
+            r#"
+@intrinsic("quazi.atomic.add")
+unsafe fn atomic_add(target: *i64, delta: i64) i64;
+@intrinsic("quazi.atomic.cas")
+unsafe fn atomic_cas(target: *i64, expected: i64, desired: i64) i64;
+unsafe fn bump(target: *i64) i64 { ret atomic_add(target, 1) + atomic_cas(target, 1, 2); }
+fn main() i32 { unsafe { bump(0); } ret 0; }
+"#,
+        );
+        let opcodes = |name: &str| -> Vec<Option<Opcode>> {
+            chunks
+                .iter()
+                .find(|chunk| chunk.name == name)
+                .unwrap_or_else(|| panic!("missing chunk {name}"))
+                .code
+                .iter()
+                .map(|instruction| instruction.opcode())
+                .collect()
+        };
+        assert!(opcodes("atomic_add").contains(&Some(Opcode::AtomicAdd)));
+        assert!(opcodes("atomic_cas").contains(&Some(Opcode::AtomicCas)));
     }
 
     // Constant propagation folds guards but deliberately leaves unreachable

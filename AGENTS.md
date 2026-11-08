@@ -446,7 +446,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | Item | Target |
 |------|--------|
 | Ownership / RAII bytecode | In progress — WPO discovers `free` destructors and codegen inserts reverse-order lexical cleanup on fallthrough/early return/break/continue. Explicit receivers distinguish shared/exclusive loans and consumption. D-014 uses inferred regions rather than source lifetime names. Complete flow-sensitive effects, place-level moves, structural destruction and verified artifact contracts remain pending; source call/place/control evidence is a prerequisite, not their proof. |
-| Atomic opcodes in encoder | `AtomicAdd`, `AtomicCas` lowering. |
+| Atomic opcodes in encoder | ✅ Done — `quazi.atomic.add`/`quazi.atomic.cas` intrinsics lower to `AtomicAdd`/`AtomicCas` (`lock xadd`/`lock cmpxchg`, sequentially consistent, 8-byte aligned targets). |
 
 ### P4 — Language Features
 
