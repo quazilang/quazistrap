@@ -688,7 +688,7 @@ and [remaining findings](docs/audits/2026-10-23-string-followups.md).
 
 ## Source type context: required follow-up (2026-10-24)
 
-Current source formats are QZC33 and QZI14; the latter remains Unverified.
+Current source formats are QZC34 and QZI14; the latter remains Unverified.
 Verify constants in source and the installed binary separately before reporting
 artifact compatibility. Earlier dated cache/ABI checkpoints describe their own
 revisions, including QZC30 for the alias-definition prerequisite.

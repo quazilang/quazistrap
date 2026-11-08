@@ -2164,7 +2164,7 @@ impl<'a> Codegen<'a> {
         if let Some(error) = fc.codegen_error {
             return Err(error);
         }
-        fc.chunk.reg_count = fc.next_reg as u8;
+        fc.chunk.reg_count = fc.next_reg.max(fc.reg_high_water) as u8;
         Ok(Some(fc.chunk))
     }
 
@@ -2495,6 +2495,10 @@ struct FnCompiler<'a> {
     /// physical register encoding so exhaustion is diagnosed instead of
     /// silently wrapping back to r0.
     next_reg: u16,
+    /// Highest `next_reg` ever reached. Statement temporaries are released
+    /// (see `release_statement_temporaries`), so the frame size and the
+    /// inliner's register offset must use this high-water mark.
+    reg_high_water: u16,
     codegen_error: Option<String>,
     resolution_errors: Rc<RefCell<Vec<String>>>,
     bound_names: HashSet<String>,
@@ -2752,6 +2756,7 @@ impl<'a> FnCompiler<'a> {
             local_types: HashMap::new(),
             binding_slots: HashMap::new(),
             next_reg: 0,
+            reg_high_water: 0,
             codegen_error: None,
             resolution_errors,
             bound_names,
@@ -5708,11 +5713,54 @@ impl<'a> FnCompiler<'a> {
 
     /// Reports a known terminal transfer (return, break, or continue).
     fn compile_stmt(&mut self, stmt: &Stmt) -> bool {
+        let first_statement_reg = self.next_reg;
         let terminal = self.compile_stmt_inner(stmt);
+        self.release_statement_temporaries(first_statement_reg);
         terminal
             || self
                 .terminal_statements
                 .contains(&(stmt.span.start, stmt.span.end))
+    }
+
+    /// After a statement, its expression temporaries are dead: hand their
+    /// register numbers back, keeping every register still owned by a live
+    /// binding, cleanup slot or closure environment. Linear-scan allocation
+    /// later assigns physical slots, so a reused number is just another
+    /// non-overlapping live range. Without this, long functions exhausted the
+    /// 255-register QZI encoding even though few values were live at once.
+    fn release_statement_temporaries(&mut self, first_statement_reg: u16) {
+        if self.codegen_error.is_some() {
+            return;
+        }
+        let mut live_end = first_statement_reg;
+        let mut keep = |start: u8, width: usize| {
+            live_end = live_end.max(start as u16 + width.max(1) as u16);
+        };
+        for &reg in self.regs.values() {
+            keep(reg, self.binding_slots.get(&reg).copied().unwrap_or(1));
+        }
+        for scope in &self.drop_scopes {
+            for local in scope {
+                keep(local.reg, self.binding_slots.get(&local.reg).copied().unwrap_or(1));
+                keep(local.initialized, 1);
+            }
+        }
+        for &reg in &self.closure_env_regs {
+            keep(reg, 1);
+        }
+        for temporary in &self.expression_temporaries {
+            keep(temporary.slot, 1);
+            if let Some(reg) = temporary.value_reg {
+                keep(reg, 1);
+            }
+        }
+        if live_end < self.next_reg {
+            self.reg_high_water = self.reg_high_water.max(self.next_reg);
+            // Width records of released registers must not describe a later
+            // value that reuses the same number.
+            self.binding_slots.retain(|&reg, _| (reg as u16) < live_end);
+            self.next_reg = live_end;
+        }
     }
 
     fn compile_stmt_inner(&mut self, stmt: &Stmt) -> bool {
@@ -9177,7 +9225,7 @@ impl<'a> FnCompiler<'a> {
                 if let Some(error) = anon.codegen_error.take() {
                     self.codegen_error.get_or_insert(error);
                 }
-                anon.chunk.reg_count = anon.next_reg.min(u8::MAX as u16) as u8;
+                anon.chunk.reg_count = anon.next_reg.max(anon.reg_high_water).min(u8::MAX as u16) as u8;
 
                 // Push the closure chunk and any nested closures into
                 // the parent's output queue.

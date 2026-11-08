@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-08: Statement-scoped register reuse and the Jz r0 fix](2026-11-08-register-reuse.md)
+
 - [2026-11-08: Numeric literals, float printing and IEEE edge cases](2026-11-08-numeric-edge-cases.md)
 
 - [2026-11-08: qz doc](2026-11-08-qz-doc.md)
