@@ -45,7 +45,7 @@ fn netbsd_ps(command: str) String {
         core.free(buffer);
         nb_pclose(stream);
     }
-    ret output;
+    output
 }
 
 // Exact whole-line matching avoids e.g. mistaking 'xterm' for a WM.
