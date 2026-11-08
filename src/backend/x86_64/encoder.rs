@@ -4019,6 +4019,55 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(r12));
                         emit!(asm.pop(rbx));
                     }
+                    42 => {
+                        // quazi.context.switch(save: *u8, restore: *u8): store the
+                        // callee-saved machine state in `save` and resume the one in
+                        // `restore`. Layout (bytes): rbx 0, rbp 8, r12 16, r13 24,
+                        // r14 32, r15 40, rip 48, rsp 56, rsi 64, rdi 72, mxcsr 80
+                        // (u32), x87 control word 84 (u16), Windows TIB stack base
+                        // 88 and limit 96, Windows xmm6-xmm15 112..272.
+                        // VM registers live in the frame, so they survive.
+                        let mut resume = asm.create_label();
+                        emit!(asm.mov(rax, slot(dst)));
+                        emit!(asm.mov(rdx, slot(dst + 1)));
+                        for (offset, register) in [(0, rbx), (8, rbp), (16, r12), (24, r13), (32, r14), (40, r15), (64, rsi), (72, rdi)] {
+                            emit!(asm.mov(qword_ptr(rax + offset), register));
+                        }
+                        emit!(asm.stmxcsr(dword_ptr(rax + 80)));
+                        emit!(asm.fnstcw(word_ptr(rax + 84)));
+                        emit!(asm.lea(rcx, ptr(resume)));
+                        emit!(asm.mov(qword_ptr(rax + 48), rcx));
+                        emit!(asm.mov(qword_ptr(rax + 56), rsp));
+                        if is_win64 {
+                            emit!(asm.mov(rcx, qword_ptr(0x08).gs()));
+                            emit!(asm.mov(qword_ptr(rax + 88), rcx));
+                            emit!(asm.mov(rcx, qword_ptr(0x10).gs()));
+                            emit!(asm.mov(qword_ptr(rax + 96), rcx));
+                            for (index, register) in [xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15].into_iter().enumerate() {
+                                emit!(asm.movdqu(xmmword_ptr(rax + (112 + index * 16) as i32), register));
+                            }
+                            emit!(asm.mov(rcx, qword_ptr(rdx + 88)));
+                            emit!(asm.mov(qword_ptr(0x08).gs(), rcx));
+                            emit!(asm.mov(rcx, qword_ptr(rdx + 96)));
+                            emit!(asm.mov(qword_ptr(0x10).gs(), rcx));
+                            for (index, register) in [xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15].into_iter().enumerate() {
+                                emit!(asm.movdqu(register, xmmword_ptr(rdx + (112 + index * 16) as i32)));
+                            }
+                        }
+                        for (offset, register) in [(0, rbx), (8, rbp), (16, r12), (24, r13), (32, r14), (40, r15), (64, rsi), (72, rdi)] {
+                            emit!(asm.mov(register, qword_ptr(rdx + offset)));
+                        }
+                        emit!(asm.ldmxcsr(dword_ptr(rdx + 80)));
+                        emit!(asm.fldcw(word_ptr(rdx + 84)));
+                        if is_win64 {
+                            // A fresh context starts like a call whose first
+                            // argument is the saved rdi; rcx is volatile otherwise.
+                            emit!(asm.mov(rcx, rdi));
+                        }
+                        emit!(asm.mov(rsp, qword_ptr(rdx + 56)));
+                        emit!(asm.jmp(qword_ptr(rdx + 48)));
+                        emit!(asm.set_label(&mut resume));
+                    }
                     _ => {
                         return Err(BackendError(format!("unknown intrinsic id {id}")));
                     }

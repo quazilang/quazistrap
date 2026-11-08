@@ -432,6 +432,7 @@ impl Instruction {
                     39 => "quazi.process.try_wait",
                     40 => "quazi.process.terminate",
                     41 => "quazi.process.close",
+                    42 => "quazi.context.switch",
                     _ => "?",
                 };
                 format!(

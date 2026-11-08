@@ -9595,6 +9595,7 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
         m.insert("quazi.process.try_wait", 39);
         m.insert("quazi.process.terminate", 40);
         m.insert("quazi.process.close", 41);
+        m.insert("quazi.context.switch", 42);
         m
     });
     let name = attr

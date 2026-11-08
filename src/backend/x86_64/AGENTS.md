@@ -148,3 +148,18 @@ returns the previous value. `AtomicCas observed, target, desired` uses
 aligned `*i64`. Regalloc treats `AtomicCas` ops[0] as used and defined;
 constprop treats both destinations as runtime values. Source access is through
 `@intrinsic("quazi.atomic.add")` / `@intrinsic("quazi.atomic.cas")`.
+
+## Context switch intrinsic (2026-11-08)
+
+`@intrinsic("quazi.context.switch") unsafe fn(save: *u8, restore: *u8) void`
+(id 42) stores rbx, rbp, r12-r15, rsi, rdi, the resume address, rsp, MXCSR and
+the x87 control word into a 272-byte context, then restores another and jumps
+to its saved rip. Windows also swaps the TIB stack base/limit (gs:0x08/0x10)
+and xmm6-xmm15, and copies the saved rdi into rcx so a fresh context starts
+with its argument in the Win64 first-argument register. VM registers live in
+the frame, so they survive. Layout offsets: rbx 0, rbp 8, r12 16, r13 24,
+r14 32, r15 40, rip 48, rsp 56, rsi 64, rdi 72, mxcsr 80 (u32), fcw 84 (u16),
+stack base 88, stack limit 96, xmm6-15 112..272. A fresh context sets rip to an
+`@export` entry `fn(*u8) void`, rsp to a 16-byte-aligned top minus 72, rdi to
+the argument, mxcsr 0x1F80 and fcw 0x037F; its entry must never return.
+This is the primitive planned for `std.qroutines`; see asks.txt in the workspace.
