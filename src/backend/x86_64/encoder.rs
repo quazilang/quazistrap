@@ -595,7 +595,15 @@ fn emit_float_to_string(
     let mut trim_loop = asm.create_label();
     let mut trim_done = asm.create_label();
     let mut done = asm.create_label();
+    let mut small = asm.create_label();
+    let mut scale_loop = asm.create_label();
+    let mut no_exponent = asm.create_label();
+    let mut exponent_scan = asm.create_label();
+    let mut exponent_end = asm.create_label();
 
+    // Decimal exponent for magnitudes >= 1e18, which cannot pass through the
+    // i64 conversion below; zero means fixed notation.
+    asm.push(0i32)?;
     asm.mov(rdx, rax)?;
     asm.mov(r8, 0x7fff_ffff_ffff_ffffu64)?;
     asm.and(rax, r8)?; // absolute-value bits
@@ -621,6 +629,19 @@ fn emit_float_to_string(
 
     asm.set_label(&mut finite)?;
     asm.movq(xmm1, rax)?;
+    asm.mov(r8, 1.0e18f64.to_bits())?;
+    asm.movq(xmm2, r8)?;
+    asm.ucomisd(xmm1, xmm2)?;
+    asm.jb(small)?;
+    asm.mov(r8, 10.0f64.to_bits())?;
+    asm.movq(xmm2, r8)?;
+    asm.set_label(&mut scale_loop)?;
+    asm.ucomisd(xmm1, xmm2)?;
+    asm.jb(small)?;
+    asm.divsd(xmm1, xmm2)?;
+    asm.inc(qword_ptr(rsp))?;
+    asm.jmp(scale_loop)?;
+    asm.set_label(&mut small)?;
     asm.cvttsd2si(rax, xmm1)?;
     asm.movq(xmm3, rax)?; // integer component, preserved while rounding
     asm.cvtsi2sd(xmm2, rax)?;
@@ -696,6 +717,25 @@ fn emit_float_to_string(
     }
 
     asm.set_label(&mut done)?;
+    asm.pop(rcx)?;
+    asm.test(rcx, rcx)?;
+    asm.je(no_exponent)?;
+    asm.mov(r10, r11)?;
+    asm.set_label(&mut exponent_scan)?;
+    asm.cmp(byte_ptr(r10), 0i32)?;
+    asm.je(exponent_end)?;
+    asm.inc(r10)?;
+    asm.jmp(exponent_scan)?;
+    asm.set_label(&mut exponent_end)?;
+    asm.mov(byte_ptr(r10), 'e' as i32)?;
+    asm.mov(byte_ptr(r10 + 1i32), '+' as i32)?;
+    asm.lea(r11, qword_ptr(r10 + 2i32))?;
+    asm.mov(rax, rcx)?;
+    emit_integer_to_string(asm, 10, false, false)?;
+    // The integer formatter ends on a label; keep labels on separate instructions.
+    asm.nop()?;
+    asm.set_label(&mut no_exponent)?;
+    asm.nop()?;
     Ok(())
 }
 
