@@ -24,8 +24,8 @@ Next once answers arrive:
    task and calls its Quazi closure, then switches back to the scheduler.
    M:1 cooperative by default (4А/5А).
 2. std.threading: rename/alias std.thread, JoinHandle, Mutex/AtomicI64 on core
-   atomics; thread_spawn currently passes NULL as the callback argument, so an
-   argument-carrying spawn intrinsic is needed for safe data passing.
+   atomics. `quazi.thread.spawn_arg` (id 43, std thread_spawn_arg) now passes a
+   data pointer; scripts/check_thread_atomics.py proves atomics under contention.
 3. Optional syntax (1Б/В/Г `spawn` keyword, 2Б `<-` token, 3Б `select`):
    parser + Tree-sitter + docs + D-019 decision record.
 4. Closure capture of owned values (9Б) is compiler work in ownership/closures.
