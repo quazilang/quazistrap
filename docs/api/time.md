@@ -45,6 +45,19 @@ must not be compared or serialized as timestamps.
 The resolution is platform-dependent. Programs must not assert exact elapsed
 values or rely on a wall-clock relationship.
 
+## Sleeping and deadlines
+
+`time.sleep(duration)` blocks for at least `duration`, rounded up to whole
+milliseconds (the platform granularity); very long durations saturate. The
+scheduler may wake the thread later than requested.
+
+`Deadline.at(instant)` and `Deadline.after(duration)` (which returns
+`OutOfRange` if the instant overflows) describe a monotonic point in time.
+`remaining()` returns the time left or zero once it has passed, and
+`has_expired()` reports whether it has passed; both sample `Instant.now()`.
+`remaining_at(&now)` computes the same value for a given instant.
+`Instant.checked_add(duration)` returns `None` on overflow.
+
 ## `SystemTime`
 
 `SystemTime` stores Unix seconds (`i64`) and nanoseconds (`u32`) in UTC.
