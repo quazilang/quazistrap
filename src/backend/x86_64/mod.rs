@@ -101,10 +101,19 @@ fn emit_native_object(
                 .filter(|symbol| !embedded_export_symbols.contains(symbol.as_str()))
             {
                 symbol.clone()
-            } else if c.native_unmangled && !c.name.starts_with("__quazi_") {
-                safe_label(c.name.rsplit('.').next().unwrap_or(&c.name))
             } else {
-                safe_label(&c.name)
+                let name = if c.native_unmangled && !c.name.starts_with("__quazi_") {
+                    safe_label(c.name.rsplit('.').next().unwrap_or(&c.name))
+                } else {
+                    safe_label(&c.name)
+                };
+                // An embedded C-ABI adapter owns the stable `@export` symbol;
+                // the Quazi body it wraps keeps a private name.
+                if embedded_export_symbols.contains(name.as_str()) {
+                    format!("__quazi_export_body_{name}")
+                } else {
+                    name
+                }
             }
         })
         .collect();
@@ -114,7 +123,7 @@ fn emit_native_object(
         .find(|name| !native_names.insert(name.as_str()))
     {
         return Err(BackendError(format!(
-            "native symbol collision `{duplicate}` with package.mangling = false"
+            "native symbol collision `{duplicate}`: two functions map to one native symbol; check `@export` names and package.mangling"
         )));
     }
 
@@ -553,6 +562,37 @@ mod tests {
             .err()
             .expect("duplicate bare names must fail");
         assert!(error.0.contains("native symbol collision `same`"));
+    }
+
+    #[test]
+    fn export_adapter_keeps_its_symbol_when_the_wrapped_body_is_unmangled() {
+        // An entry-file `@export fn twice` used as a callback: the body chunk is
+        // named `twice` and its adapter exports the stable symbol `twice`.
+        let mut body = returning_main();
+        body.name = "twice".to_string();
+        body.native_unmangled = true;
+        let mut adapter = Chunk::new("__quazi_export_adapter_twice_0");
+        adapter.reg_count = 1;
+        adapter.export = Some(ForeignSymbol {
+            symbol: "twice".to_string(),
+            signature: AbiSignature {
+                params: Vec::new(),
+                return_type: AbiType::Void,
+                variadic: false,
+            },
+        });
+        adapter.emit(rrr(Opcode::Ret, 0, 0, 0));
+        let target = TargetSpec::x86_64_linux().without_start();
+        let output = ElfBackend
+            .compile(&[body, adapter], &target, None, false)
+            .expect("the body must not collide with its own adapter");
+        let object = object::File::parse(output.bytes.as_slice()).expect("valid object");
+        let symbols: std::collections::HashSet<_> = object
+            .symbols()
+            .filter_map(|symbol| symbol.name().ok())
+            .collect();
+        assert!(symbols.contains("twice"));
+        assert!(symbols.contains("__quazi_export_body_twice"));
     }
 
     #[test]
