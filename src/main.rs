@@ -46,7 +46,9 @@ static NO_COLOR_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 fn print_stderr_line(arguments: std::fmt::Arguments<'_>) {
     let rendered = arguments.to_string();
-    if NO_COLOR_OUTPUT.load(Ordering::Relaxed) || std::env::var_os("NO_COLOR").is_some() {
+    // Colors are for terminals only; pipes, logs and tools receive plain text.
+    // `stderr_is_tty` also honors NO_COLOR.
+    if NO_COLOR_OUTPUT.load(Ordering::Relaxed) || !progress::stderr_is_tty() {
         std::eprintln!("{}", lsp::diagnostics::strip_ansi(&rendered));
     } else {
         std::eprintln!("{rendered}");
