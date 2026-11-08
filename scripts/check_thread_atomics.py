@@ -6,6 +6,48 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+STD_PROGRAM = r"""import std.io;
+import std.core;
+import std.thread;
+import std.thread.{AtomicI64, Mutex};
+
+// Shared block: [0] mutex state pointer, [8] atomic cell pointer, [16] plain counter.
+@export("std_sync_worker")
+pub unsafe fn worker(shared: *u8) *u8 {
+    const lock = Mutex.at(*(shared as **u8));
+    const atomic = AtomicI64.at(*((shared + 8) as **u8));
+    for i : 0..50000 {
+        lock.lock();
+        *((shared + 16) as *i64) = *((shared + 16) as *i64) + 1;
+        lock.unlock();
+        atomic.fetch_add(2);
+    }
+    ret 0;
+}
+
+fn main() i32 {
+    const lock = Mutex.new();
+    const atomic = AtomicI64.new(0);
+    var counted: i64 = 0;
+    unsafe {
+        const shared: *u8 = core.malloc(24);
+        *(shared as **u8) = lock.as_ptr();
+        *((shared + 8) as **u8) = atomic.as_ptr();
+        *((shared + 16) as *i64) = 0;
+        const a = thread.thread_spawn_arg(worker, shared);
+        const b = thread.thread_spawn_arg(worker, shared);
+        const c = thread.thread_spawn_arg(worker, shared);
+        const d = thread.thread_spawn_arg(worker, shared);
+        thread.thread_join(a); thread.thread_join(b); thread.thread_join(c); thread.thread_join(d);
+        counted = *((shared + 16) as *i64);
+        core.free(shared);
+    }
+    io.println("mutex {} atomic {}", counted, atomic.load());
+    if (counted != 200000 || atomic.load() != 400000) { ret 1; }
+    0
+}
+"""
+
 PROGRAM = r"""import std.io;
 import std.core;
 
@@ -80,6 +122,18 @@ def check(qz, root):
     invoke([str(qz), "build", *common, "-c", "--target", "x86_64-windows", "-o", str(coff)], case)
     assert coff.read_bytes()[:2] == b"\x64\x86"
     print("PASS threads: 4 OS threads x 100000 atomic increments = 400000 (3 runs); Windows COFF emits")
+    case = root / "std_sync"
+    (case / "src").mkdir(parents=True)
+    (case / "quazi.toml").write_text(
+        '[package]\nname="std_sync"\n[build]\nentry="src/main.qz"\n'
+        '[target.x86_64-linux.link]\nlibc = true\n')
+    (case / "src/main.qz").write_text(STD_PROGRAM)
+    binary = case / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], case)
+    for _ in range(3):
+        output = invoke([str(binary)], case)
+        assert output.startswith("mutex 200000 atomic 400000"), output
+    print("PASS std.thread: Mutex-protected counter 200000 and AtomicI64 400000 across 4 OS threads (3 runs)")
 
 
 def main():

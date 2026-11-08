@@ -69,3 +69,23 @@ The module does not currently provide cancellation, synchronization primitives,
 result or panic propagation, join timeouts, detached threads, portable thread
 identifiers, or automatic joining. Programs requiring those guarantees should
 not treat this API as production-stable.
+
+## Synchronization (D-019)
+
+`AtomicI64.new(value)` owns a heap cell whose operations are atomic and
+sequentially consistent: `load`, `store`, `swap`, `fetch_add` (returns the
+previous value) and `compare_exchange(expected, desired)` (stores only on a
+match and returns the value it saw). `Mutex.new()` is a non-reentrant,
+non-fair spin lock that yields the processor while waiting: `lock`,
+`try_lock` (true on success) and `unlock` (panics if the lock is not held).
+
+Both free their cell when the owner goes out of scope. Until `JoinHandle[T]`
+can move values into threads, share them by passing `unsafe as_ptr()` to a
+thread (for example with `thread_spawn_arg`) and opening it there with
+`unsafe AtomicI64.at(ptr)` / `Mutex.at(ptr)`, which return non-owning views
+with the same operations. Join every thread that uses a view before the owner
+is dropped.
+
+`thread_spawn_arg(callback, arg)` passes `arg` to the C-ABI callback instead of
+`NULL`. See [D-019](../decisions/qoroutines.md) for the planned `JoinHandle[T]`,
+`qo` qoroutines and `Channel[T]`.
