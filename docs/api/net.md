@@ -53,7 +53,11 @@ handle; only `-1` denotes an invalidated wrapper, so application code must not
 use a sign check to test validity.
 
 `TcpListener.bind(port)` listens with backlog 128;
-`bind_with_backlog(port, backlog)` selects the backlog. `accept()` returns an
+`bind_with_backlog(port, backlog)` selects the backlog. On Linux and NetBSD the
+listener sets `SO_REUSEADDR` before binding, so a restarted server can bind
+while earlier connections remain in `TIME_WAIT`; it still cannot bind a port
+another socket is actively listening on. Windows does not set it, because
+Windows `SO_REUSEADDR` would allow binding an actively used port. `accept()` returns an
 owning `TcpStream`. `accept()` and `close()` use exclusive receivers;
 `handle()` uses a shared receiver. Listeners otherwise have the same idempotent
 `close` and consuming `free` semantics as streams. These owners are not a
