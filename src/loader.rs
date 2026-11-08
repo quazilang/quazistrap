@@ -1473,6 +1473,11 @@ fn collect(
         .map_err(|e| format!("cannot resolve '{}': {}", path.display(), e))?;
 
     if !visited.insert(canonical.clone()) {
+        // A project source stays a project source even if a dependency reached
+        // it first (std's own tests import std modules through `std.`).
+        if !is_library {
+            library_paths.remove(&canonical);
+        }
         return Ok(());
     }
 
