@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-08: == on struct and enum values is rejected](2026-11-08-handle-equality.md)
+
 - [2026-11-08: std.time wall-clock time, UTC calendar and RFC 3339](2026-11-08-std-time-wall-clock.md)
 
 - [2026-11-08: Integer literals above i64::MAX fold as unsigned](2026-11-08-unsigned-literal-folding.md)

@@ -6514,6 +6514,24 @@ fn main() void {
     }
 
     #[test]
+    fn equality_on_struct_and_enum_handles_is_rejected() {
+        let report = analyze(
+            "enum Kind { A, B, }\nstruct Pair { x: i32, }\nfn same[T](a: T, b: T) bool { ret a == b; }\nfn main() i32 { const k: Kind = Kind.A; const p = Pair { x: 1 }; const q = Pair { x: 1 }; if (k == Kind.A || p != q) { ret 1; } ret 0; }",
+        );
+        let messages: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|error| error.code == "S06")
+            .map(|error| error.message.as_str())
+            .collect();
+        assert!(messages.iter().any(|m| m.contains("cannot compare Kind values")), "{messages:?}");
+        assert!(messages.iter().any(|m| m.contains("cannot compare Pair values")), "{messages:?}");
+        // Scalars and generic parameters keep `==`.
+        let report = analyze("fn main() i32 { const a: i32 = 1; if (a == 1 && true != false) { ret 0; } ret 1; }");
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
     fn integer_literals_above_i64_fold_as_unsigned() {
         let report = analyze(
             "fn main() i32 { const a: u64 = 18446744073709551614 / 2; const b: bool = 9223372036854775808 > 1; const c: i64 = 9223372036854775807 + 1; ret 0; }",

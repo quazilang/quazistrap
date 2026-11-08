@@ -76,7 +76,11 @@ count--;
 contents lexicographically, not addresses. Signedness affects integer
 comparisons. Ordering accepts integer pairs, float pairs or recognized strings,
 including through generic helpers; mixed integer/float ordering is rejected.
-Use explicit comparison methods for other structured values. Runtime String
+Use explicit comparison methods for other structured values. Struct and enum
+values (including `Option` and `Result`) are heap handles, so `==` and `!=` on
+them are rejected with `S06`; test a variant with `match`
+(`match kind { Kind.A => true, _ => false }`). Earlier compilers accepted the
+operators and compared addresses, so even `Kind.A == Kind.A` was false. Runtime String
 identity validation remains incomplete; see [the implementation boundary](../internals/operator-requirements.md).
 
 ## Logical operators

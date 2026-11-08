@@ -5737,6 +5737,19 @@ impl Analyzer {
         }
     }
 
+    /// Whether `==` on `ty` would compare aggregate handle addresses: declared
+    /// struct/enum types (including Option/Result), but not checked strings
+    /// or generic parameters, which are validated per specialization.
+    fn equality_compares_handles(&self, ty: &TypeKind) -> bool {
+        let resolved = self.resolve_type_aliases(ty);
+        let TypeKind::Named { name, .. } = &resolved else {
+            return false;
+        };
+        !self.is_checked_string(&resolved)
+            && self.is_declared_type_name(name)
+            && (self.struct_defs.contains_key(name) || self.enums.contains_key(name))
+    }
+
     fn is_module_import_receiver(&self, object: &Expr) -> bool {
         let Some((base, _)) = Self::extract_field_chain(object) else {
             return false;
@@ -6539,6 +6552,20 @@ impl Analyzer {
                         span,
                         "S01",
                         format!("type mismatch in binary op: {} vs {}", l, r),
+                    );
+                } else if let Some(handle) = [&left, &right]
+                    .into_iter()
+                    .flatten()
+                    .find(|ty| self.equality_compares_handles(ty))
+                {
+                    // Struct and enum values are heap handles; `==` would compare
+                    // addresses, so even `Kind.A == Kind.A` was false.
+                    self.push_error(
+                        span,
+                        "S06",
+                        format!(
+                            "`==`/`!=` cannot compare {handle} values; use `match` or a comparison method"
+                        ),
                     );
                 }
                 Some(TypeKind::Bool)
