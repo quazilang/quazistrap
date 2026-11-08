@@ -2,6 +2,26 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-08 evening, correctness fixes and std.time)
+
+Compiler commits after `c684b3c`: `8b89730` self-import error, `748ae03` D-018
+proposal (module-qualified type identities; S05 collisions stay documented),
+`4e33214` u64 literal folding (QZC33), `b2af84c` locals shadow the current
+module, `dc09cb1` plain `qz test` output off-terminal, `8db196b` reject `==`
+on struct/enum handles (it compared addresses), `7bf4196` project sources stay
+out of the library set (std tests were skipped). 1004 Rust tests; all 18 e2e
+scripts; every example binary builds.
+
+std: `91f1402`/`<sleep>`/UtcOffset/codec commits add SystemTime, DateTime,
+RFC 3339 (+offsets), UtcOffset, sleep(Duration), Deadline, SystemTime JSON;
+`7cda6ca` socket timeouts and a real shutdown-mode fix; `49d4c4c` splits
+json.decode_string (register limit). std suite 51/51; plan 57.0%.
+
+Known limitation found repeatedly: codegen allocates virtual registers
+monotonically in a u8 space, so long functions fail with "needs more than 255
+QZI register slots" before linear-scan compaction. Fix needs u16 virtual
+registers through codegen and regalloc (or statement-scoped temp reuse).
+
 ## Checkpoint (2026-11-08, per-file visibility, ownership fixes, D-017)
 
 Commits on `dev`: `1e53e63` (type visibility), `72452a5` (plain diagnostics),
