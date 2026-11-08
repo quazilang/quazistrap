@@ -48,6 +48,16 @@ use env instead.
 | hostname() | Owned host name from the platform intrinsic, or "unknown" on failure. |
 | memory_total() / memory_available() | Physical-memory counters in bytes. Linux availability uses `/proc/meminfo`'s `MemAvailable`, including reclaimable memory; unavailable, missing, malformed or inconsistent procfs data falls back to `sysinfo.free_ram`. Windows uses `MEMORYSTATUSEX.available_physical`. Values can change immediately after return; separate calls are not an atomic snapshot. |
 
+## Working directory
+
+`os.current_dir()` returns the current working directory as an owned `String`
+(`Result[String, fs.FsError]`); paths longer than the initial 4 KiB buffer are
+retried with a larger one up to 1 MiB. `os.set_current_dir(path)` changes it
+for the whole process (every thread) and returns `Result[bool, fs.FsError]`.
+Both are implemented in `std.fs` (`fs.current_dir`, `fs.set_current_dir`):
+`getcwd`/`chdir` on Linux and NetBSD, `GetCurrentDirectoryA` /
+`SetCurrentDirectoryA` (ANSI code page paths) on Windows.
+
 ## Unix-specific low-level functions
 
 The following APIs directly use Linux syscalls even though they are currently
