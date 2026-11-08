@@ -2,9 +2,8 @@
 
 Audience: language users and compiler developers.
 
-Status: maintainer discussion of 2026-11-08 recorded; decided points are marked
-**decided**, recommendations still awaiting confirmation are marked
-**proposed** (open questions are listed in the workspace `asks.txt`).
+Status: maintainer discussions of 2026-11-08 (rounds 1 and 2) recorded; decided
+points are marked **decided**, design proposals are marked **proposed**.
 
 ## Decided
 
@@ -21,7 +20,12 @@ Status: maintainer discussion of 2026-11-08 recorded; decided points are marked
 | 10a | OS threads module | **decided**: keep the name `std.thread` (no `std.threading`). |
 | 10b | OS thread API | **decided**: `thread.spawn(...) -> JoinHandle[T]`, `handle.join() -> Result[T, ThreadError]`; the unsafe C-callback layer stays underneath. |
 | 10c | OS thread synchronization | **decided**: `Mutex`, `AtomicI64`, and channels. |
-| 11 | Names | **decided**: types `Qoroutine[T]` and `Channel[T]` are built in (spelling `Qoroutine` vs `Qroutine` to confirm). |
+| 11 | Names | **decided**: built-in types `Qoroutine[T]` and `Channel[T]` (spelling `Qoroutine`, round 2 В1). |
+| 8 | Panics | **decided** (round 2 В2): a panic inside a qoroutine is reported to the joiner as an error (`join()` returns a `Result`), not a whole-program abort. |
+| 5 | Preemption | **decided** (round 2 В3): full timer-based preemption, not only compiler safe points. |
+| 12 | Closures | **decided** (round 2 В4): `qo || ...` is allowed once closures can move owned captures. |
+| 13 | Channel type | **decided** (round 2 В6): OS threads and qoroutines share the one built-in `Channel[T]`. |
+| 14 | JIT | **decided** (round 2 В5): a real minimal JIT, experimental behind `qz run --jit`; a later API may import/load code dynamically (example idea: `target = "xtensa32-esp32"`, "dynamic import"). |
 
 ## Proposed design (reconciles "compiler = base, std = library" with "built-in `qo`")
 
@@ -42,14 +46,19 @@ Status: maintainer discussion of 2026-11-08 recorded; decided points are marked
   threads (10c): `Channel[T].new(capacity)`, `send`, `receive` (returns
   `Option[T]`, `None` once closed and drained), `close`. A blocking operation
   parks only the current qoroutine, not its worker thread.
-- **Preemption.** Recommended staging: (1) the compiler inserts cheap
-  safe-point checks at loop back-edges and function entries, so a busy loop
-  yields when its time slice expires; (2) later, if needed, timer/signal based
-  asynchronous preemption. Stage 1 gives fairness without signal handling and
-  works on Linux, NetBSD and Windows alike.
-- **Panics (open, answer 8).** Recommendation: a panic in any qoroutine ends
-  the whole program with the usual panic report (Go's behavior). Returning it
-  from `join()` would require unwinding, which Quazi does not implement.
+- **Preemption (decided: timer-based).** A per-worker timer interrupts a
+  qoroutine that exceeds its time slice: a signal handler (Linux/NetBSD) or a
+  suspended-thread context switch (Windows) saves the full register state
+  and resumes the scheduler. Quazi has no moving GC and VM registers live in
+  the frame, so any instruction outside runtime critical sections is a safe
+  interruption point; critical sections (scheduler, allocator, channel locks)
+  mask preemption.
+- **Panics (decided: reported through `join()`).** Proposed mechanism without
+  unwinding: each qoroutine owns its stack, so the panic path records the
+  message on the qoroutine, abandons that stack (its pending destructors do
+  not run; the leak is documented) and switches to the scheduler; `join()`
+  then returns `Err(QoroutinePanic)`. A panic outside any qoroutine still ends
+  the program.
 
 ## Implementation phases
 

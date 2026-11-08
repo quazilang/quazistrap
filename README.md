@@ -19,7 +19,7 @@ Completion of unfinished plan items:
 | Nested struct patterns | 0/1 | 0.0% | 100.0% |
 | async / await | 0/1 | 0.0% | 100.0% |
 | LSP improvements | 16/20 | 80.0% | 20.0% |
-| JIT VM | 0/1 | 0.0% | 100.0% |
+| Experimental JIT (`qz run --jit`) | 0/1 | 0.0% | 100.0% |
 
 Revalidated on 2026-10-25 for the
 [declaration-type context prerequisite](docs/changes/2026-10-24-declaration-type-context.md) and

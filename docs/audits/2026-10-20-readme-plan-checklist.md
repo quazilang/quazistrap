@@ -202,7 +202,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | async / await | 0/1 | 0.0% | 100.0% |
 | LSP improvements | 16/20 | 80.0% | 20.0% |
 | qz doc | 1/1 | 100.0% | 0.0% |
-| JIT VM | 0/1 | 0.0% | 100.0% |
+| Experimental JIT (`qz run --jit`) | 0/1 | 0.0% | 100.0% |
 
 ## Requirements
 
@@ -435,11 +435,11 @@ Evidence: [src/apidoc.rs](../../src/apidoc.rs).
 
 - [x] Documentation generation command.
 
-### JIT VM
+### Experimental JIT (`qz run --jit`)
 
 Evidence: [AGENTS.md](../../AGENTS.md).
 
-- [ ] Executable JIT VM.
+- [ ] Compile and execute a program in memory behind `qz run --jit` (D-019 round 2).
 
 ## Current-checkout checks
 

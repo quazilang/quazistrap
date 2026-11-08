@@ -462,7 +462,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 |-----------|--------|
 | LSP improvements | Partial — see [src/lsp/AGENTS.md](src/lsp/AGENTS.md) |
 | `qz doc` | ✅ Done — `src/apidoc.rs`: one Markdown page per source with public signatures and their `//` comments, plus an index |
-| JIT VM | Deferred |
+| JIT | Experimental `qz run --jit`: compile in memory and execute in-process (D-019 round 2) |
 
 ---
 
