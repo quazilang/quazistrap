@@ -17,3 +17,7 @@ fails with the previous compiler and passes with this change (57 checks);
 Follow-up: `qz test` printed colored `ok`/`FAILED` results to a piped stdout
 as well. Its results are now colored only when stdout is a terminal and
 `NO_COLOR`/`--no-color` are absent.
+
+Follow-up: `qz build <files>` printed its colored `built ...` summary to a piped
+stdout. All compiler stdout lines now drop ANSI escapes when stdout is not a
+terminal or `NO_COLOR`/`--no-color` is set.

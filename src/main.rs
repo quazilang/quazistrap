@@ -55,6 +55,28 @@ fn print_stderr_line(arguments: std::fmt::Arguments<'_>) {
     }
 }
 
+fn print_stdout_line(arguments: std::fmt::Arguments<'_>) {
+    use std::io::IsTerminal;
+    let rendered = arguments.to_string();
+    if NO_COLOR_OUTPUT.load(Ordering::Relaxed)
+        || std::env::var_os("NO_COLOR").is_some()
+        || !std::io::stdout().is_terminal()
+    {
+        std::println!("{}", lsp::diagnostics::strip_ansi(&rendered));
+    } else {
+        std::println!("{rendered}");
+    }
+}
+
+macro_rules! println {
+    () => {
+        print_stdout_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        print_stdout_line(format_args!($($arg)*))
+    };
+}
+
 macro_rules! eprintln {
     () => {
         print_stderr_line(format_args!(""))
