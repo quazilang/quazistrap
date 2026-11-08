@@ -55,15 +55,23 @@ before allocation. Exhaustion latches, records S14 and cannot publish success;
 item, method, field and imported-record loops poll operational cancellation.
 Alias preparation separately bounds parameter counts and mapping text.
 
-Full source isolation remains incomplete. Raw local annotations, casts,
-call-site generic actuals, parts of declaration validation and source codegen
-still use global source binding tables. The known private namespace visibility
-defect remains open, including unused unresolved aliases. Canonical nominal
-names are not yet a complete declaration-identity IR. Do not infer module
-isolation or general binder hygiene from this migration. See
-[the open findings](../audits/2026-10-23-string-followups.md).
+After normalization, `semantic/type_visibility.rs` validates every raw source
+type spelling against the file containing it: same-file declarations, the
+file's authenticated import bindings (the per-source map above), public types
+of sources below the selected prelude entry's directory, builtins and library
+symbols without a source declaration, and lexical binders. Value-position heads
+(`Point { .. }`, `Point.new()`, `Color.Red` patterns) use the same rule unless a
+local or parameter shadows them. A spelling bound only by another file's import
+is reported as not imported, never resolved by a global fallback. The pass
+skips parser-only clients without source maps and caps its walk at four million
+nodes (S14). This closes the private namespace visibility finding.
 
-QZC31 rebuilds previous exact/reusable source chunks (the earlier alias-only
-checkpoint used QZC30). QZI14 is unchanged and Unverified; no ownership or effect
+Canonical nominal names are still not a complete declaration-identity IR, and
+codegen still consumes raw spellings after this check. QZI library types are not
+checked against per-file selectors. See
+[the change record](../changes/2026-11-08-source-type-visibility.md).
+
+QZC32 rebuilds previous exact/reusable source chunks (QZC31 for declaration
+contexts, QZC30 for the earlier alias-only checkpoint). QZI14 is unchanged and Unverified; no ownership or effect
 certificate follows from type name resolution. See
 [verification and compatibility](../changes/2026-10-24-declaration-type-context.md).

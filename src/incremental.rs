@@ -13,7 +13,7 @@ use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
 // Require declaration types and imported signatures normalized in defining context.
-const QZC_VERSION: u8 = 31;
+const QZC_VERSION: u8 = 32;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {

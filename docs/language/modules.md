@@ -90,6 +90,40 @@ Standard-library resolution checks the compiler's manifest directory for
 - A directory module's `mod.qz` gateway controls what children are visible
   through `pub import`.
 
+### Type name visibility
+
+Every type spelling is resolved in the source file that contains it. This
+applies to signatures, fields, enum payloads, aliases, local annotations,
+casts, generic arguments, struct literals, static calls such as `Point.new()`,
+and enum patterns such as `Color.Red`. A type name is visible when it is:
+
+- declared in the same file, with or without `pub`;
+- introduced by one of the file's own imports, including `as` aliases,
+  wildcard imports, and namespace spellings such as `geometry.Point` after
+  `import geometry;`;
+- a public type of the implicit prelude (`String`, `Array[T]`, `Option[T]`,
+  `Result[T, E]`, and the other [prelude types](types.md#prelude-types));
+- a generic parameter of the enclosing declaration, or `Self` inside a trait or
+  `impl`.
+
+Imports are private to the importing file. Importing `geometry` in
+`helper.qz` does not make `geometry.Point` visible in `main.qz`, even when
+`main.qz` imports `helper`. An unknown type name, or a type that the file did
+not import, is rejected with `S04`:
+
+```quazi
+// helper.qz
+import geometry as shapes; // visible only inside helper.qz
+
+// main.qz
+import helper.make;
+fn area(p: shapes.Point) i32 { ret 0; } // S04: not imported into this file
+```
+
+Limitation: types supplied only by precompiled QZI libraries have no source
+declaration. They are currently visible in every file of a program that links
+the library; per-file selector checking for them is not implemented yet.
+
 ## Collision handling
 
 Importing a name that collides with a local declaration is a compile error.

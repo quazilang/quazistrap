@@ -10149,7 +10149,7 @@ mod tests {
                     _ => return None,
                 };
                 Some(crate::semantic::SourceTypeImport {
-                    selector_span: Span::new(module_len + 1, module_len + 1, 1, 1),
+                    selector_span: Span::new(1, 1, module_len + 1, module_len + 1),
                     source_name: format!("helpers.{name}"),
                     target_path: "helpers.qz".into(),
                     target_name: name.clone(),
@@ -10565,10 +10565,12 @@ fn main() void { show("{}", make_text()); }
                 end: module.len(),
                 line_start: 1,
             },
+            // Both files form the prelude package, so fmt.qz may spell the
+            // public runtime String declared beside it.
             SourceFile {
                 path: "main.qz".to_string(),
                 module_name: None,
-                implicit_prelude: false,
+                implicit_prelude: true,
                 runtime_string: Some("String".to_string()),
                 type_imports: Vec::new(),
                 start: module.len() + 1,

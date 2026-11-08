@@ -256,8 +256,14 @@ lowering to an unchecked numeric conversion.
 ## `pub` Visibility
 
 - **Functions**: enforced. Private fn imported cross-module emits S04 error.
-- **Structs, traits, enums, type aliases**: parsed but hardcoded `public: false`; not enforced. (P1 roadmap item.)
-- **Re-exports**: `pub_import` stored but not read.
+- **Types**: `type_visibility.rs` checks every type spelling in its source file
+  (declared there, imported there, public prelude type, builtin/library, or
+  lexical binder). Another file's imports and private types fail with S04.
+  Locals shadow value-position type heads only within their lexical block.
+- **Re-exports**: `pub import` selectors feed the loader's authenticated
+  `type_imports`; gateway chains are resolved there, not in semantic analysis.
+- Types are still declared in one global table: two modules cannot both declare
+  the same type name (S05). Module-qualified type identities remain open work.
 
 ## C ABI validation
 

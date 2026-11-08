@@ -37,6 +37,7 @@ mod power;
 mod power_tests;
 mod string_abi;
 mod type_context;
+mod type_visibility;
 #[cfg(test)]
 mod string_abi_tests;
 use power::PowerFacts;
@@ -1130,6 +1131,7 @@ impl Analyzer {
             })
             .collect();
         self.canonicalize_declaration_types(program, &mut checkpoint)?;
+        self.validate_source_type_visibility(program, &mut checkpoint)?;
         // Validate declaration types before any layout or ownership consumer.
         for item in &program.items {
             checkpoint()?;
@@ -3853,7 +3855,7 @@ fn main() void {}
                     _ => return None,
                 };
                 Some(super::SourceTypeImport {
-                    selector_span: Span::new(module_len + 1, module_len + 1, 1, 1),
+                    selector_span: Span::new(1, 1, module_len + 1, module_len + 1),
                     source_name: format!("helpers.{name}"),
                     target_path: "helpers.qz".into(),
                     target_name: name.clone(),
@@ -7893,20 +7895,126 @@ fn invoke(value: dyn Apply) i32 { ret value.apply(|item| item + 1); }
             r#"
 pub enum FsError { NotFound, Other, }
 
-pub fn read_file(path: str) Result[String, FsError] {
+pub fn read_file(path: str) Result[str, FsError] {
     ret Result.Err(FsError.NotFound);
 }
 "#,
             r#"
 import helpers;
 fn main() void {
-    const read: Result[String, helpers.FsError] = helpers.read_file("/proc/version");
+    const read: Result[str, helpers.FsError] = helpers.read_file("/proc/version");
 }
 "#,
         );
         assert!(
             report.errors.is_empty(),
             "module-qualified type annotation should unify with the declaration: {:?}",
+            report.errors
+        );
+    }
+
+    fn visibility_errors(report: &SemanticReport) -> Vec<&str> {
+        report
+            .errors
+            .iter()
+            .filter(|error| error.code == "S04")
+            .map(|error| error.message.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn unimported_type_from_another_source_is_not_visible() {
+        let module = "pub struct Point { x: i32, }\npub fn origin() i32 { ret 0; }\n";
+        for main in [
+            "fn take(p: Point) i32 { ret p.x; }\nfn main() i32 { ret 0; }",
+            "fn main() i32 { const p = Point { x: 1 }; ret p.x; }",
+            "fn main() i32 { const p: [Point; 1] = [helpers.make()]; ret 0; }",
+        ] {
+            let report = analyze_module_pair(module, main);
+            assert!(
+                visibility_errors(&report)
+                    .contains(&"type 'Point' is not imported into this file"),
+                "{main}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn qualified_import_and_local_names_keep_type_visibility() {
+        let module = "pub struct Point { x: i32, }\npub fn origin() Point { ret Point { x: 0 }; }\n";
+        let report = analyze_module_pair(
+            module,
+            r#"
+import helpers;
+fn shift[Point](value: Point) Point { ret value; }
+fn main() i32 {
+    const p: helpers.Point = helpers.origin();
+    const Point = 3;
+    ret p.x + shift(Point);
+}
+"#,
+        );
+        assert!(visibility_errors(&report).is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn type_visibility_covers_namespace_values_scoped_locals_and_self() {
+        let module = "pub struct Point { x: i32, }\nstruct Secret { v: i32, }\nimpl Secret { pub fn mk() Secret { ret Secret { v: 1 }; } }\npub fn noop() void {}\n";
+        let report = analyze_module_pair(
+            module,
+            "import helpers;\nfn main() i32 { const s = helpers.Secret.mk(); ret s.v; }",
+        );
+        assert!(
+            visibility_errors(&report)
+                .contains(&"type 'helpers.Secret' is not imported into this file"),
+            "{:?}",
+            report.errors
+        );
+        // An enum variant spelled like a type is not a module path.
+        let report = analyze_module_pair(
+            "pub trait Write { fn flush() void; }\npub fn noop() void {}\n",
+            "enum Mode { Read, Write, }\nfn main() i32 { const mode = Mode.Write; ret 0; }",
+        );
+        assert!(visibility_errors(&report).is_empty(), "{:?}", report.errors);
+        // A local named like a type stops shadowing it when its block ends.
+        let report = analyze_module_pair(
+            module,
+            "fn main() i32 { if (true) { const Point = 3; } const p = Point { x: 1 }; ret p.x; }",
+        );
+        assert!(
+            visibility_errors(&report)
+                .contains(&"type 'Point' is not imported into this file"),
+            "{:?}",
+            report.errors
+        );
+        let report = analyze_module_pair(
+            module,
+            "struct Node { v: i32, next: *Self, }\nfn main() i32 { ret 0; }",
+        );
+        assert_eq!(
+            visibility_errors(&report),
+            ["'Self' is only available inside traits and impl blocks"],
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn unknown_type_annotation_is_rejected() {
+        let report = analyze(
+            "fn take(value: Missing) i32 { ret 0; }\nfn main() i32 { ret 0; }",
+        );
+        // Parser-only clients have no source map; loader-backed analysis rejects.
+        assert!(visibility_errors(&report).is_empty(), "{:?}", report.errors);
+        let report = analyze_module_pair(
+            "pub fn noop() void {}\n",
+            "fn take(value: Missing) i32 { ret 0; }\nfn main() i32 { ret 0; }",
+        );
+        assert_eq!(
+            visibility_errors(&report),
+            ["unknown type 'Missing'"],
+            "{:?}",
             report.errors
         );
     }

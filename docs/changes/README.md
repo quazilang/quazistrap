@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-08: Per-file type name visibility](2026-11-08-source-type-visibility.md)
+
 - [2026-11-03: NetBSD 11.0/amd64 port status, blockers, and validation](2026-11-03-netbsd11-port.md)
 
 - [2026-10-24: Defining context for stored declaration types](2026-10-24-declaration-type-context.md)

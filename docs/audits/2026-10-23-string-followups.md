@@ -6,7 +6,12 @@ The [runtime String checkpoint](../changes/2026-10-23-runtime-string-abi.md)
 replaces unsafe spelling/layout assumptions with the selected declaration and
 checked field offset. Independent review also confirmed a separate visibility gap.
 
-## P1: private namespace aliases leak between source files
+## P1: private namespace aliases leak between source files (resolved 2026-11-08)
+
+Resolved by [per-file type name visibility](../changes/2026-11-08-source-type-visibility.md):
+main now fails with `S04: type 'ns.Pt' is not imported into this file`, and
+unknown or unimported type spellings in every source position are rejected.
+The original finding is kept below for history.
 
 Check-only fixture: `/tmp/qz-string-crossfile-review-qn2t5qyp/case`.
 The selected custom prelude publicly exports text.String. helper.qz imports

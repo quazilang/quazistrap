@@ -685,13 +685,15 @@ and [remaining findings](docs/audits/2026-10-23-string-followups.md).
 
 ## Source type context: required follow-up (2026-10-24)
 
-Current source formats are QZC31 and QZI14; the latter remains Unverified.
+Current source formats are QZC32 and QZI14; the latter remains Unverified.
 Verify constants in source and the installed binary separately before reporting
 artifact compatibility. Earlier dated cache/ABI checkpoints describe their own
 revisions, including QZC30 for the alias-definition prerequisite.
 
-Private namespace aliases still leak across files through global binding tables.
-This defect is confirmed and remains unfixed. When replacing those tables,
+Per-file type visibility (`semantic/type_visibility.rs`, 2026-11-08) rejects
+unknown/unimported type spellings and another file's private aliases with S04.
+Do not reintroduce a global type-name fallback for loader-backed analysis.
+When replacing the remaining global tables,
 resolve raw source type spellings in their originating file, alias bodies in
 their declaration file, and generic actuals at their call site. Protect declaration
 binders before imported-name lookup. Keep canonical report types distinct from

@@ -1,5 +1,7 @@
 # Migration guides
 
+- [Per-file type visibility](source-type-visibility.md)
+
 - [Runtime String identity and formatting](runtime-string-abi.md)
 
 - [Typed power and QZI14](power.md)

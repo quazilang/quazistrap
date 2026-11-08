@@ -2279,12 +2279,27 @@ mod tests {
             loaded.source_files,
             HashSet::new(),
         );
-        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        // Private imports of the prelude gateway and of another source file are
+        // not visible in main, even though they remain unused.
+        let mut errors: Vec<_> = report
+            .errors
+            .iter()
+            .map(|error| (error.code, error.message.as_str()))
+            .collect();
+        errors.sort_unstable();
+        assert_eq!(
+            errors,
+            [
+                ("S04", "type 'Hidden' is not imported into this file"),
+                ("S04", "type 'own.Text' is not imported into this file"),
+            ],
+            "{:?}",
+            report.errors
+        );
         assert_eq!(format!("{:?}", loaded.program), ast_before);
         assert_eq!(report.type_aliases["Owned"].1.to_string(), "Text");
         assert_eq!(report.type_aliases["Qualified"].1.to_string(), "Text");
-        // This unused alias remains unresolved; private-import rejection in all
-        // source positions is separate work. It must not acquire Text identity.
+        // Rejected aliases must not acquire Text identity.
         assert_eq!(report.type_aliases["Private"].1.to_string(), "Hidden");
         assert_eq!(report.type_aliases["Kept"].1.to_string(), "Text");
         assert_eq!(

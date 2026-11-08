@@ -1,4 +1,5 @@
 import std.fs;
+import std.fs.{File, FsError};
 import std.io;
 
 fn write_greeting(path: str) Result[usize, FsError] {
