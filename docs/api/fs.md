@@ -20,6 +20,7 @@ differ.
 | `AllocationFailed` | A standard-library staging allocation failed. |
 | `InvalidData` | Text input was not valid UTF-8, or a native directory record was malformed. |
 | `Unsupported` | The operation has no implementation for the selected target. |
+| `TooLarge` | `read_to_string_with_limit` found more bytes than its limit. |
 | `Native(i32)` | An unclassified OS error code. Its numeric meaning is platform-specific. |
 
 Normalization is necessarily incomplete: applications that require a portable
@@ -74,8 +75,10 @@ not duplicate or retain raw handles beyond the file’s lifetime.
 `read_to_string(path)` reads to EOF into an owned `String`. It grows an internal
 buffer, closes the file on success and failure, and validates the complete byte
 sequence before constructing `String`. Invalid UTF-8 yields `FsError.InvalidData`;
-use raw `File.read` for binary input. There is currently no caller-controlled
-maximum size, so do not use it for untrusted or arbitrarily large files.
+use raw `File.read` for binary input. `read_to_string` has no size limit; for
+untrusted or possibly large files use `read_to_string_with_limit(path,
+max_bytes)`, which reads at most `max_bytes + 1` bytes and returns
+`FsError.TooLarge` when the file is longer.
 
 ```quazi
 const config: Result[String, fs.FsError] = fs.read_to_string("settings.qz");
