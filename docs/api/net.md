@@ -40,6 +40,15 @@ is unsafe because the caller must provide readable storage. On Linux, sends use
 the per-call no-SIGPIPE flag, so a closed peer reports `NetError.BrokenPipe`
 instead of terminating the process.
 
+`set_read_timeout(timeout)` and `set_write_timeout(timeout)` take an
+`Option[time.Duration]`: a blocking receive or send that waits longer fails
+with `NetError.TimedOut`, and `None` restores waiting forever. A zero duration
+returns `InvalidTimeout`. Timeouts are rounded up to microseconds (Linux,
+NetBSD) or milliseconds (Windows) and capped near 24.8 days. `UdpSocket` has
+the same two methods. Because std sockets are always blocking, an
+`EAGAIN`/`EWOULDBLOCK` result now reports `TimedOut`; `WouldBlock` is no longer
+produced.
+
 `receive(limit)` returns one available UTF-8 text read; `receive_all(limit)`
 reads until peer EOF. `recv(ptr, len)` is unsafe and returns the native count
 or failure sentinel. `send`, receive, shutdown, and `close()` take exclusive
