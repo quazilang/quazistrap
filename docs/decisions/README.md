@@ -139,3 +139,11 @@ block expressions are deferred until value-carrying block scopes exist.
 
 Proposed 2026-11-08: [give types module identities like functions](module-type-identity.md)
 so same-named types in different modules stop colliding (`S05`). Not implemented.
+
+## D-019: qoroutines, channels and OS threads
+
+Recorded 2026-11-08: [keyword `qo`, built-in `Qoroutine[T]`/`Channel[T]`, M:N
+scheduler, method-based channels, `std.thread` with `JoinHandle`/`Mutex`/
+`AtomicI64`](qoroutines.md). Open points (type spelling, panic policy,
+preemption staging, closure spawns, JIT scope) are tracked in the workspace
+`asks.txt`.
