@@ -202,9 +202,19 @@ impl usize {
 }
 
 impl f32 {
-    pub fn abs(self: f32) f32 { if (self < 0.0) { ret -self; } ret self; }
-    pub fn min(self: f32, other: f32) f32 { if (self < other) { ret self; } ret other; }
-    pub fn max(self: f32, other: f32) f32 { if (self > other) { ret self; } ret other; }
+    // `0.0 - self` also maps -0.0 to +0.0; NaN stays NaN.
+    pub fn abs(self: f32) f32 { if (self <= 0.0) { ret 0.0 - self; } ret self; }
+    // IEEE 754 minNum/maxNum: a NaN operand yields the other operand.
+    pub fn min(self: f32, other: f32) f32 {
+        if (self != self) { ret other; }
+        if (self < other || other != other) { ret self; }
+        ret other;
+    }
+    pub fn max(self: f32, other: f32) f32 {
+        if (self != self) { ret other; }
+        if (self > other || other != other) { ret self; }
+        ret other;
+    }
     pub fn clamp(self: f32, low: f32, high: f32) f32 {
         if (self < low) { ret low; }
         if (self > high) { ret high; }
@@ -213,9 +223,19 @@ impl f32 {
 }
 
 impl f64 {
-    pub fn abs(self: f64) f64 { if (self < 0.0) { ret -self; } ret self; }
-    pub fn min(self: f64, other: f64) f64 { if (self < other) { ret self; } ret other; }
-    pub fn max(self: f64, other: f64) f64 { if (self > other) { ret self; } ret other; }
+    // `0.0 - self` also maps -0.0 to +0.0; NaN stays NaN.
+    pub fn abs(self: f64) f64 { if (self <= 0.0) { ret 0.0 - self; } ret self; }
+    // IEEE 754 minNum/maxNum: a NaN operand yields the other operand.
+    pub fn min(self: f64, other: f64) f64 {
+        if (self != self) { ret other; }
+        if (self < other || other != other) { ret self; }
+        ret other;
+    }
+    pub fn max(self: f64, other: f64) f64 {
+        if (self != self) { ret other; }
+        if (self > other || other != other) { ret self; }
+        ret other;
+    }
     pub fn clamp(self: f64, low: f64, high: f64) f64 {
         if (self < low) { ret low; }
         if (self > high) { ret high; }
