@@ -6351,8 +6351,12 @@ impl Analyzer {
         if sym.attributes.contains(&"str_variadic".to_string()) {
             self.add_dependency_edge(DependencyKind::Call, &from, "fmt.format");
             if let Some(expanded) = crate::parser::format::expand_format_call_args(args) {
+                // Explicit arguments were already checked as call arguments;
+                // only placeholder expressions from the template are new.
                 for arg in &expanded.args {
-                    self.type_check_expr(arg, true);
+                    if !args.iter().any(|explicit| explicit.span == arg.span) {
+                        self.type_check_expr(arg, true);
+                    }
                 }
             }
         }

@@ -2644,6 +2644,19 @@ mod tests {
     }
 
     #[test]
+    fn explicit_format_arguments_are_checked_once() {
+        let report = analyze(
+            "@format\npub fn show(template: str, ...args: any) void {}\nfn main() void {\n    var z: i64;\n    show(\"z = {}\", z);\n}\n",
+        );
+        let uses = report
+            .errors
+            .iter()
+            .filter(|error| error.code == "S02")
+            .count();
+        assert_eq!(uses, 1, "{:?}", report.errors);
+    }
+
+    #[test]
     fn placeholders_are_checked_for_use_after_move() {
         let report = analyze(
             "struct Job { id: i64, }\nfn take(job: Job) i64 { job.id }\nfn main() void {\n    const job = Job { id: 1 };\n    const n = take(job);\n    const line = \"id {job.id} {n}\";\n}\n",
