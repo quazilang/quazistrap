@@ -2,6 +2,19 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-09 night 2, plan items)
+
+quazistrap: `758527f` owned qo results; `f43da3d` strength reduction (ops[3]
+hint k+1 on integer Mul/Div/Mod by proven 2^k; encoder shl/shr/and/sar);
+`2c9756e` struct destructuring patterns (`PatternKind::Struct`, pattern span
+annotated with the struct type); `24dce2b` ELF `.a` archive member
+extraction (`backend/archive.rs`). tree-sitter `f34e93e` struct patterns.
+Compiler plan 91.4%. asks.txt round 3 (Russian): В7 string interpolation
+syntax (f"..."?), В8 drop async/await? — waiting for answers; do not
+implement interpolation of every literal (would break JSON-like strings).
+Verified: 1026 Rust tests, all e2e (new check_strength_reduction,
+check_struct_patterns, check_static_archives), std 62/62, examples.
+
 ## Checkpoint (2026-11-09 latest, preemption and JoinHandle)
 
 quazistrap `de3a2cb` Linux timer preemption (SIGURG per worker,
