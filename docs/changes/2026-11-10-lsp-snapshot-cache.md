@@ -20,3 +20,10 @@ unchanged.
 the targets documented in `docs/tooling/lsp.md` (release build: first request
 <= 1000 ms, warm median <= 20 ms) and checks that an unsaved edit produces
 fresh references. Measured: 150 ms cold, 0.6 ms warm.
+
+Follow-up the same day (review): a file created on disk could change which
+file an unchanged import resolves to (`src/util.qz` shadows `src/util/mod.qz`;
+a directory import loads every file in it) without changing any recorded
+input. Snapshots now also record the file names of each loaded file's
+directory and its ancestors up to the containing project, dependency or std
+root, plus `quazi.lock` files; the warm request stays at 0.7 ms.

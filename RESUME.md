@@ -11,7 +11,7 @@ doc.report; scripts/lsp_client.py shared by check_lsp_performance.py and
 check_lsp_incomplete_source.py. Remaining LSP: real-client Unicode/formatting
 suite, Zed/Helix runtime validation. Review findings (2026-11-10): impl-method
 predicate copy and unpacked variadic method tails fixed (compile_method_arguments);
-still open: snapshot cache misses newly created disk files / quazi.lock; placeholder spans are
+snapshot cache now validates directory listings and quazi.lock; still open: placeholder spans are
 inexact after escapes and on later lines of multi-line literals (rename can
 edit inside an escape).
 

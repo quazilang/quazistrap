@@ -974,6 +974,7 @@ mod tests {
             source_files: Vec::new(),
             effective_sources: HashMap::from([(canonical_path, old_source.clone())]),
             manifests: Vec::new(),
+            directories: Vec::new(),
         };
         let mut documents = HashMap::from([(
             uri.clone(),

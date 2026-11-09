@@ -4,12 +4,14 @@
 
 //! Reuse of loader-backed snapshots between navigation requests.
 //!
-//! A snapshot is a pure function of the text of every file it loaded and of
-//! the manifests its import graph was resolved with. An entry is reused only
-//! while each of those inputs, read from the current open-document overlays or
-//! from disk, still has exactly the recorded text. Creating a file that would
-//! change which candidate an unchanged import resolves to is not detected by
-//! that comparison, so the server also clears the cache when a document opens.
+//! A snapshot is a function of the text of every file it loaded, of the
+//! manifests and lock files its import graph was resolved with, and of which
+//! files exist in the directories import resolution looks at (each loaded
+//! file's directory up to its project, dependency or std root). An entry is
+//! reused only while each of those inputs, read from the current open-document
+//! overlays or from disk, is unchanged. Opening a document also clears the
+//! cache, because a buffer for a path that does not exist on disk can take
+//! part in resolution too.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -65,6 +67,10 @@ fn inputs_unchanged(snapshot: &LoadedSnapshot, overlays: &HashMap<PathBuf, Strin
         .iter()
         .chain(snapshot.manifests.iter().map(|(path, text)| (path, text)))
         .all(|(path, text)| current(path).as_deref() == Some(text.as_str()))
+        && snapshot
+            .directories
+            .iter()
+            .all(|(directory, listing)| super::analysis::directory_listing(directory) == *listing)
 }
 
 #[cfg(test)]
@@ -138,6 +144,37 @@ mod tests {
         let manifest = root.join("quazi.toml");
         let text = std::fs::read_to_string(&manifest).unwrap();
         std::fs::write(&manifest, format!("{text}\n")).unwrap();
+        assert!(cache.get(&main, &HashMap::new()).is_none());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_created_file_that_shadows_a_resolved_import_invalidates() {
+        let directory = workspace("shadow");
+        std::fs::create_dir_all(directory.join("src/util")).unwrap();
+        std::fs::write(
+            directory.join("quazi.toml"),
+            "[package]\nname = \"shadow\"\n\n[build]\nentry = \"src/main.qz\"\n",
+        )
+        .unwrap();
+        std::fs::write(directory.join("src/util/mod.qz"), "pub fn helper() i32 { ret 1; }\n")
+            .unwrap();
+        let main = directory.join("src/main.qz");
+        std::fs::write(&main, "import util.{helper};\n\nfn main() i32 { ret helper(); }\n")
+            .unwrap();
+        let main = main.canonicalize().unwrap();
+        let snapshot = Arc::new(analyze_loaded_document(&main, &HashMap::new()).unwrap());
+        let mut cache = SnapshotCache::default();
+        cache.insert(main.clone(), snapshot);
+        assert!(cache.get(&main, &HashMap::new()).is_some());
+        // `src/util.qz` takes precedence over `src/util/mod.qz` once it exists.
+        std::fs::write(directory.join("src/util.qz"), "pub fn helper() i32 { ret 2; }\n")
+            .unwrap();
+        assert!(cache.get(&main, &HashMap::new()).is_none());
+        // So does a lock file appearing at the project root.
+        let snapshot = Arc::new(analyze_loaded_document(&main, &HashMap::new()).unwrap());
+        cache.insert(main.clone(), snapshot);
+        std::fs::write(directory.join("quazi.lock"), "").unwrap();
         assert!(cache.get(&main, &HashMap::new()).is_none());
         std::fs::remove_dir_all(directory).unwrap();
     }

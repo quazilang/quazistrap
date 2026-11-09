@@ -28,29 +28,77 @@ pub struct LoadedSnapshot {
     pub report: SemanticReport,
     pub source_files: Vec<SourceFile>,
     pub effective_sources: HashMap<PathBuf, String>,
-    /// Project and dependency manifests the import graph was resolved with.
+    /// Project and dependency manifests and lock files the import graph was
+    /// resolved with.
     pub manifests: Vec<(PathBuf, String)>,
+    /// File names of every directory between a loaded file and the root that
+    /// contains it: import resolution depends on which files exist there.
+    pub directories: Vec<(PathBuf, Option<Vec<std::ffi::OsString>>)>,
 }
 
-/// The manifests a project context was built from, with their text.
-fn project_manifests(context: Option<&crate::project::ProjectContext>) -> Vec<(PathBuf, String)> {
-    let Some(context) = context else {
-        return Vec::new();
-    };
-    let mut roots = vec![context.config.root.clone()];
-    roots.extend(
-        context
-            .resolver
-            .modules
-            .values()
-            .map(|module| module.root.clone()),
-    );
+/// Roots of the project, its dependencies and the standard library.
+fn project_roots(context: Option<&crate::project::ProjectContext>) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = context
+        .into_iter()
+        .flat_map(|context| {
+            std::iter::once(context.config.root.clone())
+                .chain(context.resolver.modules.values().map(|module| module.root.clone()))
+        })
+        .chain(crate::loader::find_builtin_std_root())
+        .collect();
     roots.sort();
     roots.dedup();
     roots
-        .into_iter()
-        .map(|root| root.join("quazi.toml"))
+}
+
+/// The manifests and lock files under `roots`, with their text.
+fn project_manifests(roots: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    roots
+        .iter()
+        .flat_map(|root| [root.join("quazi.toml"), root.join("quazi.lock")])
         .filter_map(|path| std::fs::read_to_string(&path).ok().map(|text| (path, text)))
+        .collect()
+}
+
+/// The sorted file names of `directory`, or `None` when it cannot be read.
+pub(super) fn directory_listing(directory: &Path) -> Option<Vec<std::ffi::OsString>> {
+    let mut names = std::fs::read_dir(directory)
+        .ok()?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    names.sort();
+    Some(names)
+}
+
+/// Listings of each loaded file's directory and its ancestors up to the
+/// root containing it (only the directory itself outside every root).
+fn import_directories(
+    sources: &HashMap<PathBuf, String>,
+    roots: &[PathBuf],
+) -> Vec<(PathBuf, Option<Vec<std::ffi::OsString>>)> {
+    let mut directories = HashSet::new();
+    for path in sources.keys() {
+        let mut directory = path.parent();
+        while let Some(current) = directory {
+            directories.insert(current.to_path_buf());
+            let inside_root = roots
+                .iter()
+                .any(|root| current.starts_with(root) && current != root.as_path());
+            if !inside_root {
+                break;
+            }
+            directory = current.parent();
+        }
+    }
+    let mut directories: Vec<PathBuf> = directories.into_iter().collect();
+    directories.sort();
+    directories
+        .into_iter()
+        .map(|directory| {
+            let listing = directory_listing(&directory);
+            (directory, listing)
+        })
         .collect()
 }
 
@@ -125,7 +173,8 @@ pub fn analyze_loaded_document(
         .canonicalize()
         .map_err(|error| format!("cannot resolve LSP document '{}': {error}", path.display()))?;
     let context = crate::project::ProjectContext::discover(&path)?;
-    let manifests = project_manifests(context.as_ref());
+    let roots = project_roots(context.as_ref());
+    let manifests = project_manifests(&roots);
     let settings = context
         .as_ref()
         .map(|context| context.config.package)
@@ -158,6 +207,7 @@ pub fn analyze_loaded_document(
     Ok(LoadedSnapshot {
         report,
         source_files: loaded.source_files,
+        directories: import_directories(&loaded.effective_sources, &roots),
         effective_sources: loaded.effective_sources,
         manifests,
     })
@@ -181,7 +231,8 @@ pub fn analyze_loaded_document_cancellable(
     })?;
     let context =
         crate::project::ProjectContext::discover(&path).map_err(CancellableAnalysisError::Load)?;
-    let manifests = project_manifests(context.as_ref());
+    let roots = project_roots(context.as_ref());
+    let manifests = project_manifests(&roots);
     let settings = context
         .as_ref()
         .map(|context| context.config.package)
@@ -219,6 +270,7 @@ pub fn analyze_loaded_document_cancellable(
     Ok(LoadedSnapshot {
         report,
         source_files: loaded.source_files,
+        directories: import_directories(&loaded.effective_sources, &roots),
         effective_sources: loaded.effective_sources,
         manifests,
     })

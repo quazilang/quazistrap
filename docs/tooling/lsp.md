@@ -84,12 +84,12 @@ than a name-resolution guarantee.
   compiler's current semantic annotations.
 - Loader-backed definition, reference, and rename snapshots are cached per
   document (`src/lsp/snapshot_cache.rs`, at most 8). An entry is reused only
-  while every loaded file (open buffer or disk text) and every project and
-  dependency `quazi.toml` still has the exact text it was built from; opening
-  a document clears the cache, because a new buffer can change which file an
-  unchanged import resolves to. A file created outside the editor that would
-  shadow an already-resolved import is not noticed until a loaded file or
-  manifest changes, the same limit as the workspace-symbol index.
+  while every loaded file (open buffer or disk text), every project,
+  dependency and std `quazi.toml`/`quazi.lock`, and the file names of every
+  directory from a loaded file up to its root are unchanged, so a file
+  created on disk that an import would now resolve to invalidates it.
+  Opening a document clears the cache. Listings are taken right after
+  loading; a file created during that window is noticed at the next change.
   Namespace and wildcard imports still depend on the compiler's available
   semantic annotations.
 - A document that does not parse still gets semantic features
