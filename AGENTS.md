@@ -384,7 +384,7 @@ If a `quazi.lock` file exists, it is used to pin dependency versions. When missi
 | `box` | Done | `Box[T]`: new, get, set, free |
 | `traits` | Done | Display, Debug, Clone, Copy, Drop, Iterator, Eq, Ord, Hash, Default, Into, From, Index, Write, arithmetic traits |
 | `prelude/mod.qz` | Done | re-exports String, Box, Array, option, result, traits, fmt, panic, Qoroutine. Auto-injected always. |
-| `prelude/qoroutine.qz` | Initial | `qo` target `__qo_spawn[T]`, `Qoroutine[T].join`, M:N scheduler (4 workers, per-qoroutine stacks). Library `@export`s are compiled only when reachable. |
+| `prelude/qoroutine.qz` | Initial | `qo` target `__qo_spawn[T]`, `Qoroutine[T].join`, M:N scheduler (4 workers, arena stack slots, yielding joins), reference-counted `Channel[T]` (send/receive/close). Library `@export`s are compiled only when reachable. |
 | `collections/array` | Done | `Array[T]`: push, get, set, len, free, from, Index impl. Index assignment supported. |
 | `collections/map` | Done | fallible, non-panicking `usize -> usize` open-addressing map; lookup returns `Option` |
 | `collections/set` | Done | fallible, non-panicking `usize` open-addressing set |

@@ -58,6 +58,67 @@ fn main() i32 {
 }
 """
 
+# Channel[T]: producers and a consumer in qoroutines, the main thread
+# receiving, blocking on a small buffer, close and drain.
+CHANNEL = r"""import std.io;
+
+fn produce(ch: Channel[i64], from: i64, count: i64) i64 {
+    for i : 0..count { ch.send(from + i as i64); }
+    count
+}
+
+fn consume(ch: Channel[i64], done: Channel[i64]) i64 {
+    var total: i64 = 0;
+    for (true) {
+        const value = ch.receive();
+        if (value.is_none()) { break; }
+        total = total + value.unwrap();
+    }
+    done.send(total);
+    total
+}
+
+fn finish(ch: Channel[i64], producer: Qoroutine[i64]) i64 {
+    const sent = producer.join();
+    ch.close();
+    sent
+}
+
+fn main() i32 {
+    const ch: Channel[i64] = Channel.new(8);
+    const a = ch.clone();
+    const b = ch.clone();
+    const p1 = qo produce(a, 0 as i64, 1000 as i64);
+    const p2 = qo produce(b, 1000 as i64, 1000 as i64);
+    var total: i64 = 0;
+    var received: i64 = 0;
+    for (received < 2000) {
+        const value = ch.receive();
+        if (value.is_some()) {
+            total = total + value.unwrap();
+            received = received + 1;
+        }
+    }
+    const sent = p1.join() + p2.join();
+
+    const pipe: Channel[i64] = Channel.new(4);
+    const done: Channel[i64] = Channel.new(1);
+    const reader = pipe.clone();
+    const reply = done.clone();
+    const consumer = qo consume(reader, reply);
+    const writer = pipe.clone();
+    const producer = qo produce(writer, 1 as i64, 500 as i64);
+    const closer = pipe.clone();
+    const closed = qo finish(closer, producer);
+    const piped = consumer.join();
+    const reported = done.receive().unwrap();
+    closed.join();
+    io.println("channel {} {} {} {}", sent, total, piped, reported);
+    if (total != 1999000 || piped != 125250 || reported != piped) { ret 1; }
+    0
+}
+"""
+
 # Joins nested ten times deeper than there are workers: a waiting qoroutine
 # must yield its worker instead of blocking it.
 NESTED = r"""import std.io;
@@ -139,13 +200,26 @@ def check(qz, root):
     result = invoke([str(qz), "check"], owned, ok=False)
     assert result.returncode != 0 and "use of moved value 'text'" in result.stdout, result.stdout
 
+    channel = root / "channel"
+    (channel / "src").mkdir(parents=True)
+    (channel / "quazi.toml").write_text('[package]\nname="channel"\n[build]\nentry="src/main.qz"\n')
+    (channel / "src/main.qz").write_text(CHANNEL)
+    binary = channel / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], channel)
+    for _ in range(5):
+        assert "channel 2000 1999000 125250 125250" in subprocess.run(
+            [str(binary)], cwd=channel, text=True, stdout=subprocess.PIPE, timeout=60).stdout
+    assert "channel 2000" in invoke([str(qz), "run", "--jit", *common], channel).stdout
+
     plain = root / "plain"
     (plain / "src").mkdir(parents=True)
     (plain / "quazi.toml").write_text('[package]\nname="plain"\n[build]\nentry="src/main.qz"\n')
     (plain / "src/main.qz").write_text('import std.io;\n\nfn main() i32 {\n    io.println("hi");\n    0\n}\n')
     artifact = plain / "program.qzi"
     invoke([str(qz), "build", *common, "-i", "-o", str(artifact)], plain)
-    assert b"__qo_" not in artifact.read_bytes(), "the scheduler must be dropped when unused"
+    # Destructor hooks (Channel.free) are always roots; the scheduler is not.
+    for symbol in (b"__qo_worker", b"__qo_spawn", b"__qo_entry", b"__qo_init"):
+        assert symbol not in artifact.read_bytes(), f"{symbol} must be dropped when unused"
 
     bad = root / "bad"
     (bad / "src").mkdir(parents=True)
@@ -153,7 +227,7 @@ def check(qz, root):
     (bad / "src/main.qz").write_text("fn main() i32 {\n    const x = qo 5;\n    0\n}\n")
     result = invoke([str(qz), "check"], bad, ok=False)
     assert result.returncode != 0 and "`qo` must be followed by a function call" in result.stdout, result.stdout
-    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, owned String/struct args moved, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
+    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, owned String/struct args moved, Channel send/receive/close, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
 
 
 def main():

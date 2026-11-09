@@ -242,6 +242,39 @@ until it finishes or waits in `join`. At most 1024 qoroutines (256 on Windows)
 are alive at once. A panic inside a qoroutine ends the program. Channels and
 preemption are planned.
 
+### Channels
+
+`Channel[T]` is a bounded FIFO for qoroutines (built in, no import):
+
+```quazi
+fn produce(ch: Channel[i64], count: i64) i64 {
+    for i : 0..count { ch.send(i as i64); }
+    ch.close();
+    count
+}
+
+fn main() i32 {
+    const ch: Channel[i64] = Channel.new(16);
+    const writer = ch.clone();
+    const producer = qo produce(writer, 100 as i64);
+    var total: i64 = 0;
+    for (true) {
+        const value = ch.receive();          // Option[i64]
+        if (value.is_none()) { break; }      // closed and drained
+        total = total + value.unwrap();
+    }
+    producer.join();
+    0
+}
+```
+
+`send` waits while the buffer is full and panics on a closed channel;
+`receive` waits while it is empty and returns `None` once the channel is
+closed and drained; `close` stops further sends. The handle is reference
+counted: `clone()` creates another owner (pass the clone to `qo`), and the
+buffer is released with the last owner. A waiting qoroutine yields its
+worker. Values occupy one slot: send plain scalars for now.
+
 ## Match expressions
 
 `match` evaluates an expression against a series of patterns:

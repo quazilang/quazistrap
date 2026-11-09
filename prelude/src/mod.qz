@@ -20,3 +20,4 @@ pub import ./fmt;
 pub import ./panic.panic;
 pub import ./qoroutine.Qoroutine;
 pub import ./qoroutine.__qo_spawn;
+pub import ./qoroutine.Channel;

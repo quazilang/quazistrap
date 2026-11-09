@@ -61,12 +61,14 @@ points are marked **decided**, design proposals are marked **proposed**.
 
 ## Status (2026-11-09)
 
-Implemented: the `qo f(args)` keyword, the built-in `Qoroutine[T]` with
-`join()`, and the M:N prelude scheduler on four worker threads
-([change record](../changes/2026-11-09-qo-keyword.md)). Open: moved arguments
-evaluated in the spawning context and owned results (closure ownership),
-`Channel[T]`, parking, timer preemption, panic reported through `join()`,
-`std.thread` `JoinHandle[T]`, Tree-sitter/LSP support for `qo`.
+Implemented: the `qo f(args)` keyword (Tree-sitter, LSP), the built-in
+`Qoroutine[T]` with `join()`, the M:N prelude scheduler on four worker
+threads, yielding joins, owned variable arguments moved into the qoroutine,
+and the built-in reference-counted `Channel[T]` (send/receive/close)
+([change records](../changes/README.md), 2026-11-09). Open: owned results and
+owned channel values, argument expressions evaluated in the spawning context,
+timer preemption, panic reported through `join()`, `std.thread`
+`JoinHandle[T]` and channel use from OS threads, select (not planned).
 
 ## Implementation phases
 

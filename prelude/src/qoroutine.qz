@@ -293,3 +293,122 @@ impl Qoroutine[T] {
         value
     }
 }
+
+// ── Channel[T] ───────────────────────────────────────────────────────────────
+//
+// A bounded FIFO shared by qoroutines and OS threads (D-019). The handle is
+// reference counted: `clone()` adds an owner and each owner's automatic
+// `free` releases one; the buffer goes away with the last owner. Blocking
+// operations yield: a qoroutine gives its worker to others, any other thread
+// yields its OS time slice.
+//
+// Block (64 bytes): +0 lock, +8 owners, +16 capacity, +24 count, +32 head,
+// +40 closed, +48 buffer (capacity 8-byte slots).
+// Values are stored as one 8-byte slot: send plain scalars for now.
+
+pub struct Channel[T] {
+    block: *u8,
+}
+
+unsafe fn __qo_channel_lock(block: *u8) void {
+    for (__qo_atomic_cas(block as *i64, 0, 1) != 0) { __qo_sleep_ms(0); }
+}
+
+unsafe fn __qo_channel_unlock(block: *u8) void {
+    __qo_atomic_cas(block as *i64, 1, 0);
+}
+
+impl Channel[T] {
+    // A channel buffering up to `capacity` values (at least one).
+    pub fn new(capacity: usize) Channel[T] {
+        var block: *u8 = 0;
+        unsafe {
+            const slots: usize = if (capacity == 0) { 1 } else { capacity };
+            block = __qo_malloc(64);
+            const buffer: *u8 = __qo_malloc(slots * 8);
+            if (block == 0 || buffer == 0) { panic("channel allocation failed"); }
+            __qo_memset(block, 0, 64);
+            *((block + 8) as *i64) = 1;
+            *((block + 16) as *i64) = slots as i64;
+            *((block + 48) as **u8) = buffer;
+        }
+        Channel { block: block }
+    }
+
+    // Another owner of the same channel, e.g. to pass to a qoroutine.
+    pub fn clone(self: &Channel[T]) Channel[T] {
+        unsafe { __qo_atomic_add((self.block + 8) as *i64, 1); }
+        Channel { block: self.block }
+    }
+
+    // Append `value`, waiting while the channel is full. Panics once closed.
+    pub fn send(self: &Channel[T], value: T) void {
+        unsafe {
+            const block = self.block;
+            for (true) {
+                __qo_channel_lock(block);
+                if (*((block + 40) as *i64) != 0) {
+                    __qo_channel_unlock(block);
+                    panic("send on a closed channel");
+                }
+                const capacity: i64 = *((block + 16) as *i64);
+                const count: i64 = *((block + 24) as *i64);
+                if (count < capacity) {
+                    const tail: i64 = (*((block + 32) as *i64) + count) % capacity;
+                    *((*((block + 48) as **u8) + (tail as usize) * 8) as *T) = value;
+                    *((block + 24) as *i64) = count + 1;
+                    __qo_channel_unlock(block);
+                    ret;
+                }
+                __qo_channel_unlock(block);
+                __qo_yield();
+            }
+        }
+    }
+
+    // The oldest value, waiting while the channel is empty; None once it is
+    // closed and drained.
+    pub fn receive(self: &Channel[T]) Option[T] {
+        unsafe {
+            const block = self.block;
+            for (true) {
+                __qo_channel_lock(block);
+                const count: i64 = *((block + 24) as *i64);
+                if (count > 0) {
+                    const head: i64 = *((block + 32) as *i64);
+                    const value: T = *((*((block + 48) as **u8) + (head as usize) * 8) as *T);
+                    *((block + 32) as *i64) = (head + 1) % *((block + 16) as *i64);
+                    *((block + 24) as *i64) = count - 1;
+                    __qo_channel_unlock(block);
+                    ret Some(value);
+                }
+                if (*((block + 40) as *i64) != 0) {
+                    __qo_channel_unlock(block);
+                    ret None;
+                }
+                __qo_channel_unlock(block);
+                __qo_yield();
+            }
+        }
+        None
+    }
+
+    // No more values will be sent; receivers drain what is buffered.
+    pub fn close(self: &Channel[T]) void {
+        unsafe {
+            __qo_channel_lock(self.block);
+            *((self.block + 40) as *i64) = 1;
+            __qo_channel_unlock(self.block);
+        }
+    }
+
+    pub fn free(self: Channel[T]) void {
+        unsafe {
+            if (self.block != 0 && __qo_atomic_add((self.block + 8) as *i64, -1) == 1) {
+                __qo_free(*((self.block + 48) as **u8));
+                __qo_free(self.block);
+            }
+            self.block = 0;
+        }
+    }
+}
