@@ -145,7 +145,8 @@ src/grammar.json: no node here; deno can't run grammar.js; tree-sitter CLI is
 /nix/store/yp6r29h2gxm1vy86f3m71vd14gh5hi9z-tree-sitter-0.26.11/bin/tree-sitter).
 Verified: 1019 Rust tests, all e2e (new check_qoroutines.py), std 61/61,
 examples. Flaky under parallel runs once: test_runner::tests::
-target_gated_modules_are_not_loaded_as_independent_test_roots (passes alone).
+target_gated_modules_are_not_loaded_as_independent_test_roots (passes alone). Likely ETXTBSY (fork while a test binary is open for writing); runner now
+retries busy launches (2026-11-09), not reproduced since.
 Note: src/semantic/types.rs and src/lexer/token.rs have mixed CRLF/LF line
 endings — edit bytewise (Python newline='' / binary), never normalize.
 
