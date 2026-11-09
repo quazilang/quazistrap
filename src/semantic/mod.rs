@@ -2683,6 +2683,14 @@ mod tests {
             "{:?}",
             reused.errors
         );
+        let owned_result = analyze(&format!(
+            "{prelude}fn make(id: i64) Job {{ Job {{ id: id }} }}\nfn main() void {{\n    const h = qo make(3 as i64);\n}}\n"
+        ));
+        assert!(
+            !owned_result.errors.iter().any(|error| error.message.contains("closure return type")),
+            "{:?}",
+            owned_result.errors
+        );
         let ordinary = analyze(&format!(
             "{prelude}fn main() void {{\n    const text = Job {{ id: 1 }};\n    const f: fn() i64 = || measure(text);\n}}\n"
         ));

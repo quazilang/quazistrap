@@ -67,8 +67,7 @@ threads, yielding joins, owned variable arguments moved into the qoroutine,
 the built-in reference-counted `Channel[T]` (send/receive/close), and panics
 reported by `join()` as `Err(QoroutineError.Panicked)`, and timer preemption
 on Linux (10 ms SIGURG per worker)
-([change records](../changes/README.md), 2026-11-09). Open: owned results and
-owned channel values, argument expressions evaluated in the spawning context,
+([change records](../changes/README.md), 2026-11-09). Owned results move out through `join()`. Open: owned channel values, argument expressions evaluated in the spawning context,
 preemption on Windows/NetBSD and with libc, owned closure captures for
 `thread.spawn`, channel use from OS threads, select (not planned).
 `std.thread` `spawn`/`JoinHandle[T]` is implemented (2026-11-09).

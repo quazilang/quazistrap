@@ -194,6 +194,52 @@ fn main() i32 {
 }
 """
 
+# Owned results (String, structs) move out through join, also next to panics.
+RESULTS = r"""import std.io;
+
+pub struct Pair { a: i64, b: String, }
+
+fn label(n: i64) String {
+    const text: String = "item-".to_string();
+    text.push_str(n.to_string().as_str())
+}
+
+fn pair(n: i64) Pair { Pair { a: n, b: label(n) } }
+
+fn main() i32 {
+    var total: i64 = 0;
+    for i : 0..200 {
+        const n: i64 = i as i64;
+        const text = (qo label(n)).join().unwrap();
+        const p = (qo pair(n)).join().unwrap();
+        total = total + text.len() as i64 + p.a + p.b.len() as i64;
+    }
+    io.println("total {}", total);
+    0
+}
+"""
+
+RESULT_PANICS = r"""import std.io;
+
+fn label(n: i64) String {
+    if (n % 2 == 0) { panic("even"); }
+    const text: String = "odd-".to_string();
+    text.push_str(n.to_string().as_str())
+}
+
+fn main() i32 {
+    var ok: i64 = 0;
+    var failed: i64 = 0;
+    for i : 0..40 {
+        const n: i64 = i as i64;
+        const result = (qo label(n)).join();
+        if (result.is_ok()) { ok = ok + result.unwrap().len() as i64; } else { failed = failed + 1; }
+    }
+    io.println("ok {} failed {}", ok, failed);
+    0
+}
+"""
+
 # Joins nested ten times deeper than there are workers: a waiting qoroutine
 # must yield its worker instead of blocking it.
 NESTED = r"""import std.io;
@@ -329,6 +375,18 @@ def check(qz, root):
     assert "nested 16400" in subprocess.run([str(binary)], cwd=libc, text=True,
                                             stdout=subprocess.PIPE, timeout=60).stdout
 
+    results = root / "results"
+    (results / "src").mkdir(parents=True)
+    (results / "quazi.toml").write_text('[package]\nname="results"\n[build]\nentry="src/main.qz"\n')
+    (results / "src/main.qz").write_text(RESULTS)
+    assert "total 22880" in invoke([str(qz), "run", *common], results).stdout
+    (results / "src/main.qz").write_text(RESULT_PANICS)
+    binary = results / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], results)
+    assert "ok 115 failed 20" in subprocess.run([str(binary)], cwd=results, text=True,
+                                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                                timeout=60).stdout
+
     plain = root / "plain"
     (plain / "src").mkdir(parents=True)
     (plain / "quazi.toml").write_text('[package]\nname="plain"\n[build]\nentry="src/main.qz"\n')
@@ -345,7 +403,7 @@ def check(qz, root):
     (bad / "src/main.qz").write_text("fn main() i32 {\n    const x = qo 5;\n    0\n}\n")
     result = invoke([str(qz), "check"], bad, ok=False)
     assert result.returncode != 0 and "`qo` must be followed by a function call" in result.stdout, result.stdout
-    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, owned String/struct args moved, Channel send/receive/close, panics reported by join, timer preemption of 8 spinners, full sleeps, libc mode, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
+    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, owned String/struct args and results moved, Channel send/receive/close, panics reported by join, timer preemption of 8 spinners, full sleeps, libc mode, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
 
 
 def main():

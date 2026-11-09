@@ -43,8 +43,9 @@
 // preempted.
 //
 // Current limits: `join` outside a qoroutine yields its OS thread; at most
-// `__qo_slot_count()` qoroutines are alive at once; results are plain scalars
-// until closure result ownership lands.
+// `__qo_slot_count()` qoroutines are alive at once. Owned results move into
+// the result slot once and out through `join`, which reads the slot only for
+// a qoroutine that finished without panicking.
 
 @intrinsic("quazi.runtime.state")
 unsafe fn __qo_state() *u8;
@@ -424,16 +425,22 @@ impl Qoroutine[T] {
     // Wait for the qoroutine to finish: its result, or an error if it panicked.
     pub fn join(self: Qoroutine[T]) Result[T, QoroutineError] {
         const task: *u8 = self.task;
-        var value: T;
         var panicked: bool = false;
         unsafe {
             for (__qo_atomic_add(task as *i64, 0) != 2) { __qo_yield(); }
             panicked = *((task + 336) as *i64) != 0;
-            value = *((task + 8) as *T);
             __qo_release_slot(*((task + 24) as *i64));
+        }
+        if (panicked) {
+            unsafe { __qo_free(task); }
+            ret Err(QoroutineError.Panicked);
+        }
+        // Only a finished qoroutine wrote its (possibly owned) result.
+        var value: T;
+        unsafe {
+            value = *((task + 8) as *T);
             __qo_free(task);
         }
-        if (panicked) { ret Err(QoroutineError.Panicked); }
         Ok(value)
     }
 }

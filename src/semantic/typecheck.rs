@@ -2773,10 +2773,15 @@ impl Analyzer {
                 );
             }
         }
+        // A `qo` closure's single result moves into its qoroutine's result
+        // slot and out through `join`, so owned named results are allowed.
+        let owned_once_result =
+            |ty: &TypeKind| once && matches!(ty, TypeKind::Named { .. });
         if !matches!(
             expected_return,
             TypeKind::Error | TypeKind::Void | TypeKind::Never
         ) && !closure_capture_is_plain_copy(&self.resolve_type_aliases(&expected_return))
+            && !owned_once_result(&self.resolve_type_aliases(&expected_return))
         {
             self.push_error(
                 expr.span,
@@ -2856,6 +2861,7 @@ impl Analyzer {
             resolved_return,
             TypeKind::Void | TypeKind::Never | TypeKind::Error
         ) && !closure_capture_is_plain_copy(&resolved_return)
+            && !owned_once_result(&resolved_return)
         {
             self.push_error(
                 body.span,

@@ -235,8 +235,10 @@ Arguments that are variables move into the qoroutine: owned values such as
 use-after-move error), scalars are copied. Argument expressions other than
 variables are evaluated inside the qoroutine.
 
-Current limits: references and `str` views cannot be passed, and the result
-must be a plain scalar. The `Qoroutine` handle itself is not released yet
+Results move out through `join()` the same way: a qoroutine may return a
+`String` or a struct.
+
+Current limits: references and `str` views cannot be passed or returned. The `Qoroutine` handle itself is not released yet
 (struct storage without a `free` hook is not reclaimed in general). At most
 1024 qoroutines (256 on Windows) are alive at once.
 

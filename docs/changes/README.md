@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-09: qo returns owned results](2026-11-09-qo-owned-results.md)
+
 - [2026-11-09: Module-qualified generic calls infer their type arguments](2026-11-09-module-call-inference.md)
 
 - [2026-11-09: Timer preemption for qoroutines (Linux)](2026-11-09-qo-preemption.md)
