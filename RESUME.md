@@ -16,6 +16,11 @@ format args checked once (duplicate S02); `99a96d0` closures capture
 variables read only in string placeholders (codegen "no register bound").
 tree-sitter `df6ce1f` structured string literals (interpolation nodes).
 `2817fd1` LSP semantic tokens for identifiers inside string placeholders.
+`f4cc6b9` fixed a regression from the D-020 commit: raw strings used as
+argument-less format templates printed doubled braces (lexer escaping), and
+"{{x}}" without args printed "{{x}}"; argument-less templates now resolve
+escapes at compile time. `944d093` example 37-qoroutines; tree-sitter
+`22c684a` \u{1F_980} escapes.
 Enum payload drops deliberately NOT done: by-value `match` does not consume
 the scrutinee (codegen expression_owner_sites consumed=false) and bindings
 alias payloads, so payload drops need place-level moves (D-014).
