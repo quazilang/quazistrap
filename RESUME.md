@@ -24,8 +24,13 @@ built-in `Channel[T]` for threads and qoroutines; no select, no `<-`.
 Order: std.thread `JoinHandle[T]` -> runtime scheduler (stacks via
 `quazi.context.switch`, worker pool, parking, Channel[T]) -> `qo` keyword
 (lexer/parser/Tree-sitter/LSP, typing, lowering) -> timer preemption ->
-closure capture moves. Note: Linux threads need `libc = true` (pthread), so
-they are not available under `--jit`.
+closure capture moves. Linux threads no longer need libc: the embedded
+clone/futex runtime (`__quazi_thread_spawn`/`__quazi_thread_join`, 2026-11-09)
+serves programs without `[link] libc`, including `--jit`; libc projects keep
+pthreads (`TargetSpec.libc`). Next: `JoinHandle[T]` needs fn values that can
+cross threads (closure/fn-value restrictions in docs/migrations/closures.md),
+so the practical next compiler step is a `qo f(args)`-style lowering through a
+synthetic per-call thunk that receives moved arguments in a heap block.
 
 ## Checkpoint (2026-11-08 night, groundwork while waiting for asks.txt)
 

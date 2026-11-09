@@ -62,7 +62,8 @@ points are marked **decided**, design proposals are marked **proposed**.
 ## Implementation phases
 
 1. Runtime groundwork (done): atomics, `quazi.context.switch`,
-   `quazi.thread.spawn_arg`.
+   `quazi.thread.spawn_arg`, libc-free Linux threads (clone/futex,
+   2026-11-09) so worker threads exist in built-in-linker programs.
 2. `std.thread`: `JoinHandle[T]`, `Mutex`, `AtomicI64` on the atomics.
 3. Runtime scheduler: per-qoroutine stacks, global run queue, worker pool,
    parking/unparking, `Channel[T]`.

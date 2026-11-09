@@ -23,8 +23,11 @@ C callback representation and cannot be passed as thread callbacks.
 Starts one native operating-system thread. The callback receives a null context
 pointer because this provisional API does not yet accept user context.
 
-Returns an opaque nonzero handle on success and `0` on failure. Linux frees its
-temporary `pthread_t` storage when `pthread_create` fails. Windows returns the
+Returns an opaque nonzero handle on success and `0` on failure. On Linux
+without `[link] libc`, the embedded runtime starts the thread with `clone` on
+its own 8 MiB stack (no libc is needed, so threads also work with the built-in
+linker and `qz run --jit`). With `libc = true`, Linux uses `pthread_create` and
+frees its temporary `pthread_t` storage if creation fails. Windows returns the
 null handle produced by `CreateThread`.
 
 The operation is unsafe because the caller must uphold the callback ABI,
@@ -33,8 +36,10 @@ value may be passed to `thread_join`, where it is handled as a no-op.
 
 ## `unsafe fn thread_join(handle: usize) void`
 
-Waits for a successful thread handle to finish. On Linux it then frees the
-temporary `pthread_t` storage; on Windows it closes the native thread handle.
+Waits for a successful thread handle to finish. On Linux it then releases the
+thread's stack (embedded runtime) or its temporary `pthread_t` storage (libc);
+on Windows it closes the native thread handle. Returning from `main` ends the
+whole process, including threads that are still running.
 
 Handle `0` is accepted as a no-op so a failed spawn cannot trigger a null-handle
 crash. Any nonzero handle must have been returned by `thread_spawn`, must belong

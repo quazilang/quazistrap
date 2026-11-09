@@ -393,6 +393,7 @@ mod tests {
                 abi: Abi::SysV,
                 emit_start: true,
                 no_crash: false,
+                libc: false,
             },
         };
 
@@ -430,6 +431,7 @@ mod tests {
                 abi: Abi::Win64,
                 emit_start: true,
                 no_crash: false,
+                libc: false,
             },
         };
         let args: Vec<String> = inv

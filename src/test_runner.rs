@@ -148,8 +148,15 @@ fn run_test_binary(
     report: &crate::semantic::SemanticReport,
 ) -> Result<std::process::ExitStatus, String> {
     let harness = harness_for(chunks, test_index)?;
-    let object =
-        crate::try_compile_to_object(&harness, true, no_crash, Some(report), false, target)?;
+    let executable_target = target.clone().linking(link_flags);
+    let object = crate::try_compile_to_object(
+        &harness,
+        true,
+        no_crash,
+        Some(report),
+        false,
+        &executable_target,
+    )?;
     link_object(&object, output, target.clone(), link_flags, None)?;
     std::process::Command::new(output)
         .status()

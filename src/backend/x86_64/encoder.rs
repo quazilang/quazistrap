@@ -1615,6 +1615,12 @@ impl<'a> FnEncoder<'a> {
     ) -> Result<(), BackendError> {
         let is_win64 = self.target.abi == Abi::Win64;
         let is_netbsd = self.target.os == crate::backend::target::Os::NetBsd;
+        // Linux executables without libc use the embedded clone/futex threads.
+        // With libc, pthreads keep libc's per-thread state valid; objects and
+        // libraries (no entry stub) may be linked into a libc program.
+        let uses_embedded_threads = self.target.os == crate::backend::target::Os::Linux
+            && !self.target.libc
+            && self.target.emit_start;
         let err = |e: IcedError| BackendError(e.to_string());
 
         macro_rules! emit {
@@ -2816,6 +2822,15 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(qword_ptr(rsp + 40i32), 0i32)); // thread_id
                             call_ext!("CreateThread".into(), RelocKind::Plt32);
                             emit!(asm.add(rsp, 48i32));
+                        } else if uses_embedded_threads {
+                            // Embedded clone-based runtime (no libc).
+                            emit!(asm.mov(rdi, slot(dst)));
+                            if id == 43 {
+                                emit!(asm.mov(rsi, slot(dst + 1)));
+                            } else {
+                                emit!(asm.xor(esi, esi));
+                            }
+                            call_ext!("__quazi_thread_spawn".into(), RelocKind::Plt32);
                         } else {
                             let mut allocation_failed = asm.create_label();
                             let mut create_failed = asm.create_label();
@@ -2867,6 +2882,9 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rcx, slot(dst)));
                             call_ext!("CloseHandle".into(), RelocKind::Plt32);
                             emit!(asm.add(rsp, 32i32));
+                        } else if uses_embedded_threads {
+                            emit!(asm.mov(rdi, slot(dst)));
+                            call_ext!("__quazi_thread_join".into(), RelocKind::Plt32);
                         } else {
                             // pthread_join(*(pthread_t*)handle, NULL)
                             emit!(asm.mov(rbx, slot(dst))); // rbx = thread_storage_ptr
@@ -4784,6 +4802,7 @@ mod tests {
             abi,
             emit_start: false,
             no_crash: true,
+            libc: false,
         }
     }
 
@@ -4827,6 +4846,24 @@ mod tests {
     }
 
     fn encode(chunk: &Chunk, abi: Abi) -> (Vec<u8>, Vec<PendingReloc>) {
+        encode_for(chunk, &target(abi))
+    }
+
+    /// A Linux executable linked without libc.
+    fn encode_executable(chunk: &Chunk) -> (Vec<u8>, Vec<PendingReloc>) {
+        let mut target = target(Abi::SysV);
+        target.emit_start = true;
+        encode_for(chunk, &target)
+    }
+
+    /// A Linux executable linked with `-lc`.
+    fn encode_libc(chunk: &Chunk) -> (Vec<u8>, Vec<PendingReloc>) {
+        let mut target = target(Abi::SysV).linking(&["-lc".to_string()]);
+        target.emit_start = true;
+        encode_for(chunk, &target)
+    }
+
+    fn encode_for(chunk: &Chunk, target: &TargetSpec) -> (Vec<u8>, Vec<PendingReloc>) {
         let fn_table = vec![chunk.name.clone()];
         let str_syms = vec![None; chunk.constants.len()];
         let bss_syms = vec![None; chunk.code.len()];
@@ -4836,7 +4873,7 @@ mod tests {
             fn_offset: 0,
             str_syms: &str_syms,
             bss_syms: &bss_syms,
-            target: &target(abi),
+            target,
         }
         .encode()
         .expect("ABI adapter should encode")
@@ -5117,7 +5154,20 @@ mod tests {
         chunk.emit(spawn);
         chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
 
-        let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+        let (_, embedded_relocs) = encode_executable(&chunk);
+        assert!(embedded_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "__quazi_thread_spawn"));
+        assert!(!embedded_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "pthread_create"));
+        // Objects and libraries may be linked into a libc program.
+        let (_, object_relocs) = encode(&chunk, Abi::SysV);
+        assert!(object_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "pthread_create"));
+
+        let (linux_bytes, linux_relocs) = encode_libc(&chunk);
         let linux_mnemonics = mnemonics(&linux_bytes);
         assert!(linux_relocs.iter().any(|reloc| reloc.symbol == "malloc"));
         assert!(linux_relocs
@@ -5145,7 +5195,12 @@ mod tests {
         chunk.emit(join);
         chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
 
-        let (linux_bytes, linux_relocs) = encode(&chunk, Abi::SysV);
+        let (_, embedded_relocs) = encode_executable(&chunk);
+        assert!(embedded_relocs
+            .iter()
+            .any(|reloc| reloc.symbol == "__quazi_thread_join"));
+
+        let (linux_bytes, linux_relocs) = encode_libc(&chunk);
         let mut decoder = Decoder::new(64, &linux_bytes, DecoderOptions::NONE);
         let mut instructions = Vec::new();
         while decoder.can_decode() {

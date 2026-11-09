@@ -203,15 +203,15 @@ fn run_pipeline(
         }
 
         EmitType::Binary => {
+            let flags = link_flags.unwrap_or(&[]);
             let obj_bytes = compile_to_object(
                 &chunks,
                 true,
                 false,
                 Some(&sema_report),
                 sema_report.main_takes_args,
-                &TargetSpec::host(),
+                &TargetSpec::host().linking(flags),
             );
-            let flags = link_flags.unwrap_or(&[]);
             link_object(
                 &obj_bytes,
                 Path::new(output_file_name),
@@ -481,9 +481,15 @@ fn emit_chunks(
         }
 
         EmitType::Binary => {
-            let obj_bytes =
-                compile_to_object(chunks, true, no_crash, None, main_takes_args, target);
             let flags = link_flags.unwrap_or(&[]);
+            let obj_bytes = compile_to_object(
+                chunks,
+                true,
+                no_crash,
+                None,
+                main_takes_args,
+                &target.clone().linking(flags),
+            );
             link_object(
                 &obj_bytes,
                 Path::new(output_file_name),
@@ -1540,7 +1546,7 @@ fn build_with_progress(
                 no_crash,
                 Some(&sema),
                 sema.main_takes_args,
-                target,
+                &target.clone().linking(link_flags.unwrap_or(&[])),
             );
             prog.done(&format!(
                 "{:.1} KB  object",

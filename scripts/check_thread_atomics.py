@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Check atomics under real OS-thread contention and argument-carrying thread spawn (Linux, libc)."""
+"""Check atomics under real OS-thread contention and argument-carrying thread spawn on
+Linux, with pthreads (`libc = true`) and with the embedded libc-free clone runtime."""
 
 import argparse
 import subprocess
@@ -98,6 +99,62 @@ fn main() i32 {
 """
 
 
+CHURN_PROGRAM = r"""import std.io;
+import std.core;
+import std.fs;
+import std.thread;
+
+// Mapped address space of this process in pages (first field of statm).
+fn mapped_pages() u64 {
+    const result = fs.read_to_string("/proc/self/statm");
+    if (result.is_err()) { ret 0; }
+    const text: String = result.unwrap();
+    const end: usize = text.as_str().find(" ").unwrap();
+    const field = text[0:end];
+    const parsed: Result[u64, ParseError] = field.parse[u64]();
+    parsed.unwrap_or(0)
+}
+
+@export("churn_worker")
+pub unsafe fn worker(counter: *u8) *u8 {
+    core.atomic_add(counter as *i64, 1);
+    ret 0;
+}
+
+@export("forever_worker")
+pub unsafe fn forever(flag: *u8) *u8 {
+    core.atomic_add(flag as *i64, 1);
+    for (true) { }
+    ret 0;
+}
+
+fn main() i32 {
+    var total: i64 = 0;
+    unsafe {
+        const counter: *u8 = core.malloc(8);
+        *(counter as *i64) = 0;
+        // Each thread maps an 8 MiB region; join must unmap it.
+        for i : 0..2000 {
+            const handle = thread.thread_spawn_arg(worker, counter);
+            if (handle == 0) { ret 2; }
+            thread.thread_join(handle);
+        }
+        total = *(counter as *i64);
+        const pages = mapped_pages();
+        // 2000 leaked regions would be about 4 million pages.
+        if (pages == 0 || pages > 65536) { io.println("mapped pages {}", pages); ret 3; }
+        // Returning from main ends the process although this thread never stops.
+        *(counter as *i64) = 0;
+        thread.thread_spawn_arg(forever, counter);
+        for (core.atomic_add(counter as *i64, 0) == 0) { }
+    }
+    io.println("churn {}", total);
+    if (total != 2000) { ret 1; }
+    0
+}
+"""
+
+
 def invoke(command, root):
     result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=300)
@@ -130,10 +187,36 @@ def check(qz, root):
     (case / "src/main.qz").write_text(STD_PROGRAM)
     binary = case / "native"
     invoke([str(qz), "build", *common, "-o", str(binary)], case)
+    assert b"pthread_create" in binary.read_bytes(), "libc builds must keep pthreads"
     for _ in range(3):
         output = invoke([str(binary)], case)
         assert output.startswith("mutex 200000 atomic 400000"), output
     print("PASS std.thread: Mutex-protected counter 200000 and AtomicI64 400000 across 4 OS threads (3 runs)")
+
+    # Without libc, Linux threads use the embedded clone/futex runtime: the
+    # same std program, the built-in linker (static, no dynamic section) and
+    # `qz run --jit`.
+    case = root / "std_sync_nolibc"
+    (case / "src").mkdir(parents=True)
+    (case / "quazi.toml").write_text('[package]\nname="std_sync_nolibc"\n[build]\nentry="src/main.qz"\n')
+    (case / "src/main.qz").write_text(STD_PROGRAM)
+    binary = case / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], case)
+    assert b"pthread" not in binary.read_bytes(), "libc-free build must not reference pthreads"
+    for _ in range(3):
+        output = invoke([str(binary)], case)
+        assert output.startswith("mutex 200000 atomic 400000"), output
+    output = invoke([str(qz), "run", "--jit", *common], case)
+    assert "mutex 200000 atomic 400000" in output, output
+    case = root / "churn"
+    (case / "src").mkdir(parents=True)
+    (case / "quazi.toml").write_text('[package]\nname="churn"\n[build]\nentry="src/main.qz"\n')
+    (case / "src/main.qz").write_text(CHURN_PROGRAM)
+    binary = case / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], case)
+    output = invoke([str(binary)], case)
+    assert output.startswith("churn 2000"), output
+    print("PASS libc-free threads: std Mutex/AtomicI64 native and --jit, 2000 spawn/join without leaking stacks, main exit ends running threads")
 
 
 def main():

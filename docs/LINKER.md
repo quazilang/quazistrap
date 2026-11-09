@@ -167,12 +167,19 @@ the assembly routines the object requests. Supported routines are:
 | Allocation | `malloc`, `calloc`, `realloc`, `free` |
 | Memory | `memcpy`, `memmove`, `memset`, `memcmp` |
 | C strings | `strcpy`, `strcat` |
+| Threads | `__quazi_thread_spawn`, `__quazi_thread_join` (programs without `[link] libc`) |
 
 Allocation uses Linux `mmap` and `munmap` syscalls. Each allocation has a
 private 16-byte header containing mapping and requested sizes. `calloc` checks
 multiplication overflow and zeroes successful allocations; `realloc` copies the
 smaller old/new requested length and releases the old mapping; `free(NULL)` is
 a no-op.
+
+Threads use `clone` with an 8 MiB `mmap` region per thread (PROT_NONE guard
+page, stack, control block). `CLONE_CHILD_CLEARTID` clears the thread-id word
+and wakes `futex` waiters when the thread exits; join waits on it and unmaps
+the region. Programs that set `[link] libc = true` keep using `pthread_create`
+and `pthread_join`, so libc's per-thread state stays valid.
 
 Integer decimal, hexadecimal, octal, and binary conversion is generated inline.
 Floating-point conversion is also generated inline, including sign,

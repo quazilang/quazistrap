@@ -32,6 +32,11 @@ pub struct TargetSpec {
     pub emit_start: bool,
     /// Whether to omit crash-handler registration in the entry stub.
     pub no_crash: bool,
+    /// Whether the executable links the platform C library (`-lc`, from
+    /// `[link] libc` or `-l c`). Linux threads then use pthreads, which keep
+    /// libc's per-thread state valid; otherwise executables use the embedded
+    /// `clone`-based runtime. Set with [`TargetSpec::linking`].
+    pub libc: bool,
 }
 
 impl TargetSpec {
@@ -42,6 +47,7 @@ impl TargetSpec {
             abi: Abi::SysV,
             emit_start: true,
             no_crash: false,
+            libc: false,
         }
     }
 
@@ -54,6 +60,7 @@ impl TargetSpec {
             abi: Abi::SysV,
             emit_start: false,
             no_crash: true,
+            libc: false,
         }
     }
 
@@ -64,6 +71,7 @@ impl TargetSpec {
             abi: Abi::SysV,
             emit_start: true,
             no_crash: false,
+            libc: false,
         }
     }
 
@@ -74,6 +82,7 @@ impl TargetSpec {
             abi: Abi::Win64,
             emit_start: true,
             no_crash: false,
+            libc: false,
         }
     }
 
@@ -95,6 +104,7 @@ impl TargetSpec {
             abi: Abi::SysV,
             emit_start: true,
             no_crash: false,
+            libc: false,
         };
 
         #[cfg(target_os = "netbsd")]
@@ -107,6 +117,7 @@ impl TargetSpec {
             abi: Abi::SysV,
             emit_start: false,
             no_crash: false,
+            libc: false,
         };
 
         #[cfg(target_os = "windows")]
@@ -116,6 +127,7 @@ impl TargetSpec {
             abi: Abi::Win64,
             emit_start: true, // emit mainCRTStartup stub
             no_crash: false,
+            libc: false,
         };
 
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "netbsd", target_os = "windows")))]
@@ -125,6 +137,7 @@ impl TargetSpec {
             abi: Abi::SysV,
             emit_start: true,
             no_crash: false,
+            libc: false,
         };
     }
 
@@ -149,5 +162,16 @@ impl TargetSpec {
     pub fn with_no_crash(mut self) -> Self {
         self.no_crash = true;
         self
+    }
+
+    pub fn with_libc(mut self, libc: bool) -> Self {
+        self.libc = libc;
+        self
+    }
+
+    /// The target for an executable linked with `flags`.
+    pub fn linking(self, flags: &[String]) -> Self {
+        let libc = self.libc || flags.iter().any(|flag| flag == "-lc");
+        self.with_libc(libc)
     }
 }

@@ -1,5 +1,9 @@
 # Change records
 
+- [2026-11-09: Loop binder diagnostics point at the binder](2026-11-09-loop-binder-spans.md)
+
+- [2026-11-09: Linux threads without libc](2026-11-09-libc-free-threads.md)
+
 - [2026-11-09: Experimental qz run --jit](2026-11-09-run-jit.md)
 
 - [2026-11-08: Statement-scoped register reuse and the Jz r0 fix](2026-11-08-register-reuse.md)

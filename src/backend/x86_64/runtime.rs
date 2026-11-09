@@ -16,8 +16,18 @@ pub struct RuntimeFunction {
 pub fn generate_required(symbols: &HashSet<String>) -> Result<Vec<RuntimeFunction>, String> {
     let mut functions = Vec::new();
     for name in [
-        "malloc", "free", "calloc", "realloc", "memcpy", "memmove", "memset", "memcmp", "strcpy",
+        "malloc",
+        "free",
+        "calloc",
+        "realloc",
+        "memcpy",
+        "memmove",
+        "memset",
+        "memcmp",
+        "strcpy",
         "strcat",
+        "__quazi_thread_spawn",
+        "__quazi_thread_join",
     ] {
         if !symbols.contains(name) {
             continue;
@@ -33,6 +43,8 @@ pub fn generate_required(symbols: &HashSet<String>) -> Result<Vec<RuntimeFunctio
             "memcmp" => generate_memcmp(),
             "strcpy" => generate_strcpy(),
             "strcat" => generate_strcat(),
+            "__quazi_thread_spawn" => generate_thread_spawn(),
+            "__quazi_thread_join" => generate_thread_join(),
             _ => unreachable!(),
         }?;
         functions.push(RuntimeFunction { name, bytes });
@@ -330,6 +342,135 @@ fn generate_strcat() -> Result<Vec<u8>, String> {
     asm.inc(rdi).unwrap();
     asm.test(cl, cl).unwrap();
     asm.jne(copy).unwrap();
+    asm.ret().unwrap();
+    finish(asm)
+}
+
+// ── Threads (Linux, no libc) ─────────────────────────────────────────────────
+//
+// Each thread owns one mmap'd region: a PROT_NONE guard page at the bottom,
+// the stack, and a control block in the last 64 bytes. The thread handle is
+// the control block address:
+//   +0  u32 kernel thread id (CLONE_PARENT_SETTID; cleared and futex-woken by
+//       the kernel when the thread exits, via CLONE_CHILD_CLEARTID)
+//   +8  region base (for munmap)
+// The child starts with rsp at [callback, argument] below the control block.
+
+const THREAD_REGION_SIZE: i32 = 8 * 1024 * 1024;
+const THREAD_CONTROL_OFFSET: i32 = THREAD_REGION_SIZE - 64;
+/// CLONE_VM | FS | FILES | SIGHAND | THREAD | SYSVSEM | PARENT_SETTID | CHILD_CLEARTID
+const THREAD_CLONE_FLAGS: i64 = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x100000 | 0x200000;
+
+/// `__quazi_thread_spawn(callback: fn(*u8) *u8, arg: *u8) usize`: start a
+/// thread running `callback(arg)`; returns its handle, or 0 on failure.
+fn generate_thread_spawn() -> Result<Vec<u8>, String> {
+    let mut asm = assembler()?;
+    let mut map_failed = asm.create_label();
+    let mut clone_failed = asm.create_label();
+    let mut child = asm.create_label();
+    asm.push(rbx).unwrap();
+    asm.push(r12).unwrap();
+    asm.push(r13).unwrap();
+    asm.mov(r12, rdi).unwrap(); // callback
+    asm.mov(r13, rsi).unwrap(); // argument
+    // mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0)
+    asm.xor(edi, edi).unwrap();
+    asm.mov(esi, THREAD_REGION_SIZE).unwrap();
+    asm.mov(edx, 3i32).unwrap();
+    asm.mov(r10d, 0x20022i32).unwrap();
+    asm.mov(r8, -1i64).unwrap();
+    asm.xor(r9d, r9d).unwrap();
+    asm.mov(eax, 9i32).unwrap();
+    asm.syscall().unwrap();
+    asm.cmp(rax, -4095i32).unwrap();
+    asm.jae(map_failed).unwrap();
+    asm.mov(rbx, rax).unwrap(); // region base
+    // Guard page: mprotect(base, 4096, PROT_NONE). Best effort.
+    asm.mov(rdi, rbx).unwrap();
+    asm.mov(esi, 4096i32).unwrap();
+    asm.xor(edx, edx).unwrap();
+    asm.mov(eax, 10i32).unwrap();
+    asm.syscall().unwrap();
+    // Control block and the child's initial stack.
+    asm.lea(rcx, qword_ptr(rbx + THREAD_CONTROL_OFFSET)).unwrap();
+    asm.mov(qword_ptr(rcx), 0i32).unwrap();
+    asm.mov(qword_ptr(rcx + 8i32), rbx).unwrap();
+    asm.mov(qword_ptr(rcx - 16i32), r12).unwrap();
+    asm.mov(qword_ptr(rcx - 8i32), r13).unwrap();
+    // clone(flags, child_stack, &tid, &tid, 0)
+    asm.mov(rdi, THREAD_CLONE_FLAGS).unwrap();
+    asm.lea(rsi, qword_ptr(rcx - 16i32)).unwrap();
+    asm.mov(rdx, rcx).unwrap();
+    asm.mov(r10, rcx).unwrap();
+    asm.xor(r8d, r8d).unwrap();
+    asm.mov(eax, 56i32).unwrap();
+    asm.syscall().unwrap();
+    asm.test(rax, rax).unwrap();
+    asm.je(child).unwrap();
+    asm.js(clone_failed).unwrap();
+    asm.lea(rax, qword_ptr(rbx + THREAD_CONTROL_OFFSET)).unwrap();
+    asm.pop(r13).unwrap();
+    asm.pop(r12).unwrap();
+    asm.pop(rbx).unwrap();
+    asm.ret().unwrap();
+
+    asm.set_label(&mut clone_failed).unwrap();
+    asm.mov(rdi, rbx).unwrap();
+    asm.mov(esi, THREAD_REGION_SIZE).unwrap();
+    asm.mov(eax, 11i32).unwrap(); // munmap
+    asm.syscall().unwrap();
+    asm.set_label(&mut map_failed).unwrap();
+    asm.xor(eax, eax).unwrap();
+    asm.pop(r13).unwrap();
+    asm.pop(r12).unwrap();
+    asm.pop(rbx).unwrap();
+    asm.ret().unwrap();
+
+    // Child: rsp is 16-byte aligned at [callback, argument].
+    asm.set_label(&mut child).unwrap();
+    asm.xor(ebp, ebp).unwrap();
+    asm.mov(rdi, qword_ptr(rsp + 8i32)).unwrap();
+    asm.mov(rax, qword_ptr(rsp)).unwrap();
+    asm.call(rax).unwrap();
+    // exit(0) ends only this thread; the kernel then clears the tid word.
+    asm.xor(edi, edi).unwrap();
+    asm.mov(eax, 60i32).unwrap();
+    asm.syscall().unwrap();
+    asm.ud2().unwrap();
+    finish(asm)
+}
+
+/// `__quazi_thread_join(handle: usize)`: wait until the thread has exited,
+/// then release its stack. A zero handle is a no-op.
+fn generate_thread_join() -> Result<Vec<u8>, String> {
+    let mut asm = assembler()?;
+    let mut done = asm.create_label();
+    let mut wait = asm.create_label();
+    let mut exited = asm.create_label();
+    asm.test(rdi, rdi).unwrap();
+    asm.je(done).unwrap();
+    asm.push(rbx).unwrap();
+    asm.mov(rbx, rdi).unwrap();
+    asm.set_label(&mut wait).unwrap();
+    asm.mov(edx, dword_ptr(rbx)).unwrap();
+    asm.test(edx, edx).unwrap();
+    asm.je(exited).unwrap();
+    // futex(&tid, FUTEX_WAIT, tid, NULL): returns at once if tid changed.
+    asm.mov(rdi, rbx).unwrap();
+    asm.xor(esi, esi).unwrap();
+    asm.xor(r10d, r10d).unwrap();
+    asm.xor(r8d, r8d).unwrap();
+    asm.xor(r9d, r9d).unwrap();
+    asm.mov(eax, 202i32).unwrap();
+    asm.syscall().unwrap();
+    asm.jmp(wait).unwrap();
+    asm.set_label(&mut exited).unwrap();
+    asm.mov(rdi, qword_ptr(rbx + 8i32)).unwrap();
+    asm.mov(esi, THREAD_REGION_SIZE).unwrap();
+    asm.mov(eax, 11i32).unwrap(); // munmap
+    asm.syscall().unwrap();
+    asm.pop(rbx).unwrap();
+    asm.set_label(&mut done).unwrap();
     asm.ret().unwrap();
     finish(asm)
 }

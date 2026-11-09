@@ -830,6 +830,7 @@ mod tests {
             abi: Abi::SysV,
             emit_start: true,
             no_crash: false,
+            libc: false,
         };
         let object = crate::backend::x86_64::ElfBackend
             .compile(&[main], &target, None, false)

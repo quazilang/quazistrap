@@ -622,6 +622,7 @@ mod tests {
             abi: Abi::Win64,
             emit_start: false,
             no_crash: false,
+            libc: false,
         };
         let output = PeBackend
             .compile(&[main, adapter], &target, None, false)
@@ -654,6 +655,7 @@ mod tests {
             abi: Abi::SysV,
             emit_start: false,
             no_crash: false,
+            libc: false,
         };
         let output = ElfBackend
             .compile(&[main], &target, None, false)
@@ -695,6 +697,7 @@ mod tests {
             abi: Abi::SysV,
             emit_start: false,
             no_crash: false,
+            libc: false,
         };
         let output = ElfBackend
             .compile(&[main], &target, None, false)
