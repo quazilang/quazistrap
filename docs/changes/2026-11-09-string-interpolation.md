@@ -28,8 +28,11 @@ are unchanged.
 The borrow checker visits the placeholder expressions of every string
 literal (interpolations and format-call templates alike) as reads, so a value
 moved earlier is rejected (`use of moved value`); before, `println("{s}")`
-after moving `s` compiled and read freed memory. The retention pass still does
-not see placeholders; Tree-sitter highlights literals as plain strings.
+after moving `s` compiled and read freed memory. Closures capture variables
+that appear only in placeholders. The retention pass still does not see
+placeholders. Tree-sitter parses literals into `string_content`,
+`escape_sequence`, `brace_escape`, `interpolation` and `format_placeholder`
+nodes (tree-sitter `df6ce1f`).
 
 Verification: `scripts/check_string_interpolation.py` (interpolation with
 specs, escapes, raw strings, templates, verbatim values, native and
