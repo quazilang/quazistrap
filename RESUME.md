@@ -2,6 +2,28 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-09 late, owned args, channels, panics)
+
+quazistrap: `d3e303f` `qo` moves owned String/struct variable args
+(`ExprKind::Closure { once }`, borrow marks moved, codegen clears the outer
+owner flag); runner env leak fixed. `cd4bfac` built-in ref-counted
+`Channel[T]` (new/clone/send/receive/close; scalars only; `Channel.new(n)`
+typed by declaration — `Channel[i64].new` does not parse). `e5962ad` bug fixes:
+`!` expression statements end a path (S03 false positive on trailing
+`panic`), multi-line diagnostic carets clamp to the first line. `e13ac34`
+panics in qoroutines -> `join()` returns `Result[T, QoroutineError]`
+(`Panicked`), stack abandoned, message "qoroutine panicked at". Verified:
+1022 Rust tests, all e2e, std 61/61, examples, freestanding.
+Known general leak: structs without a `free` hook are never released
+(2 pages per struct with the mmap-per-allocation malloc) — includes the
+`Qoroutine` handle. Not qoroutine-specific.
+
+Remaining D-019: timer preemption (В3Б; plan: per-worker timer signal via
+timer_create SIGEV_THREAD_ID, handler switches to the worker from inside the
+signal frame, preemption-disabled flag around runtime locks, unblock the signal
+in the worker after the switch, Windows via SuspendThread/SetThreadContext),
+owned results / owned channel values, `std.thread` JoinHandle[T].
+
 ## Checkpoint (2026-11-09 night, yielding join)
 
 quazistrap `68a142b`: qoroutine stacks are slots of one arena (1024; 256 on
