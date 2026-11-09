@@ -4820,7 +4820,8 @@ impl<'a> FnCompiler<'a> {
             }
         }
         visiting.remove(name);
-        (!drops.is_empty()).then_some(DropAction::Structural(drops))
+        // Even a struct without droppable fields owns its storage shell.
+        Some(DropAction::Structural(drops))
     }
 
     fn structural_field_drop_action(
@@ -12080,14 +12081,23 @@ fn take(value: Outer) void {}
 "#,
         );
         let take = chunks.iter().find(|chunk| chunk.name == "take").unwrap();
+        // Structural cleanup releases both storage shells, but never calls
+        // the non-consuming `Child.free`.
         assert!(
             take.code
                 .iter()
-                .all(|instruction| instruction.opcode != Opcode::FieldLoad as u8
-                    && instruction.opcode != Opcode::CallIdx as u8),
+                .all(|instruction| instruction.opcode != Opcode::CallIdx as u8),
             "a reusable free(&T!) method is not a structural destructor: {:?}",
             take.code
         );
+        let releases = take
+            .code
+            .iter()
+            .filter(|instruction| {
+                instruction.opcode == Opcode::Intrinsic as u8 && instruction.ri16().1 == 4
+            })
+            .count();
+        assert_eq!(releases, 2, "the child and outer shells are released: {:?}", take.code);
     }
 
     #[test]

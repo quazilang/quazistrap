@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-09: Struct storage shells are released](2026-11-09-struct-shells.md)
+
 - [2026-11-09: Static archives in the built-in ELF linker](2026-11-09-static-archives.md)
 
 - [2026-11-09: Struct destructuring in match patterns](2026-11-09-struct-patterns.md)
