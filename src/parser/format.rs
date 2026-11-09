@@ -40,12 +40,11 @@ pub fn is_format_variadic(params: &[Param], attributes: &[Attribute]) -> bool {
 /// the string content and given file-accurate spans so that semantic analysis and
 /// codegen type-map lookups produce the correct result.
 ///
-/// NOTE: span arithmetic assumes the template is an unescaped or minimally-escaped
-/// double-quoted string. Each byte in the decoded `s` maps to
-/// `template_span.start + 1 + byte_offset` in the file (the +1 skips the `"`).
-/// Escape sequences that compress multiple source bytes into one decoded byte will
-/// make inner-placeholder spans slightly inaccurate, which is acceptable for the
-/// initial implementation.
+/// NOTE: placeholder spans count Unicode scalars of the decoded string from the
+/// opening quote, which is exact only when no escape sequence precedes them;
+/// after `\n` or `\u{..}` they point a few characters too far left (still
+/// inside the literal). Consumers that edit text at these spans (rename) must
+/// check the text they replace.
 pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
     if args.is_empty() {
         return None;
@@ -123,9 +122,22 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
                                 .len();
                     let real_start = file_base + name_start_in_s + leading_spaces;
                     let real_end = real_start + name_part.chars().count();
+                    // Lines and columns follow literal line breaks; offsets
+                    // are exact only without escapes (see the note above).
+                    let prefix = &s[..i + 1];
+                    let (line, col) = match prefix.rfind('\n') {
+                        Some(newline) => (
+                            template_span.line + prefix.matches('\n').count(),
+                            prefix[newline + 1..].chars().count() + leading_spaces + 1,
+                        ),
+                        None => (
+                            template_span.line,
+                            template_span.col + name_start_in_s + leading_spaces,
+                        ),
+                    };
                     let expr_span = Span::new(
-                        template_span.line,
-                        template_span.col + name_start_in_s + leading_spaces,
+                        line,
+                        col,
                         real_start,
                         real_end,
                     );

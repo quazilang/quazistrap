@@ -89,14 +89,19 @@ pub fn loaded_references_at(
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
     let binding = loaded_binding_at(snapshot, source, uri, position)?;
-    loaded_binding_locations(snapshot, &binding, include_declaration, true)
+    loaded_binding_locations(snapshot, &binding, include_declaration, true, false)
 }
 
+/// A use whose source text is not the binding's name (or one of its import
+/// aliases) is skipped, or fails the whole request when `exact_text` is set:
+/// placeholder spans after escape sequences in a string literal are not
+/// exact, and an edit there would corrupt the literal.
 fn loaded_binding_locations(
     snapshot: &LoadedSnapshot,
     binding: &ResolvedBinding,
     include_declaration: bool,
     include_alias_uses: bool,
+    exact_text: bool,
 ) -> Option<Vec<Location>> {
     let definition = definition_entry(&snapshot.report, &binding)?;
     let name = definition
@@ -116,16 +121,32 @@ fn loaded_binding_locations(
             .or_else(|| loaded_identifier_location(snapshot, definition.symbol.span, name))?;
         locations.push(declaration);
     }
-    locations.extend(
-        snapshot
-            .report
-            .annotated_exprs
-            .iter()
-            .filter(|annotation| annotation.resolved_binding.as_ref() == Some(binding))
-            .filter_map(|annotation| annotation.binding_span)
-            .filter(|span| include_alias_uses || !is_alias_use_span(snapshot, binding, *span))
-            .filter_map(|span| loaded_location(snapshot, span)),
-    );
+    let spellings: Vec<&str> = std::iter::once(name)
+        .chain(
+            snapshot
+                .report
+                .binding_imports
+                .iter()
+                .filter(|import| import.binding == *binding)
+                .map(|import| import.local_name.as_str()),
+        )
+        .collect();
+    for span in snapshot
+        .report
+        .annotated_exprs
+        .iter()
+        .filter(|annotation| annotation.resolved_binding.as_ref() == Some(binding))
+        .filter_map(|annotation| annotation.binding_span)
+        .filter(|span| include_alias_uses || !is_alias_use_span(snapshot, binding, *span))
+    {
+        if !loaded_span_text(snapshot, span).is_some_and(|text| spellings.contains(&text)) {
+            if exact_text {
+                return None;
+            }
+            continue;
+        }
+        locations.extend(loaded_location(snapshot, span));
+    }
     locations.extend(
         snapshot
             .report
@@ -162,7 +183,7 @@ pub fn loaded_rename_edits(
         return None;
     }
     let binding = loaded_binding_at(snapshot, source, uri, position)?;
-    let locations = loaded_binding_locations(snapshot, &binding, true, false)?;
+    let locations = loaded_binding_locations(snapshot, &binding, true, false, true)?;
     if locations.iter().any(|location| !can_edit(&location.uri)) {
         return None;
     }
@@ -405,7 +426,7 @@ mod tests {
 
     use super::{loaded_references_at, loaded_rename_edits, references_at, rename_edits};
     use crate::lsp::analysis::{analyze_loaded_document, analyze_source};
-    use tower_lsp::lsp_types::{Position, Url};
+    use tower_lsp::lsp_types::{Position, Range, Url};
 
     #[test]
     fn finds_only_references_to_the_resolved_shadowed_binding() {
@@ -579,6 +600,50 @@ fn main() i32 { ret value(1); }
             .is_none()
         );
 
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[test]
+    fn rename_edits_placeholders_exactly_and_refuses_after_escapes() {
+        let root = std::env::temp_dir().join(format!(
+            "quazi_lsp_placeholder_rename_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create workspace");
+        let main_path = root.join("main.qz");
+        let rename_at = |source: &str| {
+            fs::write(&main_path, source).expect("write source");
+            let snapshot =
+                analyze_loaded_document(&main_path, &HashMap::new()).expect("load source");
+            let uri = Url::from_file_path(&main_path).expect("URI");
+            loaded_rename_edits(&snapshot, source, &uri, Position::new(1, 10), "b", |_| true)
+                .map(|edit| {
+                    let mut ranges: Vec<Range> = edit
+                        .changes
+                        .expect("changes")
+                        .into_values()
+                        .flatten()
+                        .map(|edit| edit.range)
+                        .collect();
+                    ranges.sort_by_key(|range| (range.start.line, range.start.character));
+                    ranges
+                })
+        };
+        // A compound placeholder on the literal's second line is edited in place.
+        let ranges = rename_at(
+            "fn main() i32 {\n    const a: i32 = 1;\n    const text = \"x\n  {a + 1}\";\n    ret text.len() as i32;\n}\n",
+        )
+        .expect("rename without escapes");
+        assert_eq!(ranges.len(), 2, "{ranges:?}");
+        assert_eq!((ranges[1].start.line, ranges[1].start.character), (3, 3));
+        // After escapes the placeholder offsets are not exact: no edit may land
+        // inside `\u{1F600}`, so the rename is refused.
+        assert!(
+            rename_at(
+                "fn main() i32 {\n    const a: i32 = 1;\n    const text = \"\\u{1F600} {a + 1}\";\n    ret text.len() as i32;\n}\n",
+            )
+            .is_none()
+        );
         fs::remove_dir_all(root).expect("remove workspace");
     }
 }

@@ -37,6 +37,12 @@ Follow-up the same day (independent review):
   shifted to the literal's file position (offsets counted in Unicode scalar
   values), so nested spans stay inside the literal.
 
+Second review follow-up: placeholder offsets count decoded characters, so
+after an escape (`\u{1F600}`) they pointed into the escape and a rename
+replaced part of it. Rename now refuses when the text at any use is not the
+binding's name (references skip such uses), and placeholders on later lines
+of a multi-line literal report their real line and column.
+
 Verification: `scripts/check_string_interpolation.py` runs 400000 calls whose
 placeholder `?` leaves on every other call (mapped memory stays flat), a unit
 test pins nested placeholder spans, and `scripts/check_thread_atomics.py` gained a 4-thread
