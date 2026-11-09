@@ -216,6 +216,13 @@ pub enum PatternKind {
         variant: String,
         sub_patterns: Vec<Pattern>,
     },
+    /// `Point { x, y: 0, .. }`: destructure a struct value. A field written
+    /// without `:` binds a variable of the same name; `rest` is `..`.
+    Struct {
+        name: String,
+        fields: Vec<(String, Pattern)>,
+        rest: bool,
+    },
 }
 
 pub type Pattern = Spanned<PatternKind>;
@@ -233,6 +240,11 @@ pub fn collect_pattern_bindings(sub_patterns: &[Pattern]) -> Vec<String> {
             } => {
                 out.extend(collect_pattern_bindings(inner));
             }
+            PatternKind::Struct { fields, .. } => {
+                for (_, field) in fields {
+                    out.extend(collect_pattern_bindings(std::slice::from_ref(field)));
+                }
+            }
         }
     }
     out
@@ -243,6 +255,7 @@ pub fn pattern_all_bindings(pattern: &Pattern) -> Vec<String> {
         PatternKind::Bind(name) => vec![name.clone()],
         PatternKind::Wildcard | PatternKind::Literal(_) => vec![],
         PatternKind::Variant { sub_patterns, .. } => collect_pattern_bindings(sub_patterns),
+        PatternKind::Struct { .. } => collect_pattern_bindings(std::slice::from_ref(pattern)),
     }
 }
 

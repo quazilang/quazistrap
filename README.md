@@ -4,9 +4,9 @@
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
 
-**Plan completion: 87.9%.**
+**Plan completion: 91.1%.**
 
-**Remaining work: 12.1%.**
+**Remaining work: 8.9%.**
 
 Completion of unfinished plan items:
 
@@ -15,7 +15,6 @@ Completion of unfinished plan items:
 | Built-in linker | 7/9 | 77.8% | 22.2% |
 | Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
 | Format string literals | 0/1 | 0.0% | 100.0% |
-| Nested struct patterns | 0/1 | 0.0% | 100.0% |
 | async / await | 0/1 | 0.0% | 100.0% |
 | LSP improvements | 16/20 | 80.0% | 20.0% |
 

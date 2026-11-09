@@ -4623,6 +4623,32 @@ impl<'a> FnCompiler<'a> {
                     self.compile_pattern_match(sub, payload_reg, skip_patches);
                 }
             }
+            PatternKind::Struct { name, fields, .. } => {
+                // Analysis annotates the pattern span with the checked struct type.
+                let Some(TypeKind::Named {
+                    name: struct_name, ..
+                }) = self
+                    .annotated_exprs
+                    .iter()
+                    .rev()
+                    .find(|annotation| annotation.span == pattern.span)
+                    .and_then(|annotation| annotation.ty.clone())
+                else {
+                    self.codegen_error.get_or_insert_with(|| {
+                        format!("struct pattern `{name}` has no checked struct type")
+                    });
+                    return;
+                };
+                for (field, sub) in fields {
+                    if matches!(sub.node, PatternKind::Wildcard) {
+                        continue;
+                    }
+                    let field_reg = self.alloc_reg();
+                    let offset = self.field_offset_by_name(&struct_name, field);
+                    self.chunk.emit(field_load(field_reg, value_reg, offset));
+                    self.compile_pattern_match(sub, field_reg, skip_patches);
+                }
+            }
         }
     }
 

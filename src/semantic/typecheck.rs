@@ -5220,6 +5220,11 @@ impl Analyzer {
                     // Payload slots include wildcards; substitute the actual enum
                     // arguments before assigning direct binding types.
                     let mut binding_types = std::collections::HashMap::new();
+                    if matches!(arm.pattern.node, PatternKind::Struct { .. })
+                        && let Some(scrutinee) = match_scrutinee_ty.as_ref()
+                    {
+                        self.struct_pattern_binding_types(&arm.pattern, scrutinee, &mut binding_types);
+                    }
                     if let PatternKind::Variant {
                         variant,
                         sub_patterns,
@@ -5229,8 +5234,15 @@ impl Analyzer {
                             self.match_pattern_payload_types(match_scrutinee_ty.as_ref(), variant)
                     {
                         for (pattern, ty) in sub_patterns.iter().zip(payloads) {
-                            if let PatternKind::Bind(name) = &pattern.node {
-                                binding_types.insert(name.clone(), ty);
+                            match &pattern.node {
+                                PatternKind::Bind(name) => {
+                                    binding_types.insert(name.clone(), ty);
+                                }
+                                PatternKind::Struct { .. } => {
+                                    let ty = self.resolve_type_aliases(&ty);
+                                    self.struct_pattern_binding_types(pattern, &ty, &mut binding_types);
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -7371,6 +7383,78 @@ impl Analyzer {
                     bindings,
                 )
             }
+            PatternKind::Struct { name, fields, rest } => {
+                let canonical = self
+                    .type_name_bindings
+                    .get(name)
+                    .map(|binding| binding.name.clone())
+                    .unwrap_or_else(|| name.clone());
+                match scrutinee_ty {
+                    Some(owner @ TypeKind::Named { name: owner_name, .. })
+                        if *owner_name == canonical && self.struct_defs.contains_key(owner_name) =>
+                    {
+                        if self.repr_c_structs.contains(owner_name) {
+                            self.push_error(pattern.span, "S14", format!("destructuring the C-layout struct `{name}` is not supported; read its fields instead"));
+                        }
+                        let declared: Vec<String> = self.struct_defs[owner_name]
+                            .iter()
+                            .map(|(field, _)| field.clone())
+                            .collect();
+                        for (field, sub_pattern) in fields {
+                            let Some(field_ty) = self.struct_pattern_field_type(owner, field) else {
+                                self.push_error(sub_pattern.span, "S04", format!("struct `{name}` has no field `{field}`"));
+                                continue;
+                            };
+                            if !matches!(sub_pattern.node, PatternKind::Bind(_) | PatternKind::Wildcard) {
+                                self.validate_match_pattern(sub_pattern, &Some(field_ty));
+                            }
+                        }
+                        if !rest {
+                            let missing: Vec<&String> = declared
+                                .iter()
+                                .filter(|field| !fields.iter().any(|(written, _)| written == *field))
+                                .collect();
+                            if !missing.is_empty() {
+                                self.push_error(pattern.span, "S09", format!(
+                                    "struct pattern `{name}` does not mention field(s) {}; list them or add `..`",
+                                    missing.iter().map(|field| format!("`{field}`")).collect::<Vec<_>>().join(", ")
+                                ));
+                            }
+                        }
+                        // Lowering reads field offsets from the struct type.
+                        self.annotated_exprs.push(ExprAnnotation {
+                            span: pattern.span,
+                            binding_span: None,
+                            ty: Some(owner.clone()),
+                            const_value: None,
+                            reachable: true,
+                            resolved_fn: None,
+                            resolved_global: None,
+                            resolved_binding: None,
+                            auto_deref: false,
+                            c_abi_function: false,
+                            inferred_type_args: Vec::new(),
+                        });
+                    }
+                    Some(other) => {
+                        self.push_error(pattern.span, "S09", format!("struct pattern `{name}` does not match the scrutinee type `{other}`"));
+                    }
+                    None => {
+                        self.push_error(pattern.span, "S14", format!("struct pattern `{name}` requires a scrutinee of a known struct type"));
+                    }
+                }
+                let bindings = crate::parser::ast::collect_pattern_bindings(std::slice::from_ref(pattern));
+                (
+                    MatchArmInfo {
+                        span: pattern.span,
+                        // Like literal arms, refutable fields are checked at run
+                        // time; an unmatched value traps.
+                        kind: MatchArmKindInfo::Wildcard,
+                        has_guard: false,
+                    },
+                    bindings,
+                )
+            }
         }
     }
 
@@ -7420,7 +7504,54 @@ impl Analyzer {
             PatternKind::Variant { sub_patterns, .. } => sub_patterns
                 .iter()
                 .all(|sub_pattern| matches!(sub_pattern.node, PatternKind::Wildcard)),
-            PatternKind::Bind(_) | PatternKind::Literal(_) => false,
+            PatternKind::Bind(_) | PatternKind::Literal(_) | PatternKind::Struct { .. } => false,
+        }
+    }
+
+    /// The type of `field` in the struct type `owner`, with the owner's
+    /// generic arguments substituted.
+    fn struct_pattern_field_type(&self, owner: &TypeKind, field: &str) -> Option<TypeKind> {
+        let TypeKind::Named { name, type_args } = owner else {
+            return None;
+        };
+        let raw = self
+            .struct_defs
+            .get(name)?
+            .iter()
+            .find(|(field_name, _)| field_name == field)
+            .map(|(_, ty)| ty.clone())?;
+        let parameters = self
+            .struct_generic_params
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        let subst: std::collections::HashMap<String, TypeKind> = parameters
+            .iter()
+            .zip(type_args.iter())
+            .map(|(parameter, argument)| (parameter.clone(), argument.node.clone()))
+            .collect();
+        Some(self.resolve_type_aliases(&substitute_type_kind(&raw, &subst)))
+    }
+
+    /// Binding types of a struct pattern's fields, recursively.
+    fn struct_pattern_binding_types(
+        &self,
+        pattern: &Pattern,
+        ty: &TypeKind,
+        out: &mut std::collections::HashMap<String, TypeKind>,
+    ) {
+        match &pattern.node {
+            PatternKind::Bind(name) => {
+                out.insert(name.clone(), ty.clone());
+            }
+            PatternKind::Struct { fields, .. } => {
+                for (field, sub_pattern) in fields {
+                    if let Some(field_ty) = self.struct_pattern_field_type(ty, field) {
+                        self.struct_pattern_binding_types(sub_pattern, &field_ty, out);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 

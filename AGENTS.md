@@ -455,7 +455,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | Feature | Status |
 |---------|--------|
 | Format string literals | Not started — `"value = {x}"` compile-time interpolation |
-| Nested struct patterns | Not started — `Point { x, y }` in match arms |
+| Nested struct patterns | ✅ Done — `Point { x, y: 0, .. }` in match arms, nested and inside variant payloads (`PatternKind::Struct`; analysis annotates the pattern span with the struct type for lowering) |
 | `async`/`await` | Not started — defer until lifetimes done |
 
 ### P5 — Tooling

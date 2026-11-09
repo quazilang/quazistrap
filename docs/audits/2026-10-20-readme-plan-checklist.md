@@ -5,7 +5,10 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 87.9%. Remaining: 12.1%.**
+**Complete: 91.1%. Remaining: 8.9%.**
+
+On 2026-11-09 nested struct patterns (1/1) were completed
+([change record](../changes/2026-11-09-struct-patterns.md)).
 
 On 2026-11-09 strength reduction (1/1) was completed
 ([change record](../changes/2026-11-09-strength-reduction.md)).
@@ -205,7 +208,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
 | Atomic opcodes | 2/2 | 100.0% | 0.0% |
 | Format string literals | 0/1 | 0.0% | 100.0% |
-| Nested struct patterns | 0/1 | 0.0% | 100.0% |
+| Nested struct patterns | 1/1 | 100.0% | 0.0% |
 | async / await | 0/1 | 0.0% | 100.0% |
 | LSP improvements | 16/20 | 80.0% | 20.0% |
 | qz doc | 1/1 | 100.0% | 0.0% |
@@ -402,9 +405,9 @@ Evidence: [AGENTS.md](../../AGENTS.md).
 
 ### Nested struct patterns
 
-Evidence: [AGENTS.md](../../AGENTS.md).
+Evidence: [scripts/check_struct_patterns.py](../../scripts/check_struct_patterns.py).
 
-- [ ] Struct destructuring in match patterns.
+- [x] Struct destructuring in match patterns.
 
 ### async / await
 

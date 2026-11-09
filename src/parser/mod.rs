@@ -1844,6 +1844,42 @@ impl Parser {
             end = variant_tok.span;
         }
 
+        // Struct destructuring: Name { field, field: pattern, .. }
+        if enum_name.is_none() && self.at(TokenKind::LBrace) {
+            self.advance();
+            let mut fields = Vec::new();
+            let mut rest = false;
+            while !self.at(TokenKind::RBrace) {
+                if self.at(TokenKind::DotDot) {
+                    self.advance();
+                    rest = true;
+                    break;
+                }
+                let (field, field_span) = self.parse_ident_with_span()?;
+                let pattern = if self.at(TokenKind::Colon) {
+                    self.advance();
+                    self.parse_pattern()?
+                } else {
+                    Spanned::new(PatternKind::Bind(field.clone()), field_span)
+                };
+                fields.push((field, pattern));
+                if self.at(TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            let close = self.expect(TokenKind::RBrace)?.span;
+            return Ok(Spanned::new(
+                PatternKind::Struct {
+                    name: variant,
+                    fields,
+                    rest,
+                },
+                to_ast_span(merge_token_spans(first_tok.span, close)),
+            ));
+        }
+
         // Sub-patterns in parens: Variant(pat1, pat2, ...)
         if self.at(TokenKind::LParen) {
             self.advance();
@@ -2323,6 +2359,30 @@ mod tests {
             ItemKind::Fn { body: Some(body), .. } => body,
             other => panic!("expected a function with a body, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn struct_patterns_parse_shorthand_nested_and_rest_fields() {
+        let program = parse_program(
+            "fn f(l: Line) i64 { match l { Line { from: Point { x, y: 0 }, tag, .. } => x, } }",
+        );
+        let StmtKind::Return(Some(value)) = &body(&program, 0).stmts[0].node else {
+            panic!("expected the tail match as a return");
+        };
+        let ExprKind::Match { arms, .. } = &value.node else {
+            panic!("expected match, got {:?}", value.node);
+        };
+        let PatternKind::Struct { name, fields, rest } = &arms[0].pattern.node else {
+            panic!("expected struct pattern");
+        };
+        assert_eq!(name, "Line");
+        assert!(*rest);
+        assert_eq!(fields.len(), 2);
+        assert!(matches!(&fields[1].1.node, PatternKind::Bind(tag) if tag == "tag"));
+        let PatternKind::Struct { fields: inner, rest: false, .. } = &fields[0].1.node else {
+            panic!("expected nested struct pattern");
+        };
+        assert!(matches!(&inner[1].1.node, PatternKind::Literal(LiteralValue::Int(0))));
     }
 
     #[test]

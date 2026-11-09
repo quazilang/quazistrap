@@ -304,6 +304,12 @@ Match supports:
 - Wildcard: `_` matches anything without binding.
 - Enum variant patterns: `Variant(payload)`, `EnumName.Variant(payload)`.
 - Nested payload patterns.
+- Struct patterns: `Point { x, y: 0 }` destructures a struct; a field written
+  without `:` binds a variable of the same name, `field: pattern` matches a
+  sub-pattern (literals, nested structs, enum variants), and `..` ignores the
+  remaining fields. Without `..` every field must be listed. Struct patterns
+  also work inside variant payloads (`Some(Point { x, y })`). C-layout
+  (`@repr(C)`) structs cannot be destructured yet.
 - Guards: `if condition` after a pattern.
 
 Enum matches must be exhaustive: every variant must be covered, or a `_`

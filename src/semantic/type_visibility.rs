@@ -370,6 +370,12 @@ impl Visibility<'_> {
                     self.check_pattern(sub, scope);
                 }
             }
+            PatternKind::Struct { name, fields, .. } => {
+                self.check_type_head(name, pattern.span, scope);
+                for (_, field) in fields {
+                    self.check_pattern(field, scope);
+                }
+            }
         }
     }
 
