@@ -19,10 +19,13 @@ Note: src/semantic/types.rs and src/lexer/token.rs have mixed CRLF/LF line
 endings — edit bytewise (Python newline='' / binary), never normalize.
 
 Next for D-019:
-1. Current-task detection without TLS: add an rsp-read intrinsic (or return
-   the task from the context), allocate qoroutine stacks aligned (e.g. 512 KiB
-   region, 256 KiB aligned) with the task pointer at the base; then
-   `__qo_yield()` and parking.
+1. Current-task detection without TLS. Pointer<->integer casts are rejected
+   ON PURPOSE (retention_memory_tests: pointer provenance must not be
+   reconstructed from integers) — do not add them. Plan: an intrinsic that
+   returns rsp aligned down to the stack-slot size, with all qoroutine stacks
+   carved from one aligned arena (slot base holds the task pointer) so the
+   runtime can test arena membership by pointer comparison before reading;
+   then `__qo_yield()` and parking. No `~` operator exists (use `x - x % n`).
 2. `Channel[T]` (send/receive -> Option[T]/close) parking qoroutines; OS
    threads block via yield until parking for threads exists.
 3. join parking instead of spinning; panic -> `join()` error; timer
