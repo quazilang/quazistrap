@@ -2,6 +2,18 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-09 night 3, heap)
+
+quazistrap `d93a2d4` size-class heap in the embedded Linux runtime
+(`runtime.rs`: 7 classes 32..2048 B on spin-locked free lists in
+`__quazi_heap_state`, 64 KiB refills; calloc/realloc call malloc/free;
+`RuntimeRelocation` lets routines reference data/each other). 300000-round
+alloc loop 8.2 s -> 0.19 s; check_heap.py (strace syscall count, 4 threads).
+KNOWN BUG (asked in asks.txt В9): PrimToStr (int/float -> str) writes into one
+static buffer per call site (`__quazi_itoa_*`), so concurrent threads/qoroutines
+formatting numbers at the same site race. Not fixed: frame storage breaks
+prelude `to_str()` returning the view; needs a design decision.
+
 ## Checkpoint (2026-11-09 evening 3, memory and EOF)
 
 quazistrap `d3c9997` concrete generic struct shells released (FnCompiler gets
