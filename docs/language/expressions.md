@@ -210,14 +210,14 @@ See [closures migration](../migrations/closures.md).
 
 `qo f(args)` runs the call in a new qoroutine and evaluates to a
 `Qoroutine[T]`, where `T` is the call's result type. `handle.join()` waits for
-the qoroutine and returns its result:
+the qoroutine and returns `Result[T, QoroutineError]`:
 
 ```quazi
 fn square(n: i64) i64 { n * n }
 
 fn main() i32 {
     const handle: Qoroutine[i64] = qo square(7 as i64);
-    const value = handle.join(); // 49
+    const value = handle.join().unwrap(); // 49
     0
 }
 ```
@@ -239,8 +239,12 @@ Current limits: references and `str` views cannot be passed, and the result
 must be a plain scalar. The `Qoroutine` handle itself is not released yet
 (struct storage without a `free` hook is not reclaimed in general). There is no preemption: a qoroutine runs
 until it finishes or waits in `join`. At most 1024 qoroutines (256 on Windows)
-are alive at once. A panic inside a qoroutine ends the program. Channels and
-preemption are planned.
+are alive at once. Preemption is planned.
+
+A panic inside a qoroutine prints `qoroutine panicked at '...'`, ends only that
+qoroutine and makes its `join()` return `Err(QoroutineError.Panicked)`; values
+still owned by the abandoned qoroutine are not cleaned up. A panic outside
+qoroutines ends the program with status 101 as before.
 
 ### Channels
 
@@ -263,7 +267,7 @@ fn main() i32 {
         if (value.is_none()) { break; }      // closed and drained
         total = total + value.unwrap();
     }
-    producer.join();
+    producer.join().unwrap();
     0
 }
 ```

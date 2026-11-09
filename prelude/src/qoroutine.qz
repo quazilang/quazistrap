@@ -20,14 +20,18 @@
 // Task block (512 bytes):
 //   +0 joinable (2 once finished), +8 result slot, +16 closure, +24 slot index,
 //   +32 next in queue, +40 worker context, +48 type-erased runner,
-//   +56 finished flag, +64 task context (272 bytes).
+//   +56 finished flag, +64 task context (272 bytes), +336 panicked flag.
 // A finished task is published as joinable by its worker only after the
 // worker is back on its own stack, so `join` may free the task's stack.
 //
+// A panic inside a qoroutine prints its message, abandons the qoroutine's
+// stack (pending destructors there do not run) and makes `join` return
+// `Err(QoroutineError.Panicked)`; elsewhere a panic still ends the program.
+//
 // Current limits (D-019 phases 3-5): no preemption (a qoroutine runs until it
-// finishes or waits in `join`); `join` outside a qoroutine yields its OS
-// thread; at most `__qo_slot_count()` qoroutines are alive at once; closure
-// captures and results are plain scalars until closure ownership lands.
+// finishes or waits); `join` outside a qoroutine yields its OS thread; at
+// most `__qo_slot_count()` qoroutines are alive at once; results are plain
+// scalars until closure result ownership lands.
 
 @intrinsic("quazi.runtime.state")
 unsafe fn __qo_state() *u8;
@@ -244,6 +248,29 @@ unsafe fn __qo_yield() void {
     __qo_switch(task + 64, *((task + 40) as **u8));
 }
 
+// Whether the calling code runs on a qoroutine (for panic messages).
+pub fn __qo_running() bool {
+    unsafe { ret __qo_current() != 0; }
+}
+
+// Called by the panic handler after the message is printed: inside a
+// qoroutine, mark it panicked and leave its stack for good; elsewhere return.
+pub fn __qo_abandon_on_panic() void {
+    unsafe {
+        const task = __qo_current();
+        if (task == 0) { ret; }
+        *((task + 336) as *i64) = 1;
+        *((task + 56) as *i64) = 1;
+        __qo_switch(task + 64, *((task + 40) as **u8));
+    }
+}
+
+// Why `join` could not return the qoroutine's result.
+pub enum QoroutineError {
+    // The qoroutine panicked; its message was printed to stderr.
+    Panicked,
+}
+
 // A running or finished qoroutine started by `qo`.
 pub struct Qoroutine[T] {
     task: *u8,
@@ -280,17 +307,20 @@ pub fn __qo_spawn[T](f: fn() T) Qoroutine[T] {
 }
 
 impl Qoroutine[T] {
-    // Wait for the qoroutine to finish and return its result.
-    pub fn join(self: Qoroutine[T]) T {
+    // Wait for the qoroutine to finish: its result, or an error if it panicked.
+    pub fn join(self: Qoroutine[T]) Result[T, QoroutineError] {
         const task: *u8 = self.task;
         var value: T;
+        var panicked: bool = false;
         unsafe {
             for (__qo_atomic_add(task as *i64, 0) != 2) { __qo_yield(); }
+            panicked = *((task + 336) as *i64) != 0;
             value = *((task + 8) as *T);
             __qo_release_slot(*((task + 24) as *i64));
             __qo_free(task);
         }
-        value
+        if (panicked) { ret Err(QoroutineError.Panicked); }
+        Ok(value)
     }
 }
 

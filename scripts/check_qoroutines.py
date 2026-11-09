@@ -22,10 +22,10 @@ fn main() i32 {
         const n: i64 = i as i64;
         const handle: Qoroutine[i64] = qo square(n);
         const even = qo is_even(n);
-        total = total + handle.join();
-        if (even.join()) { evens = evens + 1; }
+        total = total + handle.join().unwrap();
+        if (even.join().unwrap()) { evens = evens + 1; }
     }
-    total = total + first.join();
+    total = total + first.join().unwrap();
     io.println("total {} evens {}", total, evens);
     if (total != 8955059 || evens != 150) { ret 1; }
     0
@@ -50,7 +50,7 @@ fn main() i32 {
         const job = Job { id: i as i64, label: "abc".to_string() };
         const a = qo measure(text);
         const b = qo score(job);
-        total = total + a.join() + b.join();
+        total = total + a.join().unwrap() + b.join().unwrap();
     }
     io.println("owned {}", total);
     if (total != 500 * 9 + 100 * 124750 + 500 * 3) { ret 1; }
@@ -79,7 +79,7 @@ fn consume(ch: Channel[i64], done: Channel[i64]) i64 {
 }
 
 fn finish(ch: Channel[i64], producer: Qoroutine[i64]) i64 {
-    const sent = producer.join();
+    const sent = producer.join().unwrap();
     ch.close();
     sent
 }
@@ -99,7 +99,7 @@ fn main() i32 {
             received = received + 1;
         }
     }
-    const sent = p1.join() + p2.join();
+    const sent = p1.join().unwrap() + p2.join().unwrap();
 
     const pipe: Channel[i64] = Channel.new(4);
     const done: Channel[i64] = Channel.new(1);
@@ -110,12 +110,34 @@ fn main() i32 {
     const producer = qo produce(writer, 1 as i64, 500 as i64);
     const closer = pipe.clone();
     const closed = qo finish(closer, producer);
-    const piped = consumer.join();
+    const piped = consumer.join().unwrap();
     const reported = done.receive().unwrap();
-    closed.join();
+    closed.join().unwrap();
     io.println("channel {} {} {} {}", sent, total, piped, reported);
     if (total != 1999000 || piped != 125250 || reported != piped) { ret 1; }
     0
+}
+"""
+
+# A panic inside a qoroutine is reported by join; the program continues.
+PANIC = r"""import std.io;
+
+fn risky(n: i64) i64 {
+    if (n % 3 == 0) { panic("multiple of three"); }
+    n
+}
+
+fn main() i32 {
+    var ok: i64 = 0;
+    var failed: i64 = 0;
+    for i : 0..30 {
+        const n: i64 = i as i64;
+        const result = (qo risky(n)).join();
+        if (result.is_ok()) { ok = ok + result.unwrap(); } else { failed = failed + 1; }
+    }
+    io.println("ok {} failed {}", ok, failed);
+    if (failed != 10) { ret 1; }
+    panic("main panics");
 }
 """
 
@@ -126,14 +148,14 @@ NESTED = r"""import std.io;
 fn chain(depth: i64) i64 {
     if (depth == 0) { ret 0; }
     const child = qo chain(depth - 1);
-    child.join() + depth
+    child.join().unwrap() + depth
 }
 
 fn main() i32 {
     var total: i64 = 0;
     for i : 0..20 {
         const top = qo chain(40 as i64);
-        total = total + top.join();
+        total = total + top.join().unwrap();
     }
     io.println("nested {}", total);
     if (total != 16400) { ret 1; }
@@ -196,7 +218,7 @@ def check(qz, root):
     (owned / "src/main.qz").write_text(
         "fn measure(text: String) i64 { text.len() as i64 }\n"
         "fn main() i32 {\n    const text: String = \"x\".to_string();\n"
-        "    const a = qo measure(text);\n    const n = text.len();\n    a.join();\n    0\n}\n")
+        "    const a = qo measure(text);\n    const n = text.len();\n    a.join().unwrap();\n    0\n}\n")
     result = invoke([str(qz), "check"], owned, ok=False)
     assert result.returncode != 0 and "use of moved value 'text'" in result.stdout, result.stdout
 
@@ -210,6 +232,19 @@ def check(qz, root):
         assert "channel 2000 1999000 125250 125250" in subprocess.run(
             [str(binary)], cwd=channel, text=True, stdout=subprocess.PIPE, timeout=60).stdout
     assert "channel 2000" in invoke([str(qz), "run", "--jit", *common], channel).stdout
+
+    panicking = root / "panicking"
+    (panicking / "src").mkdir(parents=True)
+    (panicking / "quazi.toml").write_text('[package]\nname="panicking"\n[build]\nentry="src/main.qz"\n')
+    (panicking / "src/main.qz").write_text(PANIC)
+    binary = panicking / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], panicking)
+    result = subprocess.run([str(binary)], cwd=panicking, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=60)
+    assert "ok 300 failed 10" in result.stdout, (result.stdout, result.stderr)
+    assert result.stderr.count("qoroutine panicked at 'multiple of three'") == 10, result.stderr
+    # A panic outside qoroutines still ends the program with status 101.
+    assert "thread 'main' panicked at 'main panics'" in result.stderr and result.returncode == 101
 
     plain = root / "plain"
     (plain / "src").mkdir(parents=True)
@@ -227,7 +262,7 @@ def check(qz, root):
     (bad / "src/main.qz").write_text("fn main() i32 {\n    const x = qo 5;\n    0\n}\n")
     result = invoke([str(qz), "check"], bad, ok=False)
     assert result.returncode != 0 and "`qo` must be followed by a function call" in result.stdout, result.stdout
-    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, owned String/struct args moved, Channel send/receive/close, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
+    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, owned String/struct args moved, Channel send/receive/close, panics reported by join, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
 
 
 def main():

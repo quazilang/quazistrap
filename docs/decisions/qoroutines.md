@@ -64,10 +64,11 @@ points are marked **decided**, design proposals are marked **proposed**.
 Implemented: the `qo f(args)` keyword (Tree-sitter, LSP), the built-in
 `Qoroutine[T]` with `join()`, the M:N prelude scheduler on four worker
 threads, yielding joins, owned variable arguments moved into the qoroutine,
-and the built-in reference-counted `Channel[T]` (send/receive/close)
+the built-in reference-counted `Channel[T]` (send/receive/close), and panics
+reported by `join()` as `Err(QoroutineError.Panicked)`
 ([change records](../changes/README.md), 2026-11-09). Open: owned results and
 owned channel values, argument expressions evaluated in the spawning context,
-timer preemption, panic reported through `join()`, `std.thread`
+timer preemption, `std.thread`
 `JoinHandle[T]` and channel use from OS threads, select (not planned).
 
 ## Implementation phases

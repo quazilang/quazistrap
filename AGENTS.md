@@ -268,7 +268,7 @@ enum Option[T] { Some(T), None, }
 match value { Some(v) => v, Option.None => 0, _ => default, }
 match value { Some(v) if v > 0 => v, _ => 0, }   // guards
 
-const h: Qoroutine[i64] = qo square(7 as i64);  // qoroutine (D-019); h.join() == 49
+const h: Qoroutine[i64] = qo square(7 as i64);  // qoroutine (D-019); h.join() == Ok(49)
 var f: fn(i32, i32) i32 = |x, y| x + y;   // closure
 var g: fn() i32 = my_func;                  // fn-name as value
 
