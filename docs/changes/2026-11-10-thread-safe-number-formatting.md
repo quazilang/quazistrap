@@ -9,8 +9,7 @@ literal overwrote each other's digits: 4 threads formatting 100000 numbers
 each and parsing them back saw about 310000 mismatches per run.
 
 Inside a format call (`fmt.format`, `println`/`print` wrappers, interpolated
-literals, `@format` instance methods and other `str...` variadic calls) codegen
-now allocates an 80-byte heap buffer per numeric argument, passes it to
+literals and `@format` instance methods) codegen now allocates an 80-byte heap buffer per numeric argument, passes it to
 `PrimToStr` in `ops[3]` with `PRIM_TO_STR_BUFFER_FLAG`, and frees it after the
 call returns; the call's result is an owned `String` that no longer refers to
 the buffer. Register allocation and remapping treat `ops[3]` as a use when the
@@ -19,7 +18,28 @@ direct `n.to_str()` view is still per-site shared state: the API decision is
 open as question В9 in the workspace `asks.txt`, and the format path is safe
 under either answer.
 
-Verification: `scripts/check_thread_atomics.py` gained a 4-thread
+Follow-up the same day (independent review):
+
+- Format arguments are evaluated before any is converted, like Rust's
+  `format_args!`, so a `?` or branch inside a later argument can no longer
+  skip the release of an earlier argument's buffer (it leaked 80 bytes per
+  early return). User `...xs: str` functions and variadic intrinsics may return
+  one of their argument views, so conversions for them keep the static buffer
+  and never join an enclosing format call's buffers (which could otherwise be
+  freed on a path that never allocated them). A single numeric argument to a
+  format wrapper is formatted like `"{}"` into an owned String.
+- Placeholder expressions now get owner sites, so the propagated `Result` of
+  `{get()?}` is released (32 bytes leaked per early return before).
+- Nested expressions in placeholders kept fragment-relative spans (`grown` in
+  `{grown < 500}` at offsets 0..5), which aliased the type and call resolution
+  of unrelated code at those offsets: that `grown` compiled as a reference to
+  a function and the comparison printed `false`. Fragment tokens are now
+  shifted to the literal's file position (offsets counted in Unicode scalar
+  values), so nested spans stay inside the literal.
+
+Verification: `scripts/check_string_interpolation.py` runs 400000 calls whose
+placeholder `?` leaves on every other call (mapped memory stays flat), a unit
+test pins nested placeholder spans, and `scripts/check_thread_atomics.py` gained a 4-thread
 format-and-parse-back program (0 mismatches over 3 runs; the previous
 compiler reports about 310000 per run), full `cargo test`, every
 `scripts/check_*.py`, std `qz test` and all examples.

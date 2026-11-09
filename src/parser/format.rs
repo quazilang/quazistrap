@@ -88,8 +88,9 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
                 } else {
                     // Named / expression placeholder `{expr}` or `{expr:spec}`.
                     // Compute real file span for this name_part so that type_map
-                    // lookups from semantic analysis use the same key.
-                    let name_start_in_s = i + 1;
+                    // lookups from semantic analysis use the same key. Spans
+                    // count Unicode scalar values, not bytes.
+                    let name_start_in_s = s[..i + 1].chars().count();
                     let leading_spaces =
                         field.split_once(':').map(|(n, _)| n).unwrap_or(field).len()
                             - field
@@ -99,7 +100,7 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
                                 .trim_start()
                                 .len();
                     let real_start = file_base + name_start_in_s + leading_spaces;
-                    let real_end = real_start + name_part.len();
+                    let real_end = real_start + name_part.chars().count();
                     let expr_span = Span::new(
                         template_span.line,
                         template_span.col + name_start_in_s + leading_spaces,
@@ -145,19 +146,22 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
     })
 }
 
-/// Re-parse a short source fragment as an expression and assign it a file-accurate
-/// span so that the type_map key `(span.start, span.end)` matches what semantic
-/// analysis stored when it visited the original identifier.
+/// Re-parse a short source fragment as an expression with file-accurate spans:
+/// semantic analysis and codegen key types and resolutions by
+/// `(span.start, span.end)`, so every nested expression must sit inside the
+/// literal rather than at fragment-relative offsets that belong to other code.
 pub fn parse_inline_format_expr(src: &str, file_span: Span) -> Option<Expr> {
-    let tokens = crate::lexer::Lexer::new(src).tokenize();
+    let mut tokens = crate::lexer::Lexer::new(src).tokenize();
+    for token in &mut tokens {
+        token.span.line = file_span.line;
+        token.span.col = file_span.col + token.span.start;
+        token.span.start += file_span.start;
+        token.span.end += file_span.start;
+    }
     let mut parser = crate::parser::Parser::new(tokens);
     match parser.parse_expr() {
-        Ok(expr) => {
-            // Rewrite the top-level span to the real file position.
-            // Sub-expression spans (e.g. in binary ops) remain relative to `src`;
-            // that is acceptable — only the top-level span is used for coercion.
-            Some(respan_expr(expr, file_span))
-        }
+        // The top-level span covers the whole trimmed placeholder text.
+        Ok(expr) => Some(respan_expr(expr, file_span)),
         Err(_) => None,
     }
 }
@@ -173,6 +177,19 @@ fn respan_expr(mut expr: Expr, new_span: Span) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::{StringLiteralForm, classify_string_literal};
+
+    #[test]
+    fn placeholder_subexpressions_keep_file_spans() {
+        let span = crate::parser::ast::Span::new(3, 20, 100, 109);
+        let expr = super::parse_inline_format_expr("grown < 5", span).expect("expression");
+        assert_eq!((expr.span.start, expr.span.end), (100, 109));
+        let crate::parser::ast::ExprKind::Binary { left, right, .. } = &expr.node else {
+            panic!("binary placeholder");
+        };
+        // Fragment-relative spans (0..5) would alias unrelated code.
+        assert_eq!((left.span.start, left.span.end), (100, 105));
+        assert_eq!((right.span.start, right.span.end), (108, 109));
+    }
 
     #[test]
     fn literals_classify_under_d020() {

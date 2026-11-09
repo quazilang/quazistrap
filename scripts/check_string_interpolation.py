@@ -88,6 +88,45 @@ fn main() void {
 """
 
 
+TRY = r"""import std.io;
+import std.fs;
+
+fn get(n: i64) Result[i64, str] {
+    if (n % 2 == 0) { ret Err("even"); }
+    Ok(n)
+}
+
+// `?` inside a placeholder leaves after a number was evaluated: neither the
+// propagated Result nor any digit buffer may leak on either path.
+fn show(n: i64) Result[usize, str] {
+    const text = "a {n} {get(n)?} {n:x}";
+    Ok(text.len())
+}
+
+fn mapped_pages() u64 {
+    const result = fs.read_to_string("/proc/self/statm");
+    if (result.is_err()) { ret 0; }
+    const text: String = result.unwrap();
+    const end: usize = text.as_str().find(" ").unwrap();
+    const field = text[0:end];
+    const parsed: Result[u64, ParseError] = field.parse[u64]();
+    parsed.unwrap_or(0)
+}
+
+fn main() i32 {
+    const before = mapped_pages();
+    var failures: i64 = 0;
+    for i : 0..400000 {
+        if (show(i as i64).is_err()) { failures = failures + 1; }
+    }
+    // A 32-byte leak per call would map about 3000 more pages.
+    const grown = mapped_pages() - before;
+    io.println("failures {failures} small growth {grown < 500}");
+    0
+}
+"""
+
+
 def run(command, root):
     return subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, timeout=300)
@@ -130,7 +169,10 @@ def check(qz, root):
     case = project(root, "moved", MOVED)
     output = run([str(qz), "check"], case).stdout
     assert "use of moved value 's'" in output and "use of moved value 't'" in output, output
-    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders, closure captures, raw and placeholder-free templates")
+    case = project(root, "try", TRY)
+    output = invoke([str(qz), "run", *common], case)
+    assert output == "failures 200000 small growth true\n", output
+    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders, closure captures, raw and placeholder-free templates, no leak when `?` leaves a placeholder")
 
 
 def main():

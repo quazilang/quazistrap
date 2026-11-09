@@ -2611,7 +2611,7 @@ struct FnCompiler<'a> {
     struct_generic_params: &'a HashMap<String, Vec<String>>,
     /// Heap digit buffers of the format calls being compiled (innermost
     /// last); released once the call has copied its arguments.
-    format_scratch: Vec<Vec<u8>>,
+    format_scratch: Vec<Option<Vec<u8>>>,
 }
 
 /// One guarded owner in the current full expression. A local identifier only
@@ -5389,6 +5389,17 @@ impl<'a> FnCompiler<'a> {
                     self.expression_owner_sites(&arm.expr, false, transfer, sites);
                 }
             }
+            // Placeholders of a string literal are read like format-call
+            // arguments; temporaries they produce (`{get()?}`) need owners.
+            ExprKind::Literal(Literal::String(_)) => {
+                if let Some(expanded) =
+                    crate::parser::format::expand_format_call_args(std::slice::from_ref(expr))
+                {
+                    for argument in &expanded.args {
+                        self.expression_owner_sites(argument, false, false, sites);
+                    }
+                }
+            }
             // Fn environments retain their separate existing ownership path.
             ExprKind::Closure { .. } | ExprKind::Ident(_) | ExprKind::Literal(_) => {}
         }
@@ -7041,9 +7052,7 @@ impl<'a> FnCompiler<'a> {
         let expanded = (name == "fmt.format")
             .then(|| crate::parser::format::expand_format_call_args(args))
             .flatten();
-        if expanded.is_some() {
-            self.begin_format_scratch();
-        }
+        self.begin_format_scratch(expanded.is_some());
         // Variadic call: compile fixed args, pack variadic args into
         // consecutive stack slots, pass (ptr, len) as hidden trailing args.
         let fixed_regs: Vec<u8> = args[..fixed_count.min(args.len())]
@@ -7084,24 +7093,21 @@ impl<'a> FnCompiler<'a> {
             (rp, rl)
         } else {
             // Compile each variadic arg (may land in non-consecutive regs).
-            let var_regs: Vec<u8> = var_args
-                .iter()
-                .enumerate()
-                .map(|(index, a)| {
-                    if self.str_variadic_fns.contains(name) {
-                        let reg = self.compile_value(a);
-                        let spec = expanded
-                            .as_ref()
-                            .and_then(|expanded| expanded.specs.get(index))
-                            .map(String::as_str)
-                            .unwrap_or("");
-                        self.coerce_with_spec(reg, spec, a.span)
-                    } else {
+            let var_regs: Vec<u8> = if self.str_variadic_fns.contains(name) {
+                let specs = expanded
+                    .as_ref()
+                    .map(|expanded| expanded.specs.as_slice())
+                    .unwrap_or(&[]);
+                self.compile_format_arguments(var_args, specs)
+            } else {
+                var_args
+                    .iter()
+                    .map(|a| {
                         self.mark_consumed_expr(a);
                         self.compile_value(a)
-                    }
-                })
-                .collect();
+                    })
+                    .collect()
+            };
             // Copy into fresh consecutive slots so Lea gives a contiguous block.
             let first_slot = self.next_reg_slot();
             for &r in &var_regs {
@@ -7130,21 +7136,22 @@ impl<'a> FnCompiler<'a> {
             &args[..fixed_count.min(args.len())],
             result_dst,
         );
-        if expanded.is_some() {
-            self.end_format_scratch();
-        }
+        self.end_format_scratch();
         result_dst
     }
 
     /// Start a format call whose numeric arguments get private digit buffers.
-    fn begin_format_scratch(&mut self) {
-        self.format_scratch.push(Vec::new());
+    /// `private_buffers` is false for calls whose result may still view
+    /// their arguments; conversions nested in them keep the static buffer
+    /// rather than joining an enclosing format call's buffers.
+    fn begin_format_scratch(&mut self, private_buffers: bool) {
+        self.format_scratch.push(private_buffers.then(Vec::new));
     }
 
     /// Release the digit buffers of the innermost format call; its result
     /// (an owned String) no longer refers to them.
     fn end_format_scratch(&mut self) {
-        let Some(buffers) = self.format_scratch.pop() else {
+        let Some(Some(buffers)) = self.format_scratch.pop() else {
             return;
         };
         for buffer in buffers {
@@ -7156,11 +7163,77 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// Evaluate every format argument before converting any, as Rust's
+    /// `format_args!` does: conversions allocate digit buffers, and an early
+    /// exit (`?`) or branch inside a later argument must not skip their release.
+    fn compile_format_arguments(&mut self, args: &[Expr], specs: &[String]) -> Vec<u8> {
+        let values: Vec<u8> = args.iter().map(|arg| self.compile_value(arg)).collect();
+        values
+            .into_iter()
+            .zip(args)
+            .enumerate()
+            .map(|(index, (value, arg))| {
+                let spec = specs.get(index).map(String::as_str).unwrap_or("");
+                self.coerce_with_spec(value, spec, arg.span)
+            })
+            .collect()
+    }
+
+    /// Call `fmt.format(template, arguments...)` with already displayable
+    /// arguments; returns a view of the owned result.
+    fn emit_format_call(&mut self, template: u8, arguments: &[u8], span: Span) -> u8 {
+        let first_slot = self.next_reg_slot();
+        for &argument in arguments {
+            let slot = self.alloc_reg();
+            if argument != slot {
+                self.chunk.emit(rrr(Opcode::Mov, slot, argument, 0));
+            }
+        }
+        let pointer = self.alloc_reg();
+        let block_length = self.qzi_u8(arguments.len(), "format argument count");
+        self.chunk
+            .emit(mem_lea_block(first_slot, pointer, 0, block_length));
+        let count = self.alloc_reg();
+        self.chunk
+            .emit(ri16(Opcode::MovI, count, arguments.len() as u16));
+        let owner = self.alloc_reg();
+        self.emit_call_by_name("fmt.format", &[template, pointer, count], owner);
+        self.injected_format_view(span, owner)
+    }
+
+    /// Whether displaying a value of the expression at `span` converts it
+    /// into a digit buffer (numbers and bools).
+    fn displays_through_digit_buffer(&self, span: Span) -> bool {
+        let ty = self.type_of_span((span.start, span.end)).map(|ty| match ty {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => self.resolve_type(&inner.node),
+            other => other,
+        });
+        matches!(
+            ty,
+            Some(
+                TypeKind::Int8
+                    | TypeKind::Int16
+                    | TypeKind::Int32
+                    | TypeKind::Int64
+                    | TypeKind::Uint8
+                    | TypeKind::Uint16
+                    | TypeKind::Uint32
+                    | TypeKind::Uint64
+                    | TypeKind::Isize
+                    | TypeKind::Usize
+                    | TypeKind::Float16
+                    | TypeKind::Float32
+                    | TypeKind::Float64
+                    | TypeKind::Bool
+            )
+        )
+    }
+
     /// Emit a numeric-to-text conversion. Inside a format call it writes into
     /// a fresh heap buffer, because the instruction's static scratch would be
     /// shared by every thread running the same code.
     fn emit_prim_to_str(&mut self, mut instruction: super::instruction::Instruction) {
-        if !self.format_scratch.is_empty() {
+        if matches!(self.format_scratch.last(), Some(Some(_))) {
             let buffer = self.alloc_reg();
             self.chunk.emit(ri16(Opcode::MovI, buffer, 80));
             let mut allocate = ri16(Opcode::Intrinsic, buffer, 3);
@@ -7168,7 +7241,7 @@ impl<'a> FnCompiler<'a> {
             self.chunk.emit(allocate);
             instruction.ops[3] = buffer;
             instruction.flags |= crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG;
-            if let Some(buffers) = self.format_scratch.last_mut() {
+            if let Some(Some(buffers)) = self.format_scratch.last_mut() {
                 buffers.push(buffer);
             }
         }
@@ -7187,8 +7260,24 @@ impl<'a> FnCompiler<'a> {
         let view = if let [text] = args
             && !matches!(text.node, ExprKind::Literal(Literal::String(_)))
         {
-            let value = self.compile_value(text);
-            self.coerce_to_display_str(value, text.span)
+            if self.displays_through_digit_buffer(text.span) {
+                // Formatted like "{}" so the digits land in an owned String
+                // instead of the conversion's shared static buffer.
+                let template = self.chunk.add_constant(ConstPoolEntry::Str("{}".into()));
+                let template_reg = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovConst, template_reg, template));
+                self.begin_format_scratch(true);
+                let arguments = self.compile_format_arguments(std::slice::from_ref(text), &[]);
+                let view = self.emit_format_call(template_reg, &arguments, span);
+                self.end_format_scratch();
+                view
+            } else {
+                self.begin_format_scratch(false);
+                let value = self.compile_value(text);
+                let view = self.coerce_to_display_str(value, text.span);
+                self.end_format_scratch();
+                view
+            }
         } else {
             let owner = self.compile_variadic_call("fmt.format", args);
             self.injected_format_view(span, owner)
@@ -8121,33 +8210,11 @@ impl<'a> FnCompiler<'a> {
                             let template_reg = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
-                            self.begin_format_scratch();
-                            let mut coerced_var: Vec<u8> = Vec::new();
-                            for (i, arg) in expanded.args.iter().enumerate() {
-                                let reg = self.compile_value(arg);
-                                let spec = expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
-                                coerced_var.push(self.coerce_with_spec(reg, spec, arg.span));
-                            }
-
+                            self.begin_format_scratch(true);
+                            let coerced_var =
+                                self.compile_format_arguments(&expanded.args, &expanded.specs);
                             let fmt_dst = if !coerced_var.is_empty() {
-                                let first_slot = self.next_reg_slot();
-                                for &r in &coerced_var {
-                                    let slot = self.alloc_reg();
-                                    if r != slot {
-                                        self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
-                                    }
-                                }
-                                let rp = self.alloc_reg();
-                                let block_length =
-                                    self.qzi_u8(coerced_var.len(), "format argument count");
-                                self.chunk
-                                    .emit(mem_lea_block(first_slot, rp, 0, block_length));
-                                let rl = self.alloc_reg();
-                                self.chunk
-                                    .emit(ri16(Opcode::MovI, rl, coerced_var.len() as u16));
-                                let fd = self.alloc_reg();
-                                self.emit_call_by_name("fmt.format", &[template_reg, rp, rl], fd);
-                                self.injected_format_view(expr.span, fd)
+                                self.emit_format_call(template_reg, &coerced_var, expr.span)
                             } else {
                                 template_reg
                             };
@@ -8342,48 +8409,18 @@ impl<'a> FnCompiler<'a> {
                             let template_reg = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
-                            self.begin_format_scratch();
+                            // A variadic intrinsic receives the views themselves and
+                            // may return one of them, so its digits stay static.
+                            self.begin_format_scratch(!is_variadic_intrinsic);
                             let mut coerced = vec![template_reg];
-                            for (i, arg) in expanded.args.iter().enumerate() {
-                                let reg = self.compile_value(arg);
-                                let spec = expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
-                                let cr = if spec.is_empty() {
-                                    self.coerce_to_display_str(reg, arg.span)
-                                } else {
-                                    self.coerce_with_spec(reg, spec, arg.span)
-                                };
-                                coerced.push(cr);
-                            }
+                            coerced.extend(
+                                self.compile_format_arguments(&expanded.args, &expanded.specs),
+                            );
                             if is_variadic_intrinsic {
                                 self.emit_call_by_name(&call_target, &coerced, dst);
                             } else {
                                 let fmt_dst = if coerced.len() > 1 {
-                                    let coerced_args = &coerced[1..];
-                                    let first_slot = self.next_reg_slot();
-                                    for &r in coerced_args {
-                                        let slot = self.alloc_reg();
-                                        if r != slot {
-                                            self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
-                                        }
-                                    }
-                                    let rp = self.alloc_reg();
-                                    let block_length =
-                                        self.qzi_u8(coerced_args.len(), "format argument count");
-                                    self.chunk
-                                        .emit(mem_lea_block(first_slot, rp, 0, block_length));
-                                    let rl = self.alloc_reg();
-                                    self.chunk.emit(ri16(
-                                        Opcode::MovI,
-                                        rl,
-                                        coerced_args.len() as u16,
-                                    ));
-                                    let fd = self.alloc_reg();
-                                    self.emit_call_by_name(
-                                        "fmt.format",
-                                        &[template_reg, rp, rl],
-                                        fd,
-                                    );
-                                    self.injected_format_view(expr.span, fd)
+                                    self.emit_format_call(template_reg, &coerced[1..], expr.span)
                                 } else {
                                     template_reg
                                 };
@@ -8633,46 +8670,11 @@ impl<'a> FnCompiler<'a> {
                                 let template_reg = self.alloc_reg();
                                 self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
-                                self.begin_format_scratch();
+                                self.begin_format_scratch(true);
                                 let fmt_reg = if !expanded.args.is_empty() {
-                                    let mut coerced = vec![template_reg];
-                                    for (i, arg) in expanded.args.iter().enumerate() {
-                                        let r = self.compile_value(arg);
-                                        let spec =
-                                            expanded.specs.get(i).map(|s| s.as_str()).unwrap_or("");
-                                        let cr = if spec.is_empty() {
-                                            self.coerce_to_display_str(r, arg.span)
-                                        } else {
-                                            self.coerce_with_spec(r, spec, arg.span)
-                                        };
-                                        coerced.push(cr);
-                                    }
-                                    let coerced_args = &coerced[1..];
-                                    let first_slot = self.next_reg_slot();
-                                    for &r in coerced_args {
-                                        let slot = self.alloc_reg();
-                                        if r != slot {
-                                            self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
-                                        }
-                                    }
-                                    let rp = self.alloc_reg();
-                                    let block_length =
-                                        self.qzi_u8(coerced_args.len(), "format argument count");
-                                    self.chunk
-                                        .emit(mem_lea_block(first_slot, rp, 0, block_length));
-                                    let rl = self.alloc_reg();
-                                    self.chunk.emit(ri16(
-                                        Opcode::MovI,
-                                        rl,
-                                        coerced_args.len() as u16,
-                                    ));
-                                    let fd = self.alloc_reg();
-                                    self.emit_call_by_name(
-                                        "fmt.format",
-                                        &[template_reg, rp, rl],
-                                        fd,
-                                    );
-                                    self.injected_format_view(expr.span, fd)
+                                    let coerced = self
+                                        .compile_format_arguments(&expanded.args, &expanded.specs);
+                                    self.emit_format_call(template_reg, &coerced, expr.span)
                                 } else {
                                     template_reg
                                 };

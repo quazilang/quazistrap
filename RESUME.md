@@ -10,10 +10,12 @@ project/dependency manifest (`LoadedSnapshot.manifests`); did_open clears it.
 `scripts/check_lsp_performance.py` (release targets cold <= 1000 ms, warm
 median <= 20 ms; measured 150 ms / 0.6 ms). Remaining LSP: incomplete-source
 semantic features, real-client Unicode/formatting suite, Zed/Helix runtime
-validation. Review of 05799ca found: 80-byte leak when `?` returns inside a
-format argument after a number was converted, and single-argument str-variadic
-paths (codegen compile_runtime_format_wrapper, ~7067) outside any scratch
-scope; fix in progress.
+validation. Review of 05799ca findings fixed in the follow-up commit:
+two-phase format arguments (`compile_format_arguments`), scratch scopes are
+`Option` (None for user str-variadic calls / variadic intrinsics), owner sites
+for placeholder expressions (`{get()?}` Result shell leaked), and placeholder
+sub-expression spans shifted into the literal (`{grown < 500}` aliased other
+code's resolution at offsets 0..5 and miscompiled).
 
 ## Checkpoint (2026-11-10, thread-safe number formatting)
 
