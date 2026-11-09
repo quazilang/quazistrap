@@ -2,6 +2,21 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-09 evening 2, D-020 interpolation)
+
+Maintainers answered round 3: В7Б (every literal interpolates, `{{ }}`
+escapes, no f-prefix), В8А (async/await removed). quazistrap `ce530c3` D-020
+record + plan (31 items), `2e07a7e` struct shells, `1148385` interpolation:
+`parser/format.rs::classify_string_literal`, analysis marks format-call
+template literals (`format_template_literals`, free/module/method calls),
+other literals typed `String` (interpolated) or `str` with unescaped
+const_value; codegen `emit_string_literal`; lexer doubles braces in raw
+strings; single non-literal arg of a format fn prints verbatim. std
+`bfb773f` json braces. Compiler plan 97.6% (remaining: built-in linker
+native validation matrix, ownership 9/16, LSP 16/20). Verified: 1027 Rust
+tests, all e2e (new check_string_interpolation), std 62/62, example outputs
+identical to the previous compiler.
+
 ## Checkpoint (2026-11-09 night 2, plan items)
 
 quazistrap: `758527f` owned qo results; `f43da3d` strength reduction (ops[3]
