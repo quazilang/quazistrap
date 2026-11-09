@@ -7406,6 +7406,24 @@ fn main() void {
     }
 
     #[test]
+    fn str_variadic_without_template_is_an_ordinary_typed_variadic() {
+        // No fixed `str` template and no `@format`: arguments are checked as
+        // `str` values, not display-converted, and no literal is a template.
+        let report = analyze(
+            r#"
+fn count(...values: str) usize { ret values.len(); }
+
+fn main() void {
+    count("a {{", "b");
+    count(5);
+}
+"#,
+        );
+        let errors: Vec<&str> = report.errors.iter().map(|error| &*error.code).collect();
+        assert_eq!(errors, ["S08"], "{:?}", report.errors);
+    }
+
+    #[test]
     fn generic_instances_are_invariant() {
         let integer_width = analyze(
             r#"

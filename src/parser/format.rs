@@ -24,6 +24,28 @@ pub struct ExpandedFormatArgs {
 /// Escape sequences that compress multiple source bytes into one decoded byte will
 /// make inner-placeholder spans slightly inaccurate, which is acceptable for the
 /// initial implementation.
+/// Whether calls to a function with these parameters follow format-call
+/// rules (template literal, display-converted arguments): an `@format`
+/// function, or one whose final `...args: str` (or reference) follows a fixed
+/// `str` parameter. A `...values: str` without one is an ordinary typed
+/// variadic.
+pub fn is_format_variadic(params: &[Param], attributes: &[Attribute]) -> bool {
+    let Some(last) = params.last().filter(|param| param.variadic) else {
+        return false;
+    };
+    let explicit = attributes.iter().any(|attribute| attribute.name == "format");
+    match &last.ty.node {
+        TypeKind::Any => explicit,
+        TypeKind::Str | TypeKind::Ref { .. } | TypeKind::MutRef { .. } => {
+            explicit
+                || params[..params.len() - 1]
+                    .iter()
+                    .any(|param| matches!(param.ty.node, TypeKind::Str))
+        }
+        _ => false,
+    }
+}
+
 pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
     if args.is_empty() {
         return None;

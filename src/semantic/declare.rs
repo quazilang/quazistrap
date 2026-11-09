@@ -61,25 +61,7 @@ impl Analyzer {
                 }
                 // `any` is only the erased call-site convention of an explicit
                 // `@format` function; it is never a runtime parameter type.
-                let has_str_variadic_param = params
-                    .last()
-                    .map(|p| {
-                        if !p.variadic {
-                            return false;
-                        }
-                        if matches!(
-                            &p.ty.node,
-                            crate::parser::ast::TypeKind::Str
-                                | crate::parser::ast::TypeKind::Ref { .. }
-                        ) {
-                            return true;
-                        }
-                        matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
-                            && attributes
-                                .iter()
-                                .any(|attribute| attribute.name == "format")
-                    })
-                    .unwrap_or(false);
+                let has_str_variadic_param = crate::parser::format::is_format_variadic(params, attributes);
                 if has_str_variadic_param {
                     attr_names.push("str_variadic".to_string());
                 }
@@ -680,25 +662,7 @@ impl Analyzer {
                         if is_foreign && !attr_names.contains(&"ignore".to_string()) {
                             attr_names.push("ignore".to_string());
                         }
-                        let has_str_variadic_param2 = params
-                            .last()
-                            .map(|p| {
-                                if !p.variadic {
-                                    return false;
-                                }
-                                if matches!(
-                                    &p.ty.node,
-                                    crate::parser::ast::TypeKind::Str
-                                        | crate::parser::ast::TypeKind::Ref { .. }
-                                ) {
-                                    return true;
-                                }
-                                matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
-                                    && attributes
-                                        .iter()
-                                        .any(|attribute| attribute.name == "format")
-                            })
-                            .unwrap_or(false);
+                        let has_str_variadic_param2 = crate::parser::format::is_format_variadic(params, attributes);
                         if has_str_variadic_param2 {
                             attr_names.push("str_variadic".to_string());
                         }

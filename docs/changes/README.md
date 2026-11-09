@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-10: `...values: str` without a template is an ordinary variadic](2026-11-10-plain-str-variadics.md)
+
 - [2026-11-10: LSP navigation snapshots are cached](2026-11-10-lsp-snapshot-cache.md)
 
 - [2026-11-10: Numbers in format arguments get private digit buffers](2026-11-10-thread-safe-number-formatting.md)

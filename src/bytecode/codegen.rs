@@ -760,26 +760,7 @@ impl<'a> Codegen<'a> {
                     params,
                     ..
                 } => {
-                    let has_str_variadic_param = params
-                        .last()
-                        .map(|p| {
-                            if !p.variadic {
-                                return false;
-                            }
-                            if matches!(
-                                &p.ty.node,
-                                crate::parser::ast::TypeKind::Str
-                                    | crate::parser::ast::TypeKind::Ref { .. }
-                                    | crate::parser::ast::TypeKind::MutRef { .. }
-                            ) {
-                                return true;
-                            }
-                            matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
-                                && attributes
-                                    .iter()
-                                    .any(|attribute| attribute.name == "format")
-                        })
-                        .unwrap_or(false);
+                    let has_str_variadic_param = crate::parser::format::is_format_variadic(params, attributes);
                     let resolved_name = self.resolve_item_name(item.span, name, attributes);
                     if has_str_variadic_param {
                         self.str_variadic_fns.insert(resolved_name.clone());

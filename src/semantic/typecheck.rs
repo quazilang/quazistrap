@@ -323,13 +323,7 @@ impl Analyzer {
                 self.current_module_path = self.module_path_for_span(item.span);
                 self.current_function.push(fn_name);
                 self.enter_scope();
-                let fn_is_str_variadic = params.last().is_some_and(|p| {
-                    p.variadic
-                        && (matches!(
-                            &p.ty.node,
-                            TypeKind::Str | TypeKind::Ref { .. } | TypeKind::MutRef { .. }
-                        ) || erased_format_variadic)
-                });
+                let fn_is_str_variadic = crate::parser::format::is_format_variadic(params, attributes);
                 for p in params {
                     if erased_format_variadic && p.variadic && matches!(p.ty.node, TypeKind::Any) {
                         // `@format ...args: any` is an erased call-site convention.

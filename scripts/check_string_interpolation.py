@@ -127,6 +127,25 @@ fn main() i32 {
 """
 
 
+# A `...values: str` without a template parameter is a plain typed variadic;
+# it was compiled as a format wrapper (wrong arguments, out-of-bounds panic).
+VARIADIC = r"""import std.io;
+
+fn count(...xs: str) usize { xs.len() }
+fn first(...xs: str) usize { xs[0].len() }
+
+fn main() i32 {
+    const s: str = "hello";
+    io.println("a {}", count("x", "y"));
+    io.println("b {}", count(s, s));
+    io.println("c {}", first("abc"));
+    io.println("d {}", first(s));
+    io.println("e {}", count());
+    0
+}
+"""
+
+
 def run(command, root):
     return subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, timeout=300)
@@ -169,10 +188,13 @@ def check(qz, root):
     case = project(root, "moved", MOVED)
     output = run([str(qz), "check"], case).stdout
     assert "use of moved value 's'" in output and "use of moved value 't'" in output, output
+    case = project(root, "variadic", VARIADIC)
+    output = invoke([str(qz), "run", *common], case)
+    assert output == "a 2\nb 2\nc 3\nd 5\ne 0\n", output
     case = project(root, "try", TRY)
     output = invoke([str(qz), "run", *common], case)
     assert output == "failures 200000 small growth true\n", output
-    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders, closure captures, raw and placeholder-free templates, no leak when `?` leaves a placeholder")
+    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders, closure captures, raw and placeholder-free templates, no leak when `?` leaves a placeholder, plain str variadics")
 
 
 def main():

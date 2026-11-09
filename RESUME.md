@@ -2,6 +2,14 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, plain str variadics)
+
+`parser::format::is_format_variadic` is the single format-function rule
+(@format, or final `...: str` after a fixed `str` param); `fn f(...xs: str)`
+is a plain typed variadic (it was compiled as a format wrapper with a
+mismatched call ABI). Asked В11 (whether only @format should make a function
+a format function). Waiting: В9, В10, В11.
+
 ## Checkpoint (2026-11-10, LSP snapshot cache)
 
 LSP 17/20 (plan 97.7%): `src/lsp/snapshot_cache.rs` caches loader-backed
