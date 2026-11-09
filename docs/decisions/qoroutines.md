@@ -63,7 +63,9 @@ points are marked **decided**, design proposals are marked **proposed**.
 
 1. Runtime groundwork (done): atomics, `quazi.context.switch`,
    `quazi.thread.spawn_arg`, libc-free Linux threads (clone/futex,
-   2026-11-09) so worker threads exist in built-in-linker programs.
+   2026-11-09) so worker threads exist in built-in-linker programs,
+   `quazi.runtime.state` (process-wide anchor without globals) and a working
+   M:N scheduler prototype in Quazi (`scripts/check_qoroutine_runtime.py`).
 2. `std.thread`: `JoinHandle[T]`, `Mutex`, `AtomicI64` on the atomics.
 3. Runtime scheduler: per-qoroutine stacks, global run queue, worker pool,
    parking/unparking, `Channel[T]`.

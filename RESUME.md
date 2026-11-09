@@ -2,6 +2,35 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-09 later, qoroutine runtime groundwork)
+
+quazistrap commits: `b056410` W01 loop-binder spans; `c5fd4ad` libc-free Linux
+threads (clone/futex, TargetSpec::linking: `-lc` executables and entry-less
+objects keep pthreads); `e8fe535` `quazi.runtime.state` (id 44, zeroed 64-byte
+data block = process-wide anchor; Quazi has no globals). std `3a60449` docs.
+scripts/check_qoroutine_runtime.py holds a working M:N scheduler prototype in
+Quazi (runtime_state lock/queue, per-task stack + context switch, 4 workers,
+generic result slot via `run_task[T]` wrapped in a capture-free closure,
+completion published by the worker after leaving the task stack) — 1000 tasks,
+native and --jit. Verified: 1015 Rust tests, all e2e scripts, std 61/61.
+
+Next (in order):
+1. Move the prototype into the compiler prelude (`prelude/src/qoroutine.qz`):
+   built-in `Qoroutine[T]` { task: *u8 } with `join(self) T` (later
+   `Result[T, QoroutinePanic]`), `Channel[T]`. Worker entry/thread callback
+   types need per-OS cfg (Windows ThreadCallback returns u32; Windows threads
+   via CreateThread). Unreachable prelude fns are dropped (reachability from
+   main), so programs that never use `qo` stay small.
+2. `qo f(args)` keyword: lexer/parser/Tree-sitter/LSP. Pragmatic first
+   lowering: `__qo_spawn(|| f(args))` — closure captures are scalar-only
+   today (docs/migrations/closures.md), so owned args need closure capture
+   moves (D-019 phase 5) or a codegen thunk with a moved-argument block.
+3. Parking instead of spin-join, current-task detection (no TLS: derive from
+   aligned stack base), timer preemption, panic -> join error.
+Language limits met: no generic specialization as a value (`f[T]`), closure
+bodies are expressions only, no pointer->integer casts, closure literals do not
+widen (`|| 42 as i64`), `x { }` after `:` in for-loops parses as a struct.
+
 ## Checkpoint (2026-11-09, experimental qz run --jit)
 
 quazistrap: `qz run --jit` (D-019 round 2 В5, behind a flag as decided).
