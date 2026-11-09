@@ -15,6 +15,10 @@ memory). Retention still does not see placeholders. `c991d8f` explicit
 format args checked once (duplicate S02); `99a96d0` closures capture
 variables read only in string placeholders (codegen "no register bound").
 tree-sitter `df6ce1f` structured string literals (interpolation nodes).
+`2817fd1` LSP semantic tokens for identifiers inside string placeholders.
+Enum payload drops deliberately NOT done: by-value `match` does not consume
+the scrutinee (codegen expression_owner_sites consumed=false) and bindings
+alias payloads, so payload drops need place-level moves (D-014).
 KNOWN BUG (asked in asks.txt В9): PrimToStr (int/float -> str) writes into one
 static buffer per call site (`__quazi_itoa_*`), so concurrent threads/qoroutines
 formatting numbers at the same site race. Not fixed: frame storage breaks
