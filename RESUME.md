@@ -11,7 +11,9 @@ quazistrap `d93a2d4` size-class heap in the embedded Linux runtime
 alloc loop 8.2 s -> 0.19 s; check_heap.py (strace syscall count, 4 threads).
 `5031321` borrow checker visits placeholder expressions of every string
 literal (use-after-move in "{s}"/println("{s}") was accepted and read freed
-memory). Retention still does not see placeholders.
+memory). Retention still does not see placeholders. `c991d8f` explicit
+format args checked once (duplicate S02); `99a96d0` closures capture
+variables read only in string placeholders (codegen "no register bound").
 KNOWN BUG (asked in asks.txt В9): PrimToStr (int/float -> str) writes into one
 static buffer per call site (`__quazi_itoa_*`), so concurrent threads/qoroutines
 formatting numbers at the same site race. Not fixed: frame storage breaks
