@@ -8440,7 +8440,7 @@ fn infer_closure_result_binder(param: TypeKind, binders: &[String]) -> TypeKind 
     }
 }
 
-pub(super) fn substitute_type_kind(
+pub(crate) fn substitute_type_kind(
     ty: &TypeKind,
     subst: &std::collections::HashMap<String, TypeKind>,
 ) -> TypeKind {

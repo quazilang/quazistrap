@@ -15,9 +15,15 @@ analysis already treated these structs as owned (moves, no moves out of
 fields), so only the missing release was added. Nested scalar structs release
 both shells.
 
-Still open (checklist item "complete structural destruction"): generic
-structs, enum values (`Option`, `Result`, user enums) and C-layout structs keep
-leaking their shells.
+Concrete generic structs (`Pair[i64]`, `Named[T]` with `T` known, including
+`String` fields) follow the same structural rule since a follow-up the same
+day: codegen receives the declared struct type parameters
+(`struct_generic_params`) and substitutes the arguments into the field types;
+templates with unresolved parameters keep no action.
+
+Still open (checklist item "complete structural destruction"): enum values
+(`Option`, `Result`, user enums) and C-layout structs keep leaking their
+shells.
 
 Verification: `scripts/check_struct_release.py` (2060 -> 40065 pages before,
 60 -> 65 after); a codegen regression checks that a nested struct releases two

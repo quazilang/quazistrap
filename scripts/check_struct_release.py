@@ -43,6 +43,40 @@ fn main() i32 {
 """
 
 
+GENERIC = r"""import std.io;
+import std.fs;
+
+pub struct Pair[T] { left: T, right: T, }
+pub struct Named[T] { label: String, value: T, }
+
+fn sum(p: Pair[i64]) i64 { p.left + p.right }
+
+fn mapped_pages() u64 {
+    const result = fs.read_to_string("/proc/self/statm");
+    if (result.is_err()) { ret 0; }
+    const text: String = result.unwrap();
+    const end: usize = text.as_str().find(" ").unwrap();
+    const field = text[0:end];
+    const parsed: Result[u64, ParseError] = field.parse[u64]();
+    parsed.unwrap_or(0)
+}
+
+fn main() i32 {
+    var total: i64 = 0;
+    var before: u64 = 0;
+    for i : 0..20000 {
+        if (i == 1000) { before = mapped_pages(); }
+        const p = Pair { left: 1 as i64, right: 2 as i64 };
+        total = total + sum(p);
+        const n = Named { label: "abc".to_string(), value: 4 as i64 };
+        total = total + n.value + n.label.len() as i64;
+    }
+    io.println("total {} before {} after {}", total, before, mapped_pages());
+    0
+}
+"""
+
+
 def invoke(command, root):
     result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=300)
@@ -62,7 +96,14 @@ def check(qz, root):
     assert total == 120000, output
     # 38000 leaked structs would add about 38000 pages.
     assert after - before < 1000, output
-    print(f"PASS struct shells: 40000 structs, mapped pages {before} -> {after}")
+    (case / "src/main.qz").write_text(GENERIC)
+    output = invoke([str(qz), "run", "--no-incremental", "--no-color", "--silent"], case)
+    match = re.search(r"total (\d+) before (\d+) after (\d+)", output)
+    assert match, output
+    generic_total, generic_before, generic_after = (int(value) for value in match.groups())
+    assert generic_total == 200000 and generic_after - generic_before < 1000, output
+    print(f"PASS struct shells: 40000 structs ({before} -> {after} pages), "
+          f"40000 generic structs incl. String fields ({generic_before} -> {generic_after} pages)")
 
 
 def main():

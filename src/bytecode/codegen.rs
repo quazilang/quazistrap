@@ -2117,6 +2117,7 @@ impl<'a> Codegen<'a> {
             &self.report.impl_generic_params,
             &self.report.checked_string_abi,
             &self.report.type_name_bindings,
+            &self.report.struct_generic_params,
         );
         // The function owns ordinary by-value parameters. A bare inherent
         // receiver is likewise owned, except in its `.free` destructor: that
@@ -2606,6 +2607,8 @@ struct FnCompiler<'a> {
     impl_generic_params: &'a HashMap<String, Vec<String>>,
     checked_string_abi: &'a Option<crate::semantic::CheckedStringAbi>,
     type_name_bindings: &'a HashMap<String, crate::semantic::ResolvedBinding>,
+    /// Declared type parameters of generic structs, for concrete layouts.
+    struct_generic_params: &'a HashMap<String, Vec<String>>,
 }
 
 /// One guarded owner in the current full expression. A local identifier only
@@ -2788,6 +2791,7 @@ impl<'a> FnCompiler<'a> {
         impl_generic_params: &'a HashMap<String, Vec<String>>,
         checked_string_abi: &'a Option<crate::semantic::CheckedStringAbi>,
         type_name_bindings: &'a HashMap<String, crate::semantic::ResolvedBinding>,
+        struct_generic_params: &'a HashMap<String, Vec<String>>,
     ) -> Self {
         Self {
             chunk: Chunk::with_params(name, param_count),
@@ -2845,6 +2849,7 @@ impl<'a> FnCompiler<'a> {
             impl_generic_params,
             checked_string_abi,
             type_name_bindings,
+            struct_generic_params,
         }
     }
 
@@ -4781,10 +4786,26 @@ impl<'a> FnCompiler<'a> {
         // dedicated layout/ownership machinery. This first slice is only for
         // ordinary acyclic source structs whose fields can already be dropped
         // through a terminal consuming hook or the same structural rule.
-        if !type_args.is_empty()
+        // Concrete generic structs substitute their arguments into the field
+        // types; templates with unresolved parameters stay out.
+        if type_args
+            .iter()
+            .any(|argument| type_kind_mentions_unresolved_param(&argument.node))
             || self.repr_c_structs.contains(name)
             || !visiting.insert(name.to_string())
         {
+            return None;
+        }
+        let substitution: HashMap<String, TypeKind> = self
+            .struct_generic_params
+            .get(name)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .zip(type_args.iter().map(|argument| argument.node.clone()))
+            .collect();
+        if substitution.len() != type_args.len() {
+            visiting.remove(name);
             return None;
         }
         let Some(fields) = self.struct_defs.get(name) else {
@@ -4798,7 +4819,10 @@ impl<'a> FnCompiler<'a> {
 
         let mut drops = Vec::new();
         for (field_name, field_ty) in fields.iter().rev() {
-            let resolved = self.resolve_type(field_ty);
+            let resolved = self.resolve_type(&crate::semantic::typecheck::substitute_type_kind(
+                field_ty,
+                &substitution,
+            ));
             match self.structural_field_drop_action(&resolved, visiting) {
                 Some(action) => {
                     let offset = offsets
@@ -9305,6 +9329,7 @@ impl<'a> FnCompiler<'a> {
                     self.impl_generic_params,
                     self.checked_string_abi,
                     self.type_name_bindings,
+                    self.struct_generic_params,
                 );
                 // Reserve the complete incoming ABI frame before allocating
                 // capture locals or expression temporaries. r0 is the hidden
