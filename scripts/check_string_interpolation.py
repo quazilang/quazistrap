@@ -59,6 +59,24 @@ fn main() i32 {
 """
 
 
+CLOSURE = r"""import std.io;
+
+fn square(n: i64) i64 { n * n }
+
+fn main() i32 {
+    const n: i64 = 7;
+    const f: fn() i64 = || square(n);
+    io.println("f {}", f());
+    const g = qo square(n);
+    io.println("joined {g.join().unwrap()}");
+    var k: i64 = 3;
+    const h: fn() usize = || "k={k}".len();
+    io.println("h {}", h());
+    0
+}
+"""
+
+
 def run(command, root):
     return subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, timeout=300)
@@ -94,10 +112,12 @@ def check(qz, root):
     output = run([str(qz), "check"], case).stdout
     for message in ("unmatched `{`", "unmatched `}`", "`{}` has no argument outside a format call"):
         assert message in output, output
+    case = project(root, "closure", CLOSURE)
+    assert invoke([str(qz), "run", *common], case) == "f 49\njoined 49\nh 3\n"
     case = project(root, "moved", MOVED)
     output = run([str(qz), "check"], case).stdout
     assert "use of moved value 's'" in output and "use of moved value 't'" in output, output
-    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders")
+    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders, closure captures")
 
 
 def main():

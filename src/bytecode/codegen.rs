@@ -9909,6 +9909,16 @@ fn collect_destructor_roots(program: &Program) -> HashSet<String> {
 fn collect_idents(expr: &Expr, names: &mut Vec<String>) {
     match &expr.node {
         ExprKind::Ident(name) => names.push(name.clone()),
+        // Placeholders of a string literal read values too (D-020).
+        ExprKind::Literal(Literal::String(_)) => {
+            if let Some(expanded) =
+                crate::parser::format::expand_format_call_args(std::slice::from_ref(expr))
+            {
+                for argument in &expanded.args {
+                    collect_idents(argument, names);
+                }
+            }
+        }
         ExprKind::Literal(_) => {}
         ExprKind::Group(inner) => collect_idents(inner, names),
         ExprKind::Unary { expr: inner, .. } => collect_idents(inner, names),

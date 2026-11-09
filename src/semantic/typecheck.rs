@@ -8874,6 +8874,16 @@ fn expr_mutates_ident(expr: &Expr, target: &str) -> bool {
 pub(super) fn collect_expr_identifiers(expr: &Expr, names: &mut Vec<String>) {
     match &expr.node {
         ExprKind::Ident(name) => names.push(name.clone()),
+        // Placeholders of a string literal read values too (D-020).
+        ExprKind::Literal(Literal::String(_)) => {
+            if let Some(expanded) =
+                crate::parser::format::expand_format_call_args(std::slice::from_ref(expr))
+            {
+                for argument in &expanded.args {
+                    collect_expr_identifiers(argument, names);
+                }
+            }
+        }
         ExprKind::Literal(_) => {}
         ExprKind::Group(inner)
         | ExprKind::Unary { expr: inner, .. }
