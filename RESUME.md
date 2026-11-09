@@ -2,6 +2,32 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-09 evening, qo keyword)
+
+quazistrap: `7e7ebf0` generic free-call inference (incl. closure results,
+`apply(|| f(n))`); `e8a21d7` `qo f(args)` -> parser lowering to
+`__qo_spawn(|| f(args))`, prelude `prelude/src/qoroutine.qz` (Qoroutine[T],
+join, M:N scheduler on 4 workers), library `@export`s compiled only when
+reachable (+ export table-name -> analysis-name reachability fix);
+`5066003` LSP keyword. tree-sitter `af45fad` qo_expr (generated from
+src/grammar.json: no node here; deno can't run grammar.js; tree-sitter CLI is
+/nix/store/yp6r29h2gxm1vy86f3m71vd14gh5hi9z-tree-sitter-0.26.11/bin/tree-sitter).
+Verified: 1019 Rust tests, all e2e (new check_qoroutines.py), std 61/61,
+examples. Flaky under parallel runs once: test_runner::tests::
+target_gated_modules_are_not_loaded_as_independent_test_roots (passes alone).
+Note: src/semantic/types.rs and src/lexer/token.rs have mixed CRLF/LF line
+endings — edit bytewise (Python newline='' / binary), never normalize.
+
+Next for D-019:
+1. Current-task detection without TLS: add an rsp-read intrinsic (or return
+   the task from the context), allocate qoroutine stacks aligned (e.g. 512 KiB
+   region, 256 KiB aligned) with the task pointer at the base; then
+   `__qo_yield()` and parking.
+2. `Channel[T]` (send/receive -> Option[T]/close) parking qoroutines; OS
+   threads block via yield until parking for threads exists.
+3. join parking instead of spinning; panic -> `join()` error; timer
+   preemption; closure ownership for moved/owned args and results.
+
 ## Checkpoint (2026-11-09 later, qoroutine runtime groundwork)
 
 quazistrap commits: `b056410` W01 loop-binder spans; `c5fd4ad` libc-free Linux
