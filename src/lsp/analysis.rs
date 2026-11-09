@@ -97,6 +97,26 @@ pub fn analyze_source_cancellable(
         .map_err(|_| CancellableAnalysisError::Cancelled)
 }
 
+/// Analyze the first parseable recovery candidate of a document whose parse
+/// failed with `parse_error`, so semantic features see declarations at the
+/// current text's offsets while the user is typing. `None` when no candidate
+/// parses or analysis was cancelled.
+pub fn analyze_recovered_source_cancellable(
+    source: &str,
+    parse_error: &str,
+    cancellation: &crate::cancel::CancellationToken,
+) -> Option<SemanticReport> {
+    let line = super::diagnostics::parse_error_range(parse_error, source).start.line as usize + 1;
+    super::recovery::candidates(source, line)
+        .into_iter()
+        .find_map(|candidate| match analyze_source_cancellable(&candidate, cancellation) {
+            Ok(report) => Some(Ok(report)),
+            Err(CancellableAnalysisError::Cancelled) => Some(Err(())),
+            Err(_) => None,
+        })
+        .and_then(Result::ok)
+}
+
 pub fn analyze_loaded_document(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
@@ -408,6 +428,32 @@ mod tests {
             analyze_source_cancellable("const value: i32 = 1;", &cancellation),
             Err(CancellableAnalysisError::Cancelled)
         ));
+    }
+
+    #[test]
+    fn unparseable_documents_are_analyzed_through_recovery() {
+        let source = "fn helper(count: i32) i32 { ret count; }\n\nfn main() void {\n    const total: i32 = helper(2);\n    helper(total, \n}\n\nfn after() void {}\n";
+        let cancellation = crate::cancel::CancellationToken::new();
+        let Err(CancellableAnalysisError::Parse(error)) =
+            analyze_source_cancellable(source, &cancellation)
+        else {
+            panic!("the unfinished call must not parse");
+        };
+        let report = analyze_recovered_source_cancellable(source, &error, &cancellation)
+            .expect("a recovery candidate parses");
+        let span_of = |name: &str| {
+            report
+                .symbol_table
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .map(|entry| entry.symbol.span.start)
+        };
+        // Declarations before and after the broken line keep their offsets.
+        let char_offset = |needle: &str| source[..source.find(needle).unwrap()].chars().count();
+        assert_eq!(span_of("helper"), Some(char_offset("fn helper")));
+        assert_eq!(span_of("total"), Some(char_offset("const total")));
+        assert_eq!(span_of("after"), Some(char_offset("fn after")));
     }
 
     #[test]

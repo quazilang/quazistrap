@@ -19,6 +19,8 @@ notifications the server consumes.
 - ✅ Signature help for current-document and loaded standard-library functions
 - ✅ Same-document references and rename for semantically resolved bindings
 - ✅ Full-document semantic tokens for lexical tokens and known semantic symbols
+- ✅ Semantic features on unparseable documents through `recovery.rs` (blanked
+  error region keeps offsets; only the parse error is published)
 
 ## Position Model
 

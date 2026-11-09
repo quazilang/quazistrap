@@ -11,6 +11,7 @@ mod formatting;
 mod goto_def;
 mod hover;
 mod inlay_hints;
+mod recovery;
 mod references;
 mod semantic_tokens;
 mod server;

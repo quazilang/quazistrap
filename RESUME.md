@@ -2,6 +2,19 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, LSP incomplete source)
+
+LSP 18/20 (plan 97.9%): `src/lsp/recovery.rs` blanks the error line / previous
+line / both / enclosing item; server analyze_source_in_background analyzes the
+first parseable candidate (CancellableTaskError::Parse carries it) and sets
+doc.report; scripts/lsp_client.py shared by check_lsp_performance.py and
+check_lsp_incomplete_source.py. Remaining LSP: real-client Unicode/formatting
+suite, Zed/Helix runtime validation. Open review findings (2026-11-10): impl
+methods still use an old str-variadic predicate in codegen (~787); snapshot
+cache misses newly created disk files / quazi.lock; placeholder spans are
+inexact after escapes and on later lines of multi-line literals (rename can
+edit inside an escape).
+
 ## Checkpoint (2026-11-10, plain str variadics)
 
 `parser::format::is_format_variadic` is the single format-function rule

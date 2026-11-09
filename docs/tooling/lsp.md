@@ -92,6 +92,16 @@ than a name-resolution guarantee.
   manifest changes, the same limit as the workspace-symbol index.
   Namespace and wildcard imports still depend on the compiler's available
   semantic annotations.
+- A document that does not parse still gets semantic features
+  (`src/lsp/recovery.rs`): the server publishes the parse error and analyzes
+  the first parseable copy in which the error line, the previous non-blank
+  line, both, or the enclosing top-level item is blanked (every character but
+  line breaks becomes a space, so offsets match the edited text). Hover,
+  completion, signature help, semantic tokens, inlay hints and same-document
+  definition use that report; its semantic diagnostics are not published.
+  Nothing is answered for positions inside the blanked region, and
+  loader-backed references and rename still need a parseable document. When
+  no candidate parses, the previous report is kept.
 - Formatting and position conversion need a real-editor protocol smoke suite
   before they can be treated as stable across all Unicode input.
 
@@ -111,6 +121,8 @@ and repeated requests on unchanged inputs have a median within 20 ms; an
 unsaved edit must produce fresh results. On 2026-11-10 the script measured
 150 ms cold and 0.6 ms warm (previously every request took about 150 ms);
 `--no-targets` reports a debug build without enforcing them.
+`python3 scripts/check_lsp_incomplete_source.py --qz target/debug/qz` checks
+the features above on a document with a half-typed call.
 
 The compiler test suite also compiles the server implementation. Real editor
 integration remains a separate validation requirement for each editor package.

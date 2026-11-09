@@ -31,7 +31,9 @@ pub struct VoidLanguageServer {
 #[derive(Debug)]
 enum CancellableTaskError {
     Cancelled,
-    Parse(String),
+    /// The document does not parse; the report, when present, analyzes its
+    /// recovered approximation (see `recovery`).
+    Parse(String, Option<crate::semantic::SemanticReport>),
     Failed,
 }
 
@@ -202,14 +204,22 @@ async fn analyze_source_in_background(
     source: String,
     cancellation: CancellationToken,
 ) -> std::result::Result<crate::semantic::SemanticReport, CancellableTaskError> {
-    run_in_blocking_pool(move || analysis::analyze_source_cancellable(&source, &cancellation))
-        .await
-        .map_err(|_| CancellableTaskError::Failed)?
-        .map_err(|error| match error {
+    run_in_blocking_pool(move || {
+        analysis::analyze_source_cancellable(&source, &cancellation).map_err(|error| match error {
             analysis::CancellableAnalysisError::Cancelled => CancellableTaskError::Cancelled,
-            analysis::CancellableAnalysisError::Parse(error) => CancellableTaskError::Parse(error),
+            analysis::CancellableAnalysisError::Parse(error) => {
+                let recovered = analysis::analyze_recovered_source_cancellable(
+                    &source,
+                    &error,
+                    &cancellation,
+                );
+                CancellableTaskError::Parse(error, recovered)
+            }
             analysis::CancellableAnalysisError::Load(_) => CancellableTaskError::Failed,
         })
+    })
+    .await
+    .map_err(|_| CancellableTaskError::Failed)?
 }
 
 async fn analyze_loaded_document_cancellable_in_background(
@@ -390,7 +400,14 @@ impl VoidLanguageServer {
                     .publish_diagnostics(uri, diags, Some(version))
                     .await;
             }
-            Err(CancellableTaskError::Parse(parse_err)) => {
+            Err(CancellableTaskError::Parse(parse_err, recovered)) => {
+                // Features keep working while the user types: a recovered
+                // report matches the current text's offsets. Its semantic
+                // diagnostics describe the approximation, so only the parse
+                // error is published. Without one the previous report stays.
+                if let Some(report) = recovered {
+                    doc.report = Some(report);
+                }
                 let diag = Diagnostic {
                     range: diagnostics::parse_error_range(&parse_err, &text),
                     severity: Some(DiagnosticSeverity::ERROR),
