@@ -8061,9 +8061,14 @@ impl<'a> FnCompiler<'a> {
                     if self.str_variadic_fns.contains(call_name.as_str()) && !args.is_empty() {
                         if let Some(expanded) = crate::parser::format::expand_format_call_args(args)
                         {
-                            let idx = self
-                                .chunk
-                                .add_constant(ConstPoolEntry::Str(expanded.clean_template));
+                            // Without arguments nothing formats at run time: the
+                            // template's `{{`/`}}` escapes are resolved here.
+                            let template = if expanded.args.is_empty() {
+                                expanded.clean_template.replace("{{", "{").replace("}}", "}")
+                            } else {
+                                expanded.clean_template
+                            };
+                            let idx = self.chunk.add_constant(ConstPoolEntry::Str(template));
                             let template_reg = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
@@ -8275,9 +8280,14 @@ impl<'a> FnCompiler<'a> {
                     if (is_fmt_fn || is_variadic_intrinsic) && !args.is_empty() {
                         if let Some(expanded) = crate::parser::format::expand_format_call_args(args)
                         {
-                            let idx = self
-                                .chunk
-                                .add_constant(ConstPoolEntry::Str(expanded.clean_template));
+                            // Without arguments nothing formats at run time: the
+                            // template's `{{`/`}}` escapes are resolved here.
+                            let template = if expanded.args.is_empty() {
+                                expanded.clean_template.replace("{{", "{").replace("}}", "}")
+                            } else {
+                                expanded.clean_template
+                            };
+                            let idx = self.chunk.add_constant(ConstPoolEntry::Str(template));
                             let template_reg = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
@@ -8561,9 +8571,12 @@ impl<'a> FnCompiler<'a> {
                                     &mangled_check,
                                     receiver_place,
                                 );
-                                let idx = self
-                                    .chunk
-                                    .add_constant(ConstPoolEntry::Str(expanded.clean_template));
+                                let template = if expanded.args.is_empty() {
+                                    expanded.clean_template.replace("{{", "{").replace("}}", "}")
+                                } else {
+                                    expanded.clean_template
+                                };
+                                let idx = self.chunk.add_constant(ConstPoolEntry::Str(template));
                                 let template_reg = self.alloc_reg();
                                 self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 

@@ -6105,7 +6105,15 @@ impl Analyzer {
     /// (`@format`/`str_variadic`): its braces follow the format-call rules.
     fn note_format_template(&mut self, callee: Option<&str>, args: &[Expr]) {
         let Some(first) = args.first() else { return };
-        if !matches!(first.node, ExprKind::Literal(Literal::String(_))) {
+        let ExprKind::Literal(Literal::String(text)) = &first.node else {
+            return;
+        };
+        // Without placeholders the literal is plain text: its `{{`/`}}` read
+        // as single braces like any other literal.
+        if matches!(
+            crate::parser::format::classify_string_literal(text),
+            crate::parser::format::StringLiteralForm::Plain(_)
+        ) {
             return;
         }
         if callee

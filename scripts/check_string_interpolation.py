@@ -77,6 +77,17 @@ fn main() i32 {
 """
 
 
+TEMPLATES = r"""import std.io;
+fn main() void {
+    io.println(`a {x} b`);
+    io.println(`c {{y}}`);
+    io.println("e {{z}}");
+    io.println("f {{w}} {}", 1);
+    ret;
+}
+"""
+
+
 def run(command, root):
     return subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, timeout=300)
@@ -112,12 +123,14 @@ def check(qz, root):
     output = run([str(qz), "check"], case).stdout
     for message in ("unmatched `{`", "unmatched `}`", "`{}` has no argument outside a format call"):
         assert message in output, output
+    case = project(root, "templates", TEMPLATES)
+    assert invoke([str(qz), "run", *common], case) == "a {x} b\nc {{y}}\ne {z}\nf {w} 1\n"
     case = project(root, "closure", CLOSURE)
     assert invoke([str(qz), "run", *common], case) == "f 49\njoined 49\nh 3\n"
     case = project(root, "moved", MOVED)
     output = run([str(qz), "check"], case).stdout
     assert "use of moved value 's'" in output and "use of moved value 't'" in output, output
-    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders, closure captures")
+    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders, closure captures, raw and placeholder-free templates")
 
 
 def main():
