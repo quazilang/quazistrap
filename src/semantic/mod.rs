@@ -2640,6 +2640,31 @@ mod tests {
     }
 
     #[test]
+    fn never_returning_calls_end_a_function_path() {
+        let report = analyze(
+            "fn fail() ! { fail() }\nfn f(n: i32) i32 {\n    if (n > 0) { ret 1; }\n    fail();\n}\nfn main() void {}\n",
+        );
+        assert!(
+            !report.errors.iter().any(|error| error.code == "S03"),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn multi_line_spans_underline_only_their_first_line() {
+        let source = "fn f() i32 {\n    1\n}\n";
+        let error = crate::semantic::types::SemanticError {
+            code: "S03",
+            message: "example".to_string(),
+            span: Span::new(1, 1, 0, source.len()),
+        };
+        let rendered = error.render(source);
+        let carets = rendered.matches('^').count();
+        assert_eq!(carets, "fn f() i32 {".len(), "{rendered}");
+    }
+
+    #[test]
     fn only_qo_closures_move_owned_captures() {
         let prelude = "struct Q[T] { v: T, }\nfn __qo_spawn[T](f: fn() T) Q[T] { Q { v: f() } }\nstruct Job { id: i64, }\nfn measure(text: Job) i64 { text.id }\n";
         let moved = analyze(&format!(

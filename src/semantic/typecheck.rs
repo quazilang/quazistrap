@@ -2438,8 +2438,10 @@ impl Analyzer {
                 terminal
             }
             StmtKind::ExprStmt(expr) => {
-                self.type_check_expr(expr, true);
-                false
+                // A call that never returns (`panic(...)`, any `!` function)
+                // ends the path like `ret`.
+                let eval = self.type_check_expr(expr, true);
+                matches!(eval.ty, Some(TypeKind::Never))
             }
             StmtKind::CfgBlock { body, condition } => {
                 if super::item_should_include(std::slice::from_ref(condition)) {

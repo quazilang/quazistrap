@@ -212,7 +212,10 @@ fn render_diag_at(
         let w = lnum.len();
         let blank = " ".repeat(w);
         let caret_off = span.col.saturating_sub(1);
-        let caret_w = (span.end.saturating_sub(span.start)).max(1);
+        // A span continuing past this line (a whole function or loop) is
+        // underlined only up to the end of its first line.
+        let line_rest = line_text.chars().count().saturating_sub(caret_off).max(1);
+        let caret_w = (span.end.saturating_sub(span.start)).clamp(1, line_rest);
         out.push_str(&format!("\n{blank} \x1b[1;34m|\x1b[0m"));
         out.push_str(&format!(
             "\n\x1b[1;34m{lnum}\x1b[0m \x1b[1;34m|\x1b[0m {line_text}"

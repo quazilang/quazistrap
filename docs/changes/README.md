@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-09: Never-returning calls end a path; carets stay on one line](2026-11-09-never-calls-and-carets.md)
+
 - [2026-11-09: Built-in Channel[T]](2026-11-09-channels.md)
 
 - [2026-11-09: `qo` moves owned arguments](2026-11-09-qo-owned-arguments.md)
