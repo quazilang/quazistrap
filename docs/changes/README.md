@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-09: Static archives in the built-in ELF linker](2026-11-09-static-archives.md)
+
 - [2026-11-09: Struct destructuring in match patterns](2026-11-09-struct-patterns.md)
 
 - [2026-11-09: Strength reduction for powers of two](2026-11-09-strength-reduction.md)

@@ -48,16 +48,33 @@ pub fn link_object(
                 extra_flags.join(" ")
             ));
         }
+        let is_archive = |path: &str| {
+            Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("a"))
+        };
         let native_objects = extra_flags
             .iter()
+            .filter(|path| !is_archive(path))
             .map(|path| {
                 std::fs::read(path)
                     .map_err(|error| format!("cannot read native object {path}: {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let archives = extra_flags
+            .iter()
+            .filter(|path| is_archive(path))
+            .map(|path| {
+                std::fs::read(path)
+                    .map(|bytes| (path.clone(), bytes))
+                    .map_err(|error| format!("cannot read archive {path}: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut objects = Vec::with_capacity(native_objects.len() + 1);
         objects.push(object_bytes);
         objects.extend(native_objects.iter().map(Vec::as_slice));
+        let members = super::archive::select_members(&objects, &archives)?;
+        objects.extend(members.iter().map(Vec::as_slice));
         if crate::jit::requested() {
             if target.os != Os::Linux {
                 return Err("qz run --jit supports Linux targets only".into());
@@ -106,6 +123,10 @@ fn is_object_path(flag: &str, os: super::target::Os) -> bool {
         .is_some_and(|extension| match os {
             super::target::Os::Windows => {
                 extension.eq_ignore_ascii_case("obj") || extension.eq_ignore_ascii_case("o")
+            }
+            // Static archives contribute the members the link needs.
+            super::target::Os::Linux | super::target::Os::NetBsd => {
+                extension.eq_ignore_ascii_case("o") || extension.eq_ignore_ascii_case("a")
             }
             _ => extension.eq_ignore_ascii_case("o"),
         })

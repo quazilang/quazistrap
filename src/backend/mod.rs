@@ -5,6 +5,7 @@
 pub mod builtin_linker;
 pub mod builtin_netbsd_linker;
 pub mod builtin_pe_linker;
+pub mod archive;
 pub mod linker;
 pub mod target;
 pub mod x86_64;

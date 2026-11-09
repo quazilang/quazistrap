@@ -5,7 +5,10 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 91.1%. Remaining: 8.9%.**
+**Complete: 91.4%. Remaining: 8.6%.**
+
+On 2026-11-09 the built-in linker gained ELF `.a` archive member extraction
+(8/9; [change record](../changes/2026-11-09-static-archives.md)).
 
 On 2026-11-09 nested struct patterns (1/1) were completed
 ([change record](../changes/2026-11-09-struct-patterns.md)).
@@ -194,7 +197,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | else-if chains | 1/1 | 100.0% | 0.0% |
 | unsafe block sugar | 1/1 | 100.0% | 0.0% |
 | AOT cfg stripping | 1/1 | 100.0% | 0.0% |
-| Built-in linker | 7/9 | 77.8% | 22.2% |
+| Built-in linker | 8/9 | 88.9% | 11.1% |
 | qz test runner | 1/1 | 100.0% | 0.0% |
 | pub on types | 1/1 | 100.0% | 0.0% |
 | Unified formatting | 1/1 | 100.0% | 0.0% |
@@ -305,7 +308,7 @@ Evidence: [docs/LINKER.md](../LINKER.md).
 - [x] Generated Windows import tables.
 - [x] No implicit libc/CRT dependency.
 - [x] Unsupported-input diagnostics and focused linker regressions.
-- [ ] Archive member extraction in the built-in path.
+- [x] Archive member extraction in the built-in path ([scripts/check_static_archives.py](../../scripts/check_static_archives.py)).
 - [ ] Final target-native Linux/Windows linker validation matrix.
 
 ### qz test runner

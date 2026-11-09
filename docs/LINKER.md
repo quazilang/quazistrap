@@ -18,16 +18,22 @@ The built-in linker is selected when all of the following are true:
 - the target is x86-64 Linux or Windows;
 - neither `--linker <external-path>` nor an external `QUAZI_LINKER` is set;
 - every additional native input is a target-compatible ELF `.o` or COFF
-  `.o`/`.obj` file; and
-- no library, archive, shared object, library path, or other native linker flag
+  `.o`/`.obj` file, or (Linux/NetBSD) a static `.a` archive of ELF objects; and
+- no `-l` library, shared object, library path, or other native linker flag
   was requested.
+
+Static archives are searched like a traditional Unix linker: a member is
+linked only when it defines a symbol that is still undefined, repeatedly
+until nothing changes, so members nobody needs (and their own undefined
+references) stay out of the executable. Thin archives are rejected.
 
 `--linker builtin` or `QUAZI_LINKER=builtin` requires this path. If an input is
 unsupported, Quazi returns an error rather than falling back to a host linker.
 The command-line `--linker` value takes precedence over `QUAZI_LINKER`.
 
 The external path is selected by any explicit external linker, `-l`, `-L`,
-archive/shared-library input, shared-library output, or unsupported target.
+shared-library input, a Windows `.lib` archive, shared-library output, or an
+unsupported target.
 External Linux linking still adds neither libc nor libm automatically. The
 external Windows path adds OS import libraries needed by generated startup code
 (`kernel32.lib` and `shell32.lib`), but does not add the Universal CRT,
@@ -213,7 +219,8 @@ linker.
 
 - x86-64 Linux static executables only;
 - no Mach-O linker;
-- no archive extraction or shared-library handling inside the built-in linker;
+- no shared-library handling inside the built-in linker, and no Windows `.lib`
+  archives (ELF `.a` archives are supported);
 - no TLS, COMDAT/group selection, symbol versions, linker scripts, or section
   garbage collection;
 - only the relocation forms listed above;

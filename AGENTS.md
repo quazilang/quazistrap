@@ -29,12 +29,12 @@ qz lsp
 Output: `<stem>.qzi` (bytecode), `<stem>.o` (object), `<stem>`/`<stem>.exe` (binary).  
 `.qzi` as input: skips frontend, goes straight to backend. Binary emission also reuses the current project's `[cc]` and `[link]` inputs, so the same target-neutral QZI can be linked against the host's native C objects and libraries.
 Linker: plain Linux and Windows binaries use in-process ELF/PE linkers with no
-implicit native libraries. `--linker builtin` forces them. Archives/shared libraries,
+implicit native libraries. `--linker builtin` forces them. Shared libraries, `.lib` archives,
 `-l`, an explicit linker path, or `QUAZI_LINKER` opt into the external path
 (`ld.lld`/`mold`/`ld` or `lld-link`/`link`); libc/CRT libraries are never added
 implicitly. Target-compatible ELF/COFF objects passed to `qz build`/`qz run`
-are linked by the built-in pipeline; archives, shared libraries, and `-l` remain explicit
-external-linker features.
+are linked by the built-in pipeline, as are needed members of ELF `.a` archives
+(`backend/archive.rs`); shared libraries and `-l` remain explicit external-linker features.
 Rust edition 2024.
 
 ---
@@ -426,7 +426,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 | **`else if` chains** | ✅ Done |
 | **`unsafe` block sugar** | ✅ Done |
 | **AOT `@cfg` stripping** | ✅ Done |
-| **Built-in linker** | Experimental x86-64 ELF and PE32+ linking, cross-object symbols, checked relocations, generated Windows imports, and no implicit libc; archives pending |
+| **Built-in linker** | Experimental x86-64 ELF and PE32+ linking, cross-object symbols, checked relocations, generated Windows imports, needed-member extraction from ELF `.a` archives, and no implicit libc |
 | **`qz test` runner** | ✅ Done — discovers `@test` in `src/` and `tests/`, gives nested source files path-qualified module names and `tests/` a distinct `tests.*` root, compiles once, runs each test in an isolated process, reports infrastructure failures, and supports name filtering |
 | **`pub` on types** | ✅ Done |
 | **Unified formatting for `print`/`println`/`err`/`errln`/`format`** | In progress — support shared placeholder behavior, escaped braces, and format specifications; begin with `{:X}` and `{name:X}` uppercase hexadecimal |

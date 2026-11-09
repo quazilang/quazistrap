@@ -47,7 +47,8 @@ Plain Linux executable builds use the built-in linker automatically. It links
 compiler-produced and passed ELF objects into a static ELF with separate RX/R/RW load
 segments, a non-executable stack, checked PC-relative/absolute relocations, and
 no implicit native libraries. `--linker builtin` forces this path. Additional
-ELF `.o` files remain on the built-in path; archives, shared libraries, `-l`,
+ELF `.o` files and the needed members of `.a` archives (`archive.rs`) remain on
+the built-in path; shared libraries, `-l`,
 `-L`, or an explicit external linker select the external path. libc/libm are
 linked only when the user requests them with `-l`.
 
@@ -61,7 +62,7 @@ The experimental linker omits `.note.gnu.property` and `.eh_frame` metadata,
 then rejects unsupported allocated sections, relocations,
 native flags, duplicate strong symbols, and unresolved external symbols with
 actionable errors. Non-loaded metadata/debug sections are omitted. Its current
-targets are x86-64 Linux and Windows; Mach-O, archives, shared objects, TLS, COMDAT,
+targets are x86-64 Linux and Windows; Mach-O, `.lib` archives, shared objects, TLS, COMDAT,
 and linker scripts remain follow-up work. See `docs/LINKER.md` for the complete
 input, output, runtime, selection, and limitation contracts.
 

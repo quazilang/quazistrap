@@ -4,15 +4,15 @@
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
 
-**Plan completion: 91.1%.**
+**Plan completion: 91.4%.**
 
-**Remaining work: 8.9%.**
+**Remaining work: 8.6%.**
 
 Completion of unfinished plan items:
 
 | Plan item | Implemented requirements | Complete | Remaining |
 | --- | --- | --- | --- |
-| Built-in linker | 7/9 | 77.8% | 22.2% |
+| Built-in linker | 8/9 | 88.9% | 11.1% |
 | Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
 | Format string literals | 0/1 | 0.0% | 100.0% |
 | async / await | 0/1 | 0.0% | 100.0% |
@@ -95,8 +95,9 @@ See [NetBSD 11.0 port status, known bugs, and next steps](docs/changes/2026-11-0
 
 Building the compiler requires **Rust 2024 edition** (latest stable recommended).
 Plain x86-64 Linux and Windows Quazi builds need no system linker or C
-toolchain. Native C sources, archives, shared libraries, and explicit `-l`
-dependencies may use corresponding external tools.
+toolchain. Static ELF `.a` archives link in process too; native C sources,
+shared libraries, and explicit `-l` dependencies may use corresponding
+external tools.
 
 ```bash
 git clone https://github.com/quazilang/quazistrap
@@ -274,7 +275,7 @@ Quazi project.
 - `--linker <path>` — explicitly use an external linker
 - `--jit` (`qz run` only, experimental) — link with the built-in linker into memory and run the
   program inside the `qz` process without writing an executable (Linux x86-64 targets; no
-  external linker, archives or shared libraries); `qz` exits with the program's status
+  external linker or shared libraries; `.a` archives are fine); `qz` exits with the program's status
 - `-L <dir>` / `-l <name>` — opt into a native library search path/library
 
 - `-q`, `--silent` — emit nothing for successful builds; errors still print
@@ -302,7 +303,7 @@ qz run program.o helper.o
 ```
 
 No library is implicit. In particular, libc and libm are not linked merely
-because they exist on the host. Passing `-l`, an archive/shared-library input,
+because they exist on the host. Passing `-l`, a shared-library input,
 or an explicit external linker path selects the external
 linking path. `--linker builtin` rejects unsupported native flags instead of
 silently falling back. To use libc intentionally:
