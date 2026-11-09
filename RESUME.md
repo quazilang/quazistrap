@@ -2,6 +2,19 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, LSP snapshot cache)
+
+LSP 17/20 (plan 97.7%): `src/lsp/snapshot_cache.rs` caches loader-backed
+snapshots per document, validated by the exact text of every loaded file and
+project/dependency manifest (`LoadedSnapshot.manifests`); did_open clears it.
+`scripts/check_lsp_performance.py` (release targets cold <= 1000 ms, warm
+median <= 20 ms; measured 150 ms / 0.6 ms). Remaining LSP: incomplete-source
+semantic features, real-client Unicode/formatting suite, Zed/Helix runtime
+validation. Review of 05799ca found: 80-byte leak when `?` returns inside a
+format argument after a number was converted, and single-argument str-variadic
+paths (codegen compile_runtime_format_wrapper, ~7067) outside any scratch
+scope; fix in progress.
+
 ## Checkpoint (2026-11-10, thread-safe number formatting)
 
 Numbers formatted inside format calls (fmt.format, println/print, interpolated

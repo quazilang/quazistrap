@@ -4,9 +4,9 @@
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
 
-**Plan completion: 97.6%.**
+**Plan completion: 97.7%.**
 
-**Remaining work: 2.4%.**
+**Remaining work: 2.3%.**
 
 Completion of unfinished plan items:
 
@@ -14,7 +14,7 @@ Completion of unfinished plan items:
 | --- | --- | --- | --- |
 | Built-in linker | 8/9 | 88.9% | 11.1% |
 | Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
-| LSP improvements | 16/20 | 80.0% | 20.0% |
+| LSP improvements | 17/20 | 85.0% | 15.0% |
 
 Revalidated on 2026-10-25 for the
 [declaration-type context prerequisite](docs/changes/2026-10-24-declaration-type-context.md) and
@@ -49,6 +49,9 @@ recursive destruction and artifact certification remain open. Ownership stays
 9/16; LSP stays 16/20. On 2026-11-08 the maintainer removed the macOS Mach-O
 backend from the plan, leaving a 32-item, 75-requirement rubric.
 Statuses and percentages are refreshed before committing.
+On 2026-11-10 LSP reached 17/20: loader-backed navigation snapshots are
+cached while their inputs are unchanged and `scripts/check_lsp_performance.py`
+enforces measured latency targets (cold 150 ms, warm 0.6 ms in release).
 The declaration-context prerequisite completes no additional checklist requirement,
 so completion was 75.4% after that removal; native atomics and `qz doc` then raised it to 81.7%.
 Each item has equal weight; its percentage is implemented requirements

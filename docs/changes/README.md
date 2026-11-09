@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-10: LSP navigation snapshots are cached](2026-11-10-lsp-snapshot-cache.md)
+
 - [2026-11-10: Numbers in format arguments get private digit buffers](2026-11-10-thread-safe-number-formatting.md)
 
 - [2026-11-09: Size-class heap in the embedded Linux runtime](2026-11-09-size-class-heap.md)

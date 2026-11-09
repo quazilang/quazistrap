@@ -12,6 +12,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use super::document::DocumentState;
+use super::snapshot_cache::SnapshotCache;
 use super::workspace::WorkspaceIndex;
 use super::{
     analysis, code_actions, completion, diagnostics, formatting, goto_def, hover, inlay_hints,
@@ -23,6 +24,8 @@ pub struct VoidLanguageServer {
     pub client: Client,
     pub documents: Arc<RwLock<HashMap<Url, DocumentState>>>,
     pub workspace: Arc<RwLock<WorkspaceIndex>>,
+    /// Loader-backed snapshots reused while their inputs are unchanged.
+    snapshots: Arc<std::sync::Mutex<SnapshotCache>>,
 }
 
 #[derive(Debug)]
@@ -210,22 +213,43 @@ async fn analyze_source_in_background(
 }
 
 async fn analyze_loaded_document_cancellable_in_background(
+    cache: Arc<std::sync::Mutex<SnapshotCache>>,
     path: PathBuf,
     overlays: HashMap<PathBuf, String>,
-) -> std::result::Result<analysis::LoadedSnapshot, CancellableTaskError> {
+) -> std::result::Result<Arc<analysis::LoadedSnapshot>, CancellableTaskError> {
     run_cancellable_in_blocking_pool(move |cancellation| {
         cancellation
             .check()
             .map_err(|_| CancellableTaskError::Cancelled)?;
-        analysis::analyze_loaded_document_cancellable(&path, &overlays, &cancellation).map_err(
-            |error| match error {
-                analysis::CancellableAnalysisError::Cancelled => CancellableTaskError::Cancelled,
-                analysis::CancellableAnalysisError::Parse(_)
-                | analysis::CancellableAnalysisError::Load(_) => CancellableTaskError::Failed,
-            },
+        let key = path
+            .canonicalize()
+            .map_err(|_| CancellableTaskError::Failed)?;
+        if let Some(snapshot) = lock_cache(&cache).get(&key, &overlays) {
+            return Ok(snapshot);
+        }
+        let snapshot = analysis::analyze_loaded_document_cancellable(
+            &key,
+            &overlays,
+            &cancellation,
         )
+        .map_err(|error| match error {
+            analysis::CancellableAnalysisError::Cancelled => CancellableTaskError::Cancelled,
+            analysis::CancellableAnalysisError::Parse(_)
+            | analysis::CancellableAnalysisError::Load(_) => CancellableTaskError::Failed,
+        })?;
+        let snapshot = Arc::new(snapshot);
+        lock_cache(&cache).insert(key, Arc::clone(&snapshot));
+        Ok(snapshot)
     })
     .await
+}
+
+/// The cache holds only validated, immutable snapshots, so a panic while it
+/// was locked cannot leave a half-written entry behind.
+fn lock_cache(cache: &std::sync::Mutex<SnapshotCache>) -> std::sync::MutexGuard<'_, SnapshotCache> {
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn server_capabilities() -> ServerCapabilities {
@@ -309,6 +333,7 @@ impl VoidLanguageServer {
             client,
             documents: Arc::new(RwLock::new(HashMap::new())),
             workspace: Arc::new(RwLock::new(WorkspaceIndex::default())),
+            snapshots: Arc::default(),
         }
     }
 
@@ -415,6 +440,9 @@ impl LanguageServer for VoidLanguageServer {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        // A newly opened buffer can change which file an unchanged import
+        // resolves to, which input comparison alone cannot see.
+        lock_cache(&self.snapshots).clear();
         self.analyze_and_publish(
             params.text_document.uri,
             params.text_document.text,
@@ -524,8 +552,12 @@ impl LanguageServer for VoidLanguageServer {
             (doc.source.clone(), report, loader_overlays(&docs))
         };
         if let Some(path) = uri.to_file_path().ok()
-            && let Ok(snapshot) =
-                analyze_loaded_document_cancellable_in_background(path, overlays.clone()).await
+            && let Ok(snapshot) = analyze_loaded_document_cancellable_in_background(
+                Arc::clone(&self.snapshots),
+                path,
+                overlays.clone(),
+            )
+            .await
         {
             let docs = self.documents.read().await;
             if !document_matches_source(&docs, uri, &source)
@@ -584,8 +616,12 @@ impl LanguageServer for VoidLanguageServer {
         let Some(path) = uri.to_file_path().ok() else {
             return Ok(None);
         };
-        let Ok(snapshot) =
-            analyze_loaded_document_cancellable_in_background(path, overlays.clone()).await
+        let Ok(snapshot) = analyze_loaded_document_cancellable_in_background(
+            Arc::clone(&self.snapshots),
+            path,
+            overlays.clone(),
+        )
+        .await
         else {
             return Ok(None);
         };
@@ -617,8 +653,12 @@ impl LanguageServer for VoidLanguageServer {
         let Some(path) = uri.to_file_path().ok() else {
             return Ok(None);
         };
-        let Ok(snapshot) =
-            analyze_loaded_document_cancellable_in_background(path, overlays.clone()).await
+        let Ok(snapshot) = analyze_loaded_document_cancellable_in_background(
+            Arc::clone(&self.snapshots),
+            path,
+            overlays.clone(),
+        )
+        .await
         else {
             return Ok(None);
         };
@@ -916,6 +956,7 @@ mod tests {
             report: analyze_source(&old_source).expect("test source analyzes"),
             source_files: Vec::new(),
             effective_sources: HashMap::from([(canonical_path, old_source.clone())]),
+            manifests: Vec::new(),
         };
         let mut documents = HashMap::from([(
             uri.clone(),

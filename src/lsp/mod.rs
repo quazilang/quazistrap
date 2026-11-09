@@ -15,6 +15,7 @@ mod references;
 mod semantic_tokens;
 mod server;
 mod signature;
+mod snapshot_cache;
 mod span;
 mod symbols;
 mod workspace;

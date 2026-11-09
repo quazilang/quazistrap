@@ -82,8 +82,14 @@ than a name-resolution guarantee.
   buffers override disk text for every loaded source before spans are rebased
   to LSP locations. Namespace and wildcard import forms remain limited by the
   compiler's current semantic annotations.
-- Loader-backed definition, reference, and rename snapshots are rebuilt for
-  each request. Caching and performance targets remain follow-up work.
+- Loader-backed definition, reference, and rename snapshots are cached per
+  document (`src/lsp/snapshot_cache.rs`, at most 8). An entry is reused only
+  while every loaded file (open buffer or disk text) and every project and
+  dependency `quazi.toml` still has the exact text it was built from; opening
+  a document clears the cache, because a new buffer can change which file an
+  unchanged import resolves to. A file created outside the editor that would
+  shadow an already-resolved import is not noticed until a loaded file or
+  manifest changes, the same limit as the workspace-symbol index.
   Namespace and wildcard imports still depend on the compiler's available
   semantic annotations.
 - Formatting and position conversion need a real-editor protocol smoke suite
@@ -97,6 +103,14 @@ Run the focused LSP checks from the compiler repository:
 env RUSTC=$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc \
   $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --offline lsp::
 ```
+
+Performance targets for a release build, measured over stdio by
+`python3 scripts/check_lsp_performance.py --qz target/release/qz`: the first
+loader-backed request on a std-importing document completes within 1000 ms
+and repeated requests on unchanged inputs have a median within 20 ms; an
+unsaved edit must produce fresh results. On 2026-11-10 the script measured
+150 ms cold and 0.6 ms warm (previously every request took about 150 ms);
+`--no-targets` reports a debug build without enforcing them.
 
 The compiler test suite also compiles the server implementation. Real editor
 integration remains a separate validation requirement for each editor package.

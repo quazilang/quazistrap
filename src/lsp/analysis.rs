@@ -28,6 +28,30 @@ pub struct LoadedSnapshot {
     pub report: SemanticReport,
     pub source_files: Vec<SourceFile>,
     pub effective_sources: HashMap<PathBuf, String>,
+    /// Project and dependency manifests the import graph was resolved with.
+    pub manifests: Vec<(PathBuf, String)>,
+}
+
+/// The manifests a project context was built from, with their text.
+fn project_manifests(context: Option<&crate::project::ProjectContext>) -> Vec<(PathBuf, String)> {
+    let Some(context) = context else {
+        return Vec::new();
+    };
+    let mut roots = vec![context.config.root.clone()];
+    roots.extend(
+        context
+            .resolver
+            .modules
+            .values()
+            .map(|module| module.root.clone()),
+    );
+    roots.sort();
+    roots.dedup();
+    roots
+        .into_iter()
+        .map(|root| root.join("quazi.toml"))
+        .filter_map(|path| std::fs::read_to_string(&path).ok().map(|text| (path, text)))
+        .collect()
 }
 
 pub fn analyze_source(source: &str) -> Result<SemanticReport, String> {
@@ -81,6 +105,7 @@ pub fn analyze_loaded_document(
         .canonicalize()
         .map_err(|error| format!("cannot resolve LSP document '{}': {error}", path.display()))?;
     let context = crate::project::ProjectContext::discover(&path)?;
+    let manifests = project_manifests(context.as_ref());
     let settings = context
         .as_ref()
         .map(|context| context.config.package)
@@ -114,6 +139,7 @@ pub fn analyze_loaded_document(
         report,
         source_files: loaded.source_files,
         effective_sources: loaded.effective_sources,
+        manifests,
     })
 }
 
@@ -135,6 +161,7 @@ pub fn analyze_loaded_document_cancellable(
     })?;
     let context =
         crate::project::ProjectContext::discover(&path).map_err(CancellableAnalysisError::Load)?;
+    let manifests = project_manifests(context.as_ref());
     let settings = context
         .as_ref()
         .map(|context| context.config.package)
@@ -173,6 +200,7 @@ pub fn analyze_loaded_document_cancellable(
         report,
         source_files: loaded.source_files,
         effective_sources: loaded.effective_sources,
+        manifests,
     })
 }
 

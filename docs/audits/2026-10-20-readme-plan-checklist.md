@@ -5,7 +5,7 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 97.6%. Remaining: 2.4%.**
+**Complete: 97.7%. Remaining: 2.3%.**
 
 On 2026-11-09 format string literals (1/1) were completed under D-020
 ([change record](../changes/2026-11-09-string-interpolation.md)).
@@ -219,7 +219,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Atomic opcodes | 2/2 | 100.0% | 0.0% |
 | Format string literals | 1/1 | 100.0% | 0.0% |
 | Nested struct patterns | 1/1 | 100.0% | 0.0% |
-| LSP improvements | 16/20 | 80.0% | 20.0% |
+| LSP improvements | 17/20 | 85.0% | 15.0% |
 | qz doc | 1/1 | 100.0% | 0.0% |
 | Experimental JIT (`qz run --jit`) | 1/1 | 100.0% | 0.0% |
 
@@ -435,7 +435,8 @@ Evidence: [docs/tooling/lsp.md](../tooling/lsp.md).
 - [x] Cooperative cancellation.
 - [x] Blocking-pool snapshots with stale-result rejection.
 - [ ] General semantic features under incomplete source, beyond std-path completion.
-- [ ] Caching and measured performance targets.
+- [x] Caching and measured performance targets (`src/lsp/snapshot_cache.rs`,
+  `scripts/check_lsp_performance.py`: release cold <= 1000 ms, warm median <= 20 ms).
 - [ ] Real-client Unicode/formatting protocol suite.
 - [ ] Reproducible Zed/Helix feature-request runtime validation.
 - [x] Loader-backed go-to-definition with passing current-checkout regressions.
