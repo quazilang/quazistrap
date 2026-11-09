@@ -2,6 +2,16 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-09 evening 3, memory and EOF)
+
+quazistrap `d3c9997` concrete generic struct shells released (FnCompiler gets
+`struct_generic_params`); `e182145` enum shells released (payloads not
+destroyed — bindings/unwrap hand them out; needs place-level moves);
+`adcf8f5` examples handle EOF. std `49eecf6` `ReadError.EndOfInput` (read at
+EOF before any byte). check_struct_release covers structs, generic structs,
+enums (flat mapped pages); check_stdin_eof. Verified: 1027 Rust tests, all
+e2e, std 62/62, example outputs identical to the previous compiler.
+
 ## Checkpoint (2026-11-09 evening 2, D-020 interpolation)
 
 Maintainers answered round 3: В7Б (every literal interpolates, `{{ }}`
