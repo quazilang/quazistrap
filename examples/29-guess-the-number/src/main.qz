@@ -15,7 +15,11 @@ fn main() i32 {
     for !guessed {
       io.print("> ");
       const entered = io.readln();
-      if (entered.is_err()) { io.errln("Unable to read input"); ret 1; }
+      if (entered.is_err()) {
+          // EndOfInput: stdin closed before a guess was entered.
+          io.errln("Unable to read input");
+          ret 1;
+      }
       const parsed = entered.unwrap().parse[isize]();
       if (parsed.is_err()) { io.println("Please enter a number"); continue; }
       const guess: isize = parsed.unwrap();

@@ -26,7 +26,10 @@ not change the process console code page.
 ## Input
 
 `read(delimiter)` reads stdin until the non-empty UTF-8 delimiter or EOF and
-returns an owned `String` without the delimiter. `readln()` is
+returns an owned `String` without the delimiter. When stdin ends before any
+byte was read it returns `Err(ReadError.EndOfInput)`, so a closed input is
+distinguishable from an empty line (`Ok("")`); text before EOF without a
+delimiter is still returned. `readln()` is
 `read("\n")`; it normalizes Windows CRLF/CR input to `\n`. Custom delimiters
 use immediate terminal mode where available and restore the original mode on
 all normal error and success paths. Redirected input remains buffered.
@@ -36,7 +39,7 @@ EOF. It does not require Enter in an interactive terminal. Neither operation
 is a nonblocking API or offers cancellation/timeouts.
 
 `ReadError` distinguishes allocation failure, capacity overflow, native input
-failure, an empty delimiter, and invalid UTF-8. Invalid bytes are never exposed
+failure, an empty delimiter, invalid UTF-8, and end of input. Invalid bytes are never exposed
 as `String`.
 
 ## Limits and portability
