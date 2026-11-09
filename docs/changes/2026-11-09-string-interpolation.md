@@ -25,9 +25,11 @@ Migration: the prelude formatter and `std.json` used bare `"{"`, `"}"` and
 `"{}"` literals; they now write `"{{"`, `"}}"` and `"{{}}"`. Example outputs
 are unchanged.
 
-Not done: interpolated literals are not visible to the borrow and retention
-passes as expressions (the same limitation format-call placeholders already
-had); Tree-sitter highlights literals as plain strings.
+The borrow checker visits the placeholder expressions of every string
+literal (interpolations and format-call templates alike) as reads, so a value
+moved earlier is rejected (`use of moved value`); before, `println("{s}")`
+after moving `s` compiled and read freed memory. The retention pass still does
+not see placeholders; Tree-sitter highlights literals as plain strings.
 
 Verification: `scripts/check_string_interpolation.py` (interpolation with
 specs, escapes, raw strings, templates, verbatim values, native and

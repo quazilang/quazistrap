@@ -2644,6 +2644,21 @@ mod tests {
     }
 
     #[test]
+    fn placeholders_are_checked_for_use_after_move() {
+        let report = analyze(
+            "struct Job { id: i64, }\nfn take(job: Job) i64 { job.id }\nfn main() void {\n    const job = Job { id: 1 };\n    const n = take(job);\n    const line = \"id {job.id} {n}\";\n}\n",
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.message.contains("use of moved value 'job'")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn never_returning_calls_end_a_function_path() {
         let report = analyze(
             "fn fail() ! { fail() }\nfn f(n: i32) i32 {\n    if (n > 0) { ret 1; }\n    fail();\n}\nfn main() void {}\n",

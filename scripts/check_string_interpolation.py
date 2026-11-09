@@ -42,6 +42,23 @@ INVALID = r"""fn main() i32 {
 """
 
 
+MOVED = r"""import std.io;
+
+fn consume(text: String) i64 { text.len() as i64 }
+
+fn main() i32 {
+    const s: String = "secret".to_string();
+    const n = consume(s);
+    io.println("moved {s} {n}");
+    const t: String = "other".to_string();
+    const m = consume(t);
+    const line = "again {t}";
+    io.println(line.as_str());
+    0
+}
+"""
+
+
 def run(command, root):
     return subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, timeout=300)
@@ -77,7 +94,10 @@ def check(qz, root):
     output = run([str(qz), "check"], case).stdout
     for message in ("unmatched `{`", "unmatched `}`", "`{}` has no argument outside a format call"):
         assert message in output, output
-    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics")
+    case = project(root, "moved", MOVED)
+    output = run([str(qz), "check"], case).stdout
+    assert "use of moved value 's'" in output and "use of moved value 't'" in output, output
+    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders")
 
 
 def main():

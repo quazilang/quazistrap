@@ -2042,6 +2042,18 @@ impl Analyzer {
                 env.exit_scope();
             }
 
+            // Placeholders of a string literal (D-020 interpolation and format
+            // templates) read their values: moved or uninitialized owners
+            // must be rejected there too.
+            ExprKind::Literal(crate::parser::ast::Literal::String(_)) => {
+                if let Some(expanded) =
+                    crate::parser::format::expand_format_call_args(std::slice::from_ref(expr))
+                {
+                    for argument in &expanded.args {
+                        self.bc_expr(argument, env, false);
+                    }
+                }
+            }
             ExprKind::Literal(_) => {}
 
             ExprKind::StructInit { name, fields } => {
