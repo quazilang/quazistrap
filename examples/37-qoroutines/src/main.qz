@@ -1,0 +1,56 @@
+import std.io;
+
+// A slow, CPU-bound piece of work to run concurrently.
+fn sum_of_squares(limit: i64) i64 {
+    var total: i64 = 0;
+    for i : 0..limit { total = total + (i as i64) * (i as i64); }
+    total
+}
+
+// Producer: sends numbers into a channel, then closes it.
+fn produce(numbers: Channel[i64], count: i64) i64 {
+    for i : 0..count { numbers.send(i as i64); }
+    numbers.close();
+    count
+}
+
+// Consumer: adds everything it receives until the channel is closed.
+fn consume(numbers: Channel[i64]) i64 {
+    var total: i64 = 0;
+    for (true) {
+        const value = numbers.receive();
+        if (value.is_none()) { break; }
+        total = total + value.unwrap();
+    }
+    total
+}
+
+fn checked_divide(a: i64, b: i64) i64 {
+    if (b == 0) { panic("division by zero"); }
+    a / b
+}
+
+fn main() i32 {
+    // 1. Run work in parallel with `qo`; `join()` waits for each result.
+    const first = qo sum_of_squares(1000 as i64);
+    const second = qo sum_of_squares(2000 as i64);
+    const a = first.join().unwrap();
+    const b = second.join().unwrap();
+    io.println("sums: {a} and {b}");
+
+    // 2. Connect a producer and a consumer with a bounded channel.
+    const numbers: Channel[i64] = Channel.new(4);
+    const writer = numbers.clone();
+    const reader = numbers.clone();
+    const producer = qo produce(writer, 100 as i64);
+    const consumer = qo consume(reader);
+    const sent = producer.join().unwrap();
+    const received = consumer.join().unwrap();
+    io.println("sent {sent} numbers, their sum is {received}");
+
+    // 3. A panic inside a qoroutine is reported by `join()`.
+    const ok = (qo checked_divide(10 as i64, 2 as i64)).join();
+    const failed = (qo checked_divide(1 as i64, 0 as i64)).join();
+    io.println("10 / 2 ok: {ok.is_ok()}, 1 / 0 failed: {failed.is_err()}");
+    0
+}

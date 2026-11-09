@@ -1,0 +1,13 @@
+# Quazi build output
+/build/
+
+# Compiled artifacts
+*.qzi
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+*.pdb

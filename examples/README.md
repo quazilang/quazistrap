@@ -43,6 +43,7 @@ qz run
 | 32 | `testing` | `@test`, automatic discovery, filtering, and isolated runners |
 | 33 | `ini-library` | Source-backed INI library with owned text and lookup APIs |
 | 34 | `ini-parser` | Local INI dependency, executable checks, and QZI-compatible API |
+| 37 | `qoroutines` | `qo`, `join`, channels, and panics reported by `join` |
 
 Examples 19–21 need a C toolchain. Example 26 runs as two processes:
 
