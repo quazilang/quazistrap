@@ -141,6 +141,59 @@ fn main() i32 {
 }
 """
 
+# Eight qoroutines spin without ever yielding until all eight have started:
+# with four workers only timer preemption lets the last four run (Linux).
+SPIN = r"""import std.io;
+import std.core;
+
+unsafe fn spin(counter: *u8, total: i64) i64 {
+    core.atomic_add(counter as *i64, 1);
+    var loops: i64 = 0;
+    for (core.atomic_add(counter as *i64, 0) < total) { loops = loops + 1; }
+    1
+}
+
+fn main() i32 {
+    var done: i64 = 0;
+    unsafe {
+        const counter: *u8 = core.malloc(8);
+        *(counter as *i64) = 0;
+        const a = qo spin(counter, 8 as i64);
+        const b = qo spin(counter, 8 as i64);
+        const c = qo spin(counter, 8 as i64);
+        const d = qo spin(counter, 8 as i64);
+        const e = qo spin(counter, 8 as i64);
+        const f = qo spin(counter, 8 as i64);
+        const g = qo spin(counter, 8 as i64);
+        const h = qo spin(counter, 8 as i64);
+        done = a.join().unwrap() + b.join().unwrap() + c.join().unwrap() + d.join().unwrap()
+            + e.join().unwrap() + f.join().unwrap() + g.join().unwrap() + h.join().unwrap();
+    }
+    io.println("preempted {}", done);
+    0
+}
+"""
+
+# Preemption signals must not cut sleeps short.
+SLEEP = r"""import std.io;
+import std.core;
+import std.time.Instant;
+
+fn nap(ms: u64) u64 {
+    const start = Instant.now().unwrap();
+    core.sleep_ms(ms);
+    const took = start.elapsed().unwrap();
+    took.seconds() * 1000 + (took.subsec_nanoseconds() / 1000000) as u64
+}
+
+fn main() i32 {
+    const slept = (qo nap(200 as u64)).join().unwrap();
+    io.println("slept {}", slept);
+    if (slept < 190) { ret 1; }
+    0
+}
+"""
+
 # Joins nested ten times deeper than there are workers: a waiting qoroutine
 # must yield its worker instead of blocking it.
 NESTED = r"""import std.io;
@@ -246,6 +299,36 @@ def check(qz, root):
     # A panic outside qoroutines still ends the program with status 101.
     assert "thread 'main' panicked at 'main panics'" in result.stderr and result.returncode == 101
 
+    spin = root / "spin"
+    (spin / "src").mkdir(parents=True)
+    (spin / "quazi.toml").write_text('[package]\nname="spin"\n[build]\nentry="src/main.qz"\n')
+    (spin / "src/main.qz").write_text(SPIN)
+    binary = spin / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], spin)
+    for _ in range(5):
+        assert "preempted 8" in subprocess.run([str(binary)], cwd=spin, text=True,
+                                               stdout=subprocess.PIPE, timeout=60).stdout
+    assert "preempted 8" in invoke([str(qz), "run", "--jit", *common], spin).stdout
+
+    sleeper = root / "sleeper"
+    (sleeper / "src").mkdir(parents=True)
+    (sleeper / "quazi.toml").write_text('[package]\nname="sleeper"\n[build]\nentry="src/main.qz"\n')
+    (sleeper / "src/main.qz").write_text(SLEEP)
+    assert "slept" in invoke([str(qz), "run", *common], sleeper).stdout
+
+    # With libc (pthread workers) preemption is off; qo still works by yielding.
+    libc = root / "libc"
+    (libc / "src").mkdir(parents=True)
+    (libc / "quazi.toml").write_text(
+        '[package]\nname="libc_qo"\n[build]\nentry="src/main.qz"\n'
+        '[target.x86_64-linux.link]\nlibc = true\n')
+    (libc / "src/main.qz").write_text(NESTED)
+    binary = libc / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], libc)
+    assert b"pthread_create" in binary.read_bytes()
+    assert "nested 16400" in subprocess.run([str(binary)], cwd=libc, text=True,
+                                            stdout=subprocess.PIPE, timeout=60).stdout
+
     plain = root / "plain"
     (plain / "src").mkdir(parents=True)
     (plain / "quazi.toml").write_text('[package]\nname="plain"\n[build]\nentry="src/main.qz"\n')
@@ -262,7 +345,7 @@ def check(qz, root):
     (bad / "src/main.qz").write_text("fn main() i32 {\n    const x = qo 5;\n    0\n}\n")
     result = invoke([str(qz), "check"], bad, ok=False)
     assert result.returncode != 0 and "`qo` must be followed by a function call" in result.stdout, result.stdout
-    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, owned String/struct args moved, Channel send/receive/close, panics reported by join, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
+    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, owned String/struct args moved, Channel send/receive/close, panics reported by join, timer preemption of 8 spinners, full sleeps, libc mode, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
 
 
 def main():

@@ -28,6 +28,7 @@ pub fn generate_required(symbols: &HashSet<String>) -> Result<Vec<RuntimeFunctio
         "strcat",
         "__quazi_thread_spawn",
         "__quazi_thread_join",
+        "__quazi_sigreturn",
     ] {
         if !symbols.contains(name) {
             continue;
@@ -45,6 +46,7 @@ pub fn generate_required(symbols: &HashSet<String>) -> Result<Vec<RuntimeFunctio
             "strcat" => generate_strcat(),
             "__quazi_thread_spawn" => generate_thread_spawn(),
             "__quazi_thread_join" => generate_thread_join(),
+            "__quazi_sigreturn" => generate_sigreturn(),
             _ => unreachable!(),
         }?;
         functions.push(RuntimeFunction { name, bytes });
@@ -472,6 +474,16 @@ fn generate_thread_join() -> Result<Vec<u8>, String> {
     asm.pop(rbx).unwrap();
     asm.set_label(&mut done).unwrap();
     asm.ret().unwrap();
+    finish(asm)
+}
+
+/// `__quazi_sigreturn`: signal-handler restorer (`rt_sigreturn`), installed
+/// by `quazi.signal.install`.
+fn generate_sigreturn() -> Result<Vec<u8>, String> {
+    let mut asm = assembler()?;
+    asm.mov(eax, 15i32).unwrap();
+    asm.syscall().unwrap();
+    asm.ud2().unwrap();
     finish(asm)
 }
 

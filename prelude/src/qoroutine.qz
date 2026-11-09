@@ -13,14 +13,16 @@
 // lives in the `quazi.runtime.state` block:
 //   +0 queue lock, +8 queue head, +16 queue tail,
 //   +24 init state (0 none, 1 initializing, 2 ready), +32 stack arena,
-//   +40 free slot indexes (i64 array), +48 free slot count.
+//   +40 free slot indexes (i64 array), +48 free slot count,
+//   +56 preemption enabled (the signal handler was installed).
 // All stacks are slots of one arena; a slot's first word is its task, so code
 // running on a qoroutine finds its task from the stack pointer
 // (`quazi.stack.pointer` + `quazi.ptr.offset_from`, no thread-local storage).
 // Task block (512 bytes):
 //   +0 joinable (2 once finished), +8 result slot, +16 closure, +24 slot index,
 //   +32 next in queue, +40 worker context, +48 type-erased runner,
-//   +56 finished flag, +64 task context (272 bytes), +336 panicked flag.
+//   +56 finished flag, +64 task context (272 bytes), +336 panicked flag,
+//   +344 preemption hold count.
 // A finished task is published as joinable by its worker only after the
 // worker is back on its own stack, so `join` may free the task's stack.
 //
@@ -28,10 +30,21 @@
 // stack (pending destructors there do not run) and makes `join` return
 // `Err(QoroutineError.Panicked)`; elsewhere a panic still ends the program.
 //
-// Current limits (D-019 phases 3-5): no preemption (a qoroutine runs until it
-// finishes or waits); `join` outside a qoroutine yields its OS thread; at
-// most `__qo_slot_count()` qoroutines are alive at once; results are plain
-// scalars until closure result ownership lands.
+// Preemption (Linux): every worker arms a 10 ms thread timer that sends
+// SIGURG to it. The handler runs on the interrupted qoroutine's stack and, if
+// the qoroutine holds no runtime lock (+344 is zero), switches to the worker
+// from inside the signal frame; resuming the qoroutine returns from the
+// handler and `rt_sigreturn` restores every register. The worker unblocks
+// SIGURG again after each switch. A task that is not running always holds
+// at least one preemption hold (fresh tasks start with one, voluntary and
+// preempting switches take one), so a signal during the switch into a task
+// cannot re-enter it. Windows, NetBSD and programs linking libc (where a
+// preempted libc call could deadlock or migrate its thread state) are not
+// preempted.
+//
+// Current limits: `join` outside a qoroutine yields its OS thread; at most
+// `__qo_slot_count()` qoroutines are alive at once; results are plain scalars
+// until closure result ownership lands.
 
 @intrinsic("quazi.runtime.state")
 unsafe fn __qo_state() *u8;
@@ -81,6 +94,68 @@ unsafe fn __qo_spawn_thread(f: __QoWorkerEntry, arg: *u8) usize;
 @repr(C)
 pub type __QoTaskEntry = fn(*u8) void;
 
+@repr(C)
+pub type __QoSignalHandler = fn(i32, *u8, *u8) void;
+
+@intrinsic("quazi.signal.install")
+unsafe fn __qo_install_signal(signal: i32, handler: __QoSignalHandler) i64;
+
+@cfg(target_os = "linux")
+@syscall(186)
+unsafe fn __qo_gettid() i64;
+
+@cfg(target_os = "linux")
+@syscall(222)
+unsafe fn __qo_timer_create(clock: i64, event: *u8, timer: *u8) i64;
+
+@cfg(target_os = "linux")
+@syscall(223)
+unsafe fn __qo_timer_settime(timer: i64, flags: i64, value: *u8, old: *u8) i64;
+
+@cfg(target_os = "linux")
+@syscall(14)
+unsafe fn __qo_sigprocmask(how: i64, set: *u8, old: *u8, size: usize) i64;
+
+fn __qo_preempt_signal() i32 { 23 }
+
+// Send this worker thread SIGURG every 10 ms (Linux), if preemption is on.
+@cfg(target_os = "linux")
+unsafe fn __qo_arm_timer() void {
+    if (*((__qo_state() + 56) as *i64) == 0) { ret; }
+    const block: *u8 = __qo_malloc(128);
+    __qo_memset(block, 0, 128);
+    // struct sigevent: signo +8, notify +12 (SIGEV_THREAD_ID = 4), tid +16.
+    *((block + 8) as *i32) = __qo_preempt_signal();
+    *((block + 12) as *i32) = 4;
+    *((block + 16) as *i32) = __qo_gettid() as i32;
+    if (__qo_timer_create(1, block, block + 64) == 0) {
+        // struct itimerspec: interval {0, 10 ms}, first expiry {0, 10 ms}.
+        *((block + 80) as *i64) = 10000000;
+        *((block + 96) as *i64) = 10000000;
+        const timer: i32 = *((block + 64) as *i32);
+        __qo_timer_settime(timer as i64, 0, block + 72, 0);
+    }
+}
+
+@cfg(target_os = "windows")
+unsafe fn __qo_arm_timer() void {}
+
+@cfg(target_os = "netbsd")
+unsafe fn __qo_arm_timer() void {}
+
+// A preempting switch leaves SIGURG blocked on this worker: unblock it.
+// `set` is the worker's signal set holding only SIGURG.
+@cfg(target_os = "linux")
+unsafe fn __qo_unblock_preemption(set: *u8) void {
+    __qo_sigprocmask(1, set, 0, 8);
+}
+
+@cfg(target_os = "windows")
+unsafe fn __qo_unblock_preemption(_set: *u8) void {}
+
+@cfg(target_os = "netbsd")
+unsafe fn __qo_unblock_preemption(_set: *u8) void {}
+
 fn __qo_task_size() usize { 512 }
 fn __qo_stack_size() usize { 262144 }
 
@@ -95,12 +170,26 @@ fn __qo_slot_count() usize { 1024 }
 @cfg(target_os = "netbsd")
 fn __qo_slot_count() usize { 1024 }
 
+// While a qoroutine holds a runtime lock or switches voluntarily, the
+// preemption handler must leave it alone.
+unsafe fn __qo_hold() void {
+    const task = __qo_current();
+    if (task != 0) { *((task + 344) as *i64) = *((task + 344) as *i64) + 1; }
+}
+
+unsafe fn __qo_unhold() void {
+    const task = __qo_current();
+    if (task != 0) { *((task + 344) as *i64) = *((task + 344) as *i64) - 1; }
+}
+
 unsafe fn __qo_lock(state: *u8) void {
+    __qo_hold();
     for (__qo_atomic_cas(state as *i64, 0, 1) != 0) { __qo_sleep_ms(0); }
 }
 
 unsafe fn __qo_unlock(state: *u8) void {
     __qo_atomic_cas(state as *i64, 1, 0);
+    __qo_unhold();
 }
 
 unsafe fn __qo_enqueue(task: *u8) void {
@@ -128,12 +217,16 @@ unsafe fn __qo_dequeue() *u8 {
 
 // One scheduling loop per worker thread; never returns.
 unsafe fn __qo_worker_loop() void {
-    const context: *u8 = __qo_malloc(272);
+    const context: *u8 = __qo_malloc(280);
+    const preempt_set: *u8 = context + 272;
+    *(preempt_set as *i64) = 4194304; // 1 << (SIGURG - 1)
+    __qo_arm_timer();
     for (true) {
         const task = __qo_dequeue();
         if (task == 0) { __qo_sleep_ms(0); continue; }
         *((task + 40) as **u8) = context;
         __qo_switch(context, task + 64);
+        __qo_unblock_preemption(preempt_set);
         if (*((task + 56) as *i64) == 1) {
             __qo_atomic_add(task as *i64, 2);
         } else {
@@ -166,8 +259,11 @@ pub unsafe fn __qo_worker(_arg: *u8) *u8 {
 // First code a qoroutine runs on its own stack; never returns.
 @export("__quazi_qo_entry")
 pub unsafe fn __qo_entry(task: *u8) void {
+    // Fresh tasks start with one hold so the switch into them is safe.
+    __qo_unhold();
     const runner: fn(*u8) void = *((task + 48) as *fn(*u8) void);
     runner(task);
+    __qo_hold();
     // Both closures were stored through raw memory, which no owner cleans up:
     // release their environments (the call already consumed moved captures).
     __qo_free(*((task + 48) as **u8));
@@ -193,6 +289,10 @@ unsafe fn __qo_init() void {
         *((state + 32) as **u8) = arena;
         *((state + 40) as **u8) = free;
         *((state + 48) as *i64) = slots as i64;
+        const handler: __QoSignalHandler = __qo_preempt;
+        if (__qo_install_signal(__qo_preempt_signal(), handler) == 0) {
+            *((state + 56) as *i64) = 1;
+        }
         __qo_atomic_cas((state + 24) as *i64, 1, 2);
         for i : 0..4 { __qo_spawn_thread(__qo_worker, 0); }
     }
@@ -245,7 +345,19 @@ unsafe fn __qo_yield() void {
         __qo_sleep_ms(0);
         ret;
     }
+    __qo_hold();
     __qo_switch(task + 64, *((task + 40) as **u8));
+    __qo_unhold();
+}
+
+// SIGURG handler: move the interrupted qoroutine back to the run queue.
+@export("__quazi_qo_preempt")
+pub unsafe fn __qo_preempt(_signal: i32, _info: *u8, _context: *u8) void {
+    const task = __qo_current();
+    if (task == 0 || *((task + 344) as *i64) != 0) { ret; }
+    __qo_hold();
+    __qo_switch(task + 64, *((task + 40) as **u8));
+    __qo_unhold();
 }
 
 // Whether the calling code runs on a qoroutine (for panic messages).
@@ -259,6 +371,7 @@ pub fn __qo_abandon_on_panic() void {
     unsafe {
         const task = __qo_current();
         if (task == 0) { ret; }
+        __qo_hold();
         *((task + 336) as *i64) = 1;
         *((task + 56) as *i64) = 1;
         __qo_switch(task + 64, *((task + 40) as **u8));
@@ -292,6 +405,7 @@ pub fn __qo_spawn[T](f: fn() T) Qoroutine[T] {
         const stack: *u8 = __qo_slot(index);
         *(stack as **u8) = task;
         *((task + 24) as *i64) = index;
+        *((task + 344) as *i64) = 1;
         const entry: __QoTaskEntry = __qo_entry;
         const top: *u8 = stack + __qo_stack_size();
         *((task + 64 + 48) as *__QoTaskEntry) = entry;
@@ -341,11 +455,13 @@ pub struct Channel[T] {
 }
 
 unsafe fn __qo_channel_lock(block: *u8) void {
+    __qo_hold();
     for (__qo_atomic_cas(block as *i64, 0, 1) != 0) { __qo_sleep_ms(0); }
 }
 
 unsafe fn __qo_channel_unlock(block: *u8) void {
     __qo_atomic_cas(block as *i64, 1, 0);
+    __qo_unhold();
 }
 
 impl Channel[T] {

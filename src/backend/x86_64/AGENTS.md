@@ -180,6 +180,13 @@ the stack slot it runs on without thread-local storage. Quazi deliberately
 rejects pointer<->integer casts (pointer provenance for retention analysis);
 these intrinsics never rebuild a pointer from an integer.
 
+`@intrinsic("quazi.signal.install") unsafe fn(signal: i32, handler: CFn) i64`
+(id 47) installs a SA_SIGINFO | SA_RESTART handler with raw `rt_sigaction`
+and the embedded `__quazi_sigreturn` restorer; it returns -1 (nothing
+installed) on Windows, NetBSD and for executables linked with `-lc`. The
+Linux `quazi.sleep_ms` retries `nanosleep` with the remaining time after
+`EINTR`.
+
 Linux executables without `-lc` lower `quazi.thread.spawn`/`spawn_arg`/`join`
 to the embedded `__quazi_thread_spawn`/`__quazi_thread_join` routines
 (`runtime.rs`: clone + futex, 8 MiB region per thread); `-lc` executables and

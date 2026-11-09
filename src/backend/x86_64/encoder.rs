@@ -2600,12 +2600,20 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.imul_2(rdx, rcx));
                             emit!(asm.mov(qword_ptr(rsp + 8i32), rdx));
                             emit!(asm.mov(rdi, rsp));
-                            emit!(asm.xor(esi, esi));
                             if is_netbsd {
+                                emit!(asm.xor(esi, esi));
                                 call_ext!("nanosleep".into(), RelocKind::Plt32);
                             } else {
+                                // A signal (e.g. qoroutine preemption) interrupts
+                                // nanosleep: continue with the remaining time,
+                                // which the kernel writes back into the request.
+                                let mut retry = asm.create_label();
+                                emit!(asm.mov(rsi, rsp));
+                                emit!(asm.set_label(&mut retry));
                                 emit!(asm.mov(rax, 35i64));
                                 emit!(asm.syscall());
+                                emit!(asm.cmp(rax, -4i32));
+                                emit!(asm.je(retry));
                             }
                             emit!(asm.add(rsp, 16i32));
                         }
@@ -4087,6 +4095,34 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(r13));
                         emit!(asm.pop(r12));
                         emit!(asm.pop(rbx));
+                    }
+                    47 => {
+                        // quazi.signal.install(signal: i32, handler: CFn) -> i64:
+                        // install a SA_SIGINFO | SA_RESTART handler through raw
+                        // rt_sigaction with the embedded `__quazi_sigreturn`
+                        // restorer (Linux without libc). Otherwise returns -1.
+                        // With libc, preempting a qoroutine inside a libc call
+                        // (malloc arena locks, per-thread state) is unsafe.
+                        if is_win64 || is_netbsd || self.target.libc {
+                            emit!(asm.mov(rax, -1i64));
+                        } else {
+                            emit!(asm.sub(rsp, 32i32));
+                            emit!(asm.mov(rax, slot(dst + 1)));
+                            emit!(asm.mov(qword_ptr(rsp), rax));
+                            emit!(asm.mov(rax, 0x1400_0004i64));
+                            emit!(asm.mov(qword_ptr(rsp + 8i32), rax));
+                            lea_rip!(rax, "__quazi_sigreturn".to_string());
+                            emit!(asm.mov(qword_ptr(rsp + 16i32), rax));
+                            emit!(asm.mov(qword_ptr(rsp + 24i32), 0i32));
+                            emit!(asm.mov(rdi, slot(dst)));
+                            emit!(asm.mov(rsi, rsp));
+                            emit!(asm.xor(edx, edx));
+                            emit!(asm.mov(r10d, 8i32));
+                            emit!(asm.mov(eax, 13i32));
+                            emit!(asm.syscall());
+                            emit!(asm.add(rsp, 32i32));
+                        }
+                        emit!(asm.mov(slot(dst), rax));
                     }
                     45 => {
                         // quazi.stack.pointer() -> *u8: the current machine stack

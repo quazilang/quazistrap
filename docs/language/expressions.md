@@ -237,9 +237,13 @@ variables are evaluated inside the qoroutine.
 
 Current limits: references and `str` views cannot be passed, and the result
 must be a plain scalar. The `Qoroutine` handle itself is not released yet
-(struct storage without a `free` hook is not reclaimed in general). There is no preemption: a qoroutine runs
-until it finishes or waits in `join`. At most 1024 qoroutines (256 on Windows)
-are alive at once. Preemption is planned.
+(struct storage without a `free` hook is not reclaimed in general). At most
+1024 qoroutines (256 on Windows) are alive at once.
+
+On Linux, qoroutines are preempted: a qoroutine that runs for 10 ms without
+waiting is moved back to the run queue, so busy loops cannot starve others.
+Windows, NetBSD and programs that link libc are scheduled cooperatively (a
+qoroutine runs until it finishes or waits in `join`, `send` or `receive`).
 
 A panic inside a qoroutine prints `qoroutine panicked at '...'`, ends only that
 qoroutine and makes its `join()` return `Err(QoroutineError.Panicked)`; values

@@ -437,6 +437,7 @@ impl Instruction {
                     44 => "quazi.runtime.state",
                     45 => "quazi.stack.pointer",
                     46 => "quazi.ptr.offset_from",
+                    47 => "quazi.signal.install",
                     _ => "?",
                 };
                 format!(

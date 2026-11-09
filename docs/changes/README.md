@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-09: Timer preemption for qoroutines (Linux)](2026-11-09-qo-preemption.md)
+
 - [2026-11-09: A panic in a qoroutine is reported by join](2026-11-09-qo-panics.md)
 
 - [2026-11-09: A panic in a qoroutine is reported by join](2026-11-09-qo-panics.md)
