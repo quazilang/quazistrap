@@ -21,9 +21,15 @@ day: codegen receives the declared struct type parameters
 (`struct_generic_params`) and substitutes the arguments into the field types;
 templates with unresolved parameters keep no action.
 
-Still open (checklist item "complete structural destruction"): enum values
-(`Option`, `Result`, user enums) and C-layout structs keep leaking their
-shells.
+Enum values (`Option`, `Result`, user enums) without their own `free` now
+release their storage shell too (100000 enum values: 5061 -> 100066 mapped
+pages before, 60 -> 60 after). Their payloads are not destroyed by the shell
+release: pattern bindings and `unwrap` hand payloads out, and destroying them
+with the shell needs place-level moves. A container of enum elements now
+releases each element's shell.
+
+Still open (checklist item "complete structural destruction"): enum payloads
+left in a dropped enum, and C-layout structs.
 
 Verification: `scripts/check_struct_release.py` (2060 -> 40065 pages before,
 60 -> 65 after); a codegen regression checks that a nested struct releases two

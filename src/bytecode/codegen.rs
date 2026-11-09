@@ -4710,6 +4710,11 @@ impl<'a> FnCompiler<'a> {
         {
             return Some(DropAction::Call(base));
         }
+        // An enum value owns its storage shell. Payloads stay with whoever
+        // matched or unwrapped them until place-level moves exist.
+        if self.enum_defs.contains_key(name.as_str()) {
+            return Some(DropAction::ReleaseStorage);
+        }
         self.structural_drop_action_for_named(&name, &type_args, &mut HashSet::new())
     }
 
@@ -11990,8 +11995,11 @@ fn dispose(value: Buffer[Token]) void { value.free(); }
 
     #[test]
     fn contiguous_element_contract_rejects_owned_shapes_without_destruction_glue() {
+        // C-layout aggregates have no structural destruction yet (enums
+        // release their storage shell, so they no longer serve here).
         let source = r#"
-enum State { Ready, Closed }
+@repr(C)
+struct State { ready: i32 }
 
 @contiguous_elements(element=T, pointer=storage, length=count)
 struct Buffer[T] { storage: *u8, count: usize }

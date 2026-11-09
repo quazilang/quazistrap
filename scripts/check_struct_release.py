@@ -77,6 +77,48 @@ fn main() i32 {
 """
 
 
+ENUMS = r"""import std.io;
+import std.fs;
+
+pub enum Shape { Circle(i64), Square(i64), Empty, }
+
+fn area(s: Shape) i64 {
+    match s { Shape.Circle(r) => 3 * r * r, Shape.Square(a) => a * a, Shape.Empty => 0, }
+}
+
+fn maybe(n: i64) Option[i64] { if (n % 2 == 0) { ret Some(n); } None }
+
+fn checked(n: i64) Result[i64, i64] { if (n >= 0) { ret Ok(n); } Err(n) }
+
+fn mapped_pages() u64 {
+    const result = fs.read_to_string("/proc/self/statm");
+    if (result.is_err()) { ret 0; }
+    const text: String = result.unwrap();
+    const end: usize = text.as_str().find(" ").unwrap();
+    const field = text[0:end];
+    const parsed: Result[u64, ParseError] = field.parse[u64]();
+    parsed.unwrap_or(0)
+}
+
+fn main() i32 {
+    var total: i64 = 0;
+    var before: u64 = 0;
+    for i : 0..20000 {
+        if (i == 1000) { before = mapped_pages(); }
+        const n: i64 = i as i64;
+        total = total + area(Shape.Square(2)) + area(Shape.Empty);
+        const m = maybe(n);
+        if (m.is_some()) { total = total + 1; }
+        total = total + checked(n).unwrap_or(0) % 2;
+        const text = maybe(n);
+        total = total + text.unwrap_or(1);
+    }
+    io.println("total {} before {} after {}", total, before, mapped_pages());
+    0
+}
+"""
+
+
 def invoke(command, root):
     result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=300)
@@ -102,8 +144,15 @@ def check(qz, root):
     assert match, output
     generic_total, generic_before, generic_after = (int(value) for value in match.groups())
     assert generic_total == 200000 and generic_after - generic_before < 1000, output
+    (case / "src/main.qz").write_text(ENUMS)
+    output = invoke([str(qz), "run", "--no-incremental", "--no-color", "--silent"], case)
+    match = re.search(r"total (\d+) before (\d+) after (\d+)", output)
+    assert match, output
+    enum_total, enum_before, enum_after = (int(value) for value in match.groups())
+    assert enum_total == 100100000 and enum_after - enum_before < 1000, output
     print(f"PASS struct shells: 40000 structs ({before} -> {after} pages), "
-          f"40000 generic structs incl. String fields ({generic_before} -> {generic_after} pages)")
+          f"40000 generic structs incl. String fields ({generic_before} -> {generic_after}), "
+          f"100000 enum values ({enum_before} -> {enum_after})")
 
 
 def main():
