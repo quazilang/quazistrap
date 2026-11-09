@@ -32,7 +32,7 @@ import std.io.stdout;
 The following identifiers are reserved keywords:
 
 `as`, `break`, `const`, `continue`, `dyn`, `else`, `enum`, `false`, `fn`,
-`for`, `if`, `impl`, `import`, `match`, `mod`, `pub`, `ret`, `self`,
+`for`, `if`, `impl`, `import`, `match`, `mod`, `pub`, `qo`, `ret`, `self`,
 `struct`, `trait`, `true`, `type`, `unsafe`, `var`.
 
 `any` is reserved syntax for the compiler-erased `@format` pseudo-parameter

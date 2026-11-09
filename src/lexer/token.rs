@@ -51,6 +51,8 @@ pub enum TokenKind {
     For,
     Pub,
     Unsafe,
+    /// `qo` — start a qoroutine (D-019).
+    Qo,
     Break,
     Continue,
 
@@ -185,6 +187,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::For => write!(f, "for"),
             TokenKind::Pub => write!(f, "pub"),
             TokenKind::Unsafe => write!(f, "unsafe"),
+            TokenKind::Qo => write!(f, "qo"),
             TokenKind::Break => write!(f, "break"),
             TokenKind::Continue => write!(f, "continue"),
 

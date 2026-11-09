@@ -439,6 +439,13 @@ impl<'a> Codegen<'a> {
         self.native_mangling = enabled;
     }
 
+    fn is_library_span(&self, span: Span) -> bool {
+        self.report
+            .library_char_ranges
+            .iter()
+            .any(|range| range.contains(&span.start))
+    }
+
     fn configure_native_symbol(&self, chunk: &mut Chunk, span: Span) {
         chunk.native_unmangled = !self.native_mangling
             && !self
@@ -612,6 +619,12 @@ impl<'a> Codegen<'a> {
     /// `@export` functions keep their bare semantic identity; a synthetic
     /// adapter receives the external symbol and C ABI metadata after body
     /// compilation.
+    /// Analysis names functions of namespaced modules `module.name` even when
+    /// `@export` keeps their table name bare; dependency edges use this name.
+    fn analysis_fn_name(&self, span: Span, name: &str) -> String {
+        self.resolve_item_name(span, name, &[])
+    }
+
     fn resolve_item_name(&self, span: Span, name: &str, attributes: &[Attribute]) -> String {
         if name.starts_with("__quazi_")
             || attributes
@@ -888,13 +901,35 @@ impl<'a> Codegen<'a> {
             } else {
                 set.insert("main".to_string());
             }
-            set.extend(self.foreign_exports.keys().cloned());
+            // The project's exports are roots; library (prelude/std) exports
+            // are kept only when referenced, e.g. as thread or context entries.
+            // References name an export by its bare table name, while the
+            // edges of its body use the module-qualified analysis name.
+            let mut export_bodies: HashMap<String, String> = HashMap::new();
+            for item in &program.items {
+                if let ItemKind::Fn {
+                    name, attributes, ..
+                } = &item.node
+                    && attributes.iter().any(|attribute| attribute.name == "export")
+                {
+                    let table_name = self.resolve_item_name(item.span, name, attributes);
+                    if !self.is_library_span(item.span) {
+                        set.insert(table_name.clone());
+                    }
+                    export_bodies.insert(table_name, self.analysis_fn_name(item.span, name));
+                }
+            }
             set.extend(dynamic_roots.iter().cloned());
             for root in &destructor_roots {
                 set.insert(root.clone());
             }
             let mut queue = set.iter().cloned().collect::<Vec<_>>();
             while let Some(fn_name) = queue.pop() {
+                if let Some(body) = export_bodies.get(&fn_name)
+                    && set.insert(body.clone())
+                {
+                    queue.push(body.clone());
+                }
                 if let Some(targets) = self.report.dependency_graph.calls_from.get(&fn_name) {
                     for target in targets {
                         if set.insert(target.clone()) {
@@ -996,7 +1031,9 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.resolve_item_name(item.span, name, attributes)
                 };
-                if is_live(&index_name) || is_ph || is_export {
+                // Library exports are compiled only when reachable.
+                let live_export = is_export && !self.is_library_span(item.span);
+                if is_live(&index_name) || is_ph || live_export {
                     let table_index = u16::try_from(idx)
                         .map_err(|_| "program exceeds the QZI function-table limit".to_string())?;
                     self.fn_index.insert(index_name.clone(), table_index);
@@ -1107,7 +1144,9 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.resolve_item_name(item.span, name, attributes)
                 };
-                let is_export = attributes.iter().any(|a| a.name == "export");
+                // Matches pass 1: library exports are compiled only when reachable.
+                let is_export = attributes.iter().any(|a| a.name == "export")
+                    && !self.is_library_span(item.span);
                 if is_live(&compile_name) || is_ph || is_export {
                     let source_path = self.source_path_for_span(item.span);
                     let restored = if generic_params.is_empty() {

@@ -59,6 +59,15 @@ points are marked **decided**, design proposals are marked **proposed**.
   then returns `Err(QoroutinePanic)`. A panic outside any qoroutine still ends
   the program.
 
+## Status (2026-11-09)
+
+Implemented: the `qo f(args)` keyword, the built-in `Qoroutine[T]` with
+`join()`, and the M:N prelude scheduler on four worker threads
+([change record](../changes/2026-11-09-qo-keyword.md)). Open: moved arguments
+evaluated in the spawning context and owned results (closure ownership),
+`Channel[T]`, parking, timer preemption, panic reported through `join()`,
+`std.thread` `JoinHandle[T]`, Tree-sitter/LSP support for `qo`.
+
 ## Implementation phases
 
 1. Runtime groundwork (done): atomics, `quazi.context.switch`,

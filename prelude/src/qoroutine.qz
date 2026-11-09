@@ -1,0 +1,207 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
+// prelude.qoroutine — built-in qoroutines (D-019).
+//
+// `qo f(args)` is lowered by the parser to `__qo_spawn(|| f(args))`; the
+// result is a `Qoroutine[T]` whose `join()` waits and returns `T`.
+//
+// M:N scheduler: qoroutines run on four OS worker threads started on first
+// use. Each qoroutine owns a 256 KiB stack and a context entered with
+// `quazi.context.switch`. Quazi has no global variables, so the scheduler
+// lives in the `quazi.runtime.state` block:
+//   +0 queue lock, +8 queue head, +16 queue tail, +24 workers started.
+// Task block (512 bytes):
+//   +0 joinable (2 once finished), +8 result slot, +16 closure, +24 stack,
+//   +32 next in queue, +40 worker context, +48 type-erased runner,
+//   +56 finished flag, +64 task context (272 bytes).
+// A finished task is published as joinable by its worker only after the
+// worker is back on its own stack, so `join` may free the task's stack.
+//
+// Current limits (D-019 phases 3-5): qoroutines run to completion without
+// preemption; `join` waits by yielding the calling OS thread; closure
+// captures and results are plain scalars until closure ownership lands.
+
+@intrinsic("quazi.runtime.state")
+unsafe fn __qo_state() *u8;
+
+@intrinsic("quazi.context.switch")
+unsafe fn __qo_switch(save: *u8, restore: *u8) void;
+
+@intrinsic("quazi.atomic.add")
+unsafe fn __qo_atomic_add(target: *i64, delta: i64) i64;
+
+@intrinsic("quazi.atomic.cas")
+unsafe fn __qo_atomic_cas(target: *i64, expected: i64, desired: i64) i64;
+
+@intrinsic("quazi.malloc")
+unsafe fn __qo_malloc(size: usize) *u8;
+
+@intrinsic("quazi.free")
+unsafe fn __qo_free(ptr: *u8) void;
+
+@intrinsic("quazi.memset")
+unsafe fn __qo_memset(ptr: *u8, value: i32, size: usize) *u8;
+
+@intrinsic("quazi.sleep_ms")
+fn __qo_sleep_ms(ms: u64) void;
+
+@cfg(target_os = "windows")
+@repr(C)
+pub type __QoWorkerEntry = fn(*u8) u32;
+
+@cfg(target_os = "linux")
+@repr(C)
+pub type __QoWorkerEntry = fn(*u8) *u8;
+
+@cfg(target_os = "netbsd")
+@repr(C)
+pub type __QoWorkerEntry = fn(*u8) *u8;
+
+@intrinsic("quazi.thread.spawn_arg")
+unsafe fn __qo_spawn_thread(f: __QoWorkerEntry, arg: *u8) usize;
+
+@repr(C)
+pub type __QoTaskEntry = fn(*u8) void;
+
+fn __qo_task_size() usize { 512 }
+fn __qo_stack_size() usize { 262144 }
+
+unsafe fn __qo_lock(state: *u8) void {
+    for (__qo_atomic_cas(state as *i64, 0, 1) != 0) { __qo_sleep_ms(0); }
+}
+
+unsafe fn __qo_unlock(state: *u8) void {
+    __qo_atomic_cas(state as *i64, 1, 0);
+}
+
+unsafe fn __qo_enqueue(task: *u8) void {
+    const state = __qo_state();
+    *((task + 32) as **u8) = 0;
+    __qo_lock(state);
+    const tail: *u8 = *((state + 16) as **u8);
+    if (tail == 0) { *((state + 8) as **u8) = task; } else { *((tail + 32) as **u8) = task; }
+    *((state + 16) as **u8) = task;
+    __qo_unlock(state);
+}
+
+unsafe fn __qo_dequeue() *u8 {
+    const state = __qo_state();
+    __qo_lock(state);
+    const head: *u8 = *((state + 8) as **u8);
+    if (head != 0) {
+        const next: *u8 = *((head + 32) as **u8);
+        *((state + 8) as **u8) = next;
+        if (next == 0) { *((state + 16) as **u8) = 0; }
+    }
+    __qo_unlock(state);
+    head
+}
+
+// One scheduling loop per worker thread; never returns.
+unsafe fn __qo_worker_loop() void {
+    const context: *u8 = __qo_malloc(272);
+    for (true) {
+        const task = __qo_dequeue();
+        if (task == 0) { __qo_sleep_ms(0); continue; }
+        *((task + 40) as **u8) = context;
+        __qo_switch(context, task + 64);
+        if (*((task + 56) as *i64) == 1) {
+            __qo_atomic_add(task as *i64, 2);
+        } else {
+            __qo_enqueue(task);
+        }
+    }
+}
+
+@cfg(target_os = "windows")
+@export("__quazi_qo_worker")
+pub unsafe fn __qo_worker(_arg: *u8) u32 {
+    __qo_worker_loop();
+    ret 0;
+}
+
+@cfg(target_os = "linux")
+@export("__quazi_qo_worker")
+pub unsafe fn __qo_worker(_arg: *u8) *u8 {
+    __qo_worker_loop();
+    ret 0;
+}
+
+@cfg(target_os = "netbsd")
+@export("__quazi_qo_worker")
+pub unsafe fn __qo_worker(_arg: *u8) *u8 {
+    __qo_worker_loop();
+    ret 0;
+}
+
+// First code a qoroutine runs on its own stack; never returns.
+@export("__quazi_qo_entry")
+pub unsafe fn __qo_entry(task: *u8) void {
+    const runner: fn(*u8) void = *((task + 48) as *fn(*u8) void);
+    runner(task);
+    *((task + 56) as *i64) = 1;
+    __qo_switch(task + 64, *((task + 40) as **u8));
+}
+
+unsafe fn __qo_run[T](task: *u8) void {
+    const f: fn() T = *((task + 16) as *fn() T);
+    const value: T = f();
+    *((task + 8) as *T) = value;
+}
+
+unsafe fn __qo_start_workers() void {
+    const state = __qo_state();
+    if (__qo_atomic_cas((state + 24) as *i64, 0, 1) == 0) {
+        for i : 0..4 { __qo_spawn_thread(__qo_worker, 0); }
+    }
+}
+
+// A running or finished qoroutine started by `qo`.
+pub struct Qoroutine[T] {
+    task: *u8,
+}
+
+// Target of the `qo f(args)` lowering: run `f` in a new qoroutine.
+pub fn __qo_spawn[T](f: fn() T) Qoroutine[T] {
+    var task: *u8 = 0;
+    unsafe {
+        task = __qo_malloc(__qo_task_size());
+        if (task == 0) { panic("qoroutine allocation failed"); }
+        __qo_memset(task, 0, __qo_task_size());
+        *((task + 16) as *fn() T) = f;
+        const runner: fn(*u8) void = |t| __qo_run[T](t);
+        *((task + 48) as *fn(*u8) void) = runner;
+        const stack: *u8 = __qo_malloc(__qo_stack_size());
+        if (stack == 0) { panic("qoroutine stack allocation failed"); }
+        *((task + 24) as **u8) = stack;
+        const entry: __QoTaskEntry = __qo_entry;
+        const top: *u8 = stack + __qo_stack_size();
+        *((task + 64 + 48) as *__QoTaskEntry) = entry;
+        *((task + 64 + 56) as **u8) = top - 72;
+        *((task + 64 + 72) as **u8) = task;
+        *((task + 64 + 80) as *u32) = 8064;
+        *((task + 64 + 84) as *u16) = 895;
+        *((task + 64 + 88) as **u8) = top;
+        *((task + 64 + 96) as **u8) = stack;
+        __qo_start_workers();
+        __qo_enqueue(task);
+    }
+    Qoroutine { task: task }
+}
+
+impl Qoroutine[T] {
+    // Wait for the qoroutine to finish and return its result.
+    pub fn join(self: Qoroutine[T]) T {
+        const task: *u8 = self.task;
+        var value: T;
+        unsafe {
+            for (__qo_atomic_add(task as *i64, 0) != 2) { __qo_sleep_ms(0); }
+            value = *((task + 8) as *T);
+            __qo_free(*((task + 24) as **u8));
+            __qo_free(task);
+        }
+        value
+    }
+}

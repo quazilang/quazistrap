@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-09: `qo` starts qoroutines](2026-11-09-qo-keyword.md)
+
 - [2026-11-09: Generic free-function calls infer their type arguments](2026-11-09-generic-call-inference.md)
 
 - [2026-11-09: Loop binder diagnostics point at the binder](2026-11-09-loop-binder-spans.md)

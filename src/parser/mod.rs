@@ -1235,7 +1235,49 @@ impl Parser {
         Ok(base)
     }
 
+    /// `qo f(args)` starts a qoroutine (D-019). Lowered here, like D-017 tail
+    /// values, to `__qo_spawn(|| f(args))`; the prelude's generic
+    /// `__qo_spawn[T](f: fn() T) Qoroutine[T]` infers `T` from the call.
+    /// The synthetic nodes get distinct spans because analysis annotations
+    /// are keyed by span: the callee is the `qo` keyword, the closure starts
+    /// one byte later, and the whole call covers `qo` through the operand.
+    fn parse_qo(&mut self) -> Result<Expr, String> {
+        let keyword = to_ast_span(self.advance().span);
+        let operand = self.parse_unary()?;
+        if !matches!(operand.node, ExprKind::Call { .. }) {
+            return Err(self.err_here_with_code(
+                "E01",
+                "`qo` must be followed by a function call, e.g. `qo work(n)`".to_string(),
+            ));
+        }
+        let end = operand.span;
+        let closure_span = Span::new(keyword.line, keyword.col + 1, keyword.start + 1, end.end);
+        let closure = Spanned::new(
+            ExprKind::Closure {
+                params: Vec::new(),
+                body: Box::new(operand),
+            },
+            closure_span,
+        );
+        Ok(Spanned::new(
+            ExprKind::Call {
+                callee: Box::new(Spanned::new(
+                    ExprKind::Ident("__qo_spawn".to_string()),
+                    keyword,
+                )),
+                type_args: Vec::new(),
+                args: vec![closure],
+                named_args: Vec::new(),
+            },
+            Span::merge(keyword, end),
+        ))
+    }
+
     fn parse_unary(&mut self) -> Result<Expr, String> {
+        if self.at(TokenKind::Qo) {
+            return self.parse_qo();
+        }
+
         if self.at(TokenKind::Bang) {
             let t = self.advance().span;
             let expr = self.parse_unary()?;
@@ -2279,6 +2321,35 @@ mod tests {
             ItemKind::Fn { body: Some(body), .. } => body,
             other => panic!("expected a function with a body, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn qo_lowers_to_a_spawn_of_a_capture_closure_with_distinct_spans() {
+        let program = parse_program("fn main() void { const h = qo work(n, 2); }");
+        let StmtKind::Const { value, .. } = &body(&program, 0).stmts[0].node else {
+            panic!("expected const");
+        };
+        let ExprKind::Call { callee, args, .. } = &value.node else {
+            panic!("qo must lower to a call, got {:?}", value.node);
+        };
+        assert!(matches!(&callee.node, ExprKind::Ident(name) if name == "__qo_spawn"));
+        let [closure] = args.as_slice() else {
+            panic!("one closure argument expected");
+        };
+        let ExprKind::Closure { params, body: call } = &closure.node else {
+            panic!("expected closure, got {:?}", closure.node);
+        };
+        assert!(params.is_empty());
+        assert!(matches!(&call.node, ExprKind::Call { callee, .. }
+            if matches!(&callee.node, ExprKind::Ident(name) if name == "work")));
+        let spans = [value.span, callee.span, closure.span, call.span];
+        for (index, span) in spans.iter().enumerate() {
+            for other in &spans[index + 1..] {
+                assert!((span.start, span.end) != (other.start, other.end), "{spans:?}");
+            }
+        }
+        assert!(parse_program_err("fn main() void { const h = qo 5; }")
+            .contains("`qo` must be followed by a function call"));
     }
 
     #[test]

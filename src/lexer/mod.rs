@@ -433,6 +433,7 @@ impl Lexer {
             "for" => TokenKind::For,
             "pub" => TokenKind::Pub,
             "unsafe" => TokenKind::Unsafe,
+            "qo" => TokenKind::Qo,
             "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
             "type" => TokenKind::Type,

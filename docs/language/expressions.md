@@ -206,6 +206,32 @@ Current closure limitations:
 
 See [closures migration](../migrations/closures.md).
 
+## Qoroutines (`qo`)
+
+`qo f(args)` runs the call in a new qoroutine and evaluates to a
+`Qoroutine[T]`, where `T` is the call's result type. `handle.join()` waits for
+the qoroutine and returns its result:
+
+```quazi
+fn square(n: i64) i64 { n * n }
+
+fn main() i32 {
+    const handle: Qoroutine[i64] = qo square(7 as i64);
+    const value = handle.join(); // 49
+    0
+}
+```
+
+Qoroutines are scheduled M:N on a pool of OS worker threads that starts on the
+first `qo` ([D-019](../decisions/qoroutines.md)). The operand must be a call.
+When `main` returns, the program ends and running qoroutines stop.
+
+Current limits: the call is wrapped in a closure, so its arguments follow the
+closure capture rules (plain scalar values, evaluated inside the qoroutine) and
+its result must be a plain scalar. Qoroutines run to completion without
+preemption, `join` waits by yielding its OS thread, and a panic inside a
+qoroutine ends the program. Channels, parking and preemption are planned.
+
 ## Match expressions
 
 `match` evaluates an expression against a series of patterns:
