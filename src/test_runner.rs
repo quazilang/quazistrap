@@ -158,9 +158,27 @@ fn run_test_binary(
         &executable_target,
     )?;
     link_object(&object, output, target.clone(), link_flags, None)?;
-    std::process::Command::new(output)
-        .status()
+    retry_text_file_busy(|| std::process::Command::new(output).status())
         .map_err(|error| format!("cannot run '{}': {error}", output.display()))
+}
+
+/// Retry `attempt` while it fails with ETXTBSY. Another thread forking while
+/// a test binary is still open for writing lets the child inherit that file
+/// descriptor until its own `exec`, so executing the fresh binary can briefly
+/// fail with "text file busy" when tests run in parallel.
+fn retry_text_file_busy<T>(
+    mut attempt: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    const ETXTBSY: i32 = 26;
+    for _ in 0..100 {
+        match attempt() {
+            Err(error) if error.raw_os_error() == Some(ETXTBSY) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+    attempt()
 }
 
 pub fn run(filter: Option<&str>, no_color: bool, no_unicode: bool) -> Result<bool, String> {
@@ -678,6 +696,28 @@ mod tests {
     }
 
     #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn busy_executables_are_retried_and_other_errors_returned() {
+        let mut calls = 0;
+        let value = super::retry_text_file_busy(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(std::io::Error::from_raw_os_error(26))
+            } else {
+                Ok(7)
+            }
+        })
+        .unwrap();
+        assert_eq!((value, calls), (7, 3));
+        let mut calls = 0;
+        let error = super::retry_text_file_busy::<()>(|| {
+            calls += 1;
+            Err(std::io::Error::from_raw_os_error(2))
+        })
+        .unwrap_err();
+        assert_eq!((error.raw_os_error(), calls), (Some(2), 1));
+    }
+
     #[test]
     fn target_gated_modules_are_not_loaded_as_independent_test_roots() {
         let root = temp_dir("target-gated-module");
