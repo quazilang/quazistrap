@@ -123,6 +123,7 @@ fn classify(kind: &TokenKind, report: &SemanticReport) -> Option<u32> {
         | TokenKind::For
         | TokenKind::Pub
         | TokenKind::Unsafe
+        | TokenKind::Qo
         | TokenKind::Break
         | TokenKind::Continue
         | TokenKind::Type
@@ -177,6 +178,16 @@ fn classify(kind: &TokenKind, report: &SemanticReport) -> Option<u32> {
 mod tests {
     use super::{STRING, tokens_for};
     use crate::lsp::analysis::analyze_source;
+
+    #[test]
+    fn qo_is_a_keyword() {
+        let source = "fn work() i64 { 1 as i64 }\nfn main() void { const h = qo work(); }\n";
+        let report = analyze_source(source).expect("analyze source");
+        assert_eq!(
+            super::classify(&crate::lexer::token::TokenKind::Qo, &report),
+            Some(super::KEYWORD)
+        );
+    }
 
     #[test]
     fn emits_utf16_lengths_for_unicode_literals() {
