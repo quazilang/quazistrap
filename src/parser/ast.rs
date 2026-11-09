@@ -427,7 +427,12 @@ pub enum ForIter {
 #[derive(Debug, Clone)]
 pub enum ForLoop {
     /// `for var e : collection {}` / `for var i : 0..10 {}`
-    Each { vars: Vec<String>, iter: ForIter },
+    /// `var_spans[i]` is the source span of `vars[i]`.
+    Each {
+        vars: Vec<String>,
+        var_spans: Vec<Span>,
+        iter: ForIter,
+    },
     /// `for [init;] [cond;] [update] {}`  — C-style
     CStyle {
         init: Option<Box<Stmt>>,

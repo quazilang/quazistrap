@@ -2302,7 +2302,11 @@ impl Analyzer {
                         self.exit_scope_collect();
                         return Ok(terminal);
                     }
-                    ForLoop::Each { vars, iter } => {
+                    ForLoop::Each {
+                        vars,
+                        var_spans,
+                        iter,
+                    } => {
                         let loop_var_ty = match iter {
                             ForIter::Range { start, end } => {
                                 let start_eval = self.type_check_expr(start, true);
@@ -2364,7 +2368,7 @@ impl Analyzer {
                                 Symbol {
                                     kind: SymbolKind::Variable { mutable: true },
                                     ty: Some(loop_var_ty.clone()),
-                                    span: stmt.span,
+                                    span: var_spans.first().copied().unwrap_or(stmt.span),
                                     params: vec![],
                                     used: false,
                                     initialized: true,
@@ -2385,7 +2389,7 @@ impl Analyzer {
                                 Symbol {
                                     kind: SymbolKind::Variable { mutable: true },
                                     ty: Some(TypeKind::Usize),
-                                    span: stmt.span,
+                                    span: var_spans.get(1).copied().unwrap_or(stmt.span),
                                     params: vec![],
                                     used: false,
                                     initialized: true,

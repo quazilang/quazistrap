@@ -6067,7 +6067,7 @@ impl<'a> FnCompiler<'a> {
                             self.chunk.patch_jump(*jmp, exit_pos);
                         }
                     }
-                    ForLoop::Each { vars, iter } => match iter {
+                    ForLoop::Each { vars, iter, .. } => match iter {
                         ForIter::Range { start, end } => {
                             let loop_var = vars.first().map(|s| s.as_str()).unwrap_or("_");
                             let r_start = self.compile_value(start);

@@ -2640,6 +2640,25 @@ mod tests {
     }
 
     #[test]
+    fn unused_loop_binders_point_at_their_names() {
+        let source = "fn main() void {\n    for i : 0..3 {\n    }\n    for index, item : [1, 2] {\n    }\n}\n";
+        let report = analyze(source);
+        for (name, occurrence) in [("i", "i : 0"), ("index", "index,"), ("item", "item :")] {
+            let warning = report
+                .warnings
+                .iter()
+                .find(|warning| warning.code == "W01" && warning.message.contains(&format!("'{name}'")))
+                .unwrap_or_else(|| panic!("missing W01 for {name}: {:?}", report.warnings));
+            let start = source.find(occurrence).unwrap();
+            assert_eq!(
+                (warning.span.start, warning.span.end),
+                (start, start + name.len()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn try_requires_a_compatible_callable_return_wrapper() {
         for source in [
             "fn bad(value: Result[i32, i32]) i32 { ret value?; } fn main() void {}",

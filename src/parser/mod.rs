@@ -613,13 +613,16 @@ impl Parser {
         if self.at(TokenKind::Var) {
             self.advance(); // consume 'var'
 
-            let first_var = self.parse_ident()?;
+            let (first_var, first_span) = self.parse_ident_with_span()?;
 
             // Check for comma (multiple binding vars in Each form)
             let mut vars = vec![first_var.clone()];
+            let mut var_spans = vec![first_span];
             if self.at(TokenKind::Comma) {
                 self.advance();
-                vars.push(self.parse_ident()?);
+                let (name, span) = self.parse_ident_with_span()?;
+                vars.push(name);
+                var_spans.push(span);
             }
 
             if self.at(TokenKind::Colon) {
@@ -640,7 +643,11 @@ impl Parser {
                 let end = body.span;
                 return Ok(Spanned::new(
                     StmtKind::For {
-                        kind: ForLoop::Each { vars, iter },
+                        kind: ForLoop::Each {
+                            vars,
+                            var_spans,
+                            iter,
+                        },
                         body,
                     },
                     Span::merge(to_ast_span(start), end),
@@ -698,7 +705,7 @@ impl Parser {
         // Two-var without `var`: `for i, v : collection {}`
         let extra_var = if self.at(TokenKind::Comma) {
             self.advance();
-            Some(self.parse_ident()?)
+            Some(self.parse_ident_with_span()?)
         } else {
             None
         };
@@ -715,8 +722,10 @@ impl Parser {
                 }
             };
             let mut vars = vec![first];
-            if let Some(v2) = extra_var {
-                vars.push(v2);
+            let mut var_spans = vec![expr.span];
+            if let Some((name, span)) = extra_var {
+                vars.push(name);
+                var_spans.push(span);
             }
             self.advance(); // consume `:`
             let lhs = self.parse_logical_or()?;
@@ -734,7 +743,11 @@ impl Parser {
             let end = body.span;
             return Ok(Spanned::new(
                 StmtKind::For {
-                    kind: ForLoop::Each { vars, iter },
+                    kind: ForLoop::Each {
+                        vars,
+                        var_spans,
+                        iter,
+                    },
                     body,
                 },
                 Span::merge(to_ast_span(start), end),

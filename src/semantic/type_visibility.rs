@@ -204,7 +204,7 @@ impl Visibility<'_> {
             StmtKind::For { kind, body } => {
                 let outer = scope.locals.clone();
                 match kind {
-                    ForLoop::Each { vars, iter } => {
+                    ForLoop::Each { vars, iter, .. } => {
                         match iter {
                             ForIter::Range { start, end } => {
                                 self.check_expr(start, scope);
