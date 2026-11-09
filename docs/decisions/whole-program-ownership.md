@@ -84,11 +84,15 @@ later cleanup unsound; it is not place-level move tracking or structural drop
 glue.
 
 The current implementation has a deliberately narrower bridge toward that
-design: an acyclic, non-generic, non-`repr(C)` struct with no source
-`free(self)` hook may clean eligible owned fields in reverse declaration order.
-It never combines this traversal with a manual hook, and excludes recursive
-structs, arrays, enums, dynamic values, generic specializations, and physical
-aggregate-storage release. The partial-move guard remains in force until the
+design: an acyclic, non-`repr(C)` struct with no source `free(self)` hook
+(including concrete generic specializations, whose field types are
+substituted) cleans eligible owned fields in reverse declaration order and
+then releases its storage shell, also when no field needs cleanup
+(2026-11-09). It never combines this traversal with a manual hook, and
+excludes recursive structs, arrays and dynamic values. An enum value without a
+hook releases only its storage shell: its payloads are not destroyed, because
+a by-value `match` does not consume the scrutinee and its bindings alias the
+payloads, so destroying them needs the place-level rule above. The partial-move guard remains in force until the
 full rule above is implemented, except for an exact `ret self.field` from a
 by-value inherent receiver when that direct field has compiler-generated
 structural cleanup. At that return only, generated cleanup excludes the
