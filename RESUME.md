@@ -2,6 +2,25 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-09 latest, preemption and JoinHandle)
+
+quazistrap `de3a2cb` Linux timer preemption (SIGURG per worker,
+`quazi.signal.install` id 47 + embedded `__quazi_sigreturn`, hold counter at
+task+344; non-running tasks always hold one; sleep_ms retries EINTR; libc /
+Windows / NetBSD cooperative). `0cd449d` module-qualified generic inference
+(`thread.spawn(|| f(n))`). std `3ab1221` `thread.spawn` -> `JoinHandle[T]`
+(std plan 61.2%, Concurrency 6/12). Verified: 1022 Rust tests, all e2e,
+std 62/62, examples, freestanding.
+Ownership notes: a local `const f: fn = *(raw)` owns and frees that closure
+env at scope end; `__qo_entry` never returns, so it frees the runner env
+explicitly — do not copy that free into returning functions.
+
+Remaining D-019: preemption on Windows (SuspendThread/SetThreadContext) and
+NetBSD; owned qoroutine results and owned Channel values; owned captures for
+`thread.spawn` closures (only `qo` closures are `once`); Channel from OS
+threads (needs a handle capture); general struct storage reclamation (all
+structs without `free` leak — biggest memory issue, compiler-wide).
+
 ## Checkpoint (2026-11-09 late, owned args, channels, panics)
 
 quazistrap: `d3e303f` `qo` moves owned String/struct variable args
