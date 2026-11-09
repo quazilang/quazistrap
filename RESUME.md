@@ -15,8 +15,13 @@ Ownership notes: a local `const f: fn = *(raw)` owns and frees that closure
 env at scope end; `__qo_entry` never returns, so it frees the runner env
 explicitly — do not copy that free into returning functions.
 
+`758527f` owned qo results (once closures may return named owned types;
+join reads the slot only after success).
 Remaining D-019: preemption on Windows (SuspendThread/SetThreadContext) and
-NetBSD; owned qoroutine results and owned Channel values; owned captures for
+NetBSD; owned Channel values — blocked: `ch.clone()` of a `Channel[String]`
+is classified by borrow/retention as an owner-rooted string view (S10 "cannot
+capture owner-rooted string view") because it derives from a borrowed
+receiver and its type mentions String; owned captures for
 `thread.spawn` closures (only `qo` closures are `once`); Channel from OS
 threads (needs a handle capture); general struct storage reclamation (all
 structs without `free` leak — biggest memory issue, compiler-wide).
