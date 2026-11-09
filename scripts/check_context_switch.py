@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Check quazi.context.switch: two stacks hand control back and forth natively, from QZI and as COFF."""
+"""Check quazi.context.switch (two stacks hand control back and forth) and
+quazi.runtime.state (one zeroed process-wide block) natively, from QZI and as COFF."""
 
 import argparse
 import subprocess
@@ -57,6 +58,35 @@ fn main() i32 {
 """
 
 
+STATE_PROGRAM = r"""import std.io;
+
+@intrinsic("quazi.runtime.state")
+unsafe fn runtime_state() *u8;
+
+unsafe fn bump() i64 {
+    const state = runtime_state();
+    *((state + 56) as *i64) = *((state + 56) as *i64) + 1;
+    *((state + 56) as *i64)
+}
+
+fn main() i32 {
+    var zero: i64 = 1;
+    var count: i64 = 0;
+    unsafe {
+        const state = runtime_state();
+        zero = 0;
+        for offset : 0..8 { zero = zero + *((state + offset * 8) as *i64); }
+        bump();
+        bump();
+        count = bump();
+    }
+    io.println("zero {} count {}", zero, count);
+    if (zero != 0 || count != 3) { ret 1; }
+    0
+}
+"""
+
+
 def invoke(command, root):
     result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=120)
@@ -83,6 +113,24 @@ def check(qz, root):
     invoke([str(qz), "build", str(artifact), *common, "-c", "--target", "x86_64-windows", "-o", str(coff)], root)
     assert coff.read_bytes()[:2] == b"\x64\x86"
     print("PASS context switch: 4 round trips on a separate stack, native/source-removed QZI; Windows COFF emits")
+
+    case = root / "state"
+    (case / "src").mkdir(parents=True)
+    (case / "quazi.toml").write_text('[package]\nname="runtime_state"\n[build]\nentry="src/main.qz"\n')
+    (case / "src/main.qz").write_text(STATE_PROGRAM)
+    binary = case / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], case)
+    assert "zero 0 count 3" in invoke([str(binary)], case)
+    artifact = case / "program.qzi"
+    invoke([str(qz), "build", *common, "-i", "-o", str(artifact)], case)
+    (case / "src/main.qz").unlink()
+    portable = case / "portable"
+    invoke([str(qz), "build", str(artifact), *common, "-o", str(portable)], root)
+    assert "zero 0 count 3" in invoke([str(portable)], case)
+    coff = case / "program.obj"
+    invoke([str(qz), "build", str(artifact), *common, "-c", "--target", "x86_64-windows", "-o", str(coff)], root)
+    assert coff.read_bytes()[:2] == b"\x64\x86"
+    print("PASS runtime state: one shared zeroed block across calls, native/source-removed QZI; Windows COFF emits")
 
 
 def main():

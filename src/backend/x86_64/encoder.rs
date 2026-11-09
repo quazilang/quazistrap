@@ -4088,6 +4088,12 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(r12));
                         emit!(asm.pop(rbx));
                     }
+                    44 => {
+                        // quazi.runtime.state() -> *u8: the zero-initialized,
+                        // 16-byte aligned 64-byte process runtime state block.
+                        lea_rip!(rax, "__quazi_runtime_state".to_string());
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     42 => {
                         // quazi.context.switch(save: *u8, restore: *u8): store the
                         // callee-saved machine state in `save` and resume the one in

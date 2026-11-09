@@ -162,4 +162,18 @@ r14 32, r15 40, rip 48, rsp 56, rsi 64, rdi 72, mxcsr 80 (u32), fcw 84 (u16),
 stack base 88, stack limit 96, xmm6-15 112..272. A fresh context sets rip to an
 `@export` entry `fn(*u8) void`, rsp to a 16-byte-aligned top minus 72, rdi to
 the argument, mxcsr 0x1F80 and fcw 0x037F; its entry must never return.
-This is the primitive planned for `std.qroutines`; see asks.txt in the workspace.
+This is the primitive for the qoroutine scheduler ([D-019](../../../docs/decisions/qoroutines.md)).
+
+## Runtime state and threads (2026-11-09)
+
+`@intrinsic("quazi.runtime.state") unsafe fn() *u8` (id 44) returns the
+address of `__quazi_runtime_state`, a zeroed, 16-byte aligned 64-byte block in
+the object's data section. Quazi has no global variables; runtime code (the
+planned qoroutine scheduler) keeps its process-wide pointers there. Each
+object has its own block, so one executable should contain one Quazi object
+that uses it.
+
+Linux executables without `-lc` lower `quazi.thread.spawn`/`spawn_arg`/`join`
+to the embedded `__quazi_thread_spawn`/`__quazi_thread_join` routines
+(`runtime.rs`: clone + futex, 8 MiB region per thread); `-lc` executables and
+entry-less objects/libraries keep pthreads (`TargetSpec::linking`).
