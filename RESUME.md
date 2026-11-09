@@ -9,6 +9,11 @@ hint k+1 on integer Mul/Div/Mod by proven 2^k; encoder shl/shr/and/sar);
 `2c9756e` struct destructuring patterns (`PatternKind::Struct`, pattern span
 annotated with the struct type); `24dce2b` ELF `.a` archive member
 extraction (`backend/archive.rs`). tree-sitter `f34e93e` struct patterns.
+`2e07a7e` scalar-only struct shells are released (structural drop action
+even without droppable fields; check_struct_release.py 2060->40065 pages
+before, 60->65 after). Still leaking: generic struct shells and enum shells
+(Option/Result/user enums) — needs place-level moves because pattern bindings
+alias payloads and may move them out.
 Compiler plan 91.4%. asks.txt round 3 (Russian): В7 string interpolation
 syntax (f"..."?), В8 drop async/await? — waiting for answers; do not
 implement interpolation of every literal (would break JSON-like strings).
