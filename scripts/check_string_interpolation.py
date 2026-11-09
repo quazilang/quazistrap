@@ -134,6 +134,19 @@ VARIADIC = r"""import std.io;
 fn count(...xs: str) usize { xs.len() }
 fn first(...xs: str) usize { xs[0].len() }
 
+struct Bag { size: i32, }
+
+// Variadic methods pack their tail like free functions (they received the
+// raw arguments in place of the slice before).
+impl Bag {
+    fn count(self: &Bag, ...values: str) usize { values.len() }
+    fn sum(self: &Bag, ...values: i32) i32 {
+        var total = self.size;
+        for value : values { total = total + value; }
+        total
+    }
+}
+
 fn main() i32 {
     const s: str = "hello";
     io.println("a {}", count("x", "y"));
@@ -141,6 +154,9 @@ fn main() i32 {
     io.println("c {}", first("abc"));
     io.println("d {}", first(s));
     io.println("e {}", count());
+    const bag = Bag { size: 1 };
+    io.println("m {} {} {}", bag.count("x", "y"), bag.count(s), bag.count());
+    io.println("n {} {}", bag.sum(7), bag.sum(2, 3, 4));
     0
 }
 """
@@ -190,7 +206,7 @@ def check(qz, root):
     assert "use of moved value 's'" in output and "use of moved value 't'" in output, output
     case = project(root, "variadic", VARIADIC)
     output = invoke([str(qz), "run", *common], case)
-    assert output == "a 2\nb 2\nc 3\nd 5\ne 0\n", output
+    assert output == "a 2\nb 2\nc 3\nd 5\ne 0\nm 2 1 0\nn 8 10\n", output
     case = project(root, "try", TRY)
     output = invoke([str(qz), "run", *common], case)
     assert output == "failures 200000 small growth true\n", output

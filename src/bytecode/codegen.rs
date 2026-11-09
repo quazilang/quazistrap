@@ -786,26 +786,8 @@ impl<'a> Codegen<'a> {
                             ..
                         } = &method.node
                         {
-                            let has_str_var = params
-                                .last()
-                                .map(|p| {
-                                    if !p.variadic {
-                                        return false;
-                                    }
-                                    if matches!(
-                                        &p.ty.node,
-                                        crate::parser::ast::TypeKind::Str
-                                            | crate::parser::ast::TypeKind::Ref { .. }
-                                            | crate::parser::ast::TypeKind::MutRef { .. }
-                                    ) {
-                                        return true;
-                                    }
-                                    matches!(&p.ty.node, crate::parser::ast::TypeKind::Any)
-                                        && attributes
-                                            .iter()
-                                            .any(|attribute| attribute.name == "format")
-                                })
-                                .unwrap_or(false);
+                            let has_str_var =
+                                crate::parser::format::is_format_variadic(params, attributes);
                             if has_str_var {
                                 self.str_variadic_fns
                                     .insert(format!("{}.{}", type_name, name));
@@ -7089,23 +7071,7 @@ impl<'a> FnCompiler<'a> {
                     })
                     .collect()
             };
-            // Copy into fresh consecutive slots so Lea gives a contiguous block.
-            let first_slot = self.next_reg_slot();
-            for &r in &var_regs {
-                let slot = self.alloc_reg(); // = first_slot + i
-                if r != slot {
-                    self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
-                }
-            }
-            // Lea first_slot → pointer to its stack slot on this frame.
-            let rp = self.alloc_reg();
-            let block_length = self.qzi_u8(var_regs.len(), "variadic argument count");
-            self.chunk
-                .emit(mem_lea_block(first_slot, rp, 0, block_length));
-            let rl = self.alloc_reg();
-            self.chunk
-                .emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
-            (rp, rl)
+            self.pack_variadic_block(&var_regs)
         };
         let mut all_regs = fixed_regs;
         all_regs.push(r_ptr);
@@ -7119,6 +7085,53 @@ impl<'a> FnCompiler<'a> {
         );
         self.end_format_scratch();
         result_dst
+    }
+
+    /// Copy `values` into consecutive frame slots and return the (pointer,
+    /// count) pair a variadic parameter receives.
+    fn pack_variadic_block(&mut self, values: &[u8]) -> (u8, u8) {
+        if values.is_empty() {
+            let pointer = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, pointer, 0));
+            let count = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, count, 0));
+            return (pointer, count);
+        }
+        let first_slot = self.next_reg_slot();
+        for &value in values {
+            let slot = self.alloc_reg();
+            if value != slot {
+                self.chunk.emit(rrr(Opcode::Mov, slot, value, 0));
+            }
+        }
+        // Lea first_slot → pointer to its stack slot on this frame.
+        let pointer = self.alloc_reg();
+        let block_length = self.qzi_u8(values.len(), "variadic argument count");
+        self.chunk
+            .emit(mem_lea_block(first_slot, pointer, 0, block_length));
+        let count = self.alloc_reg();
+        self.chunk
+            .emit(ri16(Opcode::MovI, count, values.len() as u16));
+        (pointer, count)
+    }
+
+    /// Argument registers of an instance-method call after its receiver. A
+    /// variadic method receives its tail packed like a free function's.
+    fn compile_method_arguments(&mut self, call_target: &str, args: &[Expr]) -> Vec<u8> {
+        let compile = |this: &mut Self, arg: &Expr| {
+            this.mark_consumed_expr(arg);
+            this.compile_value(arg)
+        };
+        let Some(&fixed) = self.variadic_fn_info.get(call_target) else {
+            return args.iter().map(|arg| compile(self, arg)).collect();
+        };
+        // `fixed` counts the receiver parameter.
+        let split = fixed.saturating_sub(1).min(args.len());
+        let mut registers: Vec<u8> = args[..split].iter().map(|arg| compile(self, arg)).collect();
+        let tail: Vec<u8> = args[split..].iter().map(|arg| compile(self, arg)).collect();
+        let (pointer, count) = self.pack_variadic_block(&tail);
+        registers.extend([pointer, count]);
+        registers
     }
 
     /// Start a format call whose numeric arguments get private digit buffers.
@@ -8596,13 +8609,7 @@ impl<'a> FnCompiler<'a> {
                                 Some(receiver),
                             );
                         }
-                        let arg_regs: Vec<u8> = args
-                            .iter()
-                            .map(|arg| {
-                                self.mark_consumed_expr(arg);
-                                self.compile_value(arg)
-                            })
-                            .collect();
+                        let arg_regs = self.compile_method_arguments(&call_target, args);
                         let result_dst = self.alloc_result_block(&call_target);
                         if consuming_receiver {
                             self.transfer_expression_temporary(receiver);
@@ -8702,13 +8709,7 @@ impl<'a> FnCompiler<'a> {
                             &call_target,
                             receiver_place,
                         );
-                        let arg_regs: Vec<u8> = args
-                            .iter()
-                            .map(|a| {
-                                self.mark_consumed_expr(a);
-                                self.compile_value(a)
-                            })
-                            .collect();
+                        let arg_regs = self.compile_method_arguments(&call_target, args);
                         let result_dst = self.alloc_result_block(&call_target);
                         if self.has_consuming_receiver(&call_target) {
                             self.transfer_expression_temporary(receiver);

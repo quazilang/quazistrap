@@ -19,6 +19,14 @@ such a parameter is a typed variadic like any other: arguments must be `str`
 and no literal is a template. Whether a fixed `str` parameter alone should keep
 making a function a format function is open as question В11 in `asks.txt`.
 
+Follow-up the same day (review): impl methods used a fifth copy of the old
+rule in codegen and now call `is_format_variadic` too. That exposed an older
+defect: instance-method calls never packed a variadic tail, so a method
+`sum(self: &Bag, ...values: i32)` received its first arguments in place of the
+slice (`bag.sum(7)` faulted, `bag.count("x", "y")` returned 2 by accident).
+`compile_method_arguments` now packs the tail with the same
+`pack_variadic_block` as free functions.
+
 Verification: a semantic test (`count("a {{", "b")` is plain, `count(5)` is
 S08) and the interpolation script's `variadic` program (`count`/`first` with
-literals, variables and no arguments).
+literals, variables and no arguments, and `str`/`i32` variadic methods).
