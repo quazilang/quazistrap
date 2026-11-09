@@ -2889,6 +2889,13 @@ impl Analyzer {
         // Generic arguments inferred for a module-qualified call (`mod.f(x)`).
         let mut inferred_type_args: Option<Vec<TypeKind>> = None;
         let result = match &expr.node {
+            ExprKind::Literal(Literal::String(text))
+                if !self
+                    .format_template_literals
+                    .contains(&(expr.span.start, expr.span.end)) =>
+            {
+                self.type_check_string_literal(expr, text, reachable)
+            }
             ExprKind::Literal(lit) => {
                 let ty = match lit {
                     // A literal above i64::MAX can only be a u64 value; typing
@@ -3558,6 +3565,11 @@ impl Analyzer {
                 } else {
                     None
                 };
+                let template_callee = match &callee.node {
+                    ExprKind::Ident(name) => self.resolve_bare_fn_name(name),
+                    _ => None,
+                };
+                self.note_format_template(template_callee.as_deref(), args);
                 let arg_evals = self.type_check_call_arguments(
                     args,
                     named_args,
@@ -3887,6 +3899,7 @@ impl Analyzer {
                             (params, names)
                         })
                     });
+                    self.note_format_template(module_method.as_deref(), args);
                     let arg_evals = self.type_check_call_arguments(
                         args,
                         named_args,
@@ -4363,6 +4376,17 @@ impl Analyzer {
                                 .cloned()
                         })
                         .unwrap_or_default();
+                    if let Some(object_ty) = object_eval.ty.as_ref() {
+                        let resolved = self.resolve_type_aliases(object_ty);
+                        let type_name = super::declare::type_kind_base_name(&resolved);
+                        let mangled = format!("{type_name}.{method}");
+                        let leaf = format!(
+                            "{}.{method}",
+                            type_name.rsplit('.').next().unwrap_or(&type_name)
+                        );
+                        let name = if self.resolve_symbol(&mangled).is_some() { mangled } else { leaf };
+                        self.note_format_template(Some(&name), args);
+                    }
                     let all_evals = self.type_check_call_arguments(
                         args,
                         named_args,
@@ -6072,6 +6096,70 @@ impl Analyzer {
                             arg_name, param_ty, arg_ty
                         ),
                     );
+                }
+            }
+        }
+    }
+
+    /// Mark `args[0]` as a format template when `callee` is a format function
+    /// (`@format`/`str_variadic`): its braces follow the format-call rules.
+    fn note_format_template(&mut self, callee: Option<&str>, args: &[Expr]) {
+        let Some(first) = args.first() else { return };
+        if !matches!(first.node, ExprKind::Literal(Literal::String(_))) {
+            return;
+        }
+        if callee
+            .and_then(|name| self.resolve_symbol(name))
+            .is_some_and(|symbol| symbol.attributes.iter().any(|attribute| attribute == "str_variadic"))
+        {
+            self.format_template_literals
+                .insert((first.span.start, first.span.end));
+        }
+    }
+
+    /// D-020: an ordinary string literal is a format string. Without
+    /// placeholders it is a `str` whose `{{`/`}}` are single braces; with
+    /// `{expr}` placeholders it formats to an owned `String`.
+    fn type_check_string_literal(&mut self, expr: &Expr, text: &str, reachable: bool) -> ExprEval {
+        let view = TypeKind::Ref {
+            inner: Box::new(Spanned::new(TypeKind::Str, expr.span)),
+        };
+        match crate::parser::format::classify_string_literal(text) {
+            crate::parser::format::StringLiteralForm::Plain(plain) => ExprEval {
+                ty: Some(view),
+                const_value: Some(ConstValue::String(plain)),
+            },
+            crate::parser::format::StringLiteralForm::Invalid(message) => {
+                self.push_error(expr.span, "S01", message);
+                ExprEval {
+                    ty: Some(view),
+                    const_value: None,
+                }
+            }
+            crate::parser::format::StringLiteralForm::Interpolated => {
+                let from = self
+                    .current_function
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| "__program__".to_string());
+                self.add_dependency_edge(DependencyKind::Call, &from, "fmt.format");
+                if let Some(expanded) =
+                    crate::parser::format::expand_format_call_args(std::slice::from_ref(expr))
+                {
+                    for argument in &expanded.args {
+                        self.type_check_expr(argument, reachable);
+                    }
+                }
+                let string = self
+                    .resolve_symbol("fmt.format")
+                    .and_then(|symbol| symbol.ty.clone())
+                    .unwrap_or(TypeKind::Named {
+                        name: "String".to_string(),
+                        type_args: Vec::new(),
+                    });
+                ExprEval {
+                    ty: Some(string),
+                    const_value: None,
                 }
             }
         }

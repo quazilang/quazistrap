@@ -84,8 +84,25 @@ const greeting: str = "Hello, world!\n";
 const path: str = "C:\\data\\file.txt";
 ```
 
-Raw backtick strings preserve contents exactly, with no escape decoding. They
-may span multiple lines and must be terminated:
+Every quoted string is a format string ([D-020](../decisions/string-interpolation.md)):
+`{expr}` interpolates a value (with an optional `:spec` such as `{x:X}`) and
+the literal becomes an owned `String`; `{{` and `}}` write single braces. A
+literal without placeholders stays a `str`. An unmatched brace, or an empty
+`{}` outside a format call's template, is an error.
+
+```quazi
+const name: str = "quazi";
+const line = "hello {name}, answer {6 * 7}";   // String
+const json: str = "{{\"a\": 1}}";             // {"a": 1}
+io.println("x = {}, y = {y}", x);             // format call template
+```
+
+In a format call (`println`, `format`, ...) the first literal is the template:
+`{}` and `{:spec}` there consume the explicit arguments in order.
+
+Raw backtick strings preserve contents exactly, with no escape decoding and no
+interpolation (braces are literal). They may span multiple lines and must be
+terminated:
 
 ```quazi
 const raw: str = `C:\data\file.txt`;

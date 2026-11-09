@@ -24,8 +24,8 @@ pub fn format(template: str, ...args: str) String {
     for (index < length) {
         const first = __format_byte_at(template, index);
         if ((first == 123 || first == 125) && index + 1 < length && __format_byte_at(template, index + 1) == first) {
-            if (first == 123) { result = result.push_str("{"); }
-            else { result = result.push_str("}"); }
+            if (first == 123) { result = result.push_str("{{"); }
+            else { result = result.push_str("}}"); }
             index += 2;
             scalar += 2;
         } else if (first == 123 && index + 1 < length && __format_byte_at(template, index + 1) == 125) {
@@ -33,7 +33,7 @@ pub fn format(template: str, ...args: str) String {
                 result = result.push_str(args[argument]);
                 argument++;
             } else {
-                result = result.push_str("{}");
+                result = result.push_str("{{}}");
             }
             index += 2;
             scalar += 2;

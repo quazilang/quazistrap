@@ -5,7 +5,10 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 94.4%. Remaining: 5.6%.**
+**Complete: 97.6%. Remaining: 2.4%.**
+
+On 2026-11-09 format string literals (1/1) were completed under D-020
+([change record](../changes/2026-11-09-string-interpolation.md)).
 
 On 2026-11-09 the maintainers removed async/await from the plan
 ([D-020](../decisions/string-interpolation.md), В8А). The rubric now has 31
@@ -214,7 +217,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Strength reduction | 1/1 | 100.0% | 0.0% |
 | Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
 | Atomic opcodes | 2/2 | 100.0% | 0.0% |
-| Format string literals | 0/1 | 0.0% | 100.0% |
+| Format string literals | 1/1 | 100.0% | 0.0% |
 | Nested struct patterns | 1/1 | 100.0% | 0.0% |
 | LSP improvements | 16/20 | 80.0% | 20.0% |
 | qz doc | 1/1 | 100.0% | 0.0% |
@@ -405,9 +408,9 @@ Evidence: [src/backend/x86_64/AGENTS.md](../../src/backend/x86_64/AGENTS.md).
 
 ### Format string literals
 
-Evidence: [AGENTS.md](../../AGENTS.md).
+Evidence: [scripts/check_string_interpolation.py](../../scripts/check_string_interpolation.py), [D-020](../decisions/string-interpolation.md).
 
-- [ ] Compile-time literal interpolation.
+- [x] Compile-time literal interpolation.
 
 ### Nested struct patterns
 

@@ -454,7 +454,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 
 | Feature | Status |
 |---------|--------|
-| Format string literals | Not started — `"value = {x}"` compile-time interpolation |
+| Format string literals | ✅ Done (D-020) — every quoted literal interpolates `{expr}`; `{{`/`}}` escape; raw strings never interpolate; format-call templates keep `{}` rules |
 | Nested struct patterns | ✅ Done — `Point { x, y: 0, .. }` in match arms, nested and inside variant payloads (`PatternKind::Struct`; analysis annotates the pattern span with the struct type for lowering) |
 | `async`/`await` | Removed from the plan (D-020, В8А): `qo` qoroutines and `Channel[T]` replace it |
 

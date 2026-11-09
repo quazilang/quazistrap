@@ -152,6 +152,8 @@ pub struct Analyzer {
     initialization_reachable: bool,
     terminal_statements: BTreeSet<(usize, usize)>,
     match_pattern_tags: HashMap<(usize, usize), usize>,
+    /// Spans of string literals in a format call's template position (D-020).
+    format_template_literals: std::collections::HashSet<(usize, usize)>,
     /// Nesting depth of trait definitions (0 = outside any trait).
     /// `any` in trait method signatures is exempt from W05.
     pub(super) trait_depth: usize,
@@ -953,6 +955,7 @@ impl Analyzer {
             initialization_reachable: true,
             terminal_statements: BTreeSet::new(),
             match_pattern_tags: HashMap::new(),
+            format_template_literals: std::collections::HashSet::new(),
             trait_depth: 0,
             main_takes_args: false,
             test_functions: Vec::new(),
@@ -1550,6 +1553,7 @@ impl Analyzer {
         self.initialization_reachable = true;
         self.terminal_statements.clear();
         self.match_pattern_tags.clear();
+        self.format_template_literals.clear();
         self.trait_depth = 0;
         self.explicitly_imported_fns.clear(); // HashMap::clear
         self.struct_defs.clear();

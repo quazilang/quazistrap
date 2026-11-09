@@ -172,6 +172,22 @@ fn respan_expr(mut expr: Expr, new_span: Span) -> Expr {
 
 #[cfg(test)]
 mod tests {
+    use super::{StringLiteralForm, classify_string_literal};
+
+    #[test]
+    fn literals_classify_under_d020() {
+        assert_eq!(classify_string_literal("plain"), StringLiteralForm::Plain("plain".into()));
+        assert_eq!(classify_string_literal("a {{b}} c"), StringLiteralForm::Plain("a {b} c".into()));
+        assert_eq!(classify_string_literal("v = {x}"), StringLiteralForm::Interpolated);
+        assert_eq!(classify_string_literal("{x:X} {{"), StringLiteralForm::Interpolated);
+        for invalid in ["{", "}", "a {} b", "{:X}", "x}"] {
+            assert!(
+                matches!(classify_string_literal(invalid), StringLiteralForm::Invalid(_)),
+                "{invalid}"
+            );
+        }
+    }
+
     use super::*;
 
     fn make_span(start: usize, end: usize) -> Span {
@@ -254,5 +270,67 @@ mod tests {
         let expanded = expand_format_call_args(&args).unwrap();
         assert_eq!(expanded.clean_template, "{{}} {}");
         assert_eq!(expanded.args.len(), 1);
+    }
+}
+
+/// How an ordinary string literal reads under D-020 (every literal is a
+/// format string; `{{`/`}}` are literal braces).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StringLiteralForm {
+    /// No placeholders: the text with `{{`/`}}` reduced to single braces.
+    Plain(String),
+    /// At least one `{expr}` placeholder: formats to an owned `String`.
+    Interpolated,
+    /// Unmatched brace or an argument-less `{}` placeholder.
+    Invalid(String),
+}
+
+/// Classify a literal outside a format call's template position.
+pub fn classify_string_literal(text: &str) -> StringLiteralForm {
+    let bytes = text.as_bytes();
+    let mut plain = Vec::with_capacity(bytes.len());
+    let mut interpolated = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'{' if bytes.get(index + 1) == Some(&b'{') => {
+                plain.push(b'{');
+                index += 2;
+            }
+            b'}' if bytes.get(index + 1) == Some(&b'}') => {
+                plain.push(b'}');
+                index += 2;
+            }
+            b'{' => {
+                let Some(length) = bytes[index + 1..].iter().position(|byte| *byte == b'}') else {
+                    return StringLiteralForm::Invalid(
+                        "unmatched `{` in string literal; write `{{` for a literal brace".into(),
+                    );
+                };
+                let field = &text[index + 1..index + 1 + length];
+                let name = field.split_once(':').map_or(field, |(name, _)| name).trim();
+                if name.is_empty() {
+                    return StringLiteralForm::Invalid(format!(
+                        "`{{{field}}}` has no argument outside a format call; name a value (`{{x}}`) or write `{{{{` and `}}}}` for literal braces"
+                    ));
+                }
+                interpolated = true;
+                index += length + 2;
+            }
+            b'}' => {
+                return StringLiteralForm::Invalid(
+                    "unmatched `}` in string literal; write `}}` for a literal brace".into(),
+                );
+            }
+            byte => {
+                plain.push(byte);
+                index += 1;
+            }
+        }
+    }
+    if interpolated {
+        StringLiteralForm::Interpolated
+    } else {
+        StringLiteralForm::Plain(String::from_utf8(plain).unwrap_or_default())
     }
 }

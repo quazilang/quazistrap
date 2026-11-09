@@ -229,6 +229,11 @@ impl Lexer {
                 let span = self.make_span(start, self.pos, line, col);
                 return Token::new(TokenKind::StringLit(s), span);
             }
+            // Raw strings never interpolate (D-020): store braces escaped so
+            // the ordinary literal rules reproduce them verbatim.
+            if matches!(ch, '{' | '}') {
+                s.push(ch);
+            }
             s.push(ch);
         }
 
@@ -846,9 +851,18 @@ mod string_tests {
 
     #[test]
     fn raw_strings_preserve_backslashes_and_quotes() {
+        // Raw strings store braces escaped (D-020) so the literal reads back
+        // verbatim and never interpolates.
+        let token = string_value(r#"`\0\a\e\n\t\x41\101\u263A\U0001F980\u{1F980}"quoted"`"#);
         assert_eq!(
-            string_value(r#"`\0\a\e\n\t\x41\101\u263A\U0001F980\u{1F980}"quoted"`"#),
-            r#"\0\a\e\n\t\x41\101\u263A\U0001F980\u{1F980}"quoted""#
+            token,
+            r#"\0\a\e\n\t\x41\101\u263A\U0001F980\u{{1F980}}"quoted""#
+        );
+        assert_eq!(
+            crate::parser::format::classify_string_literal(&token),
+            crate::parser::format::StringLiteralForm::Plain(
+                r#"\0\a\e\n\t\x41\101\u263A\U0001F980\u{1F980}"quoted""#.to_string()
+            )
         );
     }
 

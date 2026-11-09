@@ -7104,8 +7104,17 @@ impl<'a> FnCompiler<'a> {
         span: Span,
         receiver: Option<u8>,
     ) -> u8 {
-        let owner = self.compile_variadic_call("fmt.format", args);
-        let view = self.injected_format_view(span, owner);
+        // D-020: only literals are format templates. A single non-literal
+        // text argument is printed verbatim, never re-parsed for braces.
+        let view = if let [text] = args
+            && !matches!(text.node, ExprKind::Literal(Literal::String(_)))
+        {
+            let value = self.compile_value(text);
+            self.coerce_to_display_str(value, text.span)
+        } else {
+            let owner = self.compile_variadic_call("fmt.format", args);
+            self.injected_format_view(span, owner)
+        };
         let mut arguments = receiver.into_iter().collect::<Vec<_>>();
         arguments.push(view);
         if self.variadic_fn_info.contains_key(name) {
@@ -7413,6 +7422,7 @@ impl<'a> FnCompiler<'a> {
         }
 
         match &expr.node {
+            ExprKind::Literal(Literal::String(text)) => self.emit_string_literal(expr, text),
             ExprKind::Literal(lit) => self.emit_literal(lit),
 
             ExprKind::Ident(name) => {
@@ -9387,6 +9397,28 @@ impl<'a> FnCompiler<'a> {
     }
 
     // ── Literal / const-value emitters ────────────────────────────────────────
+
+    /// D-020: analysis typed an interpolating literal as `String` and recorded
+    /// the brace-unescaped text of a plain one; format templates keep theirs.
+    fn emit_string_literal(&mut self, expr: &Expr, text: &str) -> u8 {
+        let annotation = self
+            .annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| annotation.span == expr.span);
+        if annotation.is_some_and(|annotation| {
+            matches!(annotation.ty, Some(TypeKind::Named { .. }))
+        }) {
+            return self.compile_variadic_call("fmt.format", std::slice::from_ref(expr));
+        }
+        let plain = annotation
+            .and_then(|annotation| match &annotation.const_value {
+                Some(crate::semantic::types::ConstValue::String(plain)) => Some(plain.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| text.to_string());
+        self.emit_literal(&Literal::String(plain))
+    }
 
     fn emit_literal(&mut self, lit: &Literal) -> u8 {
         let dst = self.alloc_reg();
