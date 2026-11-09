@@ -494,6 +494,11 @@ pub const NEGATED_COMPARE_FLAG: u8 = 0x02;
 /// A zero flags byte retains the signed behavior used by older QZI files.
 pub const UNSIGNED_FLAG: u8 = 0x04;
 
+/// `PrimToStr`: write the digits into the caller-provided buffer whose
+/// address is in register `ops[3]` (at least 80 bytes) instead of the
+/// instruction's static scratch, so concurrent formatting cannot race.
+pub const PRIM_TO_STR_BUFFER_FLAG: u8 = 0x80;
+
 /// Strength-reduction hint in `ops[3]` of an integer `Mul`/`Div`/`Mod`:
 /// `k + 1` when constant propagation proved the second operand equals `2^k`.
 /// Backends may lower the operation to a shift or mask; the operand register

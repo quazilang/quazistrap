@@ -492,7 +492,6 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
         | Opcode::StrToFloat
         | Opcode::StrAsStr
         | Opcode::VtblLoad   // ops[2]=slot (not reg)
-        | Opcode::PrimToStr  // ops[2]=type tag (not reg)
         | Opcode::FieldLoad  // ops[2]=byte offset (not reg)
         | Opcode::Load       // ops[0]=dst, ops[1]=base
         | Opcode::Lea        // ops[0]=dst, ops[1]=base
@@ -500,6 +499,15 @@ fn instr_uses(instr: &Instruction) -> Vec<u8> {
         | Opcode::CallCReg   // ops[0]=dst, ops[1]=C fn ptr, ops[2..3]=signature
         | Opcode::Spawn      // ops[0]=dst, ops[1]=fn_ptr
         => vec![instr.ops[1]],
+
+        // PrimToStr: ops[2] is a type tag; a caller buffer adds ops[3].
+        Opcode::PrimToStr => {
+            if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                vec![instr.ops[1], instr.ops[3]]
+            } else {
+                vec![instr.ops[1]]
+            }
+        }
 
         // Store: ops[0]=val, ops[1]=base.
         Opcode::Store => vec![instr.ops[0], instr.ops[1]],

@@ -155,6 +155,35 @@ fn main() i32 {
 """
 
 
+FORMAT_PROGRAM = r"""import std.io;
+import std.thread;
+
+// Formats numbers concurrently and parses them back: shared digit scratch
+// would hand one thread another thread's digits.
+fn mismatches(seed: i64) i64 {
+    var wrong: i64 = 0;
+    for i : 0..100000 {
+        const n: i64 = seed * 1000000 + i as i64;
+        const text = "x{n}";
+        const parsed: Result[i64, ParseError] = text[1:text.len()].parse[i64]();
+        if (parsed.unwrap_or(-1) != n) { wrong = wrong + 1; }
+    }
+    wrong
+}
+
+fn main() i32 {
+    const a = thread.spawn(|| mismatches(1 as i64)).unwrap();
+    const b = thread.spawn(|| mismatches(2 as i64)).unwrap();
+    const c = thread.spawn(|| mismatches(3 as i64)).unwrap();
+    const d = thread.spawn(|| mismatches(4 as i64)).unwrap();
+    const wrong = a.join().unwrap() + b.join().unwrap() + c.join().unwrap() + d.join().unwrap();
+    io.println("format mismatches {wrong}");
+    if (wrong != 0) { ret 1; }
+    0
+}
+"""
+
+
 def invoke(command, root):
     result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=300)
@@ -217,6 +246,16 @@ def check(qz, root):
     output = invoke([str(binary)], case)
     assert output.startswith("churn 2000"), output
     print("PASS libc-free threads: std Mutex/AtomicI64 native and --jit, 2000 spawn/join without leaking stacks, main exit ends running threads")
+    case = root / "format"
+    (case / "src").mkdir(parents=True)
+    (case / "quazi.toml").write_text('[package]\nname="format"\n[build]\nentry="src/main.qz"\n')
+    (case / "src/main.qz").write_text(FORMAT_PROGRAM)
+    binary = case / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], case)
+    for _ in range(3):
+        output = invoke([str(binary)], case)
+        assert output.startswith("format mismatches 0"), output
+    print("PASS thread formatting: 4 threads x 100000 interpolated numbers parse back exactly (3 runs)")
 
 
 def main():

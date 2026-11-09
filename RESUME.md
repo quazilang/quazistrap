@@ -2,6 +2,20 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, thread-safe number formatting)
+
+Numbers formatted inside format calls (fmt.format, println/print, interpolated
+literals, @format methods, str-variadic calls) use a heap digit buffer per
+argument: codegen `begin/end_format_scratch` + `emit_prim_to_str`, flag
+`PRIM_TO_STR_BUFFER_FLAG` with the buffer register in `ops[3]` (regalloc,
+remap, encoder all honour it), freed after the call. Regression in
+check_thread_atomics.py (4 threads x 100000 format+parse; old compiler ~310000
+mismatches, now 0). Direct `n.to_str()` keeps the static per-site buffer until
+the maintainers answer В9 (А: to_str returns String; Б: document). Verified:
+cargo test 1031/1031, all scripts/check_*.py (dynamic_vtables and
+result_retention take qz positionally), std qz test 62/62, every example
+(36 needs `--target x86_64-none`). Waiting: В9, В10.
+
 ## Checkpoint (2026-11-09 night 3, heap)
 
 quazistrap `d93a2d4` size-class heap in the embedded Linux runtime
@@ -26,10 +40,8 @@ the scrutinee (codegen expression_owner_sites consumed=false) and bindings
 alias payloads, so payload drops need place-level moves (D-014).
 asks.txt В10 (Russian) asks how match should own enum payloads (consuming
 match like Rust / non-consuming + clone / keep the leak). Waiting: В9, В10.
-KNOWN BUG (asked in asks.txt В9): PrimToStr (int/float -> str) writes into one
-static buffer per call site (`__quazi_itoa_*`), so concurrent threads/qoroutines
-formatting numbers at the same site race. Not fixed: frame storage breaks
-prelude `to_str()` returning the view; needs a design decision.
+PrimToStr race: fixed for format calls on 2026-11-10 (see next checkpoint);
+direct `to_str()` views still share the per-site static buffer (В9).
 
 ## Checkpoint (2026-11-09 evening 3, memory and EOF)
 

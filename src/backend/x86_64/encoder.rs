@@ -4329,7 +4329,11 @@ impl<'a> FnEncoder<'a> {
                 match type_tag {
                     1 => {
                         emit!(asm.mov(rax, slot(src)));
-                        lea_rip!(r11, buf_sym.clone());
+                        if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                            emit!(asm.mov(r11, slot(instr.ops[3])));
+                        } else {
+                            lea_rip!(r11, buf_sym.clone());
+                        }
                         emit_float_to_string(asm, 6, true).map_err(err)?;
                     }
                     2 => {
@@ -4342,9 +4346,17 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.jz(lbl_false));
                         // true branch
                         if is_win64 {
-                            lea_rip!(rcx, buf_sym.clone());
+                            if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                                emit!(asm.mov(rcx, slot(instr.ops[3])));
+                            } else {
+                                lea_rip!(rcx, buf_sym.clone());
+                            }
                         } else {
-                            lea_rip!(rdi, buf_sym.clone());
+                            if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                                emit!(asm.mov(rdi, slot(instr.ops[3])));
+                            } else {
+                                lea_rip!(rdi, buf_sym.clone());
+                            }
                         }
                         // Write "true\0" — store dword "true" (LE: 0x65757274) + byte null
                         emit!(asm.mov(rax, 0x65757274u64 as i64));
@@ -4359,9 +4371,17 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.set_label(&mut lbl_false));
                         // false branch: "false\0" = 6 bytes
                         if is_win64 {
-                            lea_rip!(rcx, buf_sym.clone());
+                            if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                                emit!(asm.mov(rcx, slot(instr.ops[3])));
+                            } else {
+                                lea_rip!(rcx, buf_sym.clone());
+                            }
                         } else {
-                            lea_rip!(rdi, buf_sym.clone());
+                            if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                                emit!(asm.mov(rdi, slot(instr.ops[3])));
+                            } else {
+                                lea_rip!(rdi, buf_sym.clone());
+                            }
                         }
                         emit!(asm.mov(rax, 0x736c6166u64 as i64)); // "fals" LE
                         if is_win64 {
@@ -4378,7 +4398,11 @@ impl<'a> FnEncoder<'a> {
                     // Integer hex/octal: compact inline conversion, no libc.
                     3..=5 => {
                         emit!(asm.mov(rax, slot(src)));
-                        lea_rip!(r11, buf_sym.clone());
+                        if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                            emit!(asm.mov(r11, slot(instr.ops[3])));
+                        } else {
+                            lea_rip!(r11, buf_sym.clone());
+                        }
                         emit_integer_to_string(
                             asm,
                             if type_tag == 5 { 8 } else { 16 },
@@ -4396,7 +4420,11 @@ impl<'a> FnEncoder<'a> {
                         let mut lbl_done = asm.create_label();
 
                         emit!(asm.mov(rax, slot(src)));
-                        lea_rip!(r11, buf_sym.clone());
+                        if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                            emit!(asm.mov(r11, slot(instr.ops[3])));
+                        } else {
+                            lea_rip!(r11, buf_sym.clone());
+                        }
 
                         // Zero shortcut: write "0\0"
                         emit!(asm.test(rax, rax));
@@ -4431,12 +4459,20 @@ impl<'a> FnEncoder<'a> {
                     t @ 20..=29 => {
                         let prec = t - 20;
                         emit!(asm.mov(rax, slot(src)));
-                        lea_rip!(r11, buf_sym.clone());
+                        if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                            emit!(asm.mov(r11, slot(instr.ops[3])));
+                        } else {
+                            lea_rip!(r11, buf_sym.clone());
+                        }
                         emit_float_to_string(asm, prec, false).map_err(err)?;
                     }
                     _ => {
                         emit!(asm.mov(rax, slot(src)));
-                        lea_rip!(r11, buf_sym.clone());
+                        if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                            emit!(asm.mov(r11, slot(instr.ops[3])));
+                        } else {
+                            lea_rip!(r11, buf_sym.clone());
+                        }
                         emit_integer_to_string(
                             asm,
                             10,
@@ -4446,7 +4482,11 @@ impl<'a> FnEncoder<'a> {
                         .map_err(err)?;
                     }
                 }
-                lea_rip!(rax, buf_sym);
+                if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                    emit!(asm.mov(rax, slot(instr.ops[3])));
+                } else {
+                    lea_rip!(rax, buf_sym);
+                }
                 emit!(asm.mov(slot(dst), rax));
             }
 

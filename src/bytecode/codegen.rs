@@ -2609,6 +2609,9 @@ struct FnCompiler<'a> {
     type_name_bindings: &'a HashMap<String, crate::semantic::ResolvedBinding>,
     /// Declared type parameters of generic structs, for concrete layouts.
     struct_generic_params: &'a HashMap<String, Vec<String>>,
+    /// Heap digit buffers of the format calls being compiled (innermost
+    /// last); released once the call has copied its arguments.
+    format_scratch: Vec<Vec<u8>>,
 }
 
 /// One guarded owner in the current full expression. A local identifier only
@@ -2850,6 +2853,7 @@ impl<'a> FnCompiler<'a> {
             checked_string_abi,
             type_name_bindings,
             struct_generic_params,
+            format_scratch: Vec::new(),
         }
     }
 
@@ -7037,6 +7041,9 @@ impl<'a> FnCompiler<'a> {
         let expanded = (name == "fmt.format")
             .then(|| crate::parser::format::expand_format_call_args(args))
             .flatten();
+        if expanded.is_some() {
+            self.begin_format_scratch();
+        }
         // Variadic call: compile fixed args, pack variadic args into
         // consecutive stack slots, pass (ptr, len) as hidden trailing args.
         let fixed_regs: Vec<u8> = args[..fixed_count.min(args.len())]
@@ -7123,7 +7130,49 @@ impl<'a> FnCompiler<'a> {
             &args[..fixed_count.min(args.len())],
             result_dst,
         );
+        if expanded.is_some() {
+            self.end_format_scratch();
+        }
         result_dst
+    }
+
+    /// Start a format call whose numeric arguments get private digit buffers.
+    fn begin_format_scratch(&mut self) {
+        self.format_scratch.push(Vec::new());
+    }
+
+    /// Release the digit buffers of the innermost format call; its result
+    /// (an owned String) no longer refers to them.
+    fn end_format_scratch(&mut self) {
+        let Some(buffers) = self.format_scratch.pop() else {
+            return;
+        };
+        for buffer in buffers {
+            let argument = self.alloc_reg();
+            self.chunk.emit(rrr(Opcode::Mov, argument, buffer, 0));
+            let mut release = ri16(Opcode::Intrinsic, argument, 4);
+            release.flags = 1;
+            self.chunk.emit(release);
+        }
+    }
+
+    /// Emit a numeric-to-text conversion. Inside a format call it writes into
+    /// a fresh heap buffer, because the instruction's static scratch would be
+    /// shared by every thread running the same code.
+    fn emit_prim_to_str(&mut self, mut instruction: super::instruction::Instruction) {
+        if !self.format_scratch.is_empty() {
+            let buffer = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, buffer, 80));
+            let mut allocate = ri16(Opcode::Intrinsic, buffer, 3);
+            allocate.flags = 1;
+            self.chunk.emit(allocate);
+            instruction.ops[3] = buffer;
+            instruction.flags |= crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG;
+            if let Some(buffers) = self.format_scratch.last_mut() {
+                buffers.push(buffer);
+            }
+        }
+        self.chunk.emit(instruction);
     }
 
     fn compile_runtime_format_wrapper(
@@ -7291,7 +7340,7 @@ impl<'a> FnCompiler<'a> {
             if tag == 0 && unsigned {
                 instr.flags |= UNSIGNED_FLAG;
             }
-            self.chunk.emit(instr);
+            self.emit_prim_to_str(instr);
             dst
         } else {
             reg
@@ -7343,7 +7392,7 @@ impl<'a> FnCompiler<'a> {
         if let Some(t) = tag {
             let reg = self.load_reference_value(reg, source_ty);
             let dst = self.alloc_reg();
-            self.chunk.emit(rrr(Opcode::PrimToStr, dst, reg, t));
+            self.emit_prim_to_str(rrr(Opcode::PrimToStr, dst, reg, t));
             dst
         } else {
             self.coerce_to_display_str(reg, span)
@@ -8072,6 +8121,7 @@ impl<'a> FnCompiler<'a> {
                             let template_reg = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
+                            self.begin_format_scratch();
                             let mut coerced_var: Vec<u8> = Vec::new();
                             for (i, arg) in expanded.args.iter().enumerate() {
                                 let reg = self.compile_value(arg);
@@ -8101,6 +8151,7 @@ impl<'a> FnCompiler<'a> {
                             } else {
                                 template_reg
                             };
+                            self.end_format_scratch();
 
                             let mut call_args = vec![fmt_dst];
                             if self.variadic_fn_info.contains_key(call_name.as_str()) {
@@ -8291,6 +8342,7 @@ impl<'a> FnCompiler<'a> {
                             let template_reg = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
+                            self.begin_format_scratch();
                             let mut coerced = vec![template_reg];
                             for (i, arg) in expanded.args.iter().enumerate() {
                                 let reg = self.compile_value(arg);
@@ -8337,6 +8389,7 @@ impl<'a> FnCompiler<'a> {
                                 };
                                 self.emit_call_by_name(&call_target, &[fmt_dst], dst);
                             }
+                            self.end_format_scratch();
                             return dst;
                         }
                     }
@@ -8580,6 +8633,7 @@ impl<'a> FnCompiler<'a> {
                                 let template_reg = self.alloc_reg();
                                 self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
+                                self.begin_format_scratch();
                                 let fmt_reg = if !expanded.args.is_empty() {
                                     let mut coerced = vec![template_reg];
                                     for (i, arg) in expanded.args.iter().enumerate() {
@@ -8622,6 +8676,7 @@ impl<'a> FnCompiler<'a> {
                                 } else {
                                     template_reg
                                 };
+                                self.end_format_scratch();
                                 let result_dst = self.alloc_result_block(&mangled_check);
                                 self.emit_call_by_name(
                                     &mangled_check,
@@ -9602,7 +9657,11 @@ pub(crate) fn remap_instr_regs(
         Opcode::PrimToStr => {
             instr.ops[0] = remap(instr.ops[0]);
             instr.ops[1] = remap(instr.ops[1]);
-            // ops[2] = type tag — leave unchanged
+            // ops[2] = type tag — leave unchanged; ops[3] is a buffer register
+            // only with the caller-buffer flag.
+            if instr.flags & crate::bytecode::instruction::PRIM_TO_STR_BUFFER_FLAG != 0 {
+                instr.ops[3] = remap(instr.ops[3]);
+            }
         }
 
         // StrLen, StrToInt, StrToFloat, StrAsStr, StrConcat — ops[2] unused or not a reg.
