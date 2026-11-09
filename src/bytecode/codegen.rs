@@ -8183,7 +8183,15 @@ impl<'a> FnCompiler<'a> {
                         return dst;
                     }
 
-                    // Monomorphized generic function: resolve to mangled name.
+                    // Monomorphized generic function: resolve to mangled name,
+                    // using the analyzer's inferred arguments when none are written.
+                    let inferred_type_args;
+                    let type_args = if type_args.is_empty() {
+                        inferred_type_args = self.inferred_type_args_for_span(expr.span);
+                        &inferred_type_args
+                    } else {
+                        type_args
+                    };
                     if !type_args.is_empty() {
                         let Some(mono_name) =
                             self.require_monomorphized_name(&call_target, type_args)

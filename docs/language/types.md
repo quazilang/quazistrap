@@ -201,8 +201,9 @@ struct Pair[A, B] { left: A, right: B, }
 Calls of generic functions infer their type arguments from the positional
 argument types (`id(5 as i64)` for `fn id[T](x: T) T`). A closure argument for
 a `fn(...) T` parameter infers `T` from its body (`apply(|| square(n))`).
-Write explicit arguments, `function[Type](...)`, when a type parameter appears
-only in the result or in named arguments, and for module-qualified calls.
+Module-qualified calls (`thread.spawn(|| work(n))`) infer the same way. Write
+explicit arguments, `function[Type](...)`, when a type parameter appears only
+in the result or in named arguments.
 Generic intrinsics keep their explicit form. The compiler monomorphizes each
 concrete instantiation.
 

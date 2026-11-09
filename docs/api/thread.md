@@ -75,6 +75,32 @@ result or panic propagation, join timeouts, detached threads, portable thread
 identifiers, or automatic joining. Programs requiring those guarantees should
 not treat this API as production-stable.
 
+## `spawn` and `JoinHandle[T]` (D-019)
+
+`thread.spawn(|| work(n))` runs a Quazi closure on a new OS thread and returns
+`Result[JoinHandle[T], ThreadError]` (`CreationFailed` if the thread cannot be
+started); `T` is inferred from the closure. `handle.join()` waits and returns
+`Result[T, ThreadError]`:
+
+```quazi
+import std.thread;
+
+fn square(n: i64) i64 { n * n }
+
+fn main() i32 {
+    const n: i64 = 7;
+    const handle = thread.spawn(|| square(n)).unwrap();
+    const value = handle.join().unwrap(); // 49
+    0
+}
+```
+
+The closure follows the ordinary capture rules (plain scalar captures and a
+plain scalar result). A panic on the thread ends the program. On Linux without
+libc the thread is a `clone` thread; this works with the built-in linker and
+`qz run --jit`. Channels between threads and qoroutines are planned on the
+same built-in `Channel[T]`.
+
 ## Synchronization (D-019)
 
 `AtomicI64.new(value)` owns a heap cell whose operations are atomic and

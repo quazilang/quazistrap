@@ -69,8 +69,9 @@ reported by `join()` as `Err(QoroutineError.Panicked)`, and timer preemption
 on Linux (10 ms SIGURG per worker)
 ([change records](../changes/README.md), 2026-11-09). Open: owned results and
 owned channel values, argument expressions evaluated in the spawning context,
-preemption on Windows/NetBSD and with libc, `std.thread`
-`JoinHandle[T]` and channel use from OS threads, select (not planned).
+preemption on Windows/NetBSD and with libc, owned closure captures for
+`thread.spawn`, channel use from OS threads, select (not planned).
+`std.thread` `spawn`/`JoinHandle[T]` is implemented (2026-11-09).
 
 ## Implementation phases
 

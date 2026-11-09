@@ -17,9 +17,10 @@ body's type infers `T`: `apply(|| square(n))`. This is the form the planned
 `qo f(args)` lowering needs (D-019).
 
 Not inferred (explicit arguments still required): binders that occur only in
-the result or in named arguments, module-qualified calls (`module.f(...)`),
-generic methods, and generic `@intrinsic`/`@api`/`@syscall` declarations,
-which dispatch on their arguments directly.
+the result or in named arguments, generic methods, and generic
+`@intrinsic`/`@api`/`@syscall` declarations, which dispatch on their arguments
+directly. Module-qualified calls (`module.f(...)`) infer since the
+`std.thread` `JoinHandle[T]` change the same day.
 
 Verification: semantic and codegen regressions (`id<i64>`/`apply<i64>`
 specializations; a result-only binder is still rejected); all Rust tests, e2e

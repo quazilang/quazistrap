@@ -2880,6 +2880,8 @@ impl Analyzer {
         self.initialization_condition = None;
         let mut initialization_condition = None;
         let mut resolved_method: Option<String> = None;
+        // Generic arguments inferred for a module-qualified call (`mod.f(x)`).
+        let mut inferred_type_args: Option<Vec<TypeKind>> = None;
         let result = match &expr.node {
             ExprKind::Literal(lit) => {
                 let ty = match lit {
@@ -3864,7 +3866,12 @@ impl Analyzer {
                             let params = symbol
                                 .params
                                 .iter()
-                                .map(|param| substitute_type_kind(param, &substitution))
+                                .map(|param| {
+                                    infer_closure_result_binder(
+                                        substitute_type_kind(param, &substitution),
+                                        &symbol.generic_params,
+                                    )
+                                })
                                 .collect::<Vec<_>>();
                             let names = self
                                 .fn_param_names
@@ -3910,10 +3917,27 @@ impl Analyzer {
                                         &arg_evals,
                                     );
                                 }
+                                let inferred = if type_args.is_empty() {
+                                    self.infer_call_type_args(
+                                        &sym,
+                                        &arg_evals[..args.len().min(arg_evals.len())],
+                                        expr.span,
+                                    )
+                                } else {
+                                    None
+                                };
                                 let eval = self.check_function_call(
-                                    resolved, expr.span, expr.span, args, named_args, &arg_evals,
-                                    &sym, type_args,
+                                    resolved,
+                                    expr.span,
+                                    expr.span,
+                                    args,
+                                    named_args,
+                                    &arg_evals,
+                                    &sym,
+                                    inferred.as_deref().unwrap_or(type_args),
                                 );
+                                inferred_type_args =
+                                    inferred.map(|args| args.into_iter().map(|arg| arg.node).collect());
                                 resolved_method = Some(resolved.clone());
                                 eval
                             }
@@ -5690,6 +5714,11 @@ impl Analyzer {
             initialization_condition.map(|condition| (expr.span, condition));
         self.reject_nested_owned_function_expression(expr, &result);
         self.annotate_expr(expr, &result, reachable, resolved_method);
+        if let Some(inferred) = inferred_type_args
+            && let Some(annotation) = self.annotated_exprs.last_mut()
+        {
+            annotation.inferred_type_args = inferred;
+        }
         result
     }
 
