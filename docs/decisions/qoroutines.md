@@ -69,3 +69,7 @@ points are marked **decided**, design proposals are marked **proposed**.
 4. Language: `qo` keyword (lexer, parser, Tree-sitter, LSP), typing to
    `Qoroutine[T]`, lowering to the runtime spawn with moved arguments.
 5. Safe-point preemption, then closure capture moves (answer 9).
+
+JIT status (2026-11-09): `qz run --jit` is implemented for Linux x86-64
+([change record](../changes/2026-11-09-run-jit.md)); the dynamic import/load
+API from round 2 В5 remains future work.

@@ -1,4 +1,4 @@
-# 22-quazifetch
+# 22-quazifetch-demo
 
 A NetBSD/Windows/Linux system-information example built on Quazi's cross-platform
 standard library. It avoids shell commands, `popen`, libc-specific bindings,
@@ -16,8 +16,8 @@ The generated executable uses the rounded Unicode frame by default. Pass `-a`
 drawing support:
 
 ```sh
-./system-information -a
-# Windows: .\system-information.exe -a
+./build/quazifetch-demo -a
+# Windows: .\build\quazifetch-demo.exe -a
 ```
 
 Run `qz check` (or `qz build -c`) on NetBSD, Windows, and Linux when validating a

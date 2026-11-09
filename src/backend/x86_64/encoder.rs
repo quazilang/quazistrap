@@ -2383,7 +2383,8 @@ impl<'a> FnEncoder<'a> {
                             if is_netbsd {
                                 call_ext!("exit".into(), RelocKind::Plt32);
                             } else {
-                                emit!(asm.mov(rax, 60i64));
+                                // exit_group ends every thread, like ExitProcess/exit(3).
+                                emit!(asm.mov(rax, 231i64));
                                 emit!(asm.syscall());
                             }
                         }

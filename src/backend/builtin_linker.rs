@@ -49,6 +49,15 @@ struct SegmentLayout {
 
 /// Link one or more x86-64 ELF relocatable objects into a static executable.
 pub fn link_elf_objects(objects: &[&[u8]], output: &Path) -> Result<(), String> {
+    let image = link_elf_image(objects)?;
+    std::fs::write(output, &image)
+        .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
+    make_executable(output)
+}
+
+/// Link x86-64 ELF relocatable objects into an in-memory static executable
+/// image (used for files and for `qz run --jit`).
+pub fn link_elf_image(objects: &[&[u8]]) -> Result<Vec<u8>, String> {
     if objects.is_empty() {
         return Err("built-in linker: no input objects".to_string());
     }
@@ -357,10 +366,7 @@ pub fn link_elf_objects(objects: &[&[u8]], output: &Path) -> Result<(), String> 
         [text_segment, rodata_segment, data_segment],
     );
 
-    std::fs::write(output, &image)
-        .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
-    make_executable(output)?;
-    Ok(())
+    Ok(image)
 }
 
 fn place_sections(

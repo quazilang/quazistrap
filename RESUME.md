@@ -2,6 +2,31 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-09, experimental qz run --jit)
+
+quazistrap: `qz run --jit` (D-019 round 2 В5, behind a flag as decided).
+`src/jit.rs` maps the built-in linker's static ELF image (`link_elf_image`) at
+its link address with MAP_FIXED_NOREPLACE, builds argc/argv/envp(raw bytes)/
+auxv, resets SIGPIPE/SIGSEGV/SIGBUS to SIG_DFL and enters `_start`. Linking
+stores the image (`jit::store_image`); the shared `run_artifact` in main.rs
+executes it, so builds finish normally. Linux x86-64 + built-in linker only;
+external linker/libc/archives are rejected. `_start` and `quazi.exit` now use
+exit_group (231). scripts/check_jit.py (SIGPIPE case fails before the fix).
+Example `22-quazifetch` renamed `22-quazifetch-demo` (package/binary
+`quazifetch-demo`) at the user's request. Compiler plan 84.8% (JIT 1/1).
+Not done: dynamic import/load API (future, vague in В5).
+
+## NEXT: concurrency per D-019 (all round-2 answers in)
+
+Decided: spelling `Qoroutine[T]`; panic in a qoroutine -> `join()` returns an
+error; full timer preemption; `qo || ...` after closure capture moves; one
+built-in `Channel[T]` for threads and qoroutines; no select, no `<-`.
+Order: std.thread `JoinHandle[T]` -> runtime scheduler (stacks via
+`quazi.context.switch`, worker pool, parking, Channel[T]) -> `qo` keyword
+(lexer/parser/Tree-sitter/LSP, typing, lowering) -> timer preemption ->
+closure capture moves. Note: Linux threads need `libc = true` (pthread), so
+they are not available under `--jit`.
+
 ## Checkpoint (2026-11-08 night, groundwork while waiting for asks.txt)
 
 quazistrap (all verified: 1012 Rust tests, 21 e2e scripts incl. new
@@ -18,7 +43,7 @@ fixes, NetBSD fs undeclared-type fix. std plan 59.5%.
 
 Concurrency syntax/semantics still wait for answers in asks.txt (see PENDING).
 
-## PENDING: concurrency per D-019 (round-2 questions in asks.txt)
+## Historical: concurrency per D-019 before round-2 answers
 
 Maintainers answered round 1 (2026-11-08): keyword `qo f(args)`, method
 channels (no `<-`), no select yet, M:N scheduler, preemption, `join()`

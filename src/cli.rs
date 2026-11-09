@@ -149,6 +149,9 @@ pub enum Command {
         /// hide build stages and print only `built <name>` on success
         #[arg(long)]
         no_progress: bool,
+        /// experimental: link in memory and run inside `qz` without writing a binary (Linux x86-64)
+        #[arg(long)]
+        jit: bool,
     },
     /// Type-check the current project without code generation
     Check {

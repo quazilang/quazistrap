@@ -34,6 +34,9 @@ pub fn link_object(
             && requested_linker.is_none()
             && objects_only);
 
+    if crate::jit::requested() && !use_builtin {
+        return Err("qz run --jit requires the built-in linker (no external linker, archives or shared libraries)".into());
+    }
     if use_builtin {
         if target.os == Os::None {
             return Err("x86_64-none requires an external ELF linker (ld or ld.lld); use [link].script to control the layout".into());
@@ -55,6 +58,14 @@ pub fn link_object(
         let mut objects = Vec::with_capacity(native_objects.len() + 1);
         objects.push(object_bytes);
         objects.extend(native_objects.iter().map(Vec::as_slice));
+        if crate::jit::requested() {
+            if target.os != Os::Linux {
+                return Err("qz run --jit supports Linux targets only".into());
+            }
+            // The run step executes the stored image; nothing is written.
+            crate::jit::store_image(super::builtin_linker::link_elf_image(&objects)?);
+            return Ok(());
+        }
         return match target.os {
             Os::Linux => super::builtin_linker::link_elf_objects(&objects, output),
             Os::NetBsd => super::builtin_netbsd_linker::link_netbsd_objects(&objects, output),

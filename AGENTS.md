@@ -17,7 +17,7 @@ cargo fmt --check        # inspect formatting; preserve unrelated formatting
 CLI (dep: `clap 4.6`):
 ```bash
 qz build [source.qz|program.qzi|native.o ...] [-i|-c] [-o out] [-r] [-s] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode]
-qz run [source.qz|program.qzi|native.o ...] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode] / qz check / qz fetch / qz deps / qz fmt / qz clean
+qz run [source.qz|program.qzi|native.o ...] [--jit] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode] / qz check / qz fetch / qz deps / qz fmt / qz clean
 qz test [filter] [--no-color] [--no-unicode]
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz new <name> [--lib] / qz init [--lib]
@@ -462,7 +462,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 |-----------|--------|
 | LSP improvements | Partial — see [src/lsp/AGENTS.md](src/lsp/AGENTS.md) |
 | `qz doc` | ✅ Done — `src/apidoc.rs`: one Markdown page per source with public signatures and their `//` comments, plus an index |
-| JIT | Experimental `qz run --jit`: compile in memory and execute in-process (D-019 round 2) |
+| JIT | Experimental — `src/jit.rs`: `qz run --jit` links into memory, maps the static ELF at its link address and enters `_start` in-process (Linux x86-64, built-in linker; D-019 round 2). Dynamic import/load API is future work |
 
 ---
 

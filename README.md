@@ -4,9 +4,9 @@
 
 Quazilang (`qz`) compiles directly to native x86-64 binaries via its own backend powered by `iced-x86`. It features a clean C-like syntax, strong generics, trait-based polymorphism, move semantics, and a growing standard library. Plain Linux programs require no LLVM, GCC, system linker, or libc; explicitly requested native dependencies remain available through an external toolchain.
 
-**Plan completion: 81.7%.**
+**Plan completion: 84.8%.**
 
-**Remaining work: 18.3%.**
+**Remaining work: 15.2%.**
 
 Completion of unfinished plan items:
 
@@ -19,7 +19,6 @@ Completion of unfinished plan items:
 | Nested struct patterns | 0/1 | 0.0% | 100.0% |
 | async / await | 0/1 | 0.0% | 100.0% |
 | LSP improvements | 16/20 | 80.0% | 20.0% |
-| Experimental JIT (`qz run --jit`) | 0/1 | 0.0% | 100.0% |
 
 Revalidated on 2026-10-25 for the
 [declaration-type context prerequisite](docs/changes/2026-10-24-declaration-type-context.md) and
@@ -223,6 +222,7 @@ qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
          [--static-lib|--shared-lib] [--no-incremental]
          [--silent|--no-progress] [--no-color] [--no-unicode]
 qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
+qz run --jit [...]        # experimental: link in memory and run inside qz (Linux)
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz check                  # type-check every artifact without compiling
 qz doc                    # Markdown API pages for public declarations (build/doc)
@@ -274,6 +274,9 @@ Quazi project.
 - `--no-incremental` — bypass reads and writes of the project QZC cache
 - `--linker builtin` — require the in-process ELF/PE linker
 - `--linker <path>` — explicitly use an external linker
+- `--jit` (`qz run` only, experimental) — link with the built-in linker into memory and run the
+  program inside the `qz` process without writing an executable (Linux x86-64 targets; no
+  external linker, archives or shared libraries); `qz` exits with the program's status
 - `-L <dir>` / `-l <name>` — opt into a native library search path/library
 
 - `-q`, `--silent` — emit nothing for successful builds; errors still print
@@ -392,7 +395,7 @@ See [project and manifest documentation](docs/PROJECTS.md) and
 | [`19-c-interop`](examples/19-c-interop/) | Calling C and exporting Quazi functions |
 | [`20-c-variadic-functions`](examples/20-c-variadic-functions/) | C-style variadic `@api` with `printf` |
 | [`21-c-abi-aggregates`](examples/21-c-abi-aggregates/) | Aggregates, callbacks, globals, exports |
-| [`22-quazifetch`](examples/22-quazifetch/) | Portable OS/CPU/memory information |
+| [`22-quazifetch-demo`](examples/22-quazifetch-demo/) | Portable OS/CPU/memory information |
 | [`23-standard-library-tour`](examples/23-standard-library-tour/) | Unicode strings, parsing, results, math |
 | [`24-local-library`](examples/24-local-library/) | Source/QZI library artifact |
 | [`25-local-dependency`](examples/25-local-dependency/) | Relative dependency and QZC cache |

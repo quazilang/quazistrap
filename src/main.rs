@@ -14,6 +14,7 @@ mod docs;
 mod evaluation;
 mod header;
 mod incremental;
+mod jit;
 pub mod lexer;
 pub mod loader;
 mod lsp;
@@ -310,7 +311,32 @@ fn write_or_package_object(
     }
 }
 
+/// The run step of `qz run` / `qz build -r`: execute the image stored by a
+/// `--jit` link in this process, otherwise spawn the written executable.
+/// Exits `qz` with the program's status when it fails.
+fn run_artifact(out: &str) {
+    if let Some(image) = jit::take_image() {
+        let program = std::ffi::OsStr::new(out).as_encoded_bytes().to_vec();
+        let Err(error) = jit::execute(&image, &[program]);
+        eprintln!("\x1b[31;1merror:\x1b[0m {error}");
+        std::process::exit(1);
+    }
+    let status = std::process::Command::new(abs_path(out))
+        .status()
+        .unwrap_or_else(|error| {
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot run {out}: {error}");
+            std::process::exit(1);
+        });
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
 fn strip_binary(path: &Path) {
+    if jit::requested() {
+        // `qz run --jit` keeps the image in memory; there is no file to strip.
+        return;
+    }
     let candidates = if cfg!(target_os = "windows") {
         ["llvm-strip.exe", "strip.exe"]
     } else {
@@ -1591,7 +1617,12 @@ fn main() {
             no_color,
             no_unicode,
             no_progress,
-        } => CliCmd::Build {
+            jit: run_jit,
+        } => {
+            if run_jit {
+                jit::request();
+            }
+            CliCmd::Build {
             files,
             output: None,
             emit_bytecode: false,
@@ -1613,7 +1644,8 @@ fn main() {
             no_color,
             no_unicode,
             no_progress,
-        },
+            }
+        }
         command => command,
     };
 
@@ -1825,15 +1857,7 @@ fn main() {
                 let _ = (emit, do_strip);
 
                 if run && !emit_bytecode && !emit_object {
-                    let status = std::process::Command::new(abs_path(&out))
-                        .status()
-                        .unwrap_or_else(|e| {
-                            eprintln!("\x1b[31;1merror:\x1b[0m cannot run {}: {}", out, e);
-                            std::process::exit(1);
-                        });
-                    if !status.success() {
-                        std::process::exit(status.code().unwrap_or(1));
-                    }
+                    run_artifact(&out);
                 }
             } else if files
                 .iter()
@@ -1986,15 +2010,7 @@ fn main() {
                 }
 
                 if run && !emit_bytecode && !emit_object {
-                    let status = std::process::Command::new(abs_path(&out))
-                        .status()
-                        .unwrap_or_else(|e| {
-                            eprintln!("\x1b[31;1merror:\x1b[0m cannot run binary: {}", e);
-                            std::process::exit(1);
-                        });
-                    if !status.success() {
-                        std::process::exit(status.code().unwrap_or(1));
-                    }
+                    run_artifact(&out);
                 }
             } else {
                 let source_files: Vec<PathBuf> = files
@@ -2095,15 +2111,7 @@ fn main() {
                     }
                     println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{out}\x1b[0m");
                     if run {
-                        let status = std::process::Command::new(abs_path(&out))
-                            .status()
-                            .unwrap_or_else(|error| {
-                                eprintln!("\x1b[31;1merror:\x1b[0m failed to run binary: {error}");
-                                std::process::exit(1);
-                            });
-                        if !status.success() {
-                            std::process::exit(status.code().unwrap_or(1));
-                        }
+                        run_artifact(&out);
                     }
                     return;
                 }
@@ -2198,15 +2206,7 @@ fn main() {
                 }
 
                 if run && !emit_bytecode && !emit_object {
-                    let status = std::process::Command::new(abs_path(&out))
-                        .status()
-                        .unwrap_or_else(|e| {
-                            eprintln!("\x1b[31;1merror:\x1b[0m failed to run binary: {}", e);
-                            std::process::exit(1);
-                        });
-                    if !status.success() {
-                        std::process::exit(status.code().unwrap_or(1));
-                    }
+                    run_artifact(&out);
                 }
             }
         }

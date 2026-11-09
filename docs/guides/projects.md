@@ -101,6 +101,7 @@ This is for bare-metal or minimal programs.
 | `qz build -i` | Compile to QZI bytecode only |
 | `qz build -s` | Strip debug symbols from a native artifact |
 | `qz run` | Build and execute |
+| `qz run --jit` | Experimental: link in memory and execute inside `qz` without writing a binary (Linux x86-64, built-in linker only) |
 | `qz check` | Parse and analyze every `[lib]`/`[[bin]]` entry without building; `--bin <name>` or `--lib` selects one |
 | `qz doc [-o DIR]` | Write Markdown reference pages for public declarations (default `<out_dir>/doc`) |
 | `qz clean` | Remove the output directory |

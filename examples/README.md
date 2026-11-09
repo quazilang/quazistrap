@@ -30,7 +30,7 @@ qz run
 | 19 | `c-interop` | Calling C and exporting Quazi functions |
 | 20 | `c-variadic-functions` | Calling C varargs safely through `CString` |
 | 21 | `c-abi-aggregates` | Aggregates, callbacks, exports, foreign globals |
-| 22 | `system-information` | Portable OS, CPU, memory, filesystem data |
+| 22 | `quazifetch-demo` | Portable OS, CPU, memory, filesystem data |
 | 23 | `standard-library-tour` | Unicode strings, parsing, `Result`, math |
 | 24 | `local-library` | Publishable source/QZI library artifact |
 | 25 | `local-dependency` | Relative dependency plus incremental QZC reuse |

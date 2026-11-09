@@ -575,8 +575,10 @@ impl StartStub {
 
         call_ext!("main", RelocKind::Plt32);
 
+        // exit_group: returning from main ends the whole process, including
+        // other threads (and the host `qz` process under `qz run --jit`).
         emit!(asm.mov(rdi, rax));
-        emit!(asm.mov(rax, 60i64));
+        emit!(asm.mov(rax, 231i64));
         emit!(asm.syscall());
 
         // ── Assemble and compute offsets ──
@@ -878,8 +880,10 @@ impl StartStub {
 
         call_ext!("main", RelocKind::Plt32);
 
+        // exit_group: returning from main ends the whole process, including
+        // other threads (and the host `qz` process under `qz run --jit`).
         emit!(asm.mov(rdi, rax));
-        emit!(asm.mov(rax, 60i64));
+        emit!(asm.mov(rax, 231i64));
         emit!(asm.syscall());
 
         // ── Assemble and compute offsets ──
