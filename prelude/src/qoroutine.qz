@@ -164,6 +164,9 @@ pub unsafe fn __qo_worker(_arg: *u8) *u8 {
 pub unsafe fn __qo_entry(task: *u8) void {
     const runner: fn(*u8) void = *((task + 48) as *fn(*u8) void);
     runner(task);
+    // Both closures were stored through raw memory, which no owner cleans up:
+    // release their environments (the call already consumed moved captures).
+    __qo_free(*((task + 48) as **u8));
     *((task + 56) as *i64) = 1;
     __qo_switch(task + 64, *((task + 40) as **u8));
 }

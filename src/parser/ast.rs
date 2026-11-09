@@ -190,6 +190,9 @@ pub enum ExprKind {
     Closure {
         params: Vec<String>,
         body: Box<Expr>,
+        /// Called exactly once (the `qo f(args)` lowering): owned captures
+        /// move into the environment and the body consumes them.
+        once: bool,
     },
 }
 

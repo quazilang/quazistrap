@@ -2465,7 +2465,7 @@ impl Analyzer {
             self.reject_nested_owned_function_expression(expr, &eval);
             return eval;
         }
-        if let ExprKind::Closure { params, body } = &expr.node {
+        if let ExprKind::Closure { params, body, .. } = &expr.node {
             let eval = self.type_check_closure_expr(expr, params, body, reachable, expected);
             self.reject_nested_owned_function_expression(expr, &eval);
             return eval;
@@ -2685,6 +2685,7 @@ impl Analyzer {
         reachable: bool,
         expected: Option<&TypeKind>,
     ) -> ExprEval {
+        let once = matches!(expr.node, ExprKind::Closure { once: true, .. });
         let mut captured_names = Vec::new();
         collect_expr_identifiers(body, &mut captured_names);
         captured_names.sort();
@@ -2701,7 +2702,10 @@ impl Analyzer {
                 && let Some(ty) = symbol.ty.as_ref()
             {
                 let resolved = self.resolve_type_aliases(ty);
-                if !closure_capture_is_plain_copy(&resolved) {
+                // A `qo` closure runs once, so owned single-slot values
+                // (structs, enums, String) move in and the call consumes them.
+                let moved_owner = once && matches!(resolved, TypeKind::Named { .. });
+                if !closure_capture_is_plain_copy(&resolved) && !moved_owner {
                     self.push_error(
                         expr.span,
                         "S10",
@@ -5675,7 +5679,7 @@ impl Analyzer {
 
             ExprKind::Try { expr: inner } => self.type_check_try_expr(expr, inner, reachable),
 
-            ExprKind::Closure { params, body } => {
+            ExprKind::Closure { params, body, .. } => {
                 return self.type_check_closure_expr(expr, params, body, reachable, None);
             }
         };
@@ -8600,14 +8604,14 @@ fn expr_mutates_ident(expr: &Expr, target: &str) -> bool {
                     .iter()
                     .any(|index| expr_mutates_ident(index, target))
         }
-        ExprKind::Closure { params, body } => {
+        ExprKind::Closure { params, body, .. } => {
             !params.iter().any(|parameter| parameter == target) && expr_mutates_ident(body, target)
         }
         ExprKind::Ident(_) | ExprKind::Literal(_) => false,
     }
 }
 
-fn collect_expr_identifiers(expr: &Expr, names: &mut Vec<String>) {
+pub(super) fn collect_expr_identifiers(expr: &Expr, names: &mut Vec<String>) {
     match &expr.node {
         ExprKind::Ident(name) => names.push(name.clone()),
         ExprKind::Literal(_) => {}
@@ -8682,7 +8686,7 @@ fn collect_expr_identifiers(expr: &Expr, names: &mut Vec<String>) {
                 collect_expr_identifiers(index, names);
             }
         }
-        ExprKind::Closure { params, body } => {
+        ExprKind::Closure { params, body, .. } => {
             let mut nested_names = Vec::new();
             collect_expr_identifiers(body, &mut nested_names);
             nested_names.retain(|name| !params.contains(name));

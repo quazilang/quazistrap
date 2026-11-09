@@ -9196,7 +9196,7 @@ impl<'a> FnCompiler<'a> {
                 val
             }
 
-            ExprKind::Closure { params, body } => {
+            ExprKind::Closure { params, body, .. } => {
                 let val = *self.next_closure_idx;
                 if let Some(next) = val.checked_add(1) {
                     *self.next_closure_idx = next;
@@ -9332,10 +9332,16 @@ impl<'a> FnCompiler<'a> {
                         ENUM_DISCRIM_OFFSET,
                     ));
 
+                    let once = matches!(expr.node, ExprKind::Closure { once: true, .. });
                     for (i, cap_name) in captures.iter().enumerate() {
                         let cap_reg = self.reg_of(cap_name);
                         let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
                         self.chunk.emit(field_store(cap_reg, env_ptr, off));
+                        // Owned captures of a `qo` closure move into its
+                        // environment; the outer owner no longer cleans up.
+                        if once && let Some(local) = self.drop_local(cap_name).cloned() {
+                            self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
+                        }
                     }
 
                     self.closure_env_regs.insert(env_ptr);
@@ -9881,7 +9887,7 @@ fn collect_idents(expr: &Expr, names: &mut Vec<String>) {
             }
         }
         ExprKind::Try { expr: inner } => collect_idents(inner, names),
-        ExprKind::Closure { params, body } => {
+        ExprKind::Closure { params, body, .. } => {
             let mut nested_names = Vec::new();
             collect_idents(body, &mut nested_names);
             nested_names.retain(|name| !params.contains(name));

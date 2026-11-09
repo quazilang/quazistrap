@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-09: `qo` moves owned arguments](2026-11-09-qo-owned-arguments.md)
+
 - [2026-11-09: Waiting qoroutines yield their worker](2026-11-09-qo-yielding-join.md)
 
 - [2026-11-09: `qo` starts qoroutines](2026-11-09-qo-keyword.md)

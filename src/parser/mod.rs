@@ -1256,6 +1256,7 @@ impl Parser {
             ExprKind::Closure {
                 params: Vec::new(),
                 body: Box::new(operand),
+                once: true,
             },
             closure_span,
         );
@@ -2000,6 +2001,7 @@ impl Parser {
                     ExprKind::Closure {
                         params,
                         body: Box::new(body),
+                        once: false,
                     },
                     span,
                 ))
@@ -2336,7 +2338,12 @@ mod tests {
         let [closure] = args.as_slice() else {
             panic!("one closure argument expected");
         };
-        let ExprKind::Closure { params, body: call } = &closure.node else {
+        let ExprKind::Closure {
+            params,
+            body: call,
+            once: true,
+        } = &closure.node
+        else {
             panic!("expected closure, got {:?}", closure.node);
         };
         assert!(params.is_empty());

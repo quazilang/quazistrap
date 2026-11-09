@@ -34,6 +34,30 @@ fn main() i32 {
 
 EXPECTED = "total 8955059 evens 150"
 
+# Owned arguments (String, structs) move into the qoroutine like call arguments.
+OWNED = r"""import std.io;
+
+pub struct Job { id: i64, label: String, }
+
+fn measure(text: String) i64 { text.len() as i64 }
+
+fn score(job: Job) i64 { job.id * 100 + job.label.len() as i64 }
+
+fn main() i32 {
+    var total: i64 = 0;
+    for i : 0..500 {
+        const text: String = "qoroutine".to_string();
+        const job = Job { id: i as i64, label: "abc".to_string() };
+        const a = qo measure(text);
+        const b = qo score(job);
+        total = total + a.join() + b.join();
+    }
+    io.println("owned {}", total);
+    if (total != 500 * 9 + 100 * 124750 + 500 * 3) { ret 1; }
+    0
+}
+"""
+
 # Joins nested ten times deeper than there are workers: a waiting qoroutine
 # must yield its worker instead of blocking it.
 NESTED = r"""import std.io;
@@ -100,6 +124,21 @@ def check(qz, root):
         assert "nested 16400" in subprocess.run([str(binary)], cwd=nested, text=True,
                                                 stdout=subprocess.PIPE, timeout=60).stdout
 
+    owned = root / "owned"
+    (owned / "src").mkdir(parents=True)
+    (owned / "quazi.toml").write_text('[package]\nname="owned"\n[build]\nentry="src/main.qz"\n')
+    (owned / "src/main.qz").write_text(OWNED)
+    binary = owned / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], owned)
+    for _ in range(3):
+        assert "owned 12481000" in invoke([str(binary)], owned).stdout
+    (owned / "src/main.qz").write_text(
+        "fn measure(text: String) i64 { text.len() as i64 }\n"
+        "fn main() i32 {\n    const text: String = \"x\".to_string();\n"
+        "    const a = qo measure(text);\n    const n = text.len();\n    a.join();\n    0\n}\n")
+    result = invoke([str(qz), "check"], owned, ok=False)
+    assert result.returncode != 0 and "use of moved value 'text'" in result.stdout, result.stdout
+
     plain = root / "plain"
     (plain / "src").mkdir(parents=True)
     (plain / "quazi.toml").write_text('[package]\nname="plain"\n[build]\nentry="src/main.qz"\n')
@@ -114,7 +153,7 @@ def check(qz, root):
     (bad / "src/main.qz").write_text("fn main() i32 {\n    const x = qo 5;\n    0\n}\n")
     result = invoke([str(qz), "check"], bad, ok=False)
     assert result.returncode != 0 and "`qo` must be followed by a function call" in result.stdout, result.stdout
-    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
+    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, owned String/struct args moved, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
 
 
 def main():

@@ -343,7 +343,7 @@ impl Visibility<'_> {
                 self.check_expr(object, scope);
                 self.check_exprs(indices, scope);
             }
-            ExprKind::Closure { params, body } => {
+            ExprKind::Closure { params, body, .. } => {
                 let outer = scope.locals.clone();
                 scope.locals.extend(params.iter().cloned());
                 self.check_expr(body, scope);

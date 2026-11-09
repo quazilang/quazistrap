@@ -2640,6 +2640,35 @@ mod tests {
     }
 
     #[test]
+    fn only_qo_closures_move_owned_captures() {
+        let prelude = "struct Q[T] { v: T, }\nfn __qo_spawn[T](f: fn() T) Q[T] { Q { v: f() } }\nstruct Job { id: i64, }\nfn measure(text: Job) i64 { text.id }\n";
+        let moved = analyze(&format!(
+            "{prelude}fn main() void {{\n    const text = Job {{ id: 1 }};\n    const h = qo measure(text);\n}}\n"
+        ));
+        assert!(
+            !moved.errors.iter().any(|error| error.message.contains("closure cannot capture")),
+            "{:?}",
+            moved.errors
+        );
+        let reused = analyze(&format!(
+            "{prelude}fn main() void {{\n    const text = Job {{ id: 1 }};\n    const h = qo measure(text);\n    const again = measure(text);\n}}\n"
+        ));
+        assert!(
+            reused.errors.iter().any(|error| error.message.contains("moved value 'text'")),
+            "{:?}",
+            reused.errors
+        );
+        let ordinary = analyze(&format!(
+            "{prelude}fn main() void {{\n    const text = Job {{ id: 1 }};\n    const f: fn() i64 = || measure(text);\n}}\n"
+        ));
+        assert!(
+            ordinary.errors.iter().any(|error| error.message.contains("closure cannot capture")),
+            "{:?}",
+            ordinary.errors
+        );
+    }
+
+    #[test]
     fn free_generic_calls_infer_arguments_or_require_explicit_ones() {
         let inferred = analyze(
             "fn id[T](x: T) T { x }\nfn apply[T](f: fn() T) T { f() }\nfn main() void {\n    const a: i64 = id(5 as i64);\n    const b: bool = apply(|| true);\n}\n",

@@ -839,7 +839,7 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
                 value
             }
             ExprKind::IncDec { expr, .. } => self.expression(expr, env, depth + 1)?,
-            ExprKind::Closure { params, body } => {
+            ExprKind::Closure { params, body, .. } => {
                 // A closure owns its captures even if its result ignores them.
                 // Capture all visible values until lexical capture effects exist.
                 let mut captured = Value::default();

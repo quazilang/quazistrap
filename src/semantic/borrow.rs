@@ -2065,7 +2065,7 @@ impl Analyzer {
                 self.bc_expr(inner, env, consumed);
             }
 
-            ExprKind::Closure { params, body } => {
+            ExprKind::Closure { params, body, .. } => {
                 let parameter_types = match self.bc_annotated_type(expr) {
                     Some(TypeKind::Fn { params, .. }) => params,
                     _ => Vec::new(),
@@ -2084,6 +2084,28 @@ impl Analyzer {
                 self.bc_reject_view_escape(body, &closure_env, "return from a closure");
                 self.bc_expr(body, &mut closure_env, true);
                 closure_env.exit_scope();
+                if matches!(expr.node, ExprKind::Closure { once: true, .. }) {
+                    // A `qo` closure moves its owned captures out of the
+                    // spawning scope.
+                    let mut names = Vec::new();
+                    super::typecheck::collect_expr_identifiers(body, &mut names);
+                    for name in names {
+                        if params.contains(&name) {
+                            continue;
+                        }
+                        let owned = env.lookup(&name).and_then(|var| var.ty.as_ref()).is_some_and(
+                            |ty| {
+                                crate::runtime_layout::runtime_move_kind(
+                                    &self.resolve_type_aliases(ty),
+                                ) == crate::runtime_layout::MoveKind::Owned
+                                    && self.bc_is_move_type(ty)
+                            },
+                        );
+                        if owned {
+                            env.mark_moved(&name, expr.span);
+                        }
+                    }
+                }
             }
         }
     }

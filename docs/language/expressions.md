@@ -230,9 +230,14 @@ A qoroutine that calls `join` gives its worker to other qoroutines while it
 waits, so joins may nest arbitrarily deep; `join` outside a qoroutine yields
 its OS thread.
 
-Current limits: the call is wrapped in a closure, so its arguments follow the
-closure capture rules (plain scalar values, evaluated inside the qoroutine) and
-its result must be a plain scalar. There is no preemption: a qoroutine runs
+Arguments that are variables move into the qoroutine: owned values such as
+`String` and structs are consumed by `qo` (using them afterwards is a
+use-after-move error), scalars are copied. Argument expressions other than
+variables are evaluated inside the qoroutine.
+
+Current limits: references and `str` views cannot be passed, and the result
+must be a plain scalar. The `Qoroutine` handle itself is not released yet
+(struct storage without a `free` hook is not reclaimed in general). There is no preemption: a qoroutine runs
 until it finishes or waits in `join`. At most 1024 qoroutines (256 on Windows)
 are alive at once. A panic inside a qoroutine ends the program. Channels and
 preemption are planned.
