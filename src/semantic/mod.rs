@@ -2640,6 +2640,19 @@ mod tests {
     }
 
     #[test]
+    fn free_generic_calls_infer_arguments_or_require_explicit_ones() {
+        let inferred = analyze(
+            "fn id[T](x: T) T { x }\nfn apply[T](f: fn() T) T { f() }\nfn main() void {\n    const a: i64 = id(5 as i64);\n    const b: bool = apply(|| true);\n}\n",
+        );
+        assert!(inferred.errors.is_empty(), "{:?}", inferred.errors);
+        // A binder that appears only in the result cannot be inferred.
+        let result_only = analyze(
+            "fn make[T]() T { make[T]() }\nfn main() void { const a: i64 = make(); }\n",
+        );
+        assert!(!result_only.errors.is_empty());
+    }
+
+    #[test]
     fn unused_loop_binders_point_at_their_names() {
         let source = "fn main() void {\n    for i : 0..3 {\n    }\n    for index, item : [1, 2] {\n    }\n}\n";
         let report = analyze(source);

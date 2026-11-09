@@ -198,8 +198,13 @@ fn first[T](items: Array[T]) T { ret items[0]; }
 struct Pair[A, B] { left: A, right: B, }
 ```
 
-Generic calls normally infer arguments. Explicit arguments use
-`function[Type](...)`. The compiler monomorphizes each concrete instantiation.
+Calls of generic functions infer their type arguments from the positional
+argument types (`id(5 as i64)` for `fn id[T](x: T) T`). A closure argument for
+a `fn(...) T` parameter infers `T` from its body (`apply(|| square(n))`).
+Write explicit arguments, `function[Type](...)`, when a type parameter appears
+only in the result or in named arguments, and for module-qualified calls.
+Generic intrinsics keep their explicit form. The compiler monomorphizes each
+concrete instantiation.
 
 ## Function types
 

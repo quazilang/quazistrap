@@ -2939,6 +2939,20 @@ impl<'a> FnCompiler<'a> {
     }
 
     /// Look up the resolved function name annotation for a span, if any.
+    fn inferred_type_args_for_span(&self, span: crate::parser::ast::Span) -> Vec<Type> {
+        self.annotated_exprs
+            .iter()
+            .rev()
+            .find(|ann| ann.span.start == span.start && ann.span.end == span.end)
+            .map(|ann| {
+                ann.inferred_type_args
+                    .iter()
+                    .map(|ty| Spanned::new(ty.clone(), span))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn resolved_fn_for_span(&self, span: crate::parser::ast::Span) -> Option<String> {
         self.annotated_exprs.iter().rev().find_map(|ann| {
             if ann.span.start == span.start && ann.span.end == span.end {
@@ -7909,7 +7923,15 @@ impl<'a> FnCompiler<'a> {
                         self.emit_call_by_name(&call_name, &call_regs, dst);
                         return dst;
                     }
-                    // Monomorphized generic function: resolve to mangled name.
+                    // Monomorphized generic function: resolve to mangled name,
+                    // using the analyzer's inferred arguments when none are written.
+                    let inferred_type_args;
+                    let type_args = if type_args.is_empty() {
+                        inferred_type_args = self.inferred_type_args_for_span(expr.span);
+                        &inferred_type_args
+                    } else {
+                        type_args
+                    };
                     if !type_args.is_empty() {
                         let Some(mono_name) =
                             self.require_monomorphized_name(&call_name, type_args)
@@ -10378,6 +10400,25 @@ fn main() i32 { unsafe { bump(0); } ret 0; }
             &HashMap::new(),
             &|name| name == "Token"
         ));
+    }
+
+    #[test]
+    fn free_generic_calls_infer_arguments_including_closure_results() {
+        let chunks = compile(
+            r#"
+fn id[T](x: T) T { x }
+fn apply[T](f: fn() T) T { f() }
+fn square(n: i64) i64 { n * n }
+fn total() i64 {
+    const n: i64 = 7;
+    id(n) + apply(|| square(n))
+}
+fn main() i32 { ret total() as i32; }
+"#,
+        );
+        let names: Vec<&str> = chunks.iter().map(|chunk| chunk.name.as_str()).collect();
+        assert!(names.contains(&"id<i64>"), "{names:?}");
+        assert!(names.contains(&"apply<i64>"), "{names:?}");
     }
 
     #[test]

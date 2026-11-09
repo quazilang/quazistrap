@@ -3514,7 +3514,12 @@ impl Analyzer {
                             let params = symbol
                                 .params
                                 .iter()
-                                .map(|param| substitute_type_kind(param, &substitution))
+                                .map(|param| {
+                                    infer_closure_result_binder(
+                                        substitute_type_kind(param, &substitution),
+                                        &symbol.generic_params,
+                                    )
+                                })
                                 .collect::<Vec<_>>();
                             let names = self
                                 .fn_param_names
@@ -3605,6 +3610,11 @@ impl Analyzer {
                                 &arg_evals,
                             );
                         }
+                        let inferred_type_args = if type_args.is_empty() {
+                            self.infer_call_type_args(&sym, &arg_evals[..args.len()], expr.span)
+                        } else {
+                            None
+                        };
                         let eval = self.check_function_call(
                             resolved,
                             callee.span,
@@ -3613,9 +3623,15 @@ impl Analyzer {
                             named_args,
                             &arg_evals,
                             &sym,
-                            type_args,
+                            inferred_type_args.as_deref().unwrap_or(type_args),
                         );
                         self.annotate_expr(expr, &eval, reachable, Some(resolved.clone()));
+                        if let Some(inferred) = inferred_type_args
+                            && let Some(annotation) = self.annotated_exprs.last_mut()
+                        {
+                            annotation.inferred_type_args =
+                                inferred.into_iter().map(|arg| arg.node).collect();
+                        }
                         self.reject_nested_owned_function_expression(expr, &eval);
                         return eval;
                     }
@@ -6008,6 +6024,40 @@ impl Analyzer {
         }
     }
 
+    /// Infer every generic argument of a call without explicit ones from its
+    /// positional argument types; `None` when some binder stays unknown.
+    fn infer_call_type_args(
+        &self,
+        sym: &Symbol,
+        arg_evals: &[ExprEval],
+        span: Span,
+    ) -> Option<Vec<Type>> {
+        // Generic intrinsics/imports dispatch on their arguments directly.
+        if sym.generic_params.is_empty()
+            || sym
+                .attributes
+                .iter()
+                .any(|attribute| matches!(attribute.as_str(), "intrinsic" | "syscall" | "api"))
+        {
+            return None;
+        }
+        let mut subst = std::collections::HashMap::new();
+        for (param, eval) in sym.params.iter().zip(arg_evals) {
+            if let Some(actual) = &eval.ty {
+                infer_type_subst(param, actual, &sym.generic_params, &mut subst);
+            }
+        }
+        sym.generic_params
+            .iter()
+            .map(|param| {
+                subst
+                    .get(param)
+                    .filter(|ty| !matches!(ty, TypeKind::Error))
+                    .map(|ty| Spanned::new(ty.clone(), span))
+            })
+            .collect()
+    }
+
     fn check_function_call(
         &mut self,
         name: &str,
@@ -6843,6 +6893,7 @@ impl Analyzer {
             resolved_binding,
             auto_deref: false,
             c_abi_function: false,
+            inferred_type_args: Vec::new(),
         });
 
         if let Some(value) = &foldable {
@@ -6881,6 +6932,7 @@ impl Analyzer {
             resolved_binding,
             auto_deref: false,
             c_abi_function: false,
+            inferred_type_args: Vec::new(),
         });
     }
 
@@ -6916,6 +6968,7 @@ impl Analyzer {
             resolved_binding,
             auto_deref: false,
             c_abi_function: false,
+            inferred_type_args: Vec::new(),
         });
 
         self.mark_auto_deref(expr);
@@ -8106,6 +8159,27 @@ fn substitute_self_type(ty: &TypeKind, concrete: &TypeKind) -> TypeKind {
 
 /// Substitute generic type parameters with concrete types.
 /// Replaces `Named(name, [])` when `name` is a key in `subst`.
+/// A `fn(...) T` parameter whose result is a not-yet-inferred binder of the
+/// callee: a closure argument is then checked without an expected result, so
+/// its body's type infers `T` (as `spawn(|| work(n))` with `fn spawn[T](f: fn() T)`).
+fn infer_closure_result_binder(param: TypeKind, binders: &[String]) -> TypeKind {
+    match param {
+        TypeKind::Fn { params, return_ty } => {
+            let uninferred = matches!(
+                &return_ty.node,
+                TypeKind::Named { name, type_args } if type_args.is_empty() && binders.contains(name)
+            );
+            let return_ty = if uninferred {
+                Box::new(Spanned::new(TypeKind::Error, return_ty.span))
+            } else {
+                return_ty
+            };
+            TypeKind::Fn { params, return_ty }
+        }
+        other => other,
+    }
+}
+
 pub(super) fn substitute_type_kind(
     ty: &TypeKind,
     subst: &std::collections::HashMap<String, TypeKind>,
@@ -8673,6 +8747,19 @@ pub(super) fn infer_type_subst(
         TypeKind::MutRef { inner } => {
             if let TypeKind::MutRef { inner: arg_inner } = arg_ty {
                 infer_type_subst(&inner.node, &arg_inner.node, generic_params, subst);
+            }
+        }
+        TypeKind::Fn { params, return_ty } => {
+            if let TypeKind::Fn {
+                params: arg_params,
+                return_ty: arg_return,
+            } = arg_ty
+                && params.len() == arg_params.len()
+            {
+                for (param, arg) in params.iter().zip(arg_params) {
+                    infer_type_subst(&param.node, &arg.node, generic_params, subst);
+                }
+                infer_type_subst(&return_ty.node, &arg_return.node, generic_params, subst);
             }
         }
         _ => {}
