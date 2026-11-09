@@ -4088,6 +4088,19 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.pop(r12));
                         emit!(asm.pop(rbx));
                     }
+                    45 => {
+                        // quazi.stack.pointer() -> *u8: the current machine stack
+                        // pointer (lets runtime code find the stack it runs on).
+                        emit!(asm.mov(rax, rsp));
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    46 => {
+                        // quazi.ptr.offset_from(p: *u8, base: *u8) -> isize: the
+                        // byte distance p - base. No pointer is rebuilt from it.
+                        emit!(asm.mov(rax, slot(dst)));
+                        emit!(asm.sub(rax, slot(dst + 1)));
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     44 => {
                         // quazi.runtime.state() -> *u8: the zero-initialized,
                         // 16-byte aligned 64-byte process runtime state block.

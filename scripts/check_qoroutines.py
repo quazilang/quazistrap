@@ -34,6 +34,28 @@ fn main() i32 {
 
 EXPECTED = "total 8955059 evens 150"
 
+# Joins nested ten times deeper than there are workers: a waiting qoroutine
+# must yield its worker instead of blocking it.
+NESTED = r"""import std.io;
+
+fn chain(depth: i64) i64 {
+    if (depth == 0) { ret 0; }
+    const child = qo chain(depth - 1);
+    child.join() + depth
+}
+
+fn main() i32 {
+    var total: i64 = 0;
+    for i : 0..20 {
+        const top = qo chain(40 as i64);
+        total = total + top.join();
+    }
+    io.println("nested {}", total);
+    if (total != 16400) { ret 1; }
+    0
+}
+"""
+
 
 def invoke(command, root, ok=True):
     result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
@@ -68,6 +90,16 @@ def check(qz, root):
     invoke([str(qz), "build", str(artifact), *common, "-o", str(portable)], root)
     assert EXPECTED in invoke([str(portable)], case).stdout
 
+    nested = root / "nested"
+    (nested / "src").mkdir(parents=True)
+    (nested / "quazi.toml").write_text('[package]\nname="nested"\n[build]\nentry="src/main.qz"\n')
+    (nested / "src/main.qz").write_text(NESTED)
+    binary = nested / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], nested)
+    for _ in range(3):
+        assert "nested 16400" in subprocess.run([str(binary)], cwd=nested, text=True,
+                                                stdout=subprocess.PIPE, timeout=60).stdout
+
     plain = root / "plain"
     (plain / "src").mkdir(parents=True)
     (plain / "quazi.toml").write_text('[package]\nname="plain"\n[build]\nentry="src/main.qz"\n')
@@ -82,7 +114,7 @@ def check(qz, root):
     (bad / "src/main.qz").write_text("fn main() i32 {\n    const x = qo 5;\n    0\n}\n")
     result = invoke([str(qz), "check"], bad, ok=False)
     assert result.returncode != 0 and "`qo` must be followed by a function call" in result.stdout, result.stdout
-    print("PASS qoroutines: qo on 4 workers (5 runs), --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
+    print("PASS qoroutines: qo on 4 workers (5 runs), 40-deep nested joins, --jit, source-removed QZI, COFF/NetBSD emit, unused scheduler dropped, non-call rejected")
 
 
 def main():

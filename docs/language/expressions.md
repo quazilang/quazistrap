@@ -226,11 +226,16 @@ Qoroutines are scheduled M:N on a pool of OS worker threads that starts on the
 first `qo` ([D-019](../decisions/qoroutines.md)). The operand must be a call.
 When `main` returns, the program ends and running qoroutines stop.
 
+A qoroutine that calls `join` gives its worker to other qoroutines while it
+waits, so joins may nest arbitrarily deep; `join` outside a qoroutine yields
+its OS thread.
+
 Current limits: the call is wrapped in a closure, so its arguments follow the
 closure capture rules (plain scalar values, evaluated inside the qoroutine) and
-its result must be a plain scalar. Qoroutines run to completion without
-preemption, `join` waits by yielding its OS thread, and a panic inside a
-qoroutine ends the program. Channels, parking and preemption are planned.
+its result must be a plain scalar. There is no preemption: a qoroutine runs
+until it finishes or waits in `join`. At most 1024 qoroutines (256 on Windows)
+are alive at once. A panic inside a qoroutine ends the program. Channels and
+preemption are planned.
 
 ## Match expressions
 

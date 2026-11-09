@@ -8,19 +8,25 @@
 // result is a `Qoroutine[T]` whose `join()` waits and returns `T`.
 //
 // M:N scheduler: qoroutines run on four OS worker threads started on first
-// use. Each qoroutine owns a 256 KiB stack and a context entered with
+// use. Each qoroutine owns a 256 KiB stack slot and a context entered with
 // `quazi.context.switch`. Quazi has no global variables, so the scheduler
 // lives in the `quazi.runtime.state` block:
-//   +0 queue lock, +8 queue head, +16 queue tail, +24 workers started.
+//   +0 queue lock, +8 queue head, +16 queue tail,
+//   +24 init state (0 none, 1 initializing, 2 ready), +32 stack arena,
+//   +40 free slot indexes (i64 array), +48 free slot count.
+// All stacks are slots of one arena; a slot's first word is its task, so code
+// running on a qoroutine finds its task from the stack pointer
+// (`quazi.stack.pointer` + `quazi.ptr.offset_from`, no thread-local storage).
 // Task block (512 bytes):
-//   +0 joinable (2 once finished), +8 result slot, +16 closure, +24 stack,
+//   +0 joinable (2 once finished), +8 result slot, +16 closure, +24 slot index,
 //   +32 next in queue, +40 worker context, +48 type-erased runner,
 //   +56 finished flag, +64 task context (272 bytes).
 // A finished task is published as joinable by its worker only after the
 // worker is back on its own stack, so `join` may free the task's stack.
 //
-// Current limits (D-019 phases 3-5): qoroutines run to completion without
-// preemption; `join` waits by yielding the calling OS thread; closure
+// Current limits (D-019 phases 3-5): no preemption (a qoroutine runs until it
+// finishes or waits in `join`); `join` outside a qoroutine yields its OS
+// thread; at most `__qo_slot_count()` qoroutines are alive at once; closure
 // captures and results are plain scalars until closure ownership lands.
 
 @intrinsic("quazi.runtime.state")
@@ -47,6 +53,12 @@ unsafe fn __qo_memset(ptr: *u8, value: i32, size: usize) *u8;
 @intrinsic("quazi.sleep_ms")
 fn __qo_sleep_ms(ms: u64) void;
 
+@intrinsic("quazi.stack.pointer")
+unsafe fn __qo_stack_pointer() *u8;
+
+@intrinsic("quazi.ptr.offset_from")
+unsafe fn __qo_offset_from(p: *u8, base: *u8) isize;
+
 @cfg(target_os = "windows")
 @repr(C)
 pub type __QoWorkerEntry = fn(*u8) u32;
@@ -67,6 +79,17 @@ pub type __QoTaskEntry = fn(*u8) void;
 
 fn __qo_task_size() usize { 512 }
 fn __qo_stack_size() usize { 262144 }
+
+// Stack arena capacity: live qoroutines at once. Linux/NetBSD map the arena
+// lazily; Windows commits heap memory, so it keeps a smaller arena.
+@cfg(target_os = "windows")
+fn __qo_slot_count() usize { 256 }
+
+@cfg(target_os = "linux")
+fn __qo_slot_count() usize { 1024 }
+
+@cfg(target_os = "netbsd")
+fn __qo_slot_count() usize { 1024 }
 
 unsafe fn __qo_lock(state: *u8) void {
     for (__qo_atomic_cas(state as *i64, 0, 1) != 0) { __qo_sleep_ms(0); }
@@ -151,11 +174,71 @@ unsafe fn __qo_run[T](task: *u8) void {
     *((task + 8) as *T) = value;
 }
 
-unsafe fn __qo_start_workers() void {
+// Map the stack arena and start the workers exactly once.
+unsafe fn __qo_init() void {
     const state = __qo_state();
     if (__qo_atomic_cas((state + 24) as *i64, 0, 1) == 0) {
+        const slots = __qo_slot_count();
+        const arena: *u8 = __qo_malloc(slots * __qo_stack_size());
+        const free: *u8 = __qo_malloc(slots * 8);
+        if (arena == 0 || free == 0) { panic("qoroutine stack arena allocation failed"); }
+        for i : 0..slots { *((free + i * 8) as *i64) = i as i64; }
+        *((state + 32) as **u8) = arena;
+        *((state + 40) as **u8) = free;
+        *((state + 48) as *i64) = slots as i64;
+        __qo_atomic_cas((state + 24) as *i64, 1, 2);
         for i : 0..4 { __qo_spawn_thread(__qo_worker, 0); }
     }
+    for (__qo_atomic_add((state + 24) as *i64, 0) != 2) { __qo_sleep_ms(0); }
+}
+
+unsafe fn __qo_take_slot() i64 {
+    const state = __qo_state();
+    __qo_lock(state);
+    const count: i64 = *((state + 48) as *i64);
+    var index: i64 = -1;
+    if (count > 0) {
+        index = *((*((state + 40) as **u8) + ((count - 1) as usize) * 8) as *i64);
+        *((state + 48) as *i64) = count - 1;
+    }
+    __qo_unlock(state);
+    index
+}
+
+unsafe fn __qo_release_slot(index: i64) void {
+    const state = __qo_state();
+    __qo_lock(state);
+    const count: i64 = *((state + 48) as *i64);
+    *((*((state + 40) as **u8) + (count as usize) * 8) as *i64) = index;
+    *((state + 48) as *i64) = count + 1;
+    __qo_unlock(state);
+}
+
+unsafe fn __qo_slot(index: i64) *u8 {
+    *((__qo_state() + 32) as **u8) + (index as usize) * __qo_stack_size()
+}
+
+// The task whose stack this code runs on, or null outside qoroutines.
+unsafe fn __qo_current() *u8 {
+    const state = __qo_state();
+    const arena: *u8 = *((state + 32) as **u8);
+    if (arena == 0) { ret 0; }
+    const offset: isize = __qo_offset_from(__qo_stack_pointer(), arena);
+    const size: isize = (__qo_slot_count() * __qo_stack_size()) as isize;
+    if (offset < 0 || offset >= size) { ret 0; }
+    const index: i64 = (offset / (__qo_stack_size() as isize)) as i64;
+    *(__qo_slot(index) as **u8)
+}
+
+// Let other qoroutines run: a qoroutine goes back to the run queue; any
+// other thread yields its OS time slice.
+unsafe fn __qo_yield() void {
+    const task = __qo_current();
+    if (task == 0) {
+        __qo_sleep_ms(0);
+        ret;
+    }
+    __qo_switch(task + 64, *((task + 40) as **u8));
 }
 
 // A running or finished qoroutine started by `qo`.
@@ -173,9 +256,12 @@ pub fn __qo_spawn[T](f: fn() T) Qoroutine[T] {
         *((task + 16) as *fn() T) = f;
         const runner: fn(*u8) void = |t| __qo_run[T](t);
         *((task + 48) as *fn(*u8) void) = runner;
-        const stack: *u8 = __qo_malloc(__qo_stack_size());
-        if (stack == 0) { panic("qoroutine stack allocation failed"); }
-        *((task + 24) as **u8) = stack;
+        __qo_init();
+        const index = __qo_take_slot();
+        if (index < 0) { panic("too many live qoroutines"); }
+        const stack: *u8 = __qo_slot(index);
+        *(stack as **u8) = task;
+        *((task + 24) as *i64) = index;
         const entry: __QoTaskEntry = __qo_entry;
         const top: *u8 = stack + __qo_stack_size();
         *((task + 64 + 48) as *__QoTaskEntry) = entry;
@@ -185,7 +271,6 @@ pub fn __qo_spawn[T](f: fn() T) Qoroutine[T] {
         *((task + 64 + 84) as *u16) = 895;
         *((task + 64 + 88) as **u8) = top;
         *((task + 64 + 96) as **u8) = stack;
-        __qo_start_workers();
         __qo_enqueue(task);
     }
     Qoroutine { task: task }
@@ -197,9 +282,9 @@ impl Qoroutine[T] {
         const task: *u8 = self.task;
         var value: T;
         unsafe {
-            for (__qo_atomic_add(task as *i64, 0) != 2) { __qo_sleep_ms(0); }
+            for (__qo_atomic_add(task as *i64, 0) != 2) { __qo_yield(); }
             value = *((task + 8) as *T);
-            __qo_free(*((task + 24) as **u8));
+            __qo_release_slot(*((task + 24) as *i64));
             __qo_free(task);
         }
         value

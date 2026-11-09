@@ -173,6 +173,13 @@ planned qoroutine scheduler) keeps its process-wide pointers there. Each
 object has its own block, so one executable should contain one Quazi object
 that uses it.
 
+`@intrinsic("quazi.stack.pointer") unsafe fn() *u8` (id 45) returns rsp and
+`@intrinsic("quazi.ptr.offset_from") unsafe fn(p: *u8, base: *u8) isize`
+(id 46) returns `p - base`. Together they let the qoroutine scheduler find
+the stack slot it runs on without thread-local storage. Quazi deliberately
+rejects pointer<->integer casts (pointer provenance for retention analysis);
+these intrinsics never rebuild a pointer from an integer.
+
 Linux executables without `-lc` lower `quazi.thread.spawn`/`spawn_arg`/`join`
 to the embedded `__quazi_thread_spawn`/`__quazi_thread_join` routines
 (`runtime.rs`: clone + futex, 8 MiB region per thread); `-lc` executables and

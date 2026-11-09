@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-09: Waiting qoroutines yield their worker](2026-11-09-qo-yielding-join.md)
+
 - [2026-11-09: `qo` starts qoroutines](2026-11-09-qo-keyword.md)
 
 - [2026-11-09: Generic free-function calls infer their type arguments](2026-11-09-generic-call-inference.md)

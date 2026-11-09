@@ -435,6 +435,8 @@ impl Instruction {
                     42 => "quazi.context.switch",
                     43 => "quazi.thread.spawn_arg",
                     44 => "quazi.runtime.state",
+                    45 => "quazi.stack.pointer",
+                    46 => "quazi.ptr.offset_from",
                     _ => "?",
                 };
                 format!(

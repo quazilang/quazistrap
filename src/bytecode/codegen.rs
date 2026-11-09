@@ -9706,6 +9706,8 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
         m.insert("quazi.context.switch", 42);
         m.insert("quazi.thread.spawn_arg", 43);
         m.insert("quazi.runtime.state", 44);
+        m.insert("quazi.stack.pointer", 45);
+        m.insert("quazi.ptr.offset_from", 46);
         m
     });
     let name = attr
