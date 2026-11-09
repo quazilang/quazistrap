@@ -2,6 +2,24 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-09 night, yielding join)
+
+quazistrap `68a142b`: qoroutine stacks are slots of one arena (1024; 256 on
+Windows) whose first word names the task; intrinsics `quazi.stack.pointer`
+(45) and `quazi.ptr.offset_from` (46) give `__qo_current()` without TLS;
+`join` yields the worker (`__qo_yield`), so nested joins deeper than the 4
+workers no longer hang (check_qoroutines: 20 chains x 40). Verified: 1019
+Rust tests, all e2e, std 61/61, examples.
+
+BLOCKER for `Channel[T]` and owned `qo` arguments: closures capture only
+plain scalars (typecheck `closure_capture_is_plain_copy`); structs are owned
+indirect handles (heap storage released at scope end), so a channel handle
+cannot be passed into `qo producer(ch)` by copying. Next real work item is
+D-019 phase 5 / closure capture moves: move owned captures (structs, String)
+into the closure environment with ownership transfer and env destruction
+(`DropAction::FreeClosureEnv`), then Channel[T] in the prelude
+(lock + ring buffer + closed flag; send/receive yield via `__qo_yield`).
+
 ## Checkpoint (2026-11-09 evening, qo keyword)
 
 quazistrap: `7e7ebf0` generic free-call inference (incl. closure results,
