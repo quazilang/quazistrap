@@ -266,6 +266,21 @@ fn emit_native_object(
                 SymbolScope::Compilation,
             );
             text_bytes.extend_from_slice(&function.bytes);
+            for relocation in function.relocations {
+                all_relocs.push((
+                    relocations::PendingReloc {
+                        offset_in_text: offset + relocation.offset,
+                        kind: if relocation.call {
+                            relocations::RelocKind::Plt32
+                        } else {
+                            relocations::RelocKind::Pc32
+                        },
+                        symbol: relocation.symbol.to_string(),
+                        addend: -4,
+                    },
+                    None,
+                ));
+            }
         }
     }
 

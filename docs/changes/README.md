@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-09: Size-class heap in the embedded Linux runtime](2026-11-09-size-class-heap.md)
+
 - [2026-11-09: Every string literal interpolates (D-020)](2026-11-09-string-interpolation.md)
 
 - [2026-11-09: Struct storage shells are released](2026-11-09-struct-shells.md)

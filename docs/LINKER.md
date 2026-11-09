@@ -175,11 +175,17 @@ the assembly routines the object requests. Supported routines are:
 | C strings | `strcpy`, `strcat` |
 | Threads | `__quazi_thread_spawn`, `__quazi_thread_join` (programs without `[link] libc`) |
 
-Allocation uses Linux `mmap` and `munmap` syscalls. Each allocation has a
-private 16-byte header containing mapping and requested sizes. `calloc` checks
-multiplication overflow and zeroes successful allocations; `realloc` copies the
-smaller old/new requested length and releases the old mapping; `free(NULL)` is
-a no-op.
+Allocation is a size-class heap. Each block has a private 16-byte header
+(kind word, requested size). Blocks up to 2048 bytes including the header come
+from seven size classes (32 to 2048 bytes) kept on free lists in
+`__quazi_heap_state` behind a spin lock and refilled 64 KiB at a time with
+`mmap`; their kind word is `-(class + 1)`, and `free` returns them to their
+list. Larger blocks are separate `mmap` mappings released with `munmap`.
+`calloc` checks multiplication overflow, allocates through `malloc` and zeroes
+the requested bytes (reused blocks are not zero); `realloc` allocates, copies
+the smaller old/new requested length and frees the old block; `free(NULL)` is
+a no-op. Runtime routines refer to the heap state and to each other through
+ordinary PC-relative relocations.
 
 Threads use `clone` with an 8 MiB `mmap` region per thread (PROT_NONE guard
 page, stack, control block). `CLONE_CHILD_CLEARTID` clears the thread-id word

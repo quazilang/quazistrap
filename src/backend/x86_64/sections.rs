@@ -205,6 +205,9 @@ impl SectionAccumulator {
         // qoroutine scheduler; Quazi has no global variables.
         let state_offset = obj.append_section_data(self.data_id, &[0u8; 64], 16);
         sym_table.define_data(obj, self.data_id, "__quazi_runtime_state", state_offset, 64);
+        // Embedded heap: spin lock and seven size-class free lists (runtime.rs).
+        let heap_offset = obj.append_section_data(self.data_id, &[0u8; 64], 64);
+        sym_table.define_data(obj, self.data_id, "__quazi_heap_state", heap_offset, 64);
 
         chunks
             .iter()
