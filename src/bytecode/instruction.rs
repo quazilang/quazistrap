@@ -494,6 +494,19 @@ pub const NEGATED_COMPARE_FLAG: u8 = 0x02;
 /// A zero flags byte retains the signed behavior used by older QZI files.
 pub const UNSIGNED_FLAG: u8 = 0x04;
 
+/// Strength-reduction hint in `ops[3]` of an integer `Mul`/`Div`/`Mod`:
+/// `k + 1` when constant propagation proved the second operand equals `2^k`.
+/// Backends may lower the operation to a shift or mask; the operand register
+/// still holds the constant, so ignoring the hint stays correct.
+pub fn power_of_two_operand(instruction: &Instruction) -> Option<u32> {
+    let opcode = instruction.opcode;
+    let arithmetic = opcode == super::opcode::Opcode::Mul as u8
+        || opcode == super::opcode::Opcode::Div as u8
+        || opcode == super::opcode::Opcode::Mod as u8;
+    (arithmetic && instruction.flags & FLOAT_FLAG == 0 && instruction.ops[3] != 0)
+        .then(|| u32::from(instruction.ops[3] - 1))
+}
+
 /// Typed floating Pow operand representations (QZI v14).
 pub const POW_BASE_FLOAT_FLAG: u8 = 0x02;
 pub const POW_BASE_UNSIGNED_FLAG: u8 = UNSIGNED_FLAG;

@@ -441,7 +441,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 |------|--------|
 | Threshold-based auto-inline | ✅ Done |
 | Cross-basic-block const folding | ✅ Done |
-| Strength reduction | Pending |
+| Strength reduction | ✅ Done — constant propagation marks integer `Mul`/`Div`/`Mod` by a proven `2^k` (`ops[3] = k + 1`); x86-64 lowers them to `shl`/`shr`/mask and a sign-corrected `sar` |
 
 ### P3 — Platform / Runtime
 

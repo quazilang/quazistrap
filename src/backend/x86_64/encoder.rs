@@ -1755,6 +1755,43 @@ impl<'a> FnEncoder<'a> {
                 }
             }
 
+            Some(Opcode::Mul | Opcode::Div | Opcode::Mod)
+                if crate::bytecode::instruction::power_of_two_operand(instr).is_some() =>
+            {
+                // Strength reduction: the second operand is a proven 2^k.
+                let (dst, s1, _) = instr.rrr();
+                let k = crate::bytecode::instruction::power_of_two_operand(instr).unwrap_or(0);
+                let unsigned = instr.flags & crate::bytecode::instruction::UNSIGNED_FLAG != 0;
+                emit!(asm.mov(rax, slot(s1)));
+                match op {
+                    Some(Opcode::Mul) => emit!(asm.shl(rax, k)),
+                    Some(Opcode::Div) if unsigned => emit!(asm.shr(rax, k)),
+                    Some(Opcode::Mod) if unsigned => {
+                        emit!(asm.mov(rcx, ((1u128 << k) - 1) as u64));
+                        emit!(asm.and(rax, rcx));
+                    }
+                    _ if k > 0 => {
+                        // Signed: bias negative dividends by 2^k - 1 so the
+                        // arithmetic shift truncates toward zero like idiv.
+                        emit!(asm.mov(rcx, rax));
+                        emit!(asm.sar(rcx, 63u32));
+                        emit!(asm.shr(rcx, 64 - k));
+                        emit!(asm.add(rcx, rax));
+                        emit!(asm.sar(rcx, k));
+                        if op == Some(Opcode::Div) {
+                            emit!(asm.mov(rax, rcx));
+                        } else {
+                            emit!(asm.shl(rcx, k));
+                            emit!(asm.sub(rax, rcx));
+                        }
+                    }
+                    // Division by 1 keeps the dividend; remainder is 0.
+                    _ if op == Some(Opcode::Mod) => emit!(asm.xor(eax, eax)),
+                    _ => {}
+                }
+                emit!(asm.mov(slot(dst), rax));
+            }
+
             Some(Opcode::Mul) => {
                 let (dst, s1, s2) = instr.rrr();
                 if instr.flags & crate::bytecode::instruction::FLOAT_FLAG != 0 {
@@ -5199,6 +5236,31 @@ mod tests {
         }
         assert_eq!(shadow_space_allocations, 2);
         assert_eq!(shadow_space_restorations, 2);
+    }
+
+    #[test]
+    fn power_of_two_hints_lower_to_shifts_without_multiply_or_divide() {
+        for (opcode, unsigned) in [
+            (Opcode::Mul, false),
+            (Opcode::Div, true),
+            (Opcode::Div, false),
+            (Opcode::Mod, true),
+            (Opcode::Mod, false),
+        ] {
+            let mut chunk = Chunk::with_params("reduced", 2);
+            let mut instruction = rrr(opcode, 0, 0, 1);
+            instruction.ops[3] = 4; // 2^3
+            if unsigned {
+                instruction.flags = crate::bytecode::instruction::UNSIGNED_FLAG;
+            }
+            chunk.emit(instruction);
+            chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+            let (bytes, _) = encode(&chunk, Abi::SysV);
+            let mnemonics = mnemonics(&bytes);
+            for slow in [Mnemonic::Imul, Mnemonic::Idiv, Mnemonic::Div] {
+                assert!(!mnemonics.contains(&slow), "{opcode:?}: {mnemonics:?}");
+            }
+        }
     }
 
     #[test]

@@ -574,6 +574,36 @@ fn eval_branch(op: u8, val: i64) -> Option<bool> {
 }
 
 /// Run constant propagation and folding on a single chunk in-place.
+/// Strength reduction: record in `ops[3]` that an integer `Mul`/`Div`/`Mod`
+/// divides or multiplies by a proven constant `2^k` (see
+/// `instruction::power_of_two_operand`). A constant left operand of `Mul` is
+/// swapped to the right first.
+fn mark_power_of_two_operand(instruction: &mut Instruction, state: &RegState) {
+    let op = instruction.opcode;
+    let multiply = op == Opcode::Mul as u8;
+    if !(multiply || op == Opcode::Div as u8 || op == Opcode::Mod as u8)
+        || instruction.flags & crate::bytecode::instruction::FLOAT_FLAG != 0
+    {
+        return;
+    }
+    let exponent = |register: u8| {
+        state
+            .get(&register)
+            .and_then(ConstLattice::as_int)
+            .filter(|value| *value > 0 && value.count_ones() == 1)
+            .map(|value| value.trailing_zeros() as u8)
+    };
+    let (_, left, right) = instruction.rrr();
+    instruction.ops[3] = 0;
+    if let Some(k) = exponent(right) {
+        instruction.ops[3] = k + 1;
+    } else if multiply && let Some(k) = exponent(left) {
+        instruction.ops[1] = right;
+        instruction.ops[2] = left;
+        instruction.ops[3] = k + 1;
+    }
+}
+
 pub fn const_prop_fold(chunk: &mut Chunk) {
     if chunk.code.is_empty() {
         return;
@@ -623,6 +653,7 @@ pub fn const_prop_fold(chunk: &mut Chunk) {
             if i >= n_instrs {
                 break;
             }
+            mark_power_of_two_operand(&mut chunk.code[i], &state);
             let instr = chunk.code[i];
             let op = instr.opcode;
 
@@ -676,6 +707,35 @@ mod tests {
         let mut c = Chunk::new(name);
         c.code = instrs;
         c
+    }
+
+    #[test]
+    fn integer_power_of_two_operands_are_marked_for_strength_reduction() {
+        use crate::bytecode::instruction::power_of_two_operand;
+        let float = {
+            let mut multiply = rrr(Opcode::Mul, 5, 0, 1);
+            multiply.flags = crate::bytecode::instruction::FLOAT_FLAG;
+            multiply
+        };
+        let mut chunk = Chunk::new("reduce");
+        chunk.reg_count = 8;
+        chunk.code = vec![
+            ri16(Opcode::MovI, 1, 8),
+            ri16(Opcode::MovI, 2, 3),
+            rrr(Opcode::Mul, 3, 0, 1),
+            rrr(Opcode::Div, 4, 0, 2),
+            float,
+            rrr(Opcode::Mul, 6, 1, 0),
+            rrr(Opcode::Mod, 7, 0, 1),
+            rrr(Opcode::Ret, 3, 0, 0),
+        ];
+        const_prop_fold(&mut chunk);
+        assert_eq!(power_of_two_operand(&chunk.code[2]), Some(3));
+        assert_eq!(power_of_two_operand(&chunk.code[3]), None, "3 is not a power of two");
+        assert_eq!(power_of_two_operand(&chunk.code[4]), None, "floating multiply");
+        assert_eq!(power_of_two_operand(&chunk.code[5]), Some(3));
+        assert_eq!(chunk.code[5].rrr(), (6, 0, 1), "constant left operand moves right");
+        assert_eq!(power_of_two_operand(&chunk.code[6]), Some(3));
     }
 
     #[test]

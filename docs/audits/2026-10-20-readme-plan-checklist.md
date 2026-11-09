@@ -5,7 +5,10 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 84.8%. Remaining: 15.2%.**
+**Complete: 87.9%. Remaining: 12.1%.**
+
+On 2026-11-09 strength reduction (1/1) was completed
+([change record](../changes/2026-11-09-strength-reduction.md)).
 
 On 2026-11-09 `qz run --jit` executes Linux programs from memory
 ([change record](../changes/2026-11-09-run-jit.md)), completing the experimental
@@ -198,7 +201,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | C ABI FFI phase 2 | 1/1 | 100.0% | 0.0% |
 | Threshold-based auto-inline | 1/1 | 100.0% | 0.0% |
 | Cross-basic-block const folding | 1/1 | 100.0% | 0.0% |
-| Strength reduction | 0/1 | 0.0% | 100.0% |
+| Strength reduction | 1/1 | 100.0% | 0.0% |
 | Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
 | Atomic opcodes | 2/2 | 100.0% | 0.0% |
 | Format string literals | 0/1 | 0.0% | 100.0% |
@@ -358,9 +361,10 @@ Evidence: [src/bytecode/constprop.rs](../../src/bytecode/constprop.rs).
 
 ### Strength reduction
 
-Evidence: [src/bytecode/constprop.rs](../../src/bytecode/constprop.rs).
+Evidence: [src/bytecode/constprop.rs](../../src/bytecode/constprop.rs),
+[scripts/check_strength_reduction.py](../../scripts/check_strength_reduction.py).
 
-- [ ] Replace expensive operations with equivalent cheaper instructions.
+- [x] Replace expensive operations with equivalent cheaper instructions.
 
 ### Ownership / RAII bytecode
 
