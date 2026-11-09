@@ -5,7 +5,11 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 91.4%. Remaining: 8.6%.**
+**Complete: 94.4%. Remaining: 5.6%.**
+
+On 2026-11-09 the maintainers removed async/await from the plan
+([D-020](../decisions/string-interpolation.md), В8А). The rubric now has 31
+items; no other credit changed.
 
 On 2026-11-09 the built-in linker gained ELF `.a` archive member extraction
 (8/9; [change record](../changes/2026-11-09-static-archives.md)).
@@ -212,7 +216,6 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Atomic opcodes | 2/2 | 100.0% | 0.0% |
 | Format string literals | 0/1 | 0.0% | 100.0% |
 | Nested struct patterns | 1/1 | 100.0% | 0.0% |
-| async / await | 0/1 | 0.0% | 100.0% |
 | LSP improvements | 16/20 | 80.0% | 20.0% |
 | qz doc | 1/1 | 100.0% | 0.0% |
 | Experimental JIT (`qz run --jit`) | 1/1 | 100.0% | 0.0% |
@@ -411,12 +414,6 @@ Evidence: [AGENTS.md](../../AGENTS.md).
 Evidence: [scripts/check_struct_patterns.py](../../scripts/check_struct_patterns.py).
 
 - [x] Struct destructuring in match patterns.
-
-### async / await
-
-Evidence: [AGENTS.md](../../AGENTS.md).
-
-- [ ] Lifetime-safe async/await design and implementation.
 
 ### LSP improvements
 

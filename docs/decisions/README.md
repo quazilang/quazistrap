@@ -140,6 +140,12 @@ block expressions are deferred until value-carrying block scopes exist.
 Proposed 2026-11-08: [give types module identities like functions](module-type-identity.md)
 so same-named types in different modules stop colliding (`S05`). Not implemented.
 
+## D-020: string interpolation in every literal
+
+Decided 2026-11-09: [every string literal interpolates `{expr}`, `{{`/`}}`
+escape braces, no `f"..."` prefix; `async`/`await` leaves the plan in favor of
+`qo`](string-interpolation.md).
+
 ## D-019: qoroutines, channels and OS threads
 
 Recorded 2026-11-08: [keyword `qo`, built-in `Qoroutine[T]`/`Channel[T]`, M:N
