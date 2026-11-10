@@ -46,8 +46,10 @@ fn source_declares_test(path: &Path) -> Result<bool, String> {
     let mut lexer = crate::lexer::Lexer::new(&source);
     let tokens = lexer.tokenize();
     let mut parser = crate::parser::Parser::new_with_source(tokens, &source);
+    // A file that does not parse becomes a root anyway, so loading reports
+    // its parse error instead of silently dropping its tests.
     let Ok(program) = parser.parse() else {
-        return Ok(false);
+        return Ok(true);
     };
     Ok(program.items.iter().any(|item| {
         matches!(
@@ -459,9 +461,11 @@ mod tests {
         std::fs::write(&test, "@test\nfn works() void { ret; }\n").unwrap();
         std::fs::write(&malformed, "@test fn broken(\n").unwrap();
 
+        // A malformed source is kept, so its parse error is reported instead
+        // of its tests silently disappearing.
         assert_eq!(
             additional_test_roots([ordinary.clone(), test.clone(), malformed.clone()], []).unwrap(),
-            [test]
+            [test, malformed.clone()]
         );
         assert_eq!(
             additional_test_roots([], [malformed.clone()]).unwrap(),
