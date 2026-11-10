@@ -1019,7 +1019,12 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
             .as_ref()
             .and_then(|name| self.declarations.get(name));
         let mut all = callee;
-        if let Some(receiver) = &receiver {
+        // A module or type namespace (`unix.open(...)`) is not a value; only
+        // an instance receiver contributes provenance.
+        let instance_receiver = self.analyzer.retention_instance_receiver(expr);
+        if let Some(receiver) = &receiver
+            && instance_receiver
+        {
             all.extend(receiver.clone());
         }
         let mut positional = Vec::new();
@@ -1096,7 +1101,36 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
         // A read-only intrinsic cannot store its inputs anywhere. Its result
         // still follows the ordinary declared-type rules below.
         let writes_nothing = effect == Some(RetentionIntrinsic::Read);
-        if declaration.is_none() && !fresh_allocation && !writes_nothing {
+        // A bodiless callee whose parameters are all scalars or `str` views
+        // (`open(path, flags, mode)`) has no address through which to store
+        // into the caller's memory.
+        let no_writable_parameters = !instance_receiver
+            && resolved
+                .and_then(|name| self.analyzer.resolve_symbol(name))
+                .is_some_and(|symbol| {
+                    !symbol.variadic
+                        && symbol.params.iter().all(|param| {
+                            matches!(
+                                self.analyzer.resolve_type_aliases(param),
+                                TypeKind::Str
+                                    | TypeKind::Bool
+                                    | TypeKind::Int8
+                                    | TypeKind::Int16
+                                    | TypeKind::Int32
+                                    | TypeKind::Int64
+                                    | TypeKind::Isize
+                                    | TypeKind::Uint8
+                                    | TypeKind::Uint16
+                                    | TypeKind::Uint32
+                                    | TypeKind::Uint64
+                                    | TypeKind::Usize
+                                    | TypeKind::Float32
+                                    | TypeKind::Float64
+                            )
+                        })
+                });
+        if declaration.is_none() && !fresh_allocation && !writes_nothing && !no_writable_parameters
+        {
             // Unavailable effects cannot establish that incoming storage was
             // left untouched. In particular, a void opaque pointer store may
             // populate an aggregate that the caller returns afterwards.
@@ -1564,5 +1598,27 @@ fn ignored(a: str, value: Choice) str {
         assert_eq!(result, Err(Cancelled));
         assert!(analyzer.result_retention.is_empty());
         assert!(analyzer.retention_annotation_index.is_empty());
+    }
+
+    #[test]
+    fn scalar_and_view_parameters_of_bodiless_calls_store_nothing() {
+        // A syscall taking only `str` and scalars cannot write into the
+        // caller's storage, so an aggregate built beside it stays independent
+        // of the path argument.
+        let analyzer = analyze(
+            r#"
+struct Holder { value: str, }
+@syscall("open")
+unsafe fn open(path: str, flags: i32, mode: u32) i32;
+fn listing(path: str) Result[Holder, i32] {
+    var holder = Holder { value: "x" };
+    var fd: i32 = -1;
+    unsafe { fd = open(path, 65536, 0); }
+    if (fd < 0) { ret Err(fd); }
+    ret Ok(holder);
+}
+"#,
+        );
+        assert!(slots(&analyzer, "listing").is_empty());
     }
 }

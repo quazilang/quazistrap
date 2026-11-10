@@ -701,6 +701,23 @@ impl Analyzer {
         {
             return BTreeSet::new();
         }
+        // Removing a checked owned String from a contiguous container moves
+        // the element out with the storage it owns; it borrows nothing from
+        // the container. (Elements that are views keep their provenance.)
+        if self.bc_resolved_call_name(expr).is_some_and(|name| {
+            self.resolve_symbol(name.split('<').next().unwrap_or(name))
+                .is_some_and(|symbol| {
+                    symbol
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute == "contiguous_element_remove")
+                })
+        }) && self
+            .bc_annotated_type(expr)
+            .is_some_and(|ty| self.is_checked_owned_string(&ty))
+        {
+            return BTreeSet::new();
+        }
         // Qualified enum constructors may intentionally lack an expression
         // type annotation. Their payload roots still cross this boundary.
         if let ExprKind::MethodCall {
