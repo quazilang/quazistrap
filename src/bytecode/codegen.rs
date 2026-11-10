@@ -8144,15 +8144,24 @@ impl<'a> FnCompiler<'a> {
                     // builtin "panic"; a user-defined `fn panic` in a module keeps the
                     // resolved module-qualified name and falls through to normal dispatch.
                     if call_name.rsplit('.').next() == Some("panic") {
-                        let mut call_regs: Vec<u8> = Vec::new();
-                        // Compile msg arg (first user-provided fixed arg).
-                        if !args.is_empty() {
-                            call_regs.push(self.compile_value(&args[0]));
+                        // A literal message is a format template (D-020): its
+                        // placeholders and explicit arguments are formatted
+                        // here, like `println`, and the handler receives the
+                        // text. Other messages are passed through unchanged.
+                        let literal_message = args.first().is_some_and(|first| {
+                            matches!(first.node, ExprKind::Literal(Literal::String(_)))
+                        }) && self.fn_index.contains_key("fmt.format");
+                        let message = if literal_message {
+                            let owner = self.compile_variadic_call("fmt.format", args);
+                            self.injected_format_view(expr.span, owner)
+                        } else if let Some(first) = args.first() {
+                            self.compile_value(first)
                         } else {
                             let r = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovI, r, 0));
-                            call_regs.push(r);
-                        }
+                            r
+                        };
+                        let mut call_regs: Vec<u8> = vec![message];
                         // Inject file path string constant.
                         let file_path = source_file_for_span(expr.span, self.source_files);
                         let file_idx = self.chunk.add_constant(ConstPoolEntry::Str(file_path));
@@ -8170,39 +8179,20 @@ impl<'a> FnCompiler<'a> {
                         let line_reg = self.alloc_reg();
                         self.chunk.emit(ri16(Opcode::MovConst, line_reg, line_idx));
                         call_regs.push(line_reg);
-                        // Compile remaining user args as variadic.
-                        let var_args = &args[1..];
-                        let (r_ptr, r_len) = if var_args.is_empty() {
-                            let rp = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rp, 0));
-                            let rl = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovI, rl, 0));
-                            (rp, rl)
+                        // The arguments are already part of a formatted message;
+                        // a non-literal message keeps its extra values.
+                        let extra: Vec<u8> = if literal_message || args.len() < 2 {
+                            Vec::new()
                         } else {
-                            let var_regs: Vec<u8> = var_args
+                            args[1..]
                                 .iter()
                                 .map(|a| {
                                     self.mark_consumed_expr(a);
                                     self.compile_value(a)
                                 })
-                                .collect();
-                            let first_slot = self.next_reg_slot();
-                            for &r in &var_regs {
-                                let slot = self.alloc_reg();
-                                if r != slot {
-                                    self.chunk.emit(rrr(Opcode::Mov, slot, r, 0));
-                                }
-                            }
-                            let rp = self.alloc_reg();
-                            let block_length =
-                                self.qzi_u8(var_regs.len(), "variadic argument count");
-                            self.chunk
-                                .emit(mem_lea_block(first_slot, rp, 0, block_length));
-                            let rl = self.alloc_reg();
-                            self.chunk
-                                .emit(ri16(Opcode::MovI, rl, var_regs.len() as u16));
-                            (rp, rl)
+                                .collect()
                         };
+                        let (r_ptr, r_len) = self.pack_variadic_block(&extra);
                         call_regs.push(r_ptr);
                         call_regs.push(r_len);
                         self.emit_call_by_name(&call_name, &call_regs, dst);
