@@ -57,7 +57,8 @@ See [generic-call diagnostics](../changes/2026-10-09-ownership-specialization-gr
 
 ```quazi
 fn main() i32 { ret 0; }
-fn main(args: Array[str]) i32 { ret args.len() as i32; }
+// or, to receive the arguments:
+// fn main(args: Array[str]) i32 { ret args.len() as i32; }
 ```
 
 `main` may take no arguments or a single `Array[str]`. It may omit its return

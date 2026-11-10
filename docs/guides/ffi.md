@@ -17,7 +17,7 @@ unsafe fn puts(text: *c_char) c_int;
 
 fn main() i32 {
     unsafe {
-        puts("Hello from C\0".as_ptr() as *c_char);
+        puts(b"Hello from C\0".as_ptr() as *c_char);
     };
     ret 0;
 }
@@ -244,17 +244,18 @@ Only `@export` symbols enter the shared library export table.
 ### Runtime loading
 
 ```quazi
+import std.io;
 import std.dylib.DynamicLibrary;
 
 fn main() i32 {
-    const lib = DynamicLibrary.open("libm.so");
-    match lib {
-        Ok(handle) => {
-            // Use handle.symbol("function_name") for raw addresses
-            handle.close();
-        },
-        Err(e) => io.eprintln("Load error: {}", e.message()),
-    };
+    const lib = DynamicLibrary.open("libm.so.6");
+    if (lib.is_err()) {
+        io.errln("could not load libm");
+        ret 1;
+    }
+    var handle = lib.unwrap();
+    // Use handle.symbol("function_name") for raw addresses.
+    handle.close();
     ret 0;
 }
 ```

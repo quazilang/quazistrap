@@ -22,7 +22,7 @@ Call `free()` when the document is no longer needed.
 while an exclusive parse is in progress.
 
 ```quazi
-import std.ini;
+import std.ini.IniDocument;
 
 fn main() i32 {
     var config = IniDocument.new();

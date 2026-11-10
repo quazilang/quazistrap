@@ -7,7 +7,8 @@ This guide documents the implemented language surface. Quazi source files use
 
 ```quazi
 fn main() i32 { ret 0; }
-fn main(args: Array[str]) i32 { ret args.len() as i32; }
+// or, to receive the arguments:
+// fn main(args: Array[str]) i32 { ret args.len() as i32; }
 ```
 
 `main` may omit its return type, return `i32`, or return `!`. Argument-aware

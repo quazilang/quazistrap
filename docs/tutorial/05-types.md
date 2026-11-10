@@ -7,7 +7,9 @@ This chapter covers custom types and polymorphism.
 Structs group related data into named fields:
 
 ```quazi
-// tutorial: fragment — requires the surrounding chapter context.
+// tutorial: runnable
+import std.io;
+
 struct Point {
     x: f64,
     y: f64,
@@ -49,7 +51,9 @@ pub struct Color { r: u8, g: u8, b: u8, }
 `impl` blocks add methods to a struct:
 
 ```quazi
-// tutorial: fragment — requires the surrounding chapter context.
+// tutorial: runnable
+import std.io;
+
 struct Rectangle { width: f64, height: f64, }
 
 impl Rectangle {
@@ -59,11 +63,11 @@ impl Rectangle {
     }
 
     // Instance method
-    fn area(self: Rectangle) f64 {
+    fn area(self: &Rectangle) f64 {
         ret self.width * self.height;
     }
 
-    fn perimeter(self: Rectangle) f64 {
+    fn perimeter(self: &Rectangle) f64 {
         ret 2.0 * (self.width + self.height);
     }
 }

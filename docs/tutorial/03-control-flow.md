@@ -196,7 +196,9 @@ fn describe(value: i32) str {
 ### Option matching
 
 ```quazi
-// tutorial: fragment — requires the surrounding chapter context.
+// tutorial: runnable
+import std.io;
+
 fn safe_divide(a: i32, b: i32) Option[i32] {
     if (b == 0) { ret None; }
     ret Some(a / b);

@@ -32,7 +32,9 @@ const missing: Option[i32] = None;
 ### Using Options
 
 ```quazi
-// tutorial: fragment — requires the surrounding chapter context.
+// tutorial: runnable
+import std.io;
+
 fn safe_divide(a: i32, b: i32) Option[i32] {
     if (b == 0) { ret None; }
     ret Some(a / b);
@@ -72,7 +74,9 @@ enum Result[T, E] { Ok(T), Err(E), }
 ### Using Results
 
 ```quazi
-// tutorial: fragment — requires the surrounding chapter context.
+// tutorial: runnable
+import std.io;
+
 fn parse_port(text: str) Result[u16, ParseError] {
     ret text.parse[u16]();
 }
