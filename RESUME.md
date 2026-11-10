@@ -2,6 +2,18 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, second review fixes)
+
+Review of 2ff8a27..b561afb, all fixed: 7ceefa1 format methods via sema path,
+generic-receiver and static (`Kit.make(...)`) variadic tails
+(variadic_info_for, compile_format_method_call); 24fa52f escaped `\n` no
+longer moves placeholder lines; a3385ac prelude module names reserved as
+package names, driver check in LinkerInvocation::run (+ cl/clang-cl);
+c67cba7 lazy-import hint ignored direct module use. std 5815e37
+fs.read_dir_names (Linux/NetBSD/Windows; Wine-verified). Asked В14 (owned
+captures for thread.spawn; Channel cannot reach OS threads from safe code).
+Waiting: В9-В14.
+
 ## Checkpoint (2026-11-10, linker matrix)
 
 scripts/check_linker_matrix.py: 24 programs x {built-in ELF, GNU ld, built-in
