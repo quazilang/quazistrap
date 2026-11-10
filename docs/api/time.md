@@ -58,6 +58,13 @@ scheduler may wake the thread later than requested.
 `remaining_at(&now)` computes the same value for a given instant.
 `Instant.checked_add(duration)` returns `None` on overflow.
 
+`Interval.new(period)` is a periodic timer: ticks fall at start + k * period,
+so waiting does not drift. `wait()` sleeps until the next tick and returns how
+many ticks passed (more than one if the caller fell behind; missed ticks are
+not replayed). `Interval.starting_at(&instant, period)`, `until(&now)` and
+`advance_at(&now)` give the same schedule for explicit instants. A zero period
+is `OutOfRange`.
+
 ## `SystemTime`
 
 `SystemTime` stores Unix seconds (`i64`) and nanoseconds (`u32`) in UTC.

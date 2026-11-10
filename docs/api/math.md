@@ -4,19 +4,23 @@ Audience: Quazi application developers needing dependency-free scalar math.
 
 `std.math` is implemented in Quazi and does not import libc or libm. Its
 floating-point functions operate on `f64`; trigonometric arguments and results
-use radians. The implementation uses finite iteration approximations and is a
-portable convenience layer, not a correctly rounded numerical library.
+use radians. `sqrt` is correctly rounded (`sqrtsd`) and `floor`/`ceil`/
+`round`/`trunc` are exact; the other functions are fdlibm-style
+approximations with measured bounds of 1 to 5 ULP over their whole finite
+range (std `docs/MATH_ACCURACY.md`, enforced by
+`scripts/check_math_accuracy.py`).
 
 ## Integer combinatorics
 
 - `gcd(a, b)` returns a non-negative `i64` greatest common divisor. It panics
   when the mathematical result cannot fit in `i64` (notably the magnitude of
   `i64::MIN`).
-- `lcm(a, b)` returns zero if either operand is zero. Its arithmetic can
-  overflow; callers requiring checked combinatorics must bound their inputs.
-- `factorial(n)`, `permutations(n, r)`, and `combinations(n, r)` return `u64`.
-  `permutations` and `combinations` return zero when `r > n`; none of these
-  functions report overflow.
+- `lcm(a, b)` returns zero if either operand is zero and panics when the
+  result does not fit `i64`.
+- `factorial(n)`, `permutations(n, r)`, and `combinations(n, r)` return `u64`
+  and panic when the result does not fit, like integer `**` (D-016).
+  `permutations` and `combinations` return zero when `r > n`; `combinations`
+  avoids intermediate overflow, so every result that fits is exact.
 
 ## Basic floating-point operations
 
@@ -36,20 +40,22 @@ avoidable overflow and returns infinity if either input is infinite, even when
 the other is NaN.
 
 `sin`, `cos`, `tan`, `atan`/`arctan`, `atan2`/`arctan2`, `asin`, and `acos`
-use finite polynomial or series approximations after range reduction. `asin`
+use fdlibm kernels; `asin`
 returns NaN outside `[-1, 1]` and for NaN; `acos` follows from it. `atan2`
 follows C99 Annex F for signed zeros and infinities (`atan2(-0.0, -1.0)` is
-`-pi`, `atan2(inf, inf)` is `pi/4`). Range reduction subtracts a three-part
-2*pi, so `sin`/`cos` stay accurate to about `1e-9` for `|x|` up to `1e6` and
-`1e-6` up to `1e9`; larger arguments lose accuracy. `tan` grows without a
-special pole error.
+`-pi`, `atan2(inf, inf)` is `pi/4`). Arguments are reduced by pi/2 with a
+three-part Cody-Waite reduction below about 1.6e6 and Payne-Hanek reduction
+above, so `sin`/`cos`/`tan` stay within 1 ULP for every finite input; `tan`
+grows without a special pole error.
 
 `exp`, `ln`, `log2`, and `log10` provide IEEE-style NaN/infinite boundary
 handling where implemented: `exp` saturates to infinity/zero beyond its
 documented reduction thresholds, and `ln(0)` is negative infinity while
 negative inputs produce NaN. `sinh`, `cosh`, and `tanh` are derived from
-`exp`; `tanh` clamps beyond ±20. `pow` supports integral exponents for negative
-bases and returns NaN for a negative base with a non-integral exponent;
+`exp` (series below 1/2, finite up to |x| = 710.47); `tanh` clamps beyond ±20.
+`pow` carries `y * ln(x)` in double-double precision (3 ULP), supports
+integral exponents for negative bases and returns NaN for a negative base with
+a non-integral exponent;
 `pow(x, 0)` and `pow(1, y)` are 1 even for NaN operands.
 
 ```quazi
@@ -63,6 +69,6 @@ fn main() i32 {
 }
 ```
 
-For financial, safety-critical, or strict cross-platform reproducibility work,
-validate the approximation and overflow behavior against the application’s
-required error bounds before relying on this module.
+Results are not correctly rounded except `sqrt` and the rounding functions;
+for strict reproducibility, check the documented bounds against the
+application's requirements.

@@ -28,6 +28,14 @@ GetCurrentProcessId. getppid() remains Linux-specific; Windows callers must not
 rely on its current Unix-syscall-based result. This limitation is tracked as
 standard-library portability debt rather than a portable parent-PID contract.
 
+## Arguments
+
+`args()` returns `Result[Array[String], FsError]`: the program name followed by
+its arguments as owned UTF-8 strings, available anywhere (not only through
+`main(args)`). Linux reads `/proc/self/cmdline`; Windows splits
+`GetCommandLineW` like the C runtime. An argument that is not valid UTF-8
+returns `InvalidData`; NetBSD returns `Unsupported`.
+
 ## Environment and host information
 
 env(name, fallback) returns an owned environment value or an owned copy of

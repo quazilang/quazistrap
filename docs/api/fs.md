@@ -91,6 +91,9 @@ const config: Result[String, fs.FsError] = fs.read_to_string("settings.qz");
 | `exists(path)` | Returns whether a native existence query succeeds. It conflates absence, permission failures, and other errors. |
 | `readable(path)` / `writable(path)` | Best-effort access probes, not a guarantee that a later open or write will succeed. Windows `writable` currently reports existence rather than testing write access. |
 | `count_entries(path)` | Counts immediate entries, excluding `.` and `..`; it does not recurse. Native enumeration errors are returned. |
+| `read_dir_names(path)` | `Result[Array[String], FsError]`: names of the immediate entries (no `.`/`..`) as owned strings in operating-system order. |
+| `walk(root)` | `Result[Array[String], FsError]`: every entry below `root` as a `/`-separated relative path, depth first, directories before their contents. Symbolic links are listed but not followed, so link cycles cannot recur. |
+| `metadata(path)` / `symlink_metadata(path)` | `Result[Metadata, FsError]`, following links or describing the link itself. `Metadata` offers `len()`, `kind()` (`FileKind.File`/`Directory`/`Symlink`/`Other`), `is_file()`, `is_dir()`, `is_symlink()`, `readonly()` (no write bit on Linux, read-only attribute on Windows) and `modified_unix_nanos()`. Windows does not resolve links for `metadata`; NetBSD returns `Unsupported`. |
 | `remove(path)` | Removes a file, not a directory. |
 | `mkdir(path)` | Creates one directory. On Linux it requests `0o755` before `umask`; Windows ignores POSIX mode bits. Parent directories are not created. |
 | `mkdir_mode(path, mode)` | Linux-specific requested mode; Windows creates a directory but does not apply the mode. |
@@ -103,10 +106,23 @@ These APIs are subject to time-of-check/time-of-use races. Do not authorize a
 security-sensitive operation based on `exists`, `readable`, or `writable` and
 then assume a subsequent path operation affects the same object.
 
+## Buffered I/O
+
+| API | Semantics |
+| --- | --- |
+| `LineReader.open(path)` | Opens a file for line reading through one 64 KiB buffer. |
+| `reader.read_line()` | `Result[Option[String], FsError]`: the next line without `\n` (and a preceding `\r`), `None` at the end; the final line needs no terminator. A line that is not valid UTF-8 returns `InvalidData`. |
+| `reader.close()` | Closes the file early (later reads report the end); dropping the reader closes it otherwise. |
+| `BufferedWriter.create(path)` | Creates or truncates a file and buffers writes in 64 KiB. |
+| `writer.write_str(text)` | Buffers `text`; writes larger than the buffer go straight to the file. |
+| `writer.flush()` / `writer.close()` | Hand buffered bytes to the system (and close), reporting errors. Dropping the writer flushes what is left, ignoring errors like closing a file. |
+
+Windows cannot delete or rename a file that is still open; close readers and
+writers first.
+
 ## Limits and future work
 
-The module has no path normalization policy, file metadata API, buffered
-reader/writer interfaces, streaming trait integration, directory iterator,
-large-file limit control, or cross-platform symbolic-link and permission model.
-Those are not implied by the current functions and should be treated as future
-design work rather than emulated through undocumented raw-handle behavior.
+Paths are manipulated lexically by [`std.path`](path.md). The module has no
+streaming trait integration, large-file limit control, or cross-platform
+symbolic-link and permission model; those remain future design work rather
+than undocumented raw-handle behavior.

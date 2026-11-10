@@ -9,7 +9,8 @@ prevents the API index from implying that undocumented modules are stable.
 | --- | --- | --- |
 | `std.codec` | [codec](codec.md) | Initial typed JSON encoding/decoding contract. |
 | `std.ini` | [ini](ini.md) | Deterministic source-backed INI documents and typed field decoding. |
-| `std.fs` | [fs](fs.md) | Current owned-file and text-read surface. |
+| `std.fs` | [fs](fs.md) | Owned files, text reads, metadata, traversal and buffered I/O. |
+| `std.path` | [path](path.md) | Lexical `Path` manipulation (no file-system access). |
 | `std.json` | [json](json.md) | Bounded JSON validation and composition. |
 | `std.net` | [net](net.md) | IPv4 sockets and limited HTTP helpers. |
 | `std.os` | [os](os.md) | Current-process and host-information boundaries. |
@@ -20,7 +21,7 @@ prevents the API index from implying that undocumented modules are stable.
 | `std.io` | [io](io.md) | Current UTF-8 console input/output and writer contracts. |
 | `std.collections` | [collections](collections.md) | Experimental `usize` Map/Set with in-place updates and audited single-owner cleanup. |
 | `std.ffi` | [ffi](ffi.md) | C ABI aliases, raw-pointer boundary, and explicit C-string ownership. |
-| `std.math` | [math](math.md) | Dependency-free integer helpers and finite-approximation `f64` math. |
+| `std.math` | [math](math.md) | Checked integer combinatorics and `f64` math with measured ULP bounds. |
 | `std.random` | [random](random.md) | CSPRNG values, unbiased ranges, and current generic-collection limits. |
 | `std.dylib` | [dylib](dylib.md) | Owned native-library handles and unsafe raw-symbol boundary. |
 | `std.unix` | [platform internals](platform-internals.md) | Linux-only raw syscall implementation boundary; not a portable API. |
