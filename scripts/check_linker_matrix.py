@@ -67,6 +67,41 @@ fn main() i32 {
     0
 }
 """, []),
+    # realloc(NULL, n) allocates (HeapReAlloc rejected it on Windows), and
+    # buffered file I/O built on it round-trips CRLF lines.
+    "buffered": (r"""import std.io;
+import std.fs;
+import std.core;
+
+fn main() i32 {
+    unsafe {
+        const block: *u8 = core.realloc(0, 32);
+        if (block == 0) { ret 9; }
+        core.free(block);
+    }
+    var writer = fs.BufferedWriter.create("matrix_buffered.txt").unwrap();
+    for i : 0..5000 {
+        const line = "row {i}\r\n";
+        writer.write_str(line.as_str()).unwrap();
+    }
+    writer.close().unwrap();
+    var reader = fs.LineReader.open("matrix_buffered.txt").unwrap();
+    var count: usize = 0;
+    var seen: usize = 0;
+    for (true) {
+        const line = reader.read_line().unwrap();
+        if (line.is_none()) { break; }
+        const text: String = line.unwrap();
+        seen = seen + text.bytes_len();
+        count = count + 1;
+    }
+    // Windows cannot delete a file that is still open.
+    reader.close().unwrap();
+    fs.remove("matrix_buffered.txt").unwrap();
+    io.println("lines {} bytes {}", count, seen);
+    0
+}
+""", []),
     # OS threads with closures and joins.
     "threads": (r"""import std.io;
 import std.thread;

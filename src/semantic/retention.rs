@@ -1108,7 +1108,9 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
             && resolved
                 .and_then(|name| self.analyzer.resolve_symbol(name))
                 .is_some_and(|symbol| {
+                    // C variadics (`...`) can pass pointers in their tail.
                     !symbol.variadic
+                        && !symbol.attributes.iter().any(|attribute| attribute == "c_variadic")
                         && symbol.params.iter().all(|param| {
                             matches!(
                                 self.analyzer.resolve_type_aliases(param),

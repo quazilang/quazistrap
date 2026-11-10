@@ -2466,12 +2466,23 @@ impl<'a> FnEncoder<'a> {
                     5 => {
                         // quazi.realloc(ptr, size) → usize
                         if is_win64 {
+                            // HeapReAlloc rejects a null block; realloc(NULL, n)
+                            // allocates like malloc(n).
+                            let mut fresh = asm.create_label();
+                            let mut done = asm.create_label();
                             call_ext!("GetProcessHeap".into(), RelocKind::Plt32);
                             emit!(asm.mov(rcx, rax));
                             emit!(asm.xor(edx, edx));
                             emit!(asm.mov(r8, slot(dst)));
+                            emit!(asm.test(r8, r8));
+                            emit!(asm.jz(fresh));
                             emit!(asm.mov(r9, slot(dst + 1)));
                             call_ext!("HeapReAlloc".into(), RelocKind::Plt32);
+                            emit!(asm.jmp(done));
+                            emit!(asm.set_label(&mut fresh));
+                            emit!(asm.mov(r8, slot(dst + 1)));
+                            call_ext!("HeapAlloc".into(), RelocKind::Plt32);
+                            emit!(asm.set_label(&mut done));
                         } else {
                             emit!(asm.mov(rdi, slot(dst)));
                             emit!(asm.mov(rsi, slot(dst + 1)));
