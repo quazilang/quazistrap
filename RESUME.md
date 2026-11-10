@@ -2,6 +2,16 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, linker matrix)
+
+scripts/check_linker_matrix.py: 24 programs x {built-in ELF, GNU ld, built-in
+PE under Wine 11.0} agree (wine via `nix build nixpkgs#wine64`, run with
+WINEPREFIX=/tmp/... WINEDEBUG=-all --wine <store>/bin/wine). It found two bugs,
+fixed: `--linker cc` passed ld flags to gcc (drivers now rejected, c6ecfbc);
+a package named `panic` shadowed the prelude `panic` (prelude item exports
+reserved, 66d62cc). Linker requirement stays 8/9 until native Windows runs
+(asked В12/В13).
+
 ## Checkpoint (2026-11-10, LSP real client)
 
 LSP 19/20 (plan 98.1%): vim-quazi `7e7f5f7` tests/lsp-unicode.lua (Neovim 0.12

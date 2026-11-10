@@ -221,6 +221,27 @@ implement the dependency in Quazi/the embedded runtime, pass another ELF `.o`
 which defines it, or explicitly opt into the native library and external
 linker.
 
+## Validation matrix
+
+`scripts/check_linker_matrix.py` links 20 deterministic examples and four
+focused programs (arguments with non-ASCII text, exit status, a panic with
+status 101, heap traffic, OS threads) three ways: the built-in ELF linker and
+GNU `ld` (when installed), both run natively, and the built-in PE32+ linker
+run under Wine when `--wine` names its executable (for example from
+`nix build nixpkgs#wine64`). Standard output and exit status must agree:
+
+```bash
+WINEPREFIX=/tmp/quazi-wine WINEDEBUG=-all \
+  python3 scripts/check_linker_matrix.py --qz target/debug/qz --wine /path/to/wine
+```
+
+On 2026-11-10 all 24 programs agreed across the three columns with Wine 11.0.
+Wine runs the PE images on the host CPU but implements the Windows API
+itself, so execution on Windows proper is still outstanding.
+
+`--linker` expects a linker. C compiler drivers (`cc`, `gcc`, `clang`) are
+rejected because Quazi passes linker flags and provides its own entry point.
+
 ## Current limitations
 
 - x86-64 Linux static executables only;

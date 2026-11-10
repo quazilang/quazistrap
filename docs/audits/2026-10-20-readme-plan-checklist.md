@@ -315,7 +315,8 @@ Evidence: [docs/LINKER.md](../LINKER.md).
 - [x] No implicit libc/CRT dependency.
 - [x] Unsupported-input diagnostics and focused linker regressions.
 - [x] Archive member extraction in the built-in path ([scripts/check_static_archives.py](../../scripts/check_static_archives.py)).
-- [ ] Final target-native Linux/Windows linker validation matrix.
+- [ ] Final target-native Linux/Windows linker validation matrix (Linux native and
+  Windows-under-Wine columns pass: `scripts/check_linker_matrix.py`; native Windows open).
 
 ### qz test runner
 
