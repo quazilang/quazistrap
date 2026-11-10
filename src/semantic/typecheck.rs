@@ -4036,6 +4036,10 @@ impl Analyzer {
                                     .last()
                                     .cloned()
                                     .unwrap_or_else(|| "__program__".to_string());
+                                // Parameter types to check the arguments against; generic
+                                // ones only once every type parameter is inferred.
+                                let mut checked_params: Option<Vec<TypeKind>> =
+                                    struct_params.is_empty().then(|| sym.params.clone());
                                 let ret_ty = if !struct_params.is_empty() {
                                     let mut subst: std::collections::HashMap<String, TypeKind> =
                                         std::collections::HashMap::new();
@@ -4103,6 +4107,7 @@ impl Analyzer {
                                                 .iter()
                                                 .map(|param| substitute_type_kind(param, &subst))
                                                 .collect();
+                                            checked_params = Some(specialized_params.clone());
                                             let specialized_return = sym
                                                 .ty
                                                 .as_ref()
@@ -4144,6 +4149,16 @@ impl Analyzer {
                                     sym.ty.clone()
                                 };
                                 self.add_dependency_edge(DependencyKind::Call, &from, &method_full);
+                                if let Some(params) = checked_params {
+                                    self.check_associated_call_arguments(
+                                        expr.span,
+                                        &sym,
+                                        &params,
+                                        args,
+                                        arg_evals,
+                                        named_args.len(),
+                                    );
+                                }
                                 let eval = ExprEval {
                                     ty: ret_ty,
                                     const_value: None,
@@ -6091,6 +6106,53 @@ impl Analyzer {
                         ),
                     );
                 }
+            }
+        }
+    }
+
+    /// Arity and argument types of a type-qualified call `Type.function(...)`,
+    /// checked like a free function call. Named arguments count towards the
+    /// arity; their types were checked against their declared slots already.
+    /// Display-converted format tails are left to the format rules.
+    fn check_associated_call_arguments(
+        &mut self,
+        span: Span,
+        sym: &Symbol,
+        params: &[TypeKind],
+        args: &[Expr],
+        arg_evals: &[ExprEval],
+        named_count: usize,
+    ) {
+        let fixed = if sym.variadic { params.len().saturating_sub(1) } else { params.len() };
+        let supplied = args.len() + named_count;
+        if (!sym.variadic && supplied != fixed) || (sym.variadic && supplied < fixed) {
+            self.push_error(
+                span,
+                "S10",
+                format!("expected {} argument(s), got {}", fixed, supplied),
+            );
+            return;
+        }
+        let format_tail = sym.attributes.iter().any(|attribute| attribute == "str_variadic");
+        for (index, (arg, eval)) in args.iter().zip(arg_evals).enumerate() {
+            let expected = if index < fixed {
+                &params[index]
+            } else if format_tail {
+                continue;
+            } else {
+                match params.last() {
+                    Some(element) => element,
+                    None => continue,
+                }
+            };
+            if let Some(actual) = &eval.ty
+                && !self.check_expr_compat(arg, expected, actual)
+            {
+                self.push_error(
+                    arg.span,
+                    "S08",
+                    format!("arg {}: expected {}, got {}", index + 1, expected, actual),
+                );
             }
         }
     }

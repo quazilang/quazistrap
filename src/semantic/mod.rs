@@ -7427,6 +7427,29 @@ fn main() void {
     }
 
     #[test]
+    fn associated_calls_check_arity_and_argument_types() {
+        // `Type.function(...)` skipped both checks; an owned value passed for
+        // a `str` parameter then reached the callee as a raw handle.
+        let report = analyze(
+            r#"
+struct Kit { size: i32, }
+impl Kit {
+    fn count(text: str) usize { ret text.len(); }
+}
+
+fn main() void {
+    const flag: bool = true;
+    Kit.count(flag);
+    Kit.count("a", "b");
+    Kit.count("fine");
+}
+"#,
+        );
+        let codes: Vec<&str> = report.errors.iter().map(|error| &*error.code).collect();
+        assert_eq!(codes, ["S08", "S10"], "{:?}", report.errors);
+    }
+
+    #[test]
     fn str_variadic_without_template_is_an_ordinary_typed_variadic() {
         // No fixed `str` template and no `@format`: arguments are checked as
         // `str` values, not display-converted, and no literal is a template.
