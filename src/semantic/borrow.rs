@@ -559,18 +559,32 @@ impl Analyzer {
     }
 
     fn retention_type_may_contain(&self, ty: &TypeKind, storage: bool) -> bool {
+        self.type_may_contain(ty, storage, false)
+    }
+
+    /// Whether a value of `ty` may hold views borrowed from other owners. A
+    /// checked owned String owns its text, so it holds none.
+    fn bc_may_hold_borrowed_views(&self, ty: &TypeKind) -> bool {
+        self.type_may_contain(ty, false, true)
+    }
+
+    fn type_may_contain(&self, ty: &TypeKind, storage: bool, owned_strings: bool) -> bool {
         fn visit(
             analyzer: &Analyzer,
             ty: &TypeKind,
             active: &mut HashSet<String>,
             fuel: &mut usize,
             storage: bool,
+            owned_strings: bool,
         ) -> bool {
             if *fuel == 0 || active.len() >= 64 {
                 return true;
             }
             *fuel -= 1;
             let resolved = analyzer.resolve_type_aliases(ty);
+            if owned_strings && analyzer.is_checked_owned_string(&resolved) {
+                return false;
+            }
             match &resolved {
                 TypeKind::RawPtr { .. } => storage,
                 TypeKind::Str => !storage,
@@ -582,12 +596,12 @@ impl Analyzer {
                 TypeKind::Array { elem_ty, .. }
                 | TypeKind::Slice { elem_ty }
                 | TypeKind::FlexibleArray { elem_ty } => {
-                    visit(analyzer, &elem_ty.node, active, fuel, storage)
+                    visit(analyzer, &elem_ty.node, active, fuel, storage, owned_strings)
                 }
                 TypeKind::Named { name, type_args } => {
                     if type_args
                         .iter()
-                        .any(|arg| visit(analyzer, &arg.node, active, fuel, storage))
+                        .any(|arg| visit(analyzer, &arg.node, active, fuel, storage, owned_strings))
                     {
                         return true;
                     }
@@ -629,7 +643,9 @@ impl Analyzer {
                                 &HashSet::new(),
                                 |_| None,
                             )
-                            .map_or(true, |field| visit(analyzer, &field, active, fuel, storage))
+                            .map_or(true, |field| {
+                                visit(analyzer, &field, active, fuel, storage, owned_strings)
+                            })
                         })
                     });
                     active.remove(name);
@@ -638,7 +654,7 @@ impl Analyzer {
                 _ => false,
             }
         }
-        visit(self, ty, &mut HashSet::new(), &mut 4096, storage)
+        visit(self, ty, &mut HashSet::new(), &mut 4096, storage, owned_strings)
     }
 
     fn bc_parameter_contains_views(&self, ty: &TypeKind) -> bool {
@@ -1838,6 +1854,17 @@ impl Analyzer {
                 if exclusive_receiver {
                     self.bc_reject_borrowed_write(object, env);
                 }
+                // A mutating method can store its view arguments in the
+                // receiver (`items.push(owner.as_str())`): the receiver now
+                // depends on their owners as well.
+                let stored_origins: BTreeSet<ViewOrigin> = if exclusive_receiver {
+                    args.iter()
+                        .chain(named_args.iter().map(|(_, arg)| arg))
+                        .flat_map(|argument| self.bc_view_origins(argument, env))
+                        .collect()
+                } else {
+                    BTreeSet::new()
+                };
                 self.bc_expr(object, env, consuming_receiver);
                 let pending_receiver = !consuming_receiver
                     && !exclusive_receiver
@@ -1882,6 +1909,20 @@ impl Analyzer {
                     || pending_receiver
                 {
                     env.exit_scope();
+                }
+                if !stored_origins.is_empty()
+                    && let ExprKind::Ident(name) = &object.node
+                    && env
+                        .lookup(name)
+                        .and_then(|var| var.ty.as_ref())
+                        .is_some_and(|ty| self.bc_may_hold_borrowed_views(ty))
+                {
+                    let mut origins = env
+                        .lookup(name)
+                        .map(|var| var.view_origins.clone())
+                        .unwrap_or_default();
+                    origins.extend(stored_origins);
+                    env.set_view_origins(name, origins);
                 }
             }
 

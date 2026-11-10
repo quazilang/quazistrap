@@ -12,6 +12,15 @@ fn wrap(value: str) View { ret View { value: value }; }
 """
 
 NEGATIVE_CASES = {
+    # A mutating method stores a view of `owner` in the receiver.
+    "stored_by_mutating_method": """fn main() i32 {
+    var items: Array[str] = Array.new();
+    var owner = String.from("hello world, long enough to be heap allocated");
+    items.push(owner.as_str());
+    owner.free();
+    ret items.len() as i32;
+}
+""",
     "raw_helper_copy": """struct View { value: str }
 @intrinsic("quazi.malloc") unsafe fn allocate(n: usize) *u8;
 @intrinsic("quazi.memcpy") unsafe fn copy(dst: *u8, src: *u8, n: usize) *u8;
