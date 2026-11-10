@@ -2,6 +2,14 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, math review fixes)
+
+std b0dcc0b: fdlibm __rem_pio2 + Payne-Hanek port (f64-only integers) ->
+sin/cos/tan 1 ULP on the whole range; cbrt(DBL_MAX), sinh/cosh to 710.47;
+5c982a8 checked combinatorics (panic on overflow). std Mathematics 11/11,
+plan 63.9%. quazistrap (panic fix): panic formats literal messages + args (was
+printing raw templates). Asked В15 (int<->float `as` casts are unimplemented).
+
 ## Checkpoint (2026-11-10, math accuracy)
 
 quazistrap 8096655 intrinsics quazi.f64.sqrt/to_bits/from_bits (ids 48-50);
