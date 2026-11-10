@@ -440,7 +440,8 @@ Evidence: [docs/tooling/lsp.md](../tooling/lsp.md).
   `scripts/check_lsp_performance.py`: release cold <= 1000 ms, warm median <= 20 ms).
 - [x] Real-client Unicode/formatting protocol suite (Neovim client:
   `../vim-quazi/tests/lsp-unicode.lua`; stdio: `scripts/check_lsp_*.py`).
-- [ ] Reproducible Zed/Helix feature-request runtime validation.
+- [ ] Reproducible Zed/Helix feature-request runtime validation (Helix done:
+  `../helix-quazi/tests/lsp-runtime.py`; Zed open, asks.txt В12).
 - [x] Loader-backed go-to-definition with passing current-checkout regressions.
 - [x] Workspace symbols with passing current-checkout regressions.
 - [x] Cross-file references with passing current-checkout regressions.

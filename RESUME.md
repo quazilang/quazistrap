@@ -8,7 +8,12 @@ LSP 19/20 (plan 98.1%): vim-quazi `7e7f5f7` tests/lsp-unicode.lua (Neovim 0.12
 real client: incremental UTF-16 edits beside non-BMP text, diagnostic/hover
 positions, formatting == `qz fmt`). Run with QUAZI_LSP_COMMAND=<qz> nvim
 --headless -u NONE -i NONE -c 'luafile tests/lsp-unicode.lua' -c qa. Last LSP
-item: Zed/Helix runtime validation (editors not installed here).
+item: Zed/Helix runtime validation. Helix done: helix-quazi `729ef06`
+tests/lsp-runtime.py (Helix via `nix build nixpkgs#helix`, pty + logging
+proxy; hover/definition/completion). helix-quazi and zed-quazi (`e123cc3`) now
+pin tree-sitter 22c684a (local, ahead of origin by 3): publish tree-sitter
+with them. Zed needs a GPU display (not available); asked В12 whether Helix
+alone satisfies the requirement.
 
 ## Checkpoint (2026-11-10, LSP incomplete source)
 

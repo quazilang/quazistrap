@@ -12,7 +12,7 @@ attributes.
 |---|---|---|---|
 | VS Code | `../vscode-quazi/` | extension with language registration and LSP launcher | manifest parsing and `npm pack --dry-run` |
 | Neovim | `../vim-quazi/` | native Neovim 0.11+ LSP configuration | headless configuration, real-client LSP smoke and Unicode/formatting protocol check on Neovim 0.12 |
-| Helix | `../helix-quazi/` | configuration/runtime query package | canonical grammar-asset check; Helix binary unavailable |
+| Helix | `../helix-quazi/` | configuration/runtime query package | canonical grammar-asset check and runtime LSP validation in a pseudo-terminal (Helix 25.07) |
 | Zed | `../zed-quazi/` | Zed language extension | canonical grammar-asset check, `cargo check`, and formatting check |
 
 The canonical grammar is the separate [`tree-sitter`](../../../tree-sitter/)

@@ -105,8 +105,11 @@ than a name-resolution guarantee.
 - Formatting and position conversion are checked through a real client:
   `../vim-quazi/tests/lsp-unicode.lua` (Neovim 0.12) sends incremental edits
   beside non-BMP text and compares diagnostic and hover positions with the
-  client's UTF-16 indexes and formatting with `qz fmt`. Zed and Helix runtime
-  validation remains open (neither editor is installed here).
+  client's UTF-16 indexes and formatting with `qz fmt`.
+  `../helix-quazi/tests/lsp-runtime.py` runs Helix 25.07 in a pseudo-terminal
+  with the shipped `languages.toml` and requires hover, definition and
+  completion requests typed as keys to be answered. Zed runtime validation
+  remains open: Zed needs a GPU-backed display that this environment lacks.
 
 ## Verification
 
