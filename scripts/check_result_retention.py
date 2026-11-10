@@ -12,6 +12,56 @@ fn wrap(value: str) View { ret View { value: value }; }
 """
 
 NEGATIVE_CASES = {
+    "stored_through_exclusive_argument": """import std.io;
+fn add(items: &Array[str]!, v: str) void { items.push(v); }
+fn main() void {
+    var items: Array[str] = Array.new();
+    var owner = String.from("hello world, long enough to be heap allocated");
+    add(&items!, owner.as_str());
+    owner.free();
+    var junk = String.from("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    io.println("[{}]", items[0]);
+}
+""",
+    "stored_through_field_receiver": """import std.io;
+struct Holder { items: Array[str], }
+fn main() void {
+    const arr: Array[str] = Array.new();
+    var h = Holder { items: arr };
+    var owner = String.from("hello world, long enough to be heap allocated");
+    h.items.push(owner.as_str());
+    owner.free();
+    var junk = String.from("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    io.println("[{}]", h.items[0]);
+}
+""",
+    "stored_local_view_through_self": """import std.io;
+struct Bag { items: Array[str], }
+impl Bag {
+  fn fill(self: &Bag!) void {
+    var owner = String.from("hello world, long enough to be heap allocated");
+    self.items.push(owner.as_str());
+    owner.free();
+  }
+}
+fn main() void {
+    const arr: Array[str] = Array.new();
+    var b = Bag { items: arr };
+    b.fill();
+    var junk = String.from("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    io.println("[{}]", b.items[0]);
+}
+""",
+    "owner_reassigned_while_stored": """import std.io;
+fn main() void {
+    var items: Array[str] = Array.new();
+    var owner = String.from("hello world, long enough to be heap allocated");
+    items.push(owner.as_str());
+    owner = String.from("YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY");
+    var junk = String.from("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    io.println("[{}]", items[0]);
+}
+""",
     # A mutating method stores a view of `owner` in the receiver.
     "stored_by_mutating_method": """fn main() i32 {
     var items: Array[str] = Array.new();

@@ -5076,8 +5076,12 @@ impl Analyzer {
                 // The runtime String owns its text; a literal outside its
                 // declaring file could wrap a borrowed view (`String { data: v
                 // }`) and free it later. Its constructors copy instead.
+                let literal_type = self.resolve_type_aliases(&TypeKind::Named {
+                    name: name.clone(),
+                    type_args: Vec::new(),
+                });
                 if let Some(abi) = &self.checked_string_abi
-                    && abi.declaration.name == *name
+                    && (abi.declaration.name == *name || abi.matches_type(&literal_type))
                     && !self.same_source_file(abi.declaration.span, expr.span)
                 {
                     self.push_error(

@@ -108,6 +108,11 @@ def check(qz, root, before=None):
     result = subprocess.run([str(qz), "check"], cwd=work, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
     assert result.returncode != 0 and "S14" in result.stdout and "struct literal" in result.stdout, result.stdout
+    # ... including through a type alias.
+    (work / "src/main.qz").write_text('type S=String;fn wrap(v:str)S{ret S{data:v,len:5,cap:0};}fn main()void{wrap("x");}')
+    result = subprocess.run([str(qz), "check"], cwd=work, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert result.returncode != 0 and "S14" in result.stdout and "struct literal" in result.stdout, result.stdout
     for name, source in [
         ("qualified", "import fake;fn compare(a:fake.String,b:fake.String)bool{ret a<b;}fn main()void{}"),
         ("import_alias", "import fake.String as Text;fn compare(a:Text,b:Text)bool{ret a<b;}fn main()void{}"),

@@ -1816,6 +1816,12 @@ impl Analyzer {
                         self.bc_loan_observation(callee, env);
                     }
                 }
+                let all_arguments: Vec<&Expr> =
+                    args.iter().chain(named_args.iter().map(|(_, arg)| arg)).collect();
+                let argument_origins: Vec<BTreeSet<ViewOrigin>> = all_arguments
+                    .iter()
+                    .map(|argument| self.bc_view_origins(argument, env))
+                    .collect();
                 for (index, name, arg) in self.bc_argument_schedule(expr) {
                     self.bc_call_argument(
                         arg,
@@ -1825,6 +1831,19 @@ impl Analyzer {
                 }
                 if direct_call || view_arguments || owned_callee {
                     env.exit_scope();
+                }
+                // An exclusive address argument (`add(&items!, v)`) can
+                // receive the other arguments' views.
+                for (position, argument) in all_arguments.iter().enumerate() {
+                    if let ExprKind::Unary { op: UnaryOpKind::RefMut, expr: target } = &argument.node {
+                        let others: BTreeSet<ViewOrigin> = argument_origins
+                            .iter()
+                            .enumerate()
+                            .filter(|(other, _)| *other != position)
+                            .flat_map(|(_, origins)| origins.iter().cloned())
+                            .collect();
+                        self.bc_record_stored_views(target, others, env);
+                    }
                 }
             }
 
@@ -1910,20 +1929,7 @@ impl Analyzer {
                 {
                     env.exit_scope();
                 }
-                if !stored_origins.is_empty()
-                    && let ExprKind::Ident(name) = &object.node
-                    && env
-                        .lookup(name)
-                        .and_then(|var| var.ty.as_ref())
-                        .is_some_and(|ty| self.bc_may_hold_borrowed_views(ty))
-                {
-                    let mut origins = env
-                        .lookup(name)
-                        .map(|var| var.view_origins.clone())
-                        .unwrap_or_default();
-                    origins.extend(stored_origins);
-                    env.set_view_origins(name, origins);
-                }
+                self.bc_record_stored_views(object, stored_origins, env);
             }
 
             ExprKind::Binary { left, op, right } => {
@@ -2343,6 +2349,93 @@ impl Analyzer {
             })
             .and_then(|annotation| annotation.resolved_fn.as_deref());
         resolved.is_some_and(|name| self.explicit_shared_receiver_methods.contains(name))
+    }
+
+    /// Views stored through `target` (a mutated receiver or exclusive address
+    /// argument) make its root local depend on their owners: `items`,
+    /// `h.items`, `self.items` and `*slot` all store into their root.
+    fn bc_record_stored_views(
+        &mut self,
+        target: &Expr,
+        origins: BTreeSet<ViewOrigin>,
+        env: &mut MoveEnv,
+    ) {
+        if origins.is_empty() {
+            return;
+        }
+        // Only storage that can hold borrowed views matters: `self.stream`
+        // (a socket) cannot keep a view although `self` is a reference.
+        let holds = |ty: TypeKind| match self.resolve_type_aliases(&ty) {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                self.bc_may_hold_borrowed_views(&inner.node)
+            }
+            other => self.bc_may_hold_borrowed_views(&other),
+        };
+        if self.bc_annotated_type(target).is_some_and(|ty| !holds(ty)) {
+            return;
+        }
+        let mut root = target;
+        loop {
+            match &root.node {
+                ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => root = object,
+                ExprKind::Group(inner) | ExprKind::Unary { expr: inner, .. } => root = inner,
+                _ => break,
+            }
+        }
+        let ExprKind::Ident(name) = &root.node else {
+            return;
+        };
+        if !env
+            .lookup(name)
+            .and_then(|var| var.ty.clone())
+            .is_some_and(holds)
+        {
+            return;
+        }
+        let mut current = env
+            .lookup(name)
+            .map(|var| var.view_origins.clone())
+            .unwrap_or_default();
+        // Storage reached through a parameter outlives this call, so it may
+        // not keep views of the call's own owners or temporaries.
+        let parameter_root = current
+            .iter()
+            .any(|origin| matches!(origin, ViewOrigin::Parameter { .. }));
+        if parameter_root
+            && let Some(local) = origins.iter().find_map(|origin| match origin {
+                ViewOrigin::Owner(root) => Some(root.name.clone()),
+                ViewOrigin::Temporary => Some("a temporary".to_string()),
+                _ => None,
+            })
+        {
+            self.push_error(
+                target.span,
+                "S10",
+                format!(
+                    "cannot store a view of `{local}` through `{name}`: it would outlive this call"
+                ),
+            );
+            return;
+        }
+        // The owners stay borrowed as long as the container is in scope, like
+        // a `const view = owner.as_str()` binding.
+        let depth = env.binding_depth(name).unwrap_or(0);
+        for origin in &origins {
+            if let Some(root) = origin.storage_root()
+                && let Some(var) = env.root_mut(root)
+            {
+                if let Some(loan) = &mut var.shared_borrow {
+                    loan.scope_depth = loan.scope_depth.min(depth);
+                } else {
+                    var.shared_borrow = Some(Loan {
+                        at: target.span,
+                        scope_depth: depth,
+                    });
+                }
+            }
+        }
+        current.extend(origins);
+        env.set_view_origins(name, current);
     }
 
     fn bc_has_explicit_exclusive_receiver(&self, expr: &Expr) -> bool {
