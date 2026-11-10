@@ -102,6 +102,48 @@ fn main() i32 {
     0
 }
 """, []),
+    # Offsets past 4 GiB (sparse) and reads in small pieces: partial I/O must
+    # assemble the same bytes on every target.
+    "large_file": (r"""import std.io;
+import std.fs;
+import std.core;
+
+fn main() i32 {
+    const path = "matrix_large.bin";
+    var file = fs.File.create(path).unwrap();
+    const far: i64 = 5000000123;
+    if (file.seek(far, fs.seek_set()).unwrap() != far) { ret 2; }
+    file.write_str("tail-marker").unwrap();
+    file.close().unwrap();
+    const info = fs.metadata(path).unwrap();
+    io.println("size {}", info.len());
+    var reader = fs.File.open(path).unwrap();
+    if (reader.seek(far - 4, fs.seek_set()).unwrap() != far - 4) { ret 3; }
+    var buffer: *u8 = 0;
+    unsafe { buffer = core.malloc(32); }
+    var total: usize = 0;
+    // Three bytes at a time until the end of the file.
+    for (true) {
+        var count: isize = 0;
+        unsafe { count = reader.read(buffer + total, 3); }
+        if (count < 0) { ret 4; }
+        if (count == 0) { break; }
+        total = total + (count as usize);
+    }
+    var zeros: usize = 0;
+    var marker: bool = false;
+    unsafe {
+        for i : 0..4 { if (*(buffer + i) == 0) { zeros = zeros + 1; } }
+        *(buffer + total) = 0;
+        marker = core.str_from_ptr(buffer + 4) == "tail-marker";
+        core.free(buffer);
+    }
+    reader.close().unwrap();
+    fs.remove(path).unwrap();
+    io.println("read {} zeros {} marker {}", total, zeros, marker);
+    0
+}
+""", []),
     # OS threads with closures and joins.
     "threads": (r"""import std.io;
 import std.thread;
@@ -170,6 +212,8 @@ def check(qz, wine, root):
                 failures.append(f"{name}: {variant} {outcome!r} != linux-builtin {reference!r}")
         if name == "panicking":
             assert reference[0] == 101, reference
+        if name == "large_file":
+            assert reference == (0, "size 5000000134\nread 15 zeros 4 marker true\n"), reference
     assert not failures, "\n".join(failures)
     print(f"PASS linker matrix: {len(cases)} programs x {[v[0] for v in variants]} "
           "agree on stdout and exit status")
