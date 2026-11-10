@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-10: Real-client Unicode and formatting protocol check](2026-11-10-lsp-real-client-unicode.md)
+
 - [2026-11-10: LSP features keep working while a document does not parse](2026-11-10-lsp-incomplete-source.md)
 
 - [2026-11-10: `...values: str` without a template is an ordinary variadic](2026-11-10-plain-str-variadics.md)

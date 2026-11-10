@@ -2,6 +2,14 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, LSP real client)
+
+LSP 19/20 (plan 98.1%): vim-quazi `7e7f5f7` tests/lsp-unicode.lua (Neovim 0.12
+real client: incremental UTF-16 edits beside non-BMP text, diagnostic/hover
+positions, formatting == `qz fmt`). Run with QUAZI_LSP_COMMAND=<qz> nvim
+--headless -u NONE -i NONE -c 'luafile tests/lsp-unicode.lua' -c qa. Last LSP
+item: Zed/Helix runtime validation (editors not installed here).
+
 ## Checkpoint (2026-11-10, LSP incomplete source)
 
 LSP 18/20 (plan 97.9%): `src/lsp/recovery.rs` blanks the error line / previous

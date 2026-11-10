@@ -11,7 +11,7 @@ attributes.
 | Editor | Project | Integration type | Local verification |
 |---|---|---|---|
 | VS Code | `../vscode-quazi/` | extension with language registration and LSP launcher | manifest parsing and `npm pack --dry-run` |
-| Neovim | `../nvim-quazi/` | native Neovim 0.11+ LSP configuration | headless configuration and real-client LSP smoke on Neovim 0.12 |
+| Neovim | `../vim-quazi/` | native Neovim 0.11+ LSP configuration | headless configuration, real-client LSP smoke and Unicode/formatting protocol check on Neovim 0.12 |
 | Helix | `../helix-quazi/` | configuration/runtime query package | canonical grammar-asset check; Helix binary unavailable |
 | Zed | `../zed-quazi/` | Zed language extension | canonical grammar-asset check, `cargo check`, and formatting check |
 

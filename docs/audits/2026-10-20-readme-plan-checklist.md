@@ -5,7 +5,7 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 97.9%. Remaining: 2.1%.**
+**Complete: 98.1%. Remaining: 1.9%.**
 
 On 2026-11-09 format string literals (1/1) were completed under D-020
 ([change record](../changes/2026-11-09-string-interpolation.md)).
@@ -219,7 +219,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Atomic opcodes | 2/2 | 100.0% | 0.0% |
 | Format string literals | 1/1 | 100.0% | 0.0% |
 | Nested struct patterns | 1/1 | 100.0% | 0.0% |
-| LSP improvements | 18/20 | 90.0% | 10.0% |
+| LSP improvements | 19/20 | 95.0% | 5.0% |
 | qz doc | 1/1 | 100.0% | 0.0% |
 | Experimental JIT (`qz run --jit`) | 1/1 | 100.0% | 0.0% |
 
@@ -438,7 +438,8 @@ Evidence: [docs/tooling/lsp.md](../tooling/lsp.md).
   (`src/lsp/recovery.rs`, `scripts/check_lsp_incomplete_source.py`).
 - [x] Caching and measured performance targets (`src/lsp/snapshot_cache.rs`,
   `scripts/check_lsp_performance.py`: release cold <= 1000 ms, warm median <= 20 ms).
-- [ ] Real-client Unicode/formatting protocol suite.
+- [x] Real-client Unicode/formatting protocol suite (Neovim client:
+  `../vim-quazi/tests/lsp-unicode.lua`; stdio: `scripts/check_lsp_*.py`).
 - [ ] Reproducible Zed/Helix feature-request runtime validation.
 - [x] Loader-backed go-to-definition with passing current-checkout regressions.
 - [x] Workspace symbols with passing current-checkout regressions.

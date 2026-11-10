@@ -102,8 +102,11 @@ than a name-resolution guarantee.
   Nothing is answered for positions inside the blanked region, and
   loader-backed references and rename still need a parseable document. When
   no candidate parses, the previous report is kept.
-- Formatting and position conversion need a real-editor protocol smoke suite
-  before they can be treated as stable across all Unicode input.
+- Formatting and position conversion are checked through a real client:
+  `../vim-quazi/tests/lsp-unicode.lua` (Neovim 0.12) sends incremental edits
+  beside non-BMP text and compares diagnostic and hover positions with the
+  client's UTF-16 indexes and formatting with `qz fmt`. Zed and Helix runtime
+  validation remains open (neither editor is installed here).
 
 ## Verification
 
