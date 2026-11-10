@@ -2,6 +2,14 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, docs verification and diagnostics)
+
+2c29151 scripts/check_docs.py (links + complete examples; 11 doc examples
+fixed); 60f1f94 unknown methods on structs/scalars are S04 (they type-checked
+silently); 02791db ParseError.message(); a66f206 API docs for today's std
+additions; 45ea487 matrix large-file program (26 programs). Asked В19
+(Deserialize decode policy, D-012). Waiting: В9-В19.
+
 ## Checkpoint (2026-11-10, std os/time; process timeout withdrawn)
 
 std e0f7a24 os.args() (Linux /proc/self/cmdline, Windows CommandLineToArgvW),
