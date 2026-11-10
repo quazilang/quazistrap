@@ -7439,6 +7439,30 @@ fn main() void {
     }
 
     #[test]
+    fn for_loops_accept_has_next_next_iterators() {
+        let report = analyze(
+            r#"
+struct Countdown { left: i32, }
+impl Countdown {
+    fn has_next(self: &Countdown) bool { ret self.left > 0; }
+    fn next(self: &Countdown!) Option[i32] {
+        if (self.left == 0) { ret None; }
+        self.left = self.left - 1;
+        ret Some(self.left);
+    }
+}
+
+fn main() i32 {
+    var total: i32 = 0;
+    for value : Countdown { left: 3 } { total = total + value; }
+    ret total;
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
     fn unknown_methods_on_structs_and_scalars_are_reported() {
         // These calls were accepted with an unknown result type.
         let report = analyze(

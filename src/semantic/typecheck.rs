@@ -2338,9 +2338,34 @@ impl Analyzer {
                                         t
                                     }
                                 });
+                                let iterator_item = iter_ty.and_then(|ty| self.iterator_item_type(ty));
+                                if iterator_item.is_some()
+                                    && let Some(TypeKind::Named { name, type_args }) =
+                                        iter_ty.map(|ty| self.resolve_type_aliases(ty))
+                                {
+                                    let from = self
+                                        .current_function
+                                        .last()
+                                        .cloned()
+                                        .unwrap_or_else(|| "__program__".to_string());
+                                    for method in ["has_next", "next"] {
+                                        let base = format!("{name}.{method}");
+                                        let target = if type_args.is_empty() {
+                                            base
+                                        } else {
+                                            let arguments: Vec<TypeKind> =
+                                                type_args.iter().map(|arg| arg.node.clone()).collect();
+                                            mangle_monomorphized(&base, &arguments)
+                                        };
+                                        self.add_dependency_edge(DependencyKind::Call, &from, &target);
+                                    }
+                                }
                                 match iter_ty {
                                     Some(TypeKind::Array { elem_ty, .. }) => elem_ty.node.clone(),
                                     Some(TypeKind::Slice { elem_ty }) => elem_ty.node.clone(),
+                                    Some(_) if iterator_item.is_some() => {
+                                        iterator_item.expect("iterator item")
+                                    }
                                     Some(t) => {
                                         self.push_error(
                                             expr.span,
@@ -6161,6 +6186,35 @@ impl Analyzer {
                 }
             }
         }
+    }
+
+    /// The item type `T` of an iterator: a named type whose methods
+    /// `has_next(self) bool` and `next(self) Option[T]` drive `for x : it`.
+    fn iterator_item_type(&self, ty: &TypeKind) -> Option<TypeKind> {
+        let TypeKind::Named { name, type_args } = self.resolve_type_aliases(ty) else {
+            return None;
+        };
+        let has_next = self.resolve_symbol(&format!("{name}.has_next"))?;
+        if !matches!(has_next.ty, Some(TypeKind::Bool)) {
+            return None;
+        }
+        let next = self.resolve_symbol(&format!("{name}.next"))?;
+        let TypeKind::Named { name: option, type_args: item } = next.ty.as_ref()? else {
+            return None;
+        };
+        if option != "Option" || item.len() != 1 {
+            return None;
+        }
+        let item = item[0].node.clone();
+        if type_args.is_empty() {
+            return Some(item);
+        }
+        let parameters = self.generic_params_for_function(&format!("{name}.next"));
+        let substitution: std::collections::HashMap<String, TypeKind> = parameters
+            .into_iter()
+            .zip(type_args.iter().map(|arg| arg.node.clone()))
+            .collect();
+        Some(substitute_type_kind(&item, &substitution))
     }
 
     /// Arity and argument types of a type-qualified call `Type.function(...)`,

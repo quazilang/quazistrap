@@ -157,6 +157,11 @@ for value : values {
 }
 ```
 
+Besides arrays and slices, `for` accepts any value whose type has
+`has_next(self) bool` and `next(self) Option[T]` methods; the loop variable
+has type `T` and the loop ends when `has_next` is false or `next` returns
+`None` (std `fs.read_dir` returns such a `ReadDir`).
+
 ### Index-value loops
 
 ```quazi
