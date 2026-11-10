@@ -2,6 +2,21 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, std fs/path and ownership holes)
+
+std: path.Path (16cbc21), fs.metadata/symlink_metadata (bfc7b7b), fs.walk
+(21c3910), LineReader/BufferedWriter (+close) (cdb62a5, 3569969), pow 3 ULP
+(20237eb). std plan 66.4% (Filesystem 14/16, Mathematics 11/11).
+quazistrap: 29b282e associated calls check arity/types (String.from(String)
+passed a raw handle); 0f6ee8a/a22c655 retention precision (namespace
+receivers, scalar/str bodiless callees, removed owned Strings; C variadics
+excluded); bdd452b views stored by `&T!` methods keep owners borrowed
+(push(owner.as_str()); owner.free() was accepted); 05ec616 String struct
+literals only in the declaring file; 3cac9e1 qz test reports unparseable
+sources; a22c655 Windows realloc(NULL). Matrix: 25 programs agree.
+Known language limits met: no top-level `const` in modules, no bare block
+statements, `bytes` is a keyword, no int<->float `as` (В15).
+
 ## Checkpoint (2026-11-10, math review fixes)
 
 std b0dcc0b: fdlibm __rem_pio2 + Payne-Hanek port (f64-only integers) ->
