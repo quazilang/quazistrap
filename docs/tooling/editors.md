@@ -10,7 +10,7 @@ attributes.
 
 | Editor | Project | Integration type | Local verification |
 |---|---|---|---|
-| VS Code | `../vscode-quazi/` | extension with language registration and LSP launcher | manifest parsing and `npm pack --dry-run` |
+| VS Code | `../vscode-quazi/` | extension with language registration and LSP launcher | lifecycle test, `npm pack --dry-run`, and real-client hover smoke (VSCodium 1.126 under Xvfb) |
 | Neovim | `../vim-quazi/` | native Neovim 0.11+ LSP configuration | headless configuration, real-client LSP smoke and Unicode/formatting protocol check on Neovim 0.12 |
 | Helix | `../helix-quazi/` | configuration/runtime query package | canonical grammar-asset check and runtime LSP validation in a pseudo-terminal (Helix 25.07) |
 | Zed | `../zed-quazi/` | Zed language extension | canonical grammar-asset check, `cargo check`, and formatting check |
