@@ -4890,7 +4890,41 @@ impl Analyzer {
                                 }
                                 _ => None,
                             },
-                            _ => None,
+                            _ => {
+                                // A struct or scalar receiver with no such method
+                                // anywhere: report it instead of an unknown result.
+                                let receiver = object_eval.ty.as_ref().map(|ty| {
+                                    match self.resolve_type_aliases(ty) {
+                                        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                                            self.resolve_type_aliases(&inner.node)
+                                        }
+                                        other => other,
+                                    }
+                                });
+                                let concrete = match &receiver {
+                                    Some(TypeKind::Named { name, .. }) => {
+                                        self.struct_defs.contains_key(name)
+                                            && !self
+                                                .current_generic_params
+                                                .iter()
+                                                .any(|scope| scope.contains(name))
+                                    }
+                                    Some(ty) => {
+                                        Self::is_integer(ty)
+                                            || Self::is_float(ty)
+                                            || matches!(ty, TypeKind::Bool)
+                                    }
+                                    None => false,
+                                };
+                                if concrete && let Some(receiver) = &receiver {
+                                    self.push_error(
+                                        expr.span,
+                                        "S04",
+                                        format!("no method `{method}` on type `{receiver}`"),
+                                    );
+                                }
+                                None
+                            }
                         };
                         (builtin_ty, None)
                     };

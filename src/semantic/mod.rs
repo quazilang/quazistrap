@@ -7439,6 +7439,32 @@ fn main() void {
     }
 
     #[test]
+    fn unknown_methods_on_structs_and_scalars_are_reported() {
+        // These calls were accepted with an unknown result type.
+        let report = analyze(
+            r#"
+struct Point { x: i32, }
+impl Point { fn norm(self: &Point) i32 { ret self.x; } }
+
+fn main() void {
+    const p = Point { x: 1 };
+    p.norm();
+    p.missing();
+    const n: i32 = 5;
+    n.nonexistent();
+}
+"#,
+        );
+        let messages: Vec<&str> = report.errors.iter().map(|error| &*error.message).collect();
+        assert_eq!(
+            messages,
+            ["no method `missing` on type `Point`", "no method `nonexistent` on type `i32`"],
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn associated_calls_check_arity_and_argument_types() {
         // `Type.function(...)` skipped both checks; an owned value passed for
         // a `str` parameter then reached the callee as a raw handle.
