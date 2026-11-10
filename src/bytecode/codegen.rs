@@ -3103,6 +3103,73 @@ impl<'a> FnCompiler<'a> {
         dst
     }
 
+    /// Lower a numeric `as` conversion of the one-slot `value`. Integers keep
+    /// a canonical slot (sign- or zero-extended from their width), so a
+    /// narrower or differently signed target truncates and re-extends; casts
+    /// across the integer/float families and f64 -> f32 use the private
+    /// conversion intrinsics. Other casts keep the value unchanged.
+    fn emit_numeric_cast(&mut self, value: u8, source: &TypeKind, target: &TypeKind) -> u8 {
+        use crate::bytecode::instruction::numeric_cast as id;
+        let Some(target_kind) = NumericKind::of(target) else {
+            return value;
+        };
+        let Some(source_kind) = NumericKind::of(source) else {
+            return value;
+        };
+        let intrinsic = match (source_kind, target_kind) {
+            (NumericKind::Integer { .. }, NumericKind::Integer { bits: 64, .. }) => return value,
+            (NumericKind::Integer { .. }, NumericKind::Integer { bits, signed }) => {
+                if source_kind == target_kind {
+                    return value;
+                }
+                return self.emit_integer_narrowing(value, bits, signed);
+            }
+            (NumericKind::Integer { signed, .. }, NumericKind::Float { single }) => {
+                match (signed, single) {
+                    (true, false) => id::SIGNED_TO_F64,
+                    (false, false) => id::UNSIGNED_TO_F64,
+                    (true, true) => id::SIGNED_TO_F32,
+                    (false, true) => id::UNSIGNED_TO_F32,
+                }
+            }
+            (NumericKind::Float { .. }, NumericKind::Integer { bits, signed }) => {
+                match (signed, bits) {
+                    (true, 8) => id::F64_TO_I8,
+                    (true, 16) => id::F64_TO_I16,
+                    (true, 32) => id::F64_TO_I32,
+                    (true, _) => id::F64_TO_I64,
+                    (false, 8) => id::F64_TO_U8,
+                    (false, 16) => id::F64_TO_U16,
+                    (false, 32) => id::F64_TO_U32,
+                    (false, _) => id::F64_TO_U64,
+                }
+            }
+            (NumericKind::Float { single: false }, NumericKind::Float { single: true }) => {
+                id::F64_TO_F32
+            }
+            (NumericKind::Float { .. }, NumericKind::Float { .. }) => return value,
+        };
+        let converted = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mov, converted, value, 0));
+        let mut instruction = ri16(Opcode::Intrinsic, converted, intrinsic);
+        instruction.flags = 1;
+        self.chunk.emit(instruction);
+        converted
+    }
+
+    fn emit_integer_narrowing(&mut self, value: u8, bits: u32, signed: bool) -> u8 {
+        let narrowed = self.alloc_reg();
+        if signed {
+            let shift = self.emit_u64_constant(u64::from(64 - bits));
+            self.chunk.emit(rrr(Opcode::Shl, narrowed, value, shift));
+            self.chunk.emit(rrr(Opcode::Sar, narrowed, narrowed, shift));
+        } else {
+            let mask = self.emit_u64_constant((1u64 << bits) - 1);
+            self.chunk.emit(rrr(Opcode::And, narrowed, value, mask));
+        }
+        narrowed
+    }
+
     fn is_float_span(&self, key: (usize, usize)) -> bool {
         matches!(
             self.type_of_span(key),
@@ -7708,14 +7775,22 @@ impl<'a> FnCompiler<'a> {
                 self.reg_of(name)
             }
 
-            ExprKind::Group(_) | ExprKind::Cast { .. } => {
+            ExprKind::Group(_) => {
                 let ExpressionControl::UnaryChild(inner) = expression_control(expr) else {
                     unreachable!("transparent operand");
                 };
-                // QZI uses 64-bit slots for all values. Integer size changes and
-                // float size changes are no-ops at this level; the encoder and ABI
-                // handle the actual width. The typechecker has already validated.
                 self.compile_expr(inner)
+            }
+
+            ExprKind::Cast { expr: inner, ty } => {
+                let value = self.compile_expr(inner);
+                match self.type_of_expr(inner) {
+                    Some(source) => {
+                        let target = self.resolve_type(&ty.node);
+                        self.emit_numeric_cast(value, &source, &target)
+                    }
+                    None => value,
+                }
             }
 
             ExprKind::Unary { op, .. } => {
@@ -10160,6 +10235,33 @@ fn type_kind_base_name(ty: &TypeKind) -> String {
         TypeKind::Ref { inner } | TypeKind::MutRef { inner } => type_kind_base_name(&inner.node),
         TypeKind::RawPtr { inner } => type_kind_base_name(&inner.node),
         other => format!("{}", other),
+    }
+}
+
+/// The numeric representation classes that `as` converts between.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NumericKind {
+    Integer { bits: u32, signed: bool },
+    /// f32 values are carried in f64 slots; `single` marks the f32 target.
+    Float { single: bool },
+}
+
+impl NumericKind {
+    fn of(ty: &TypeKind) -> Option<Self> {
+        let (bits, signed) = match ty {
+            TypeKind::Int8 => (8, true),
+            TypeKind::Int16 => (16, true),
+            TypeKind::Int32 => (32, true),
+            TypeKind::Int64 | TypeKind::Isize => (64, true),
+            TypeKind::Uint8 => (8, false),
+            TypeKind::Uint16 => (16, false),
+            TypeKind::Uint32 => (32, false),
+            TypeKind::Uint64 | TypeKind::Usize => (64, false),
+            TypeKind::Float32 => return Some(Self::Float { single: true }),
+            TypeKind::Float64 => return Some(Self::Float { single: false }),
+            _ => return None,
+        };
+        Some(Self::Integer { bits, signed })
     }
 }
 

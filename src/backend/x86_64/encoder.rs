@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use iced_x86::code_asm::*;
 #[path = "float_power.rs"]
 mod float_power;
+#[path = "numeric_cast.rs"]
+mod numeric_cast;
 
 use crate::abi::{AbiSignature, AbiType, ForeignSymbol};
 use crate::backend::{BackendError, TargetSpec, target::Abi};
@@ -4179,6 +4181,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.sqrtsd(xmm0, xmm0));
                         emit!(asm.movsd_2(slot(dst), xmm0));
                     }
+                    51..=63 => numeric_cast::emit(asm, slot(dst), id)?,
                     49 | 50 => {
                         // quazi.f64.to_bits(x: f64) -> u64 and
                         // quazi.f64.from_bits(bits: u64) -> f64: registers hold

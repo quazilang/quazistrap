@@ -13,8 +13,9 @@ classification. `f16`, `f32`, and `f64` are distinct source types; Quazi's
 internal slots preserve required target conversion at C boundaries.
 
 Supported representation-changing conversions are explicit with `as`.
-Integer-family casts are supported; integer-to-float and float-to-integer casts
-are not implemented yet. Integer overflow checking is not a substitute for
+Integer casts keep the low bits of the target width; integer/float casts round
+to nearest or truncate and saturate (NaN is 0), as in Rust
+([expressions](language/expressions.md#type-casts)). Integer overflow checking is not a substitute for
 input validation; parsing returns `Result` and rejects malformed/out-of-range
 values.
 

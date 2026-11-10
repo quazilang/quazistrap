@@ -56,8 +56,9 @@ escapes, and escaped newlines. Backtick strings preserve contents exactly.
 const wide: i64 = 42 as i64;
 ```
 
-The current compiler supports `as` within the integer family; integer-to-float
-and float-to-integer casts are not implemented yet.
+Integer casts keep the low bits of the target width. Integer to float rounds
+to nearest; float to integer truncates toward zero and saturates, with NaN
+becoming 0 (the Rust rules, see [expressions](language/expressions.md#type-casts)).
 
 `str` is immutable UTF-8. Indexes count Unicode scalars, negative indexes count
 from the end, and slices follow Python spelling: `text[start:end:step]`.

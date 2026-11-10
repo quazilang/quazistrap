@@ -71,7 +71,7 @@ fn power_preserves_runtime_checks_and_float_negative_exponents() {
         "fn main()void{var n=-2;2**n;}",
         "fn power(n:i32)i32{ret 2**n;}",
         "fn main()void{2.0**-2;2**-2.0;2**0;}",
-        "fn main()void{(-2 as i8)**7;(2 as u8)**7;(-128 as i8)**1;}",
+        "fn main()void{((-2) as i8)**7;(2 as u8)**7;((-128) as i8)**1;}",
         "fn power[T](a:T,b:T)T{ret a**b;} fn main()void{power[i32](2,3);power[f64](2.0,-2.0);}",
         "fn power[T](a:T)T{ret a**-2;} fn main()void{power[f64](2.0);}",
         "type Scalar=i64;fn main()void{var a:Scalar=2;var b=3;var r=&a;r**b;}",

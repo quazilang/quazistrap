@@ -3242,6 +3242,16 @@ impl Analyzer {
                 let allowed = match inner_eval.ty.as_ref() {
                     Some(src) if Self::is_integer(src) && Self::is_integer(&target_ty) => true,
                     Some(src) if Self::is_float(src) && Self::is_float(&target_ty) => true,
+                    // Cross-family casts round (to float) or truncate and
+                    // saturate (to integer); f16 has no conversion lowering.
+                    Some(src)
+                        if (Self::is_integer(src)
+                            && matches!(target_ty, TypeKind::Float32 | TypeKind::Float64))
+                            || (matches!(src, TypeKind::Float32 | TypeKind::Float64)
+                                && Self::is_integer(&target_ty)) =>
+                    {
+                        true
+                    }
                     Some(src)
                         if (Self::is_integer(src) || matches!(src, TypeKind::RawPtr { .. }))
                             && matches!(&target_ty, TypeKind::CFn { .. }) =>
@@ -3312,9 +3322,15 @@ impl Analyzer {
                         "casting a raw C function pointer requires unsafe context".to_string(),
                     );
                 }
+                let const_value = match (inner_eval.const_value, inner_eval.ty.as_ref()) {
+                    (Some(value), Some(source)) => {
+                        Self::const_numeric_cast(value, &self.resolve_type_aliases(source), &target_ty)
+                    }
+                    (value, _) => value,
+                };
                 ExprEval {
                     ty: Some(target_ty),
-                    const_value: inner_eval.const_value,
+                    const_value,
                 }
             }
             ExprKind::Binary { left, op, right } => {
@@ -8325,6 +8341,65 @@ impl Analyzer {
                 | TypeKind::Isize
                 | TypeKind::Usize
         )
+    }
+
+    /// The constant result of `value as target`, matching the runtime cast
+    /// lowering: integers wrap to the target width, integer to float rounds
+    /// to nearest, float to integer truncates and saturates (NaN is 0), and
+    /// f64 to f32 rounds. Constants of other casts pass through unchanged.
+    pub(super) fn const_numeric_cast(
+        value: ConstValue,
+        source: &TypeKind,
+        target: &TypeKind,
+    ) -> Option<ConstValue> {
+        let unsigned_source = matches!(
+            source,
+            TypeKind::Uint8 | TypeKind::Uint16 | TypeKind::Uint32 | TypeKind::Uint64 | TypeKind::Usize
+        );
+        let integer = |wide: i128| -> Option<ConstValue> {
+            let narrowed = match target {
+                TypeKind::Int8 => wide as i8 as i64,
+                TypeKind::Int16 => wide as i16 as i64,
+                TypeKind::Int32 => wide as i32 as i64,
+                TypeKind::Uint8 => wide as u8 as i64,
+                TypeKind::Uint16 => wide as u16 as i64,
+                TypeKind::Uint32 => wide as u32 as i64,
+                _ => wide as i64,
+            };
+            Some(ConstValue::Int(narrowed))
+        };
+        match value {
+            ConstValue::Int(raw) if Self::is_integer(target) => {
+                integer(if unsigned_source { raw as u64 as i128 } else { raw as i128 })
+            }
+            ConstValue::Int(raw) if matches!(target, TypeKind::Float32 | TypeKind::Float64) => {
+                let single = matches!(target, TypeKind::Float32);
+                let float = match (unsigned_source, single) {
+                    (true, true) => raw as u64 as f32 as f64,
+                    (true, false) => raw as u64 as f64,
+                    (false, true) => raw as f32 as f64,
+                    (false, false) => raw as f64,
+                };
+                Some(ConstValue::Float(float))
+            }
+            ConstValue::Float(float) if Self::is_integer(target) => {
+                let saturated = match target {
+                    TypeKind::Int8 => float as i8 as i64,
+                    TypeKind::Int16 => float as i16 as i64,
+                    TypeKind::Int32 => float as i32 as i64,
+                    TypeKind::Uint8 => float as u8 as i64,
+                    TypeKind::Uint16 => float as u16 as i64,
+                    TypeKind::Uint32 => float as u32 as i64,
+                    TypeKind::Uint64 | TypeKind::Usize => float as u64 as i64,
+                    _ => float as i64,
+                };
+                Some(ConstValue::Int(saturated))
+            }
+            ConstValue::Float(float) if matches!(target, TypeKind::Float32) => {
+                Some(ConstValue::Float(float as f32 as f64))
+            }
+            other => Some(other),
+        }
     }
 
     pub(super) fn is_float(t: &TypeKind) -> bool {

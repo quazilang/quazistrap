@@ -156,11 +156,13 @@ result propagation, or automatic join. Read the complete safety contract in
 [`std.thread`](../api/thread.md) before using it; most applications should keep
 their first projects single-threaded.
 
-Quazi does not yet provide a supported `std.process` child-process API.
-Do not build shell command strings or depend on undocumented compiler/runtime
-internals for process execution. The first shell-free process contract is
-decided, but its runtime primitives and cross-platform cleanup evidence are
-not implemented yet.
+`std.process` starts programs without a shell. On Linux, `process.Command`
+finds the program in `PATH`, sets arguments, a working directory and
+environment variables, and returns the exit status; together with
+`fs.read_dir` it replaces small shell scripts (see
+[example 38](../../examples/38-shell-scripting/README.md) and
+[`std.process`](../api/process.md)). Windows process creation is not
+implemented yet.
 
 ## Debugging failures
 

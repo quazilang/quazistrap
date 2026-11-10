@@ -75,18 +75,20 @@ const no: bool = false;
 
 ## Type conversions
 
-Use `as` for explicit conversions within the integer family:
+Use `as` for explicit numeric conversions:
 
 ```quazi
 // tutorial: fragment — requires the surrounding chapter context.
 const x: i32 = 42;
 const y: i64 = x as i64;
 const narrow: u8 = 256 as u8; // truncates to 0
+const half: f64 = x as f64 / 2.0; // 21.0
+const whole: i32 = 2.9 as i32; // 2: truncates toward zero
+const capped: u8 = 1000.0 as u8; // 255: out-of-range values saturate
 ```
 
-Integer-to-float and float-to-integer casts are not implemented by the current
-compiler. Write a correctly typed literal when practical, or keep the value in
-its original numeric family until an explicit conversion API is available.
+Float-to-integer casts never fail: NaN becomes 0. `as` binds tighter than
+unary minus, so write `(-1) as u8` rather than `-1 as u8`.
 
 ## Strings
 

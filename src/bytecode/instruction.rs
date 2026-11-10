@@ -441,6 +441,7 @@ impl Instruction {
                     48 => "quazi.f64.sqrt",
                     49 => "quazi.f64.to_bits",
                     50 => "quazi.f64.from_bits",
+                    51..=63 => "numeric cast",
                     _ => "?",
                 };
                 format!(
@@ -529,6 +530,26 @@ pub fn valid_float_power_flags(flags: u8) -> bool {
             != POW_BASE_FLOAT_FLAG | POW_BASE_UNSIGNED_FLAG
         && flags & (POW_EXP_FLOAT_FLAG | POW_EXP_UNSIGNED_FLAG)
             != POW_EXP_FLOAT_FLAG | POW_EXP_UNSIGNED_FLAG
+}
+
+/// Compiler-private `Intrinsic` ids for numeric `as` casts between the
+/// integer and floating families. Each converts its one slot in place; they
+/// have no `@intrinsic` name, so only cast lowering emits them.
+pub mod numeric_cast {
+    pub const SIGNED_TO_F64: u16 = 51;
+    pub const UNSIGNED_TO_F64: u16 = 52;
+    pub const SIGNED_TO_F32: u16 = 53;
+    pub const UNSIGNED_TO_F32: u16 = 54;
+    pub const F64_TO_F32: u16 = 55;
+    pub const F64_TO_I64: u16 = 56;
+    pub const F64_TO_I32: u16 = 57;
+    pub const F64_TO_I16: u16 = 58;
+    pub const F64_TO_I8: u16 = 59;
+    pub const F64_TO_U64: u16 = 60;
+    pub const F64_TO_U32: u16 = 61;
+    pub const F64_TO_U16: u16 = 62;
+    pub const F64_TO_U8: u16 = 63;
+    pub const IDS: std::ops::RangeInclusive<u16> = SIGNED_TO_F64..=F64_TO_U8;
 }
 
 const MEM_WIDTH_SHIFT: u8 = 1;

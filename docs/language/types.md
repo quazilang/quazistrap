@@ -239,13 +239,21 @@ function; the compiler converts each argument at the call site.
 
 ## Conversions
 
-`as` performs explicit conversion within the integer family:
+`as` performs explicit numeric conversion:
 
 ```quazi
 const wide: i64 = 42 as i64;
-const byte: u8 = 256 as u8; // truncation
+const byte: u8 = 256 as u8; // truncation: 0
+const ratio: f64 = 7 as f64 / 2.0; // 3.5
+const clamped: u8 = 300.0 as u8; // saturation: 255
 ```
 
-Integer-to-float and float-to-integer casts are not implemented by the current
-compiler. Integer overflow checking is not a substitute for input validation;
+`as` converts between the integer and floating families with Rust's
+rules (D-021): integer to `f32`/`f64` rounds to nearest-even, directly to the
+target precision; `f32`/`f64` to integer truncates toward zero and saturates,
+so values beyond the target range become its minimum or maximum and NaN
+becomes 0. `f64 as f32` rounds to nearest. Integer casts to a narrower or
+differently signed type keep the low bits (`300 as u8` is 44, `-1 as u32` is
+4294967295). `as` binds tighter than unary minus: `-1 as u16` is
+`-(1 as u16)`; write `(-1) as u16`. `f16` has no cross-family conversion. Integer overflow checking is not a substitute for input validation;
 parsing returns `Result` and rejects malformed or out-of-range values.

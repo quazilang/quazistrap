@@ -56,6 +56,11 @@ LSP 18/20: a document that does not parse keeps hover, completion, signature
 help and definition through a recovered analysis of its unbroken regions.
 LSP 19/20: a real Neovim client checks incremental UTF-16 edits beside
 non-BMP text, diagnostic/hover positions and formatting against `qz fmt`.
+Numeric `as` now converts between integers and floats with Rust's rounding
+and saturation rules, and narrowing integer casts truncate at run time
+([change record](docs/changes/2026-11-10-numeric-casts.md)); this strengthens
+correctness without completing another checklist requirement. Arithmetic
+wrapping for integers narrower than 64 bits remains open.
 The declaration-context prerequisite completes no additional checklist requirement,
 so completion was 75.4% after that removal; native atomics and `qz doc` then raised it to 81.7%.
 Each item has equal weight; its percentage is implemented requirements

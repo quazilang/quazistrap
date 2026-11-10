@@ -9789,25 +9789,56 @@ unsafe fn cast(address: usize) Callback { ret address as Callback; }
     }
 
     #[test]
-    fn numeric_casts_do_not_cross_integer_and_float_families() {
+    fn numeric_casts_cross_integer_and_float_families_except_f16() {
         let report = analyze(
             r#"
 fn main() i32 {
     const ratio: f64 = 3 as f64;
     const count: i32 = 3.0 as i32;
+    const single: f32 = count as f32;
+    const index: usize = single as usize;
+    const half: f16 = 1 as f16;
     ret 0;
 }
 "#,
         );
+        let invalid: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|error| error.code == "S06" && error.message.contains("invalid cast"))
+            .collect();
+        assert_eq!(invalid.len(), 1, "numeric casts: {:?}", report.errors);
+        assert!(invalid[0].message.contains("f16"), "{:?}", invalid);
+    }
+
+    #[test]
+    fn constant_numeric_casts_fold_like_the_runtime_lowering() {
+        let cast = |value, source: TypeKind, target: TypeKind| {
+            Analyzer::const_numeric_cast(value, &source, &target)
+        };
         assert_eq!(
-            report
-                .errors
-                .iter()
-                .filter(|error| error.code == "S06" && error.message.contains("invalid cast"))
-                .count(),
-            2,
-            "numeric cross-family casts: {:?}",
-            report.errors
+            cast(ConstValue::Int(300), TypeKind::Int64, TypeKind::Uint8),
+            Some(ConstValue::Int(44))
+        );
+        assert_eq!(
+            cast(ConstValue::Int(200), TypeKind::Int64, TypeKind::Int8),
+            Some(ConstValue::Int(-56))
+        );
+        assert_eq!(
+            cast(ConstValue::Int(-1), TypeKind::Uint64, TypeKind::Float64),
+            Some(ConstValue::Float(18446744073709551615.0))
+        );
+        assert_eq!(
+            cast(ConstValue::Float(-1e20), TypeKind::Float64, TypeKind::Int32),
+            Some(ConstValue::Int(i32::MIN as i64))
+        );
+        assert_eq!(
+            cast(ConstValue::Float(f64::NAN), TypeKind::Float64, TypeKind::Uint64),
+            Some(ConstValue::Int(0))
+        );
+        assert_eq!(
+            cast(ConstValue::Float(0.1), TypeKind::Float64, TypeKind::Float32),
+            Some(ConstValue::Float(0.1_f32 as f64))
         );
     }
 
