@@ -40,6 +40,17 @@ pub enum ParseError {
     Overflow,
 }
 
+impl ParseError {
+    // A short description of the failure.
+    pub fn message(self: &ParseError) str {
+        ret match self {
+            ParseError.Empty => "cannot parse a number from empty text",
+            ParseError.InvalidDigit(_) => "invalid digit in number",
+            ParseError.Overflow => "number is out of range for its type",
+        };
+    }
+}
+
 pub struct String {
     data: str,
     len: usize,
