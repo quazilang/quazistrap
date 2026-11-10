@@ -702,6 +702,26 @@ impl ProjectContext {
     }
 }
 
+/// Why `name` cannot name a package: a package's namespace is visible as an
+/// identifier, so it would shadow a declaration the prelude exports to every
+/// file (a package named `panic` broke every `panic(...)` call in the
+/// standard library).
+fn reserved_package_name(name: &str) -> Option<String> {
+    let prelude = crate::loader::find_builtin_prelude_root()?;
+    let entry = std::fs::read_to_string(prelude.join("src/mod.qz")).ok()?;
+    prelude_item_exports(&entry)
+        .any(|export| export == name)
+        .then(|| format!("the prelude exports '{name}' to every source file"))
+}
+
+/// Item names re-exported by the prelude entry (`pub import ./module.Item;`).
+fn prelude_item_exports(entry: &str) -> impl Iterator<Item = &str> {
+    entry.lines().filter_map(|line| {
+        let path = line.trim().strip_prefix("pub import ./")?.strip_suffix(';')?;
+        path.split_once('.').map(|(_, item)| item.trim())
+    })
+}
+
 fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut dir = if start.is_file() {
         start.parent()?.to_path_buf()
@@ -1022,6 +1042,13 @@ fn collect_modules(
         }
     }
 
+    if let Some(reserved) = reserved_package_name(import_name) {
+        return Err(format!(
+            "package name '{import_name}' is reserved: {reserved}\n\
+             hint: rename the package (or import the dependency under another name)"
+        ));
+    }
+
     let spec = ModuleSpec {
         name: import_name.to_string(),
         root: canonical.clone(),
@@ -1338,6 +1365,20 @@ fn write_lockfile(path: &Path, dependencies: &[ResolvedDependency]) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn package_names_may_not_shadow_prelude_exports() {
+        let message = super::reserved_package_name("panic").expect("panic is reserved");
+        assert!(message.contains("prelude exports 'panic'"), "{message}");
+        assert!(super::reserved_package_name("Channel").is_some());
+        // Module re-exports and ordinary names stay available.
+        for allowed in ["fmt", "option", "demo", "panics"] {
+            assert!(super::reserved_package_name(allowed).is_none(), "{allowed}");
+        }
+        let exports: Vec<&str> =
+            super::prelude_item_exports("pub import ./array.Array;\npub import ./fmt;\n").collect();
+        assert_eq!(exports, ["Array"]);
+    }
+
     use super::*;
     use crate::analysis::analyze_program_with_source_files;
 

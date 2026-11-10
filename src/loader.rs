@@ -1381,7 +1381,7 @@ pub fn find_builtin_std_root() -> Option<PathBuf> {
     None
 }
 
-fn find_builtin_prelude_root() -> Option<PathBuf> {
+pub fn find_builtin_prelude_root() -> Option<PathBuf> {
     if let Ok(root) = std::env::var("QUAZI_PRELUDE_ROOT") {
         let path = PathBuf::from(root);
         if path.join("src").join("mod.qz").exists() {
