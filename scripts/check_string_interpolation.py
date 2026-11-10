@@ -162,6 +162,51 @@ fn main() i32 {
 """
 
 
+# Format methods, generic receivers and static associated calls with a
+# variadic tail (each received unpacked or unformatted arguments before).
+METHODS = r"""import std.io;
+
+struct Logger { level: i32, }
+struct Bag[T] { first: T, }
+struct Kit { size: i32, }
+
+impl Logger {
+    fn show(self: &Logger, prefix: str, ...args: str) void {
+        io.println("[{}] n={}", prefix, args.len());
+    }
+}
+
+impl Bag[T] {
+    fn sum(self: &Bag[T], ...values: i32) i32 {
+        var total: i32 = 0;
+        for value : values { total = total + value; }
+        total
+    }
+}
+
+impl Kit {
+    fn make(...values: i32) i32 { values.len() as i32 }
+    fn add(self: &Kit, ...values: i32) i32 {
+        var total = self.size;
+        for value : values { total = total + value; }
+        total
+    }
+}
+
+fn main() i32 {
+    const x: i32 = 5;
+    const l = Logger { level: 1 };
+    l.show("p {x} {}", "q");
+    const bag: Bag[i32] = Bag { first: 1 };
+    io.println("generic {} {}", bag.sum(7), bag.sum(1, 2, 3));
+    io.println("static {} {}", Kit.make(1, 2, 3), Kit.make());
+    const kit = Kit { size: 10 };
+    io.println("static receiver {}", Kit.add(&kit, 2, 3));
+    0
+}
+"""
+
+
 def run(command, root):
     return subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, timeout=300)
@@ -207,10 +252,13 @@ def check(qz, root):
     case = project(root, "variadic", VARIADIC)
     output = invoke([str(qz), "run", *common], case)
     assert output == "a 2\nb 2\nc 3\nd 5\ne 0\nm 2 1 0\nn 8 10\n", output
+    case = project(root, "methods", METHODS)
+    output = invoke([str(qz), "run", *common], case)
+    assert output == "[p 5 q] n=0\ngeneric 7 6\nstatic 3 0\nstatic receiver 15\n", output
     case = project(root, "try", TRY)
     output = invoke([str(qz), "run", *common], case)
     assert output == "failures 200000 small growth true\n", output
-    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders, closure captures, raw and placeholder-free templates, no leak when `?` leaves a placeholder, plain str variadics")
+    print("PASS string interpolation: literals, escapes, raw, templates, verbatim values, native/QZI, 3 diagnostics, use-after-move in placeholders, closure captures, raw and placeholder-free templates, no leak when `?` leaves a placeholder, plain str variadics, variadic method forms")
 
 
 def main():

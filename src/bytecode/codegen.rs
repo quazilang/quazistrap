@@ -7011,7 +7011,7 @@ impl<'a> FnCompiler<'a> {
     /// Pack source variadics into their internal pointer/count ABI. Formatting
     /// borrows display arguments; ordinary variadics transfer owned elements.
     fn compile_variadic_call(&mut self, name: &str, args: &[Expr]) -> u8 {
-        let fixed_count = self.variadic_fn_info[name];
+        let fixed_count = self.variadic_info_for(name).unwrap_or(0);
         let expanded = (name == "fmt.format")
             .then(|| crate::parser::format::expand_format_call_args(args))
             .flatten();
@@ -7122,7 +7122,7 @@ impl<'a> FnCompiler<'a> {
             this.mark_consumed_expr(arg);
             this.compile_value(arg)
         };
-        let Some(&fixed) = self.variadic_fn_info.get(call_target) else {
+        let Some(fixed) = self.variadic_info_for(call_target) else {
             return args.iter().map(|arg| compile(self, arg)).collect();
         };
         // `fixed` counts the receiver parameter.
@@ -7132,6 +7132,54 @@ impl<'a> FnCompiler<'a> {
         let (pointer, count) = self.pack_variadic_block(&tail);
         registers.extend([pointer, count]);
         registers
+    }
+
+    /// A format method call `receiver.method("template {x}", args...)`: the
+    /// template and arguments are formatted first and the method receives
+    /// the result (plus an empty tail when its variadic is not erased).
+    fn compile_format_method_call(
+        &mut self,
+        call_target: &str,
+        receiver: u8,
+        expanded: crate::parser::format::ExpandedFormatArgs,
+        span: Span,
+    ) -> u8 {
+        let template = if expanded.args.is_empty() {
+            expanded.clean_template.replace("{{", "{").replace("}}", "}")
+        } else {
+            expanded.clean_template
+        };
+        let constant = self.chunk.add_constant(ConstPoolEntry::Str(template));
+        let template_reg = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovConst, template_reg, constant));
+        self.begin_format_scratch(true);
+        let formatted = if expanded.args.is_empty() {
+            template_reg
+        } else {
+            let arguments = self.compile_format_arguments(&expanded.args, &expanded.specs);
+            self.emit_format_call(template_reg, &arguments, span)
+        };
+        self.end_format_scratch();
+        let mut call_args = vec![receiver, formatted];
+        if self.variadic_info_for(call_target).is_some() {
+            let (pointer, count) = self.pack_variadic_block(&[]);
+            call_args.extend([pointer, count]);
+        }
+        let result_dst = self.alloc_result_block(call_target);
+        self.emit_call_by_name(call_target, &call_args, result_dst);
+        result_dst
+    }
+
+    /// Fixed-parameter count of a variadic callable, looked up by its
+    /// declared name for monomorphized targets (`Bag.sum<i32>`).
+    fn variadic_info_for(&self, call_target: &str) -> Option<usize> {
+        self.variadic_fn_info
+            .get(call_target)
+            .or_else(|| {
+                self.variadic_fn_info
+                    .get(call_target.split('<').next().unwrap_or(call_target))
+            })
+            .copied()
     }
 
     /// Start a format call whose numeric arguments get private digit buffers.
@@ -7278,7 +7326,7 @@ impl<'a> FnCompiler<'a> {
         };
         let mut arguments = receiver.into_iter().collect::<Vec<_>>();
         arguments.push(view);
-        if self.variadic_fn_info.contains_key(name) {
+        if self.variadic_info_for(name).is_some() {
             let pointer = self.alloc_reg();
             self.chunk.emit(ri16(Opcode::MovI, pointer, 0));
             let count = self.alloc_reg();
@@ -8215,7 +8263,7 @@ impl<'a> FnCompiler<'a> {
                             self.end_format_scratch();
 
                             let mut call_args = vec![fmt_dst];
-                            if self.variadic_fn_info.contains_key(call_name.as_str()) {
+                            if self.variadic_info_for(call_name.as_str()).is_some() {
                                 let rp = self.alloc_reg();
                                 self.chunk.emit(ri16(Opcode::MovI, rp, 0));
                                 let rl = self.alloc_reg();
@@ -8231,7 +8279,7 @@ impl<'a> FnCompiler<'a> {
                         return self
                             .compile_runtime_format_wrapper(&call_name, args, expr.span, None);
                     }
-                    if self.variadic_fn_info.contains_key(call_name.as_str()) {
+                    if self.variadic_info_for(call_name.as_str()).is_some() {
                         return self.compile_variadic_call(&call_name, args);
                     } else if let Some(tag) =
                         self.enum_ctor_tag(&call_name, self.type_of_expr(expr))
@@ -8432,7 +8480,7 @@ impl<'a> FnCompiler<'a> {
                             None,
                         );
                     }
-                    if self.variadic_fn_info.contains_key(call_target.as_str()) {
+                    if self.variadic_info_for(call_target.as_str()).is_some() {
                         return self.compile_variadic_call(&call_target, args);
                     }
                     // Fallthrough: plain call (format expansion not applicable or no template match).
@@ -8531,6 +8579,11 @@ impl<'a> FnCompiler<'a> {
                             base_mangled.clone()
                         };
                         if self.fn_index.contains_key(&call_target) {
+                            // Variadic associated functions (and `Type.method(&value, ...)`)
+                            // pack their tail like free functions.
+                            if self.variadic_info_for(&call_target).is_some() {
+                                return self.compile_variadic_call(&call_target, args);
+                            }
                             let arg_regs: Vec<u8> = args
                                 .iter()
                                 .map(|a| {
@@ -8598,16 +8651,21 @@ impl<'a> FnCompiler<'a> {
                         _ => resolved_target,
                     };
                     if self.fn_index.contains_key(&call_target) {
-                        if self.str_variadic_fns.contains(&call_target)
-                            && !args.is_empty()
-                            && crate::parser::format::expand_format_call_args(args).is_none()
-                        {
-                            return self.compile_runtime_format_wrapper(
-                                &call_target,
-                                args,
-                                expr.span,
-                                Some(receiver),
-                            );
+                        if self.str_variadic_fns.contains(&call_target) && !args.is_empty() {
+                            return match crate::parser::format::expand_format_call_args(args) {
+                                Some(expanded) => self.compile_format_method_call(
+                                    &call_target,
+                                    receiver,
+                                    expanded,
+                                    expr.span,
+                                ),
+                                None => self.compile_runtime_format_wrapper(
+                                    &call_target,
+                                    args,
+                                    expr.span,
+                                    Some(receiver),
+                                ),
+                            };
                         }
                         let arg_regs = self.compile_method_arguments(&call_target, args);
                         let result_dst = self.alloc_result_block(&call_target);
@@ -8649,31 +8707,12 @@ impl<'a> FnCompiler<'a> {
                                     &mangled_check,
                                     receiver_place,
                                 );
-                                let template = if expanded.args.is_empty() {
-                                    expanded.clean_template.replace("{{", "{").replace("}}", "}")
-                                } else {
-                                    expanded.clean_template
-                                };
-                                let idx = self.chunk.add_constant(ConstPoolEntry::Str(template));
-                                let template_reg = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
-
-                                self.begin_format_scratch(true);
-                                let fmt_reg = if !expanded.args.is_empty() {
-                                    let coerced = self
-                                        .compile_format_arguments(&expanded.args, &expanded.specs);
-                                    self.emit_format_call(template_reg, &coerced, expr.span)
-                                } else {
-                                    template_reg
-                                };
-                                self.end_format_scratch();
-                                let result_dst = self.alloc_result_block(&mangled_check);
-                                self.emit_call_by_name(
+                                return self.compile_format_method_call(
                                     &mangled_check,
-                                    &[receiver, fmt_reg],
-                                    result_dst,
+                                    receiver,
+                                    expanded,
+                                    expr.span,
                                 );
-                                return result_dst;
                             }
                         }
                     }
