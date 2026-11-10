@@ -141,6 +141,11 @@ impl Analyzer {
             };
 
             let import_path = sym.import_path.as_deref().unwrap_or(local_name).to_string();
+            // Direct uses of the module itself (`fs.mkdir(...)`) need the
+            // whole import, whatever deeper paths are also accessed.
+            if paths.contains(&import_path) {
+                continue;
+            }
 
             // Sorted module paths sharing a dotted prefix are contiguous. A
             // path therefore has a deeper descendant exactly when its next

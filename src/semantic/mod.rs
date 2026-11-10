@@ -6431,6 +6431,27 @@ fn main() void {
     }
 
     #[test]
+    fn lazy_import_used_directly_produces_no_hint() {
+        // `std.exit` uses the imported module itself; narrowing the import
+        // to `std.io.stdout` would break that call.
+        let report = analyze(
+            r#"
+import std;
+
+fn main() void {
+    std.io.stdout.println("hello");
+    std.exit(0);
+}
+"#,
+        );
+        assert!(
+            !report.lazy_import_hints.iter().any(|h| h.broad_path == "std"),
+            "{:?}",
+            report.lazy_import_hints
+        );
+    }
+
+    #[test]
     fn lazy_import_exact_import_produces_no_hint() {
         let report = analyze(
             r#"
