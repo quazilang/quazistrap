@@ -1031,6 +1031,18 @@ impl Analyzer {
             .any(|r| r.contains(&span.start))
     }
 
+    /// Whether both spans lie in the same source file (always true for a
+    /// single anonymous source).
+    pub(super) fn same_source_file(&self, left: Span, right: Span) -> bool {
+        if self.source_files.is_empty() {
+            return true;
+        }
+        self.source_files
+            .iter()
+            .find(|file| file.contains(left))
+            .is_some_and(|file| file.contains(right))
+    }
+
     pub(super) fn describe_span(&self, span: Span) -> String {
         self.source_files
             .iter()

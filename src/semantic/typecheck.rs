@@ -5039,6 +5039,21 @@ impl Analyzer {
                         format!("opaque FFI type `{name}` cannot be constructed in Quazi"),
                     );
                 }
+                // The runtime String owns its text; a literal outside its
+                // declaring file could wrap a borrowed view (`String { data: v
+                // }`) and free it later. Its constructors copy instead.
+                if let Some(abi) = &self.checked_string_abi
+                    && abi.declaration.name == *name
+                    && !self.same_source_file(abi.declaration.span, expr.span)
+                {
+                    self.push_error(
+                        expr.span,
+                        "S14",
+                        format!(
+                            "`{name}` cannot be built with a struct literal outside its declaration; use `{name}.new()` or `{name}.from(text)`"
+                        ),
+                    );
+                }
                 if self.repr_c_unions.contains(name) && fields.len() != 1 {
                     self.push_error(
                         expr.span,

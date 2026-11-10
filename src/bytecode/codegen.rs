@@ -10927,11 +10927,14 @@ fn main() void { pending(); }
 
     #[test]
     fn injected_owned_formatter_and_argument_share_full_expression_cleanup() {
-        let module = "pub fn format(template: str, ...args: str) String { ret String { prefix: 7, data: template }; }";
+        let module = "pub fn format(template: str, ...args: str) String { ret String.wrap(template); }";
         let main = r#"
 import fmt;
 pub struct String { prefix: i32, data: str }
-impl String { fn free(self: String) void {} }
+impl String {
+    fn free(self: String) void {}
+    pub fn wrap(data: str) String { ret String { prefix: 7, data: data }; }
+}
 fn make_text() String { ret String { prefix: 9, data: "owned" }; }
 @format fn show(template: str, ...args: any) void {}
 fn main() void { show("{}", make_text()); }

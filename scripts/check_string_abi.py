@@ -61,9 +61,9 @@ def custom_runtime(qz, root):
         (prelude / "src").mkdir(parents=True)
         alias = " as String" if declaration == "Text" else ""
         (prelude / "src" / "mod.qz").write_text(f"pub import ./text.{declaration}{alias};")
-        (prelude / "src" / "text.qz").write_text(f"pub struct {declaration}{{tag:i32,data:str,}}impl {declaration}{{pub fn marker()i32{{ret 0;}}}}")
+        (prelude / "src" / "text.qz").write_text(f"pub struct {declaration}{{tag:i32,data:str,}}impl {declaration}{{pub fn marker()i32{{ret 0;}}pub fn make(tag:i32,data:str){declaration}{{ret {declaration}{{tag:tag,data:data}};}}}}")
         source = '''fn less[T](a:T,b:T)bool{ret a<b;}
-fn main()i32{var a=String{tag:99,data:"alpha"};var b=String{tag:11,data:"beta"};if !(a<b){ret 1;}if !less[String](a,b){ret 2;}ret String.marker();}'''
+fn main()i32{var a=String.make(99,"alpha");var b=String.make(11,"beta");if !(a<b){ret 1;}if !less[String](a,b){ret 2;}ret String.marker();}'''
         with selected_prelude(prelude):
             artifacts(qz, root, f"checked_offset_{declaration}", source, std=True)
     print("PASS String ABI: selected nonzero data offset and renamed export native/source-removed QZI/COFF", flush=True)
@@ -71,14 +71,14 @@ fn main()i32{var a=String{tag:99,data:"alpha"};var b=String{tag:11,data:"beta"};
 
 def runtime_cache(qz,root):
     work=root / "runtime_cache"
-    project(work, 'fn main()i32{var a=String{tag:7,data:"alpha"};var b=String{tag:9,data:"beta"};if !(a<b){ret 9;}ret String.marker();}')
+    project(work, 'fn main()i32{var a=String.make(7,"alpha");var b=String.make(9,"beta");if !(a<b){ret 9;}ret String.marker();}')
     manifest=work / "quazi.toml"
     manifest.write_text(manifest.read_text().replace("std=false\n", ""))
     roots=[]
     for number,fields in [(1,"data:str,tag:i32"),(2,"tag:i32,data:str")]:
         prelude=root / f"cache_prelude_{number}"
         (prelude / "src").mkdir(parents=True)
-        (prelude / "src/mod.qz").write_text(f"pub struct String{{{fields},}}impl String{{pub fn marker()i32{{ret {number};}}}}")
+        (prelude / "src/mod.qz").write_text(f"pub struct String{{{fields},}}impl String{{pub fn marker()i32{{ret {number};}}pub fn make(tag:i32,data:str)String{{ret String{{tag:tag,data:data}};}}}}")
         roots.append((prelude,number))
     binary=work / "native"
     for prelude,expected in [*roots,roots[0]]:
@@ -100,6 +100,14 @@ def check(qz, root, before=None):
             result = subprocess.run([str(qz), *options], cwd=work, text=True,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
             assert result.returncode != 0 and "S06" in result.stdout, (name, options, result.stdout)
+    # A struct literal of the runtime String could wrap a borrowed view.
+    work = root / "string_literal"
+    (work / "src").mkdir(parents=True)
+    (work / "quazi.toml").write_text('[package]\nname = "string_literal"\n\n[build]\nentry = "src/main.qz"\n')
+    (work / "src/main.qz").write_text('fn wrap(v:str)String{ret String{data:v,len:5,cap:0};}fn main()void{wrap("x");}')
+    result = subprocess.run([str(qz), "check"], cwd=work, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert result.returncode != 0 and "S14" in result.stdout and "struct literal" in result.stdout, result.stdout
     for name, source in [
         ("qualified", "import fake;fn compare(a:fake.String,b:fake.String)bool{ret a<b;}fn main()void{}"),
         ("import_alias", "import fake.String as Text;fn compare(a:Text,b:Text)bool{ret a<b;}fn main()void{}"),
