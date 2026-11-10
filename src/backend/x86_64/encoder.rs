@@ -4161,6 +4161,18 @@ impl<'a> FnEncoder<'a> {
                         }
                         emit!(asm.mov(slot(dst), rax));
                     }
+                    48 => {
+                        // quazi.f64.sqrt(x: f64) -> f64: SSE2 `sqrtsd`, correctly
+                        // rounded, NaN for negative input, -0.0 kept.
+                        emit!(asm.movsd_2(xmm0, slot(dst)));
+                        emit!(asm.sqrtsd(xmm0, xmm0));
+                        emit!(asm.movsd_2(slot(dst), xmm0));
+                    }
+                    49 | 50 => {
+                        // quazi.f64.to_bits(x: f64) -> u64 and
+                        // quazi.f64.from_bits(bits: u64) -> f64: registers hold
+                        // the IEEE-754 bits either way, so the value stays.
+                    }
                     45 => {
                         // quazi.stack.pointer() -> *u8: the current machine stack
                         // pointer (lets runtime code find the stack it runs on).

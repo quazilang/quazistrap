@@ -438,6 +438,9 @@ impl Instruction {
                     45 => "quazi.stack.pointer",
                     46 => "quazi.ptr.offset_from",
                     47 => "quazi.signal.install",
+                    48 => "quazi.f64.sqrt",
+                    49 => "quazi.f64.to_bits",
+                    50 => "quazi.f64.from_bits",
                     _ => "?",
                 };
                 format!(

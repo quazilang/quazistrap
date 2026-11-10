@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-10: f64 square-root and bit-pattern intrinsics](2026-11-10-f64-intrinsics.md)
+
 - [2026-11-10: Real-client Unicode and formatting protocol check](2026-11-10-lsp-real-client-unicode.md)
 
 - [2026-11-10: LSP features keep working while a document does not parse](2026-11-10-lsp-incomplete-source.md)
