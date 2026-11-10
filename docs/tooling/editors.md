@@ -14,6 +14,7 @@ attributes.
 | Neovim | `../vim-quazi/` | native Neovim 0.11+ LSP configuration | headless configuration, real-client LSP smoke and Unicode/formatting protocol check on Neovim 0.12 |
 | Helix | `../helix-quazi/` | configuration/runtime query package | canonical grammar-asset check and runtime LSP validation in a pseudo-terminal (Helix 25.07) |
 | Zed | `../zed-quazi/` | Zed language extension | canonical grammar-asset check, `cargo check`, and formatting check |
+| Emacs | `../emacs-quazi/` | major mode with Eglot integration | headless Eglot real-client smoke (hover, definition) on Emacs 31.1 |
 
 The canonical grammar is the separate [`tree-sitter`](../../../tree-sitter/)
 repository. Its immutable grammar revision is pinned by integrations that need
