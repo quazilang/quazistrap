@@ -98,14 +98,6 @@ pub fn link_object(
     let object = write_temp_object(object_bytes, stem)?;
     let result = (|| {
         let linker = match requested_linker {
-            Some(linker) if is_compiler_driver(&linker) => {
-                return Err(format!(
-                    "`{}` is a C compiler driver, not a linker: Quazi passes linker flags and \
-                     provides its own entry point\n\
-                     hint: pass a linker such as ld, ld.lld or mold (lld-link or link.exe for Windows)",
-                    linker.display()
-                ));
-            }
             Some(linker) => linker,
             None => LinkerInvocation::detect_for_target(&target).ok_or_else(|| match target.os {
                 Os::Windows => "no linker found; install lld-link or link.exe, set QUAZI_LINKER, or pass --linker".to_string(),
@@ -125,15 +117,16 @@ pub fn link_object(
     result
 }
 
-/// `cc`, `gcc`, `clang` and their prefixed or versioned spellings
-/// (`x86_64-linux-gnu-gcc-13`) take compiler flags and add C startup files.
+/// `cc`, `gcc`, `clang`, MSVC `cl`/`clang-cl` and their prefixed or
+/// versioned spellings (`x86_64-linux-gnu-gcc-13`) take compiler flags and
+/// add C startup files.
 fn is_compiler_driver(linker: &Path) -> bool {
     let Some(name) = linker.file_stem().and_then(|name| name.to_str()) else {
         return false;
     };
     let base = name.trim_end_matches(|ch: char| ch.is_ascii_digit() || ch == '.' || ch == '-');
     let base = base.rsplit('-').next().unwrap_or(base);
-    matches!(base, "cc" | "gcc" | "clang" | "c++" | "g++" | "clang++")
+    matches!(base, "cc" | "gcc" | "clang" | "c++" | "g++" | "clang++" | "cl")
 }
 
 fn is_object_path(flag: &str, os: super::target::Os) -> bool {
@@ -208,6 +201,14 @@ impl LinkerInvocation {
     }
 
     pub fn run(&self) -> Result<(), String> {
+        if is_compiler_driver(&self.linker) {
+            return Err(format!(
+                "`{}` is a C compiler driver, not a linker: Quazi passes linker flags and \
+                 provides its own entry point\n\
+                 hint: pass a linker such as ld, ld.lld or mold (lld-link or link.exe for Windows)",
+                self.linker.display()
+            ));
+        }
         let args = self.build_args();
         let output = std::process::Command::new(&self.linker)
             .args(&args)
@@ -422,10 +423,10 @@ mod tests {
 
     #[test]
     fn compiler_drivers_are_rejected_as_linkers() {
-        for driver in ["cc", "/usr/bin/gcc", "clang-17", "x86_64-linux-gnu-gcc-13", "g++"] {
+        for driver in ["cc", "/usr/bin/gcc", "clang-17", "x86_64-linux-gnu-gcc-13", "g++", "clang-cl", "cl.exe"] {
             assert!(super::is_compiler_driver(Path::new(driver)), "{driver}");
         }
-        for linker in ["ld", "ld.lld", "/usr/bin/mold", "lld-link", "link.exe", "ld.bfd"] {
+        for linker in ["ld", "ld.lld", "/usr/bin/mold", "lld-link", "link.exe", "ld.bfd", "ld.gold", "x86_64-w64-mingw32-ld"] {
             assert!(!super::is_compiler_driver(Path::new(linker)), "{linker}");
         }
     }

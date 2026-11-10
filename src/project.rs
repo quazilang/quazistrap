@@ -703,15 +703,19 @@ impl ProjectContext {
 }
 
 /// Why `name` cannot name a package: a package's namespace is visible as an
-/// identifier, so it would shadow a declaration the prelude exports to every
-/// file (a package named `panic` broke every `panic(...)` call in the
-/// standard library).
+/// identifier in every source, including the prelude and std, so it would
+/// shadow a declaration the prelude exports (a package named `panic` broke
+/// every `panic(...)` call in std) or a prelude module that prelude code
+/// calls through (`layout.size_of`, `qoroutine`).
 fn reserved_package_name(name: &str) -> Option<String> {
-    let prelude = crate::loader::find_builtin_prelude_root()?;
-    let entry = std::fs::read_to_string(prelude.join("src/mod.qz")).ok()?;
-    prelude_item_exports(&entry)
-        .any(|export| export == name)
-        .then(|| format!("the prelude exports '{name}' to every source file"))
+    let prelude = crate::loader::find_builtin_prelude_root()?.join("src");
+    let entry = std::fs::read_to_string(prelude.join("mod.qz")).ok()?;
+    if prelude_item_exports(&entry).any(|export| export == name) {
+        return Some(format!("the prelude exports '{name}' to every source file"));
+    }
+    let module = prelude.join(format!("{name}.qz"));
+    (name != "mod" && module.is_file())
+        .then(|| format!("'{name}' names a prelude module"))
 }
 
 /// Item names re-exported by the prelude entry (`pub import ./module.Item;`).
@@ -1370,8 +1374,11 @@ mod tests {
         let message = super::reserved_package_name("panic").expect("panic is reserved");
         assert!(message.contains("prelude exports 'panic'"), "{message}");
         assert!(super::reserved_package_name("Channel").is_some());
-        // Module re-exports and ordinary names stay available.
-        for allowed in ["fmt", "option", "demo", "panics"] {
+        for module in ["layout", "qoroutine", "fmt"] {
+            let message = super::reserved_package_name(module).expect("prelude module");
+            assert!(message.contains("prelude module"), "{message}");
+        }
+        for allowed in ["demo", "panics", "mod", "json"] {
             assert!(super::reserved_package_name(allowed).is_none(), "{allowed}");
         }
         let exports: Vec<&str> =
