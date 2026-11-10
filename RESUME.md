@@ -2,6 +2,15 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, math accuracy)
+
+quazistrap 8096655 intrinsics quazi.f64.sqrt/to_bits/from_bits (ids 48-50);
+std b464748 rewrote sqrt/cbrt/trunc/floor/ceil/round/sin/cos/tan/exp/atan/
+acos/sinh/tanh (old ones were off by up to 1e12+ ULP) and adds
+scripts/check_math_accuracy.py + docs/MATH_ACCURACY.md (bounds enforced;
+pow stays 43 ULP). std now NEEDS the matching compiler (coordinated change).
+std Mathematics 10/11 (63.0%). Also std 5815e37 fs.read_dir_names.
+
 ## Checkpoint (2026-11-10, second review fixes)
 
 Review of 2ff8a27..b561afb, all fixed: 7ceefa1 format methods via sema path,
