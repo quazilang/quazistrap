@@ -2,6 +2,14 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-10, std os/time; process timeout withdrawn)
+
+std e0f7a24 os.args() (Linux /proc/self/cmdline, Windows CommandLineToArgvW),
+11df3a0 time.Interval; std plan 67.9%. A Child.wait_timeout commit was
+withdrawn (D-011 defers timeouts; asked В17). Asked В16 (panic recursion,
+D-006) and В18 (D-004: safety fixes that break permissive programs).
+Waiting: В9-В18.
+
 ## Checkpoint (2026-11-10, std fs/path and ownership holes)
 
 std: path.Path (16cbc21), fs.metadata/symlink_metadata (bfc7b7b), fs.walk
