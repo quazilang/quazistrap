@@ -122,10 +122,14 @@ pub fn expand_format_call_args(args: &[Expr]) -> Option<ExpandedFormatArgs> {
                                 .len();
                     let real_start = file_base + name_start_in_s + leading_spaces;
                     let real_end = real_start + name_part.chars().count();
-                    // Lines and columns follow literal line breaks; offsets
-                    // are exact only without escapes (see the note above).
+                    // Lines and columns follow literal line breaks. With
+                    // escapes the decoded text no longer matches the source
+                    // (an escaped `\n` is not a line break), so positions
+                    // stay on the literal's first line.
                     let prefix = &s[..i + 1];
-                    let (line, col) = match prefix.rfind('\n') {
+                    let exact = s.chars().count() + 2
+                        == template_span.end.saturating_sub(template_span.start);
+                    let (line, col) = match prefix.rfind('\n').filter(|_| exact) {
                         Some(newline) => (
                             template_span.line + prefix.matches('\n').count(),
                             prefix[newline + 1..].chars().count() + leading_spaces + 1,
