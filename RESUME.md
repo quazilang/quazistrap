@@ -21,7 +21,7 @@ positions, formatting == `qz fmt`). Run with QUAZI_LSP_COMMAND=<qz> nvim
 item: Zed/Helix runtime validation. Helix done: helix-quazi `729ef06`
 tests/lsp-runtime.py (Helix via `nix build nixpkgs#helix`, pty + logging
 proxy; hover/definition/completion). helix-quazi and zed-quazi (`e123cc3`) now
-pin tree-sitter 22c684a (local, ahead of origin by 3): publish tree-sitter
+pin tree-sitter 1bc33fc (local, ahead of origin): publish tree-sitter
 with them. Zed needs a GPU display (not available); asked В12 whether Helix
 alone satisfies the requirement.
 
