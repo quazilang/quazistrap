@@ -153,3 +153,7 @@ scheduler, method-based channels, `std.thread` with `JoinHandle`/`Mutex`/
 `AtomicI64`](qoroutines.md). Open points (type spelling, panic policy,
 preemption staging, closure spawns, JIT scope) are tracked in the workspace
 `asks.txt`.
+
+## D-021: maintainer answers of 2026-11-10
+
+Decided 2026-11-10: [numeric to_str, consuming match, plain variadics, thread.spawn captures, casts, fs and process requests](maintainer-answers-2026-11-10.md).
