@@ -1,0 +1,33 @@
+// Shell-style scripting: walk a directory and run a program in every
+// subdirectory, like `for d in */; do (cd "$d" && git status --short); done`.
+import std.io;
+import std.fs;
+import std.process;
+import std.process.ExitStatus;
+
+fn main(args: Array[str]) i32 {
+    const root: str = if (args.len() > 1) { args[1] } else { "." };
+    var failures: i32 = 0;
+    for entry : fs.read_dir(root).unwrap() {
+        if (!entry.is_dir()) { continue; }
+        // Looked up in PATH; runs with the entry as its working directory.
+        const status = process.Command.new("git")
+            .arg("status")
+            .arg("--short")
+            .current_dir(entry.path_str())
+            .env("GIT_PAGER", "cat")
+            .status();
+        if (status.is_err()) {
+            io.println("{}: could not start git", entry.name());
+            failures = failures + 1;
+            continue;
+        }
+        const ok: bool = match status.unwrap() {
+            ExitStatus.Code(0) => true,
+            _ => false,
+        };
+        const label: str = if (ok) { "ok" } else { "not a repository" };
+        io.println("{}: {}", entry.name(), label);
+    }
+    failures
+}

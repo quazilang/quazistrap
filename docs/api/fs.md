@@ -93,7 +93,7 @@ const config: Result[String, fs.FsError] = fs.read_to_string("settings.qz");
 | `count_entries(path)` | Counts immediate entries, excluding `.` and `..`; it does not recurse. Native enumeration errors are returned. |
 | `read_dir_names(path)` | `Result[Array[String], FsError]`: names of the immediate entries (no `.`/`..`) as owned strings in operating-system order. |
 | `walk(root)` | `Result[Array[String], FsError]`: every entry below `root` as a `/`-separated relative path, depth first, directories before their contents. Symbolic links are listed but not followed, so link cycles cannot recur. |
-| `metadata(path)` / `symlink_metadata(path)` | `Result[Metadata, FsError]`, following links or describing the link itself. `Metadata` offers `len()`, `kind()` (`FileKind.File`/`Directory`/`Symlink`/`Other`), `is_file()`, `is_dir()`, `is_symlink()`, `readonly()` (no write bit on Linux, read-only attribute on Windows) and `modified_unix_nanos()`. Windows does not resolve links for `metadata`; NetBSD returns `Unsupported`. |
+| `metadata(path)` / `symlink_metadata(path)` | `Result[Metadata, FsError]`, following links or describing the link itself. `Metadata` offers `len()`, `file_type()` (`FileType.File`/`Directory`/`Symlink`/`Other`), `is_file()`, `is_dir()`, `is_symlink()`, `readonly()` (no write bit on Linux, read-only attribute on Windows) and `modified_unix_nanos()`. Windows does not resolve links for `metadata`; NetBSD returns `Unsupported`. |
 | `remove(path)` | Removes a file, not a directory. |
 | `mkdir(path)` | Creates one directory. On Linux it requests `0o755` before `umask`; Windows ignores POSIX mode bits. Parent directories are not created. |
 | `mkdir_mode(path, mode)` | Linux-specific requested mode; Windows creates a directory but does not apply the mode. |
@@ -105,6 +105,20 @@ const config: Result[String, fs.FsError] = fs.read_to_string("settings.qz");
 These APIs are subject to time-of-check/time-of-use races. Do not authorize a
 security-sensitive operation based on `exists`, `readable`, or `writable` and
 then assume a subsequent path operation affects the same object.
+
+## Directory entries and helpers
+
+| API | Semantics |
+| --- | --- |
+| `read_dir(path)` | `Result[ReadDir, FsError]`: the entries of a directory (no `.`/`..`) in operating-system order; iterate with `for entry : fs.read_dir(path)? { ... }`. An empty path is the current directory. |
+| `DirEntry` | `name()`, `path()` (a `Path`), `path_str()`, `file_type()`, `is_file()`, `is_dir()`, `is_symlink()` (from the listing, links not followed) and `metadata()` (the entry itself). |
+| `FileType` | `File`, `Directory`, `Symlink` or `Other`; also `Metadata.file_type()`. |
+| `is_dir(path)` / `is_file(path)` / `is_symlink(path)` | `false` when the path cannot be examined. |
+| `create_dir_all(path)` | Creates missing parents; an existing directory is accepted. |
+| `canonicalize(path)` | `Result[Path, FsError]`: the absolute path with links, `.` and `..` resolved (Linux); Windows returns the full path name. The path must exist. |
+| `write(path, contents)` | Creates or truncates the file and writes `contents`. |
+
+`fs` re-exports `Path` and its `PathBuf` alias from [`std.path`](path.md).
 
 ## Buffered I/O
 

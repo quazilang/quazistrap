@@ -1,0 +1,6 @@
+[package]
+name = "shell-scripting"
+version = "0.1.0"
+
+[build]
+entry = "src/main.qz"

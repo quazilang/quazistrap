@@ -9,7 +9,9 @@ components everywhere; Windows builds also accept `\` and treat `C:\...` and
 
 | API | Semantics |
 | --- | --- |
-| `Path.new(text)` / `as_str()` | Wraps a copy of `text`; returns the text. |
+| `Path.new(text)` / `as_str()` / `to_string()` | Wraps a copy of `text`; returns the text or an owned copy. `PathBuf` is an alias of `Path` (it owns its text). |
+| `with_extension(ext)` | Replaces the extension (adds one; an empty `ext` removes it). |
+| `starts_with(base)` | Whether the normalized path begins with all components of `base`. |
 | `is_absolute()` | Rooted at a separator (after a Windows drive). |
 | `join(child)` | Appends `child` with one separator; an absolute `child` replaces the path and an empty base yields `child`. |
 | `file_name()` | `Option[String]`: the last component, ignoring trailing separators; `None` for a root or a path ending in `..`. |

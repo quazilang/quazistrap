@@ -44,6 +44,7 @@ qz run
 | 33 | `ini-library` | Source-backed INI library with owned text and lookup APIs |
 | 34 | `ini-parser` | Local INI dependency, executable checks, and QZI-compatible API |
 | 37 | `qoroutines` | `qo`, `join`, channels, and panics reported by `join` |
+| 38 | `shell-scripting` | `fs.read_dir` iteration and `process.Command` (PATH lookup, working directory, environment) |
 
 Examples 19–21 need a C toolchain. Example 26 runs as two processes:
 

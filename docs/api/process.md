@@ -2,10 +2,42 @@
 
 Audience: Quazi application developers.
 
-Status: Linux implementation available. Windows process creation and all
-resource-retaining/asynchronous extensions are blocked on the implementation
-of [D-014](../decisions/whole-program-ownership.md). Applications requiring
-Windows support must not depend on this module.
+Status: Linux implementation available. `Command` adds PATH lookup, working
+directories and environments at the maintainers' request
+([D-021](../decisions/maintainer-answers-2026-11-10.md)); Windows process
+creation and asynchronous extensions remain pending.
+
+## `Command` (scripting)
+
+`Command` builds and runs a program like a shell would, without a shell
+(D-021). Builders take and return the command, so calls chain:
+
+```quazi
+import std.process;
+
+fn main() i32 {
+    const status = process.Command.new("sh")
+        .arg("-c")
+        .arg("exit 3")
+        .current_dir("/tmp")
+        .env("MODE", "test")
+        .status();
+    if (status.is_err()) { ret 1; }
+    ret 0;
+}
+```
+
+| API | Semantics |
+| --- | --- |
+| `Command.new(program)` | A program name without `/` is looked up in the `PATH` the child will see (an `env("PATH", ...)` override first); a path is used as is. |
+| `arg(value)` / `args(values)` | Append arguments; `program` is `argv[0]`. |
+| `current_dir(dir)` | Working directory of the child; a failing `chdir` is reported as `SpawnFailed`. |
+| `env(name, value)` / `env_remove(name)` / `env_clear()` | Adjust the inherited environment; later calls win. |
+| `spawn()` | Starts the child and returns a `Child`; a failed `execve` (missing program, no permission) is reported before returning. |
+| `status()` | Spawns and waits, returning the `ExitStatus`. |
+
+`Command` is Linux-only for now (fork/execve in the standard library; other
+targets return `SpawnFailed(38)`); standard streams are inherited.
 
 ## Launching
 
