@@ -716,7 +716,7 @@ and trait methods in their defining context, then refreshes imported copies.
 Function parameter/return and retention seeds use source spans. This prerequisite
 does not close namespace isolation.
 Call-site types and source codegen still need coordinated scope migration. See
-[the committed boundary](docs/internals/source-type-context.md) and `RESUME.md`
+[the committed boundary](docs/internals/source-type-context.md) and the workspace `RESUME.md` (outside this repository)
 for verification limits and unfinished work.
 
 Preserve binder identity throughout name resolution. A qualified imported type
