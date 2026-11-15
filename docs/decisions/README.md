@@ -164,3 +164,7 @@ Decided 2026-11-10: [numeric to_str, consuming match, plain variadics, thread.sp
 ## D-022: checked integer arithmetic
 
 Decided 2026-11-15: [integer `+ - * /` and unary minus panic on overflow; constants that overflow are compile errors; `wrapping_*` wrap explicitly](checked-integer-arithmetic.md).
+
+## D-023: maintainer answers of 2026-11-15
+
+Decided 2026-11-15: [to_str removal, consuming match, plain variadics, closures, nested panics, process timeouts, deserialization errors, module constants, trait bounds before generic Map](maintainer-answers-2026-11-15.md).
