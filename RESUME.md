@@ -2,6 +2,28 @@
 
 Audience: the next assistant continuing the current `dev` worktree.
 
+## Checkpoint (2026-11-15, quaziprompt.txt + quazifixqziprompt.txt goal)
+
+Done (committed, tests + scripts green): f2c2372 int<->float casts and real
+narrowing (В15Г); 501dd5b/2455f1f checked integer arithmetic (D-022,
+wrapping_* in prelude; std migrated); 23486a8 literal range check (S06);
+89f1a24 `const c = C.B` typed (match exhaustiveness); 822dc43 push_str
+appends in place; e28dbdf block-arm parse message; 1145fc6 for over
+Array[T] + `for index, value`; 841d630 stack overflow report (altstack);
+4621c19 optional if/for/match parentheses; ba00fa2 universal QZI v15
+(linux/windows/netbsd variants, fail_build, check_universal_qzi.py);
+35defb3 structured `qz doc` + documented prelude reference; perf d0df5f5,
+7094f2e, 4c0f0a5, 99ee2be, c0112a4 (quazifetch 119056 -> 90384 bytes).
+std: aaaf779 read_dir -> Array[DirEntry], count_entries/read_dir_names
+removed, Path fs methods; c25fde8 every std item documented
+(docs/reference, check_reference.py strict).
+
+Open: generic Map (asked В22), RESUME.md removal (asked В21), further size
+work (slot compaction, ICF of identical monomorphized chunks, conditional
+destructor roots, tiny-function inlining, register allocation), real
+NetBSD/Windows runs of universal QZI (only Wine and byte-identity checked).
+Waiting: В16-В22.
+
 ## Checkpoint (2026-11-10, docs verification and diagnostics)
 
 2c29151 scripts/check_docs.py (links + complete examples; 11 doc examples
