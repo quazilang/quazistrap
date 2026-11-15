@@ -1077,8 +1077,7 @@ impl<'a> FnEncoder<'a> {
                 emit!(asm.set_label(lbl));
             }
             emit!(asm.xor(rax, rax));
-            emit!(asm.mov(rsp, rbp));
-            emit!(asm.pop(rbp));
+            emit!(asm.leave()); // mov rsp, rbp; pop rbp
             emit!(asm.ret());
         }
 
@@ -2199,8 +2198,7 @@ impl<'a> FnEncoder<'a> {
                 } else if rax_holds != Some(instr.ops[0]) {
                     emit!(asm.mov(rax, slot(instr.ops[0])));
                 }
-                emit!(asm.mov(rsp, rbp));
-                emit!(asm.pop(rbp));
+                emit!(asm.leave()); // mov rsp, rbp; pop rbp
                 emit!(asm.ret());
             }
 
