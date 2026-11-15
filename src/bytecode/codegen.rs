@@ -3157,6 +3157,18 @@ impl<'a> FnCompiler<'a> {
         converted
     }
 
+    /// Integer arithmetic runs on 64-bit slots; a result of a narrower type
+    /// wraps to its width (platform contract: native wrap, not checked) so the
+    /// slot stays sign- or zero-extended like every other value of the type.
+    fn wrap_narrow_integer(&mut self, value: u8, key: (usize, usize)) -> u8 {
+        match self.type_of_span(key).as_ref().and_then(NumericKind::of) {
+            Some(NumericKind::Integer { bits, signed }) if bits < 64 => {
+                self.emit_integer_narrowing(value, bits, signed)
+            }
+            _ => value,
+        }
+    }
+
     fn emit_integer_narrowing(&mut self, value: u8, bits: u32, signed: bool) -> u8 {
         let narrowed = self.alloc_reg();
         if signed {
@@ -7838,11 +7850,17 @@ impl<'a> FnCompiler<'a> {
                         let src = self.compile_expr(inner);
                         let dst = self.alloc_reg();
                         let mut instruction = rrr(Opcode::Neg, dst, src, 0);
-                        if self.is_float_span((inner.span.start, inner.span.end)) {
+                        let inner_key = (inner.span.start, inner.span.end);
+                        if self.is_float_span(inner_key) {
                             instruction.flags |= FLOAT_FLAG;
+                            self.chunk.emit(instruction);
+                            return dst;
                         }
                         self.chunk.emit(instruction);
-                        dst
+                        if crate::evaluation::is_integer_literal_expression(inner) {
+                            return dst;
+                        }
+                        self.wrap_narrow_integer(dst, inner_key)
                     }
                     UnaryOpKind::Not => {
                         let src = self.compile_expr(inner);
@@ -7904,8 +7922,12 @@ impl<'a> FnCompiler<'a> {
                     unreachable!("eager binary operands");
                 };
                 let left_key = (left.span.start, left.span.end);
+                let width_operand = crate::evaluation::integer_width_operand(op, left, right);
                 let is_float = self.is_float_span(left_key);
-                let is_unsigned = self.is_unsigned_span(left_key);
+                // A literal-only left operand takes the right operand's type.
+                let is_unsigned = self.is_unsigned_span(
+                    width_operand.map_or(left_key, |operand| (operand.span.start, operand.span.end)),
+                );
                 let is_str = self.is_str_span(left_key);
                 let right_is_str = self.is_str_span((right.span.start, right.span.end));
                 let string_comparison = is_comparison(op) && is_str && right_is_str;
@@ -8010,6 +8032,26 @@ impl<'a> FnCompiler<'a> {
                     _ => {
                         self.chunk.emit(rrr(Opcode::Add, dst, r1, r2));
                     } // fallback
+                }
+                // Sums, differences, products, shifts and MIN / -1 can leave
+                // the range of a narrow integer type.
+                if !is_float
+                    && !is_str
+                    && matches!(
+                        op,
+                        BinOpKind::Add
+                            | BinOpKind::Sub
+                            | BinOpKind::Mul
+                            | BinOpKind::Div
+                            | BinOpKind::Shl
+                    )
+                {
+                    if let Some(operand) = width_operand {
+                        return self.wrap_narrow_integer(
+                            dst,
+                            (operand.span.start, operand.span.end),
+                        );
+                    }
                 }
                 dst
             }
@@ -8131,6 +8173,11 @@ impl<'a> FnCompiler<'a> {
                     rhs,
                     expr.span,
                 );
+                let result = if is_float {
+                    result
+                } else {
+                    self.wrap_narrow_integer(result, (target.span.start, target.span.end))
+                };
                 self.store_lvalue(&address, result);
                 result
             }
@@ -8158,6 +8205,11 @@ impl<'a> FnCompiler<'a> {
                         copy
                     };
                     self.chunk.emit(rrr(opcode, register, register, 0));
+                    let wrapped =
+                        self.wrap_narrow_integer(register, (inner.span.start, inner.span.end));
+                    if wrapped != register {
+                        self.chunk.emit(rrr(Opcode::Mov, register, wrapped, 0));
+                    }
                     return result;
                 }
                 let address = self.compute_lvalue_addr(inner);
@@ -8176,6 +8228,11 @@ impl<'a> FnCompiler<'a> {
                 let result = self.alloc_reg();
                 let arithmetic = if is_float { rrr_f } else { rrr };
                 self.chunk.emit(arithmetic(opcode, result, old, one));
+                let result = if is_float {
+                    result
+                } else {
+                    self.wrap_narrow_integer(result, (inner.span.start, inner.span.end))
+                };
                 self.store_lvalue(&address, result);
                 if *prefix { result } else { old }
             }

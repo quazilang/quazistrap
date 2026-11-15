@@ -3214,11 +3214,19 @@ impl Analyzer {
                     }
                 }
 
+                let const_value = inner_eval
+                    .const_value
+                    .and_then(|value| Self::const_from_unary(op, value))
+                    .map(|value| {
+                        if crate::evaluation::is_integer_literal_expression(inner) {
+                            value
+                        } else {
+                            self.wrap_const_integer(value, inner_eval.ty.as_ref())
+                        }
+                    });
                 ExprEval {
                     ty: inner_eval.ty,
-                    const_value: inner_eval
-                        .const_value
-                        .and_then(|value| Self::const_from_unary(op, value)),
+                    const_value,
                 }
             }
             ExprKind::Cast { expr: inner, ty } => {
@@ -3407,11 +3415,36 @@ impl Analyzer {
                     self.check_power_expression(expr.span, left, right, &left_eval, &right_eval)
                 } else {
                     let ty = self.infer_binary_type(expr.span, op, &left_eval.ty, &right_eval.ty);
+                    let width_operand = crate::evaluation::integer_width_operand(op, left, right);
+                    // `1 + x` has the type of `x`: integer literals are `i32`
+                    // only for want of a typed operand.
+                    let ty = match (&ty, &right_eval.ty) {
+                        (Some(result), Some(right_ty))
+                            if width_operand.is_some_and(|operand| {
+                                std::ptr::eq(operand, right.as_ref())
+                            }) && Self::is_integer(&self.resolve_type_aliases(result))
+                                && Self::is_integer(&self.resolve_type_aliases(right_ty)) =>
+                        {
+                            Some(right_ty.clone())
+                        }
+                        _ => ty,
+                    };
                     self.mark_binary_autoderef(left, &left_eval.ty, right, &right_eval.ty);
                     let const_value = if let (Some(lhs), Some(rhs)) =
                         (&left_eval.const_value, &right_eval.const_value)
                     {
-                        Self::const_from_binary(op, lhs, rhs, left_eval.ty.as_ref())
+                        let signedness = width_operand.and_then(|operand| {
+                            if std::ptr::eq(operand, left.as_ref()) {
+                                left_eval.ty.as_ref()
+                            } else {
+                                right_eval.ty.as_ref()
+                            }
+                        });
+                        Self::const_from_binary(op, lhs, rhs, signedness.or(left_eval.ty.as_ref()))
+                            .map(|value| match width_operand {
+                                Some(_) => self.wrap_const_integer(value, ty.as_ref()),
+                                None => value,
+                            })
                     } else {
                         self.check_math_identities(expr.span, op, &left_eval, &right_eval)
                     };
@@ -7039,6 +7072,17 @@ impl Analyzer {
             Literal::String(v) => Some(ConstValue::String(v.clone())),
             Literal::Bytes(_) => None,
             Literal::Bool(v) => Some(ConstValue::Bool(*v)),
+        }
+    }
+
+    /// Wrap an integer constant to the width of its narrow integer type, as
+    /// runtime arithmetic does (codegen `wrap_narrow_integer`).
+    fn wrap_const_integer(&self, value: ConstValue, ty: Option<&TypeKind>) -> ConstValue {
+        match (&value, ty.map(|ty| self.resolve_type_aliases(ty))) {
+            (ConstValue::Int(_), Some(ty)) if Self::is_integer(&ty) => {
+                Self::const_numeric_cast(value.clone(), &ty, &ty).unwrap_or(value)
+            }
+            _ => value,
         }
     }
 

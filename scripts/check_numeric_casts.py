@@ -4,7 +4,9 @@ re-extends, integer to float rounds to nearest, float to integer truncates and
 saturates (NaN is 0), and f64 to f32 rounds. Runtime operands come through
 functions so constant folding cannot hide the lowering; constant operands
 check the compile-time folding gives the same answers. `as` binds tighter
-than unary minus, so negative operands are parenthesized. Native and QZI."""
+than unary minus, so negative operands are parenthesized. Arithmetic on
+narrow integers wraps at the type width, while literal-only expressions keep
+64 bits and a literal operand takes the other operand's type. Native and QZI."""
 
 import argparse
 import subprocess
@@ -27,6 +29,11 @@ fn main() i32 {
     println("{} {}", tenth as f64 == 0.1, tenth as f64 == 0.1 as f32 as f64);
     const count: usize = 10;
     println("{}", 25.0 / (count as f64));
+    const top: u16 = 65535 as u16;
+    var small: i8 = 127 as i8;
+    small++;
+    println("{} {} {} {}", real(1.0) as u16 + top, small, -(1 as u16), (200 as u8) + (200 as u8));
+    println("{} {} {}", 1 << 40, 100000 * 100000, 10 / big(18446744073709551615));
     0
 }
 """
@@ -39,6 +46,8 @@ EXPECTED = """44 4294967295 -56 25536
 3 32767 0
 false true
 2.5
+0 -128 65535 144
+1099511627776 10000000000 0
 """
 
 
