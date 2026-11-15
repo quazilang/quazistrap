@@ -31,6 +31,12 @@ fn safe_label(name: &str) -> String {
         .collect()
 }
 
+/// Printed by the Linux crash handler when a fault hits the guard page below
+/// the stack (`crash_handler = true`).
+pub(crate) const STACK_OVERFLOW_MESSAGE: &[u8] =
+    b"\nthread 'main' has overflowed its stack\nfatal runtime error: stack overflow (unbounded recursion or a too large local value)\n";
+
+
 pub struct SectionAccumulator {
     pub text_id: SectionId,
     pub rodata_id: SectionId,
@@ -122,6 +128,14 @@ impl SectionAccumulator {
             "__quazi_proc_self_environ",
             proc_offset,
             19,
+        );
+        let overflow_offset = obj.append_section_data(self.rodata_id, STACK_OVERFLOW_MESSAGE, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__quazi_stack_overflow",
+            overflow_offset,
+            STACK_OVERFLOW_MESSAGE.len() as u64,
         );
         let fatal_offset = obj.append_section_data(self.rodata_id, b"fatal: signal 0x ", 1);
         sym_table.define_data(obj, self.rodata_id, "__quazi_fatal_sig", fatal_offset, 16);

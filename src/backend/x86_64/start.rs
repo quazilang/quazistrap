@@ -199,6 +199,31 @@ impl StartStub {
         emit!(asm.mov(r13, rsi)); // info pointer
         emit!(asm.mov(r14, rdx)); // ucontext pointer
 
+        // A SIGSEGV within 64 KiB below (or one page above) the interrupted
+        // stack pointer hit the stack guard page: report a stack overflow.
+        // The handler runs on the alternate signal stack set up in _start.
+        let mut not_overflow = asm.create_label();
+        emit!(asm.cmp(r12, 11i32));
+        emit!(asm.jne(not_overflow));
+        emit!(asm.mov(rax, qword_ptr(r13 + 0x10))); // si_addr
+        emit!(asm.mov(rcx, qword_ptr(r14 + 0xA0))); // interrupted RSP
+        emit!(asm.sub(rcx, 0x10000i32));
+        emit!(asm.sub(rax, rcx));
+        emit!(asm.cmp(rax, 0x11000i32));
+        emit!(asm.jae(not_overflow));
+        emit!(asm.mov(rax, 1i64));
+        emit!(asm.mov(rdi, 2i64));
+        lea_rip!(rsi, "__quazi_stack_overflow");
+        emit!(asm.mov(
+            rdx,
+            crate::backend::x86_64::sections::STACK_OVERFLOW_MESSAGE.len() as i64
+        ));
+        emit!(asm.syscall());
+        emit!(asm.mov(rdi, 134i64));
+        emit!(asm.mov(rax, 231i64)); // exit_group
+        emit!(asm.syscall());
+        emit!(asm.set_label(&mut not_overflow));
+
         // write(2, "== CRASHED ==\n", 14)
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
@@ -341,7 +366,10 @@ impl StartStub {
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
         lea_rip!(rsi, "__quazi_trace_hint");
-        emit!(asm.mov(rdx, 41i64));
+        emit!(asm.mov(
+            rdx,
+            crate::backend::x86_64::sections::TRACE_HINT.len() as i64
+        ));
         emit!(asm.syscall());
         emit!(asm.set_label(&mut skip_hint));
 
@@ -469,11 +497,35 @@ impl StartStub {
         // sa_sigaction = __quazi_crash_handler
         lea_rip!(rax, "__quazi_crash_handler");
         emit!(asm.mov(qword_ptr(rsp), rax));
-        // sa_flags = SA_SIGINFO | SA_RESTORER (0x04000004)
-        emit!(asm.mov(dword_ptr(rsp + 8), 0x04000004u32 as i32));
+        // sa_flags = SA_SIGINFO | SA_RESTORER | SA_ONSTACK (0x0C000004)
+        emit!(asm.mov(dword_ptr(rsp + 8), 0x0C000004u32 as i32));
         // sa_restorer = __quazi_sigreturn
         lea_rip!(rax, "__quazi_sigreturn");
         emit!(asm.mov(qword_ptr(rsp + 16), rax));
+
+        // The crash handler must run on its own stack to report a stack
+        // overflow: mmap 64 KiB and register it with sigaltstack. On failure
+        // the handler simply runs on the faulting stack, as before.
+        emit!(asm.xor(edi, edi));
+        emit!(asm.mov(esi, 0x10000i32));
+        emit!(asm.mov(edx, 3i32)); // PROT_READ | PROT_WRITE
+        emit!(asm.mov(r10d, 0x22i32)); // MAP_PRIVATE | MAP_ANONYMOUS
+        emit!(asm.mov(r8, -1i64));
+        emit!(asm.xor(r9d, r9d));
+        emit!(asm.mov(eax, 9i32)); // mmap
+        emit!(asm.syscall());
+        let mut no_altstack = asm.create_label();
+        emit!(asm.cmp(rax, -4096i32));
+        emit!(asm.jae(no_altstack));
+        emit!(asm.mov(qword_ptr(rsp + 32), rax)); // ss_sp
+        emit!(asm.mov(dword_ptr(rsp + 40), 0i32)); // ss_flags (+ padding)
+        emit!(asm.mov(dword_ptr(rsp + 44), 0i32));
+        emit!(asm.mov(qword_ptr(rsp + 48), 0x10000i32)); // ss_size
+        emit!(asm.lea(rdi, qword_ptr(rsp + 32)));
+        emit!(asm.xor(esi, esi));
+        emit!(asm.mov(eax, 131i32)); // sigaltstack
+        emit!(asm.syscall());
+        emit!(asm.set_label(&mut no_altstack));
 
         // rt_sigaction(signum, &act, NULL, 8)
         emit!(asm.mov(rsi, rsp));
@@ -1219,7 +1271,7 @@ impl StartStub {
         emit!(asm.jne(skip_hint));
         emit!(asm.mov(rcx, r15));
         lea_rip!(rdx, "__quazi_trace_hint");
-        emit!(asm.mov(r8d, 41i32));
+        emit!(asm.mov(r8d, crate::backend::x86_64::sections::TRACE_HINT.len() as i32));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
         call_ext!("WriteFile", RelocKind::Plt32);

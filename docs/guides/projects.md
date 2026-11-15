@@ -85,7 +85,7 @@ libraries = ["user32"]
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `std` | `true` | Inject prelude and resolve `std` |
-| `crash_handler` | `true` | Register crash/signal handler |
+| `crash_handler` | `true` | Register crash/signal handler; on Linux it runs on its own 64 KiB signal stack so unbounded recursion reports `thread 'main' has overflowed its stack` and exits with status 134 (other faults print the signal and exit with 101) |
 | `mangling` | `true` | Module-qualify function names |
 
 Setting `std = false` omits the prelude and all standard library resolution.
