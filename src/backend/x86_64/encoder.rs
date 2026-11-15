@@ -751,6 +751,11 @@ pub struct FnEncoder<'a> {
     /// bss_syms[i] = Some(symbol_name) if code[i] is PrimToStr.
     pub bss_syms: &'a [Option<String>],
     pub target: &'a TargetSpec,
+    /// The VM slot whose value `rax` still holds after the previous QZI
+    /// instruction stored it (`mov [slot], rax`), so the next instruction can
+    /// skip reloading it. Cleared at jump targets and by every instruction
+    /// that does not maintain it.
+    pub rax_slot: std::cell::Cell<Option<u8>>,
 }
 
 impl<'a> FnEncoder<'a> {
@@ -831,9 +836,29 @@ impl<'a> FnEncoder<'a> {
             // Set label if this QZI instruction index is a jump target.
             if let Some(lbl) = label_map.get_mut(&qzi_idx) {
                 emit!(asm.set_label(lbl));
+                // Another path can reach this instruction.
+                self.rax_slot.set(None);
+            }
+            // Only `emit_instr` (and the emission-free CallArg) keep the cache.
+            let opcode = Opcode::from_u8(instr.opcode);
+            if !matches!(opcode, Some(Opcode::CallArg)) {
+                let cached = self.rax_slot.take();
+                let keeps = !matches!(
+                    opcode,
+                    Some(
+                        Opcode::CallIdx
+                            | Opcode::CallReg
+                            | Opcode::CallExt
+                            | Opcode::CallCReg
+                            | Opcode::Syscall
+                    )
+                );
+                if keeps {
+                    self.rax_slot.set(cached);
+                }
             }
 
-            match Opcode::from_u8(instr.opcode) {
+            match opcode {
                 // ── CallArg / CallIdx ─────────────────────────────────────────
                 Some(Opcode::CallArg) => {
                     pending_args.push(instr.ops[0]);
@@ -887,6 +912,7 @@ impl<'a> FnEncoder<'a> {
                     // overwrite the destination with rax.
                     if instr.flags <= 1 {
                         emit!(asm.mov(slot(dst), rax));
+                        self.rax_slot.set(Some(dst));
                     }
                     pending_args.clear();
                 }
@@ -1615,6 +1641,8 @@ impl<'a> FnEncoder<'a> {
         label_map: &HashMap<usize, CodeLabel>,
         fn_start: CodeLabel,
     ) -> Result<(), BackendError> {
+        // Instructions not listed below leave the cache cleared.
+        let rax_holds = self.rax_slot.take();
         let is_win64 = self.target.abi == Abi::Win64;
         let is_netbsd = self.target.os == crate::backend::target::Os::NetBsd;
         // Linux executables without libc use the embedded clone/futex threads.
@@ -1659,8 +1687,11 @@ impl<'a> FnEncoder<'a> {
 
             Some(Opcode::Mov) => {
                 let (dst, src, _) = instr.rrr();
-                emit!(asm.mov(rax, slot(src)));
+                if rax_holds != Some(src) {
+                    emit!(asm.mov(rax, slot(src)));
+                }
                 emit!(asm.mov(slot(dst), rax));
+                self.rax_slot.set(Some(dst));
             }
 
             Some(Opcode::MovI) => {
@@ -1746,9 +1777,12 @@ impl<'a> FnEncoder<'a> {
                     emit!(asm.addsd(xmm0, xmm1));
                     emit!(asm.movq(slot(dst), xmm0));
                 } else {
-                    emit!(asm.mov(rax, slot(s1)));
+                    if rax_holds != Some(s1) {
+                        emit!(asm.mov(rax, slot(s1)));
+                    }
                     emit!(asm.add(rax, slot(s2)));
                     emit!(asm.mov(slot(dst), rax));
+                    self.rax_slot.set(Some(dst));
                 }
             }
 
@@ -1760,9 +1794,12 @@ impl<'a> FnEncoder<'a> {
                     emit!(asm.subsd(xmm0, xmm1));
                     emit!(asm.movq(slot(dst), xmm0));
                 } else {
-                    emit!(asm.mov(rax, slot(s1)));
+                    if rax_holds != Some(s1) {
+                        emit!(asm.mov(rax, slot(s1)));
+                    }
                     emit!(asm.sub(rax, slot(s2)));
                     emit!(asm.mov(slot(dst), rax));
+                    self.rax_slot.set(Some(dst));
                 }
             }
 
@@ -1998,8 +2035,12 @@ impl<'a> FnEncoder<'a> {
                     emit!(asm.movq(xmm1, slot(s2)));
                     emit!(asm.ucomisd(xmm0, xmm1));
                 } else {
-                    emit!(asm.mov(rax, slot(s1)));
+                    if rax_holds != Some(s1) {
+                        emit!(asm.mov(rax, slot(s1)));
+                    }
                     emit!(asm.cmp(rax, slot(s2)));
+                    // `cmp` leaves rax unchanged.
+                    self.rax_slot.set(Some(s1));
                 }
             }
 
@@ -2118,15 +2159,27 @@ impl<'a> FnEncoder<'a> {
             Some(Opcode::Jz) => {
                 let (reg, target) = instr.ri16();
                 let lbl = *label_map.get(&(target as usize)).expect("Jz target");
-                emit!(asm.cmp(slot(reg), 0i32));
+                if rax_holds == Some(reg) {
+                    emit!(asm.test(rax, rax));
+                } else {
+                    emit!(asm.cmp(slot(reg), 0i32));
+                }
                 emit!(asm.je(lbl));
+                // The fall-through path still has rax as before.
+                self.rax_slot.set(rax_holds);
             }
 
             Some(Opcode::Jnz) => {
                 let (reg, target) = instr.ri16();
                 let lbl = *label_map.get(&(target as usize)).expect("Jnz target");
-                emit!(asm.cmp(slot(reg), 0i32));
+                if rax_holds == Some(reg) {
+                    emit!(asm.test(rax, rax));
+                } else {
+                    emit!(asm.cmp(slot(reg), 0i32));
+                }
                 emit!(asm.jne(lbl));
+                // The fall-through path still has rax as before.
+                self.rax_slot.set(rax_holds);
             }
 
             Some(Opcode::Ret) => {
@@ -2143,7 +2196,7 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.mov(rax, slot((1 + offset) as u8)));
                         emit!(asm.mov(qword_ptr(r10 - (offset * 8) as i32), rax));
                     }
-                } else {
+                } else if rax_holds != Some(instr.ops[0]) {
                     emit!(asm.mov(rax, slot(instr.ops[0])));
                 }
                 emit!(asm.mov(rsp, rbp));
@@ -5064,6 +5117,7 @@ mod tests {
             str_syms: &str_syms,
             bss_syms: &bss_syms,
             target,
+            rax_slot: Default::default(),
         }
         .encode()
         .expect("ABI adapter should encode")
@@ -5230,6 +5284,7 @@ mod tests {
             str_syms: &str_syms,
             bss_syms: &bss_syms,
             target: &TargetSpec::x86_64_netbsd(),
+            rax_slot: Default::default(),
         }
         .encode()
         .expect("NetBSD hostname intrinsic must assemble");

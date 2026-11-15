@@ -136,6 +136,7 @@ fn emit_native_object(
             str_syms: &str_syms_per_chunk[chunk_idx],
             bss_syms: &bss_syms_per_chunk[chunk_idx],
             target,
+            rax_slot: Default::default(),
         };
 
         let (fn_bytes, fn_relocs) = encoder.encode()?;
