@@ -6278,6 +6278,14 @@ impl<'a> FnCompiler<'a> {
                                         expr = inner_expr;
                                         iter_ty = Some(inner.node.clone());
                                         true
+                                    } else if matches!(
+                                        self.resolve_type(&inner.node),
+                                        TypeKind::Named { ref name, .. } if name == "Array"
+                                    ) {
+                                        // A reference-typed value (`values: &Array[T]`):
+                                        // its methods take the reference itself.
+                                        iter_ty = Some(inner.node.clone());
+                                        true
                                     } else {
                                         false
                                     }
@@ -6356,6 +6364,79 @@ impl<'a> FnCompiler<'a> {
                                     self.chunk.patch_jump(*jmp, continue_pos);
                                 }
                                 self.chunk.emit(rrr(Opcode::Inc, r_counter, r_counter, 0));
+                                self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
+                                let exit_pos = self.chunk.len() as u16;
+                                self.chunk.patch_jump(jump_exit, exit_pos);
+                                for jmp in &frame.break_jumps {
+                                    self.chunk.patch_jump(*jmp, exit_pos);
+                                }
+                            } else if !is_borrow
+                                && let Some(TypeKind::Named { name, type_args }) = &iter_ty
+                                && name == "Array"
+                                && type_args.len() == 1
+                                && self.drop_action_for_type(&type_args[0].node).is_some()
+                            {
+                                // Owning elements are moved out one at a time
+                                // (`remove(0)`), so the loop variable owns its
+                                // value: it is dropped at the end of every
+                                // iteration unless the body moves it, and the
+                                // elements left after `break` are dropped with
+                                // the array.
+                                let element_ty = type_args[0].node.clone();
+                                let type_kinds = vec![element_ty.clone()];
+                                let target = |codegen: &Self, method: &str| {
+                                    let base = format!("Array.{method}");
+                                    let mangled = crate::semantic::typecheck::mangle_monomorphized(
+                                        &base,
+                                        &type_kinds,
+                                    );
+                                    if codegen.fn_index.contains_key(&mangled) { mangled } else { base }
+                                };
+                                let len_target = target(self, "len");
+                                let remove_target = target(self, "remove");
+                                let arr_reg = self.compile_expr(expr);
+                                self.register_drop_local("__for_iter", arr_reg, iter_ty.clone());
+                                let index_var = if vars.len() >= 2 { vars.first() } else { None };
+                                let value_var = vars.last().cloned().unwrap_or_else(|| "_".to_string());
+                                let r_index = match index_var {
+                                    Some(name) => self.bind(name.clone()),
+                                    None => self.alloc_reg(),
+                                };
+                                self.chunk.emit(ri16(Opcode::MovI, r_index, 0));
+                                let loop_top = self.chunk.len() as u16;
+                                let len_reg = self.alloc_reg();
+                                let receiver = self.prepare_method_receiver(
+                                    arr_reg,
+                                    self.type_of_expr(expr),
+                                    &len_target,
+                                );
+                                self.emit_call_by_name(&len_target, &[receiver], len_reg);
+                                let jump_exit = self.chunk.emit(ri16(Opcode::Jz, len_reg, 0));
+                                self.drop_scopes.push(Vec::new());
+                                let r_val = self.bind(value_var.clone());
+                                let zero = self.alloc_reg();
+                                self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+                                let receiver = self.prepare_method_receiver(
+                                    arr_reg,
+                                    self.type_of_expr(expr),
+                                    &remove_target,
+                                );
+                                self.emit_call_by_name(&remove_target, &[receiver, zero], r_val);
+                                self.register_drop_local(&value_var, r_val, Some(element_ty));
+                                self.loop_stack
+                                    .push(LoopFrame::new(self.drop_scopes.len() - 1));
+                                let exits = self.compile_block(body);
+                                let frame = self.loop_stack.pop().unwrap();
+                                if !exits {
+                                    self.emit_scope_cleanup();
+                                }
+                                // `continue` has already run this scope's cleanup.
+                                let continue_pos = self.chunk.len() as u16;
+                                for jmp in &frame.continue_jumps {
+                                    self.chunk.patch_jump(*jmp, continue_pos);
+                                }
+                                self.drop_scopes.pop();
+                                self.chunk.emit(rrr(Opcode::Inc, r_index, r_index, 0));
                                 self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
                                 let exit_pos = self.chunk.len() as u16;
                                 self.chunk.patch_jump(jump_exit, exit_pos);
@@ -6466,7 +6547,15 @@ impl<'a> FnCompiler<'a> {
                                 let iter_key = (expr.span.start, expr.span.end);
                                 let iter_ty = self.type_of_span(iter_key);
 
-                                let loop_var = vars.first().map(|s| s.as_str()).unwrap_or("_");
+                                // `for value : iterator` or `for index, value : iterator`.
+                                let r_index = if vars.len() >= 2 {
+                                    let register = self.bind(vars[0].clone());
+                                    self.chunk.emit(ri16(Opcode::MovI, register, 0));
+                                    Some(register)
+                                } else {
+                                    None
+                                };
+                                let loop_var = vars.last().map(|s| s.as_str()).unwrap_or("_");
                                 let r_val = self.bind(loop_var.to_string());
 
                                 let loop_top = self.chunk.len() as u16;
@@ -6649,8 +6738,12 @@ impl<'a> FnCompiler<'a> {
                                     .push(LoopFrame::new(self.drop_scopes.len()));
                                 self.compile_block(body);
                                 let frame = self.loop_stack.pop().unwrap();
+                                let continue_pos = self.chunk.len() as u16;
                                 for jmp in &frame.continue_jumps {
-                                    self.chunk.patch_jump(*jmp, loop_top);
+                                    self.chunk.patch_jump(*jmp, continue_pos);
+                                }
+                                if let Some(r_index) = r_index {
+                                    self.chunk.emit(rrr(Opcode::Inc, r_index, r_index, 0));
                                 }
                                 self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
 

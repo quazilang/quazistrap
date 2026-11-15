@@ -157,12 +157,23 @@ for value : values {
 }
 ```
 
-Besides arrays and slices, `for` accepts any value whose type has
+`for` accepts fixed arrays, slices, the prelude `Array[T]` and iterators.
+Iterating an `Array[T]` by value consumes it: elements that own resources
+(such as `String`) are moved into the loop variable one at a time, so the body
+may keep them (`kept.push(name)`); elements left after `break` are released
+with the array. Iterating a borrowed array (`for value : &values`, or a
+`values: &Array[T]` parameter) reads copyable elements in place; a borrowed
+array of owning elements is rejected (S10), iterate it by index instead.
+
+Besides these, `for` accepts any value whose type has
 `has_next(self) bool` and `next(self) Option[T]` methods; the loop variable
 has type `T` and the loop ends when `has_next` is false or `next` returns
 `None` (std `fs.read_dir` returns such a `ReadDir`).
 
 ### Index-value loops
+
+The first variable is the zero-based `usize` index, the second the value. This
+works for every iterable, including iterators.
 
 ```quazi
 for index, value : values {

@@ -2360,9 +2360,25 @@ impl Analyzer {
                                         self.add_dependency_edge(DependencyKind::Call, &from, &target);
                                     }
                                 }
+                                let prelude_array = iter_ty
+                                    .map(|ty| self.resolve_type_aliases(ty))
+                                    .and_then(|ty| match ty {
+                                        TypeKind::Named { name, type_args }
+                                            if name == "Array" && type_args.len() == 1 =>
+                                        {
+                                            Some(type_args[0].node.clone())
+                                        }
+                                        _ => None,
+                                    });
+                                if let Some(element) = &prelude_array {
+                                    self.record_array_loop(expr, iter_eval.ty.as_ref(), element);
+                                }
                                 match iter_ty {
                                     Some(TypeKind::Array { elem_ty, .. }) => elem_ty.node.clone(),
                                     Some(TypeKind::Slice { elem_ty }) => elem_ty.node.clone(),
+                                    Some(_) if prelude_array.is_some() => {
+                                        prelude_array.clone().expect("array element")
+                                    }
                                     Some(_) if iterator_item.is_some() => {
                                         iterator_item.expect("iterator item")
                                     }
@@ -2381,13 +2397,19 @@ impl Analyzer {
                                 }
                             }
                         };
-                        if let Some(name) = vars.first() {
+                        // `for value : items` or `for index, value : items`.
+                        let (value_position, index_position) =
+                            if vars.len() >= 2 { (1, Some(0)) } else { (0, None) };
+                        if let Some(name) = vars.get(value_position) {
                             self.declare(
                                 name.clone(),
                                 Symbol {
                                     kind: SymbolKind::Variable { mutable: true },
                                     ty: Some(loop_var_ty.clone()),
-                                    span: var_spans.first().copied().unwrap_or(stmt.span),
+                                    span: var_spans
+                                        .get(value_position)
+                                        .copied()
+                                        .unwrap_or(stmt.span),
                                     params: vec![],
                                     used: false,
                                     initialized: true,
@@ -2402,13 +2424,16 @@ impl Analyzer {
                                 },
                             );
                         }
-                        if let Some(name) = vars.get(1) {
+                        if let Some(name) = index_position.and_then(|position| vars.get(position)) {
                             self.declare(
                                 name.clone(),
                                 Symbol {
                                     kind: SymbolKind::Variable { mutable: true },
                                     ty: Some(TypeKind::Usize),
-                                    span: var_spans.get(1).copied().unwrap_or(stmt.span),
+                                    span: index_position
+                                        .and_then(|position| var_spans.get(position))
+                                        .copied()
+                                        .unwrap_or(stmt.span),
                                     params: vec![],
                                     used: false,
                                     initialized: true,
@@ -7409,6 +7434,46 @@ impl Analyzer {
 
     /// Check type compatibility and mark the expression for auto-deref when a
     /// reference to a value-like type is used where the value type is expected.
+    /// `for value : array` over a prelude `Array[T]` calls `len` with `get`
+    /// (copyable elements) or `remove` (owning elements, moved out one by
+    /// one). A borrowed array cannot give up owning elements.
+    fn record_array_loop(&mut self, iterable: &Expr, iterable_ty: Option<&TypeKind>, element: &TypeKind) {
+        let borrowed = matches!(
+            iterable_ty.map(|ty| self.resolve_type_aliases(ty)),
+            Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+        );
+        let owning = self.bc_is_move_type(&self.resolve_type_aliases(element));
+        if borrowed && owning {
+            self.push_error(
+                iterable.span,
+                "S10",
+                format!(
+                    "cannot iterate over borrowed `Array[{element}]`: its elements own resources; iterate the array by value (consuming it) or by index"
+                ),
+            );
+        }
+        let from = self
+            .current_function
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "__program__".to_string());
+        let arguments = vec![element.clone()];
+        for method in ["len", "get", "remove"] {
+            let generic = format!("Array.{method}");
+            let target = mangle_monomorphized(&generic, &arguments);
+            let generic_params = self.generic_params_for_function(&generic);
+            self.record_specialization_layout(&generic, &generic_params, &arguments);
+            if !self.has_monomorphization(&generic, &arguments, &target) {
+                self.monomorphizations.push(MonomorphizationInfo {
+                    fn_name: generic,
+                    type_args: arguments.clone(),
+                    mangled_name: target.clone(),
+                });
+            }
+            self.add_dependency_edge(DependencyKind::Call, &from, &target);
+        }
+    }
+
     pub(super) fn unit_variant_type(&self, object: &Expr, variant: &str) -> Option<TypeKind> {
         let ExprKind::Ident(enum_name) = &object.node else {
             return None;

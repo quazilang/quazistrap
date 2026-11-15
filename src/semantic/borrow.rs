@@ -1455,6 +1455,7 @@ impl Analyzer {
                                 iter: ForIter::Iter(iter),
                                 ..
                             } = kind
+                                && !self.bc_moves_owned_array_elements(iter)
                             {
                                 let origins = self.bc_owner_origins(iter, env);
                                 loop_env.set_view_origins(var, origins);
@@ -2745,6 +2746,21 @@ impl Analyzer {
                     | TypeKind::Bytes
             )
         })
+    }
+
+    /// `for value : array` over an owned prelude `Array[T]` whose elements own
+    /// resources moves each element out (codegen `remove(0)`): the loop
+    /// variable is an independent owner, not a view of the array.
+    fn bc_moves_owned_array_elements(&self, iterable: &Expr) -> bool {
+        let Some(TypeKind::Named { name, type_args }) = self
+            .bc_annotated_type(iterable)
+            .map(|ty| self.resolve_type_aliases(&ty))
+        else {
+            return false;
+        };
+        name == "Array"
+            && type_args.len() == 1
+            && self.bc_is_move_type(&self.resolve_type_aliases(&type_args[0].node))
     }
 
     fn bc_reject_partial_move(&mut self, expr: &Expr) {
