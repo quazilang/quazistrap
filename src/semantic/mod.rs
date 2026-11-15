@@ -6727,6 +6727,16 @@ fn main() void {
     }
 
     #[test]
+    fn methods_on_void_results_are_reported() {
+        let report = analyze("fn nothing() void { } fn main() i32 { nothing().size(); ret 0; }");
+        assert!(
+            report.errors.iter().any(|error| error.message.contains("no method `size` on type `void`")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn module_constants_are_compile_time_values() {
         let report = analyze(
             "fn area() i64 { ret WIDTH * HEIGHT; } const WIDTH: i64 = 40; const HEIGHT: i64 = WIDTH / 2; pub const NAME: str = \"q\"; const ON: bool = WIDTH > 10; fn main() i32 { const shadow: i64 = 1; if ON { ret (area() + shadow) as i32; } ret 0; }",

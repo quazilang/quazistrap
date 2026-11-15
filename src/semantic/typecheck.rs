@@ -5130,7 +5130,7 @@ impl Analyzer {
                                     Some(ty) => {
                                         Self::is_integer(ty)
                                             || Self::is_float(ty)
-                                            || matches!(ty, TypeKind::Bool)
+                                            || matches!(ty, TypeKind::Bool | TypeKind::Void)
                                     }
                                     None => false,
                                 };
