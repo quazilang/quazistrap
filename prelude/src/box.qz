@@ -17,11 +17,14 @@ unsafe fn __box_malloc(size: usize) *u8;
 @intrinsic("quazi.free")
 unsafe fn __box_free(ptr: *u8) void;
 
+// An owned value of type `T` stored on the heap; the storage is freed with
+// the box.
 pub struct Box[T] {
     ptr: *u8,
 }
 
 impl Box[T] {
+    // A box holding `val`.
     pub fn new(val: T) Box[T] {
         var p: *u8;
         unsafe { p = __box_malloc(size_of[T]()); }
@@ -29,10 +32,12 @@ impl Box[T] {
         ret Box { ptr: p };
     }
 
+    // Moves the value out of the box.
     pub fn get(self: Box[T]) T {
         ret __box_read(self.ptr, 0);
     }
 
+    // Frees the storage; called automatically at the end of scope.
     pub fn free(self: Box[T]) void {
         if (self.ptr != 0) {
             unsafe { __box_free(self.ptr); }

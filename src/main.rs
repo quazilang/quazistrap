@@ -992,16 +992,32 @@ fn collect_quazi_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String>
 fn generate_project_docs(output: Option<&str>) {
     let ctx = load_project_context();
     let out_dir = output.map_or_else(|| ctx.config.out_dir.join("doc"), PathBuf::from);
+    write_api_docs(&ctx.config.src_dir, &ctx.config.name, &out_dir);
+}
+
+/// Reference pages for every `.qz` file under `src_dir`, named
+/// `package.module`, plus a `README.md` index.
+fn write_api_docs(src_dir: &std::path::Path, package: &str, out_dir: &std::path::Path) {
     let mut files = Vec::new();
-    collect_quazi_files(&ctx.config.src_dir, &mut files).unwrap_or_else(|e| {
+    collect_quazi_files(src_dir, &mut files).unwrap_or_else(|e| {
         eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
         std::process::exit(1);
     });
     files.sort();
-    let mut index = format!("# `{}` API reference\n\n", ctx.config.name);
+    let mut index = format!("# `{}` API reference\n\n", package);
     for path in &files {
-        let relative = path.strip_prefix(&ctx.config.src_dir).unwrap_or(path);
-        let module = relative.with_extension("").to_string_lossy().replace(['/', '\\'], ".");
+        let relative = path.strip_prefix(&src_dir).unwrap_or(path);
+        let local = relative.with_extension("").to_string_lossy().replace(['/', '\\'], ".");
+        // `std/src/fs.qz` documents `std.fs`; a `mod.qz` documents its directory.
+        let local = local
+            .strip_suffix(".mod")
+            .map(str::to_string)
+            .unwrap_or(local);
+        let module = if local == "mod" {
+            package.to_string()
+        } else {
+            format!("{}.{}", package, local)
+        };
         let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
             eprintln!("\x1b[31;1merror:\x1b[0m cannot read {}: {}", path.display(), e);
             std::process::exit(1);
@@ -2493,9 +2509,17 @@ fn main() {
             format_project_sources();
         }
 
-        CliCmd::Doc { output } => {
-            generate_project_docs(output.as_deref());
-        }
+        CliCmd::Doc {
+            output,
+            src,
+            package,
+        } => match (src, package) {
+            (Some(src), Some(package)) => {
+                let out_dir = PathBuf::from(output.as_deref().unwrap_or("doc"));
+                write_api_docs(std::path::Path::new(&src), &package, &out_dir);
+            }
+            _ => generate_project_docs(output.as_deref()),
+        },
 
         CliCmd::Clean => {
             clean_project_artifacts();

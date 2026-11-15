@@ -6,6 +6,7 @@
 // Option[T] is a builtin enum: Some(T) = tag 1, None = tag 0.
 
 impl Option[T] {
+    // Whether this is `Some(value)`.
     pub fn is_some(self: &Option[T]) bool {
         ret match self {
             Some(_) => true,
@@ -13,6 +14,7 @@ impl Option[T] {
         };
     }
 
+    // Whether this is `None`.
     pub fn is_none(self: &Option[T]) bool {
         ret match self {
             Some(_) => false,
@@ -28,6 +30,7 @@ impl Option[T] {
         };
     }
 
+    // The value inside `Some`; panics on `None`.
     pub fn unwrap(self: Option[T]) T {
         ret match self {
             Some(v) => v,
@@ -35,6 +38,7 @@ impl Option[T] {
         };
     }
 
+    // The value inside `Some`, or `default` for `None`.
     pub fn unwrap_or(self: Option[T], default: T) T {
         ret match self {
             Some(v) => v,
@@ -42,6 +46,7 @@ impl Option[T] {
         };
     }
 
+    // This option if it is `Some`, otherwise `other`.
     pub fn or_else(self: Option[T], other: Option[T]) Option[T] {
         ret match self {
             Some(v) => Some(v),

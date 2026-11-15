@@ -2,10 +2,13 @@
 
 Audience: Quazi application developers.
 
-`std.fs` provides the currently supported cross-platform file and directory
-operations for Linux and Windows. Paths are UTF-8 `str` values passed to the
-native platform APIs; there is no separate `Path` type, buffering layer,
-metadata object, recursive traversal, or atomic-write helper yet.
+`std.fs` provides cross-platform file and directory operations for Linux,
+Windows and NetBSD. Functions take paths as UTF-8 `str`; a
+[`Path`](path.md) (re-exported as `fs.Path`/`fs.PathBuf`) has the same
+operations as methods (`path.read_dir()`, `path.is_dir()`, ...). This page
+explains behavior and platform differences; the generated reference lists
+every function and method with its signature (std repository,
+`docs/reference/fs.md`). There is no atomic-write helper yet.
 
 ## Errors
 
@@ -90,8 +93,6 @@ const config: Result[String, fs.FsError] = fs.read_to_string("settings.qz");
 | --- | --- |
 | `exists(path)` | Returns whether a native existence query succeeds. It conflates absence, permission failures, and other errors. |
 | `readable(path)` / `writable(path)` | Best-effort access probes, not a guarantee that a later open or write will succeed. Windows `writable` currently reports existence rather than testing write access. |
-| `count_entries(path)` | Counts immediate entries, excluding `.` and `..`; it does not recurse. Native enumeration errors are returned. |
-| `read_dir_names(path)` | `Result[Array[String], FsError]`: names of the immediate entries (no `.`/`..`) as owned strings in operating-system order. |
 | `walk(root)` | `Result[Array[String], FsError]`: every entry below `root` as a `/`-separated relative path, depth first, directories before their contents. Symbolic links are listed but not followed, so link cycles cannot recur. |
 | `metadata(path)` / `symlink_metadata(path)` | `Result[Metadata, FsError]`, following links or describing the link itself. `Metadata` offers `len()`, `file_type()` (`FileType.File`/`Directory`/`Symlink`/`Other`), `is_file()`, `is_dir()`, `is_symlink()`, `readonly()` (no write bit on Linux, read-only attribute on Windows) and `modified_unix_nanos()`. Windows does not resolve links for `metadata`; NetBSD returns `Unsupported`. |
 | `remove(path)` | Removes a file, not a directory. |
@@ -110,7 +111,7 @@ then assume a subsequent path operation affects the same object.
 
 | API | Semantics |
 | --- | --- |
-| `read_dir(path)` | `Result[ReadDir, FsError]`: the entries of a directory (no `.`/`..`) in operating-system order; iterate with `for entry : fs.read_dir(path)? { ... }`. An empty path is the current directory. |
+| `read_dir(path)` | `Result[Array[DirEntry], FsError]`: the entries of a directory (no `.`/`..`) in operating-system order. Iterate with `for entry : fs.read_dir(path)? { ... }`; `fs.read_dir(path)?.len()` counts them. An empty path is the current directory. |
 | `DirEntry` | `name()`, `path()` (a `Path`), `path_str()`, `file_type()`, `is_file()`, `is_dir()`, `is_symlink()` (from the listing, links not followed) and `metadata()` (the entry itself). |
 | `FileType` | `File`, `Directory`, `Symlink` or `Other`; also `Metadata.file_type()`. |
 | `is_dir(path)` / `is_file(path)` / `is_symlink(path)` | `false` when the path cannot be examined. |
@@ -118,7 +119,24 @@ then assume a subsequent path operation affects the same object.
 | `canonicalize(path)` | `Result[Path, FsError]`: the absolute path with links, `.` and `..` resolved (Linux); Windows returns the full path name. The path must exist. |
 | `write(path, contents)` | Creates or truncates the file and writes `contents`. |
 
-`fs` re-exports `Path` and its `PathBuf` alias from [`std.path`](path.md).
+`fs` re-exports `Path` and its `PathBuf` alias from [`std.path`](path.md) and
+gives `Path` the methods `exists`, `is_dir`, `is_file`, `is_symlink`,
+`metadata`, `read_dir`, `read_to_string` and `canonicalize`:
+
+```quazi
+import std.fs;
+import std.io;
+
+fn main() i32 {
+    const root = fs.Path.new(".");
+    for entry : root.read_dir().unwrap() {
+        if (entry.is_dir() && entry.path().join("quazi.toml").is_file()) {
+            io.println("project: {}", entry.name());
+        }
+    }
+    ret 0;
+}
+```
 
 ## Buffered I/O
 

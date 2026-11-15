@@ -51,16 +51,21 @@ impl i32 {
     // Arithmetic that wraps around at the bounds of `i32` instead of
     // panicking on overflow (hashes, random number generators, checksums).
     pub fn wrapping_add(self: i32, other: i32) i32 { ret __wrapping_add(self as u64, other as u64) as i32; }
+    // `self - other`, wrapping around at the bounds of the type.
     pub fn wrapping_sub(self: i32, other: i32) i32 { ret __wrapping_sub(self as u64, other as u64) as i32; }
+    // `self * other`, wrapping around at the bounds of the type.
     pub fn wrapping_mul(self: i32, other: i32) i32 { ret __wrapping_mul(self as u64, other as u64) as i32; }
+    // `-self`, wrapping around at the bounds of the type (`MIN` stays `MIN`).
     pub fn wrapping_neg(self: i32) i32 { ret __wrapping_sub(0, self as u64) as i32; }
 
+    // The absolute value; panics for `MIN`, whose absolute value does not fit.
     pub fn abs(self: i32) i32 {
         if (self == -2147483648) { panic("i32.abs() overflow"); }
         if (self < 0) { ret -self; }
         ret self;
     }
 
+    // `self` raised to `exponent`; panics when the result overflows the type.
     pub fn pow(self: i32, exponent: u32) i32 {
         var base: i32 = self;
         var power: u32 = exponent;
@@ -73,16 +78,22 @@ impl i32 {
         ret result;
     }
 
+    // The greatest common divisor (non-negative); `gcd(0, 0)` is 0. Panics when
+    // the result does not fit the type.
     pub fn gcd(self: i32, other: i32) i32 {
         const value: u64 = __gcd_u64(__magnitude_i64(self as i64), __magnitude_i64(other as i64));
         if (value > 2147483647) { panic("i32.gcd() result overflow"); }
         ret value as i32;
     }
+    // The least common multiple; 0 when either operand is 0. Panics when the
+    // result does not fit the type.
     pub fn lcm(self: i32, other: i32) i32 {
         if (self == 0 || other == 0) { ret 0; }
         ret (self / self.gcd(other) * other).abs();
     }
+    // Whether the value is divisible by 2.
     pub fn is_even(self: i32) bool { ret self % 2 == 0; }
+    // Whether the value is not divisible by 2.
     pub fn is_odd(self: i32) bool { ret self % 2 != 0; }
 }
 
@@ -90,16 +101,21 @@ impl i64 {
     // Arithmetic that wraps around at the bounds of `i64` instead of
     // panicking on overflow (hashes, random number generators, checksums).
     pub fn wrapping_add(self: i64, other: i64) i64 { ret __wrapping_add(self as u64, other as u64) as i64; }
+    // `self - other`, wrapping around at the bounds of the type.
     pub fn wrapping_sub(self: i64, other: i64) i64 { ret __wrapping_sub(self as u64, other as u64) as i64; }
+    // `self * other`, wrapping around at the bounds of the type.
     pub fn wrapping_mul(self: i64, other: i64) i64 { ret __wrapping_mul(self as u64, other as u64) as i64; }
+    // `-self`, wrapping around at the bounds of the type (`MIN` stays `MIN`).
     pub fn wrapping_neg(self: i64) i64 { ret __wrapping_sub(0, self as u64) as i64; }
 
+    // The absolute value; panics for `MIN`, whose absolute value does not fit.
     pub fn abs(self: i64) i64 {
         if (self == (-9223372036854775807 - 1)) { panic("i64.abs() overflow"); }
         if (self < 0) { ret -self; }
         ret self;
     }
 
+    // `self` raised to `exponent`; panics when the result overflows the type.
     pub fn pow(self: i64, exponent: u32) i64 {
         var base: i64 = self;
         var power: u32 = exponent;
@@ -112,16 +128,22 @@ impl i64 {
         ret result;
     }
 
+    // The greatest common divisor (non-negative); `gcd(0, 0)` is 0. Panics when
+    // the result does not fit the type.
     pub fn gcd(self: i64, other: i64) i64 {
         const value: u64 = __gcd_u64(__magnitude_i64(self), __magnitude_i64(other));
         if (value > 9223372036854775807) { panic("i64.gcd() result overflow"); }
         ret value as i64;
     }
+    // The least common multiple; 0 when either operand is 0. Panics when the
+    // result does not fit the type.
     pub fn lcm(self: i64, other: i64) i64 {
         if (self == 0 || other == 0) { ret 0; }
         ret (self / self.gcd(other) * other).abs();
     }
+    // Whether the value is divisible by 2.
     pub fn is_even(self: i64) bool { ret self % 2 == 0; }
+    // Whether the value is not divisible by 2.
     pub fn is_odd(self: i64) bool { ret self % 2 != 0; }
 }
 
@@ -129,16 +151,21 @@ impl isize {
     // Arithmetic that wraps around at the bounds of `isize` instead of
     // panicking on overflow (hashes, random number generators, checksums).
     pub fn wrapping_add(self: isize, other: isize) isize { ret __wrapping_add(self as u64, other as u64) as isize; }
+    // `self - other`, wrapping around at the bounds of the type.
     pub fn wrapping_sub(self: isize, other: isize) isize { ret __wrapping_sub(self as u64, other as u64) as isize; }
+    // `self * other`, wrapping around at the bounds of the type.
     pub fn wrapping_mul(self: isize, other: isize) isize { ret __wrapping_mul(self as u64, other as u64) as isize; }
+    // `-self`, wrapping around at the bounds of the type (`MIN` stays `MIN`).
     pub fn wrapping_neg(self: isize) isize { ret __wrapping_sub(0, self as u64) as isize; }
 
+    // The absolute value; panics for `MIN`, whose absolute value does not fit.
     pub fn abs(self: isize) isize {
         if (self == ((-9223372036854775807 - 1) as isize)) { panic("isize.abs() overflow"); }
         if (self < 0) { ret -self; }
         ret self;
     }
 
+    // `self` raised to `exponent`; panics when the result overflows the type.
     pub fn pow(self: isize, exponent: u32) isize {
         var base: isize = self;
         var power: u32 = exponent;
@@ -151,6 +178,8 @@ impl isize {
         ret result;
     }
 
+    // The greatest common divisor (non-negative); `gcd(0, 0)` is 0. Panics when
+    // the result does not fit the type.
     pub fn gcd(self: isize, other: isize) isize {
         const value: u64 = __gcd_u64(
             __magnitude_i64(self as i64), __magnitude_i64(other as i64)
@@ -158,11 +187,15 @@ impl isize {
         if (value > 9223372036854775807) { panic("isize.gcd() result overflow"); }
         ret value as isize;
     }
+    // The least common multiple; 0 when either operand is 0. Panics when the
+    // result does not fit the type.
     pub fn lcm(self: isize, other: isize) isize {
         if (self == 0 || other == 0) { ret 0; }
         ret (self / self.gcd(other) * other).abs();
     }
+    // Whether the value is divisible by 2.
     pub fn is_even(self: isize) bool { ret self % 2 == 0; }
+    // Whether the value is not divisible by 2.
     pub fn is_odd(self: isize) bool { ret self % 2 != 0; }
 }
 
@@ -170,10 +203,14 @@ impl u32 {
     // Arithmetic that wraps around at the bounds of `u32` instead of
     // panicking on overflow (hashes, random number generators, checksums).
     pub fn wrapping_add(self: u32, other: u32) u32 { ret __wrapping_add(self as u64, other as u64) as u32; }
+    // `self - other`, wrapping around at the bounds of the type.
     pub fn wrapping_sub(self: u32, other: u32) u32 { ret __wrapping_sub(self as u64, other as u64) as u32; }
+    // `self * other`, wrapping around at the bounds of the type.
     pub fn wrapping_mul(self: u32, other: u32) u32 { ret __wrapping_mul(self as u64, other as u64) as u32; }
+    // `-self`, wrapping around at the bounds of the type (`MIN` stays `MIN`).
     pub fn wrapping_neg(self: u32) u32 { ret __wrapping_sub(0, self as u64) as u32; }
 
+    // `self` raised to `exponent`; panics when the result overflows the type.
     pub fn pow(self: u32, exponent: u32) u32 {
         var base: u32 = self;
         var power: u32 = exponent;
@@ -185,12 +222,18 @@ impl u32 {
         }
         ret result;
     }
+    // The greatest common divisor (non-negative); `gcd(0, 0)` is 0. Panics when
+    // the result does not fit the type.
     pub fn gcd(self: u32, other: u32) u32 { ret __gcd_u64(self as u64, other as u64) as u32; }
+    // The least common multiple; 0 when either operand is 0. Panics when the
+    // result does not fit the type.
     pub fn lcm(self: u32, other: u32) u32 {
         if (self == 0 || other == 0) { ret 0; }
         ret self / self.gcd(other) * other;
     }
+    // Whether the value is divisible by 2.
     pub fn is_even(self: u32) bool { ret self % 2 == 0; }
+    // Whether the value is not divisible by 2.
     pub fn is_odd(self: u32) bool { ret self % 2 != 0; }
 }
 
@@ -198,10 +241,14 @@ impl u64 {
     // Arithmetic that wraps around at the bounds of `u64` instead of
     // panicking on overflow (hashes, random number generators, checksums).
     pub fn wrapping_add(self: u64, other: u64) u64 { ret __wrapping_add(self as u64, other as u64) as u64; }
+    // `self - other`, wrapping around at the bounds of the type.
     pub fn wrapping_sub(self: u64, other: u64) u64 { ret __wrapping_sub(self as u64, other as u64) as u64; }
+    // `self * other`, wrapping around at the bounds of the type.
     pub fn wrapping_mul(self: u64, other: u64) u64 { ret __wrapping_mul(self as u64, other as u64) as u64; }
+    // `-self`, wrapping around at the bounds of the type (`MIN` stays `MIN`).
     pub fn wrapping_neg(self: u64) u64 { ret __wrapping_sub(0, self as u64) as u64; }
 
+    // `self` raised to `exponent`; panics when the result overflows the type.
     pub fn pow(self: u64, exponent: u32) u64 {
         var base: u64 = self;
         var power: u32 = exponent;
@@ -213,12 +260,18 @@ impl u64 {
         }
         ret result;
     }
+    // The greatest common divisor (non-negative); `gcd(0, 0)` is 0. Panics when
+    // the result does not fit the type.
     pub fn gcd(self: u64, other: u64) u64 { ret __gcd_u64(self, other); }
+    // The least common multiple; 0 when either operand is 0. Panics when the
+    // result does not fit the type.
     pub fn lcm(self: u64, other: u64) u64 {
         if (self == 0 || other == 0) { ret 0; }
         ret self / self.gcd(other) * other;
     }
+    // Whether the value is divisible by 2.
     pub fn is_even(self: u64) bool { ret self % 2 == 0; }
+    // Whether the value is not divisible by 2.
     pub fn is_odd(self: u64) bool { ret self % 2 != 0; }
 }
 
@@ -226,10 +279,14 @@ impl usize {
     // Arithmetic that wraps around at the bounds of `usize` instead of
     // panicking on overflow (hashes, random number generators, checksums).
     pub fn wrapping_add(self: usize, other: usize) usize { ret __wrapping_add(self as u64, other as u64) as usize; }
+    // `self - other`, wrapping around at the bounds of the type.
     pub fn wrapping_sub(self: usize, other: usize) usize { ret __wrapping_sub(self as u64, other as u64) as usize; }
+    // `self * other`, wrapping around at the bounds of the type.
     pub fn wrapping_mul(self: usize, other: usize) usize { ret __wrapping_mul(self as u64, other as u64) as usize; }
+    // `-self`, wrapping around at the bounds of the type (`MIN` stays `MIN`).
     pub fn wrapping_neg(self: usize) usize { ret __wrapping_sub(0, self as u64) as usize; }
 
+    // `self` raised to `exponent`; panics when the result overflows the type.
     pub fn pow(self: usize, exponent: u32) usize {
         var base: usize = self;
         var power: u32 = exponent;
@@ -241,14 +298,20 @@ impl usize {
         }
         ret result;
     }
+    // The greatest common divisor (non-negative); `gcd(0, 0)` is 0. Panics when
+    // the result does not fit the type.
     pub fn gcd(self: usize, other: usize) usize {
         ret __gcd_u64(self as u64, other as u64) as usize;
     }
+    // The least common multiple; 0 when either operand is 0. Panics when the
+    // result does not fit the type.
     pub fn lcm(self: usize, other: usize) usize {
         if (self == 0 || other == 0) { ret 0; }
         ret self / self.gcd(other) * other;
     }
+    // Whether the value is divisible by 2.
     pub fn is_even(self: usize) bool { ret self % 2 == 0; }
+    // Whether the value is not divisible by 2.
     pub fn is_odd(self: usize) bool { ret self % 2 != 0; }
 }
 
@@ -256,8 +319,11 @@ impl i8 {
     // Arithmetic that wraps around at the bounds of `i8` instead of
     // panicking on overflow (hashes, random number generators, checksums).
     pub fn wrapping_add(self: i8, other: i8) i8 { ret __wrapping_add(self as u64, other as u64) as i8; }
+    // `self - other`, wrapping around at the bounds of the type.
     pub fn wrapping_sub(self: i8, other: i8) i8 { ret __wrapping_sub(self as u64, other as u64) as i8; }
+    // `self * other`, wrapping around at the bounds of the type.
     pub fn wrapping_mul(self: i8, other: i8) i8 { ret __wrapping_mul(self as u64, other as u64) as i8; }
+    // `-self`, wrapping around at the bounds of the type (`MIN` stays `MIN`).
     pub fn wrapping_neg(self: i8) i8 { ret __wrapping_sub(0, self as u64) as i8; }
 }
 
@@ -265,8 +331,11 @@ impl i16 {
     // Arithmetic that wraps around at the bounds of `i16` instead of
     // panicking on overflow (hashes, random number generators, checksums).
     pub fn wrapping_add(self: i16, other: i16) i16 { ret __wrapping_add(self as u64, other as u64) as i16; }
+    // `self - other`, wrapping around at the bounds of the type.
     pub fn wrapping_sub(self: i16, other: i16) i16 { ret __wrapping_sub(self as u64, other as u64) as i16; }
+    // `self * other`, wrapping around at the bounds of the type.
     pub fn wrapping_mul(self: i16, other: i16) i16 { ret __wrapping_mul(self as u64, other as u64) as i16; }
+    // `-self`, wrapping around at the bounds of the type (`MIN` stays `MIN`).
     pub fn wrapping_neg(self: i16) i16 { ret __wrapping_sub(0, self as u64) as i16; }
 }
 
@@ -274,8 +343,11 @@ impl u8 {
     // Arithmetic that wraps around at the bounds of `u8` instead of
     // panicking on overflow (hashes, random number generators, checksums).
     pub fn wrapping_add(self: u8, other: u8) u8 { ret __wrapping_add(self as u64, other as u64) as u8; }
+    // `self - other`, wrapping around at the bounds of the type.
     pub fn wrapping_sub(self: u8, other: u8) u8 { ret __wrapping_sub(self as u64, other as u64) as u8; }
+    // `self * other`, wrapping around at the bounds of the type.
     pub fn wrapping_mul(self: u8, other: u8) u8 { ret __wrapping_mul(self as u64, other as u64) as u8; }
+    // `-self`, wrapping around at the bounds of the type (`MIN` stays `MIN`).
     pub fn wrapping_neg(self: u8) u8 { ret __wrapping_sub(0, self as u64) as u8; }
 }
 
@@ -283,8 +355,11 @@ impl u16 {
     // Arithmetic that wraps around at the bounds of `u16` instead of
     // panicking on overflow (hashes, random number generators, checksums).
     pub fn wrapping_add(self: u16, other: u16) u16 { ret __wrapping_add(self as u64, other as u64) as u16; }
+    // `self - other`, wrapping around at the bounds of the type.
     pub fn wrapping_sub(self: u16, other: u16) u16 { ret __wrapping_sub(self as u64, other as u64) as u16; }
+    // `self * other`, wrapping around at the bounds of the type.
     pub fn wrapping_mul(self: u16, other: u16) u16 { ret __wrapping_mul(self as u64, other as u64) as u16; }
+    // `-self`, wrapping around at the bounds of the type (`MIN` stays `MIN`).
     pub fn wrapping_neg(self: u16) u16 { ret __wrapping_sub(0, self as u64) as u16; }
 }
 
@@ -297,11 +372,13 @@ impl f32 {
         if (self < other || other != other) { ret self; }
         ret other;
     }
+    // The larger of the two values (IEEE maxNum: a NaN operand yields the other).
     pub fn max(self: f32, other: f32) f32 {
         if (self != self) { ret other; }
         if (self > other || other != other) { ret self; }
         ret other;
     }
+    // The value limited to `low..=high`.
     pub fn clamp(self: f32, low: f32, high: f32) f32 {
         if (self < low) { ret low; }
         if (self > high) { ret high; }
@@ -318,17 +395,20 @@ impl f64 {
         if (self < other || other != other) { ret self; }
         ret other;
     }
+    // The larger of the two values (IEEE maxNum: a NaN operand yields the other).
     pub fn max(self: f64, other: f64) f64 {
         if (self != self) { ret other; }
         if (self > other || other != other) { ret self; }
         ret other;
     }
+    // The value limited to `low..=high`.
     pub fn clamp(self: f64, low: f64, high: f64) f64 {
         if (self < low) { ret low; }
         if (self > high) { ret high; }
         ret self;
     }
 
+    // `self` raised to the integer `exponent` (negative exponents divide).
     pub fn powi(self: f64, exponent: i32) f64 {
         var base: f64 = self;
         var power: i32 = exponent;

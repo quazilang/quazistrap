@@ -30,6 +30,8 @@ fn __quazi_print_backtrace() void;
 import qoroutine.__qo_abandon_on_panic;
 import qoroutine.__qo_running;
 
+// What a panic handler receives: the message and the source location of
+// the `panic`.
 pub struct PanicInfo {
     message: str,
     file: str,
@@ -37,14 +39,17 @@ pub struct PanicInfo {
 }
 
 impl PanicInfo {
+    // The panic message.
     pub fn message(self: &PanicInfo) str {
         ret self.message;
     }
 
+    // The source file of the `panic` call.
     pub fn file(self: &PanicInfo) str {
         ret self.file;
     }
 
+    // The line of the `panic` call.
     pub fn line(self: &PanicInfo) usize {
         ret self.line;
     }
@@ -70,6 +75,9 @@ pub fn __quazi_panic_handler(info: PanicInfo) ! {
     __panic_exit(101);
 }
 
+// Stops the program with a message. The compiler supplies `file` and `line`;
+// write `panic("bad value {}", value)`. The panic handler prints
+// `thread 'main' panicked at '...'` and exits with status 101.
 pub fn panic(msg: str, file: str, line: usize, ...args: str) ! {
     __quazi_panic_handler(PanicInfo { message: msg, file: file, line: line });
 }

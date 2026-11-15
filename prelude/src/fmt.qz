@@ -8,6 +8,7 @@ import string;
 @intrinsic("quazi.str.byte_at")
 fn __format_byte_at(text: str, index: usize) u8;
 
+// A new String: `a` followed by `b`.
 pub fn concat(a: str, b: str) String {
     var result = String.from(a);
     result.push_str(b);

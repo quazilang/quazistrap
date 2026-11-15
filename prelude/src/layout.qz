@@ -4,8 +4,10 @@
 
 // prelude.layout — compiler-known runtime layout queries
 
+// The size in bytes of a value of type `T` (`size_of[i64]()` is 8).
 @intrinsic("quazi.size_of")
 pub fn size_of[T]() usize;
 
+// The alignment in bytes of type `T`.
 @intrinsic("quazi.align_of")
 pub fn align_of[T]() usize;

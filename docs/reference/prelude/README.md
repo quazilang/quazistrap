@@ -1,0 +1,15 @@
+# `prelude` API reference
+
+- [`prelude.array`](array.md)
+- [`prelude.box`](box.md)
+- [`prelude.fmt`](fmt.md)
+- [`prelude.layout`](layout.md)
+- [`prelude`](mod.md)
+- [`prelude.number`](number.md)
+- [`prelude.option`](option.md)
+- [`prelude.panic`](panic.md)
+- [`prelude.qoroutine`](qoroutine.md)
+- [`prelude.range`](range.md)
+- [`prelude.result`](result.md)
+- [`prelude.string`](string.md)
+- [`prelude.traits`](traits.md)

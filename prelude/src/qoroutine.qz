@@ -457,6 +457,9 @@ impl Qoroutine[T] {
 // +40 closed, +48 buffer (capacity 8-byte slots).
 // Values are stored as one 8-byte slot: send plain scalars for now.
 
+// A queue that passes values between qoroutines: `send` adds a value,
+// `receive` waits for one and returns `None` once the channel is closed and
+// empty. Clones share the same queue.
 pub struct Channel[T] {
     block: *u8,
 }
@@ -555,6 +558,7 @@ impl Channel[T] {
         }
     }
 
+    // Releases this handle; the queue is freed with its last clone.
     pub fn free(self: Channel[T]) void {
         unsafe {
             if (self.block != 0 && __qo_atomic_add((self.block + 8) as *i64, -1) == 1) {

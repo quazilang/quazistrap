@@ -315,9 +315,9 @@ fn append_count(result: String, tag: str, count: usize) String {
 }
 
 fn append_directory_count(result: String, path: str, tag: str) String {
-    const counted: Result[usize, fs.FsError] = fs.count_entries(path);
-    if (counted.is_err()) { ret result; }
-    ret append_count(result, tag, counted.unwrap());
+    const listed: Result[Array[fs.DirEntry], fs.FsError] = fs.read_dir(path);
+    if (listed.is_err()) { ret result; }
+    ret append_count(result, tag, listed.unwrap().len());
 }
 
 @cfg(target_os = "linux")
@@ -421,9 +421,9 @@ fn get_packages() String {
         if (!local.is_empty()) {
             var winget: String = String.from(local.as_str());
             winget.push_str("\\Microsoft\\WinGet\\Packages");
-            const portable_count: Result[usize, fs.FsError] = fs.count_entries(winget.as_str());
-            if (portable_count.is_ok()) {
-                result = append_count(result, "winget", portable_count.unwrap());
+            const portable: Result[Array[fs.DirEntry], fs.FsError] = fs.read_dir(winget.as_str());
+            if (portable.is_ok()) {
+                result = append_count(result, "winget", portable.unwrap().len());
             } else {
                 var packaged: String = String.from(local.as_str());
                 packaged.push_str(

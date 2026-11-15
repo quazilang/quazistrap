@@ -32,8 +32,11 @@ unsafe fn __string_as_ptr(s: str) *u8;
 @intrinsic("quazi.str.from_ptr")
 unsafe fn __string_from_ptr(s: *u8) str;
 
+// One Unicode scalar value (a code point that is not a surrogate).
 pub type Rune = u32;
 
+// Why `parse_*` rejected its text: `Empty`, `InvalidDigit(index)` (the byte
+// offset of the first bad character) or `Overflow`.
 pub enum ParseError {
     Empty,
     InvalidDigit(usize),
@@ -51,6 +54,8 @@ impl ParseError {
     }
 }
 
+// Owned, growable UTF-8 text. It frees its buffer when it goes out of scope.
+// Borrow it as `str` with `as_str()`; append with `push_str`.
 pub struct String {
     data: str,
     len: usize,
@@ -118,8 +123,10 @@ fn __owned_range(text: str, start: usize, end: usize) String {
 }
 
 impl str {
+    // The number of Unicode scalar values (runes), not bytes; see `bytes_len`.
     pub fn len(self: str) usize { ret self.rune_len(); }
 
+    // The number of Unicode scalar values (runes).
     pub fn rune_len(self: str) usize {
         const byte_len: usize = __string_strlen(self);
         var byte_index: usize = 0;
@@ -131,9 +138,13 @@ impl str {
         ret count;
     }
 
+    // The length in UTF-8 bytes.
     pub fn bytes_len(self: str) usize { ret __string_strlen(self); }
+    // Whether the text has no characters.
     pub fn is_empty(self: str) bool { ret self.bytes_len() == 0; }
 
+    // The rune at `index` (negative counts from the end), or `None` when out
+    // of range.
     pub fn get(self: str, index: isize) Option[Rune] {
         const rune_count: isize = self.rune_len() as isize;
         var normalized: isize = index;
@@ -237,6 +248,7 @@ impl str {
         ret result;
     }
 
+    // A new String with the runes in reverse order.
     pub fn reverse(self: str) String {
         const length: usize = __string_strlen(self);
         if (length == 0) { ret String.new(); }
@@ -274,6 +286,7 @@ impl str {
         ret result;
     }
 
+    // A new String with ASCII letters in upper case (other text unchanged).
     pub fn to_uppercase(self: str) String {
         const length: usize = __string_strlen(self);
         const result: String = __owned_range(self, 0, length);
@@ -289,9 +302,12 @@ impl str {
         ret result;
     }
 
+    // Same as `to_lowercase`.
     pub fn lowercase(self: str) String { ret self.to_lowercase(); }
+    // Same as `to_uppercase`.
     pub fn uppercase(self: str) String { ret self.to_uppercase(); }
 
+    // A new String whose first ASCII letter is upper case.
     pub fn capitalize(self: str) String {
         const result: String = __owned_range(self, 0, __string_strlen(self));
         if (!result.is_empty()) {
@@ -304,6 +320,7 @@ impl str {
         ret result;
     }
 
+    // A new String without leading and trailing ASCII whitespace.
     pub fn trim(self: str) String {
         const length: usize = __string_strlen(self);
         var start: usize = 0;
@@ -327,6 +344,7 @@ impl str {
         ret __owned_range(self, start, end);
     }
 
+    // Whether the text begins with `prefix`.
     pub fn starts_with(self: str, prefix: str) bool {
         const length: usize = __string_strlen(self);
         const prefix_len: usize = __string_strlen(prefix);
@@ -339,6 +357,7 @@ impl str {
         ret true;
     }
 
+    // Whether the text ends with `suffix`.
     pub fn ends_with(self: str, suffix: str) bool {
         const length: usize = __string_strlen(self);
         const suffix_len: usize = __string_strlen(suffix);
@@ -377,8 +396,11 @@ impl str {
         ret None;
     }
 
+    // Whether `needle` occurs in the text.
     pub fn contains(self: str, needle: str) bool { ret self.find(needle).is_some(); }
 
+    // Parses decimal text (optional `+` or `-`) as `i64`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_i64(self: str) Result[i64, ParseError] {
         const length: usize = __string_strlen(self);
         if (length == 0) { ret Err(ParseError.Empty); }
@@ -411,29 +433,39 @@ impl str {
         ret Ok(value);
     }
 
+    // Parses decimal text (optional `+` or `-`) as `i32`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_i32(self: str) Result[i32, ParseError] {
         const value: i64 = self.parse_i64()?;
         if (value < -2147483648 || value > 2147483647) { ret Err(ParseError.Overflow); }
         ret Ok(value as i32);
     }
 
+    // Parses decimal text (optional `+` or `-`) as `i8`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_i8(self: str) Result[i8, ParseError] {
         const value: i64 = self.parse_i64()?;
         if (value < -128 || value > 127) { ret Err(ParseError.Overflow); }
         ret Ok(value as i8);
     }
 
+    // Parses decimal text (optional `+` or `-`) as `i16`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_i16(self: str) Result[i16, ParseError] {
         const value: i64 = self.parse_i64()?;
         if (value < -32768 || value > 32767) { ret Err(ParseError.Overflow); }
         ret Ok(value as i16);
     }
 
+    // Parses decimal text (optional `+` or `-`) as `isize`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_isize(self: str) Result[isize, ParseError] {
         const value: i64 = self.parse_i64()?;
         ret Ok(value as isize);
     }
 
+    // Parses decimal text (optional `+`) as `u64`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_u64(self: str) Result[u64, ParseError] {
         const length: usize = __string_strlen(self);
         if (length == 0) { ret Err(ParseError.Empty); }
@@ -457,29 +489,38 @@ impl str {
         ret Ok(value);
     }
 
+    // Parses decimal text (optional `+`) as `u8`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_u8(self: str) Result[u8, ParseError] {
         const value: u64 = self.parse_u64()?;
         if (value > 255) { ret Err(ParseError.Overflow); }
         ret Ok(value as u8);
     }
 
+    // Parses decimal text (optional `+`) as `u16`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_u16(self: str) Result[u16, ParseError] {
         const value: u64 = self.parse_u64()?;
         if (value > 65535) { ret Err(ParseError.Overflow); }
         ret Ok(value as u16);
     }
 
+    // Parses decimal text (optional `+`) as `u32`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_u32(self: str) Result[u32, ParseError] {
         const value: u64 = self.parse_u64()?;
         if (value > 4294967295) { ret Err(ParseError.Overflow); }
         ret Ok(value as u32);
     }
 
+    // Parses decimal text (optional `+`) as `usize`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_usize(self: str) Result[usize, ParseError] {
         const value: u64 = self.parse_u64()?;
         ret Ok(value as usize);
     }
 
+    // Parses decimal floating-point text such as `-1.5` or `2.5e10` as `f64`.
     pub fn parse_f64(self: str) Result[f64, ParseError] {
         const length: usize = __string_strlen(self);
         if (length == 0) { ret Err(ParseError.Empty); }
@@ -544,6 +585,7 @@ impl str {
         ret Ok(sign * value);
     }
 
+    // Parses decimal floating-point text as `f32`.
     pub fn parse_f32(self: str) Result[f32, ParseError] {
         ret Ok(self.parse_f64()? as f32);
     }
@@ -556,12 +598,16 @@ fn __string_index(text: str, index: isize) Rune {
 }
 
 impl Index[isize, Rune] for str {
+    // `text[i]`: the rune at `index` (negative counts from the end); panics
+    // when out of range.
     pub fn index(self: &str, index: isize) Rune { ret __string_index(self, index); }
 }
 
 impl String {
+    // An empty String.
     pub fn new() String { ret String { data: "", len: 0, cap: 0 }; }
 
+    // A String holding a copy of `s`.
     pub fn from(s: str) String {
         const n: usize = __string_strlen(s);
         const buf: str = __string_str_concat(s, "");
@@ -574,10 +620,15 @@ impl String {
         ret String { data: text, len: len, cap: cap };
     }
 
+    // The number of Unicode scalar values (runes), not bytes; see `bytes_len`.
     pub fn len(self: &String) usize { ret self.data.rune_len(); }
+    // The number of Unicode scalar values (runes).
     pub fn rune_len(self: &String) usize { ret self.data.rune_len(); }
+    // The length in UTF-8 bytes.
     pub fn bytes_len(self: &String) usize { ret self.len; }
+    // Whether the text has no characters.
     pub fn is_empty(self: &String) bool { ret self.len == 0; }
+    // The text as a borrowed `str` view, valid while the String is unchanged.
     pub fn as_str(self: &String) str { ret self.data; }
 
     // Append `s` in place (like Rust's `String::push_str`). It returns
@@ -591,38 +642,74 @@ impl String {
         self.cap = length + 1;
     }
 
+    // A new String: `a` followed by `b`.
     pub fn concat(a: String, b: String) String {
         var result: String = a;
         result.push_str(b.data);
         ret result;
     }
+    // The rune at `index` (negative counts from the end), or `None` when out
+    // of range.
     pub fn get(self: &String, index: isize) Option[Rune] { ret self.data.get(index); }
     pub fn __slice(self: &String, start: isize, end: isize, step: isize,
         start_omitted: bool, end_omitted: bool) String {
         ret self.data.__slice(start, end, step, start_omitted, end_omitted);
     }
+    // A new String with the runes in reverse order.
     pub fn reverse(self: &String) String { ret self.data.reverse(); }
+    // A new String with ASCII letters in lower case (other text unchanged).
     pub fn to_lowercase(self: &String) String { ret self.data.to_lowercase(); }
+    // A new String with ASCII letters in upper case (other text unchanged).
     pub fn to_uppercase(self: &String) String { ret self.data.to_uppercase(); }
+    // Same as `to_lowercase`.
     pub fn lowercase(self: &String) String { ret self.data.to_lowercase(); }
+    // Same as `to_uppercase`.
     pub fn uppercase(self: &String) String { ret self.data.to_uppercase(); }
+    // A new String whose first ASCII letter is upper case.
     pub fn capitalize(self: &String) String { ret self.data.capitalize(); }
+    // A new String without leading and trailing ASCII whitespace.
     pub fn trim(self: &String) String { ret self.data.trim(); }
+    // Whether the text begins with `prefix`.
     pub fn starts_with(self: &String, prefix: str) bool { ret self.data.starts_with(prefix); }
+    // Whether the text ends with `suffix`.
     pub fn ends_with(self: &String, suffix: str) bool { ret self.data.ends_with(suffix); }
+    // The UTF-8 byte offset of the first occurrence of `needle`, or `None`.
     pub fn find(self: &String, needle: str) Option[usize] { ret self.data.find(needle); }
+    // Whether `needle` occurs in the text.
     pub fn contains(self: &String, needle: str) bool { ret self.data.contains(needle); }
+    // Parses decimal text (optional `+` or `-`) as `i64`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_i64(self: &String) Result[i64, ParseError] { ret self.data.parse_i64(); }
+    // Parses decimal text (optional `+` or `-`) as `i8`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_i8(self: &String) Result[i8, ParseError] { ret self.data.parse_i8(); }
+    // Parses decimal text (optional `+` or `-`) as `i16`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_i16(self: &String) Result[i16, ParseError] { ret self.data.parse_i16(); }
+    // Parses decimal text (optional `+` or `-`) as `i32`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_i32(self: &String) Result[i32, ParseError] { ret self.data.parse_i32(); }
+    // Parses decimal text (optional `+` or `-`) as `isize`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_isize(self: &String) Result[isize, ParseError] { ret self.data.parse_isize(); }
+    // Parses decimal text (optional `+`) as `u8`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_u8(self: &String) Result[u8, ParseError] { ret self.data.parse_u8(); }
+    // Parses decimal text (optional `+`) as `u16`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_u16(self: &String) Result[u16, ParseError] { ret self.data.parse_u16(); }
+    // Parses decimal text (optional `+`) as `u32`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_u32(self: &String) Result[u32, ParseError] { ret self.data.parse_u32(); }
+    // Parses decimal text (optional `+`) as `u64`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_u64(self: &String) Result[u64, ParseError] { ret self.data.parse_u64(); }
+    // Parses decimal text (optional `+`) as `usize`. Errors: `Empty`,
+    // `InvalidDigit(index)`, `Overflow` when the value does not fit.
     pub fn parse_usize(self: &String) Result[usize, ParseError] { ret self.data.parse_usize(); }
+    // Parses decimal floating-point text as `f32`.
     pub fn parse_f32(self: &String) Result[f32, ParseError] { ret self.data.parse_f32(); }
+    // Parses decimal floating-point text such as `-1.5` or `2.5e10` as `f64`.
     pub fn parse_f64(self: &String) Result[f64, ParseError] { ret self.data.parse_f64(); }
 
     // Release the owned allocation while retaining a valid, reusable String.
@@ -636,6 +723,7 @@ impl String {
         }
     }
 
+    // Frees the buffer; called automatically at the end of scope.
     pub fn free(self: String) void {
         if (self.cap > 0) {
             __string_free(self.data);
@@ -647,5 +735,7 @@ impl String {
 }
 
 impl Index[isize, Rune] for String {
+    // `text[i]`: the rune at `index` (negative counts from the end); panics
+    // when out of range.
     pub fn index(self: &String, index: isize) Rune { ret __string_index(self.data, index); }
 }

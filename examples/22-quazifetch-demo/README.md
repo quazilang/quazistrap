@@ -43,7 +43,7 @@ to free physical memory. Counters are live estimates and can change between call
 Package output includes the discovered count, for example `apt (425)` or
 `choco (3)`. Debian/APK counts come from their installed-package databases;
 Pacman, XBPS, Nix, Flatpak, Chocolatey, Scoop, and WinGet portable-package
-counts use manager-owned directories through `std.fs.count_entries`. When no
+counts use manager-owned directories through `std.fs.read_dir`. When no
 Windows package-manager metadata exists, the example counts the per-user
 AppX/MSIX store and reports `appx (N)`. Restricted/minimal Windows sessions
 fall back to the system package cache, then the immediate Program Files entries,
@@ -68,4 +68,4 @@ hatch confined here to ownership-transfer helpers and standard-library internals
 
 ## NetBSD note
 
-The NetBSD build uses cross-platform `std.os` for host/CPU/memory/shell, and `std.fs.count_entries` for pkgsrc. Its `kernel` row currently reports `NetBSD` until `std.os.version()` can supply a verified NetBSD release; no `/proc` or Linux syscalls are used.
+The NetBSD build uses cross-platform `std.os` for host/CPU/memory/shell, and `std.fs.read_dir` for pkgsrc. Its `kernel` row currently reports `NetBSD` until `std.os.version()` can supply a verified NetBSD release; no `/proc` or Linux syscalls are used.

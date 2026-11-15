@@ -226,6 +226,12 @@ pub enum Command {
         /// output directory (default: <out_dir>/doc)
         #[arg(short = 'o', long = "output")]
         output: Option<String>,
+        /// document this source directory instead of the project's (with --package)
+        #[arg(long = "src", requires = "package")]
+        src: Option<String>,
+        /// module prefix for --src pages (for example `prelude`)
+        #[arg(long = "package", requires = "src")]
+        package: Option<String>,
     },
     /// Remove project build artifacts
     Clean,

@@ -61,6 +61,7 @@ pub trait Into[T] {
     fn into() T;
 }
 
+// Conversion from `T`: `Target.from(value)`.
 pub trait From[T] {
     fn from(val: T) Self;
 }
@@ -88,95 +89,150 @@ pub trait Write {
 // ── Display impls for primitives ─────────────────────────────────────────────
 
 impl Display for i8 {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: i8) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: i8) String { ret String.from(self.to_str()); }
 }
 
 impl Display for i16 {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: i16) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: i16) String { ret String.from(self.to_str()); }
 }
 
 impl Display for i32 {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: i32) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: i32) String { ret String.from(self.to_str()); }
 }
 
 impl Display for i64 {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: i64) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: i64) String { ret String.from(self.to_str()); }
 }
 
 impl Display for u8 {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: u8) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: u8) String { ret String.from(self.to_str()); }
 }
 
 impl Display for u16 {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: u16) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: u16) String { ret String.from(self.to_str()); }
 }
 
 impl Display for u32 {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: u32) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: u32) String { ret String.from(self.to_str()); }
 }
 
 impl Display for u64 {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: u64) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: u64) String { ret String.from(self.to_str()); }
 }
 
 impl Display for isize {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: isize) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: isize) String { ret String.from(self.to_str()); }
 }
 
 impl Display for usize {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: usize) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: usize) String { ret String.from(self.to_str()); }
 }
 
 impl Display for f16 {
+    // The decimal text of the value as a borrowed `str`.
     pub fn to_str(self: f16) str { ret (self as f64).to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: f16) String { ret String.from((self as f64).to_str()); }
 }
 
 impl Display for f32 {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: f32) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: f32) String { ret String.from(self.to_str()); }
 }
 
 impl Display for f64 {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: f64) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: f64) String { ret String.from(self.to_str()); }
 }
 
 impl Display for bool {
+    // The decimal text of the value as a borrowed `str` (valid until the next
+    // conversion; use `to_string` to keep it).
     pub fn to_str(self: bool) str { ret self.to_str(); }
+    // The decimal text of the value as an owned String.
     pub fn to_string(self: bool) String { ret String.from(self.to_str()); }
 }
 
 impl Display for str {
+    // The text itself.
     pub fn to_str(self: str) str { ret self; }
+    // An owned copy of the text.
     pub fn to_string(self: &str) String { ret String.from(self); }
 }
 
 // Owned text exposes borrowed display views and explicit owned copies.
 impl String {
+    // The text as a borrowed `str` view.
     pub fn to_str(self: &String) str { ret self.as_str(); }
+    // An owned copy of the text.
     pub fn to_string(self: &String) String { ret String.from(self.as_str()); }
 }
 
 // ── Operator overloading ──────────────────────────────────────────────────────
 pub trait Add[T] { fn add(rhs: T) T; }
+// Overloads `-`.
 pub trait Sub[T] { fn sub(rhs: T) T; }
+// Overloads `*`.
 pub trait Mul[T] { fn mul(rhs: T) T; }
+// Overloads `/`.
 pub trait Div[T] { fn div(rhs: T) T; }
+// Overloads `%`.
 pub trait Rem[T] { fn rem(rhs: T) T; }
+// Overloads unary `-`.
 pub trait Neg    { fn neg() Self; }
+// Overloads `&`.
 pub trait BitAnd[T] { fn bit_and(rhs: T) T; }
+// Overloads `|`.
 pub trait BitOr[T]  { fn bit_or(rhs: T) T; }
+// Overloads `^`.
 pub trait BitXor[T] { fn bit_xor(rhs: T) T; }
+// Overloads `<<`.
 pub trait Shl[T] { fn shl(n: T) T; }
+// Overloads `>>`.
 pub trait Shr[T] { fn shr(n: T) T; }

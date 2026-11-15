@@ -6,6 +6,7 @@
 // Result[T, E] is a builtin enum: Ok(T) = tag 1, Err(E) = tag 0.
 
 impl Result[T, E] {
+    // Whether this is `Ok(value)`.
     pub fn is_ok(self: &Result[T, E]) bool {
         ret match self {
             Ok(_) => true,
@@ -13,6 +14,7 @@ impl Result[T, E] {
         };
     }
 
+    // Whether this is `Err(error)`.
     pub fn is_err(self: &Result[T, E]) bool {
         ret match self {
             Ok(_) => false,
@@ -28,6 +30,7 @@ impl Result[T, E] {
         };
     }
 
+    // The value inside `Ok`; panics on `Err`.
     pub fn unwrap(self: Result[T, E]) T {
         ret match self {
             Ok(v) => v,
@@ -35,6 +38,7 @@ impl Result[T, E] {
         };
     }
 
+    // The error inside `Err`; panics on `Ok`.
     pub fn unwrap_err(self: Result[T, E]) E {
         // Evaluate the payload-producing branch before the diverging panic arm.
         ret match self {
@@ -43,6 +47,7 @@ impl Result[T, E] {
         };
     }
 
+    // The value inside `Ok`, or `default` for `Err`.
     pub fn unwrap_or(self: Result[T, E], default: T) T {
         ret match self {
             Ok(v) => v,
@@ -50,6 +55,7 @@ impl Result[T, E] {
         };
     }
 
+    // The error inside `Err`, or `default` for `Ok`.
     pub fn unwrap_err_or(self: Result[T, E], default: E) E {
         ret match self {
             Ok(_) => default,

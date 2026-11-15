@@ -24,6 +24,9 @@ fn __ptr_store[T](base: *u8, idx: usize, val: T) void;
 @intrinsic("quazi.array.load")
 fn __ptr_load[T](base: *u8, idx: usize) T;
 
+// A growable list of values of type `T`, stored contiguously. It frees its
+// elements and storage when it goes out of scope. `for value : array`
+// consumes it; `for value : &array` reads copyable elements in place.
 @contiguous_elements(element=T, pointer=ptr, length=len)
 pub struct Array[T] {
     ptr: *u8,
@@ -32,6 +35,7 @@ pub struct Array[T] {
 }
 
 impl Array[T] {
+    // An empty array.
     pub fn new() Array[T] {
         var buf: *u8;
         const initial_cap: usize = 8;
@@ -39,6 +43,7 @@ impl Array[T] {
         ret Array { ptr: buf, len: 0, cap: initial_cap };
     }
 
+    // An array of the given values: `Array.from(1, 2, 3)`.
     pub fn from(...items: T) Array[T] {
         var result = Array.new();
         for item : items {
@@ -47,6 +52,7 @@ impl Array[T] {
         ret result;
     }
 
+    // Appends `val` at the end, growing the storage when needed.
     pub fn push(self: &Array[T]!, val: T) void {
         if (self.len >= self.cap) {
             self.cap = self.cap * 2;
@@ -56,6 +62,7 @@ impl Array[T] {
         self.len = self.len + 1;
     }
 
+    // A copy of the element at `idx`; panics when `idx >= len()`.
     pub fn get(self: &Array[T], idx: usize) T {
         if (idx >= self.len) {
             panic("index out of bounds");
@@ -63,8 +70,9 @@ impl Array[T] {
         ret __ptr_load(self.ptr, idx);
     }
 
-    // The compiler recognizes this generic container contract and replaces an
-    // initialized slot through checked load, recursive drop, then store.
+    // Replaces the element at `idx` with `val` and drops the old element;
+    // panics when `idx >= len()`. (The compiler lowers this contract through a
+    // checked load, recursive drop, then store.)
     @contiguous_element_replace pub fn set(self: &Array[T]!, idx: usize, val: T) void {
         if (idx >= self.len) {
             panic("index out of bounds");
@@ -72,8 +80,9 @@ impl Array[T] {
         __ptr_store(self.ptr, idx, val);
     }
 
-    // The compiler recognizes this generic container contract and transfers
-    // one initialized slot to the caller while compacting the live range.
+    // Removes the element at `idx` and returns it, moving the later elements
+    // down by one; panics when `idx >= len()`. (The compiler transfers the
+    // slot to the caller and compacts the live range.)
     @contiguous_element_remove pub fn remove(self: &Array[T]!, idx: usize) T {
         if (idx >= self.len) {
             panic("index out of bounds");
@@ -81,10 +90,12 @@ impl Array[T] {
         ret __ptr_load(self.ptr, idx);
     }
 
+    // The number of elements.
     pub fn len(self: &Array[T]) usize {
         ret self.len;
     }
 
+    // Whether the array has no elements.
     pub fn is_empty(self: &Array[T]) bool {
         ret self.len == 0;
     }
@@ -97,6 +108,7 @@ impl Array[T] {
         ret self.ptr as *T;
     }
 
+    // Frees the storage; called automatically at the end of scope.
     pub fn free(self: Array[T]) void {
         if (self.ptr != 0) {
             unsafe { __array_free(self.ptr); }
@@ -108,6 +120,7 @@ impl Array[T] {
 }
 
 impl Index[usize, T] for Array[T] {
+    // `array[i]`: the element at `i`; panics when out of range.
     pub fn index(self: &Array[T], i: usize) T {
         ret self.get(i);
     }
