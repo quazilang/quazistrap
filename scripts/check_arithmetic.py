@@ -23,8 +23,8 @@ for operator, name in [("+", "add"), ("-", "sub"), ("*", "mul"), ("/", "div"), (
 INVALID.update({
     "owner_neg": ("struct Owner{value:i32,}fn main()void{var a=Owner{value:1};var b=-a;}", "S06"),
     "array_neg": ("fn main()void{var a=[1,2];var b=-a;}", "S06"),
-    "untyped_neg": ("enum E{One,}fn main()void{var a=E.One;var b=-a;}", "S14"),
-    "untyped_add": ("enum E{One,}fn main()void{var a=E.One;var b=a+a;}", "S14"),
+    "untyped_neg": ("enum E[T]{One,}fn main()void{var a=E.One;var b=-a;}", "S14"),
+    "untyped_add": ("enum E[T]{One,}fn main()void{var a=E.One;var b=a+a;}", "S14"),
     "reference_neg": ("fn main()void{var a=1;var r=&a;var b=-r;}", "S06"),
     "generic_neg": ("fn neg[T](a:T)T{ret -a;}fn outer[U](a:U)U{ret neg[U](a);}fn main()void{outer[i32](1);outer[bool](true);}", "S06"),
     "owned_concat": ("struct String{data:*u8,}fn main()void{var a=String{data:0};var b=String{data:0};var c=a+b;}", "S06"),

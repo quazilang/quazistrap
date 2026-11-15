@@ -14,7 +14,7 @@ for operator, name in [("&", "and"), ("|", "or"), ("^", "xor"), ("<<", "shl"), (
     INVALID[f"owner_{name}"] = (f"struct Owner{{value:i32,}}fn main()void{{var a=Owner{{value:1}};var b=Owner{{value:2}};var result=a{operator}b;}}", "S06")
     INVALID[f"float_{name}"] = (f"fn main()void{{var a=1.5;var result=a{operator}a;}}", "S06")
     INVALID[f"generic_float_{name}"] = (f"fn calc[T](a:T,b:T)T{{ret a{operator}b;}}fn main()void{{calc[i32](5,2);calc[f64](1.5,2.5);}}", "S06")
-    INVALID[f"missing_{name}"] = (f"enum E{{One,}}fn main()void{{var a=E.One;var result=a{operator}a;}}", "S14")
+    INVALID[f"missing_{name}"] = (f"enum E[T]{{One,}}fn main()void{{var a=E.One;var result=a{operator}a;}}", "S14")
 for operator, name in [("<", "lt"), ("<=", "le"), (">", "gt"), (">=", "ge")]:
     INVALID[f"generic_owner_{name}"] = (f"struct Owner{{value:i32,}}fn calc[T](a:T,b:T)bool{{ret a{operator}b;}}fn main()void{{calc[i32](1,2);calc[Owner](Owner{{value:1}},Owner{{value:2}});}}", "S06")
     INVALID[f"generic_bool_{name}"] = (f"fn calc[T](a:T,b:T)bool{{ret a{operator}b;}}fn main()void{{calc[bool](true,false);}}", "S06")

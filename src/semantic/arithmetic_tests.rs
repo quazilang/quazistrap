@@ -62,11 +62,21 @@ fn numeric_mutations_reject_handle_arithmetic_assignment() {
 
 #[test]
 fn numeric_mutations_fail_closed_when_constructor_types_are_missing() {
+    // A unit variant of a non-generic enum has the enum's type, so these
+    // are ordinary type errors.
     for source in [
         "enum Choice{One,} fn main()void{var value=Choice.One;value++;}",
         "enum Choice{One,} fn main()void{var value=Choice.One;value+=Choice.One;}",
         "enum Choice{One,} fn main()void{var value=1;value+=Choice.One;}",
         "enum Choice{One,} fn helper[T](unused:T)void{var value=Choice.One;value++;}",
+    ] {
+        assert_error(source, "S06");
+    }
+    // A generic enum's unit variant has no type arguments to infer from.
+    for source in [
+        "enum Choice[T]{One,} fn main()void{var value=Choice.One;value++;}",
+        "enum Choice[T]{One,} fn main()void{var value=Choice.One;value+=Choice.One;}",
+        "enum Choice[T]{One,} fn main()void{var value=1;value+=Choice.One;}",
     ] {
         assert_error(source, "S14");
     }
@@ -231,6 +241,10 @@ fn arithmetic_rejects_nonnumeric_values_and_missing_types() {
         );
         assert_error(
             &format!("enum E{{One,}}fn main()void{{var a=E.One;var b=E.One;var c=a{operator}b;}}"),
+            "S06",
+        );
+        assert_error(
+            &format!("enum E[T]{{One,}}fn main()void{{var a=E.One;var b=E.One;var c=a{operator}b;}}"),
             "S14",
         );
     }
@@ -241,7 +255,8 @@ fn arithmetic_rejects_nonnumeric_values_and_missing_types() {
     ] {
         assert_error(source, "S06");
     }
-    assert_error("enum E{One,}fn main()void{var a=E.One;var b=-a;}", "S14");
+    assert_error("enum E{One,}fn main()void{var a=E.One;var b=-a;}", "S06");
+    assert_error("enum E[T]{One,}fn main()void{var a=E.One;var b=-a;}", "S14");
 }
 
 #[test]
@@ -382,6 +397,10 @@ fn operator_requirements_reject_handles_floats_and_untyped_operands_in_bits() {
         );
         assert_error(
             &format!("enum E{{One,}}fn main()void{{var a=E.One;var b=a{operator}a;}}"),
+            "S06",
+        );
+        assert_error(
+            &format!("enum E[T]{{One,}}fn main()void{{var a=E.One;var b=a{operator}a;}}"),
             "S14",
         );
         assert_valid(&format!(

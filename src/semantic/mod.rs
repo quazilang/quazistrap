@@ -6715,6 +6715,29 @@ fn main() void {
     }
 
     #[test]
+    fn unit_variant_constants_keep_their_enum_type() {
+        // `const c = C.B;` was untyped: the match skipped exhaustiveness and
+        // trapped at run time, and `const d: bool = c;` was accepted.
+        let report = analyze(
+            "enum C { A, B, R } fn main() i32 { const c = C.B; const d: bool = c; const v = match c { C.A => 1, C.R => 3 }; ret v; }",
+        );
+        assert!(
+            report.errors.iter().any(|error| error.code == "S09" && error.message.contains("missing [C.B]")),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.iter().any(|error| error.code == "S01" && error.message.contains("declared bool, got C")),
+            "{:?}",
+            report.errors
+        );
+        let report = analyze(
+            "enum C { A, B } fn main() i32 { const c = C.B; ret match c { C.A => 1, C.B => 2 }; }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
     fn integer_literals_must_fit_their_declared_type() {
         let report = analyze(
             "fn take(x: i8) i8 { ret x; } fn main() i32 { var y: u8 = 300; const z: u8 = -1; const c: i64 = 9223372036854775807 + 1; take(200); const ok: i8 = -128; const top: u64 = 18446744073709551615; const shift: u64 = 1 << 40; const wrap: u8 = 300 as u8; ret 0; }",

@@ -5125,6 +5125,10 @@ impl Analyzer {
                     }
                     _ => None,
                 };
+                // `C.B` names a unit variant of a non-generic enum: its type
+                // is the enum (`const c = C.B;` must not be untyped, or match
+                // exhaustiveness and assignment checks are skipped).
+                let field_ty = field_ty.or_else(|| self.unit_variant_type(object, name));
                 ExprEval {
                     ty: field_ty,
                     const_value: None,
@@ -7405,6 +7409,33 @@ impl Analyzer {
 
     /// Check type compatibility and mark the expression for auto-deref when a
     /// reference to a value-like type is used where the value type is expected.
+    pub(super) fn unit_variant_type(&self, object: &Expr, variant: &str) -> Option<TypeKind> {
+        let ExprKind::Ident(enum_name) = &object.node else {
+            return None;
+        };
+        let symbol = self.resolve_symbol(enum_name)?;
+        if !matches!(symbol.kind, SymbolKind::TypeName) || !symbol.generic_params.is_empty() {
+            return None;
+        }
+        let canonical = self
+            .type_name_bindings
+            .get(enum_name)
+            .map(|binding| binding.name.clone())
+            .unwrap_or_else(|| enum_name.clone());
+        if self
+            .struct_generic_params
+            .get(&canonical)
+            .is_some_and(|params| !params.is_empty())
+        {
+            return None;
+        }
+        let info = self.enums.get(&canonical)?;
+        (info.variants.get(variant) == Some(&0)).then(|| TypeKind::Named {
+            name: canonical,
+            type_args: Vec::new(),
+        })
+    }
+
     /// An integer literal (or literal-only expression) must fit the integer
     /// type it initializes: `var y: u8 = 300;` is an error, not a wrap.
     fn check_integer_literal_range(&mut self, expr: &Expr, value: i128, ty: &TypeKind) {

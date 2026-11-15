@@ -9,8 +9,8 @@ from pathlib import Path
 INVALID = {
     "struct_increment": ("struct Owner{value:i32,}fn main()void{var owner=Owner{value:1};owner++;}", "S06"),
     "enum_increment": ("enum E{One,}fn main()void{var e:E=E.One;e++;}", "S06"),
-    "untyped_enum_increment": ("enum E{One,}fn main()void{var e=E.One;e++;}", "S14"),
-    "untyped_enum_compound": ("enum E{One,}fn main()void{var e=E.One;e+=E.One;}", "S14"),
+    "untyped_enum_increment": ("enum E[T]{One,}fn main()void{var e=E.One;e++;}", "S14"),
+    "untyped_enum_compound": ("enum E[T]{One,}fn main()void{var e=E.One;e+=E.One;}", "S14"),
     "array_increment": ("fn main()void{var a=[1,2];a++;}", "S06"),
     "bool_increment": ("fn main()void{var b=true;--b;}", "S06"),
     "str_increment": ('fn main()void{var s="text";s++;}', "S06"),

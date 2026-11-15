@@ -2049,8 +2049,10 @@ impl Analyzer {
                 self.bc_expr(inner, env, consumed);
             }
 
-            ExprKind::Field { object, .. } => {
+            ExprKind::Field { object, name } => {
+                // `Enum.Variant` constructs a value; it is not a field place.
                 if consumed
+                    && self.unit_variant_type(object, name).is_none()
                     && self.bc_receiver_is_move_type(expr)
                     && !env.allows_destructor_projection_move(expr)
                     && !env.allows_returned_receiver_field_move(expr)
