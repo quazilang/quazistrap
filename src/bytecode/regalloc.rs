@@ -9,6 +9,94 @@ use super::chunk::Chunk;
 use super::instruction::Instruction;
 use super::opcode::Opcode;
 
+const JUMPS: [Opcode; 11] = [
+    Opcode::Jmp,
+    Opcode::Je,
+    Opcode::Jne,
+    Opcode::Jg,
+    Opcode::Jge,
+    Opcode::Jl,
+    Opcode::Jle,
+    Opcode::Ja,
+    Opcode::Jb,
+    Opcode::Jz,
+    Opcode::Jnz,
+];
+
+fn jump_target(instr: &Instruction) -> Option<usize> {
+    JUMPS
+        .iter()
+        .any(|op| instr.opcode == *op as u8)
+        .then(|| u16::from_le_bytes([instr.ops[1], instr.ops[2]]) as usize)
+}
+
+/// Removes control flow that does nothing: instructions no path reaches,
+/// `jmp` to the next instruction, and jumps to a `jmp` (retargeted to its
+/// final destination). Jump targets are renumbered by `strip_nops_fix_jumps`.
+pub fn simplify_control_flow(chunk: &mut Chunk) {
+    let len = chunk.code.len();
+    if len == 0 {
+        return;
+    }
+    // Thread jumps through chains of unconditional jumps (bounded).
+    for index in 0..len {
+        let Some(mut target) = jump_target(&chunk.code[index]) else {
+            continue;
+        };
+        let mut steps = 0;
+        while target < len && chunk.code[target].opcode == Opcode::Jmp as u8 && steps < 8 {
+            let next = jump_target(&chunk.code[target]).unwrap_or(target);
+            if next == target {
+                break;
+            }
+            target = next;
+            steps += 1;
+        }
+        let [lo, hi] = (target.min(u16::MAX as usize) as u16).to_le_bytes();
+        chunk.code[index].ops[1] = lo;
+        chunk.code[index].ops[2] = hi;
+    }
+    // Reachability from the entry.
+    let mut reachable = vec![false; len];
+    let mut pending = vec![0usize];
+    while let Some(index) = pending.pop() {
+        if index >= len || reachable[index] {
+            continue;
+        }
+        reachable[index] = true;
+        let instr = &chunk.code[index];
+        if let Some(target) = jump_target(instr) {
+            pending.push(target);
+        }
+        let falls_through = instr.opcode != Opcode::Jmp as u8
+            && instr.opcode != Opcode::Ret as u8
+            && instr.opcode != Opcode::Trap as u8;
+        if falls_through {
+            pending.push(index + 1);
+        }
+    }
+    for index in 0..len {
+        if !reachable[index] {
+            chunk.code[index] = Instruction::nop();
+        }
+    }
+    // A jump to the next live instruction does nothing.
+    for index in 0..len {
+        if chunk.code[index].opcode != Opcode::Jmp as u8 {
+            continue;
+        }
+        let target = jump_target(&chunk.code[index]).unwrap_or(usize::MAX);
+        let mut next = index + 1;
+        while next < len && chunk.code[next].opcode == Opcode::Nop as u8 {
+            next += 1;
+        }
+        if target == next {
+            chunk.code[index] = Instruction::nop();
+        }
+    }
+    strip_nops_fix_jumps(chunk);
+}
+
 pub fn elim_dead_regs(chunk: &mut Chunk) {
     loop {
         let use_set = compute_use_set(&chunk.code);

@@ -1807,7 +1807,10 @@ impl<'a> Codegen<'a> {
 
         // Dead register elimination then linear-scan slot sharing.
         for chunk in &mut chunks {
+            crate::bytecode::regalloc::simplify_control_flow(chunk);
             crate::bytecode::regalloc::elim_dead_regs(chunk);
+            // Removing dead definitions can leave a jump to the next instruction.
+            crate::bytecode::regalloc::simplify_control_flow(chunk);
             crate::bytecode::regalloc::linear_scan_alloc(chunk);
         }
 
