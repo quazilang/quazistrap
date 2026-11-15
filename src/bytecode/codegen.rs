@@ -44,8 +44,33 @@ fn source_file_for_span(span: Span, source_files: &[SourceFile]) -> String {
     source_files
         .iter()
         .find(|sf| sf.contains(span))
-        .map(|sf| sf.path.clone())
+        .map(|sf| portable_source_path(&sf.path))
         .unwrap_or_else(|| "<unknown>".to_string())
+}
+
+/// The source path recorded in panic locations. Absolute build-machine paths
+/// would leak the builder's directories into binaries and make builds
+/// irreproducible: project files are shown relative to the working
+/// directory, library files from their `std/` or `prelude/` root.
+fn portable_source_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    for root in ["/std/src/", "/prelude/src/"] {
+        if let Some(position) = normalized.rfind(root) {
+            return normalized[position + 1..].to_string();
+        }
+    }
+    if let Ok(current) = std::env::current_dir()
+        && let Ok(relative) = std::path::Path::new(path).strip_prefix(&current)
+    {
+        return relative.to_string_lossy().replace('\\', "/");
+    }
+    if std::path::Path::new(path).is_absolute() {
+        return std::path::Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| normalized.clone());
+    }
+    normalized
 }
 
 /// Derive module name from a span's source file (e.g. "unix" from "std/src/unix.qz").

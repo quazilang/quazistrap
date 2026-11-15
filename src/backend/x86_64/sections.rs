@@ -154,6 +154,8 @@ impl SectionAccumulator {
         let nl_offset = obj.append_section_data(self.rodata_id, b"\n", 1);
         sym_table.define_data(obj, self.rodata_id, "__quazi_nl", nl_offset, 1);
 
+        let mut interned: std::collections::HashMap<Vec<u8>, u64> =
+            std::collections::HashMap::new();
         chunks
             .iter()
             .map(|chunk| {
@@ -166,7 +168,17 @@ impl SectionAccumulator {
                         ConstPoolEntry::Str(s) => {
                             let mut bytes = s.as_bytes().to_vec();
                             bytes.push(0); // null terminator
-                            let offset = obj.append_section_data(self.rodata_id, &bytes, 1);
+                            // Read-only text is shared: each distinct string
+                            // is stored once, every use gets its own symbol.
+                            let offset = match interned.get(&bytes) {
+                                Some(offset) => *offset,
+                                None => {
+                                    let offset =
+                                        obj.append_section_data(self.rodata_id, &bytes, 1);
+                                    interned.insert(bytes.clone(), offset);
+                                    offset
+                                }
+                            };
                             let sym_name = format!("__quazi_str_{}_{}", lbl, i);
                             sym_table.define_data(
                                 obj,
