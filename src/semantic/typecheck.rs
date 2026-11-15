@@ -7405,9 +7405,41 @@ impl Analyzer {
 
     /// Check type compatibility and mark the expression for auto-deref when a
     /// reference to a value-like type is used where the value type is expected.
+    /// An integer literal (or literal-only expression) must fit the integer
+    /// type it initializes: `var y: u8 = 300;` is an error, not a wrap.
+    fn check_integer_literal_range(&mut self, expr: &Expr, value: i128, ty: &TypeKind) {
+        let (min, max): (i128, i128) = match ty {
+            TypeKind::Int8 => (i8::MIN.into(), i8::MAX.into()),
+            TypeKind::Int16 => (i16::MIN.into(), i16::MAX.into()),
+            TypeKind::Int32 => (i32::MIN.into(), i32::MAX.into()),
+            TypeKind::Int64 | TypeKind::Isize => (i64::MIN.into(), i64::MAX.into()),
+            TypeKind::Uint8 => (0, u8::MAX.into()),
+            TypeKind::Uint16 => (0, u16::MAX.into()),
+            TypeKind::Uint32 => (0, u32::MAX.into()),
+            TypeKind::Uint64 | TypeKind::Usize => (0, u64::MAX.into()),
+            _ => return,
+        };
+        if value < min || value > max {
+            self.push_error(
+                expr.span,
+                "S06",
+                format!(
+                    "integer literal {value} does not fit in `{ty}` (range {min}..={max}); use a value in range or an explicit `as` cast"
+                ),
+            );
+        }
+    }
+
     fn check_expr_compat(&mut self, expr: &Expr, expected: &TypeKind, actual: &TypeKind) -> bool {
         let expected_resolved = self.resolve_type_aliases(expected);
         let actual_resolved = self.resolve_type_aliases(actual);
+        if Self::is_integer(&expected_resolved)
+            && Self::is_integer(&actual_resolved)
+            && let Some(value) = crate::evaluation::integer_literal_value(expr)
+        {
+            self.check_integer_literal_range(expr, value, &expected_resolved);
+            return true;
+        }
         if let (
             TypeKind::RawPtr {
                 inner: expected_inner,

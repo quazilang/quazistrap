@@ -239,6 +239,11 @@ function; the compiler converts each argument at the call site.
 
 ## Conversions
 
+An integer literal must fit the integer type it initializes, is passed as or
+returned as: `var y: u8 = 300;` and `const z: u8 = -1;` are S06 errors. This
+also applies to expressions made only of literals (`9223372036854775807 + 1`
+for an `i64`). Use an explicit `as` cast to truncate on purpose.
+
 `as` performs explicit numeric conversion:
 
 ```quazi

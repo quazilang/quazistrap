@@ -6693,7 +6693,7 @@ fn main() void {
     #[test]
     fn integer_literals_above_i64_fold_as_unsigned() {
         let report = analyze(
-            "fn main() i32 { const a: u64 = 18446744073709551614 / 2; const b: bool = 9223372036854775808 > 1; const c: i64 = 9223372036854775807 + 1; ret 0; }",
+            "fn main() i32 { const a: u64 = 18446744073709551614 / 2; const b: bool = 9223372036854775808 > 1; const m: i64 = 9223372036854775807; const c: i64 = m + 1; ret 0; }",
         );
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         let folded = |value: i64| {
@@ -6712,6 +6712,23 @@ fn main() void {
         );
         // Signed overflow wraps instead of aborting the compiler.
         assert!(folded(i64::MIN));
+    }
+
+    #[test]
+    fn integer_literals_must_fit_their_declared_type() {
+        let report = analyze(
+            "fn take(x: i8) i8 { ret x; } fn main() i32 { var y: u8 = 300; const z: u8 = -1; const c: i64 = 9223372036854775807 + 1; take(200); const ok: i8 = -128; const top: u64 = 18446744073709551615; const shift: u64 = 1 << 40; const wrap: u8 = 300 as u8; ret 0; }",
+        );
+        let messages: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|error| error.code == "S06")
+            .map(|error| error.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 4, "{:?}", report.errors);
+        for literal in ["300 does not fit in `u8`", "-1 does not fit in `u8`", "9223372036854775808 does not fit in `i64`", "200 does not fit in `i8`"] {
+            assert!(messages.iter().any(|m| m.contains(literal)), "{literal}: {messages:?}");
+        }
     }
 
     #[test]

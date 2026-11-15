@@ -88,3 +88,40 @@ pub(crate) fn integer_width_operand<'a>(
         Some(right)
     }
 }
+
+/// The exact value of a literal-only integer expression (see
+/// [`is_integer_literal_expression`]), or `None` when it is not one, divides
+/// by zero or leaves the i128 range.
+pub(crate) fn integer_literal_value(expression: &Expr) -> Option<i128> {
+    match &expression.node {
+        ExprKind::Literal(Literal::Int(value)) => Some(i128::from(*value)),
+        ExprKind::Group(inner) => integer_literal_value(inner),
+        ExprKind::Unary {
+            op: UnaryOpKind::Neg,
+            expr: inner,
+        } => integer_literal_value(inner)?.checked_neg(),
+        ExprKind::Binary { left, op, right } => {
+            let (left, right) = (integer_literal_value(left)?, integer_literal_value(right)?);
+            match op {
+                BinOpKind::Add => left.checked_add(right),
+                BinOpKind::Sub => left.checked_sub(right),
+                BinOpKind::Mul => left.checked_mul(right),
+                BinOpKind::Div => left.checked_div(right),
+                BinOpKind::Mod => left.checked_rem(right),
+                BinOpKind::BitAnd => Some(left & right),
+                BinOpKind::BitOr => Some(left | right),
+                BinOpKind::BitXor => Some(left ^ right),
+                BinOpKind::Shl => u32::try_from(right)
+                    .ok()
+                    .filter(|shift| *shift < 64)
+                    .and_then(|shift| left.checked_mul(1i128 << shift)),
+                BinOpKind::Shr => u32::try_from(right)
+                    .ok()
+                    .filter(|shift| *shift < 64)
+                    .map(|shift| left >> shift),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
