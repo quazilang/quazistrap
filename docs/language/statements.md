@@ -119,16 +119,18 @@ Rules:
 ### `if` / `else if` / `else`
 
 ```quazi
-if (temperature < 0) {
+if temperature < 0 {
     println("freezing");
-} else if (temperature < 20) {
+} else if temperature < 20 {
     println("cool");
 } else {
     println("warm");
 }
 ```
 
-The condition is always parenthesized. Braces are required for the body.
+The condition needs no parentheses, as in `for`; parentheses are an ordinary
+grouping, so `if (a) || b {` is the condition `(a) || b`. Braces are required
+for the body.
 A condition may be `bool` or an integer, which is true when nonzero.
 
 `if` can also produce a value; see

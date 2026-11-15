@@ -28,6 +28,9 @@ pub struct Parser {
     /// Expression statements closed by `}` without `;`, with the error to report
     /// unless the enclosing function body consumes them as its tail (D-017).
     unterminated_tails: Vec<(Span, String)>,
+    /// Inside an `if`/`for`/`match` head, `Name {}` is the body that follows,
+    /// not an empty struct literal (parentheses lift the restriction).
+    in_condition: bool,
 }
 
 impl Parser {
@@ -38,6 +41,7 @@ impl Parser {
             source: None,
             source_files: Vec::new(),
             unterminated_tails: Vec::new(),
+            in_condition: false,
         }
     }
 
@@ -48,6 +52,7 @@ impl Parser {
             source: Some(source.to_string()),
             source_files: Vec::new(),
             unterminated_tails: Vec::new(),
+            in_condition: false,
         }
     }
 
@@ -62,6 +67,7 @@ impl Parser {
             source: Some(source.to_string()),
             source_files,
             unterminated_tails: Vec::new(),
+            in_condition: false,
         }
     }
 
@@ -278,6 +284,14 @@ impl Parser {
     }
 
     pub fn parse_block(&mut self) -> Result<Block, String> {
+        // Statements inside the body are not part of an enclosing head.
+        let outer = std::mem::replace(&mut self.in_condition, false);
+        let block = self.parse_block_contents();
+        self.in_condition = outer;
+        block
+    }
+
+    fn parse_block_contents(&mut self) -> Result<Block, String> {
         let lbrace = self.expect(TokenKind::LBrace)?.span;
         let mut stmts = Vec::new();
         let mut first_err: Option<String> = None;
@@ -510,17 +524,19 @@ impl Parser {
         ))
     }
 
+    /// The head expression of `if`, `for` or `match`, followed by a block.
+    fn parse_condition(&mut self) -> Result<Expr, String> {
+        let outer = std::mem::replace(&mut self.in_condition, true);
+        let condition = self.parse_expr();
+        self.in_condition = outer;
+        condition
+    }
+
     fn parse_if_stmt(&mut self) -> Result<Stmt, String> {
         let start = self.expect(TokenKind::If)?.span;
 
-        let condition = if self.at(TokenKind::LParen) {
-            self.advance();
-            let c = self.parse_expr()?;
-            self.expect(TokenKind::RParen)?;
-            c
-        } else {
-            self.parse_expr()?
-        };
+        // Parentheses are optional: `(a) || b` is an ordinary expression.
+        let condition = self.parse_condition()?;
 
         let then_block = self.parse_block()?;
 
@@ -531,14 +547,7 @@ impl Parser {
             self.advance();
             if self.at(TokenKind::If) {
                 self.advance(); // consume `if`
-                let else_if_condition = if self.at(TokenKind::LParen) {
-                    self.advance();
-                    let c = self.parse_expr()?;
-                    self.expect(TokenKind::RParen)?;
-                    c
-                } else {
-                    self.parse_expr()?
-                };
+                let else_if_condition = self.parse_condition()?;
                 let else_if_then = self.parse_block()?;
                 else_if.push((else_if_condition, else_if_then));
             } else {
@@ -565,6 +574,14 @@ impl Parser {
     }
 
     fn parse_for_stmt(&mut self) -> Result<Stmt, String> {
+        // The whole head is a condition context; `parse_block` lifts it.
+        let outer = std::mem::replace(&mut self.in_condition, true);
+        let statement = self.parse_for_stmt_head();
+        self.in_condition = outer;
+        statement
+    }
+
+    fn parse_for_stmt_head(&mut self) -> Result<Stmt, String> {
         let start = self.expect(TokenKind::For)?.span;
 
         // `for {}` — infinite loop
@@ -1626,14 +1643,7 @@ impl Parser {
     /// two-arm match `match cond { true => then, _ => else }`, so it keeps `if`
     /// truthiness and shares match typing, ownership and lowering.
     fn parse_if_expr(&mut self, if_span: crate::lexer::token::Span) -> Result<Expr, String> {
-        let condition = if self.at(TokenKind::LParen) {
-            self.advance();
-            let condition = self.parse_expr()?;
-            self.expect(TokenKind::RParen)?;
-            condition
-        } else {
-            self.parse_expr()?
-        };
+        let condition = self.parse_condition()?;
         let (then_expr, then_span) = self.parse_if_expr_branch()?;
         if !self.at(TokenKind::Else) {
             return Err(self.err_here_with_code(
@@ -1712,7 +1722,7 @@ impl Parser {
     }
 
     fn parse_match_expr(&mut self, match_span: crate::lexer::token::Span) -> Result<Expr, String> {
-        let scrutinee = self.parse_expr()?;
+        let scrutinee = self.parse_condition()?;
         self.expect(TokenKind::LBrace)?;
 
         let mut arms = Vec::new();
@@ -1974,7 +1984,7 @@ impl Parser {
                     // Disambiguate: { } or { ident : ... } is a struct literal
                     let is_struct_init = {
                         let p0 = self.peek_n(1); // token after {
-                        matches!(p0.kind, TokenKind::RBrace)
+                        (matches!(p0.kind, TokenKind::RBrace) && !self.in_condition)
                             || (matches!(p0.kind, TokenKind::Ident(_))
                                 && matches!(self.peek_n(2).kind, TokenKind::Colon))
                     };
@@ -2000,7 +2010,10 @@ impl Parser {
                 Ok(Spanned::new(ExprKind::Ident(name), ident_span))
             }
             TokenKind::LParen => {
-                let expr = self.parse_expr()?;
+                let outer = std::mem::replace(&mut self.in_condition, false);
+                let expr = self.parse_expr();
+                self.in_condition = outer;
+                let expr = expr?;
                 let r = self.expect(TokenKind::RParen)?.span;
                 let span = Span::merge(to_ast_span(tok.span), to_ast_span(r));
                 Ok(Spanned::new(ExprKind::Group(Box::new(expr)), span))
@@ -2498,6 +2511,19 @@ mod tests {
         ] {
             let error = parse_program_err(source);
             assert!(error.contains(message), "{source}: {error}");
+        }
+    }
+
+    #[test]
+    fn if_conditions_need_no_parentheses_and_may_start_with_a_group() {
+        for source in [
+            "fn f(a: bool, b: bool) void { if a && b { } }",
+            "fn f(a: bool, b: bool) void { if (a) || b { } else if (a) { } else { } }",
+            "fn f(x: i32) i32 { ret if (x - 1) * 2 == 4 { 1 } else { 0 }; }",
+            "fn f(x: i32) i32 { if x > 0 { ret 1; } else if (x) < -1 { ret 2; } ret 0; }",
+        ] {
+            let tokens = Lexer::new(source).tokenize();
+            assert!(Parser::new(tokens).parse().is_ok(), "{source}");
         }
     }
 
