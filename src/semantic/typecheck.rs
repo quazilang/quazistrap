@@ -84,6 +84,63 @@ impl Analyzer {
     ///
     /// A cancellation result intentionally skips scope cleanup: callers must
     /// discard this partially populated analyzer rather than publish it.
+    /// Module-level `const` items (В20А): each value must be a constant
+    /// expression of the declared number, `bool` or `str` type. They are
+    /// evaluated in source order before any function body, so functions
+    /// anywhere can use them; a const may use the consts declared before it.
+    pub(super) fn evaluate_module_constants(&mut self, program: &crate::parser::ast::Program) {
+        for item in &program.items {
+            let ItemKind::Const { name, ty, value, .. } = &item.node else {
+                continue;
+            };
+            let declared = self.resolve_type_aliases(&ty.node);
+            let allowed = Self::is_integer(&declared)
+                || Self::is_float(&declared)
+                || matches!(declared, TypeKind::Bool | TypeKind::Str)
+                || matches!(&declared, TypeKind::Ref { inner } if matches!(inner.node, TypeKind::Str));
+            if !allowed {
+                self.push_error(
+                    ty.span,
+                    "S01",
+                    format!("module-level const `{name}` must be a number, `bool` or `str`, not `{declared}`"),
+                );
+                continue;
+            }
+            let eval = self.type_check_expr_expected(value, true, Some(&declared));
+            if let Some(actual) = &eval.ty
+                && !self.check_expr_compat(value, &declared, actual)
+            {
+                self.push_error(
+                    value.span,
+                    "S01",
+                    format!("type mismatch: const `{name}` is `{declared}`, got `{actual}`"),
+                );
+            }
+            let Some(constant) = eval.const_value else {
+                self.push_error(
+                    value.span,
+                    "S06",
+                    format!(
+                        "module-level const `{name}` needs a constant expression (literals, operators and other consts)"
+                    ),
+                );
+                continue;
+            };
+            let constant = match (constant, &declared) {
+                (ConstValue::Int(raw), TypeKind::Float32 | TypeKind::Float64) => {
+                    ConstValue::Float(raw as f64)
+                }
+                (other, _) => other,
+            };
+            let register_name = if let Some(module) = self.module_path_for_span(item.span) {
+                format!("{}.{}", module, name)
+            } else {
+                name.clone()
+            };
+            self.set_symbol_const_value(&register_name, Some(constant));
+        }
+    }
+
     pub(super) fn type_check_item(
         &mut self,
         item: &Item,
@@ -628,6 +685,8 @@ impl Analyzer {
                 }
                 self.current_generic_params.pop();
             }
+            // Evaluated before every function by `evaluate_module_constants`.
+            ItemKind::Const { .. } => {}
             ItemKind::ForeignGlobal {
                 name,
                 ty,
@@ -2326,7 +2385,13 @@ impl Analyzer {
                                         format!("for range end must be an integer type, got {}", t),
                                     );
                                 }
-                                start_eval.ty.or(end_eval.ty).unwrap_or(TypeKind::Int32)
+                                // `0..n` counts in the type of `n`: a literal
+                                // bound takes the other bound's type.
+                                if crate::evaluation::is_integer_literal_expression(start) {
+                                    end_eval.ty.or(start_eval.ty).unwrap_or(TypeKind::Int32)
+                                } else {
+                                    start_eval.ty.or(end_eval.ty).unwrap_or(TypeKind::Int32)
+                                }
                             }
                             ForIter::Iter(expr) => {
                                 let iter_eval = self.type_check_expr(expr, true);
@@ -2961,6 +3026,18 @@ impl Analyzer {
                 }
             }
             ExprKind::Ident(name) => {
+                if let Some(resolved) = self.resolve_module_const_name(name) {
+                    if resolved != *name {
+                        let _ = self.resolve_for_read(name);
+                    }
+                    let sym = self.resolve_for_read(&resolved).expect("resolved const exists");
+                    let eval = ExprEval {
+                        ty: sym.ty,
+                        const_value: sym.const_value,
+                    };
+                    self.annotate_expr(expr, &eval, reachable, None);
+                    return eval;
+                }
                 if let Some(resolved) = self.resolve_bare_foreign_global_name(name) {
                     if resolved != *name {
                         let _ = self.resolve_for_read(name);
@@ -3466,6 +3543,14 @@ impl Analyzer {
                                 std::ptr::eq(operand, right.as_ref())
                             }) && Self::is_integer(&self.resolve_type_aliases(result))
                                 && Self::is_integer(&self.resolve_type_aliases(right_ty)) =>
+                        {
+                            Some(right_ty.clone())
+                        }
+                        // `0.0 - value` has the float type of `value`.
+                        (Some(result), Some(right_ty))
+                            if crate::evaluation::is_float_literal_expression(left)
+                                && Self::is_float(&self.resolve_type_aliases(result))
+                                && Self::is_float(&self.resolve_type_aliases(right_ty)) =>
                         {
                             Some(right_ty.clone())
                         }
@@ -5089,6 +5174,23 @@ impl Analyzer {
                 // Module namespace field referencing a function: `bar.foo` as a value.
                 if self.is_module_import_receiver(object) {
                     if let Some(resolved) = self.resolve_module_method(object, name) {
+                        if let Some(sym) = self.resolve_for_read(&resolved)
+                            && sym.attributes.iter().any(|a| a == "module_const")
+                        {
+                            if !sym.public {
+                                self.push_error(
+                                    expr.span,
+                                    "S04",
+                                    format!("const `{name}` is private to its module"),
+                                );
+                            }
+                            let eval = ExprEval {
+                                ty: sym.ty,
+                                const_value: sym.const_value,
+                            };
+                            self.annotate_expr(expr, &eval, reachable, None);
+                            return eval;
+                        }
                         if let Some(sym) = self.resolve_for_read(&resolved) {
                             if matches!(sym.kind, SymbolKind::Function) {
                                 let return_ty = sym.ty.clone().unwrap_or(TypeKind::Void);
@@ -6053,7 +6155,7 @@ impl Analyzer {
             && (self.struct_defs.contains_key(name) || self.enums.contains_key(name))
     }
 
-    fn is_module_import_receiver(&self, object: &Expr) -> bool {
+    pub(super) fn is_module_import_receiver(&self, object: &Expr) -> bool {
         let Some((base, _)) = Self::extract_field_chain(object) else {
             return false;
         };
@@ -6126,6 +6228,36 @@ impl Analyzer {
         None
     }
 
+    /// The declared name of the module-level const that `name` refers to:
+    /// a local shadows it; inside a module its own consts come first; an
+    /// imported const resolves to its module's declaration.
+    pub(super) fn resolve_module_const_name(&self, name: &str) -> Option<String> {
+        for scope in self.scopes.iter().skip(1).rev() {
+            if scope.contains_key(name) {
+                return None;
+            }
+        }
+        let is_const = |symbol: &Symbol| symbol.attributes.iter().any(|a| a == "module_const");
+        if let Some(module) = &self.current_module_path {
+            let qualified = format!("{}.{}", module, name);
+            if self.resolve_symbol(&qualified).is_some_and(|symbol| is_const(&symbol)) {
+                return Some(qualified);
+            }
+        }
+        let symbol = self.resolve_symbol(name)?;
+        if is_const(&symbol) {
+            return Some(name.to_string());
+        }
+        if symbol.is_import
+            && let Some(path) = symbol.import_path.as_deref()
+            && let Some(mangled) = super::declare::mangle_import_path(path)
+            && self.resolve_symbol(&mangled).is_some_and(|target| is_const(&target))
+        {
+            return Some(mangled);
+        }
+        None
+    }
+
     pub(super) fn resolve_bare_foreign_global_name(&self, name: &str) -> Option<String> {
         for scope in self.scopes.iter().skip(1).rev() {
             if scope.contains_key(name) {
@@ -6163,7 +6295,7 @@ impl Analyzer {
     /// resolved as `<module_file>.<method>` where `<module_file>` is the last
     /// segment of the chain or the last segment of the import path (i.e. the
     /// actual source file module).
-    fn resolve_module_method(&self, object: &Expr, method: &str) -> Option<String> {
+    pub(super) fn resolve_module_method(&self, object: &Expr, method: &str) -> Option<String> {
         let (base, path) = Self::extract_field_chain(object)?;
         if self.is_local_binding(&base) {
             return None;
@@ -7560,6 +7692,57 @@ impl Analyzer {
 
     /// An integer literal (or literal-only expression) must fit the integer
     /// type it initializes: `var y: u8 = 300;` is an error, not a wrap.
+    /// `if c { 29 } else { 28 }` and similar: every branch is a literal that
+    /// the expected type can hold, so no conversion is implied.
+    fn literal_branches_fit(&self, expr: &Expr, expected: &TypeKind) -> bool {
+        let fits = |branch: &Expr| {
+            if let Some(value) = crate::evaluation::integer_literal_value(branch) {
+                Self::integer_range(expected).is_some_and(|(min, max)| (min..=max).contains(&value))
+                    || Self::is_float(expected)
+            } else {
+                Self::is_float(expected) && crate::evaluation::is_float_literal_expression(branch)
+            }
+        };
+        let typed_as_expected = |branch: &Expr| {
+            self.annotated_exprs
+                .iter()
+                .rev()
+                .find(|annotation| annotation.span == branch.span)
+                .and_then(|annotation| annotation.ty.as_ref())
+                .is_some_and(|ty| {
+                    std::mem::discriminant(&self.resolve_type_aliases(ty))
+                        == std::mem::discriminant(expected)
+                })
+        };
+        match &expr.node {
+            ExprKind::Group(inner) => self.literal_branches_fit(inner, expected),
+            ExprKind::Match { arms, .. } => arms.iter().all(|arm| {
+                fits(&arm.expr)
+                    || typed_as_expected(&arm.expr)
+                    || matches!(arm.expr.node, ExprKind::Call { .. } | ExprKind::MethodCall { .. })
+                        && self
+                            .annotated_exprs
+                            .iter()
+                            .rev()
+                            .find(|annotation| annotation.span == arm.expr.span)
+                            .is_some_and(|annotation| matches!(annotation.ty, Some(TypeKind::Never)))
+                    || self.literal_branches_fit(&arm.expr, expected)
+            }),
+            _ => false,
+        }
+    }
+
+    /// Every value of integer type `from` is a value of `to` (`i32` -> `i64`,
+    /// `u8` -> `u32`, `u32` -> `i64`): the canonical slot needs no change.
+    fn integer_widens(from: &TypeKind, to: &TypeKind) -> bool {
+        match (Self::integer_range(from), Self::integer_range(to)) {
+            (Some((from_min, from_max)), Some((to_min, to_max))) => {
+                to_min <= from_min && from_max <= to_max
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn integer_range(ty: &TypeKind) -> Option<(i128, i128)> {
         Some(match ty {
             TypeKind::Int8 => (i8::MIN.into(), i8::MAX.into()),
@@ -7636,6 +7819,40 @@ impl Analyzer {
             && let Some(value) = crate::evaluation::integer_literal_value(expr)
         {
             self.check_integer_literal_range(expr, value, &expected_resolved);
+            return true;
+        }
+        // Numbers and bools convert only with `as`: no implicit change of
+        // width, signedness, family or truthiness (the slot is not converted).
+        let numeric_kind = |ty: &TypeKind| {
+            if Self::is_integer(ty) || Self::is_float(ty) || matches!(ty, TypeKind::Bool) {
+                Some(std::mem::discriminant(ty))
+            } else {
+                None
+            }
+        };
+        if let (Some(expected_kind), Some(actual_kind)) =
+            (numeric_kind(&expected_resolved), numeric_kind(&actual_resolved))
+            && expected_kind != actual_kind
+            && !(Self::is_float(&expected_resolved)
+                && (crate::evaluation::integer_literal_value(expr).is_some()
+                    || crate::evaluation::is_float_literal_expression(expr)))
+            && !self.literal_branches_fit(expr, &expected_resolved)
+            && !Self::integer_widens(&actual_resolved, &expected_resolved)
+            && !(Self::is_float(&expected_resolved) && Self::is_float(&actual_resolved)
+                && !matches!(expected_resolved, TypeKind::Float32 | TypeKind::Float16))
+        {
+            let hint = if matches!(expected_resolved, TypeKind::Bool) {
+                "compare explicitly, for example `value != 0`".to_string()
+            } else if matches!(actual_resolved, TypeKind::Bool) {
+                format!("convert explicitly with `if flag {{ 1 }} else {{ 0 }}`")
+            } else {
+                format!("convert explicitly with `as {expected_resolved}`")
+            };
+            self.push_error(
+                expr.span,
+                "S01",
+                format!("expected `{expected_resolved}`, found `{actual_resolved}`; {hint}"),
+            );
             return true;
         }
         if let (

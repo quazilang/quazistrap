@@ -269,11 +269,11 @@ fn boolean_match_coverage_uses_truth_classes_not_canonical_bits() {
         "value",
     );
     uninitialized(
-        "fn test()i32 {const flag:bool=2;var value:i32;match flag{false=>value=7,_=>0,};ret value;}",
+        "fn test(flag:bool)i32 {var value:i32;match flag{false=>value=7,_=>0,};ret value;}",
         "value",
     );
     valid(
-        "fn test()i32 {const flag:bool=2;var value:i32;match flag{true=>value=7,_=>0,};ret value;}",
+        "fn test()i32 {const flag:bool=true;var value:i32;match flag{true=>value=7,_=>0,};ret value;}",
     );
 }
 

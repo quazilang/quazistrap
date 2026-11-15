@@ -239,6 +239,28 @@ function; the compiler converts each argument at the call site.
 
 ## Conversions
 
+Numbers and `bool` never change type implicitly where the slot would need a
+conversion: assigning, passing or returning a value of another numeric type
+is S01 unless every value of the source type is a value of the target type
+(`i32` to `i64`, `u8` to `u32`, `f32` to `f64`). Narrowing, changing
+signedness, integer/float and number/`bool` need an explicit `as` (or a
+comparison for `bool`):
+
+```quazi
+fn main() i32 {
+    const small: i32 = 7;
+    const wide: i64 = small;          // widening: allowed
+    const byte: u8 = wide as u8;      // narrowing: explicit
+    const ratio: f64 = small as f64;  // int to float: explicit
+    const flag: bool = small != 0;    // number to bool: compare
+    if flag && byte > 0 && ratio > 0.0 { ret 0; }
+    ret 1;
+}
+```
+
+Literals take the type their context needs (`const x: u8 = 200;`,
+`const half: f32 = 0.5;`) as long as the value fits.
+
 An integer literal must fit the integer type it initializes, is passed as or
 returned as: `var y: u8 = 300;` and `const z: u8 = -1;` are S06 errors. This
 also applies to expressions made only of literals (`9223372036854775807 + 1`

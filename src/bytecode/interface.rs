@@ -105,6 +105,18 @@ pub fn build_qzi_interface(
                 "QZI v7 cannot export `{name}` because runtime `any` has no portable representation; publish this package as source or replace `any` with a concrete, generic, or trait type"
             ));
         }
+        if let ItemKind::Const {
+            name,
+            value,
+            public: true,
+            ..
+        } = &item.node
+            && render_const_literal(value).is_none()
+        {
+            return Err(format!(
+                "QZI cannot export `pub const {name}` computed from other consts yet; write its value as a literal"
+            ));
+        }
         let Some((declaration, exports)) = render_public_item(item) else {
             continue;
         };
@@ -196,6 +208,22 @@ fn private_impl_interface<'a>(
         })));
     }
     Ok(Some(Cow::Borrowed(item)))
+}
+
+/// The literal text of a public const value. A value computed from other
+/// consts has no literal in the source; the interface would need it folded.
+fn render_const_literal(value: &crate::parser::ast::Expr) -> Option<String> {
+    use crate::parser::ast::{ExprKind, Literal};
+    if let Some(number) = crate::evaluation::integer_literal_value(value) {
+        return Some(number.to_string());
+    }
+    match &value.node {
+        ExprKind::Literal(Literal::Bool(flag)) => Some(flag.to_string()),
+        ExprKind::Literal(Literal::Float(number)) => Some(format!("{number:?}")),
+        ExprKind::Literal(Literal::String(text)) => Some(format!("{text:?}").replace('{', "{{").replace('}', "}}")),
+        ExprKind::Group(inner) => render_const_literal(inner),
+        _ => None,
+    }
 }
 
 fn public_item_with_unsupported_generic(item: &Item) -> Option<String> {
@@ -699,6 +727,21 @@ fn render_public_item(item: &Item) -> Option<(String, Vec<String>)> {
             output.push_str(": ");
             output.push_str(&ty.node.to_string());
             output.push_str(";\n");
+            Some((output, vec![name.clone()]))
+        }
+        ItemKind::Const {
+            name,
+            ty,
+            value,
+            attributes,
+            public,
+        } if *public => {
+            let mut output = render_attributes(attributes);
+            output.push_str(&format!(
+                "pub const {name}: {} = {};\n",
+                ty.node,
+                render_const_literal(value)?
+            ));
             Some((output, vec![name.clone()]))
         }
         ItemKind::Impl {

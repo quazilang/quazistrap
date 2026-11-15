@@ -64,7 +64,7 @@ fn write_note(path: str) Result[bool, fs.FsError] {
 | `file.write(bytes)` | Performs one binary write through an exclusive receiver and returns the number of bytes written. A successful short write is possible; callers needing complete output must retry the remainder. |
 | `file.write_raw(buf, n)` | Unsafe exclusive-receiver counterpart for an arbitrary readable byte buffer. It can perform a partial write. |
 | `file.write_str(text)` | Performs one UTF-8 text write through an exclusive receiver and returns bytes written. It does not append a terminator or retry a partial write. |
-| `file.seek(offset, whence)` | Changes the current position through an exclusive receiver and returns the resulting byte offset. Use `seek_set()`, `seek_cur()`, or `seek_end()` for `whence`; invalid offsets and non-seekable files return `FsError`. |
+| `file.seek(offset, whence)` | Changes the current position through an exclusive receiver and returns the resulting byte offset. Use `fs.SEEK_SET`, `fs.SEEK_CUR` or `fs.SEEK_END` for `whence`; invalid offsets and non-seekable files return `FsError`. |
 | `file.sync()` | Requests through an exclusive receiver that file contents reach the platform’s persistent-storage boundary. It does not promise hardware durability beyond the operating system’s API. |
 | `file.truncate(len)` | Changes a file length through an exclusive receiver on Linux. It currently returns `Unsupported` on Windows. |
 | `file.fd()` / `file.raw_handle()` | Read the native handle through a shared receiver for tightly scoped interoperation. `fd()` truncates Windows handles and is therefore not a portable handle API; prefer `raw_handle()` only with target-specific FFI. |

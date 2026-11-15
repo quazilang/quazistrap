@@ -638,6 +638,15 @@ pub enum ItemKind {
         attributes: Vec<Attribute>,
         public: bool,
     },
+    /// Module-level `[pub] const NAME: T = constant expression;` (В20А): a
+    /// compile-time value substituted at every use.
+    Const {
+        name: String,
+        ty: Type,
+        value: Expr,
+        attributes: Vec<Attribute>,
+        public: bool,
+    },
 }
 
 pub type Item = Spanned<ItemKind>;

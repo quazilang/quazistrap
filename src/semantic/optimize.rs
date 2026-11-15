@@ -46,6 +46,16 @@ impl Analyzer {
                     && self.can_elide_expression(left)
                     && self.can_elide_expression(right)
             }
+            // `module.CONST`: the value is known and reading it has no effect.
+            ExprKind::Field { object, name } => {
+                self.is_module_import_receiver(object)
+                    && self
+                        .resolve_module_method(object, name)
+                        .and_then(|resolved| self.resolve_symbol(&resolved))
+                        .is_some_and(|symbol| {
+                            symbol.attributes.iter().any(|attribute| attribute == "module_const")
+                        })
+            }
             _ => false,
         }
     }

@@ -992,6 +992,21 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
+            // A QZI library exports no generics, and an uninstantiated generic
+            // body has no code (its `T` has no layout): only the concrete
+            // specializations the library uses are compiled.
+            for item in &program.items {
+                if let ItemKind::Fn {
+                    name,
+                    generic_params,
+                    attributes,
+                    ..
+                } = &item.node
+                    && !generic_params.is_empty()
+                {
+                    set.remove(&self.resolve_item_name(item.span, name, attributes));
+                }
+            }
             Some(set)
         } else {
             None
@@ -2240,6 +2255,18 @@ impl<'a> Codegen<'a> {
                 _ => None,
             })
             .unwrap_or("");
+        // The uninstantiated `size_of[T]`/`align_of[T]` template (kept when a
+        // library build compiles every function) has no value: it traps if it
+        // is ever called; real calls use the specializations.
+        if matches!(instr_name, "quazi.size_of" | "quazi.align_of")
+            && (type_subst.is_empty()
+                || type_subst.values().any(|ty| Self::has_unresolved_layout_param(ty, type_subst)))
+        {
+            chunk.emit(rrr(Opcode::Trap, 0, 0, 0));
+            chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+            chunk.reg_count = 1;
+            return Ok(chunk);
+        }
         if let Some(value) = self.layout_intrinsic_value(instr_name, type_subst)? {
             if value <= u16::MAX as usize {
                 chunk.emit(ri16(Opcode::MovI, 0, value as u16));
@@ -3535,7 +3562,8 @@ impl<'a> FnCompiler<'a> {
                 .collect::<Vec<_>>()
                 .join(", ");
             self.codegen_error = Some(format!(
-                "internal codegen error: required specialization `{fn_name}<{args}>` is missing from the function table"
+                "internal codegen error: required specialization `{fn_name}<{args}>` is missing from the function table (in `{}`)",
+                self.chunk.name
             ));
         }
         None
@@ -3557,7 +3585,8 @@ impl<'a> FnCompiler<'a> {
         if self.has_unresolved_layout_param(&resolved) {
             self.codegen_error.get_or_insert_with(|| {
                 format!(
-                    "layout intrinsic `{intrinsic}` requires a concrete type argument, got `{resolved}`"
+                    "layout intrinsic `{intrinsic}` requires a concrete type argument, got `{resolved}` (in `{}`)",
+                    self.chunk.name
                 )
             });
             return Some(0);
@@ -7963,6 +7992,13 @@ impl<'a> FnCompiler<'a> {
         // Skip Ident (value already in a register) and Literal (emits directly below).
         let key = (expr.span.start, expr.span.end);
         if !matches!(expr.node, ExprKind::Ident(_) | ExprKind::Literal(_))
+            && let Some(cv) = self.const_map.get(&key).cloned()
+        {
+            return self.emit_const_value(cv);
+        }
+        // A module-level const has no register: its value is substituted.
+        if let ExprKind::Ident(name) = &expr.node
+            && !self.regs.contains_key(name)
             && let Some(cv) = self.const_map.get(&key).cloned()
         {
             return self.emit_const_value(cv);
@@ -14670,7 +14706,7 @@ fn produce() i64 {
     ret first + second;
 }
 fn update(index: i64) i64 {
-    var values = [0, 1, 2];
+    var values: [i64; 3] = [0, 1, 2];
     values[index] = produce();
     ret values[index];
 }

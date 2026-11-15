@@ -28,6 +28,10 @@ use tower_lsp::{LspService, Server};
 pub fn run_lsp_server() {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        // Analysis recurses over the program like `qz check`, which runs on the
+        // 8 MiB main stack; tokio's 2 MiB workers overflow on deep std
+        // expressions in debug builds.
+        .thread_stack_size(16 * 1024 * 1024)
         .build()
         .expect("failed to build tokio runtime")
         .block_on(async {

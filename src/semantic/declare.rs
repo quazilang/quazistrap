@@ -564,6 +564,40 @@ impl Analyzer {
                 self.type_aliases
                     .insert(name.clone(), (generic_params.clone(), stored_type));
             }
+            ItemKind::Const {
+                name,
+                ty,
+                attributes,
+                public,
+                ..
+            } => {
+                let register_name = if let Some(module) = self.module_path_for_span(item.span) {
+                    format!("{}.{}", module, name)
+                } else {
+                    name.clone()
+                };
+                let mut attr_names = extract_attribute_names(attributes);
+                attr_names.push("module_const".to_string());
+                self.declare(
+                    register_name,
+                    Symbol {
+                        kind: SymbolKind::Variable { mutable: false },
+                        span: item.span,
+                        ty: Some(ty.node.clone()),
+                        params: vec![],
+                        used: true,
+                        initialized: true,
+                        is_import: false,
+                        import_path: None,
+                        const_value: None,
+                        variadic: false,
+                        attributes: attr_names,
+                        public: *public,
+                        unsafe_fn: false,
+                        generic_params: vec![],
+                    },
+                );
+            }
             ItemKind::ForeignGlobal {
                 name,
                 ty,

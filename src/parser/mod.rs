@@ -173,6 +173,7 @@ impl Parser {
             TokenKind::Impl => self.parse_impl(),
             TokenKind::Type => self.parse_type_alias(attributes, is_pub),
             TokenKind::Var => self.parse_foreign_global(attributes, is_pub),
+            TokenKind::Const => self.parse_const_item(attributes, is_pub),
             other => Err(self.err_here_with_code(
                 "E03",
                 format!("unexpected token in item position: {}", other),
@@ -453,6 +454,32 @@ impl Parser {
                 ty,
                 value,
                 attributes,
+            },
+            to_ast_span(merge_token_spans(start, semi)),
+        ))
+    }
+
+    fn parse_const_item(&mut self, attributes: Vec<Attribute>, public: bool) -> Result<Item, String> {
+        let start = self.expect(TokenKind::Const)?.span;
+        let name = self.parse_ident()?;
+        if !self.at(TokenKind::Colon) {
+            return Err(self.err_here_with_code(
+                "E02",
+                format!("module-level const `{name}` needs a type: `const {name}: T = value;`"),
+            ));
+        }
+        self.advance();
+        let ty = self.parse_type()?;
+        self.expect(TokenKind::Eq)?;
+        let value = self.parse_expr()?;
+        let semi = self.expect(TokenKind::Semicolon)?.span;
+        Ok(Spanned::new(
+            ItemKind::Const {
+                name,
+                ty,
+                value,
+                attributes,
+                public,
             },
             to_ast_span(merge_token_spans(start, semi)),
         ))
@@ -1452,6 +1479,20 @@ impl Parser {
                         || Spanned::new(ExprKind::Literal(Literal::Int(1)), arg_span);
                     let start_omitted = first.is_none();
                     let end_omitted = end.is_none();
+                    // Slice bounds may be any integer (`text[i:len]` with usize).
+                    let as_isize = |bound: Expr| {
+                        let span = bound.span;
+                        Spanned::new(
+                            ExprKind::Cast {
+                                expr: Box::new(bound),
+                                ty: Spanned::new(TypeKind::Isize, span),
+                            },
+                            span,
+                        )
+                    };
+                    let first = first.map(as_isize);
+                    let end = end.map(as_isize);
+                    let step = step.map(as_isize);
                     let span = Span::merge(expr.span, to_ast_span(rbracket));
                     expr = Spanned::new(
                         ExprKind::MethodCall {

@@ -112,13 +112,13 @@ fn main() i32 {
     const path = "matrix_large.bin";
     var file = fs.File.create(path).unwrap();
     const far: i64 = 5000000123;
-    if (file.seek(far, fs.seek_set()).unwrap() != far) { ret 2; }
+    if (file.seek(far, fs.SEEK_SET).unwrap() != far) { ret 2; }
     file.write_str("tail-marker").unwrap();
     file.close().unwrap();
     const info = fs.metadata(path).unwrap();
     io.println("size {}", info.len());
     var reader = fs.File.open(path).unwrap();
-    if (reader.seek(far - 4, fs.seek_set()).unwrap() != far - 4) { ret 3; }
+    if (reader.seek(far - 4, fs.SEEK_SET).unwrap() != far - 4) { ret 3; }
     var buffer: *u8 = 0;
     unsafe { buffer = core.malloc(32); }
     var total: usize = 0;

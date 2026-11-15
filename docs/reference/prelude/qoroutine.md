@@ -12,7 +12,8 @@ lives in the `quazi.runtime.state` block:
   +0 queue lock, +8 queue head, +16 queue tail,
   +24 init state (0 none, 1 initializing, 2 ready), +32 stack arena,
   +40 free slot indexes (i64 array), +48 free slot count,
-  +56 preemption enabled (the signal handler was installed).
+  +56 preemption enabled (the signal handler was installed),
+  +64 panics entered outside qoroutines (see `__qo_enter_panic`).
 All stacks are slots of one arena; a slot's first word is its task, so code
 running on a qoroutine finds its task from the stack pointer
 (`quazi.stack.pointer` + `quazi.ptr.offset_from`, no thread-local storage).
@@ -20,7 +21,7 @@ Task block (512 bytes):
   +0 joinable (2 once finished), +8 result slot, +16 closure, +24 slot index,
   +32 next in queue, +40 worker context, +48 type-erased runner,
   +56 finished flag, +64 task context (272 bytes), +336 panicked flag,
-  +344 preemption hold count.
+  +344 preemption hold count, +352 panicking flag.
 A finished task is published as joinable by its worker only after the
 worker is back on its own stack, so `join` may free the task's stack.
 

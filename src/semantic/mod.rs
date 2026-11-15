@@ -1160,6 +1160,9 @@ impl Analyzer {
             .collect();
         checkpoint()?;
 
+        // Module constants first: functions may use them before their line.
+        self.evaluate_module_constants(program);
+
         // Pass 2: type checking + usage tracking + initialization checks + annotations.
         for item in &program.items {
             checkpoint()?;
@@ -6721,6 +6724,28 @@ fn main() void {
             "{:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn module_constants_are_compile_time_values() {
+        let report = analyze(
+            "fn area() i64 { ret WIDTH * HEIGHT; } const WIDTH: i64 = 40; const HEIGHT: i64 = WIDTH / 2; pub const NAME: str = \"q\"; const ON: bool = WIDTH > 10; fn main() i32 { const shadow: i64 = 1; if ON { ret (area() + shadow) as i32; } ret 0; }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        for (source, message) in [
+            ("fn f() i32 { ret 1; } const X: i32 = f(); fn main() i32 { ret X; }", "needs a constant expression"),
+            ("const X: u8 = 300; fn main() i32 { ret 0; }", "does not fit in `u8`"),
+            ("const X: i32 = true; fn main() i32 { ret X; }", "expected `i32`, found `bool`"),
+            ("struct P { x: i32 } const X: P = 1; fn main() i32 { ret 0; }", "must be a number, `bool` or `str`"),
+            ("const X: i32 = 2147483647; const Y: i32 = X + 1; fn main() i32 { ret Y; }", "will overflow"),
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| error.message.contains(message)),
+                "{source}: {:?}",
+                report.errors
+            );
+        }
     }
 
     #[test]

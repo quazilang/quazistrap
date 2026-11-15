@@ -504,6 +504,20 @@ pub fn semantic_context_hash(
                 hasher.update([u8::from(*public)]);
                 hash_attributes(&mut hasher, attributes);
             }
+            ItemKind::Const {
+                name,
+                ty,
+                attributes,
+                public,
+                ..
+            } => {
+                // The value is part of the source hash of its file.
+                hasher.update(b"const");
+                hasher.update(name.as_bytes());
+                hasher.update(ty.node.to_string().as_bytes());
+                hasher.update([u8::from(*public)]);
+                hash_attributes(&mut hasher, attributes);
+            }
         }
     }
     Ok(hasher.finalize().into())

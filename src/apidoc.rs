@@ -39,10 +39,11 @@ pub fn render_module(module: &str, source: &str) -> Result<String, String> {
     let program = Parser::new_with_source(Lexer::new(source).tokenize(), source).parse()?;
     let chars: Vec<char> = source.chars().collect();
     let lines: Vec<&str> = source.lines().collect();
+    let mut constants = Vec::new();
     let mut functions = Vec::new();
     let mut types: Vec<TypeSection> = Vec::new();
     for item in &program.items {
-        collect(item, &chars, &lines, &mut functions, &mut types);
+        collect(item, &chars, &lines, &mut constants, &mut functions, &mut types);
     }
     // A struct with methods is used through them: its fields are internal.
     for section in &mut types {
@@ -60,11 +61,14 @@ pub fn render_module(module: &str, source: &str) -> Result<String, String> {
         page.push_str(&intro.join("\n"));
         page.push_str("\n\n");
     }
-    if functions.is_empty() && types.is_empty() {
+    if constants.is_empty() && functions.is_empty() && types.is_empty() {
         page.push_str("This module has no public declarations.\n");
         return Ok(page);
     }
     page.push_str("## Contents\n\n");
+    if !constants.is_empty() {
+        page.push_str("- [Constants](#constants)\n");
+    }
     if !functions.is_empty() {
         page.push_str("- [Functions](#functions)\n");
     }
@@ -77,6 +81,12 @@ pub fn render_module(module: &str, source: &str) -> Result<String, String> {
         ));
     }
     page.push('\n');
+    if !constants.is_empty() {
+        page.push_str("## Constants\n\n");
+        for entry in &constants {
+            render_entry(&mut page, "###", entry);
+        }
+    }
     if !functions.is_empty() {
         page.push_str("## Functions\n\n");
         for entry in &functions {
@@ -170,6 +180,7 @@ fn collect(
     item: &Item,
     chars: &[char],
     lines: &[&str],
+    constants: &mut Vec<Entry>,
     functions: &mut Vec<Entry>,
     types: &mut Vec<TypeSection>,
 ) {
@@ -187,6 +198,9 @@ fn collect(
         ItemKind::Fn {
             name, pub_fn: true, ..
         } => functions.push(entry(name.clone(), false)),
+        ItemKind::Const {
+            name, public: true, ..
+        } => constants.push(entry(name.clone(), true)),
         ItemKind::Struct {
             name, public: true, ..
         } => {

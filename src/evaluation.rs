@@ -69,6 +69,20 @@ pub(crate) fn is_integer_literal_expression(expression: &Expr) -> bool {
     }
 }
 
+/// A float literal, possibly negated or grouped (`-0.5`): like integer
+/// literals it takes the float type its context needs.
+pub(crate) fn is_float_literal_expression(expression: &Expr) -> bool {
+    match &expression.node {
+        ExprKind::Literal(Literal::Float(_)) => true,
+        ExprKind::Group(inner)
+        | ExprKind::Unary {
+            op: UnaryOpKind::Neg,
+            expr: inner,
+        } => is_float_literal_expression(inner),
+        _ => false,
+    }
+}
+
 /// The operand whose integer type gives an operation its width and
 /// signedness: the left one unless it is literal-only, then the right one (a
 /// shift keeps the type of its left operand, so a literal-only left has

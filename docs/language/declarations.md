@@ -224,6 +224,32 @@ supported:
 Other derive names are recorded as metadata but do not generate
 implementations.
 
+## Constants
+
+A module may declare compile-time constants (maintainer answer В20А):
+
+```quazi
+pub const MAX_USERS: i32 = 100;
+const HALF: i32 = MAX_USERS / 2;
+pub const GREETING: str = "hello";
+
+fn main() i32 {
+    if HALF > 10 { ret 0; }
+    ret 1;
+}
+```
+
+- The type is required and must be a number, `bool` or `str`.
+- The value must be a constant expression: literals, operators and other
+  constants. Constants are evaluated before any function, so a function may
+  use a constant declared below it; a constant may use those declared before
+  it.
+- Every use is replaced by the value; constants occupy no memory.
+- `pub const` is visible to other modules as `module.NAME` or through
+  `import module.NAME`; a private constant is visible only in its module.
+- A QZI library exports `pub const` values written as literals; a constant
+  computed from other constants cannot be exported from a QZI yet.
+
 ## Visibility
 
 `pub` on functions, types, constants, and imports makes them visible outside
