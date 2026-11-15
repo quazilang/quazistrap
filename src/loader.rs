@@ -2902,7 +2902,7 @@ mod tests {
         let main_path = root.join("main.qz");
         fs::write(
             &main_path,
-            "fn main() void { var value: String = String.from(\"42\"); var view: &String = &value; const text: str = view.as_str(); const length: usize = view.len(); const appended: String = view.push_str(\"!\"); const first: Option[Rune] = view.get(0); const slice: String = view[0:1]; const parsed: Result[i32, ParseError] = view.parse_i32(); }",
+            "fn main() void { var value: String = String.from(\"42\"); var view: &String = &value; const text: str = view.as_str(); const length: usize = view.len(); var copy: String = String.from(view.as_str()); copy.push_str(\"!\"); const first: Option[Rune] = view.get(0); const slice: String = view[0:1]; const parsed: Result[i32, ParseError] = view.parse_i32(); }",
         )
         .expect("write main source");
 

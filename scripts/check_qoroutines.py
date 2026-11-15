@@ -200,8 +200,9 @@ RESULTS = r"""import std.io;
 pub struct Pair { a: i64, b: String, }
 
 fn label(n: i64) String {
-    const text: String = "item-".to_string();
-    text.push_str(n.to_string().as_str())
+    var text: String = "item-".to_string();
+    text.push_str(n.to_string().as_str());
+    text
 }
 
 fn pair(n: i64) Pair { Pair { a: n, b: label(n) } }
@@ -223,8 +224,9 @@ RESULT_PANICS = r"""import std.io;
 
 fn label(n: i64) String {
     if (n % 2 == 0) { panic("even"); }
-    const text: String = "odd-".to_string();
-    text.push_str(n.to_string().as_str())
+    var text: String = "odd-".to_string();
+    text.push_str(n.to_string().as_str());
+    text
 }
 
 fn main() i32 {

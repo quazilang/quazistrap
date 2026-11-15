@@ -30,8 +30,8 @@ fn mapped_pages() u64 {
 fn main() i32 {
     var total: i64 = 0;
     for i : 0..300000 {
-        const text: String = "item-".to_string();
-        const label = text.push_str(i.to_string().as_str());
+        var label: String = "item-".to_string();
+        label.push_str(i.to_string().as_str());
         const item = Item { id: i as i64, label: label };
         total = total + item.label.len() as i64 + item.id % 3;
     }
@@ -46,8 +46,8 @@ import std.thread;
 fn churn(seed: i64) i64 {
     var total: i64 = 0;
     for i : 0..100000 {
-        const text: String = "x".to_string();
-        const longer = text.push_str(if ((seed + i as i64) % 2 == 0) { "ab" } else { "abc" });
+        var longer: String = "x".to_string();
+        longer.push_str(if ((seed + i as i64) % 2 == 0) { "ab" } else { "abc" });
         total = total + longer.len() as i64;
     }
     total

@@ -38,7 +38,7 @@ fn netbsd_ps(command: str) String {
         if (read == 0) { break; }
         var chunk = String.new();
         unsafe { chunk = String.from(core.str_from_ptr(buffer)); }
-        output = output.push_str(chunk.as_str());
+        output.push_str(chunk.as_str());
         loops++;
     }
     unsafe {
@@ -97,10 +97,10 @@ fn netbsd_ps_pid_field(pid: i32, field: str) String {
     if (pid <= 1) { ret String.new(); }
     const pid_text = pid.to_string();
     var command = String.from("ps -p ");
-    command = command.push_str(pid_text.as_str());
-    command = command.push_str(" -o ");
-    command = command.push_str(field);
-    command = command.push_str("= 2>/dev/null");
+    command.push_str(pid_text.as_str());
+    command.push_str(" -o ");
+    command.push_str(field);
+    command.push_str("= 2>/dev/null");
     const raw = netbsd_ps(command.as_str());
     const trimmed: String = raw.trim();
     ret String.from(trimmed.as_str());
@@ -174,8 +174,8 @@ fn get_os() String {
             const raw_release: String = read.unwrap();
             const release: String = raw_release.trim();
             var result: String = String.from(os.name());
-            result = result.push_str(" ");
-            result = result.push_str(release.as_str());
+            result.push_str(" ");
+            result.push_str(release.as_str());
             ret result;
         }
         ret String.from(os.name());
@@ -196,9 +196,9 @@ fn get_memory() String {
     const used_text: String = owned_u64(used / mib);
     const total_text: String = owned_u64(total / mib);
     var result: String = String.from(used_text.as_str());
-    result = result.push_str(" MiB / ");
-    result = result.push_str(total_text.as_str());
-    result = result.push_str(" MiB");
+    result.push_str(" MiB / ");
+    result.push_str(total_text.as_str());
+    result.push_str(" MiB");
     ret result;
 }
 
@@ -240,9 +240,9 @@ fn detect_unix_desktop() String {
 
     if (!display.is_empty()) {
         if (!session.is_empty()) {
-            display = display.push_str(" (");
-            display = display.push_str(session.as_str());
-            display = display.push_str(")");
+            display.push_str(" (");
+            display.push_str(session.as_str());
+            display.push_str(")");
         }
         ret display;
     }
@@ -250,7 +250,7 @@ fn detect_unix_desktop() String {
         const process_wm = netbsd_window_manager();
         if (!process_wm.is_empty()) {
             var detected = String.from(process_wm.as_str());
-            detected = detected.push_str(" (X11)");
+            detected.push_str(" (X11)");
             ret detected;
         }
     }
@@ -305,12 +305,12 @@ fn get_terminal() String {
 
 fn append_count(result: String, tag: str, count: usize) String {
     var next: String = result;
-    if (!next.is_empty()) { next = next.push_str(", "); }
+    if (!next.is_empty()) { next.push_str(", "); }
     const amount: String = owned_u64(count as u64);
-    next = next.push_str(tag);
-    next = next.push_str(" (");
-    next = next.push_str(amount.as_str());
-    next = next.push_str(")");
+    next.push_str(tag);
+    next.push_str(" (");
+    next.push_str(amount.as_str());
+    next.push_str(")");
     ret next;
 }
 
@@ -392,7 +392,7 @@ fn get_packages() String {
             const home: String = os.env("HOME", "");
             if (!home.is_empty()) {
                 var user_db: String = String.from(home.as_str());
-                user_db = user_db.push_str("/pkg/pkgdb");
+                user_db.push_str("/pkg/pkgdb");
                 result = append_directory_count(result, user_db.as_str(), "pkgsrc");
             }
         }
@@ -406,7 +406,7 @@ fn get_packages() String {
         const local: String = os.env("LOCALAPPDATA", "");
         if (!chocolatey.is_empty()) {
             var choco_path: String = String.from(chocolatey.as_str());
-            choco_path = choco_path.push_str("\\lib");
+            choco_path.push_str("\\lib");
             result = append_directory_count(result, choco_path.as_str(), "choco");
         } else {
             result = append_directory_count(
@@ -415,18 +415,18 @@ fn get_packages() String {
         }
         if (!scoop.is_empty()) {
             var scoop_path: String = String.from(scoop.as_str());
-            scoop_path = scoop_path.push_str("\\apps");
+            scoop_path.push_str("\\apps");
             result = append_directory_count(result, scoop_path.as_str(), "scoop");
         }
         if (!local.is_empty()) {
             var winget: String = String.from(local.as_str());
-            winget = winget.push_str("\\Microsoft\\WinGet\\Packages");
+            winget.push_str("\\Microsoft\\WinGet\\Packages");
             const portable_count: Result[usize, fs.FsError] = fs.count_entries(winget.as_str());
             if (portable_count.is_ok()) {
                 result = append_count(result, "winget", portable_count.unwrap());
             } else {
                 var packaged: String = String.from(local.as_str());
-                packaged = packaged.push_str(
+                packaged.push_str(
                     "\\Packages\\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\\LocalState\\packages"
                 );
                 result = append_directory_count(result, packaged.as_str(), "winget");
@@ -436,7 +436,7 @@ fn get_packages() String {
             // the row still reports useful, countable Windows packages.
             if (result.is_empty()) {
                 var appx: String = String.from(local.as_str());
-                appx = appx.push_str("\\Packages");
+                appx.push_str("\\Packages");
                 result = append_directory_count(result, appx.as_str(), "appx");
             }
         }

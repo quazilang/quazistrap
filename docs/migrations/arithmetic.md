@@ -13,7 +13,8 @@ For symbolic &T in generic arithmetic, dereference the argument before operating
 
 Only str views support + concatenation. Owned String + String previously produced
 a raw view under an owning result type and is now rejected. Use an explicit String
-operation such as `left.push_str(right.as_str())` to construct an owned result;
+operation such as `left.push_str(right.as_str());` (which appends to `left` in
+place) to construct an owned result;
 use view concatenation only where a str result is intended. This checkpoint does
 not change allocation/lifetime policy for concatenated views.
 

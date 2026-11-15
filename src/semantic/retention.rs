@@ -569,11 +569,14 @@ impl Analyzer {
             .push(self.generic_params_for_function(name));
         let mutable = params
             .iter()
-            .map(|param| {
-                matches!(
-                    self.resolve_type_aliases(&self.source_type(&param.ty)),
-                    TypeKind::MutRef { .. } | TypeKind::RawPtr { .. }
-                )
+            .map(|param| match self.resolve_type_aliases(&self.source_type(&param.ty)) {
+                // The checked runtime String owns its text: outside its
+                // declaring file it cannot be built around a borrowed view
+                // (S14), so `&String!` cannot acquire an argument's provenance.
+                TypeKind::MutRef { inner } => !self
+                    .is_checked_owned_string(&self.resolve_type_aliases(&inner.node)),
+                TypeKind::RawPtr { .. } => true,
+                _ => false,
             })
             .collect();
         self.current_generic_params.pop();

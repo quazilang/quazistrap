@@ -57,6 +57,13 @@ pub struct String {
     cap: usize,
 }
 
+// A new owned String holding `text` followed by `suffix`.
+fn __string_appended(text: str, text_len: usize, suffix: str) String {
+    const combined: str = __string_str_concat(text, suffix);
+    const length: usize = text_len + __string_strlen(suffix);
+    ret String { data: combined, len: length, cap: length + 1 };
+}
+
 fn __utf8_width(first: u8) usize {
     if (first < 128) { ret 1; }
     if (first < 224) { ret 2; }
@@ -573,13 +580,22 @@ impl String {
     pub fn is_empty(self: &String) bool { ret self.len == 0; }
     pub fn as_str(self: &String) str { ret self.data; }
 
-    pub fn push_str(self: &String, s: str) String {
+    // Append `s` in place (like Rust's `String::push_str`). It returns
+    // nothing: `text.push_str("x");` changes `text`.
+    pub fn push_str(self: &String!, s: str) void {
         const combined: str = __string_str_concat(self.data, s);
-        const new_len: usize = self.len + __string_strlen(s);
-        ret String { data: combined, len: new_len, cap: new_len + 1 };
+        const length: usize = self.len + __string_strlen(s);
+        if (self.cap > 0) { __string_free(self.data); }
+        self.data = combined;
+        self.len = length;
+        self.cap = length + 1;
     }
 
-    pub fn concat(a: String, b: String) String { ret a.push_str(b.data); }
+    pub fn concat(a: String, b: String) String {
+        var result: String = a;
+        result.push_str(b.data);
+        ret result;
+    }
     pub fn get(self: &String, index: isize) Option[Rune] { ret self.data.get(index); }
     pub fn __slice(self: &String, start: isize, end: isize, step: isize,
         start_omitted: bool, end_omitted: bool) String {
