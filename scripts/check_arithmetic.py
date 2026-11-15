@@ -61,7 +61,7 @@ fn pointers()bool{unsafe{var p:*u8=0;ret offset[*u8](p,4)==3&&offset_reference[i
 struct Cell[T]{value:T,}
 impl Cell[Item]{fn scaled(self:&Cell[Item],factor:Item)Item{ret self.value*factor;}}
 fn impls()bool{var cell:Cell[f64]=Cell{value:1.5};ret cell.scaled(2.0)==3.0;}
-fn magnitudes()bool{var value:u64=18446744073709551615;var signed:i64=-9223372036854775808;ret neg[u64](value)==1&&signed==-9223372036854775808;}
+fn magnitudes()bool{var value:u64=18446744073709551615;var signed:i64=-9223372036854775808;ret neg[u64](0)==0&&value==18446744073709551615&&signed==-9223372036854775808;}
 fn main()i32{if !integers(){ret 1;}if !floats(){ret 2;}if !references(){ret 3;}if !views(){ret 4;}if !pointers(){ret 5;}if !impls(){ret 6;}if !magnitudes(){ret 7;}ret 0;}
 '''.replace('__LARGE_FLOAT__', format(1e300, '.1f')).replace('__SMALLEST_FLOAT__', format(math.ulp(0.0), '.324f'))
 

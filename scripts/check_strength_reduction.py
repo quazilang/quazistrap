@@ -16,7 +16,12 @@ fn signed_case(x: i64) void {
     const d2: i64 = 2;
     const d8: i64 = 8;
     const dbig: i64 = 1048576;
-    io.println("s {} {} {} {} {} {} {} {} {} {} {}", x, x / d1, x % d1, x / d2, x % d2, x / d8, x % d8, x / dbig, x % dbig, x * d8, d8 * x);
+    // `*` is checked; beyond 2^60 the product would overflow, so the wrapping
+    // form keeps the expected two's-complement value.
+    const small: bool = x > -1152921504606846976 && x < 1152921504606846976;
+    const left: i64 = if (small) { x * d8 } else { x.wrapping_mul(d8) };
+    const right: i64 = if (small) { d8 * x } else { d8.wrapping_mul(x) };
+    io.println("s {} {} {} {} {} {} {} {} {} {} {}", x, x / d1, x % d1, x / d2, x % d2, x / d8, x % d8, x / dbig, x % dbig, left, right);
 }
 
 fn unsigned_case(x: u64) void {

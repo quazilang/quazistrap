@@ -2,6 +2,15 @@
 
 import panic.panic;
 
+// Two's-complement 64-bit arithmetic without overflow checks; narrower types
+// truncate the result back with `as` (which keeps the low bits).
+@intrinsic("quazi.int.wrapping_add")
+fn __wrapping_add(left: u64, right: u64) u64;
+@intrinsic("quazi.int.wrapping_sub")
+fn __wrapping_sub(left: u64, right: u64) u64;
+@intrinsic("quazi.int.wrapping_mul")
+fn __wrapping_mul(left: u64, right: u64) u64;
+
 fn __u64_greater(left: u64, right: u64) bool {
     const left_high: u64 = left >> 63;
     const right_high: u64 = right >> 63;
@@ -39,6 +48,13 @@ fn __magnitude_i64(value: i64) u64 {
 }
 
 impl i32 {
+    // Arithmetic that wraps around at the bounds of `i32` instead of
+    // panicking on overflow (hashes, random number generators, checksums).
+    pub fn wrapping_add(self: i32, other: i32) i32 { ret __wrapping_add(self as u64, other as u64) as i32; }
+    pub fn wrapping_sub(self: i32, other: i32) i32 { ret __wrapping_sub(self as u64, other as u64) as i32; }
+    pub fn wrapping_mul(self: i32, other: i32) i32 { ret __wrapping_mul(self as u64, other as u64) as i32; }
+    pub fn wrapping_neg(self: i32) i32 { ret __wrapping_sub(0, self as u64) as i32; }
+
     pub fn abs(self: i32) i32 {
         if (self == -2147483648) { panic("i32.abs() overflow"); }
         if (self < 0) { ret -self; }
@@ -71,6 +87,13 @@ impl i32 {
 }
 
 impl i64 {
+    // Arithmetic that wraps around at the bounds of `i64` instead of
+    // panicking on overflow (hashes, random number generators, checksums).
+    pub fn wrapping_add(self: i64, other: i64) i64 { ret __wrapping_add(self as u64, other as u64) as i64; }
+    pub fn wrapping_sub(self: i64, other: i64) i64 { ret __wrapping_sub(self as u64, other as u64) as i64; }
+    pub fn wrapping_mul(self: i64, other: i64) i64 { ret __wrapping_mul(self as u64, other as u64) as i64; }
+    pub fn wrapping_neg(self: i64) i64 { ret __wrapping_sub(0, self as u64) as i64; }
+
     pub fn abs(self: i64) i64 {
         if (self == (-9223372036854775807 - 1)) { panic("i64.abs() overflow"); }
         if (self < 0) { ret -self; }
@@ -103,6 +126,13 @@ impl i64 {
 }
 
 impl isize {
+    // Arithmetic that wraps around at the bounds of `isize` instead of
+    // panicking on overflow (hashes, random number generators, checksums).
+    pub fn wrapping_add(self: isize, other: isize) isize { ret __wrapping_add(self as u64, other as u64) as isize; }
+    pub fn wrapping_sub(self: isize, other: isize) isize { ret __wrapping_sub(self as u64, other as u64) as isize; }
+    pub fn wrapping_mul(self: isize, other: isize) isize { ret __wrapping_mul(self as u64, other as u64) as isize; }
+    pub fn wrapping_neg(self: isize) isize { ret __wrapping_sub(0, self as u64) as isize; }
+
     pub fn abs(self: isize) isize {
         if (self == ((-9223372036854775807 - 1) as isize)) { panic("isize.abs() overflow"); }
         if (self < 0) { ret -self; }
@@ -137,6 +167,13 @@ impl isize {
 }
 
 impl u32 {
+    // Arithmetic that wraps around at the bounds of `u32` instead of
+    // panicking on overflow (hashes, random number generators, checksums).
+    pub fn wrapping_add(self: u32, other: u32) u32 { ret __wrapping_add(self as u64, other as u64) as u32; }
+    pub fn wrapping_sub(self: u32, other: u32) u32 { ret __wrapping_sub(self as u64, other as u64) as u32; }
+    pub fn wrapping_mul(self: u32, other: u32) u32 { ret __wrapping_mul(self as u64, other as u64) as u32; }
+    pub fn wrapping_neg(self: u32) u32 { ret __wrapping_sub(0, self as u64) as u32; }
+
     pub fn pow(self: u32, exponent: u32) u32 {
         var base: u32 = self;
         var power: u32 = exponent;
@@ -158,6 +195,13 @@ impl u32 {
 }
 
 impl u64 {
+    // Arithmetic that wraps around at the bounds of `u64` instead of
+    // panicking on overflow (hashes, random number generators, checksums).
+    pub fn wrapping_add(self: u64, other: u64) u64 { ret __wrapping_add(self as u64, other as u64) as u64; }
+    pub fn wrapping_sub(self: u64, other: u64) u64 { ret __wrapping_sub(self as u64, other as u64) as u64; }
+    pub fn wrapping_mul(self: u64, other: u64) u64 { ret __wrapping_mul(self as u64, other as u64) as u64; }
+    pub fn wrapping_neg(self: u64) u64 { ret __wrapping_sub(0, self as u64) as u64; }
+
     pub fn pow(self: u64, exponent: u32) u64 {
         var base: u64 = self;
         var power: u32 = exponent;
@@ -179,6 +223,13 @@ impl u64 {
 }
 
 impl usize {
+    // Arithmetic that wraps around at the bounds of `usize` instead of
+    // panicking on overflow (hashes, random number generators, checksums).
+    pub fn wrapping_add(self: usize, other: usize) usize { ret __wrapping_add(self as u64, other as u64) as usize; }
+    pub fn wrapping_sub(self: usize, other: usize) usize { ret __wrapping_sub(self as u64, other as u64) as usize; }
+    pub fn wrapping_mul(self: usize, other: usize) usize { ret __wrapping_mul(self as u64, other as u64) as usize; }
+    pub fn wrapping_neg(self: usize) usize { ret __wrapping_sub(0, self as u64) as usize; }
+
     pub fn pow(self: usize, exponent: u32) usize {
         var base: usize = self;
         var power: u32 = exponent;
@@ -199,6 +250,42 @@ impl usize {
     }
     pub fn is_even(self: usize) bool { ret self % 2 == 0; }
     pub fn is_odd(self: usize) bool { ret self % 2 != 0; }
+}
+
+impl i8 {
+    // Arithmetic that wraps around at the bounds of `i8` instead of
+    // panicking on overflow (hashes, random number generators, checksums).
+    pub fn wrapping_add(self: i8, other: i8) i8 { ret __wrapping_add(self as u64, other as u64) as i8; }
+    pub fn wrapping_sub(self: i8, other: i8) i8 { ret __wrapping_sub(self as u64, other as u64) as i8; }
+    pub fn wrapping_mul(self: i8, other: i8) i8 { ret __wrapping_mul(self as u64, other as u64) as i8; }
+    pub fn wrapping_neg(self: i8) i8 { ret __wrapping_sub(0, self as u64) as i8; }
+}
+
+impl i16 {
+    // Arithmetic that wraps around at the bounds of `i16` instead of
+    // panicking on overflow (hashes, random number generators, checksums).
+    pub fn wrapping_add(self: i16, other: i16) i16 { ret __wrapping_add(self as u64, other as u64) as i16; }
+    pub fn wrapping_sub(self: i16, other: i16) i16 { ret __wrapping_sub(self as u64, other as u64) as i16; }
+    pub fn wrapping_mul(self: i16, other: i16) i16 { ret __wrapping_mul(self as u64, other as u64) as i16; }
+    pub fn wrapping_neg(self: i16) i16 { ret __wrapping_sub(0, self as u64) as i16; }
+}
+
+impl u8 {
+    // Arithmetic that wraps around at the bounds of `u8` instead of
+    // panicking on overflow (hashes, random number generators, checksums).
+    pub fn wrapping_add(self: u8, other: u8) u8 { ret __wrapping_add(self as u64, other as u64) as u8; }
+    pub fn wrapping_sub(self: u8, other: u8) u8 { ret __wrapping_sub(self as u64, other as u64) as u8; }
+    pub fn wrapping_mul(self: u8, other: u8) u8 { ret __wrapping_mul(self as u64, other as u64) as u8; }
+    pub fn wrapping_neg(self: u8) u8 { ret __wrapping_sub(0, self as u64) as u8; }
+}
+
+impl u16 {
+    // Arithmetic that wraps around at the bounds of `u16` instead of
+    // panicking on overflow (hashes, random number generators, checksums).
+    pub fn wrapping_add(self: u16, other: u16) u16 { ret __wrapping_add(self as u64, other as u64) as u16; }
+    pub fn wrapping_sub(self: u16, other: u16) u16 { ret __wrapping_sub(self as u64, other as u64) as u16; }
+    pub fn wrapping_mul(self: u16, other: u16) u16 { ret __wrapping_mul(self as u64, other as u64) as u16; }
+    pub fn wrapping_neg(self: u16) u16 { ret __wrapping_sub(0, self as u64) as u16; }
 }
 
 impl f32 {

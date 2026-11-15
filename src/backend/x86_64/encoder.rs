@@ -4182,6 +4182,29 @@ impl<'a> FnEncoder<'a> {
                         emit!(asm.movsd_2(slot(dst), xmm0));
                     }
                     51..=63 => numeric_cast::emit(asm, slot(dst), id)?,
+                    64 | 65 => {
+                        // Overflow flag of the 64-bit product of two slots.
+                        emit!(asm.mov(rax, slot(dst)));
+                        if id == 64 {
+                            emit!(asm.imul_2(rax, slot(dst + 1)));
+                        } else {
+                            emit!(asm.mul(slot(dst + 1)));
+                        }
+                        emit!(asm.seto(al));
+                        emit!(asm.movzx(eax, al));
+                        emit!(asm.mov(slot(dst), rax));
+                    }
+                    66..=68 => {
+                        // quazi.int.wrapping_{add,sub,mul}: two's-complement
+                        // 64-bit arithmetic without overflow checks.
+                        emit!(asm.mov(rax, slot(dst)));
+                        match id {
+                            66 => emit!(asm.add(rax, slot(dst + 1))),
+                            67 => emit!(asm.sub(rax, slot(dst + 1))),
+                            _ => emit!(asm.imul_2(rax, slot(dst + 1))),
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     49 | 50 => {
                         // quazi.f64.to_bits(x: f64) -> u64 and
                         // quazi.f64.from_bits(bits: u64) -> f64: registers hold

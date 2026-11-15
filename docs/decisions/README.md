@@ -157,3 +157,7 @@ preemption staging, closure spawns, JIT scope) are tracked in the workspace
 ## D-021: maintainer answers of 2026-11-10
 
 Decided 2026-11-10: [numeric to_str, consuming match, plain variadics, thread.spawn captures, casts, fs and process requests](maintainer-answers-2026-11-10.md).
+
+## D-022: checked integer arithmetic
+
+Decided 2026-11-15: [integer `+ - * /` and unary minus panic on overflow; constants that overflow are compile errors; `wrapping_*` wrap explicitly](checked-integer-arithmetic.md).

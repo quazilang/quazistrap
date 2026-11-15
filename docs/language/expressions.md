@@ -35,6 +35,12 @@ const power: i32 = 2 ** 10;
 const remainder: i32 = 17 % 5;
 ```
 
+Integer arithmetic is checked ([D-022](../decisions/checked-integer-arithmetic.md)):
+`+`, `-`, `*`, unary `-`, and `MIN / -1` panic when the result does not fit
+the type (`attempt to add with overflow`), and the same operation on
+constants is a compile error. Use `a.wrapping_add(b)`, `wrapping_sub`,
+`wrapping_mul` or `wrapping_neg` to wrap around on purpose.
+
 Integer division by zero panics. Floating-point division by zero produces
 signed infinity; `0.0 / 0.0` produces NaN.
 

@@ -6693,7 +6693,7 @@ fn main() void {
     #[test]
     fn integer_literals_above_i64_fold_as_unsigned() {
         let report = analyze(
-            "fn main() i32 { const a: u64 = 18446744073709551614 / 2; const b: bool = 9223372036854775808 > 1; const m: i64 = 9223372036854775807; const c: i64 = m + 1; ret 0; }",
+            "fn main() i32 { const a: u64 = 18446744073709551614 / 2; const b: bool = 9223372036854775808 > 1; const m: i64 = 9223372036854775807; ret 0; }",
         );
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         let folded = |value: i64| {
@@ -6710,8 +6710,17 @@ fn main() void {
                 .any(|annotation| annotation.const_value == Some(ConstValue::Bool(true))),
             "u64 comparison folded as signed"
         );
-        // Signed overflow wraps instead of aborting the compiler.
-        assert!(folded(i64::MIN));
+        // Constant signed overflow is reported instead of wrapping (checked
+        // integer arithmetic), and does not abort the compiler.
+        let report = analyze(
+            "fn main() i32 { const m: i64 = 9223372036854775807; const c: i64 = m + 1; ret 0; }",
+        );
+        assert!(
+            report.errors.iter().any(|error| error.code == "S06"
+                && error.message.contains("will overflow")),
+            "{:?}",
+            report.errors
+        );
     }
 
     #[test]

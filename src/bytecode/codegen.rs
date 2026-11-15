@@ -3169,6 +3169,144 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// Integer `+ - *` are checked (like `**`, D-016): a result outside the
+    /// operand type panics with Rust's message. Narrow types compare the
+    /// exact 64-bit result with its value re-extended from the type width;
+    /// 64-bit types use sign tests, unsigned comparisons or the multiply
+    /// overflow flag. Returns the (canonical) result.
+    fn emit_overflow_checked(
+        &mut self,
+        op: OverflowOp,
+        left: u8,
+        right: u8,
+        result: u8,
+        key: (usize, usize),
+        span: Span,
+    ) -> u8 {
+        let Some(NumericKind::Integer { bits, signed }) =
+            self.type_of_span(key).as_ref().and_then(NumericKind::of)
+        else {
+            return result;
+        };
+        // Scratch registers (probes and the panic call) are dead after the
+        // check; release them so long expressions stay within 255 slots.
+        let mark = self.next_reg;
+        let message = match op {
+            OverflowOp::Add => "attempt to add with overflow",
+            OverflowOp::Sub => "attempt to subtract with overflow",
+            OverflowOp::Mul => "attempt to multiply with overflow",
+            OverflowOp::Negate => "attempt to negate with overflow",
+        };
+        if bits < 64 {
+            let narrowed = self.emit_integer_narrowing(result, bits, signed);
+            self.chunk.emit(rrr(Opcode::Cmp, 0, result, narrowed));
+            let fits = self.chunk.emit(ri16(Opcode::Je, 0, 0));
+            self.emit_language_panic(span, message);
+            self.chunk.patch_jump(fits, self.chunk.len() as u16);
+            self.release_scratch_registers(mark);
+            return result;
+        }
+        let fits = match (op, signed) {
+            (OverflowOp::Mul, _) => {
+                let probe = self.alloc_reg();
+                let second = self.alloc_reg();
+                debug_assert_eq!(second, probe + 1, "consecutive intrinsic arguments");
+                self.chunk.emit(rrr(Opcode::Mov, probe, left, 0));
+                self.chunk.emit(rrr(Opcode::Mov, second, right, 0));
+                let mut overflows = ri16(
+                    Opcode::Intrinsic,
+                    probe,
+                    if signed {
+                        crate::bytecode::instruction::integer_arithmetic::SIGNED_MUL_OVERFLOWS
+                    } else {
+                        crate::bytecode::instruction::integer_arithmetic::UNSIGNED_MUL_OVERFLOWS
+                    },
+                );
+                overflows.flags = 2;
+                self.chunk.emit(overflows);
+                self.chunk.emit(ri16(Opcode::Jz, probe, 0))
+            }
+            (OverflowOp::Add | OverflowOp::Sub | OverflowOp::Negate, true) => {
+                // Signed overflow: the result's sign differs from the sign
+                // both operands share (add) or from the minuend's when the
+                // operands' signs differ (sub).
+                let first = self.alloc_reg();
+                let second = self.alloc_reg();
+                if matches!(op, OverflowOp::Add) {
+                    self.chunk.emit(rrr(Opcode::Xor, first, left, result));
+                    self.chunk.emit(rrr(Opcode::Xor, second, right, result));
+                } else {
+                    self.chunk.emit(rrr(Opcode::Xor, first, left, right));
+                    self.chunk.emit(rrr(Opcode::Xor, second, left, result));
+                }
+                self.chunk.emit(rrr(Opcode::And, first, first, second));
+                let zero = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+                self.chunk.emit(rrr(Opcode::Cmp, 0, first, zero));
+                self.chunk.emit(ri16(Opcode::Jge, 0, 0))
+            }
+            (OverflowOp::Add, false) => {
+                self.chunk.emit(rrr(Opcode::Cmp, 0, result, left));
+                let mut jump = ri16(Opcode::Jge, 0, 0);
+                jump.flags |= UNSIGNED_FLAG;
+                self.chunk.emit(jump)
+            }
+            (OverflowOp::Sub | OverflowOp::Negate, false) => {
+                self.chunk.emit(rrr(Opcode::Cmp, 0, left, right));
+                let mut jump = ri16(Opcode::Jge, 0, 0);
+                jump.flags |= UNSIGNED_FLAG;
+                self.chunk.emit(jump)
+            }
+        };
+        self.emit_language_panic(span, message);
+        self.chunk.patch_jump(fits, self.chunk.len() as u16);
+        self.release_scratch_registers(mark);
+        result
+    }
+
+    /// Release scratch registers above `mark` once the code that used them
+    /// has been emitted (the frame keeps their high-water size).
+    fn release_scratch_registers(&mut self, mark: u16) {
+        self.reg_high_water = self.reg_high_water.max(self.next_reg);
+        self.binding_slots.retain(|&reg, _| (reg as u16) < mark);
+        self.next_reg = mark;
+    }
+
+    /// Signed `MIN / -1` and `MIN % -1` overflow (and fault in hardware).
+    fn emit_signed_division_guard(
+        &mut self,
+        dividend: u8,
+        divisor: u8,
+        key: (usize, usize),
+        span: Span,
+        remainder: bool,
+    ) {
+        let Some(NumericKind::Integer { bits, signed: true }) =
+            self.type_of_span(key).as_ref().and_then(NumericKind::of)
+        else {
+            return;
+        };
+        let mark = self.next_reg;
+        let minus_one = self.emit_u64_constant(u64::MAX);
+        self.chunk.emit(rrr(Opcode::Cmp, 0, divisor, minus_one));
+        let not_minus_one = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
+        let minimum = self.emit_u64_constant((i64::MIN >> (64 - bits)) as u64);
+        self.chunk.emit(rrr(Opcode::Cmp, 0, dividend, minimum));
+        let not_minimum = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
+        self.emit_language_panic(
+            span,
+            if remainder {
+                "attempt to calculate the remainder with overflow"
+            } else {
+                "attempt to divide with overflow"
+            },
+        );
+        let end = self.chunk.len() as u16;
+        self.chunk.patch_jump(not_minus_one, end);
+        self.chunk.patch_jump(not_minimum, end);
+        self.release_scratch_registers(mark);
+    }
+
     fn emit_integer_narrowing(&mut self, value: u8, bits: u32, signed: bool) -> u8 {
         let narrowed = self.alloc_reg();
         if signed {
@@ -7953,7 +8091,16 @@ impl<'a> FnCompiler<'a> {
                         if crate::evaluation::is_integer_literal_expression(inner) {
                             return dst;
                         }
-                        self.wrap_narrow_integer(dst, inner_key)
+                        let zero = self.alloc_reg();
+                        self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+                        self.emit_overflow_checked(
+                            OverflowOp::Negate,
+                            zero,
+                            src,
+                            dst,
+                            inner_key,
+                            expr.span,
+                        )
                     }
                     UnaryOpKind::Not => {
                         let src = self.compile_expr(inner);
@@ -8063,6 +8210,15 @@ impl<'a> FnCompiler<'a> {
                     BinOpKind::Div => {
                         if !is_float {
                             self.emit_integer_zero_guard(r2, expr.span, "integer division by zero");
+                            if let Some(operand) = width_operand {
+                                self.emit_signed_division_guard(
+                                    r1,
+                                    r2,
+                                    (operand.span.start, operand.span.end),
+                                    expr.span,
+                                    false,
+                                );
+                            }
                         }
                         let mut instruction = arith(Opcode::Div, dst, r1, r2);
                         if is_unsigned {
@@ -8077,6 +8233,15 @@ impl<'a> FnCompiler<'a> {
                                 expr.span,
                                 "integer remainder by zero",
                             );
+                            if let Some(operand) = width_operand {
+                                self.emit_signed_division_guard(
+                                    r1,
+                                    r2,
+                                    (operand.span.start, operand.span.end),
+                                    expr.span,
+                                    true,
+                                );
+                            }
                         }
                         let mut instruction = arith(Opcode::Mod, dst, r1, r2);
                         if is_unsigned {
@@ -8126,24 +8291,24 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.emit(rrr(Opcode::Add, dst, r1, r2));
                     } // fallback
                 }
-                // Sums, differences, products, shifts and MIN / -1 can leave
-                // the range of a narrow integer type.
+                // Sums, differences and products are checked; a shift keeps
+                // the low bits of its type.
                 if !is_float
                     && !is_str
-                    && matches!(
-                        op,
-                        BinOpKind::Add
-                            | BinOpKind::Sub
-                            | BinOpKind::Mul
-                            | BinOpKind::Div
-                            | BinOpKind::Shl
-                    )
+                    && let Some(operand) = width_operand
                 {
-                    if let Some(operand) = width_operand {
-                        return self.wrap_narrow_integer(
-                            dst,
-                            (operand.span.start, operand.span.end),
-                        );
+                    let key = (operand.span.start, operand.span.end);
+                    let checked = match op {
+                        BinOpKind::Add => Some(OverflowOp::Add),
+                        BinOpKind::Sub => Some(OverflowOp::Sub),
+                        BinOpKind::Mul => Some(OverflowOp::Mul),
+                        _ => None,
+                    };
+                    if let Some(checked) = checked {
+                        return self.emit_overflow_checked(checked, r1, r2, dst, key, expr.span);
+                    }
+                    if matches!(op, BinOpKind::Shl) {
+                        return self.wrap_narrow_integer(dst, key);
                     }
                 }
                 dst
@@ -8257,6 +8422,16 @@ impl<'a> FnCompiler<'a> {
                 let old = self.snapshot_slots(old, 1);
                 let rhs = self.compile_expr(value);
                 let result = self.alloc_reg();
+                let target_key = (target.span.start, target.span.end);
+                if !is_float && matches!(op, CompoundAssignOp::Div | CompoundAssignOp::Mod) {
+                    self.emit_signed_division_guard(
+                        old,
+                        rhs,
+                        target_key,
+                        expr.span,
+                        matches!(op, CompoundAssignOp::Mod),
+                    );
+                }
                 self.emit_compound_arithmetic(
                     op,
                     is_float,
@@ -8266,10 +8441,17 @@ impl<'a> FnCompiler<'a> {
                     rhs,
                     expr.span,
                 );
-                let result = if is_float {
-                    result
-                } else {
-                    self.wrap_narrow_integer(result, (target.span.start, target.span.end))
+                let checked = match op {
+                    CompoundAssignOp::Add => Some(OverflowOp::Add),
+                    CompoundAssignOp::Sub => Some(OverflowOp::Sub),
+                    CompoundAssignOp::Mul => Some(OverflowOp::Mul),
+                    _ => None,
+                };
+                let result = match checked {
+                    Some(checked) if !is_float => self.emit_overflow_checked(
+                        checked, old, rhs, result, target_key, expr.span,
+                    ),
+                    _ => result,
                 };
                 self.store_lvalue(&address, result);
                 result
@@ -8290,19 +8472,23 @@ impl<'a> FnCompiler<'a> {
                         IncDecOp::Inc => Opcode::Inc,
                         IncDecOp::Dec => Opcode::Dec,
                     };
-                    let result = if *prefix {
-                        register
-                    } else {
-                        let copy = self.alloc_reg();
-                        self.chunk.emit(rrr(Opcode::Mov, copy, register, 0));
-                        copy
-                    };
+                    let previous = self.alloc_reg();
+                    self.chunk.emit(rrr(Opcode::Mov, previous, register, 0));
+                    let result = if *prefix { register } else { previous };
                     self.chunk.emit(rrr(opcode, register, register, 0));
-                    let wrapped =
-                        self.wrap_narrow_integer(register, (inner.span.start, inner.span.end));
-                    if wrapped != register {
-                        self.chunk.emit(rrr(Opcode::Mov, register, wrapped, 0));
-                    }
+                    let one = self.emit_u64_constant(1);
+                    let checked = match op {
+                        IncDecOp::Inc => OverflowOp::Add,
+                        IncDecOp::Dec => OverflowOp::Sub,
+                    };
+                    self.emit_overflow_checked(
+                        checked,
+                        previous,
+                        one,
+                        register,
+                        (inner.span.start, inner.span.end),
+                        expr.span,
+                    );
                     return result;
                 }
                 let address = self.compute_lvalue_addr(inner);
@@ -8324,7 +8510,18 @@ impl<'a> FnCompiler<'a> {
                 let result = if is_float {
                     result
                 } else {
-                    self.wrap_narrow_integer(result, (inner.span.start, inner.span.end))
+                    let checked = match op {
+                        IncDecOp::Inc => OverflowOp::Add,
+                        IncDecOp::Dec => OverflowOp::Sub,
+                    };
+                    self.emit_overflow_checked(
+                        checked,
+                        old,
+                        one,
+                        result,
+                        (inner.span.start, inner.span.end),
+                        expr.span,
+                    )
                 };
                 self.store_lvalue(&address, result);
                 if *prefix { result } else { old }
@@ -10125,6 +10322,9 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
         m.insert("quazi.f64.sqrt", 48);
         m.insert("quazi.f64.to_bits", 49);
         m.insert("quazi.f64.from_bits", 50);
+        m.insert("quazi.int.wrapping_add", 66);
+        m.insert("quazi.int.wrapping_sub", 67);
+        m.insert("quazi.int.wrapping_mul", 68);
         m
     });
     let name = attr
@@ -10386,6 +10586,16 @@ fn type_kind_base_name(ty: &TypeKind) -> String {
         TypeKind::RawPtr { inner } => type_kind_base_name(&inner.node),
         other => format!("{}", other),
     }
+}
+
+/// Checked integer operations (`emit_overflow_checked`).
+#[derive(Clone, Copy)]
+enum OverflowOp {
+    Add,
+    Sub,
+    Mul,
+    /// `0 - value`.
+    Negate,
 }
 
 /// The numeric representation classes that `as` converts between.
@@ -14618,13 +14828,13 @@ fn update(index: i64) i64 {
     fn unsigned_constant_folding_uses_u64_semantics() {
         let chunks = compile(
             r#"
-            fn quotient() u64 { ret (-1 as u64) / 2; }
-            fn high() u64 { ret -1 as u64; }
+            fn quotient() u64 { ret ((-1) as u64) / 2; }
+            fn high() u64 { ret (-1) as u64; }
             fn decimal_high() u64 { ret 18446744073709551615; }
             fn decimal_min() i64 { ret -9223372036854775808; }
-            fn remainder() u64 { ret (-1 as u64) % 2; }
-            fn shift() u64 { ret (-1 as u64) >> 63; }
-            fn ordered() bool { ret (-1 as u64) > 1; }
+            fn remainder() u64 { ret ((-1) as u64) % 2; }
+            fn shift() u64 { ret ((-1) as u64) >> 63; }
+            fn ordered() bool { ret ((-1) as u64) > 1; }
             "#,
         );
         let returned_constant = |function: &str| -> i64 {

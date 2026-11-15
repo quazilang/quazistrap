@@ -442,6 +442,11 @@ impl Instruction {
                     49 => "quazi.f64.to_bits",
                     50 => "quazi.f64.from_bits",
                     51..=63 => "numeric cast",
+                    64 => "signed mul overflows",
+                    65 => "unsigned mul overflows",
+                    66 => "quazi.int.wrapping_add",
+                    67 => "quazi.int.wrapping_sub",
+                    68 => "quazi.int.wrapping_mul",
                     _ => "?",
                 };
                 format!(
@@ -550,6 +555,19 @@ pub mod numeric_cast {
     pub const F64_TO_U16: u16 = 62;
     pub const F64_TO_U8: u16 = 63;
     pub const IDS: std::ops::RangeInclusive<u16> = SIGNED_TO_F64..=F64_TO_U8;
+}
+
+/// `Intrinsic` ids for integer overflow checks and explicit wrapping
+/// arithmetic on 64-bit slots. The overflow probes are compiler-private;
+/// the wrapping operations back the prelude `wrapping_*` methods.
+pub mod integer_arithmetic {
+    /// dst = 1 when the signed product of (dst, dst + 1) overflows i64.
+    pub const SIGNED_MUL_OVERFLOWS: u16 = 64;
+    /// dst = 1 when the unsigned product of (dst, dst + 1) overflows u64.
+    pub const UNSIGNED_MUL_OVERFLOWS: u16 = 65;
+    pub const WRAPPING_ADD: u16 = 66;
+    pub const WRAPPING_SUB: u16 = 67;
+    pub const WRAPPING_MUL: u16 = 68;
 }
 
 const MEM_WIDTH_SHIFT: u8 = 1;

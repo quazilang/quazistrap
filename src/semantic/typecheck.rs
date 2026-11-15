@@ -3236,9 +3236,26 @@ impl Analyzer {
                             inner_eval.ty.as_ref(),
                             None,
                         );
+                        if inner_eval
+                            .ty
+                            .as_ref()
+                            .is_some_and(|ty| Self::is_integer(&self.resolve_type_aliases(ty)))
+                        {
+                            self.require_language_panic();
+                        }
                     }
                 }
 
+                if matches!(op, UnaryOpKind::Neg)
+                    && !crate::evaluation::is_integer_literal_expression(inner)
+                    && let (Some(value), Some(ty)) = (
+                        inner_eval.const_value.as_ref(),
+                        inner_eval.ty.as_ref().map(|ty| self.resolve_type_aliases(ty)),
+                    )
+                {
+                    let exact = Self::exact_integer_constant(value, &ty).map(|value| -value);
+                    self.check_constant_overflow(expr.span, "unary `-`", exact, Some(&ty));
+                }
                 let const_value = inner_eval
                     .const_value
                     .and_then(|value| Self::const_from_unary(op, value))
@@ -3465,6 +3482,23 @@ impl Analyzer {
                                 right_eval.ty.as_ref()
                             }
                         });
+                        if width_operand.is_some()
+                            && let Some(result_ty) =
+                                ty.as_ref().map(|ty| self.resolve_type_aliases(ty))
+                            && let (Some(a), Some(b)) = (
+                                Self::exact_integer_constant(lhs, &result_ty),
+                                Self::exact_integer_constant(rhs, &result_ty),
+                            )
+                        {
+                            let (name, exact) = match op {
+                                BinOpKind::Add => ("`+`", a.checked_add(b)),
+                                BinOpKind::Sub => ("`-`", a.checked_sub(b)),
+                                BinOpKind::Mul => ("`*`", a.checked_mul(b)),
+                                BinOpKind::Div if b != 0 => ("`/`", a.checked_div(b)),
+                                _ => ("", None),
+                            };
+                            self.check_constant_overflow(expr.span, name, exact, Some(&result_ty));
+                        }
                         Self::const_from_binary(op, lhs, rhs, signedness.or(left_eval.ty.as_ref()))
                             .map(|value| match width_operand {
                                 Some(_) => self.wrap_const_integer(value, ty.as_ref()),
@@ -5621,6 +5655,13 @@ impl Analyzer {
                     inner_eval.ty.as_ref(),
                     None,
                 );
+                if inner_eval
+                    .ty
+                    .as_ref()
+                    .is_some_and(|ty| Self::is_integer(&self.resolve_type_aliases(ty)))
+                {
+                    self.require_language_panic();
+                }
                 ExprEval {
                     ty: inner_eval.ty,
                     const_value: None,
@@ -6965,7 +7006,11 @@ impl Analyzer {
                         // Record that hidden call so whole-program dead-code elimination keeps
                         // the prelude panic path reachable from the current function.
                         // A symbolic numeric parameter can specialize to an integer.
-                        if matches!(op, BinOpKind::Div | BinOpKind::Mod) && !Self::is_float(l) {
+                        // Checked integer + - * panic on overflow too.
+                        if (matches!(op, BinOpKind::Div | BinOpKind::Mod) && !Self::is_float(l))
+                            || (matches!(op, BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul)
+                                && Self::is_integer(l))
+                        {
                             let from = self
                                 .current_function
                                 .last()
@@ -7474,6 +7519,18 @@ impl Analyzer {
         }
     }
 
+    /// Keep the prelude panic path reachable from the current function for
+    /// operations that may panic implicitly (checked integer arithmetic).
+    fn require_language_panic(&mut self) {
+        let from = self
+            .current_function
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "__program__".to_string());
+        self.add_dependency_edge(DependencyKind::Call, &from, "panic.panic");
+        self.add_dependency_edge(DependencyKind::Call, &from, "panic");
+    }
+
     pub(super) fn unit_variant_type(&self, object: &Expr, variant: &str) -> Option<TypeKind> {
         let ExprKind::Ident(enum_name) = &object.node else {
             return None;
@@ -7503,8 +7560,8 @@ impl Analyzer {
 
     /// An integer literal (or literal-only expression) must fit the integer
     /// type it initializes: `var y: u8 = 300;` is an error, not a wrap.
-    fn check_integer_literal_range(&mut self, expr: &Expr, value: i128, ty: &TypeKind) {
-        let (min, max): (i128, i128) = match ty {
+    pub(super) fn integer_range(ty: &TypeKind) -> Option<(i128, i128)> {
+        Some(match ty {
             TypeKind::Int8 => (i8::MIN.into(), i8::MAX.into()),
             TypeKind::Int16 => (i16::MIN.into(), i16::MAX.into()),
             TypeKind::Int32 => (i32::MIN.into(), i32::MAX.into()),
@@ -7513,7 +7570,52 @@ impl Analyzer {
             TypeKind::Uint16 => (0, u16::MAX.into()),
             TypeKind::Uint32 => (0, u32::MAX.into()),
             TypeKind::Uint64 | TypeKind::Usize => (0, u64::MAX.into()),
-            _ => return,
+            _ => return None,
+        })
+    }
+
+    /// The exact value of a folded constant of integer type `ty`.
+    fn exact_integer_constant(value: &ConstValue, ty: &TypeKind) -> Option<i128> {
+        let ConstValue::Int(raw) = value else {
+            return None;
+        };
+        let unsigned = matches!(
+            ty,
+            TypeKind::Uint8 | TypeKind::Uint16 | TypeKind::Uint32 | TypeKind::Uint64 | TypeKind::Usize
+        );
+        Some(if unsigned { i128::from(*raw as u64) } else { i128::from(*raw) })
+    }
+
+    /// Constant `+ - *` (and unary minus, `MIN / -1`) of a typed operand must
+    /// not overflow: the same operation panics at run time (checked integer
+    /// arithmetic), so a constant one is a compile error.
+    fn check_constant_overflow(
+        &mut self,
+        span: Span,
+        op: &str,
+        exact: Option<i128>,
+        ty: Option<&TypeKind>,
+    ) {
+        let Some(ty) = ty.map(|ty| self.resolve_type_aliases(ty)) else {
+            return;
+        };
+        let (Some(exact), Some((min, max))) = (exact, Self::integer_range(&ty)) else {
+            return;
+        };
+        if exact < min || exact > max {
+            self.push_error(
+                span,
+                "S06",
+                format!(
+                    "this arithmetic operation will overflow: {op} gives {exact}, outside `{ty}` ({min}..={max})"
+                ),
+            );
+        }
+    }
+
+    fn check_integer_literal_range(&mut self, expr: &Expr, value: i128, ty: &TypeKind) {
+        let Some((min, max)) = Self::integer_range(ty) else {
+            return;
         };
         if value < min || value > max {
             self.push_error(

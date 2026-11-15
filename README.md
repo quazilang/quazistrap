@@ -59,8 +59,11 @@ non-BMP text, diagnostic/hover positions and formatting against `qz fmt`.
 Numeric `as` now converts between integers and floats with Rust's rounding
 and saturation rules, and narrowing integer casts truncate at run time
 ([change record](docs/changes/2026-11-10-numeric-casts.md)); this strengthens
-correctness without completing another checklist requirement. Arithmetic
-wrapping for integers narrower than 64 bits remains open.
+correctness without completing another checklist requirement. Integer
+arithmetic is now checked ([D-022](docs/decisions/checked-integer-arithmetic.md)):
+overflow panics, constant overflow and out-of-range literals are compile
+errors, and `wrapping_*` methods wrap explicitly. On 2026-11-15 unbounded
+recursion also reports a stack overflow instead of a bare SIGSEGV.
 The declaration-context prerequisite completes no additional checklist requirement,
 so completion was 75.4% after that removal; native atomics and `qz doc` then raised it to 81.7%.
 Each item has equal weight; its percentage is implemented requirements

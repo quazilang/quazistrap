@@ -120,7 +120,8 @@ implicitly; `libc = true` in `quazi.toml` is an explicit opt-in.
 ## Implementation-defined behavior
 
 - Struct layout (without `@repr(C)`) is compiler-defined and not stable.
-- Integer overflow uses the target's native wrap behavior (not checked).
+- Integer arithmetic is checked: overflow panics, constant overflow is a
+  compile error ([D-022](../decisions/checked-integer-arithmetic.md)).
 - `f64` math functions in `std.math` are lightweight approximations, not
   correctly rounded scientific implementations.
 - ASCII-only case conversion until Unicode tables are shipped.
