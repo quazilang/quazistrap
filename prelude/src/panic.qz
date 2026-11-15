@@ -28,6 +28,7 @@ fn __panic_exit(code: i32) i32;
 fn __quazi_print_backtrace() void;
 
 import qoroutine.__qo_abandon_on_panic;
+import qoroutine.__qo_enter_panic;
 import qoroutine.__qo_running;
 
 // What a panic handler receives: the message and the source location of
@@ -79,5 +80,18 @@ pub fn __quazi_panic_handler(info: PanicInfo) ! {
 // write `panic("bad value {}", value)`. The panic handler prints
 // `thread 'main' panicked at '...'` and exits with status 101.
 pub fn panic(msg: str, file: str, line: usize, ...args: str) ! {
+    // A panic while a panic is being handled (for example inside a custom
+    // `@panic_handler`) does not call the handler again.
+    if (__qo_enter_panic()) {
+        __panic_write(2, "panicked while processing a panic: '", 36);
+        __panic_write(2, msg, __panic_strlen(msg));
+        __panic_write(2, "'\n  at ", 7);
+        __panic_write(2, file, __panic_strlen(file));
+        __panic_write(2, ":", 1);
+        var line_str: str = __panic_int_to_str(line);
+        __panic_write(2, line_str, __panic_strlen(line_str));
+        __panic_write(2, "\n", 1);
+        __panic_exit(101);
+    }
     __quazi_panic_handler(PanicInfo { message: msg, file: file, line: line });
 }

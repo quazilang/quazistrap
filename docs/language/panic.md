@@ -32,7 +32,11 @@ one `PanicInfo` value using Quazi's ordinary value ABI. A handler that returns
 could resume into a panic path with no valid continuation, so it is a
 compile-time error.
 
-Handlers are intended for terminal diagnostics. Recursive panics, allocation
-failure while reporting, concurrent panics, and cleanup ordering do not yet
-have a stronger public guarantee. A custom handler is not a recovery hook and
+Handlers are intended for terminal diagnostics. A panic raised while a panic
+is being handled (for example by the handler itself) does not call the handler
+again: the program prints `panicked while processing a panic: '<message>'`
+with its location and exits with status 101 (maintainer answer В16А). Inside a
+qoroutine this applies per qoroutine. Allocation failure while reporting,
+concurrent panics in several OS threads, and cleanup ordering do not yet have
+a stronger public guarantee. A custom handler is not a recovery hook and
 must not be used to establish application control flow.

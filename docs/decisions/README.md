@@ -56,6 +56,9 @@ including which standard-library modules and tests each tier guarantees.
 
 Choose termination-only versus unwinding, cleanup guarantees, thread behavior,
 custom-handler exact signature/lifecycle, recursion handling, and exit status.
+Recursion handling decided 2026-11-15 (В16А): a second panic while handling
+one prints `panicked while processing a panic` and exits with 101 without
+calling the handler again.
 
 ## D-007: concurrency model and terminology
 

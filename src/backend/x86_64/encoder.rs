@@ -4285,7 +4285,7 @@ impl<'a> FnEncoder<'a> {
                     }
                     44 => {
                         // quazi.runtime.state() -> *u8: the zero-initialized,
-                        // 16-byte aligned 64-byte process runtime state block.
+                        // 16-byte aligned 128-byte process runtime state block.
                         lea_rip!(rax, "__quazi_runtime_state".to_string());
                         emit!(asm.mov(slot(dst), rax));
                     }
