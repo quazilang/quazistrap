@@ -12,6 +12,10 @@ from pathlib import Path
 RECURSION = """fn deep(n: i64) i64 { ret deep(n + 1) + 1; }
 fn main() i32 { ret deep(0) as i32; }
 """
+NESTED_PANIC = """@panic_handler
+fn handler(info: PanicInfo) ! { panic("inner failure"); }
+fn main() i32 { panic("outer failure"); }
+"""
 NULL_READ = """fn main() i32 {
     var p: *i64 = 0;
     unsafe { ret (*p) as i32; }
@@ -50,7 +54,10 @@ def main():
             assert fault.returncode == 101, (fault.returncode, fault.stderr)
             assert "== CRASHED ==" in fault.stderr and "overflowed" not in fault.stderr, fault.stderr
             assert fault.stderr.endswith("stack trace\n"), repr(fault.stderr)
-    print("PASS stack overflow: recursion reports overflow (134), null read keeps crash report (101); native and QZI")
+            nested = build(qz, root, NESTED_PANIC, qzi)
+            assert nested.returncode == 101, (nested.returncode, nested.stderr)
+            assert "panicked while processing a panic: 'inner failure'" in nested.stderr, nested.stderr
+    print("PASS stack overflow: recursion reports overflow (134), null read keeps crash report (101), panic in panic handler aborts (101); native and QZI")
 
 
 if __name__ == "__main__":
