@@ -132,7 +132,7 @@ fn run_pipeline(
         namespaced_paths,
     );
     if !report_diagnostics(&sema_report, src, &source_files) {
-        std::process::exit(1);
+        fail_build();
     }
 
     let mut cg = Codegen::new(&sema_report);
@@ -141,7 +141,7 @@ fn run_pipeline(
         .compile_program(program, &source_files)
         .unwrap_or_else(|error| {
             eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
-            std::process::exit(1);
+            fail_build();
         });
 
     if debug {
@@ -154,18 +154,18 @@ fn run_pipeline(
         EmitType::Bytecode => {
             let bytes = serialize_qzi(&chunks).unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
-                std::process::exit(1);
+                fail_build();
             });
             let mut f = std::fs::File::create(output_file_name).unwrap_or_else(|e| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
                     output_file_name, e
                 );
-                std::process::exit(1);
+                fail_build();
             });
             f.write_all(&bytes).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m write failed: {}", e);
-                std::process::exit(1);
+                fail_build();
             });
             println!(
                 "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m({} bytes)\x1b[0m",
@@ -221,7 +221,7 @@ fn run_pipeline(
             )
             .unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
+                fail_build();
             });
             println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
         }
@@ -240,7 +240,7 @@ fn write_or_package_object(
         Some("a") => {
             let object = write_temp_object(bytes, "ffi_static").unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                std::process::exit(1);
+                fail_build();
             });
             let ar = std::env::var_os("AR").unwrap_or_else(|| "ar".into());
             // `ar r` replaces only a member with the same member name; our temporary
@@ -249,7 +249,7 @@ fn write_or_package_object(
                 std::fs::remove_file(output).unwrap_or_else(|e| {
                     remove_temp(&object);
                     eprintln!("\x1b[31;1merror:\x1b[0m cannot replace {output}: {e}");
-                    std::process::exit(1);
+                    fail_build();
                 });
             }
             let mut command = std::process::Command::new(&ar);
@@ -264,7 +264,7 @@ fn write_or_package_object(
                     "\x1b[31;1merror:\x1b[0m failed to run archiver {:?}: {e}",
                     ar
                 );
-                std::process::exit(1);
+                fail_build();
             });
             if !result.status.success() {
                 eprintln!(
@@ -272,13 +272,13 @@ fn write_or_package_object(
                     String::from_utf8_lossy(&result.stderr),
                     String::from_utf8_lossy(&result.stdout)
                 );
-                std::process::exit(1);
+                fail_build();
             }
         }
         Some("so" | "dll") => {
             let object = write_temp_object(bytes, "ffi_shared").unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                std::process::exit(1);
+                fail_build();
             });
             let mut flags = vec!["-shared".to_string()];
             flags.extend_from_slice(link_flags);
@@ -292,7 +292,7 @@ fn write_or_package_object(
                     .unwrap_or_else(|e| {
                         remove_temp(&object);
                         eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                        std::process::exit(1);
+                        fail_build();
                     });
             if let Some(linker) = explicit_linker {
                 invocation.linker = linker.to_path_buf();
@@ -300,13 +300,13 @@ fn write_or_package_object(
             invocation.run().unwrap_or_else(|e| {
                 remove_temp(&object);
                 eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                std::process::exit(1);
+                fail_build();
             });
             remove_temp(&object);
         }
         _ => std::fs::write(output, bytes).unwrap_or_else(|e| {
             eprintln!("\x1b[31;1merror:\x1b[0m cannot write {output}: {e}");
-            std::process::exit(1);
+            fail_build();
         }),
     }
 }
@@ -319,13 +319,13 @@ fn run_artifact(out: &str) {
         let program = std::ffi::OsStr::new(out).as_encoded_bytes().to_vec();
         let Err(error) = jit::execute(&image, &[program]);
         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-        std::process::exit(1);
+        fail_build();
     }
     let status = std::process::Command::new(abs_path(out))
         .status()
         .unwrap_or_else(|error| {
             eprintln!("\x1b[31;1merror:\x1b[0m cannot run {out}: {error}");
-            std::process::exit(1);
+            fail_build();
         });
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
@@ -389,7 +389,7 @@ fn compile_to_object(
     )
     .unwrap_or_else(|e| {
         eprintln!("\x1b[31;1merror:\x1b[0m codegen failed: {}", e);
-        std::process::exit(1);
+        fail_build();
     })
 }
 
@@ -438,18 +438,18 @@ fn emit_chunks(
         EmitType::Bytecode => {
             let bytes = serialize_qzi(chunks).unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
-                std::process::exit(1);
+                fail_build();
             });
             let mut f = std::fs::File::create(output_file_name).unwrap_or_else(|e| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
                     output_file_name, e
                 );
-                std::process::exit(1);
+                fail_build();
             });
             f.write_all(&bytes).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m write failed: {}", e);
-                std::process::exit(1);
+                fail_build();
             });
             if announce {
                 println!(
@@ -499,7 +499,7 @@ fn emit_chunks(
             )
             .unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
+                fail_build();
             });
             if announce {
                 println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
@@ -549,6 +549,105 @@ fn check_project_entry(ctx: &ProjectContext, entry: PathBuf, target: &TargetSpec
         namespaced_paths,
     );
     report_diagnostics(&report, &result.merged_source, &result.source_files)
+}
+
+/// Set while one operating-system variant of a universal QZI is compiled: a
+/// failure then abandons that variant instead of the whole process.
+static QZI_VARIANT_BUILD: AtomicBool = AtomicBool::new(false);
+
+/// Payload of an abandoned QZI variant build (not a panic: no hook runs).
+struct QziVariantFailed;
+
+/// Ends a failed build: the process exits with status 1, or, inside a
+/// universal-QZI variant build, control returns to `build_universal_qzi`.
+fn fail_build() -> ! {
+    if QZI_VARIANT_BUILD.load(Ordering::Relaxed) {
+        std::panic::resume_unwind(Box::new(QziVariantFailed));
+    }
+    std::process::exit(1)
+}
+
+/// The operating systems every QZI carries a variant for.
+const QZI_TARGETS: [(&str, fn() -> TargetSpec); 3] = [
+    ("linux", TargetSpec::x86_64_linux),
+    ("windows", TargetSpec::x86_64_windows),
+    ("netbsd", TargetSpec::x86_64_netbsd),
+];
+
+fn target_os_name(target: &TargetSpec) -> &'static str {
+    match target.os {
+        backend::target::Os::Windows => "windows",
+        backend::target::Os::Linux => "linux",
+        backend::target::Os::NetBsd => "netbsd",
+        backend::target::Os::None => "none",
+        backend::target::Os::MacOs => "macos",
+    }
+}
+
+/// Builds the QZI of a project: the program is compiled once per operating
+/// system (each with its own `@cfg` resolution and full semantic/ownership
+/// analysis) and the variants are written as one universal QZI. A system the
+/// program does not compile for is left out with a warning; the build fails
+/// only when no variant compiles.
+fn build_universal_qzi(out: &str, silent: bool, build: &dyn Fn(&TargetSpec, &str, bool)) {
+    let staging = std::env::temp_dir().join(format!("quazi-qzi-{}", std::process::id()));
+    std::fs::create_dir_all(&staging).unwrap_or_else(|error| {
+        eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {error}", staging.display());
+        fail_build();
+    });
+    let mut variants = Vec::new();
+    let mut missing = Vec::new();
+    for (index, (os, spec)) in QZI_TARGETS.iter().enumerate() {
+        let path = staging.join(format!("{os}.qzi"));
+        let path_text = path.to_string_lossy().into_owned();
+        let target = spec();
+        bytecode::select_qzi_target(os);
+        QZI_VARIANT_BUILD.store(true, Ordering::Relaxed);
+        let _ = index;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            build(&target, &path_text, true)
+        }));
+        QZI_VARIANT_BUILD.store(false, Ordering::Relaxed);
+        match result {
+            Ok(()) => match std::fs::read(&path) {
+                Ok(bytes) => variants.push((os.to_string(), bytes)),
+                Err(error) => missing.push(format!("{os} ({error})")),
+            },
+            Err(payload) if payload.is::<QziVariantFailed>() => missing.push(os.to_string()),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&staging);
+    if variants.is_empty() {
+        eprintln!("\x1b[31;1merror:\x1b[0m the program compiles for no QZI target");
+        fail_build();
+    }
+    if !missing.is_empty() && !silent {
+        eprintln!(
+            "\x1b[33;1mwarning:\x1b[0m QZI has no variant for {}: the program did not compile for it (errors above)",
+            missing.join(", ")
+        );
+    }
+    let bytes = bytecode::serialize_universal_qzi(&variants).unwrap_or_else(|error| {
+        eprintln!("\x1b[31;1merror:\x1b[0m cannot write universal QZI: {error}");
+        fail_build();
+    });
+    std::fs::write(out, &bytes).unwrap_or_else(|error| {
+        eprintln!("\x1b[31;1merror:\x1b[0m cannot write {out}: {error}");
+        fail_build();
+    });
+    if !silent {
+        let name = Path::new(out)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| out.to_string());
+        let systems: Vec<&str> = variants.iter().map(|(os, _)| os.as_str()).collect();
+        eprintln!(
+            "\x1b[1;32mbuilt\x1b[0m  {name}  {:.1} KB  universal QZI: {}",
+            bytes.len() as f64 / 1024.0,
+            systems.join(", ")
+        );
+    }
 }
 
 fn target_output_name(name: &str, emit: EmitType, target: &TargetSpec) -> String {
@@ -662,11 +761,11 @@ fn apply_package_settings(
 fn load_project_context() -> ProjectContext {
     let cwd = std::env::current_dir().unwrap_or_else(|e| {
         eprintln!("\x1b[31;1merror:\x1b[0m cannot read cwd: {}", e);
-        std::process::exit(1);
+        fail_build();
     });
     ProjectContext::load(&cwd).unwrap_or_else(|e| {
         eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-        std::process::exit(1);
+        fail_build();
     })
 }
 
@@ -847,7 +946,7 @@ fn write_file(path: &Path, contents: &str) {
             path.display(),
             e
         );
-        std::process::exit(1);
+        fail_build();
     });
 }
 
@@ -877,7 +976,7 @@ fn scaffold_project(root: &Path, pkg_name: &str, lib: bool) {
             src_dir.display(),
             e
         );
-        std::process::exit(1);
+        fail_build();
     });
     write_file(&root.join(".gitignore"), PROJECT_GITIGNORE);
 
@@ -939,7 +1038,7 @@ fn create_new_project(name: &str, lib: bool) {
             "\x1b[31;1merror:\x1b[0m path already exists: {}",
             root.display()
         );
-        std::process::exit(1);
+        fail_build();
     }
 
     let pkg_name = root.file_name().and_then(|n| n.to_str()).unwrap_or(name);
@@ -955,12 +1054,12 @@ fn init_project(lib: bool) {
             "\x1b[31;1merror:\x1b[0m cannot get current directory: {}",
             e
         );
-        std::process::exit(1);
+        fail_build();
     });
 
     if cwd.join("quazi.toml").exists() {
         eprintln!("\x1b[31;1merror:\x1b[0m quazi.toml already exists in this directory");
-        std::process::exit(1);
+        fail_build();
     }
 
     let pkg_name = cwd
@@ -1001,7 +1100,7 @@ fn write_api_docs(src_dir: &std::path::Path, package: &str, out_dir: &std::path:
     let mut files = Vec::new();
     collect_quazi_files(src_dir, &mut files).unwrap_or_else(|e| {
         eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-        std::process::exit(1);
+        fail_build();
     });
     files.sort();
     let mut index = format!("# `{}` API reference\n\n", package);
@@ -1020,17 +1119,17 @@ fn write_api_docs(src_dir: &std::path::Path, package: &str, out_dir: &std::path:
         };
         let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
             eprintln!("\x1b[31;1merror:\x1b[0m cannot read {}: {}", path.display(), e);
-            std::process::exit(1);
+            fail_build();
         });
         let page = apidoc::render_module(&module, &source).unwrap_or_else(|e| {
             eprintln!("{e}");
-            std::process::exit(1);
+            fail_build();
         });
         let page_path = out_dir.join(relative).with_extension("md");
         if let Some(parent) = page_path.parent() {
             std::fs::create_dir_all(parent).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {}", parent.display(), e);
-                std::process::exit(1);
+                fail_build();
             });
         }
         write_file(&page_path, &page);
@@ -1050,7 +1149,7 @@ fn format_project_sources() {
     let mut files = Vec::new();
     collect_quazi_files(&ctx.config.src_dir, &mut files).unwrap_or_else(|e| {
         eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-        std::process::exit(1);
+        fail_build();
     });
 
     let mut changed = 0usize;
@@ -1061,7 +1160,7 @@ fn format_project_sources() {
                 path.display(),
                 e
             );
-            std::process::exit(1);
+            fail_build();
         });
         let formatted = format_quazi_source(&src);
         if formatted != src {
@@ -1080,7 +1179,7 @@ fn format_project_sources() {
 fn clean_project_artifacts() {
     let preview = project::preview(Path::new("."), None, false).unwrap_or_else(|error| {
         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-        std::process::exit(1);
+        fail_build();
     });
     if !preview.out_dir.exists() {
         println!("no build artifacts found");
@@ -1090,7 +1189,7 @@ fn clean_project_artifacts() {
                 "\x1b[31;1merror:\x1b[0m cannot remove {}: {error}",
                 preview.out_dir.display()
             );
-            std::process::exit(1);
+            fail_build();
         });
         println!("removed {}", preview.out_dir.display());
     }
@@ -1146,7 +1245,7 @@ fn build_with_progress(
                 "\x1b[31;1merror:\x1b[0m cannot create {}: {error}",
                 parent.display()
             );
-            std::process::exit(1);
+            fail_build();
         });
     }
 
@@ -1167,12 +1266,12 @@ fn build_with_progress(
                 let module = bytecode::deserialize_qzi_module(&hit.qzi).unwrap_or_else(|error| {
                     prog.fail("invalid");
                     eprintln!("\x1b[31;1merror:\x1b[0m invalid cached QZI: {error}");
-                    std::process::exit(1);
+                    fail_build();
                 });
                 module.validate_current_ownership_abi().unwrap_or_else(|error| {
                     prog.fail("incompatible");
                     eprintln!("error: incompatible cached QZI: {error}");
-                    std::process::exit(1);
+                    fail_build();
                 });
                 prog.done(&format!("hit · {} functions", module.chunks.len()));
                 if debug {
@@ -1183,7 +1282,7 @@ fn build_with_progress(
                 if matches!(emit, EmitType::Bytecode) {
                     std::fs::write(out, &hit.qzi).unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m cannot write {out}: {error}");
-                        std::process::exit(1);
+                        fail_build();
                     });
                 } else {
                     emit_chunks(
@@ -1238,7 +1337,7 @@ fn build_with_progress(
         Err(e) => {
             prog.fail("");
             eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-            std::process::exit(1);
+            fail_build();
         }
     };
     if debug {
@@ -1267,7 +1366,7 @@ fn build_with_progress(
     if let Some(parse_err) = &result.parse_error {
         prog.fail("");
         eprintln!("{}", parse_err);
-        std::process::exit(1);
+        fail_build();
     }
     let (target_os, target_abi) = match target.os {
         backend::target::Os::Windows => ("windows", "win64"),
@@ -1285,7 +1384,7 @@ fn build_with_progress(
             .unwrap_or_else(|error| {
                 prog.fail("error");
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot fingerprint semantic context: {error}");
-                std::process::exit(1);
+                fail_build();
             });
     let cached_codegen_units = qzc_path
         .map(|cache_path| {
@@ -1359,7 +1458,7 @@ fn build_with_progress(
                 e.render_with_source_files(&result.merged_source, &result.source_files)
             );
         }
-        std::process::exit(1);
+        fail_build();
     }
 
     prog.begin("bytecode");
@@ -1377,7 +1476,7 @@ fn build_with_progress(
         .unwrap_or_else(|error| {
             prog.fail("error");
             eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
-            std::process::exit(1);
+            fail_build();
         });
     let external_call_relocations = cg.external_call_relocations().to_vec();
     let incremental_stats = cg.incremental_codegen_stats();
@@ -1412,7 +1511,7 @@ fn build_with_progress(
                     "\x1b[31;1merror:\x1b[0m cannot read QZI dependency '{}': {error}",
                     dependency.display()
                 );
-                std::process::exit(1);
+                fail_build();
             });
             modules.push(
                 bytecode::deserialize_qzi_module(&bytes).unwrap_or_else(|error| {
@@ -1421,14 +1520,14 @@ fn build_with_progress(
                         "\x1b[31;1merror:\x1b[0m invalid QZI dependency '{}': {error}",
                         dependency.display()
                     );
-                    std::process::exit(1);
+                    fail_build();
                 }),
             );
         }
         chunks = bytecode::link_qzi_modules(&modules).unwrap_or_else(|error| {
             prog.fail("error");
             eprintln!("\x1b[31;1merror:\x1b[0m cannot link QZI dependencies: {error}");
-            std::process::exit(1);
+            fail_build();
         });
         prog.done(&format!(
             "{} module{}",
@@ -1458,7 +1557,7 @@ fn build_with_progress(
             .unwrap_or_else(|error| {
                 prog.fail("error");
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot build QZI interface: {error}");
-                std::process::exit(1);
+                fail_build();
             })
         } else {
             String::new()
@@ -1475,7 +1574,7 @@ fn build_with_progress(
         bytecode::serialize_qzi_module(&module).unwrap_or_else(|error| {
             prog.fail("error");
             eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
-            std::process::exit(1);
+            fail_build();
         })
     });
 
@@ -1508,22 +1607,22 @@ fn build_with_progress(
                 bytecode::serialize_qzi(&chunks).unwrap_or_else(|error| {
                     prog.fail("error");
                     eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
-                    std::process::exit(1);
+                    fail_build();
                 })
             });
             if bytes.is_empty() {
                 prog.fail("error");
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize empty QZI");
-                std::process::exit(1);
+                fail_build();
             }
             let mut f = std::fs::File::create(out).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {}", out, e);
-                std::process::exit(1);
+                fail_build();
             });
             use std::io::Write as _;
             f.write_all(&bytes).unwrap_or_else(|e| {
                 eprintln!("\x1b[31;1merror:\x1b[0m write failed: {}", e);
-                std::process::exit(1);
+                fail_build();
             });
             prog.success(out, Some(bytes.len() as u64));
         }
@@ -1582,7 +1681,7 @@ fn build_with_progress(
             .unwrap_or_else(|e| {
                 prog.fail("error");
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                std::process::exit(1);
+                fail_build();
             });
 
             let bin_size = std::fs::metadata(out).map(|m| m.len()).ok();
@@ -1703,17 +1802,18 @@ fn main() {
                 Some(cli::TargetTriple::X86_64None) => TargetSpec::x86_64_none(),
                 None => TargetSpec::host(),
             };
+            bytecode::select_qzi_target(target_os_name(&target));
             if run && target.triple() != TargetSpec::host().triple() {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot run target '{}' on host '{}'; use `qz build`",
                     target.triple(),
                     TargetSpec::host().triple()
                 );
-                std::process::exit(1);
+                fail_build();
             }
             if target.os == backend::target::Os::None && shared_lib {
                 eprintln!("error: x86_64-none does not support hosted shared-library output");
-                std::process::exit(1);
+                fail_build();
             }
             let emit = if emit_bytecode {
                 EmitType::Bytecode
@@ -1731,7 +1831,7 @@ fn main() {
                 let preview =
                     project::preview(Path::new("."), bin.as_deref(), lib).unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                        std::process::exit(1);
+                        fail_build();
                     });
                 let preview_is_lib = preview.kind == project::ProjectKind::Lib;
                 let preview_emit = if preview_is_lib
@@ -1770,7 +1870,7 @@ fn main() {
                 ctx.select_artifact(bin.as_deref(), lib)
                     .unwrap_or_else(|e| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                        std::process::exit(1);
+                        fail_build();
                     });
                 let target = apply_package_settings(target, ctx.config.package);
                 let manifest_link = ctx.link_for_target(target.triple());
@@ -1786,11 +1886,11 @@ fn main() {
                 }
                 if target.os == backend::target::Os::None && ctx.config.package.std {
                     eprintln!("error: freestanding x86_64-none projects require [package] std = false");
-                    std::process::exit(1);
+                    fail_build();
                 }
                 ctx.ensure_lockfile().unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                    std::process::exit(1);
+                    fail_build();
                 });
 
                 // Library projects default to bytecode output; binaries default to native binary.
@@ -1834,7 +1934,7 @@ fn main() {
                 } else {
                     native_link_flags(&ctx).unwrap_or_else(|e| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                        std::process::exit(1);
+                        fail_build();
                     })
                 };
                 link_flags.extend(
@@ -1846,6 +1946,49 @@ fn main() {
                 let qzc_path =
                     (!no_incremental).then(|| ctx.incremental_cache_path(target.triple()));
                 let cache_inputs = ctx.incremental_inputs();
+                let qzi_metadata = bytecode::QziMetadata {
+                    name: ctx.config.name.clone(),
+                    version: ctx.config.version.clone(),
+                    kind: if is_lib {
+                        bytecode::QziModuleKind::Library
+                    } else {
+                        bytecode::QziModuleKind::Executable
+                    },
+                    main_takes_args: false,
+                };
+                if matches!(effective_emit, EmitType::Bytecode) {
+                    // A QZI always carries every operating system.
+                    let build_variant = |variant: &TargetSpec, path: &str, quiet: bool| {
+                        let variant = apply_package_settings(variant.clone(), ctx.config.package);
+                        let variant_cache = (!no_incremental)
+                            .then(|| ctx.incremental_cache_path(variant.triple()));
+                        build_with_progress(
+                            std::slice::from_ref(&entry),
+                            path,
+                            EmitType::Bytecode,
+                            debug,
+                            Some(&[]),
+                            explicit_linker,
+                            false,
+                            Some(qzi_metadata.clone()),
+                            &ctx.config.qzi_dependencies,
+                            variant_cache.as_deref(),
+                            &cache_inputs,
+                            &variant,
+                            quiet,
+                            no_color,
+                            no_unicode,
+                            no_progress,
+                            None,
+                            Some(&ctx.resolver),
+                            ctx.config.package,
+                        );
+                    };
+                    build_universal_qzi(&out, silent, &build_variant);
+                    bytecode::select_qzi_target(target_os_name(&target));
+                    let _ = (emit, do_strip, preview_progress, qzc_path);
+                    return;
+                }
                 build_with_progress(
                     &[entry],
                     &out,
@@ -1895,7 +2038,7 @@ fn main() {
                             "\x1b[31;1merror:\x1b[0m .qzi builds accept .qzi, .o, .c, .s and .S inputs: {}",
                             input.display()
                         );
-                        std::process::exit(1);
+                        fail_build();
                     }
                 }
 
@@ -1910,7 +2053,7 @@ fn main() {
                             qzi_file.display(),
                             e
                         );
-                        std::process::exit(1);
+                        fail_build();
                     });
                     let module = bytecode::deserialize_qzi_module(&bytes).unwrap_or_else(|e| {
                         eprintln!(
@@ -1918,17 +2061,17 @@ fn main() {
                             qzi_file.display(),
                             e
                         );
-                        std::process::exit(1);
+                        fail_build();
                     });
                     module.validate_current_ownership_abi().unwrap_or_else(|error| {
                         eprintln!("error: incompatible QZI '{}': {error}", qzi_file.display());
-                        std::process::exit(1);
+                        fail_build();
                     });
                     qzi_modules.push(module);
                 }
                 let all_chunks = bytecode::link_qzi_modules(&qzi_modules).unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m cannot link QZI modules: {e}");
-                    std::process::exit(1);
+                    fail_build();
                 });
                 let main_takes_args = qzi_modules.iter().any(|module| {
                     module.metadata.kind == bytecode::QziModuleKind::Executable
@@ -1955,7 +2098,7 @@ fn main() {
                 let compiled_native_objects = if matches!(emit, EmitType::Binary) {
                     compile_direct_c_sources(&asm_and_c_sources).unwrap_or_else(|error| {
                         eprintln!("error: {error}");
-                        std::process::exit(1);
+                        fail_build();
                     })
                 } else {
                     Vec::new()
@@ -1973,7 +2116,7 @@ fn main() {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let qzi_context = ProjectContext::discover(&cwd).unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                    std::process::exit(1);
+                    fail_build();
                 });
                 let package_settings = qzi_context
                     .as_ref()
@@ -1984,7 +2127,7 @@ fn main() {
                     if let Some(ctx) = qzi_context {
                         qzi_link_flags.extend(native_link_flags(&ctx).unwrap_or_else(|e| {
                             eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                            std::process::exit(1);
+                            fail_build();
                         }));
                     }
                     qzi_link_flags.extend(
@@ -1996,7 +2139,7 @@ fn main() {
                     if let Some(script) = &linker_script {
                         if !script.is_file() {
                             eprintln!("error: linker script does not exist: {}", script.display());
-                            std::process::exit(1);
+                            fail_build();
                         }
                         qzi_link_flags.push("-T".into());
                         qzi_link_flags.push(script.to_string_lossy().into_owned());
@@ -2058,7 +2201,7 @@ fn main() {
                     .collect();
                 let compiled_c_objects = compile_direct_c_sources(&c_sources).unwrap_or_else(|e| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {e}");
-                    std::process::exit(1);
+                    fail_build();
                 });
                 if source_files.is_empty() {
                     if !matches!(emit, EmitType::Binary)
@@ -2067,7 +2210,7 @@ fn main() {
                         eprintln!(
                             "\x1b[31;1merror:\x1b[0m build requires a .qz source or a linkable object"
                         );
-                        std::process::exit(1);
+                        fail_build();
                     }
                     let mut objects = native_objects;
                     objects.extend(
@@ -2086,12 +2229,12 @@ fn main() {
                             eprintln!(
                                 "\x1b[31;1merror:\x1b[0m object-only builds require at least one .o input"
                             );
-                            std::process::exit(1);
+                            fail_build();
                         });
                     let primary = objects.remove(primary_index);
                     let primary_bytes = std::fs::read(&primary).unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m cannot read object {primary}: {error}");
-                        std::process::exit(1);
+                        fail_build();
                     });
                     objects.extend(
                         library_paths
@@ -2102,7 +2245,7 @@ fn main() {
                     if let Some(script) = &linker_script {
                         if !script.is_file() {
                             eprintln!("error: linker script does not exist: {}", script.display());
-                            std::process::exit(1);
+                            fail_build();
                         }
                         objects.push("-T".into());
                         objects.push(script.to_string_lossy().into_owned());
@@ -2123,7 +2266,7 @@ fn main() {
                     )
                     .unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                        std::process::exit(1);
+                        fail_build();
                     });
                     for object in &compiled_c_objects {
                         remove_temp(object);
@@ -2185,7 +2328,7 @@ fn main() {
                 if let Some(script) = &linker_script {
                     if !script.is_file() {
                         eprintln!("error: linker script does not exist: {}", script.display());
-                        std::process::exit(1);
+                        fail_build();
                     }
                     link_flags.push("-T".into());
                     link_flags.push(script.to_string_lossy().into_owned());
@@ -2193,7 +2336,7 @@ fn main() {
                 let mut package_settings = ProjectContext::discover(&source_files[0])
                     .unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                        std::process::exit(1);
+                        fail_build();
                     })
                     .map(|context| context.config.package)
                     .unwrap_or_default();
@@ -2260,11 +2403,11 @@ fn main() {
             }
             .unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                std::process::exit(1);
+                fail_build();
             });
             if let Some(error) = &result.parse_error {
                 eprintln!("{error}");
-                std::process::exit(1);
+                fail_build();
             }
             let namespaced_paths: HashSet<String> = result
                 .namespaced_paths
@@ -2288,7 +2431,7 @@ fn main() {
                 namespaced_paths,
             );
             if !report_diagnostics(&report, &result.merged_source, &result.source_files) {
-                std::process::exit(1);
+                fail_build();
             }
             let guard = output
                 .file_name()
@@ -2300,14 +2443,14 @@ fn main() {
                         for error in errors {
                             eprintln!("\x1b[31;1merror:\x1b[0m {error}");
                         }
-                        std::process::exit(1);
+                        fail_build();
                     });
             std::fs::write(&output, generated).unwrap_or_else(|error| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot write '{}': {error}",
                     output.display()
                 );
-                std::process::exit(1);
+                fail_build();
             });
             println!(
                 "\x1b[1;32mgenerated\x1b[0m  \x1b[1m{}\x1b[0m",
@@ -2331,7 +2474,7 @@ fn main() {
                 ctx.select_artifact(bin.as_deref(), lib)
                     .unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                        std::process::exit(1);
+                        fail_build();
                     });
                 entries.push(ctx.config.entry.clone());
             } else {
@@ -2342,7 +2485,7 @@ fn main() {
                 success &= check_project_entry(&ctx, entry, &target);
             }
             if !success {
-                std::process::exit(1);
+                fail_build();
             }
         }
 
@@ -2354,17 +2497,17 @@ fn main() {
             let success = test_runner::run(filter.as_deref(), no_color, no_unicode)
                 .unwrap_or_else(|error| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                    std::process::exit(1);
+                    fail_build();
                 });
             if !success {
-                std::process::exit(1);
+                fail_build();
             }
         }
 
         CliCmd::Fetch => {
             let preview = project::preview(Path::new("."), None, false).unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                std::process::exit(1);
+                fail_build();
             });
             progress::BuildProgress::new(false, false, false, false).header(
                 "quazi.toml",
@@ -2379,7 +2522,7 @@ fn main() {
             let ctx = load_project_context();
             ctx.ensure_lockfile().unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                std::process::exit(1);
+                fail_build();
             });
             if ctx.config.dependencies.is_empty() {
                 eprintln!("  Dependencies  ·  none");
@@ -2395,7 +2538,7 @@ fn main() {
             let ctx = load_project_context();
             ctx.ensure_lockfile().unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                std::process::exit(1);
+                fail_build();
             });
             eprintln!(
                 "\n  \x1b[1mDependencies\x1b[0m  ({})\n",
@@ -2429,7 +2572,7 @@ fn main() {
                 let name =
                     project::infer_dependency_name(None, url.as_deref()).unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                        std::process::exit(1);
+                        fail_build();
                     });
                 (name, None, url)
             } else {
@@ -2437,7 +2580,7 @@ fn main() {
                 let name =
                     project::infer_dependency_name(path.as_deref(), None).unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                        std::process::exit(1);
+                        fail_build();
                     });
                 (name, path, None)
             };
@@ -2446,7 +2589,7 @@ fn main() {
                 let preview =
                     project::preview(Path::new("."), None, false).unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                        std::process::exit(1);
+                        fail_build();
                     });
                 progress::BuildProgress::new(false, false, false, false).header(
                     "quazi.toml",
@@ -2473,7 +2616,7 @@ fn main() {
             )
             .unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                std::process::exit(1);
+                fail_build();
             });
             let dependency = context
                 .config
@@ -2492,7 +2635,7 @@ fn main() {
         CliCmd::Remove { name } => {
             project::remove_dependency(Path::new("."), &name).unwrap_or_else(|error| {
                 eprintln!("\x1b[31;1merror:\x1b[0m {error}");
-                std::process::exit(1);
+                fail_build();
             });
             println!("\x1b[32;1mremoved\x1b[0m  {name}");
         }
@@ -2576,7 +2719,7 @@ fn main() i32 {
                 ),
                 Err(err) => {
                     eprintln!("{}", err);
-                    std::process::exit(1);
+                    fail_build();
                 }
             }
         }

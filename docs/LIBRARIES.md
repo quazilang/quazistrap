@@ -83,10 +83,32 @@ Build dependency trees show logical import names such as `std.io` and
 Git's reported percentage as an accurate progress bar followed by the same green
 status diamond as build stages; failures use a red diamond.
 
-## QZI v14
+## Universal QZI (format 15)
+
+One QZI file serves every supported operating system. `qz build -i` compiles
+the program once per system (Linux, Windows, NetBSD), each time resolving
+`@cfg(target_os = ...)` for that system and running the complete semantic and
+ownership analysis, and writes all variants into one file. Compiling the QZI
+to native code (`qz build app.qzi --target x86_64-netbsd`) selects that
+system's variant, so a native binary contains only its own implementation
+and dependencies: no Linux syscalls in NetBSD output, no NetBSD libc in Linux
+output. QZI dependencies of a project are selected the same way. Building
+needs no source files.
+
+A system the program does not compile for (for example Linux-only code
+without a `@cfg` alternative) is left out with a warning; compiling the QZI
+for it then fails with "this universal QZI has no `windows` variant" instead
+of silently using another system's code. There is no single-system QZI mode.
+
+Layout: magic, format 15, variant count, then per variant the system name
+and a complete single-target module in the v14 format below.
+`scripts/check_universal_qzi.py` checks the contract.
+
+## Single-target modules (QZI v14)
 
 QZI is both the portable bytecode container and compiled-library format. It is
-not a package-manager archive. A v14 file contains:
+not a package-manager archive. Each variant of a universal QZI (and an older
+single-target QZI file) contains:
 
 1. package name, version, `executable`/`library` kind, and entry signature;
 2. a source-visible public interface;

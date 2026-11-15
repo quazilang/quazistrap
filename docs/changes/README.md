@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-15: Universal QZI](2026-11-15-universal-qzi.md)
+
 - [2026-11-15: `String.push_str` appends in place](2026-11-15-push-str-in-place.md)
 
 - [2026-11-10: Numeric casts between integers and floats](2026-11-10-numeric-casts.md)
