@@ -1664,22 +1664,31 @@ impl<'a> FnEncoder<'a> {
             }
 
             Some(Opcode::MovI) => {
+                // A sign-extended imm32 store needs no scratch register and
+                // avoids the 10-byte `movabs`.
                 let (dst, imm) = instr.ri16();
-                emit!(asm.mov(rax, imm as i64));
-                emit!(asm.mov(slot(dst), rax));
+                emit!(asm.mov(slot(dst), imm as i32));
             }
 
             Some(Opcode::MovConst) => {
                 let (dst, idx) = instr.ri16();
                 match chunk.constants.get(idx as usize) {
                     Some(ConstPoolEntry::Int(n)) => {
-                        emit!(asm.mov(rax, *n));
-                        emit!(asm.mov(slot(dst), rax));
+                        if let Ok(small) = i32::try_from(*n) {
+                            emit!(asm.mov(slot(dst), small));
+                        } else {
+                            emit!(asm.mov(rax, *n));
+                            emit!(asm.mov(slot(dst), rax));
+                        }
                     }
                     Some(ConstPoolEntry::Float(f)) => {
                         let bits = f.to_bits() as i64;
-                        emit!(asm.mov(rax, bits));
-                        emit!(asm.mov(slot(dst), rax));
+                        if let Ok(small) = i32::try_from(bits) {
+                            emit!(asm.mov(slot(dst), small));
+                        } else {
+                            emit!(asm.mov(rax, bits));
+                            emit!(asm.mov(slot(dst), rax));
+                        }
                     }
                     Some(ConstPoolEntry::Str(_) | ConstPoolEntry::Bytes(_)) => {
                         if let Some(sym) = self.str_syms.get(idx as usize).and_then(|s| s.as_ref())
