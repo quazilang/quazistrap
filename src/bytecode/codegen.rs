@@ -10199,7 +10199,7 @@ pub(crate) fn remap_instr_regs(
 enum PrimitiveMethod {
     /// .len() on &str or slice — emit StrLen or copy hidden __len register
     Len,
-    /// .to_str() on primitives — emit PrimToStr with the given type tag
+    /// Primitive-to-text conversion (format arguments) — emit PrimToStr with the given type tag
     PrimToStr { tag: u8 },
     /// .as_str() / .as_string() — StrAsStr identity view
     AsStr,
@@ -10297,12 +10297,6 @@ fn resolve_primitive_method(
         {
             Some(PrimitiveMethod::Len)
         }
-        "to_str" if args.is_empty() => match receiver_ty {
-            Some(ty) if is_string_view_type(ty) => Some(PrimitiveMethod::AsStr),
-            _ => Some(PrimitiveMethod::PrimToStr {
-                tag: prim_to_str_tag(receiver_ty),
-            }),
-        },
         "as_string" | "as_str"
             if args.is_empty() && receiver_ty.is_some_and(is_string_view_type) =>
         {
@@ -13114,25 +13108,6 @@ fn take(value: Outer) void {}
                 .any(|i| i.opcode == Opcode::CallIdx as u8),
             "expected CallIdx in main"
         );
-    }
-
-    #[test]
-    fn monomorphized_primitive_method_uses_concrete_type() {
-        let chunks = compile(
-            r#"fn show[T](x: T) str { ret x.to_str(); }
-            fn main() void { show[i32](1); show[f64](2); }"#,
-        );
-        for (name, tag) in [("show<i32>", 0), ("show<f64>", 1)] {
-            let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
-            assert!(
-                chunk
-                    .code
-                    .iter()
-                    .any(|instruction| instruction.opcode == Opcode::PrimToStr as u8
-                        && instruction.ops[2] == tag),
-                "{name} must format its concrete primitive type"
-            );
-        }
     }
 
     #[test]

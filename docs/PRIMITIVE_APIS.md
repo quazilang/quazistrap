@@ -44,10 +44,10 @@ normal application code does not call `.free()` manually.
 booleans, borrowed text, and `String`. It remains valid after later conversions.
 `Display` implementations must return `String` from this method.
 
-`to_str()` returns a borrowed view. Numeric conversion uses static scratch
-storage and may be overwritten by later calls to the same conversion site;
-copy it into a `String` when retaining it. `String.as_str()` and
-`String.to_str()` borrow their owner. The compiler rejects storing a view of a
+There is no `to_str()` (maintainer answer В9В, 2026-11-15): numbers and
+bools become text only through `to_string()`, which formats into its own
+buffer and is safe when several threads run the same code. `String.as_str()`
+borrows its owner. The compiler rejects storing a view of a
 temporary owner or returning a view of a local owned string.
 
 `fmt.format(...)` returns owned UTF-8 text. Formatting borrows `String` arguments

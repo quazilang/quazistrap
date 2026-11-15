@@ -6727,6 +6727,17 @@ fn main() void {
     }
 
     #[test]
+    fn numbers_have_no_to_str() {
+        // В9В: only `to_string()` turns a number into text.
+        let report = analyze("fn main() i32 { const n: i32 = 5; n.to_str(); ret 0; }");
+        assert!(
+            report.errors.iter().any(|error| error.message.contains("no method `to_str` on type `i32`")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn methods_on_void_results_are_reported() {
         let report = analyze("fn nothing() void { } fn main() i32 { nothing().size(); ret 0; }");
         assert!(

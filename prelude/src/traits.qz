@@ -5,11 +5,10 @@
 // prelude.traits — core language traits
 
 // ── Display ──────────────────────────────────────────────────────────────────
-// Human-readable string representation.
-// to_str()    → &str   — borrowed view (may point to a static buffer)
-// to_string() → String — owned copy, independent of later borrowed conversions
+// Human-readable text: `to_string()` returns an owned String (maintainer
+// answer В9В: there is no borrowed `to_str()`; numbers are formatted into
+// their own buffer, which is safe in every thread).
 pub trait Display {
-    fn to_str() &str;
     fn to_string() String;
 }
 
@@ -89,127 +88,82 @@ pub trait Write {
 // ── Display impls for primitives ─────────────────────────────────────────────
 
 impl Display for i8 {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: i8) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: i8) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: i8) String { ret "{self}"; }
 }
 
 impl Display for i16 {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: i16) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: i16) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: i16) String { ret "{self}"; }
 }
 
 impl Display for i32 {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: i32) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: i32) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: i32) String { ret "{self}"; }
 }
 
 impl Display for i64 {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: i64) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: i64) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: i64) String { ret "{self}"; }
 }
 
 impl Display for u8 {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: u8) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: u8) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: u8) String { ret "{self}"; }
 }
 
 impl Display for u16 {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: u16) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: u16) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: u16) String { ret "{self}"; }
 }
 
 impl Display for u32 {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: u32) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: u32) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: u32) String { ret "{self}"; }
 }
 
 impl Display for u64 {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: u64) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: u64) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: u64) String { ret "{self}"; }
 }
 
 impl Display for isize {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: isize) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: isize) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: isize) String { ret "{self}"; }
 }
 
 impl Display for usize {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: usize) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: usize) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: usize) String { ret "{self}"; }
 }
 
 impl Display for f16 {
-    // The decimal text of the value as a borrowed `str`.
-    pub fn to_str(self: f16) str { ret (self as f64).to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: f16) String { ret String.from((self as f64).to_str()); }
+    pub fn to_string(self: f16) String { ret (self as f64).to_string(); }
 }
 
 impl Display for f32 {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: f32) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: f32) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: f32) String { ret "{self}"; }
 }
 
 impl Display for f64 {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: f64) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: f64) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: f64) String { ret "{self}"; }
 }
 
 impl Display for bool {
-    // The decimal text of the value as a borrowed `str` (valid until the next
-    // conversion; use `to_string` to keep it).
-    pub fn to_str(self: bool) str { ret self.to_str(); }
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: bool) String { ret String.from(self.to_str()); }
+    pub fn to_string(self: bool) String { ret "{self}"; }
 }
 
 impl Display for str {
-    // The text itself.
-    pub fn to_str(self: str) str { ret self; }
     // An owned copy of the text.
     pub fn to_string(self: &str) String { ret String.from(self); }
 }
 
 // Owned text exposes borrowed display views and explicit owned copies.
 impl String {
-    // The text as a borrowed `str` view.
-    pub fn to_str(self: &String) str { ret self.as_str(); }
     // An owned copy of the text.
     pub fn to_string(self: &String) String { ret String.from(self.as_str()); }
 }

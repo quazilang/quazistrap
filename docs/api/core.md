@@ -50,8 +50,8 @@ otherwise valid trailing prefix; run full validation after completing the tail.
 
 ## Owned text results
 
-`str_concat(a, b)`, `int_to_str(i64)`, `float_to_str(f64)`, and
-`str_from_byte(u8)` return owned `String` values. Return or move the result to
+`str_concat(a, b)` and `str_from_byte(u8)` return owned `String` values
+(numbers become text with `n.to_string()`). Return or move the result to
 transfer ownership; lexical cleanup releases it automatically. Borrow
 `.as_str()` only while its owner remains alive. Allocation failure terminates
 rather than returning invalid text; these convenience APIs are infallible.

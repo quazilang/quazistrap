@@ -6,7 +6,9 @@ Status: decided by the maintainers on 2026-11-10 (asks.txt rounds 4-5).
 
 - **В9А.** Numeric `to_str()` returns an owned `String`, like `to_string`;
   the static per-site digit buffer goes away and `Display.to_str` returns
-  `String`.
+  `String`. Superseded on 2026-11-15 by **В9В**: `to_str()` is removed
+  everywhere (numbers, bools, `str`, `String`, `Display`); `to_string()`
+  remains.
 - **В10А.** A by-value `match` consumes its scrutinee: bindings own the
   payload, the rest is destroyed, and the scrutinee cannot be used after it
   (use-after-move). `match &value` borrows instead.

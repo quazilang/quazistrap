@@ -49,15 +49,14 @@ prelude.traits — core language traits
 
 ```quazi
 pub trait Display {
-    fn to_str() &str;
     fn to_string() String;
 }
 ```
 
 ── Display ──────────────────────────────────────────────────────────────────
-Human-readable string representation.
-to_str()    → &str   — borrowed view (may point to a static buffer)
-to_string() → String — owned copy, independent of later borrowed conversions
+Human-readable text: `to_string()` returns an owned String (maintainer
+answer В9В: there is no borrowed `to_str()`; numbers are formatted into
+their own buffer, which is safe in every thread).
 
 ## `Debug`
 
@@ -194,15 +193,6 @@ string; the compiler auto-formats when called with multiple arguments.
 
 ## `i8`
 
-### `i8.to_str`
-
-```quazi
-pub fn to_str(self: i8) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
-
 ### `i8.to_string`
 
 ```quazi
@@ -212,15 +202,6 @@ pub fn to_string(self: i8) String
 The decimal text of the value as an owned String.
 
 ## `i16`
-
-### `i16.to_str`
-
-```quazi
-pub fn to_str(self: i16) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
 
 ### `i16.to_string`
 
@@ -232,15 +213,6 @@ The decimal text of the value as an owned String.
 
 ## `i32`
 
-### `i32.to_str`
-
-```quazi
-pub fn to_str(self: i32) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
-
 ### `i32.to_string`
 
 ```quazi
@@ -250,15 +222,6 @@ pub fn to_string(self: i32) String
 The decimal text of the value as an owned String.
 
 ## `i64`
-
-### `i64.to_str`
-
-```quazi
-pub fn to_str(self: i64) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
 
 ### `i64.to_string`
 
@@ -270,15 +233,6 @@ The decimal text of the value as an owned String.
 
 ## `u8`
 
-### `u8.to_str`
-
-```quazi
-pub fn to_str(self: u8) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
-
 ### `u8.to_string`
 
 ```quazi
@@ -288,15 +242,6 @@ pub fn to_string(self: u8) String
 The decimal text of the value as an owned String.
 
 ## `u16`
-
-### `u16.to_str`
-
-```quazi
-pub fn to_str(self: u16) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
 
 ### `u16.to_string`
 
@@ -308,15 +253,6 @@ The decimal text of the value as an owned String.
 
 ## `u32`
 
-### `u32.to_str`
-
-```quazi
-pub fn to_str(self: u32) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
-
 ### `u32.to_string`
 
 ```quazi
@@ -326,15 +262,6 @@ pub fn to_string(self: u32) String
 The decimal text of the value as an owned String.
 
 ## `u64`
-
-### `u64.to_str`
-
-```quazi
-pub fn to_str(self: u64) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
 
 ### `u64.to_string`
 
@@ -346,15 +273,6 @@ The decimal text of the value as an owned String.
 
 ## `isize`
 
-### `isize.to_str`
-
-```quazi
-pub fn to_str(self: isize) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
-
 ### `isize.to_string`
 
 ```quazi
@@ -364,15 +282,6 @@ pub fn to_string(self: isize) String
 The decimal text of the value as an owned String.
 
 ## `usize`
-
-### `usize.to_str`
-
-```quazi
-pub fn to_str(self: usize) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
 
 ### `usize.to_string`
 
@@ -384,14 +293,6 @@ The decimal text of the value as an owned String.
 
 ## `f16`
 
-### `f16.to_str`
-
-```quazi
-pub fn to_str(self: f16) str
-```
-
-The decimal text of the value as a borrowed `str`.
-
 ### `f16.to_string`
 
 ```quazi
@@ -401,15 +302,6 @@ pub fn to_string(self: f16) String
 The decimal text of the value as an owned String.
 
 ## `f32`
-
-### `f32.to_str`
-
-```quazi
-pub fn to_str(self: f32) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
 
 ### `f32.to_string`
 
@@ -421,15 +313,6 @@ The decimal text of the value as an owned String.
 
 ## `f64`
 
-### `f64.to_str`
-
-```quazi
-pub fn to_str(self: f64) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
-
 ### `f64.to_string`
 
 ```quazi
@@ -439,15 +322,6 @@ pub fn to_string(self: f64) String
 The decimal text of the value as an owned String.
 
 ## `bool`
-
-### `bool.to_str`
-
-```quazi
-pub fn to_str(self: bool) str
-```
-
-The decimal text of the value as a borrowed `str` (valid until the next
-conversion; use `to_string` to keep it).
 
 ### `bool.to_string`
 
@@ -459,14 +333,6 @@ The decimal text of the value as an owned String.
 
 ## `str`
 
-### `str.to_str`
-
-```quazi
-pub fn to_str(self: str) str
-```
-
-The text itself.
-
 ### `str.to_string`
 
 ```quazi
@@ -476,14 +342,6 @@ pub fn to_string(self: &str) String
 An owned copy of the text.
 
 ## `String`
-
-### `String.to_str`
-
-```quazi
-pub fn to_str(self: &String) str
-```
-
-The text as a borrowed `str` view.
 
 ### `String.to_string`
 

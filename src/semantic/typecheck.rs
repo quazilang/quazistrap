@@ -4646,7 +4646,7 @@ impl Analyzer {
                         let prefer_primitive_builtin = !receiver_is_named_type(&resolved_object_ty)
                             && matches!(
                                 method.as_str(),
-                                "len" | "to_str" | "as_string" | "as_str" | "as_ptr" | "parse"
+                                "len" | "as_string" | "as_str" | "as_ptr" | "parse"
                             );
                         if prefer_primitive_builtin {
                             None
@@ -5046,7 +5046,6 @@ impl Analyzer {
                         };
                         let builtin_ty = match method.as_str() {
                             "len" => Some(TypeKind::Usize),
-                            "to_str" => Some(ref_str.clone()),
                             "to_string" => {
                                 self.push_error(expr.span, "S04", "to_string() requires an owned Display implementation; enable the prelude or provide one".to_string());
                                 None
@@ -5059,7 +5058,7 @@ impl Analyzer {
                                     self.push_error(
                                         expr.span,
                                         "S06",
-                                        format!("as_str() not valid for {} — use to_str() to convert primitives to string", other),
+                                        format!("as_str() not valid for {} — use to_string() to convert numbers and bools to text", other),
                                     );
                                     None
                                 }
