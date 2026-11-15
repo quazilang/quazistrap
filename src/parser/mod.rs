@@ -1734,6 +1734,15 @@ impl Parser {
                 None
             };
             self.expect(TokenKind::FatArrow)?;
+            if self.at(TokenKind::LBrace) {
+                return Err(self.err_here_with_code(
+                    "E02",
+                    "a match arm takes a single expression, not a `{ ... }` block; \
+                     write `Pattern => expression,` (for several statements call a \
+                     function or use `if`/`else`)"
+                        .to_string(),
+                ));
+            }
             let arm_expr = self.parse_expr()?;
 
             // A guarded arm extends through its result expression, not merely
@@ -2485,6 +2494,7 @@ mod tests {
             ("fn f(x: i32) i32 { ret if (x > 0) { 1 }; }", "requires an `else` branch"),
             ("fn f(x: i32) i32 { ret if (x > 0) { var y = 1; y } else { 0 }; }", "exactly one expression"),
             ("fn f(x: i32) i32 { ret if (x > 0) { 1; } else { 0 }; }", "exactly one expression"),
+            ("fn f(x: i32) i32 { ret match x { 1 => { 2 }, _ => 3 }; }", "not a `{ ... }` block"),
         ] {
             let error = parse_program_err(source);
             assert!(error.contains(message), "{source}: {error}");
