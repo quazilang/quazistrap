@@ -57,7 +57,7 @@ def portable_outputs(qz, root, name):
     artifact = root / f"{name}.qzi"
     run(qz, root, "run", "--no-incremental", "--no-progress")
     run(qz, root, "build", "-i", "-o", artifact, "--no-incremental")
-    assert artifact.read_bytes()[:5] == b"\x00QZI\x0f", "expected universal QZI (format 15)"
+    assert artifact.read_bytes()[:5] == b"\x00QZI\x10", "expected a unified QZI (format 16)"
     run(qz, root, "run", artifact, "--no-incremental", "--no-progress")
     coff = root / f"{name}.obj"
     run(

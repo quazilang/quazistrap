@@ -1298,13 +1298,301 @@ pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
     serialize_qzi_module(&QziModule::from_chunks(chunks.to_vec()))
 }
 
-/// Universal QZI (format 15): one artifact holding a complete module for each
-/// supported operating system. Source `@cfg(target_os = ...)` alternatives are
-/// resolved per variant at QZI build time with full semantic and ownership
-/// analysis; the variant is chosen when the QZI is compiled to native code.
-/// Layout: magic, 15, u16 variant count, then per variant a u8-length OS name
-/// and a u32-length single-target module (format <= 14).
+/// QZI package (format 15): a container of several independent QZI artifacts,
+/// each kept whole under a label (`qz pack`). Packaging never merges them.
+/// Layout: magic, 15, u16 entry count, then per entry a u8-length label and a
+/// u32-length artifact. (Before format 16, one-project multi-target QZI used
+/// this container with operating-system labels; such files still load.)
 pub const QZI_UNIVERSAL_VERSION: u8 = 15;
+
+/// Unified multi-target QZI (format 16): ONE program or library. Every
+/// function body appears once with the set of target operating systems it
+/// applies to: platform-independent functions apply to all of them, and the
+/// `@cfg(target_os)` alternatives of a function are separate bodies with
+/// disjoint target sets. Calls are resolved by name when a target is
+/// selected, so shared code links to that target's implementation.
+///
+/// Layout: magic, 16, u8 target count and u8-length target names; a u32-length
+/// module in the format 14 sectioned layout holding every distinct function
+/// body (metadata, interface, call relocations, ownership envelope, bytecode);
+/// a u32 count and one target-mask byte per function body; a u8 count of
+/// interface overrides, each a target mask and a u32-length interface; then a
+/// SHA-256 of all preceding bytes.
+pub const QZI_UNIFIED_VERSION: u8 = 16;
+
+/// Builds the unified QZI of one project from its per-target compilations
+/// (`(os, module)`, each a complete single-target result). Function bodies that
+/// are identical for several targets (same name, code, constants and call
+/// targets) are stored once with all those targets in their mask.
+pub fn serialize_unified_qzi(variants: &[(String, QziModule)]) -> Result<Vec<u8>, String> {
+    if variants.is_empty() || variants.len() > 8 {
+        return Err("a unified QZI needs between one and eight targets".to_string());
+    }
+    // A body is identified by its name, its normalized code (call operands
+    // cleared) and the names it calls, in order.
+    let normalized = |chunk: &Chunk, calls: &[String]| {
+        let mut chunk = chunk.clone();
+        for instruction in &mut chunk.code {
+            if instruction.opcode == Opcode::CallIdx as u8 {
+                let [lo, hi] = 0u16.to_le_bytes();
+                instruction.ops[1] = lo;
+                instruction.ops[2] = hi;
+            }
+        }
+        (chunk, calls.to_vec())
+    };
+    let mut bodies: Vec<(Chunk, Vec<String>, u8)> = Vec::new();
+    for (target_index, (_, module)) in variants.iter().enumerate() {
+        let bit = 1u8 << target_index;
+        for chunk in &module.chunks {
+            let calls: Vec<String> = chunk
+                .code
+                .iter()
+                .filter(|instruction| instruction.opcode == Opcode::CallIdx as u8)
+                .map(|instruction| {
+                    let target = instruction.ri16().1 as usize;
+                    module
+                        .chunks
+                        .get(target)
+                        .map(|callee| callee.name.clone())
+                        .ok_or_else(|| format!("call in `{}` has no target", chunk.name))
+                })
+                .collect::<Result<_, _>>()?;
+            let key = normalized(chunk, &calls);
+            if let Some(existing) = bodies
+                .iter_mut()
+                .find(|(body, body_calls, _)| body == &key.0 && body_calls == &key.1)
+            {
+                existing.2 |= bit;
+            } else {
+                bodies.push((key.0, key.1, bit));
+            }
+        }
+    }
+    // Point every call at a body of the callee that shares a target with the
+    // caller; selection re-resolves calls by name anyway.
+    let mut chunks: Vec<Chunk> = Vec::with_capacity(bodies.len());
+    for (body, calls, mask) in &bodies {
+        let mut chunk = body.clone();
+        let mut next_call = 0;
+        for instruction in &mut chunk.code {
+            if instruction.opcode != Opcode::CallIdx as u8 {
+                continue;
+            }
+            let name = &calls[next_call];
+            next_call += 1;
+            let target = bodies
+                .iter()
+                .position(|(callee, _, callee_mask)| callee.name == *name && callee_mask & mask != 0)
+                .or_else(|| bodies.iter().position(|(callee, _, _)| callee.name == *name))
+                .ok_or_else(|| format!("unified QZI: `{}` calls missing `{name}`", chunk.name))?;
+            let [lo, hi] = u16::try_from(target)
+                .map_err(|_| "unified QZI has too many functions".to_string())?
+                .to_le_bytes();
+            instruction.ops[1] = lo;
+            instruction.ops[2] = hi;
+        }
+        chunks.push(chunk);
+    }
+    let first = &variants[0].1;
+    let module = QziModule {
+        ownership_abi_version: first.ownership_abi_version,
+        metadata: first.metadata.clone(),
+        interface: first.interface.clone(),
+        call_relocations: infer_call_relocations(&chunks)?,
+        ownership: QziOwnershipArtifact::default(),
+        chunks,
+    };
+    let module_bytes = serialize_qzi_module(&module)?;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(QZI_MAGIC);
+    bytes.push(QZI_UNIFIED_VERSION);
+    bytes.push(variants.len() as u8);
+    for (os, _) in variants {
+        let length = u8::try_from(os.len()).map_err(|_| "QZI target name too long".to_string())?;
+        bytes.push(length);
+        bytes.extend_from_slice(os.as_bytes());
+    }
+    bytes.extend_from_slice(
+        &u32::try_from(module_bytes.len())
+            .map_err(|_| "unified QZI module exceeds 4 GiB".to_string())?
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(&module_bytes);
+    bytes.extend_from_slice(&(bodies.len() as u32).to_le_bytes());
+    bytes.extend(bodies.iter().map(|(_, _, mask)| *mask));
+    // Interfaces that differ from the first target's.
+    let mut overrides: Vec<(u8, &str)> = Vec::new();
+    for (target_index, (_, module)) in variants.iter().enumerate().skip(1) {
+        if module.interface == first.interface {
+            continue;
+        }
+        let bit = 1u8 << target_index;
+        if let Some(existing) = overrides
+            .iter_mut()
+            .find(|(_, interface)| *interface == module.interface.as_str())
+        {
+            existing.0 |= bit;
+        } else {
+            overrides.push((bit, module.interface.as_str()));
+        }
+    }
+    bytes.push(overrides.len() as u8);
+    for (mask, interface) in overrides {
+        bytes.push(mask);
+        bytes.extend_from_slice(&(interface.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(interface.as_bytes());
+    }
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+    bytes.extend_from_slice(&digest);
+    Ok(bytes)
+}
+
+/// Decoded unified QZI: target names, the module of all function bodies,
+/// each body's target mask, and interface overrides.
+#[derive(Debug)]
+pub struct UnifiedQzi {
+    pub targets: Vec<String>,
+    pub module: QziModule,
+    pub masks: Vec<u8>,
+    pub interface_overrides: Vec<(u8, String)>,
+}
+
+pub fn decode_unified_qzi(bytes: &[u8]) -> Result<UnifiedQzi, String> {
+    let malformed = |what: &str| format!("malformed unified QZI: {what}");
+    if bytes.len() < 6 + 32 || bytes[4] != QZI_UNIFIED_VERSION {
+        return Err(malformed("header"));
+    }
+    let (content, digest) = bytes.split_at(bytes.len() - 32);
+    let expected: [u8; 32] = Sha256::digest(content).into();
+    if expected != digest {
+        return Err(malformed("integrity digest does not match"));
+    }
+    let mut offset = 5usize;
+    let take = |offset: &mut usize, length: usize| -> Result<&[u8], String> {
+        let slice = content
+            .get(*offset..*offset + length)
+            .ok_or_else(|| malformed("truncated section"))?;
+        *offset += length;
+        Ok(slice)
+    };
+    let count = take(&mut offset, 1)?[0] as usize;
+    if count == 0 || count > 8 {
+        return Err(malformed("target count"));
+    }
+    let mut targets = Vec::with_capacity(count);
+    for _ in 0..count {
+        let length = take(&mut offset, 1)?[0] as usize;
+        let name = std::str::from_utf8(take(&mut offset, length)?)
+            .map_err(|_| malformed("target name"))?;
+        if targets.iter().any(|known: &String| known == name) {
+            return Err(malformed("duplicate target"));
+        }
+        targets.push(name.to_string());
+    }
+    let module_length = u32::from_le_bytes(take(&mut offset, 4)?.try_into().unwrap()) as usize;
+    let module = deserialize_qzi_module(take(&mut offset, module_length)?)?;
+    let body_count = u32::from_le_bytes(take(&mut offset, 4)?.try_into().unwrap()) as usize;
+    if body_count != module.chunks.len() {
+        return Err(malformed("target masks do not match the function bodies"));
+    }
+    let all = if count == 8 { u8::MAX } else { (1u8 << count) - 1 };
+    let masks = take(&mut offset, body_count)?.to_vec();
+    if masks.iter().any(|mask| *mask == 0 || mask & !all != 0) {
+        return Err(malformed("target mask"));
+    }
+    let override_count = take(&mut offset, 1)?[0] as usize;
+    let mut interface_overrides = Vec::with_capacity(override_count);
+    for _ in 0..override_count {
+        let mask = take(&mut offset, 1)?[0];
+        let length = u32::from_le_bytes(take(&mut offset, 4)?.try_into().unwrap()) as usize;
+        let interface = std::str::from_utf8(take(&mut offset, length)?)
+            .map_err(|_| malformed("interface override"))?
+            .to_string();
+        if mask == 0 || mask & !all != 0 {
+            return Err(malformed("interface override mask"));
+        }
+        interface_overrides.push((mask, interface));
+    }
+    if offset != content.len() {
+        return Err(malformed("trailing bytes"));
+    }
+    // Each target sees each function name at most once.
+    for bit in 0..count {
+        let mut seen = std::collections::HashSet::new();
+        for (chunk, mask) in module.chunks.iter().zip(&masks) {
+            if mask & (1 << bit) != 0 && !seen.insert(chunk.name.as_str()) {
+                return Err(malformed(&format!(
+                    "`{}` has two bodies for {}",
+                    chunk.name, targets[bit]
+                )));
+            }
+        }
+    }
+    Ok(UnifiedQzi {
+        targets,
+        module,
+        masks,
+        interface_overrides,
+    })
+}
+
+/// The program as compiled for `os`: its function bodies, calls re-linked by
+/// name, and its interface.
+fn select_unified_target(unified: UnifiedQzi, os: &str) -> Result<QziModule, String> {
+    let Some(bit) = unified.targets.iter().position(|target| target == os) else {
+        return Err(format!(
+            "this QZI has no `{os}` target (it supports: {}); the program did not compile for {os} when the QZI was built",
+            unified.targets.join(", ")
+        ));
+    };
+    let bit = 1u8 << bit;
+    let UnifiedQzi {
+        module,
+        masks,
+        interface_overrides,
+        ..
+    } = unified;
+    let callee_names: Vec<String> = module.chunks.iter().map(|chunk| chunk.name.clone()).collect();
+    let mut kept: Vec<Chunk> = Vec::new();
+    for (chunk, mask) in module.chunks.into_iter().zip(&masks) {
+        if mask & bit != 0 {
+            kept.push(chunk);
+        }
+    }
+    let index_of: std::collections::HashMap<String, usize> = kept
+        .iter()
+        .enumerate()
+        .map(|(index, chunk)| (chunk.name.clone(), index))
+        .collect();
+    for chunk in &mut kept {
+        for instruction in &mut chunk.code {
+            if instruction.opcode != Opcode::CallIdx as u8 {
+                continue;
+            }
+            let name = &callee_names[instruction.ri16().1 as usize];
+            let target = *index_of.get(name).ok_or_else(|| {
+                format!("`{}` calls `{name}`, which has no implementation for {os}", chunk.name)
+            })?;
+            let [lo, hi] = (target as u16).to_le_bytes();
+            instruction.ops[1] = lo;
+            instruction.ops[2] = hi;
+        }
+    }
+    let interface = interface_overrides
+        .into_iter()
+        .find(|(mask, _)| mask & bit != 0)
+        .map(|(_, interface)| interface)
+        .unwrap_or(module.interface);
+    Ok(QziModule {
+        ownership_abi_version: module.ownership_abi_version,
+        metadata: module.metadata,
+        interface,
+        call_relocations: infer_call_relocations(&kept)?,
+        ownership: QziOwnershipArtifact::default(),
+        chunks: kept,
+    })
+}
 
 static SELECTED_QZI_TARGET: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 
@@ -1341,8 +1629,8 @@ pub fn serialize_universal_qzi(variants: &[(String, Vec<u8>)]) -> Result<Vec<u8>
     bytes.push(QZI_UNIVERSAL_VERSION);
     bytes.extend_from_slice(&(variants.len() as u16).to_le_bytes());
     for (os, module) in variants {
-        if module.len() < 5 || module[4] >= QZI_UNIVERSAL_VERSION {
-            return Err(format!("QZI variant `{os}` is not a single-target module"));
+        if module.len() < 5 || module[4] == QZI_UNIVERSAL_VERSION {
+            return Err(format!("packaged artifact `{os}` must be a QZI program or library, not a package"));
         }
         let name = u8::try_from(os.len()).map_err(|_| "QZI target name too long".to_string())?;
         bytes.push(name);
@@ -1387,12 +1675,15 @@ pub fn universal_qzi_variants(bytes: &[u8]) -> Result<Option<Vec<(String, &[u8])
 }
 
 pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
+    if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_UNIFIED_VERSION {
+        return select_unified_target(decode_unified_qzi(bytes)?, &selected_qzi_target());
+    }
     if let Some(variants) = universal_qzi_variants(bytes)? {
         let target = selected_qzi_target();
         let available: Vec<&str> = variants.iter().map(|(os, _)| os.as_str()).collect();
         let Some((_, module)) = variants.iter().find(|(os, _)| *os == target) else {
             return Err(format!(
-                "this universal QZI has no `{target}` variant (it contains: {}); the program did not compile for {target} when the QZI was built",
+                "this is a QZI package of independent artifacts ({}), not a program; extract one with `qz pack --extract NAME -o FILE`",
                 available.join(", ")
             ));
         };
@@ -2015,6 +2306,67 @@ impl std::fmt::Display for Chunk {
 
 #[cfg(test)]
 mod tests {
+    fn unified_variant(os_value: u16) -> QziModule {
+        // main -> shared -> os; `os` differs per target.
+        let mut main = Chunk::with_params("main", 0);
+        main.emit(ri16(Opcode::CallIdx, 0, 1));
+        main.emit(rrr(Opcode::Ret, 0, 0, 0));
+        main.reg_count = 1;
+        let mut shared = Chunk::with_params("shared", 0);
+        shared.emit(ri16(Opcode::CallIdx, 0, 2));
+        shared.emit(rrr(Opcode::Ret, 0, 0, 0));
+        shared.reg_count = 1;
+        let mut os = Chunk::with_params("os", 0);
+        os.emit(ri16(Opcode::MovI, 0, os_value));
+        os.emit(rrr(Opcode::Ret, 0, 0, 0));
+        os.reg_count = 1;
+        QziModule::from_chunks(vec![main, shared, os])
+    }
+
+    #[test]
+    fn unified_qzi_stores_shared_bodies_once_and_selects_each_target() {
+        let variants = vec![
+            ("linux".to_string(), unified_variant(1)),
+            ("windows".to_string(), unified_variant(2)),
+            ("netbsd".to_string(), unified_variant(1)),
+        ];
+        let bytes = serialize_unified_qzi(&variants).unwrap();
+        let unified = decode_unified_qzi(&bytes).unwrap();
+        let names: Vec<_> = unified.module.chunks.iter().map(|chunk| chunk.name.as_str()).collect();
+        assert_eq!(names, ["main", "shared", "os", "os"]);
+        assert_eq!(unified.masks, [0b111, 0b111, 0b101, 0b010]);
+        for (os, value) in [("linux", 1), ("windows", 2), ("netbsd", 1)] {
+            let module = select_unified_target(decode_unified_qzi(&bytes).unwrap(), os).unwrap();
+            assert_eq!(module.chunks.len(), 3);
+            let callee = module.chunks[1].code[0].ri16().1 as usize;
+            assert_eq!(module.chunks[callee].name, "os");
+            assert_eq!(module.chunks[callee].code[0].ri16().1, value, "{os}");
+        }
+        assert!(select_unified_target(decode_unified_qzi(&bytes).unwrap(), "macos")
+            .unwrap_err()
+            .contains("no `macos` target"));
+    }
+
+    #[test]
+    fn unified_qzi_rejects_tampering_and_missing_implementations() {
+        let variants = vec![("linux".to_string(), unified_variant(1))];
+        let mut bytes = serialize_unified_qzi(&variants).unwrap();
+        let last = bytes.len() - 40;
+        bytes[last] ^= 1;
+        assert!(decode_unified_qzi(&bytes).unwrap_err().contains("integrity"));
+        // A body missing for one target is diagnosed when that target is used.
+        let mut partial = unified_variant(2);
+        partial.chunks.truncate(2);
+        partial.chunks[1].code[0] = ri16(Opcode::MovI, 0, 0);
+        let bytes = serialize_unified_qzi(&[
+            ("linux".to_string(), unified_variant(1)),
+            ("windows".to_string(), partial),
+        ])
+        .unwrap();
+        let module = select_unified_target(decode_unified_qzi(&bytes).unwrap(), "windows").unwrap();
+        assert_eq!(module.chunks.len(), 2);
+    }
+
     use super::*;
     use crate::abi::{AbiSignature, AbiType, ForeignGlobal, ForeignSymbol};
 

@@ -27,3 +27,16 @@ byte-identical to a direct NetBSD build, contains no `syscall` instruction
 and needs only `libc.so.12`. Not verified: running on a real NetBSD or
 Windows machine, and QZI built on NetBSD or Windows hosts (the format and
 selection do not depend on the host).
+
+## Follow-up: one unified program (format 16)
+
+The first fix wrote a format 15 container with one complete compilation per
+operating system, so a single project became three copies of the same
+program. Format 16 merges the per-target compilations into one module in
+which each function body appears once with its target mask: for quazifetch,
+109 bodies are shared by all three systems, 28 by two, and 40-44 are
+specific to one; the file is 139 KB instead of 258 KB. The format 15
+container remains as `qz pack`, the separate packaging of independent
+artifacts. Limitation: each target is still analyzed and compiled once
+(the merge happens on the compiled bodies), which costs build time but not
+artifact size.

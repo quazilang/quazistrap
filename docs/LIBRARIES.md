@@ -83,26 +83,45 @@ Build dependency trees show logical import names such as `std.io` and
 Git's reported percentage as an accurate progress bar followed by the same green
 status diamond as build stages; failures use a red diamond.
 
-## Universal QZI (format 15)
+## Unified multi-target QZI (format 16)
 
-One QZI file serves every supported operating system. `qz build -i` compiles
-the program once per system (Linux, Windows, NetBSD), each time resolving
-`@cfg(target_os = ...)` for that system and running the complete semantic and
-ownership analysis, and writes all variants into one file. Compiling the QZI
-to native code (`qz build app.qzi --target x86_64-netbsd`) selects that
-system's variant, so a native binary contains only its own implementation
-and dependencies: no Linux syscalls in NetBSD output, no NetBSD libc in Linux
-output. QZI dependencies of a project are selected the same way. Building
+One project compiles into ONE QZI that serves every supported operating
+system. `qz build -i` analyzes the program once per system (Linux, Windows,
+NetBSD), resolving `@cfg(target_os = ...)` for each with the full semantic
+and ownership analysis, and merges the results into one program: every
+function body is stored once together with the set of targets it applies to.
+Platform-independent functions (and their constants) apply to all targets;
+the `@cfg` alternatives of a function are separate bodies with disjoint
+target sets. Calls are recorded by name, so selecting a target links shared
+code to that target's implementation.
+
+`qz build app.qzi --target x86_64-netbsd` selects the NetBSD bodies: the
+native binary contains only them and the shared code, so no Linux syscalls
+reach NetBSD output and no NetBSD libc reaches Linux output. QZI
+dependencies of a project are selected the same way, and native generation
 needs no source files.
 
 A system the program does not compile for (for example Linux-only code
 without a `@cfg` alternative) is left out with a warning; compiling the QZI
-for it then fails with "this universal QZI has no `windows` variant" instead
-of silently using another system's code. There is no single-system QZI mode.
+for it fails with "this QZI has no `windows` target" instead of falling back
+to another system. A call to a function without a body for the selected
+target is reported by name.
 
-Layout: magic, format 15, variant count, then per variant the system name
-and a complete single-target module in the v14 format below.
-`scripts/check_universal_qzi.py` checks the contract.
+Layout: magic, 16, the target names, one module in the sectioned v14 layout
+holding every distinct body (one metadata section, interface, call
+relocations, ownership envelope, bytecode), one target mask per body,
+interface overrides for targets whose public interface differs, and a
+SHA-256 of the whole file. Integrity verification does not establish
+ownership safety. `scripts/check_universal_qzi.py` checks the contract.
+
+### Packages of independent QZI artifacts (format 15)
+
+`qz pack a.qzi b.qzi -o bundle.qzi` keeps several independent programs or
+libraries whole in one container, each under its file stem;
+`qz pack --list bundle.qzi` lists them and
+`qz pack --extract a bundle.qzi -o a.qzi` restores one unchanged. A package
+is not compiled directly. (QZI files that an earlier compiler produced as
+one package entry per operating system still load for their systems.)
 
 ## Single-target modules (QZI v14)
 
