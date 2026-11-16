@@ -628,8 +628,18 @@ fn build_universal_qzi(out: &str, silent: bool, build: &dyn Fn(&TargetSpec, &str
             missing.join(", ")
         );
     }
-    let bytes = bytecode::serialize_universal_qzi(&variants).unwrap_or_else(|error| {
-        eprintln!("\x1b[31;1merror:\x1b[0m cannot write universal QZI: {error}");
+    // One project is one program: merge the per-target compilations into a
+    // unified QZI that stores each function body once (format 16).
+    let mut modules = Vec::with_capacity(variants.len());
+    for (os, module_bytes) in &variants {
+        let module = bytecode::deserialize_qzi_module(module_bytes).unwrap_or_else(|error| {
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot read the {os} compilation: {error}");
+            fail_build();
+        });
+        modules.push((os.clone(), module));
+    }
+    let bytes = bytecode::serialize_unified_qzi(&modules).unwrap_or_else(|error| {
+        eprintln!("\x1b[31;1merror:\x1b[0m cannot write unified QZI: {error}");
         fail_build();
     });
     std::fs::write(out, &bytes).unwrap_or_else(|error| {
@@ -643,11 +653,86 @@ fn build_universal_qzi(out: &str, silent: bool, build: &dyn Fn(&TargetSpec, &str
             .unwrap_or_else(|| out.to_string());
         let systems: Vec<&str> = variants.iter().map(|(os, _)| os.as_str()).collect();
         eprintln!(
-            "\x1b[1;32mbuilt\x1b[0m  {name}  {:.1} KB  universal QZI: {}",
+            "\x1b[1;32mbuilt\x1b[0m  {name}  {:.1} KB  QZI for {}",
             bytes.len() as f64 / 1024.0,
             systems.join(", ")
         );
     }
+}
+
+/// `qz pack`: a QZI package keeps several independent artifacts whole, each
+/// under the stem of its file name. It is not a multi-target program (a
+/// project's QZI is already one unified artifact for every target).
+fn pack_qzi(inputs: &[PathBuf], output: Option<&Path>, list: bool, extract: Option<&str>) {
+    let read = |path: &Path| {
+        std::fs::read(path).unwrap_or_else(|error| {
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot read {}: {error}", path.display());
+            fail_build();
+        })
+    };
+    if list || extract.is_some() {
+        let [package] = inputs else {
+            eprintln!("\x1b[31;1merror:\x1b[0m give exactly one package to inspect");
+            fail_build();
+        };
+        let bytes = read(package);
+        let entries = bytecode::universal_qzi_variants(&bytes)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                eprintln!("\x1b[31;1merror:\x1b[0m {} is not a QZI package", package.display());
+                fail_build();
+            });
+        if list {
+            for (label, artifact) in &entries {
+                println!("{label}\t{} bytes", artifact.len());
+            }
+            return;
+        }
+        let label = extract.expect("extract requested");
+        let Some((_, artifact)) = entries.iter().find(|(name, _)| name == label) else {
+            eprintln!("\x1b[31;1merror:\x1b[0m the package has no entry `{label}`");
+            fail_build();
+        };
+        let Some(output) = output else {
+            eprintln!("\x1b[31;1merror:\x1b[0m --extract needs -o FILE");
+            fail_build();
+        };
+        std::fs::write(output, artifact).unwrap_or_else(|error| {
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot write {}: {error}", output.display());
+            fail_build();
+        });
+        return;
+    }
+    let Some(output) = output else {
+        eprintln!("\x1b[31;1merror:\x1b[0m qz pack needs -o PACKAGE.qzi");
+        fail_build();
+    };
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    for input in inputs {
+        let bytes = read(input);
+        if bytes.len() < 5 || &bytes[..4] != b"\x00QZI" {
+            eprintln!("\x1b[31;1merror:\x1b[0m {} is not a QZI artifact", input.display());
+            fail_build();
+        }
+        let label = input
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if entries.iter().any(|(existing, _)| existing == &label) {
+            eprintln!("\x1b[31;1merror:\x1b[0m two packaged artifacts are named `{label}`");
+            fail_build();
+        }
+        entries.push((label, bytes));
+    }
+    let bytes = bytecode::serialize_universal_qzi(&entries).unwrap_or_else(|error| {
+        eprintln!("\x1b[31;1merror:\x1b[0m cannot write package: {error}");
+        fail_build();
+    });
+    std::fs::write(output, bytes).unwrap_or_else(|error| {
+        eprintln!("\x1b[31;1merror:\x1b[0m cannot write {}: {error}", output.display());
+        fail_build();
+    });
 }
 
 fn target_output_name(name: &str, emit: EmitType, target: &TargetSpec) -> String {
@@ -2663,6 +2748,13 @@ fn main() {
             }
             _ => generate_project_docs(output.as_deref()),
         },
+
+        CliCmd::Pack {
+            inputs,
+            output,
+            list,
+            extract,
+        } => pack_qzi(&inputs, output.as_deref(), list, extract.as_deref()),
 
         CliCmd::Clean => {
             clean_project_artifacts();

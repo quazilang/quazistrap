@@ -83,7 +83,7 @@ or production readiness.
 - **Move semantics** — non-primitive types are moved by default, borrow with `&`
 - **First-class functions & closures** — `|x, y| x + y` stored as `fn(i32, i32) i32`
 - **Unsafe system** — `unsafe fn` / `unsafe { ... }` for raw pointer work
-- **Modules and libraries** — dotted imports, `pub import`, downloadable dependencies, and compiled QZI libraries
+- **Modules and libraries** — dotted imports, `pub import`, downloadable dependencies, and compiled QZI libraries (one unified QZI per project: shared code once, target-specific code conditional)
 - **Native test runner** — `@test` discovery with isolated `qz test` execution
 - **LSP support** — hover, diagnostics, go-to-definition, completion, formatting
 - **Cross-platform** — Linux (ELF), Windows (PE), and experimental NetBSD 11.0/amd64 (ELF with `libc.so.12`) targets
@@ -236,6 +236,7 @@ qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
 qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
 qz run --jit [...]        # experimental: link in memory and run inside qz (Linux)
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
+qz pack a.qzi b.qzi -o bundle.qzi  # container of independent QZI (--list, --extract NAME)
 qz check                  # type-check every artifact without compiling
 qz doc                    # Markdown API pages for public declarations (build/doc)
 qz test [filter]          # run @test functions from src/ and tests/
