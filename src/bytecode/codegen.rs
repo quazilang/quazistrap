@@ -2685,6 +2685,11 @@ struct DropLocal {
     initialized: u8,
 }
 
+/// Closure environment layout: the function at +0, an optional drop
+/// function for owned captures at +8 (zero when none), captures from +16.
+const CLOSURE_DROP_OFFSET: u16 = 8;
+const CLOSURE_CAPTURE_OFFSET: u16 = 16;
+
 #[derive(Clone)]
 enum DropAction {
     /// Compiler-owned source aggregate storage, after source teardown.
@@ -5595,6 +5600,18 @@ impl<'a> FnCompiler<'a> {
                 self.emit_call_by_name(&release, &[reg], dst);
             }
             DropAction::FreeClosureEnv => {
+                // Destroy owned captures through the environment's drop
+                // function, when it has one, then the environment itself.
+                let glue = self.alloc_reg();
+                self.chunk.emit(field_load(glue, reg, CLOSURE_DROP_OFFSET));
+                let zero = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+                self.chunk.emit(rrr(Opcode::Cmp, 0, glue, zero));
+                let skip = self.chunk.emit(ri16(Opcode::Je, 0, 0));
+                let ignored = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::CallArg, reg, 0, 0));
+                self.chunk.emit(rrr(Opcode::CallReg, ignored, glue, 0));
+                self.chunk.patch_jump(skip, self.chunk.len() as u16);
                 let mut instruction = ri16(Opcode::Intrinsic, reg, 4);
                 instruction.flags = 1;
                 self.chunk.emit(instruction);
@@ -10352,7 +10369,7 @@ impl<'a> FnCompiler<'a> {
                 if !captures.is_empty() {
                     for (i, cap_name) in captures.iter().enumerate() {
                         let cap_reg = anon.alloc_reg();
-                        let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
+                        let off = CLOSURE_CAPTURE_OFFSET + (i as u16 * 8);
                         anon.chunk.emit(field_load(cap_reg, 0, off));
                         anon.regs.insert(cap_name.clone(), cap_reg);
                     }
@@ -10398,11 +10415,11 @@ impl<'a> FnCompiler<'a> {
                 } else {
                     // With captures: allocate an environment struct, store fn ptr + captures.
                     let env_ptr = self.alloc_reg();
-                    let env_size = ((captures.len() + 1) * 8).max(16) as u16;
+                    let env_size = ((captures.len() + 2) * 8) as u16;
                     self.chunk.emit(ri16(Opcode::New, env_ptr, env_size));
 
                     let fn_addr_reg = self.alloc_reg();
-                    let cidx = self.chunk.add_constant(ConstPoolEntry::FnAddr(anon_name));
+                    let cidx = self.chunk.add_constant(ConstPoolEntry::FnAddr(anon_name.clone()));
                     self.chunk.emit(ri16(Opcode::MovConst, fn_addr_reg, cidx));
                     self.chunk.emit(rrr(
                         Opcode::FieldStore,
@@ -10412,13 +10429,101 @@ impl<'a> FnCompiler<'a> {
                     ));
 
                     let once = matches!(expr.node, ExprKind::Closure { once: true, .. });
+                    // Owned captures move into the environment (D-023 В14Г).
+                    // A closure that can run more than once only borrows
+                    // them, so destroying the closure destroys them through
+                    // its generated drop function in env[8].
+                    let owned: Vec<(usize, DropAction)> = captures
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, name)| {
+                            let ty = self.local_types.get(name).cloned()?;
+                            self.drop_action_for_type(&ty).map(|action| (index, action))
+                        })
+                        .collect();
+                    if !once && !owned.is_empty() {
+                        let glue_name = format!("{anon_name}__drop");
+                        let mut glue_chunks = Vec::new();
+                        let mut glue = FnCompiler::new(
+                    &glue_name,
+                    1,
+                    self.fn_index,
+                    self.contiguous_element_containers,
+                    self.const_map,
+                    self.type_map,
+                    self.autoderef_map,
+                    self.import_names,
+                    self.struct_defs,
+                    self.struct_sizes,
+                    self.struct_field_offsets,
+                    self.struct_alignments,
+                    self.bit_field_layouts,
+                    self.repr_c_structs,
+                    self.type_aliases,
+                    self.foreign_imports,
+                    self.foreign_globals,
+                    self.trait_impls,
+                    self.variadic_fn_info,
+                    self.enum_defs,
+                    self.enum_payloads,
+                    self.explicit_shared_receiver_methods,
+                    self.explicit_exclusive_receiver_methods,
+                    self.consuming_receiver_methods,
+                    self.str_variadic_fns,
+                    self.variadic_intrinsic_fns,
+                    self.monomorphizations,
+                    self.fn_value_layouts,
+                    self.trait_method_slots,
+                    self.trait_method_signatures,
+                    &mut glue_chunks,
+                    &mut *self.next_closure_idx,
+                    self.type_subst.clone(),
+                    self.named_call_slots,
+                    self.source_files,
+                    self.annotated_exprs,
+                    self.terminal_statements,
+                    self.match_pattern_tags,
+                    Rc::clone(&self.resolution_errors),
+                    self.bound_names.clone(),
+                    self.format_result_type.clone(),
+                    self.symbol_table,
+                    self.impl_generic_params,
+                    self.checked_string_abi,
+                    self.type_name_bindings,
+                    self.struct_generic_params,
+                );
+                        let _ = glue.alloc_reg();
+                        for (index, action) in &owned {
+                            let value = glue.alloc_reg();
+                            let off = CLOSURE_CAPTURE_OFFSET + (*index as u16 * 8);
+                            glue.chunk.emit(field_load(value, 0, off));
+                            glue.emit_drop_action(value, action.clone());
+                        }
+                        glue.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+                        if let Some(error) = glue.codegen_error.take() {
+                            self.codegen_error.get_or_insert(error);
+                        }
+                        glue.chunk.reg_count =
+                            glue.next_reg.max(glue.reg_high_water).min(u8::MAX as u16) as u8;
+                        self.output_chunks.push(glue.chunk);
+                        for chunk in glue_chunks {
+                            if !self.output_chunks.iter().any(|existing| existing.name == chunk.name) {
+                                self.output_chunks.push(chunk);
+                            }
+                        }
+                        let glue_reg = self.alloc_reg();
+                        let gidx = self.chunk.add_constant(ConstPoolEntry::FnAddr(glue_name));
+                        self.chunk.emit(ri16(Opcode::MovConst, glue_reg, gidx));
+                        self.chunk.emit(field_store(glue_reg, env_ptr, CLOSURE_DROP_OFFSET));
+                    }
                     for (i, cap_name) in captures.iter().enumerate() {
                         let cap_reg = self.reg_of(cap_name);
-                        let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
+                        let off = CLOSURE_CAPTURE_OFFSET + (i as u16 * 8);
                         self.chunk.emit(field_store(cap_reg, env_ptr, off));
-                        // Owned captures of a `qo` closure move into its
-                        // environment; the outer owner no longer cleans up.
-                        if once && let Some(local) = self.drop_local(cap_name).cloned() {
+                        // The outer owner no longer cleans up a moved capture.
+                        if owned.iter().any(|(index, _)| *index == i)
+                            && let Some(local) = self.drop_local(cap_name).cloned()
+                        {
                             self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
                         }
                     }

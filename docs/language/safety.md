@@ -211,7 +211,9 @@ Current restrictions:
 
 - Function values cannot be placed inside arrays, structs, enums, or generic
   type arguments (no recursive destruction yet).
-- Closure captures are limited to immutable plain scalars.
+- Closures capture plain scalars by copy and owned values by move; the
+  environment destroys its owned captures. Borrowed captures and mutable
+  captures are rejected.
 - An outer `fn` owner cannot be moved from only one branch, loop iteration,
   short-circuit operand, or match arm.
 - Function-valued assignments are not themselves transferable.

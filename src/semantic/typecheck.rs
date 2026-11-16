@@ -2855,9 +2855,11 @@ impl Analyzer {
                 && let Some(ty) = symbol.ty.as_ref()
             {
                 let resolved = self.resolve_type_aliases(ty);
-                // A `qo` closure runs once, so owned single-slot values
-                // (structs, enums, String) move in and the call consumes them.
-                let moved_owner = once && matches!(resolved, TypeKind::Named { .. });
+                // Owned single-slot values (structs, enums, String, Array)
+                // move into the closure environment (D-023 В14Г). A `qo`
+                // closure may consume them; others borrow them.
+                let _ = once;
+                let moved_owner = matches!(resolved, TypeKind::Named { .. });
                 if !closure_capture_is_plain_copy(&resolved) && !moved_owner {
                     self.push_error(
                         expr.span,
@@ -2867,7 +2869,14 @@ impl Analyzer {
                         ),
                     );
                 }
-                if expr_mutates_ident(body, &name) {
+                // A method call mutates a capture only through an exclusive
+                // `&T!` receiver; consuming calls are moves (borrow pass).
+                let type_name = super::declare::type_kind_base_name(&resolved);
+                let exclusive = |method: &str| {
+                    self.explicit_exclusive_receiver_methods
+                        .contains(&format!("{type_name}.{method}"))
+                };
+                if expr_mutates_ident_with(body, &name, &exclusive) {
                     self.push_error(
                         expr.span,
                         "S07",
@@ -9967,6 +9976,17 @@ fn assignment_ident(expr: &Expr) -> Option<&str> {
 }
 
 fn expr_mutates_ident(expr: &Expr, target: &str) -> bool {
+    expr_mutates_ident_with(expr, target, &|_| true)
+}
+
+/// Whether `expr` may mutate `target`; a method call on `target` mutates it
+/// when `mutating_method(method)` says so (closure bodies ask the method's
+/// receiver: only an exclusive `&T!` receiver mutates).
+fn expr_mutates_ident_with(
+    expr: &Expr,
+    target: &str,
+    mutating_method: &dyn Fn(&str) -> bool,
+) -> bool {
     match &expr.node {
         ExprKind::Assign {
             target: place,
@@ -9978,34 +9998,35 @@ fn expr_mutates_ident(expr: &Expr, target: &str) -> bool {
             ..
         } => {
             expression_root_ident(place) == Some(target)
-                || expr_mutates_ident(place, target)
-                || expr_mutates_ident(value, target)
+                || expr_mutates_ident_with(place, target, mutating_method)
+                || expr_mutates_ident_with(value, target, mutating_method)
         }
         ExprKind::IncDec { expr: inner, .. } => {
-            expression_root_ident(inner) == Some(target) || expr_mutates_ident(inner, target)
+            expression_root_ident(inner) == Some(target) || expr_mutates_ident_with(inner, target, mutating_method)
         }
         ExprKind::MethodCall {
             object,
+            method,
             args,
             named_args,
             ..
         } => {
-            expression_root_ident(object) == Some(target)
-                || expr_mutates_ident(object, target)
+            (expression_root_ident(object) == Some(target) && mutating_method(method))
+                || expr_mutates_ident_with(object, target, mutating_method)
                 || args
                     .iter()
-                    .any(|argument| expr_mutates_ident(argument, target))
+                    .any(|argument| expr_mutates_ident_with(argument, target, mutating_method))
                 || named_args
                     .iter()
-                    .any(|(_, argument)| expr_mutates_ident(argument, target))
+                    .any(|(_, argument)| expr_mutates_ident_with(argument, target, mutating_method))
         }
         ExprKind::Group(inner)
         | ExprKind::Spread(inner)
         | ExprKind::Unary { expr: inner, .. }
         | ExprKind::Cast { expr: inner, .. }
-        | ExprKind::Try { expr: inner } => expr_mutates_ident(inner, target),
+        | ExprKind::Try { expr: inner } => expr_mutates_ident_with(inner, target, mutating_method),
         ExprKind::Binary { left, right, .. } => {
-            expr_mutates_ident(left, target) || expr_mutates_ident(right, target)
+            expr_mutates_ident_with(left, target, mutating_method) || expr_mutates_ident_with(right, target, mutating_method)
         }
         ExprKind::Call {
             callee,
@@ -10013,42 +10034,42 @@ fn expr_mutates_ident(expr: &Expr, target: &str) -> bool {
             named_args,
             ..
         } => {
-            expr_mutates_ident(callee, target)
+            expr_mutates_ident_with(callee, target, mutating_method)
                 || args
                     .iter()
-                    .any(|argument| expr_mutates_ident(argument, target))
+                    .any(|argument| expr_mutates_ident_with(argument, target, mutating_method))
                 || named_args
                     .iter()
-                    .any(|(_, argument)| expr_mutates_ident(argument, target))
+                    .any(|(_, argument)| expr_mutates_ident_with(argument, target, mutating_method))
         }
-        ExprKind::Field { object, .. } => expr_mutates_ident(object, target),
+        ExprKind::Field { object, .. } => expr_mutates_ident_with(object, target, mutating_method),
         ExprKind::StructInit { fields, .. } => fields
             .iter()
-            .any(|(_, value)| expr_mutates_ident(value, target)),
+            .any(|(_, value)| expr_mutates_ident_with(value, target, mutating_method)),
         ExprKind::Match { scrutinee, arms } => {
-            expr_mutates_ident(scrutinee, target)
+            expr_mutates_ident_with(scrutinee, target, mutating_method)
                 || arms.iter().any(|arm| {
                     !crate::parser::ast::pattern_all_bindings(&arm.pattern)
                         .iter()
                         .any(|binding| binding == target)
-                        && (expr_mutates_ident(&arm.expr, target)
+                        && (expr_mutates_ident_with(&arm.expr, target, mutating_method)
                             || arm
                                 .guard
                                 .as_ref()
-                                .is_some_and(|guard| expr_mutates_ident(guard, target)))
+                                .is_some_and(|guard| expr_mutates_ident_with(guard, target, mutating_method)))
                 })
         }
         ExprKind::ArrayLit(elements) => elements
             .iter()
-            .any(|element| expr_mutates_ident(element, target)),
+            .any(|element| expr_mutates_ident_with(element, target, mutating_method)),
         ExprKind::Index { object, indices } => {
-            expr_mutates_ident(object, target)
+            expr_mutates_ident_with(object, target, mutating_method)
                 || indices
                     .iter()
-                    .any(|index| expr_mutates_ident(index, target))
+                    .any(|index| expr_mutates_ident_with(index, target, mutating_method))
         }
         ExprKind::Closure { params, body, .. } => {
-            !params.iter().any(|parameter| parameter == target) && expr_mutates_ident(body, target)
+            !params.iter().any(|parameter| parameter == target) && expr_mutates_ident_with(body, target, mutating_method)
         }
         ExprKind::Ident(_) | ExprKind::Literal(_) => false,
     }

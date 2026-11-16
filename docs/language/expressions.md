@@ -228,12 +228,23 @@ Context for parameter inference may come from a typed binding, assignment,
 return, or a function argument. A standalone closure binding needs an explicit
 function type.
 
+A closure captures plain scalars by copy and owned values (structs, enums,
+`String`, `Array`) by move: the variable is moved into the closure, which
+borrows it each time it runs and destroys it together with its environment
+(D-023 В14Г). Moving a capture out of the body is only possible in a one-shot
+`qo` call; other closures may run more than once:
+
+```quazi
+fn make_greeting(name: String) fn() usize {
+    ret || name.len();        // `name` lives as long as the closure
+}
+```
+
 Current closure limitations:
 
-- Captures are limited to immutable plain scalars (`bool`, numbers, raw
-  pointers, C function pointers).
-- Owned values, strings, references, mutable captures, and `fn` values inside
-  arrays or aggregates are rejected.
+- Borrowed references and string views cannot be captured (their lifetimes
+  are not tracked), and captures are immutable.
+- `fn` values cannot be placed inside arrays or aggregates.
 - Parameter and return types must match exactly; numeric conversions do not
   adapt a function signature.
 - An outer `fn` owner cannot be moved from only one branch of control flow.

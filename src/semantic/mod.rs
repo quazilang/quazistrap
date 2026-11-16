@@ -2958,7 +2958,7 @@ mod tests {
     }
 
     #[test]
-    fn only_qo_closures_move_owned_captures() {
+    fn only_qo_closures_consume_owned_captures() {
         let prelude = "struct Q[T] { v: T, }\nfn __qo_spawn[T](f: fn() T) Q[T] { Q { v: f() } }\nstruct Job { id: i64, }\nfn measure(text: Job) i64 { text.id }\n";
         let moved = analyze(&format!(
             "{prelude}fn main() void {{\n    const text = Job {{ id: 1 }};\n    const h = qo measure(text);\n}}\n"
@@ -2988,7 +2988,10 @@ mod tests {
             "{prelude}fn main() void {{\n    const text = Job {{ id: 1 }};\n    const f: fn() i64 = || measure(text);\n}}\n"
         ));
         assert!(
-            ordinary.errors.iter().any(|error| error.message.contains("closure cannot capture")),
+            ordinary
+                .errors
+                .iter()
+                .any(|error| error.message.contains("cannot move captured `text`")),
             "{:?}",
             ordinary.errors
         );
@@ -8476,8 +8479,12 @@ fn main() void {
 
     #[test]
     fn closures_reject_untracked_ownership_and_mutable_captures() {
+        // An owned capture moves into the closure and is borrowed there (В14Г).
+        let owned = analyze(
+            r#"struct Owned { value: i32, } fn main() void { var owned = Owned { value: 1 }; var read: fn() i32 = || owned.value; }"#,
+        );
+        assert!(owned.errors.is_empty(), "{:?}", owned.errors);
         for source in [
-            r#"struct Owned { value: i32, } fn main() void { var owned = Owned { value: 1 }; var bad: fn() i32 = || owned.value; }"#,
             r#"fn main() void { var text: str = "borrowed"; var bad: fn() str = || text; }"#,
             r#"fn main() void { var value: i32 = 1; var bad: fn() i32 = || ++value; }"#,
             r#"fn main() void { var bad: fn(str) i32 = |text| 1; }"#,

@@ -14,7 +14,9 @@ Status: decided by the maintainers on 2026-11-15 (asks.txt rounds 4-6).
   need an attribute (implemented 2026-11-16 as `...args: Display` and `...args`
   forwarding, [D-024](display-variadics.md)).
 - **В14Г.** Closures must capture properly, including owned values
-  (pending).
+  (implemented 2026-11-16: owned captures move into the environment, are
+  borrowed by the body and destroyed by a generated drop function stored in
+  the environment; `scripts/check_closure_captures.py`).
 - **В15А.** Float to integer `as` truncates and saturates, NaN is 0
   (implemented 2026-11-10, D-022 neighbours).
 - **В16А.** A panic while handling a panic prints `panicked while processing a

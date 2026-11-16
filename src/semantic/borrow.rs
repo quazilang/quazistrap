@@ -115,6 +115,9 @@ struct MoveEnv {
     /// the remaining fields are still destructible.
     returning_receiver_field: Option<String>,
     capture_boundary: Option<usize>,
+    /// The closure being checked runs at most once (`qo`): it may move its
+    /// owned captures out. Any other closure only borrows them.
+    capture_once: bool,
 }
 
 impl MoveEnv {
@@ -129,6 +132,7 @@ impl MoveEnv {
             consuming_receiver: None,
             returning_receiver_field: None,
             capture_boundary: None,
+            capture_once: false,
         }
     }
 
@@ -1614,6 +1618,15 @@ impl Analyzer {
                 }
 
                 if consumed {
+                    if !env.capture_once
+                        && env.capture_boundary.is_some_and(|boundary| {
+                            env.binding_depth(name).is_some_and(|depth| depth < boundary)
+                        })
+                    {
+                        self.push_error(expr.span, "S10", format!(
+                            "cannot move captured `{name}` out of a closure that can run more than once; borrow it (`&{name}`, a method or field) or use a `qo` call"));
+                        return;
+                    }
                     if let Some(loan) = var.pending_storage {
                         self.push_error(expr.span, "S10", format!(
                             "cannot move `{name}` while an evaluated operand needs its storage (observed at {})",
@@ -2153,6 +2166,7 @@ impl Analyzer {
                 };
                 let mut closure_env = env.clone();
                 closure_env.capture_boundary = Some(closure_env.scopes.len());
+                closure_env.capture_once = matches!(expr.node, ExprKind::Closure { once: true, .. });
                 closure_env.enter_scope();
                 for (index, name) in params.iter().enumerate() {
                     closure_env.declare(
@@ -2165,9 +2179,9 @@ impl Analyzer {
                 self.bc_reject_view_escape(body, &closure_env, "return from a closure");
                 self.bc_expr(body, &mut closure_env, true);
                 closure_env.exit_scope();
-                if matches!(expr.node, ExprKind::Closure { once: true, .. }) {
-                    // A `qo` closure moves its owned captures out of the
-                    // spawning scope.
+                {
+                    // A closure moves its owned captures out of the creating
+                    // scope (D-023 В14Г); its environment owns them.
                     let mut names = Vec::new();
                     super::typecheck::collect_expr_identifiers(body, &mut names);
                     for name in names {

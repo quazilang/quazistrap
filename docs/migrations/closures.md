@@ -25,14 +25,14 @@ closure or named function value; the compiler destroys the old environment.
 
 ## Temporary restrictions
 
-Until recursive destruction is implemented, closure captures, parameters, and
-results must have plain scalar runtime shapes: booleans, numeric types, raw
-pointers, or C function pointers. Captures are immutable. Quazi `fn` values
-cannot be fields, enum payloads, array elements, or generic type arguments.
+Closure parameters and results must have plain scalar runtime shapes:
+booleans, numeric types, raw pointers, or C function pointers. Captures may be
+plain scalars (copied) or owned values (moved into the closure, borrowed by
+its body and destroyed with it, D-023 В14Г); borrowed references and string
+views cannot be captured, and captures are immutable. Quazi `fn` values cannot
+be fields, enum payloads, array elements, or generic type arguments.
 
-Move owned state through an explicit non-closure API, or pass the state as a
-plain scalar parameter. Keep callback collections and optional callbacks out of
-safe APIs for now.
+Keep callback collections and optional callbacks out of safe APIs for now.
 
 Function signatures are invariant: `fn() i32` does not implicitly become
 `fn() f64`. Add an ordinary adapter function or closure with the exact desired
