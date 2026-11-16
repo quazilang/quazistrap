@@ -5,7 +5,11 @@ Status: decided by the maintainers on 2026-11-15 (asks.txt rounds 4-6).
 - **В9В.** `to_str()` is removed everywhere; `to_string()` remains
   (implemented, `adf6660`).
 - **В10А.** A by-value `match` consumes its scrutinee; `match &r` borrows
-  (pending).
+  (implemented 2026-11-16: enum drop glue destroys the active payload,
+  bindings own payloads, `?` consumes owned operands;
+  `scripts/check_consuming_match.py`). Struct patterns move bound fields
+  out; a struct with its own `free` hook cannot be destructured that way.
+  Recursive enums keep shell-only release.
 - **В11В.** No `@format`: variadics must work normally and formatting must not
   need an attribute (pending).
 - **В14Г.** Closures must capture properly, including owned values

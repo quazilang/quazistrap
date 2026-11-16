@@ -104,7 +104,10 @@ destroys them before the next statement. Body locals are destroyed before a
 C-style update runs. Supported locals carry runtime cleanup flags: skipped
 initialization leaves cleanup disabled, successful assignment enables it, and
 movement or destruction disables it on the executed path. A `match` result
-transfers only its selected owner. These flags protect cleanup. Source checks
+transfers only its selected owner. An enum owns its active payload: dropping
+the enum destroys the payload, and a by-value `match` moves payloads into the
+arm's bindings (see [match expressions](expressions.md#match-expressions)).
+Structs destroy owned enum fields the same way. These flags protect cleanup. Source checks
 separately require local reads initialized on every normal path; they do not
 establish partial-place initialization or interprocedural effects. Complete
 recursive destruction remains open in [D-014](../decisions/whole-program-ownership.md).

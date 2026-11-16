@@ -2117,6 +2117,7 @@ impl<'a> Codegen<'a> {
             &self.report.trait_impls,
             &self.variadic_fn_info,
             &self.report.enum_defs,
+            &self.report.enum_payloads,
             &self.report.explicit_shared_receiver_methods,
             &self.report.explicit_exclusive_receiver_methods,
             &self.report.consuming_receiver_methods,
@@ -2606,6 +2607,8 @@ struct FnCompiler<'a> {
     variadic_fn_info: &'a HashMap<String, usize>,
     /// Enum variant tags: enum name → variant name → discriminant.
     enum_defs: &'a HashMap<String, HashMap<String, usize>>,
+    /// Enum payload types by discriminant (with the enum's generic params).
+    enum_payloads: &'a HashMap<String, (Vec<String>, Vec<Vec<TypeKind>>)>,
     /// Methods whose explicit `self` receiver is a shared reference.
     explicit_shared_receiver_methods: &'a HashSet<String>,
     /// Methods whose explicit `self` receiver is an exclusive reference.
@@ -2708,6 +2711,15 @@ enum DropAction {
         release: String,
     },
     FreeClosureEnv,
+    /// Destroy the active variant's owned payloads, then the enum storage.
+    EnumPayloads(Vec<EnumVariantDrop>),
+}
+
+/// The owned payload slots of one enum variant.
+#[derive(Clone)]
+struct EnumVariantDrop {
+    tag: u16,
+    payloads: Vec<StructuralFieldDrop>,
 }
 
 /// A compiler-generated cleanup step for a field of an eligible aggregate.
@@ -2809,6 +2821,7 @@ impl<'a> FnCompiler<'a> {
         trait_impls: &'a HashMap<String, std::collections::HashSet<String>>,
         variadic_fn_info: &'a HashMap<String, usize>,
         enum_defs: &'a HashMap<String, HashMap<String, usize>>,
+        enum_payloads: &'a HashMap<String, (Vec<String>, Vec<Vec<TypeKind>>)>,
         explicit_shared_receiver_methods: &'a HashSet<String>,
         explicit_exclusive_receiver_methods: &'a HashSet<String>,
         consuming_receiver_methods: &'a HashSet<String>,
@@ -2867,6 +2880,7 @@ impl<'a> FnCompiler<'a> {
             trait_impls,
             variadic_fn_info,
             enum_defs,
+            enum_payloads,
             explicit_shared_receiver_methods,
             explicit_exclusive_receiver_methods,
             consuming_receiver_methods,
@@ -4772,6 +4786,182 @@ impl<'a> FnCompiler<'a> {
         self.consuming_receiver_methods.contains(declared_target)
     }
 
+    /// The enum type a `match` consumes: an owned local, parameter or
+    /// temporary whose enum type owns payloads. Places (fields, elements)
+    /// and borrowed scrutinees are inspected without consuming them.
+    fn consuming_match_type(&self, scrutinee: &Expr) -> Option<TypeKind> {
+        let inner = match &scrutinee.node {
+            ExprKind::Group(inner) => inner.as_ref(),
+            _ => scrutinee,
+        };
+        let owned_expression = match &inner.node {
+            ExprKind::Ident(name) => self.drop_local(name).is_some(),
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. } => true,
+            _ => false,
+        };
+        if !owned_expression {
+            return None;
+        }
+        let ty = self.type_of_expr(scrutinee)?;
+        matches!(self.drop_action_for_type(&ty), Some(DropAction::EnumPayloads(_))).then_some(ty)
+    }
+
+    /// The payload types of the variant with discriminant `tag` of `enum_ty`.
+    fn enum_variant_payload_types(&self, enum_ty: &TypeKind, tag: usize) -> Option<Vec<TypeKind>> {
+        let TypeKind::Named { name, type_args } = self.resolve_type(enum_ty) else {
+            return None;
+        };
+        let (generic_params, payloads) = self.enum_payloads.get(&name)?;
+        let substitution: HashMap<String, TypeKind> = generic_params
+            .iter()
+            .cloned()
+            .zip(type_args.iter().map(|argument| argument.node.clone()))
+            .collect();
+        Some(
+            payloads
+                .get(tag)?
+                .iter()
+                .map(|ty| {
+                    self.resolve_type(&crate::semantic::typecheck::substitute_type_kind(
+                        ty,
+                        &substitution,
+                    ))
+                })
+                .collect(),
+        )
+    }
+
+    /// Take ownership of a matched value of type `ty` through `pattern`:
+    /// bindings become owned locals of the current drop scope, unbound parts
+    /// are destroyed now, and destructured enum storage is released.
+    fn consume_pattern(&mut self, pattern: &Pattern, value: u8, ty: &TypeKind) {
+        let Some(action) = self.drop_action_for_type(ty) else {
+            return;
+        };
+        match &pattern.node {
+            PatternKind::Wildcard => self.emit_drop_action(value, action),
+            PatternKind::Bind(name) => {
+                let reg = self.reg_of(name);
+                self.register_drop_action(name, reg, action, true);
+            }
+            PatternKind::Literal(_) => {}
+            PatternKind::Variant { sub_patterns, .. } => {
+                let Some(&tag) = self.match_pattern_tags.get(&(pattern.span.start, pattern.span.end))
+                else {
+                    return;
+                };
+                let Some(payload_types) = self.enum_variant_payload_types(ty, tag) else {
+                    self.codegen_error.get_or_insert_with(|| {
+                        format!("consuming match cannot resolve the payloads of `{ty}`")
+                    });
+                    return;
+                };
+                for (index, (sub, payload_ty)) in sub_patterns.iter().zip(&payload_types).enumerate()
+                {
+                    let payload = match &sub.node {
+                        PatternKind::Bind(name) => self.reg_of(name),
+                        _ => {
+                            let payload = self.alloc_reg();
+                            let offset = ENUM_PAYLOAD_OFFSET + index as u16 * 8;
+                            self.chunk.emit(field_load(payload, value, offset));
+                            payload
+                        }
+                    };
+                    self.consume_pattern(sub, payload, payload_ty);
+                }
+                self.emit_drop_action(value, DropAction::ReleaseStorage);
+            }
+            PatternKind::Struct { fields, .. } => {
+                let DropAction::Structural(drops) = action else {
+                    // A type with its own `free` hook is destroyed whole; its
+                    // fields cannot move out of it.
+                    if pattern_binds_names(pattern) {
+                        self.codegen_error.get_or_insert_with(|| {
+                            format!("a consuming match cannot move fields out of `{ty}`, which has a `free` hook; match a reference or bind the whole value")
+                        });
+                    } else {
+                        self.emit_drop_action(value, action);
+                    }
+                    return;
+                };
+                let Some((field_types, offsets)) = self.struct_field_layout(ty) else {
+                    self.codegen_error.get_or_insert_with(|| {
+                        format!("consuming match cannot resolve the fields of `{ty}`")
+                    });
+                    return;
+                };
+                let mut moved = Vec::new();
+                for (field, sub) in fields {
+                    if matches!(sub.node, PatternKind::Wildcard) {
+                        continue;
+                    }
+                    let (Some(field_ty), Some(&offset)) = (field_types.get(field), offsets.get(field))
+                    else {
+                        continue;
+                    };
+                    let field_reg = match &sub.node {
+                        PatternKind::Bind(name) => self.reg_of(name),
+                        _ => {
+                            let field_reg = self.alloc_reg();
+                            self.chunk.emit(field_load(field_reg, value, offset));
+                            field_reg
+                        }
+                    };
+                    self.consume_pattern(sub, field_reg, &field_ty.clone());
+                    moved.push(offset);
+                }
+                for drop in drops {
+                    if moved.contains(&drop.offset) {
+                        continue;
+                    }
+                    let field_reg = self.alloc_reg();
+                    self.chunk.emit(field_load(field_reg, value, drop.offset));
+                    self.emit_drop_action(field_reg, *drop.action);
+                }
+                self.emit_drop_action(value, DropAction::ReleaseStorage);
+            }
+        }
+    }
+
+    /// Field types (generic arguments substituted) and offsets of a struct.
+    fn struct_field_layout(
+        &self,
+        ty: &TypeKind,
+    ) -> Option<(HashMap<String, TypeKind>, HashMap<String, u16>)> {
+        let TypeKind::Named { name, type_args } = self.resolve_type(ty) else {
+            return None;
+        };
+        let substitution: HashMap<String, TypeKind> = self
+            .struct_generic_params
+            .get(&name)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .zip(type_args.iter().map(|argument| argument.node.clone()))
+            .collect();
+        let types = self
+            .struct_defs
+            .get(&name)?
+            .iter()
+            .map(|(field, field_ty)| {
+                (
+                    field.clone(),
+                    self.resolve_type(&crate::semantic::typecheck::substitute_type_kind(
+                        field_ty,
+                        &substitution,
+                    )),
+                )
+            })
+            .collect();
+        let offsets = self
+            .struct_field_offsets
+            .get(&name)?
+            .iter()
+            .filter_map(|(field, offset)| Some((field.clone(), u16::try_from(*offset).ok()?)))
+            .collect();
+        Some((types, offsets))
+    }
+
     fn match_scrutinee_needs_load(&self, scrutinee: &Expr) -> bool {
         match self.type_of_expr(scrutinee) {
             Some(TypeKind::Ref { inner }) => {
@@ -4991,10 +5181,13 @@ impl<'a> FnCompiler<'a> {
         {
             return Some(DropAction::Call(base));
         }
-        // An enum value owns its storage shell. Payloads stay with whoever
-        // matched or unwrapped them until place-level moves exist.
+        // An enum value owns its storage shell and its active payload; a
+        // consuming `match` moves payloads out before releasing the shell.
         if self.enum_defs.contains_key(name.as_str()) {
-            return Some(DropAction::ReleaseStorage);
+            return Some(
+                self.enum_drop_action(name, type_args, &mut HashSet::new())
+                    .unwrap_or(DropAction::ReleaseStorage),
+            );
         }
         self.structural_drop_action_for_named(&name, &type_args, &mut HashSet::new())
     }
@@ -5134,6 +5327,82 @@ impl<'a> FnCompiler<'a> {
         Some(DropAction::Structural(drops))
     }
 
+    /// Drop glue for an enum: the active variant's owned payload slots, then
+    /// the storage shell. `None` when a payload needs destruction this slice
+    /// cannot express (unresolved generics, recursion); the caller then keeps
+    /// the shell-only release.
+    fn enum_drop_action(
+        &self,
+        name: &str,
+        type_args: &[Type],
+        visiting: &mut HashSet<String>,
+    ) -> Option<DropAction> {
+        // Recursion is detected per instantiation: `Option[Option[Res]]`
+        // nests two different types.
+        let key = TypeKind::Named {
+            name: name.to_string(),
+            type_args: type_args.to_vec(),
+        }
+        .to_string();
+        if type_args
+            .iter()
+            .any(|argument| type_kind_mentions_unresolved_param(&argument.node))
+            || !visiting.insert(key.clone())
+        {
+            return None;
+        }
+        let result = self.enum_variant_drops(name, type_args, visiting);
+        visiting.remove(&key);
+        let variants = result?;
+        Some(if variants.is_empty() {
+            DropAction::ReleaseStorage
+        } else {
+            DropAction::EnumPayloads(variants)
+        })
+    }
+
+    fn enum_variant_drops(
+        &self,
+        name: &str,
+        type_args: &[Type],
+        visiting: &mut HashSet<String>,
+    ) -> Option<Vec<EnumVariantDrop>> {
+        let (generic_params, payloads) = self.enum_payloads.get(name)?;
+        if generic_params.len() != type_args.len() {
+            return None;
+        }
+        let substitution: HashMap<String, TypeKind> = generic_params
+            .iter()
+            .cloned()
+            .zip(type_args.iter().map(|argument| argument.node.clone()))
+            .collect();
+        let mut variants = Vec::new();
+        for (tag, fields) in payloads.iter().enumerate() {
+            let mut drops = Vec::new();
+            for (index, field_ty) in fields.iter().enumerate() {
+                let resolved = self.resolve_type(&crate::semantic::typecheck::substitute_type_kind(
+                    field_ty,
+                    &substitution,
+                ));
+                match self.structural_field_drop_action(&resolved, visiting) {
+                    Some(action) => drops.push(StructuralFieldDrop {
+                        offset: ENUM_PAYLOAD_OFFSET + u16::try_from(index * 8).ok()?,
+                        action: Box::new(action),
+                    }),
+                    None if self.type_requires_structural_drop(&resolved) => return None,
+                    None => {}
+                }
+            }
+            if !drops.is_empty() {
+                variants.push(EnumVariantDrop {
+                    tag: u16::try_from(tag).ok()?,
+                    payloads: drops,
+                });
+            }
+        }
+        Some(variants)
+    }
+
     fn structural_field_drop_action(
         &self,
         ty: &TypeKind,
@@ -5158,6 +5427,9 @@ impl<'a> FnCompiler<'a> {
             && self.fn_index.contains_key(&base)
         {
             return Some(DropAction::Call(base));
+        }
+        if self.enum_defs.contains_key(name.as_str()) {
+            return self.enum_drop_action(&name, &type_args, visiting);
         }
         self.structural_drop_action_for_named(&name, &type_args, visiting)
     }
@@ -5321,6 +5593,31 @@ impl<'a> FnCompiler<'a> {
                 let mut instruction = ri16(Opcode::Intrinsic, reg, 4);
                 instruction.flags = 1;
                 self.chunk.emit(instruction);
+            }
+            DropAction::EnumPayloads(variants) => {
+                let disc = self.alloc_reg();
+                self.chunk
+                    .emit(rrr(Opcode::FieldLoad, disc, reg, ENUM_DISCRIM_OFFSET));
+                let mut done = Vec::new();
+                for variant in variants {
+                    let tag = self.alloc_reg();
+                    let encoded = self.qzi_u16(usize::from(variant.tag), "enum variant tag");
+                    self.chunk.emit(ri16(Opcode::MovI, tag, encoded));
+                    self.chunk.emit(rrr(Opcode::Cmp, 0, disc, tag));
+                    let other = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
+                    for payload in variant.payloads {
+                        let payload_reg = self.alloc_reg();
+                        self.chunk.emit(field_load(payload_reg, reg, payload.offset));
+                        self.emit_drop_action(payload_reg, *payload.action);
+                    }
+                    done.push(self.chunk.emit(ri16(Opcode::Jmp, 0, 0)));
+                    self.chunk.patch_jump(other, self.chunk.len() as u16);
+                }
+                let end = self.chunk.len() as u16;
+                for jump in done {
+                    self.chunk.patch_jump(jump, end);
+                }
+                self.emit_drop_action(reg, DropAction::ReleaseStorage);
             }
         }
     }
@@ -9698,7 +9995,17 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::Match { scrutinee, arms } => {
+                // A by-value match of an enum that owns payloads consumes it
+                // (D-021 В10А): bindings own their payloads, the rest is
+                // destroyed when the arm is chosen.
+                let consumed_ty = self.consuming_match_type(scrutinee);
+                if consumed_ty.is_some() {
+                    self.mark_consumed_expr(scrutinee);
+                }
                 let evaluated = self.compile_value(scrutinee);
+                if consumed_ty.is_some() {
+                    self.mark_consumed_value(scrutinee, evaluated);
+                }
                 let scr = if self.match_scrutinee_needs_load(scrutinee) {
                     let loaded = self.alloc_reg();
                     self.chunk.emit(mem_load(evaluated, loaded, 0));
@@ -9734,8 +10041,24 @@ impl<'a> FnCompiler<'a> {
                         guard_fail_jumps.push(self.chunk.emit(ri16(Opcode::Je, 0, 0)));
                     }
 
-                    // Arm body.
+                    // Arm body. A consumed scrutinee hands its parts to the
+                    // arm's bindings, which the arm scope destroys unless the
+                    // body moves them on.
+                    if let Some(ty) = &consumed_ty {
+                        self.drop_scopes.push(Vec::new());
+                        self.consume_pattern(&arm.pattern, scr, ty);
+                    }
                     let val = self.compile_expr(&arm.expr);
+                    if consumed_ty.is_some() {
+                        if self
+                            .type_of_expr(expr)
+                            .is_some_and(|ty| self.drop_action_for_type(&ty).is_some())
+                        {
+                            self.mark_consumed_binding(&arm.expr, val);
+                        }
+                        self.emit_scope_cleanup();
+                        self.drop_scopes.pop();
+                    }
                     if val != dst {
                         self.emit_block_copy(dst, val, result_slots);
                     }
@@ -9771,7 +10094,16 @@ impl<'a> FnCompiler<'a> {
                 let ExpressionControl::TryOperand(inner) = expression_control(expr) else {
                     unreachable!("try operand");
                 };
+                // An owned operand is consumed: its payload moves into the
+                // result (or the returned failure) and its storage is released.
+                let consumed = self.consuming_match_type(inner).is_some();
+                if consumed {
+                    self.mark_consumed_expr(inner);
+                }
                 let scr = self.compile_expr(inner);
+                if consumed {
+                    self.mark_consumed_value(inner, scr);
+                }
                 let key = (inner.span.start, inner.span.end);
                 let enum_name = match self.type_of_span(key) {
                     Some(TypeKind::Named { name, .. }) if name == "Option" => "Option",
@@ -9805,6 +10137,9 @@ impl<'a> FnCompiler<'a> {
                 // Success path: extract first payload.
                 let val = self.alloc_reg();
                 self.chunk.emit(field_load(val, scr, ENUM_PAYLOAD_OFFSET));
+                if consumed {
+                    self.emit_drop_action(scr, DropAction::ReleaseStorage);
+                }
                 let jmp_end = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
 
                 // Failure path: build failure variant and early-return.
@@ -9853,6 +10188,9 @@ impl<'a> FnCompiler<'a> {
                 }
                 let failure = self.alloc_reg();
                 self.chunk.emit(rrr(Opcode::Mov, failure, 0, 0));
+                if consumed {
+                    self.emit_drop_action(scr, DropAction::ReleaseStorage);
+                }
                 self.emit_all_cleanup();
                 self.chunk.emit(rrr(Opcode::Mov, 0, failure, 0));
                 self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
@@ -9901,6 +10239,7 @@ impl<'a> FnCompiler<'a> {
                     self.trait_impls,
                     self.variadic_fn_info,
                     self.enum_defs,
+                    self.enum_payloads,
                     self.explicit_shared_receiver_methods,
                     self.explicit_exclusive_receiver_methods,
                     self.consuming_receiver_methods,
@@ -14949,5 +15288,14 @@ fn update(index: i64) i64 {
                 .iter()
                 .all(|instruction| { instruction.opcode != Opcode::VtblLoad as u8 })
         );
+    }
+}
+
+fn pattern_binds_names(pattern: &Pattern) -> bool {
+    match &pattern.node {
+        PatternKind::Bind(_) => true,
+        PatternKind::Wildcard | PatternKind::Literal(_) => false,
+        PatternKind::Variant { sub_patterns, .. } => sub_patterns.iter().any(pattern_binds_names),
+        PatternKind::Struct { fields, .. } => fields.iter().any(|(_, sub)| pattern_binds_names(sub)),
     }
 }

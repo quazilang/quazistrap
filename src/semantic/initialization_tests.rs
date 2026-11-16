@@ -313,7 +313,8 @@ fn enum_pattern_discriminants_follow_the_scrutinee_declaration() {
     let report = analyze(
         "enum First{Some(i32),None,}fn test()i32{var value=First.Some(1);ret match value{Some(_)=>7,_=>0,};}",
     );
-    assert!(report.errors.iter().any(|error| error.code == "S14"));
+    // A qualified constructor has its enum type, so its variant tags resolve.
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
     valid(
         "enum T{Atom(i32),}enum Holder[X]{Value(X),}fn test(value:Option[Holder[T]])i32{ret match value{Some(Holder.Value(T.Atom(1)))=>7,_=>0,};}",
     );

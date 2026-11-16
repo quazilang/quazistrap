@@ -766,6 +766,9 @@ pub struct SemanticReport {
     pub trait_method_signatures: HashMap<String, HashMap<String, TraitMethodSignature>>,
     /// Enum variant tags: enum name → variant name → discriminant index.
     pub enum_defs: HashMap<String, HashMap<String, usize>>,
+    /// Enum payload declarations: enum name → (generic params, payload types
+    /// indexed by discriminant). Drop glue destroys the active payload.
+    pub enum_payloads: HashMap<String, (Vec<String>, Vec<Vec<TypeKind>>)>,
     /// Methods whose explicit `self` receiver is a shared reference.
     pub explicit_shared_receiver_methods: std::collections::HashSet<String>,
     /// Methods whose explicit `self` receiver is an exclusive reference.

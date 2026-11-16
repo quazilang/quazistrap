@@ -332,8 +332,28 @@ wildcard must be present.
 
 Known scalar value matches also require complete coverage or a catch-all arm.
 If a value match reaches no arm at runtime, it traps; Void matches may fall
-through. A nested refutable payload pattern requires its actual payload type;
-annotate an untyped qualified-constructor result before matching it.
+through. A nested refutable payload pattern requires its actual payload type.
+A qualified constructor (`Pair.Both(a, b)`, `Option.Some(x)`) has its enum
+type once every type parameter is known from the payloads or the declared
+type; otherwise annotate the result before matching it.
+
+A by-value `match` of an owned enum (a local, a parameter or a call result)
+consumes it (D-021 В10А). The selected arm's bindings own their payloads and
+are destroyed at the end of the arm unless the arm moves them on; payloads
+matched by `_` are destroyed when the arm is chosen; a guard that fails takes
+nothing. Using the matched value afterwards is S10 (use of a moved value).
+`match &value` only inspects the variant. Matching a field or element place
+does not consume it. `?` consumes an owned operand the same way: the success
+payload becomes the result and a failure payload moves into the returned value.
+
+```quazi
+fn take(slot: Option[String]) usize {
+    ret match slot {
+        Some(text) => text.len(),   // `text` is destroyed after the arm
+        None => 0,
+    };
+}
+```
 
 A match snapshots its scrutinee once before evaluating patterns and guards.
 Boolean literals test truthiness: true matches any nonzero integer or Boolean

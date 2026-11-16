@@ -4489,7 +4489,47 @@ impl Analyzer {
                                     }
                                 }
                             }
-                            for arg in args {
+                            let enum_params = self
+                                .declared_type_parameters(enum_name)
+                                .cloned()
+                                .unwrap_or_default();
+                            let param = |index: usize| -> Vec<TypeKind> {
+                                enum_params
+                                    .get(index)
+                                    .map(|name| TypeKind::Named {
+                                        name: name.clone(),
+                                        type_args: Vec::new(),
+                                    })
+                                    .into_iter()
+                                    .collect()
+                            };
+                            let declared_fields = match (enum_name.as_str(), method.as_str()) {
+                                ("Option", "Some") | ("Result", "Ok") => param(0),
+                                ("Result", "Err") => param(1),
+                                _ => self
+                                    .enums
+                                    .get(enum_name.as_str())
+                                    .and_then(|info| info.variant_fields.get(method))
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            };
+                            let mut substitution = std::collections::HashMap::new();
+                            if !enum_params.is_empty()
+                                && let Some(TypeKind::Named { name: expected_name, type_args }) = self
+                                    .contextual_expected_types
+                                    .last()
+                                    .map(|expected| self.resolve_type_aliases(expected))
+                                && expected_name == *enum_name
+                                && type_args.len() == enum_params.len()
+                            {
+                                substitution.extend(
+                                    enum_params
+                                        .iter()
+                                        .cloned()
+                                        .zip(type_args.into_iter().map(|arg| arg.node)),
+                                );
+                            }
+                            for (index, arg) in args.iter().enumerate() {
                                 let arg_eval = self.type_check_expr(arg, reachable);
                                 if variant_arity.is_none() {
                                     continue;
@@ -4497,6 +4537,14 @@ impl Analyzer {
                                 let Some(payload_ty) = &arg_eval.ty else {
                                     continue;
                                 };
+                                if let Some(field_ty) = declared_fields.get(index) {
+                                    infer_struct_type_subst(
+                                        field_ty,
+                                        payload_ty,
+                                        &enum_params,
+                                        &mut substitution,
+                                    );
+                                }
                                 let resolved = self.resolve_type_aliases(payload_ty);
                                 if !matches!(resolved, TypeKind::Error)
                                     && !crate::runtime_layout::runtime_value_layout(&resolved)
@@ -4511,11 +4559,28 @@ impl Analyzer {
                                     );
                                 }
                             }
-                            // Keep the historical untyped result: codegen
-                            // resolves valid qualified constructors
-                            // structurally. Typing them in analysis is a
-                            // separate feature.
-                            let eval = ExprEval::default();
+                            // A valid constructor has its enum type once every
+                            // type parameter is known (D-021 В10А: its owner
+                            // must be destroyed); otherwise it stays untyped
+                            // and codegen resolves it structurally.
+                            let eval = if variant_arity.is_some()
+                                && enum_params.iter().all(|param| substitution.contains_key(param))
+                            {
+                                ExprEval {
+                                    ty: Some(TypeKind::Named {
+                                        name: enum_name.clone(),
+                                        type_args: enum_params
+                                            .iter()
+                                            .map(|param| {
+                                                Spanned::new(substitution[param].clone(), expr.span)
+                                            })
+                                            .collect(),
+                                    }),
+                                    ..ExprEval::default()
+                                }
+                            } else {
+                                ExprEval::default()
+                            };
                             self.annotate_expr(expr, &eval, reachable, None);
                             self.reject_nested_owned_function_expression(expr, &eval);
                             return eval;

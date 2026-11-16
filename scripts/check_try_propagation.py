@@ -17,7 +17,7 @@ INVALID = {
     "generic_error": "fn bad[E, F](value: Result[i32, E]) Result[i32, F] { ret Ok(value?); }",
     "typed_closure": "fn bad() Result[i32, i32] { var f: fn() i32 = || failed()?; ret Ok(1); }",
     "inferred_closure": "fn bad() Result[i32, i32] { var f = || failed()?; ret Ok(1); }",
-    "untyped_constructor": "fn bad() Option[i32] { ret Some(Option.Some(1)?); }",
+    "untyped_constructor": "fn bad() Option[i32] { ret Some(Option.None?); }",
 }
 
 PRELUDE = "fn failed() Result[i32, i32] { ret Err(7); }\n"

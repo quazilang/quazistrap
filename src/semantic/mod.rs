@@ -1485,6 +1485,33 @@ impl Analyzer {
             trait_impls: self.trait_impls.clone(),
             trait_method_slots: self.trait_method_slots.clone(),
             trait_method_signatures: self.trait_method_signatures.clone(),
+            enum_payloads: self
+                .enums
+                .iter()
+                .map(|(name, info)| {
+                    let generic_params = self
+                        .struct_generic_params
+                        .get(name)
+                        .cloned()
+                        .or_else(|| self.resolve_symbol(name).map(|symbol| symbol.generic_params))
+                        .unwrap_or_default();
+                    let param = |index: usize| TypeKind::Named {
+                        name: generic_params.get(index).cloned().unwrap_or_default(),
+                        type_args: Vec::new(),
+                    };
+                    let payloads = info
+                        .order
+                        .iter()
+                        .map(|variant| match (name.as_str(), variant.as_str()) {
+                            // The prelude sum types are declared by the analyzer.
+                            ("Option", "Some") | ("Result", "Ok") => vec![param(0)],
+                            ("Result", "Err") => vec![param(1)],
+                            _ => info.variant_fields.get(variant).cloned().unwrap_or_default(),
+                        })
+                        .collect();
+                    (name.clone(), (generic_params, payloads))
+                })
+                .collect(),
             enum_defs: self
                 .enums
                 .iter()
