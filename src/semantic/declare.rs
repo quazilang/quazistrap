@@ -100,6 +100,10 @@ impl Analyzer {
                         export_name.unwrap_or_else(|| name.clone()),
                     );
                 }
+                let bounds = super::bound_attributes(attributes);
+                if !bounds.is_empty() {
+                    self.generic_bounds.insert(register_name.clone(), bounds);
+                }
                 self.fn_param_names.insert(
                     register_name.clone(),
                     params
@@ -198,6 +202,10 @@ impl Analyzer {
                 attributes,
                 public,
             } => {
+                let bounds = super::bound_attributes(attributes);
+                if !bounds.is_empty() {
+                    self.generic_bounds.insert(name.clone(), bounds);
+                }
                 self.declare(
                     name.clone(),
                     Symbol {

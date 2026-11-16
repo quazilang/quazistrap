@@ -1481,6 +1481,9 @@ impl Analyzer {
         receiver_ty: &TypeKind,
         method: &str,
     ) -> (bool, bool) {
+        if let Some(capabilities) = self.bounded_receiver_capabilities(receiver_ty, method) {
+            return capabilities;
+        }
         let resolved = self.resolve_type_aliases(receiver_ty);
         let type_name = super::declare::type_kind_base_name(&resolved);
         let declared_type_name = type_name.rsplit('.').next().unwrap_or(type_name.as_str());
@@ -1496,6 +1499,46 @@ impl Analyzer {
                 .iter()
                 .any(|name| self.explicit_exclusive_receiver_methods.contains(name)),
         )
+    }
+
+    /// A method reached through a generic bound has the receiver its trait
+    /// declares: `self: &Self` is shared, `self: &mut Self` exclusive, and an
+    /// implicit receiver is the value itself.
+    fn bounded_receiver_capabilities(
+        &self,
+        receiver_ty: &TypeKind,
+        method: &str,
+    ) -> Option<(bool, bool)> {
+        let receiver = match self.resolve_type_aliases(receiver_ty) {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => inner.node.clone(),
+            other => other,
+        };
+        let TypeKind::Named { name: param, type_args } = &receiver else {
+            return None;
+        };
+        if !type_args.is_empty()
+            || !self.current_generic_params.iter().any(|scope| scope.contains(param))
+        {
+            return None;
+        }
+        let signature = self
+            .current_generic_bounds()
+            .into_iter()
+            .filter(|(bounded, _)| bounded == param)
+            .find_map(|(_, bound)| {
+                self.trait_method_signatures
+                    .get(&bound)
+                    .and_then(|methods| methods.get(method))
+                    .cloned()
+            })?;
+        if !signature.has_explicit_receiver {
+            return Some((false, false));
+        }
+        Some(match signature.params.first().map(|ty| self.resolve_type_aliases(ty)) {
+            Some(TypeKind::Ref { .. }) => (true, false),
+            Some(TypeKind::MutRef { .. }) => (false, true),
+            _ => (false, false),
+        })
     }
 
     fn require_exclusive_receiver(
@@ -5107,6 +5150,14 @@ impl Analyzer {
                                 }
                                 _ => None,
                             },
+                            _ if let Some(bounded) = self.bounded_generic_method(
+                                object_eval.ty.as_ref(),
+                                method,
+                                expr.span,
+                            ) =>
+                            {
+                                bounded
+                            }
                             _ => {
                                 // A struct or scalar receiver with no such method
                                 // anywhere: report it instead of an unknown result.
@@ -5362,6 +5413,23 @@ impl Analyzer {
                     .cloned()
                     .unwrap_or_default();
                 let mut substitution = std::collections::HashMap::new();
+                // `const h: Holder[i64] = Holder { item: 5 }` takes its type
+                // arguments from the declared type before field inference.
+                if !generic_params.is_empty()
+                    && let Some(TypeKind::Named { name: expected_name, type_args }) = self
+                        .contextual_expected_types
+                        .last()
+                        .map(|expected| self.resolve_type_aliases(expected))
+                    && expected_name == *name
+                    && type_args.len() == generic_params.len()
+                {
+                    substitution.extend(
+                        generic_params
+                            .iter()
+                            .cloned()
+                            .zip(type_args.into_iter().map(|arg| arg.node)),
+                    );
+                }
                 if let Some(field_defs) = self.struct_defs.get(name).cloned() {
                     let mut scheduled_fields: Vec<_> = fields.iter().collect();
                     scheduled_fields.sort_by_key(|(name, _)| {
@@ -5405,7 +5473,10 @@ impl Analyzer {
                                         );
                                     }
                                 }
-                                if !self.types_compatible(got_ty, &concrete_expected) {
+                                // Field values follow the assignment rules:
+                                // literals take the field type, numbers convert
+                                // only by lossless widening or `as`.
+                                if !self.check_expr_compat(fval, &concrete_expected, got_ty) {
                                     self.push_error(
                                         fval.span,
                                         "S08",
@@ -7660,6 +7731,164 @@ impl Analyzer {
             .unwrap_or_else(|| "__program__".to_string());
         self.add_dependency_edge(DependencyKind::Call, &from, "panic.panic");
         self.add_dependency_edge(DependencyKind::Call, &from, "panic");
+    }
+
+    /// Trait bounds visible in the current function: its own and, in an impl
+    /// method, those of the generic type it belongs to.
+    fn current_generic_bounds(&self) -> Vec<(String, String)> {
+        let Some(function) = self.current_function.last() else {
+            return Vec::new();
+        };
+        let mut bounds = self.generic_bounds.get(function).cloned().unwrap_or_default();
+        if let Some((owner, _)) = function.rsplit_once('.')
+            && let Some(owner_bounds) = self
+                .generic_bounds
+                .get(owner)
+                .or_else(|| self.generic_bounds.get(owner.rsplit('.').next().unwrap_or(owner)))
+        {
+            bounds.extend(owner_bounds.iter().cloned());
+        }
+        bounds
+    }
+
+    /// `x.method()` where `x: T` and `T` has trait bounds: the method comes
+    /// from a bound trait (its return type), or it is an error. `None` when
+    /// the receiver is not a bounded generic parameter.
+    fn bounded_generic_method(
+        &mut self,
+        receiver: Option<&TypeKind>,
+        method: &str,
+        span: Span,
+    ) -> Option<Option<TypeKind>> {
+        let receiver = receiver.map(|ty| match self.resolve_type_aliases(ty) {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => inner.node.clone(),
+            other => other,
+        })?;
+        let TypeKind::Named { name: param, type_args } = &receiver else {
+            return None;
+        };
+        if !type_args.is_empty()
+            || !self.current_generic_params.iter().any(|scope| scope.contains(param))
+        {
+            return None;
+        }
+        let bounds: Vec<String> = self
+            .current_generic_bounds()
+            .into_iter()
+            .filter(|(bounded, _)| bounded == param)
+            .map(|(_, bound)| bound)
+            .collect();
+        if bounds.is_empty() {
+            self.push_error(
+                span,
+                "S04",
+                format!(
+                    "no method `{method}` on `{param}`: add a trait bound such as `{param}: Trait` that declares it"
+                ),
+            );
+            return Some(None);
+        }
+        for bound in &bounds {
+            if let Some(signature) = self
+                .trait_method_signatures
+                .get(bound)
+                .and_then(|methods| methods.get(method))
+            {
+                let result = signature.return_ty.clone();
+                let by_value = !signature.has_explicit_receiver
+                    || !signature.params.first().is_some_and(|ty| {
+                        matches!(
+                            self.resolve_type_aliases(ty),
+                            TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+                        )
+                    });
+                if by_value {
+                    self.consuming_bound_calls.insert((span.start, span.end));
+                }
+                if let Some(function) = self.current_function.last().cloned() {
+                    self.bound_method_calls
+                        .entry(function)
+                        .or_default()
+                        .push((param.clone(), method.to_string()));
+                }
+                return Some(Some(result));
+            }
+        }
+        self.push_error(
+            span,
+            "S04",
+            format!(
+                "no method `{method}` on `{param}`: its bounds ({}) do not declare it",
+                bounds.join(" + ")
+            ),
+        );
+        Some(None)
+    }
+
+    /// Every instantiation of a bounded generic function (or of a method of
+    /// a bounded generic type) uses types that implement the bounds; the
+    /// concrete trait methods its body calls are kept (dependency edges).
+    pub(super) fn check_generic_bound_instantiations(&mut self) {
+        let monos = self.monomorphizations.clone();
+        for mono in &monos {
+            let mut bounds = self.generic_bounds.get(&mono.fn_name).cloned().unwrap_or_default();
+            if let Some((owner, _)) = mono.fn_name.rsplit_once('.')
+                && let Some(owner_bounds) = self.generic_bounds.get(owner)
+            {
+                bounds.extend(owner_bounds.iter().cloned());
+            }
+            if bounds.is_empty() {
+                continue;
+            }
+            let params = self.generic_params_for_function(&mono.fn_name);
+            let concrete = |param: &str| {
+                params
+                    .iter()
+                    .position(|candidate| candidate == param)
+                    .and_then(|index| mono.type_args.get(index))
+                    .cloned()
+            };
+            let span = self
+                .resolve_symbol(&mono.fn_name)
+                .map(|symbol| symbol.span)
+                .unwrap_or(Span::new(0, 0, 0, 0));
+            for (param, bound) in &bounds {
+                let Some(argument) = concrete(param) else {
+                    continue;
+                };
+                let argument = self.resolve_type_aliases(&argument);
+                if let TypeKind::Named { name, type_args } = &argument
+                    && type_args.is_empty()
+                    && params.contains(name)
+                {
+                    continue;
+                }
+                let type_name = super::declare::type_kind_base_name(&argument);
+                if !self
+                    .trait_impls
+                    .get(&type_name)
+                    .is_some_and(|traits| traits.contains(bound))
+                {
+                    self.push_error(
+                        span,
+                        "S04",
+                        format!(
+                            "`{type_name}` does not implement `{bound}`, required by `{param}` of `{}`",
+                            mono.fn_name
+                        ),
+                    );
+                }
+            }
+            for (param, method) in self.bound_method_calls.get(&mono.fn_name).cloned().unwrap_or_default() {
+                if let Some(argument) = concrete(&param) {
+                    let type_name =
+                        super::declare::type_kind_base_name(&self.resolve_type_aliases(&argument));
+                    let target = format!("{type_name}.{method}");
+                    self.resolve_for_read(&target);
+                    self.add_dependency_edge(DependencyKind::Call, &mono.mangled_name, &target);
+                }
+            }
+        }
     }
 
     pub(super) fn unit_variant_type(&self, object: &Expr, variant: &str) -> Option<TypeKind> {

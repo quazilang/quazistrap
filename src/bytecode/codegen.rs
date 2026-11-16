@@ -1202,6 +1202,22 @@ impl<'a> Codegen<'a> {
             }
         }
         // Compile live impl methods.
+        // A method of a type whose parameters carry trait bounds (`struct
+        // Map[K: Hash, V]`) calls bound methods on `K`: it has code only per
+        // specialization, so its erased template is not compiled.
+        let bounded_types: std::collections::HashSet<String> = program
+            .items
+            .iter()
+            .filter_map(|item| match &item.node {
+                ItemKind::Struct { name, attributes, .. }
+                | ItemKind::Enum { name, attributes, .. }
+                    if attributes.iter().any(|attribute| attribute.name == "bound") =>
+                {
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .collect();
         for item in &program.items {
             if let ItemKind::Impl {
                 for_ty, methods, ..
@@ -1220,6 +1236,14 @@ impl<'a> Codegen<'a> {
                     } = &method.node
                     {
                         if !item_cfg_active(attributes) {
+                            continue;
+                        }
+                        let bounded_template = attributes
+                            .iter()
+                            .any(|attribute| attribute.name == "bound")
+                            || matches!(&for_ty.node, TypeKind::Named { name, type_args }
+                                if !type_args.is_empty() && bounded_types.contains(name));
+                        if bounded_template {
                             continue;
                         }
                         let mangled = format!("{}.{}", type_name, name);
@@ -4699,6 +4723,22 @@ impl<'a> FnCompiler<'a> {
             TypeKind::Ref { inner } | TypeKind::MutRef { inner } => self.resolve_type(&inner.node),
             other => other,
         })
+    }
+
+    /// The impl method a receiver's substituted concrete type provides, used
+    /// when semantic analysis could only resolve the call through a generic
+    /// bound and therefore recorded no span target.
+    fn substituted_receiver_method(&self, object: &Expr, method: &str) -> Option<String> {
+        let receiver_ty = self.receiver_value_type(object)?;
+        let base = format!("{}.{}", type_kind_base_name(&receiver_ty), method);
+        let target = match &receiver_ty {
+            TypeKind::Named { type_args, .. } if !type_args.is_empty() => {
+                let kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
+                crate::semantic::typecheck::mangle_monomorphized(&base, &kinds)
+            }
+            _ => base,
+        };
+        self.fn_index.contains_key(&target).then_some(target)
     }
 
     /// Dyn stores its concrete owned value in word zero. That word is the
@@ -9074,8 +9114,12 @@ impl<'a> FnCompiler<'a> {
                     }
                 }
 
+                // A bounded generic receiver (`x: T` with `T: Trait`) has no
+                // span-resolved target; inside a monomorphized body the
+                // substituted receiver type names the concrete impl method.
                 let consuming_receiver_prepared = self
                     .resolved_fn_for_span(expr.span)
+                    .or_else(|| self.substituted_receiver_method(object, method))
                     .is_some_and(|target| self.has_consuming_receiver(&target));
                 if consuming_receiver_prepared {
                     self.mark_consumed_expr(object);
@@ -9307,26 +9351,6 @@ impl<'a> FnCompiler<'a> {
                             self.chunk.emit(instruction);
                             return dst;
                         }
-                        PrimitiveMethod::PrimToStr { tag } => {
-                            let dst = self.alloc_reg();
-                            let mut instruction = rrr(Opcode::PrimToStr, dst, obj, tag);
-                            if tag == 0
-                                && matches!(
-                                    resolved_receiver,
-                                    Some(
-                                        TypeKind::Uint8
-                                            | TypeKind::Uint16
-                                            | TypeKind::Uint32
-                                            | TypeKind::Uint64
-                                            | TypeKind::Usize
-                                    )
-                                )
-                            {
-                                instruction.flags |= UNSIGNED_FLAG;
-                            }
-                            self.chunk.emit(instruction);
-                            return dst;
-                        }
                         PrimitiveMethod::AsStr => {
                             let dst = self.alloc_reg();
                             self.chunk.emit(rrr(Opcode::StrAsStr, dst, obj, 0));
@@ -9404,7 +9428,7 @@ impl<'a> FnCompiler<'a> {
                                 .map(|ty| format!("{ty:?}"))
                                 .unwrap_or_else(|| "unknown receiver type".to_string());
                             self.codegen_error = Some(format!(
-                                "no direct or trait method resolves `{method}` for {receiver}"
+                                "no direct or trait method resolves `{method}` for {receiver} in `{}`", self.chunk.name
                             ));
                         }
                         0
@@ -10199,8 +10223,6 @@ pub(crate) fn remap_instr_regs(
 enum PrimitiveMethod {
     /// .len() on &str or slice — emit StrLen or copy hidden __len register
     Len,
-    /// Primitive-to-text conversion (format arguments) — emit PrimToStr with the given type tag
-    PrimToStr { tag: u8 },
     /// .as_str() / .as_string() — StrAsStr identity view
     AsStr,
     /// .as_ptr() on bytes â€” skip the read-only length prefix.

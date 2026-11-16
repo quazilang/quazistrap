@@ -197,6 +197,14 @@ pub struct Analyzer {
     pub(super) serialization_derives: HashMap<String, SerializationDeriveMetadata>,
     /// Trait implementations: type name → set of trait names explicitly implemented via `impl Trait for Type`.
     pub(super) trait_impls: HashMap<String, std::collections::HashSet<String>>,
+    /// Trait bounds of generic parameters (`fn f[K: Hash]`, `struct Map[K: Eq]`):
+    /// function or struct name -> (parameter, trait).
+    pub(super) generic_bounds: HashMap<String, Vec<(String, String)>>,
+    /// Methods called on bounded parameters: function -> (parameter, method).
+    pub(super) bound_method_calls: HashMap<String, Vec<(String, String)>>,
+    /// Spans of bounded calls whose trait method takes `self` by value; the
+    /// ownership pass treats them as consuming the receiver.
+    pub(super) consuming_bound_calls: std::collections::HashSet<(usize, usize)>,
     /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
     pub(super) trait_method_slots: HashMap<String, Vec<String>>,
     /// Declared signatures used to type-check dynamic trait dispatch.
@@ -463,6 +471,22 @@ pub fn strip_cfg(program: &Program) -> Program {
 }
 
 /// Strip @cfg-disabled syntax for an explicit target before semantic analysis.
+/// `@bound(param, Trait)` attributes written by the parser for `[T: Trait]`.
+pub(super) fn bound_attributes(attributes: &[crate::parser::ast::Attribute]) -> Vec<(String, String)> {
+    use crate::parser::ast::{AttrArg, AttrVal};
+    attributes
+        .iter()
+        .filter(|attribute| attribute.name == "bound")
+        .filter_map(|attribute| match attribute.args.as_slice() {
+            [
+                AttrArg::Positional(AttrVal::Str(param)),
+                AttrArg::Positional(AttrVal::Str(bound)),
+            ] => Some((param.clone(), bound.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn strip_cfg_for(
     program: &Program,
     target_os: &str,
@@ -983,6 +1007,9 @@ impl Analyzer {
             derived_traits: HashMap::new(),
             serialization_derives: HashMap::new(),
             trait_impls: HashMap::new(),
+            generic_bounds: HashMap::new(),
+            bound_method_calls: HashMap::new(),
+            consuming_bound_calls: std::collections::HashSet::new(),
             trait_method_slots: HashMap::new(),
             trait_method_signatures: HashMap::new(),
             current_fn_name_override: None,
@@ -1168,6 +1195,10 @@ impl Analyzer {
             checkpoint()?;
             self.type_check_item(item, &mut checkpoint)?;
         }
+
+        // Instantiations must satisfy the bounds of their generic parameters,
+        // and keep the concrete trait methods they call.
+        self.check_generic_bound_instantiations();
 
         // A direct source call may end a temporary loan only after every
         // resolved callee in its source call graph has the same property.
@@ -1578,6 +1609,9 @@ impl Analyzer {
         self.derived_traits.clear();
         self.serialization_derives.clear();
         self.trait_impls.clear();
+        self.generic_bounds.clear();
+        self.bound_method_calls.clear();
+        self.consuming_bound_calls.clear();
         self.trait_method_slots.clear();
         self.trait_method_signatures.clear();
         self.monomorphizations.clear();
@@ -6770,6 +6804,56 @@ fn main() void {
     }
 
     #[test]
+    fn trait_bounds_allow_declared_methods_and_check_instantiations() {
+        let prefix = "trait Hashed { fn hash_code(self: &Self) u64; } trait Named { fn label(self: &Self) str; } \
+            struct P { x: i32 } impl Hashed for P { fn hash_code(self: &P) u64 { ret self.x as u64; } } \
+            impl Named for P { fn label(self: &P) str { ret \"p\"; } } ";
+        let report = analyze(&format!(
+            "{prefix} struct Holder[T: Hashed + Named] {{ item: T }} \
+             fn code[T: Hashed + Named](x: &T) u64 {{ const n = x.label(); ret x.hash_code() + n.len() as u64; }} \
+             fn main() i32 {{ const p = P {{ x: 1 }}; const h: Holder[P] = Holder {{ item: P {{ x: 2 }} }}; ret (code[P](&p) as i32) + h.item.x; }}"
+        ));
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        for (source, message) in [
+            (
+                "fn code[T: Hashed](x: &T) u64 { ret x.missing(); } fn main() i32 { ret 0; }",
+                "no method `missing` on `T`: its bounds (Hashed) do not declare it",
+            ),
+            (
+                "fn code[T](x: &T) u64 { ret x.hash_code(); } fn main() i32 { ret 0; }",
+                "add a trait bound such as `T: Trait`",
+            ),
+            (
+                "fn code[T: Hashed](x: &T) u64 { ret x.hash_code(); } fn main() i32 { const b = true; ret code[bool](&b) as i32; }",
+                "`bool` does not implement `Hashed`, required by `T` of `code`",
+            ),
+        ] {
+            let report = analyze(&format!("{prefix} {source}"));
+            assert!(
+                report.errors.iter().any(|error| error.message.contains(message)),
+                "{source}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn generic_struct_literals_take_type_arguments_from_the_declared_type() {
+        let report = analyze(
+            "struct Box2[T] { item: T } fn main() i32 { const b: Box2[i64] = Box2 { item: 5 }; const c: Box2[u8] = Box2 { item: 7 }; ret (b.item as i32) + (c.item as i32); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let report = analyze(
+            "struct Box2[T] { item: T } fn main() i32 { const b: Box2[u8] = Box2 { item: 300 }; ret 0; }",
+        );
+        assert!(
+            report.errors.iter().any(|error| error.message.contains("does not fit in `u8`")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn unit_variant_constants_keep_their_enum_type() {
         // `const c = C.B;` was untyped: the match skipped exhaustiveness and
         // trapped at run time, and `const d: bool = c;` was accepted.
@@ -7630,12 +7714,15 @@ fn main() void {
             r#"
 struct Box[T] { value: T, }
 fn consume(value: Box[u64]) void { ret; }
-fn main() void { consume(Box { value: 1 }); }
+fn main() void { const narrow: i32 = 1; const boxed = Box { value: narrow }; consume(boxed); consume(Box { value: narrow }); }
 "#,
         );
         assert!(integer_width.errors.iter().any(|error| {
             error.code == "S08" && error.message.contains("expected Box[u64], got Box[i32]")
-        }));
+        }), "{:?}", integer_width.errors);
+        assert!(integer_width.errors.iter().any(|error| {
+            error.code == "S01" && error.message.contains("expected `u64`, found `i32`")
+        }), "{:?}", integer_width.errors);
 
         let owned_vs_view = analyze(
             r#"
@@ -7652,8 +7739,8 @@ fn main() void {
             error.code == "S08"
                 && error
                     .message
-                    .contains("expected Array[str], got Array[String]")
-        }));
+                    .contains("field 'value': expected str, got String")
+        }), "{:?}", owned_vs_view.errors);
     }
 
     #[test]

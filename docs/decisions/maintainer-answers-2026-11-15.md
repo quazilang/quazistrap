@@ -24,4 +24,7 @@ Status: decided by the maintainers on 2026-11-15 (asks.txt rounds 4-6).
   `0f8fe6e`).
 - **В21А.** `RESUME.md` is not kept in product repositories; session notes
   live in the workspace (implemented).
-- **В22Б.** Trait bounds first, then a generic `Map[K, V]` (pending).
+- **В22Б.** Trait bounds first, then a generic `Map[K, V]`. Bounds are done
+  (2026-11-16, `docs/language/types.md#trait-bounds`, `scripts/check_trait_bounds.py`);
+  the generic `Map` is pending. Generic values are still treated as copyable
+  by the ownership pass (asks В23).

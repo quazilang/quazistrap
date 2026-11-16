@@ -2463,6 +2463,9 @@ impl Analyzer {
             })
             .and_then(|annotation| annotation.resolved_fn.as_deref());
         resolved.is_some_and(|name| self.consuming_receiver_methods.contains(name))
+            || self
+                .consuming_bound_calls
+                .contains(&(expr.span.start, expr.span.end))
     }
 
     /// A contiguous-container accessor that returns its owned element by

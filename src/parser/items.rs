@@ -18,6 +18,8 @@ impl Parser {
 
         let (name, name_span) = self.parse_ident_with_span()?;
         let generic_params = self.parse_optional_generic_params()?;
+        let mut attributes = attributes;
+        attributes.extend(self.take_bound_attributes());
         self.expect(TokenKind::LParen)?;
 
         let mut params: Vec<Param> = Vec::new();
@@ -139,6 +141,8 @@ impl Parser {
             .span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
+        let mut attributes = attributes;
+        attributes.extend(self.take_bound_attributes());
 
         self.expect(TokenKind::LBrace)?;
         let mut fields = Vec::new();
@@ -224,6 +228,8 @@ impl Parser {
         let start = self.expect(TokenKind::Trait)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
+        let mut attributes = attributes;
+        attributes.extend(self.take_bound_attributes());
 
         self.expect(TokenKind::LBrace)?;
         let mut methods = Vec::new();
@@ -295,6 +301,8 @@ impl Parser {
         let start = self.expect(TokenKind::Enum)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
+        let mut attributes = attributes;
+        attributes.extend(self.take_bound_attributes());
 
         self.expect(TokenKind::LBrace)?;
         let mut variants = Vec::new();
@@ -428,6 +436,8 @@ impl Parser {
         let start = self.expect(TokenKind::Type)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
+        let mut attributes = attributes;
+        attributes.extend(self.take_bound_attributes());
         self.expect(TokenKind::Eq)?;
         let aliased_type = self.parse_type()?;
         let end = self.expect(TokenKind::Semicolon)?.span;

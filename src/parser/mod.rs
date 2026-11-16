@@ -28,6 +28,9 @@ pub struct Parser {
     /// Expression statements closed by `}` without `;`, with the error to report
     /// unless the enclosing function body consumes them as its tail (D-017).
     unterminated_tails: Vec<(Span, String)>,
+    /// Trait bounds read by `parse_optional_generic_params` (`K: Hash + Eq`),
+    /// attached by the item parser as `@bound(K, Hash)` attributes.
+    pending_bounds: Vec<(String, String, Span)>,
     /// Inside an `if`/`for`/`match` head, `Name {}` is the body that follows,
     /// not an empty struct literal (parentheses lift the restriction).
     in_condition: bool,
@@ -42,6 +45,7 @@ impl Parser {
             source_files: Vec::new(),
             unterminated_tails: Vec::new(),
             in_condition: false,
+            pending_bounds: Vec::new(),
         }
     }
 
@@ -53,6 +57,7 @@ impl Parser {
             source_files: Vec::new(),
             unterminated_tails: Vec::new(),
             in_condition: false,
+            pending_bounds: Vec::new(),
         }
     }
 
@@ -68,6 +73,7 @@ impl Parser {
             source_files,
             unterminated_tails: Vec::new(),
             in_condition: false,
+            pending_bounds: Vec::new(),
         }
     }
 
@@ -2333,6 +2339,21 @@ impl Parser {
         ))
     }
 
+    /// The bounds read since the last call, as `@bound(param, trait)`.
+    pub(crate) fn take_bound_attributes(&mut self) -> Vec<Attribute> {
+        std::mem::take(&mut self.pending_bounds)
+            .into_iter()
+            .map(|(param, bound, span)| Attribute {
+                name: "bound".to_string(),
+                args: vec![
+                    AttrArg::Positional(AttrVal::Str(param)),
+                    AttrArg::Positional(AttrVal::Str(bound)),
+                ],
+                span,
+            })
+            .collect()
+    }
+
     pub(crate) fn parse_optional_generic_params(&mut self) -> Result<Vec<String>, String> {
         if !self.at(TokenKind::LBracket) {
             return Ok(Vec::new());
@@ -2342,7 +2363,21 @@ impl Parser {
         let mut params = Vec::new();
 
         loop {
-            params.push(self.parse_ident()?);
+            let (param, _) = self.parse_ident_with_span()?;
+            // `K: Hash + Eq` bounds the parameter by traits.
+            if self.at(TokenKind::Colon) {
+                self.advance();
+                loop {
+                    let (bound, bound_span) = self.parse_ident_with_span()?;
+                    self.pending_bounds.push((param.clone(), bound, bound_span));
+                    if self.at(TokenKind::Plus) {
+                        self.advance();
+                        continue;
+                    }
+                    break;
+                }
+            }
+            params.push(param);
 
             if self.at(TokenKind::Comma) {
                 self.advance();

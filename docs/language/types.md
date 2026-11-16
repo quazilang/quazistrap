@@ -207,6 +207,39 @@ in the result or in named arguments.
 Generic intrinsics keep their explicit form. The compiler monomorphizes each
 concrete instantiation.
 
+A generic struct literal takes its type arguments from the declared type when
+there is one (`const h: Holder[i64] = Holder { item: 5 };`), so literal fields
+take the field type. Field values follow the assignment conversion rules.
+
+### Trait bounds
+
+A type parameter may require traits, `T: Trait` or `T: A + B`. Inside the
+generic body, a value of type `T` (or `&T`) can call the methods those traits
+declare. The receiver is the one the trait declares: `self: &Self` is shared,
+`self: &mut Self` is exclusive, and an implicit receiver takes the value.
+
+```quazi
+trait Hashed { fn hash_code(self: &Self) u64; }
+impl Hashed for i64 { fn hash_code(self: &i64) u64 { ret ((*self) as u64) * 31; } }
+
+fn code[T: Hashed](x: &T) u64 { ret x.hash_code(); }
+
+struct Holder[T: Hashed] { item: T }
+impl Holder[T] {
+    fn total(self: &Holder[T]) u64 { ret self.item.hash_code(); }
+}
+```
+
+Each specialization calls the concrete implementation (`i64.hash_code`).
+The bounds are checked when the type parameter is instantiated: using
+`code[bool]` without `impl Hashed for bool` is S04. Calling a method that no
+bound declares is S04, and so is calling any method on an unbounded type
+parameter. Methods of a type with bounds have code only per specialization.
+
+Known limit (asks В23): the ownership pass treats a value of an unbounded
+or bounded type parameter as copyable, so a generic body can use an owned `T`
+after passing it by value. Prefer `&T` parameters for owned element types.
+
 ## Function types
 
 `fn(T, U) V` — a function value type. Quazi `fn` values own their closure

@@ -77,7 +77,7 @@ or production readiness.
 ## Features
 
 - **Self-contained Linux binaries** — emits and links static x86-64 ELF executables in-process, with no LLVM, system linker, libc, or CRT by default
-- **Generics** — `fn max[T](a: T, b: T) T` with compile-time monomorphization
+- **Generics** — `fn max[T](a: T, b: T) T` with compile-time monomorphization and trait bounds (`fn code[T: Hash + Eq](x: &T)`)
 - **Traits** — `trait Foo { fn method(...) ...; }` with `impl Foo for Bar`
 - **Enums with payloads** — `enum Option[T] { Some(T), None }` + `match`
 - **Move semantics** — non-primitive types are moved by default, borrow with `&`
