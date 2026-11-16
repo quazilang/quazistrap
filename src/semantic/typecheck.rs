@@ -5728,26 +5728,10 @@ impl Analyzer {
                     {
                         self.struct_pattern_binding_types(&arm.pattern, scrutinee, &mut binding_types);
                     }
-                    if let PatternKind::Variant {
-                        variant,
-                        sub_patterns,
-                        ..
-                    } = &arm.pattern.node
-                        && let Some(payloads) =
-                            self.match_pattern_payload_types(match_scrutinee_ty.as_ref(), variant)
+                    if matches!(arm.pattern.node, PatternKind::Variant { .. })
+                        && let Some(scrutinee) = match_scrutinee_ty.as_ref()
                     {
-                        for (pattern, ty) in sub_patterns.iter().zip(payloads) {
-                            match &pattern.node {
-                                PatternKind::Bind(name) => {
-                                    binding_types.insert(name.clone(), ty);
-                                }
-                                PatternKind::Struct { .. } => {
-                                    let ty = self.resolve_type_aliases(&ty);
-                                    self.struct_pattern_binding_types(pattern, &ty, &mut binding_types);
-                                }
-                                _ => {}
-                            }
-                        }
+                        self.variant_pattern_binding_types(&arm.pattern, scrutinee, &mut binding_types);
                     }
                     for binding in bindings {
                         let ty = binding_types
@@ -8678,6 +8662,43 @@ impl Analyzer {
                     },
                     bindings,
                 )
+            }
+        }
+    }
+
+    /// Binding types of a variant pattern matched against `ty`, through nested
+    /// variant and struct patterns (`Some(Status.Code(code))`).
+    fn variant_pattern_binding_types(
+        &self,
+        pattern: &Pattern,
+        ty: &TypeKind,
+        binding_types: &mut std::collections::HashMap<String, TypeKind>,
+    ) {
+        let PatternKind::Variant {
+            variant,
+            sub_patterns,
+            ..
+        } = &pattern.node
+        else {
+            return;
+        };
+        let ty = self.resolve_type_aliases(ty);
+        let Some(payloads) = self.match_pattern_payload_types(Some(&ty), variant) else {
+            return;
+        };
+        for (sub, payload) in sub_patterns.iter().zip(payloads) {
+            match &sub.node {
+                PatternKind::Bind(name) => {
+                    binding_types.insert(name.clone(), payload);
+                }
+                PatternKind::Struct { .. } => {
+                    let payload = self.resolve_type_aliases(&payload);
+                    self.struct_pattern_binding_types(sub, &payload, binding_types);
+                }
+                PatternKind::Variant { .. } => {
+                    self.variant_pattern_binding_types(sub, &payload, binding_types);
+                }
+                _ => {}
             }
         }
     }

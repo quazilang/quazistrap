@@ -7064,6 +7064,15 @@ fn main() void {
     }
 
     #[test]
+    fn nested_variant_pattern_bindings_have_their_payload_type() {
+        // `code` was untyped (S14) because only direct payload bindings were typed.
+        let report = analyze(
+            "enum Status { Code(i32), Signal(i32) } fn code_of(status: Option[Status]) i32 { ret match status { Some(Status.Code(code)) => code, _ => 0 }; } fn main() i32 { ret code_of(None); }",
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
     fn unit_variant_constants_keep_their_enum_type() {
         // `const c = C.B;` was untyped: the match skipped exhaustiveness and
         // trapped at run time, and `const d: bool = c;` was accepted.
