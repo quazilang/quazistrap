@@ -19,7 +19,7 @@ The compiler replaces the default with your function automatically.
 ### `panic`
 
 ```quazi
-pub fn panic(msg: str, file: str, line: usize, ...args: str) !
+pub fn panic(msg: str, file: str, line: usize, ...args: Display) !
 ```
 
 Stops the program with a message. The compiler supplies `file` and `line`;

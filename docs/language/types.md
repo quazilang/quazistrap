@@ -275,9 +275,9 @@ parse errors. No import is required for these types.
 ## The `any` keyword
 
 `any` is reserved syntax, not a runtime value type. It is rejected in
-variables, fields, parameters, returns, casts, and generic arguments. The only
-supported use is the final `...args: any` pseudo-parameter of an `@format`
-function; the compiler converts each argument at the call site.
+variables, fields, parameters, returns, casts, and generic arguments.
+Functions that format values take `...args: Display`
+([D-024](../decisions/display-variadics.md)).
 
 ## Conversions
 

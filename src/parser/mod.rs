@@ -1671,6 +1671,18 @@ impl Parser {
                             self.err_here("positional argument after named argument".to_string())
                         );
                     }
+                    if self.at(TokenKind::DotDotDot) {
+                        let start = to_ast_span(self.advance().span);
+                        let forwarded = self.parse_expr()?;
+                        let span = Span::merge(start, forwarded.span);
+                        args.push(Spanned::new(ExprKind::Spread(Box::new(forwarded)), span));
+                        if !self.at(TokenKind::RParen) {
+                            return Err(self.err_here(
+                                "a forwarded variadic `...values` must be the last argument".to_string(),
+                            ));
+                        }
+                        break;
+                    }
                     args.push(self.parse_expr()?);
                 }
 

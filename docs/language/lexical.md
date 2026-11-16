@@ -35,8 +35,7 @@ The following identifiers are reserved keywords:
 `for`, `if`, `impl`, `import`, `match`, `mod`, `pub`, `qo`, `ret`, `self`,
 `struct`, `trait`, `true`, `type`, `unsafe`, `var`.
 
-`any` is reserved syntax for the compiler-erased `@format` pseudo-parameter
-and is rejected in user declarations.
+`any` is reserved syntax and is rejected in declarations.
 
 ## Literals
 
@@ -97,8 +96,9 @@ const json: str = "{{\"a\": 1}}";             // {"a": 1}
 io.println("x = {}, y = {y}", x);             // format call template
 ```
 
-In a format call (`println`, `format`, ...) the first literal is the template:
-`{}` and `{:spec}` there consume the explicit arguments in order.
+In a call of a `...args: Display` function (`println`, `format`, ...) the
+first literal is the template: `{}` and `{:spec}` there consume the explicit
+arguments in order ([D-024](../decisions/display-variadics.md)).
 
 Raw backtick strings preserve contents exactly, with no escape decoding and no
 interpolation (braces are literal). They may span multiple lines and must be

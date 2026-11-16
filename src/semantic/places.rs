@@ -500,6 +500,7 @@ impl Places<'_> {
                     }
                     match &expr.node {
                         ExprKind::Group(inner)
+                        | ExprKind::Spread(inner)
                         | ExprKind::Unary { expr: inner, .. }
                         | ExprKind::Cast { expr: inner, .. }
                         | ExprKind::Try { expr: inner }

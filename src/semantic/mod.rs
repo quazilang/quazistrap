@@ -2732,7 +2732,7 @@ mod tests {
     #[test]
     fn explicit_format_arguments_are_checked_once() {
         let report = analyze(
-            "@format\npub fn show(template: str, ...args: any) void {}\nfn main() void {\n    var z: i64;\n    show(\"z = {}\", z);\n}\n",
+            "pub fn show(template: str, ...args: Display) void {}\nfn main() void {\n    var z: i64;\n    show(\"z = {}\", z);\n}\n",
         );
         let uses = report
             .errors
@@ -3059,7 +3059,7 @@ mod tests {
             }]);
             analyzer.analyze_program(&parse_program(source))
         };
-        let declarations = "pub struct String { value: i32, data: str, } impl String { fn free(self: String) void {} fn len(self: &String) i32 { ret self.value; } } fn emit(template: str, ...args: str) void {} fn consume(value: String) i32 { ret 0; }";
+        let declarations = "pub struct String { value: i32, data: str, } impl String { fn free(self: String) void {} fn len(self: &String) i32 { ret self.value; } } fn emit(template: str, ...args: Display) void {} fn consume(value: String) i32 { ret 0; }";
         let report = analyze_runtime(&format!(
             "{declarations} fn main() void {{ const value = String {{ value: 1, data: \"\" }}; emit(\"{{}}\", value); value.len(); }}"
         ));
@@ -3073,7 +3073,7 @@ mod tests {
             report.errors
         );
         let report = analyze_module_pair_with_runtime(
-            "pub fn apply(template: str, ...args: str) void {}",
+            "pub fn apply(template: str, ...args: Display) void {}",
             "import helpers; pub struct String { value: i32, data: str, } impl String { fn free(self: String) void {} fn len(self: &String) i32 { ret self.value; } } fn main() void { const value = String { value: 1, data: \"\" }; helpers.apply(\"{}\", value); value.len(); }",
             Some("String"),
         );
@@ -3378,7 +3378,7 @@ fn plain_bytes(value: bytes, callback: Callback) bytes { ret value; }
 fn move_array(value: [i32; 2]) void {}
 fn transfer(value: Token) Token { ret value; }
 fn generic[T](value: T) T { ret value; }
-@format fn format_like(...parts: str) void {}
+fn format_like(...parts: Display) void {}
 @api("foreign") fn opaque(pointer: *Token) void;
 "#,
         );
@@ -7636,11 +7636,10 @@ fn main() void {
     }
 
     #[test]
-    fn format_variadic_any_remains_an_erased_call_site_convention() {
+    fn display_variadics_take_values_of_any_displayable_type() {
         let report = analyze(
             r#"
-@format
-fn render(template: str, ...args: any) void { ret; }
+fn render(template: str, ...args: Display) void { ret; }
 
 fn main() void {
     render("{} {}", 42, "answer");
@@ -7649,7 +7648,7 @@ fn main() void {
         );
         assert!(
             report.errors.is_empty(),
-            "@format variadics must remain usable without a runtime any value: {:?}",
+            "Display variadics accept any displayable value: {:?}",
             report.errors
         );
     }
@@ -8758,20 +8757,19 @@ impl Measure for Broken {}
             error.code == "S14" && error.message.contains("missing method `value`")
         }));
 
-        let erased_format_tail = analyze(
+        let removed_format = analyze(
             r#"
-trait Write { fn writef(self: Self, text: str) void; }
 struct Output {}
-impl Write for Output {
+impl Output {
     @format
     fn writef(self: Output, text: str, ...args: any) void {}
 }
 "#,
         );
         assert!(
-            erased_format_tail.errors.is_empty(),
-            "a compiler-erased @format tail is not part of trait runtime conformance: {:?}",
-            erased_format_tail.errors
+            removed_format.errors.iter().any(|error| error.message.contains("`@format` is removed")),
+            "@format is a removed compiler crutch (D-024): {:?}",
+            removed_format.errors
         );
 
         let unsafe_implementation = analyze(

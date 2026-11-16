@@ -2049,6 +2049,8 @@ impl Analyzer {
                 // Transparent wrapper: propagate consumed flag.
                 self.bc_expr(inner, env, consumed);
             }
+            // Forwarding a variadic parameter reads it.
+            ExprKind::Spread(inner) => self.bc_expr(inner, env, false),
 
             ExprKind::Field { object, name } => {
                 // `Enum.Variant` constructs a value; it is not a field place.

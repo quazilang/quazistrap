@@ -86,8 +86,8 @@ independently of this decision.
 
 Current stabilization rule: `any` is reserved and cannot carry runtime values
 because the VM, native ABI, and QZI format do not define a tag, payload layout,
-ownership, or checked downcast. `@format ...args: any` remains a compiler-erased
-call-site convention and does not create an `any` value. A future dynamic-value
+ownership, or checked downcast. Formatting functions take `...args: Display`
+([D-024](display-variadics.md)) instead of the removed `@format ...args: any`. A future dynamic-value
 feature requires an explicit maintainer decision covering representation,
 ownership/destruction, trait interaction, casts and pattern matching, FFI, and
 QZI compatibility; it must not restore universal implicit compatibility.
@@ -168,3 +168,5 @@ Decided 2026-11-15: [integer `+ - * /` and unary minus panic on overflow; consta
 ## D-023: maintainer answers of 2026-11-15
 
 Decided 2026-11-15: [to_str removal, consuming match, plain variadics, closures, nested panics, process timeouts, deserialization errors, module constants, trait bounds before generic Map](maintainer-answers-2026-11-15.md).
+
+Decided 2026-11-16: [Display variadics replace `@format`](display-variadics.md) (D-024).

@@ -12,13 +12,13 @@ Replace each value-bearing `any` according to its intent:
 - Dynamic application data: define an explicit enum with one variant per
   supported representation and match it before accessing the payload.
 
-Format APIs may retain this exact form:
+Format APIs take displayable values and format them themselves
+([D-024](../decisions/display-variadics.md)):
 
 ```quazi
-@format
-pub fn print(template: str, ...args: any) void {
-    // `args` is intentionally unavailable here; call-site lowering supplies
-    // the formatted template through the ordinary parameters.
+pub fn print(template: str, ...args: Display) void {
+    const text = format(template, ...args);
+    io.write(text.as_str());
 }
 ```
 

@@ -246,9 +246,9 @@ def check(qz, root):
     output = invoke([str(binary)], case)
     assert output.startswith("churn 2000"), output
     print("PASS libc-free threads: std Mutex/AtomicI64 native and --jit, 2000 spawn/join without leaking stacks, main exit ends running threads")
-    case = root / "format"
+    case = root / "formatting"
     (case / "src").mkdir(parents=True)
-    (case / "quazi.toml").write_text('[package]\nname="format"\n[build]\nentry="src/main.qz"\n')
+    (case / "quazi.toml").write_text('[package]\nname="formatting"\n[build]\nentry="src/main.qz"\n')
     (case / "src/main.qz").write_text(FORMAT_PROGRAM)
     binary = case / "native"
     invoke([str(qz), "build", *common, "-o", str(binary)], case)

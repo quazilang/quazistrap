@@ -16,21 +16,21 @@ pub struct ExpandedFormatArgs {
 /// function, or one whose final `...args: str` (or reference) follows a fixed
 /// `str` parameter. A `...values: str` without one is an ordinary typed
 /// variadic.
-pub fn is_format_variadic(params: &[Param], attributes: &[Attribute]) -> bool {
-    let Some(last) = params.last().filter(|param| param.variadic) else {
-        return false;
-    };
-    let explicit = attributes.iter().any(|attribute| attribute.name == "format");
-    match &last.ty.node {
-        TypeKind::Any => explicit,
-        TypeKind::Str | TypeKind::Ref { .. } | TypeKind::MutRef { .. } => {
-            explicit
-                || params[..params.len() - 1]
-                    .iter()
-                    .any(|param| matches!(param.ty.node, TypeKind::Str))
-        }
-        _ => false,
-    }
+/// Internal marker of a `...values: Display` parameter (the parser records
+/// the declared trait; the body sees each value as `str`).
+pub const DISPLAY_VARIADIC: &str = "__display_variadic";
+
+/// A function whose variadic tail is `...values: Display` (D-024): call sites
+/// pass each value as its display text, and a literal first argument is a
+/// format template whose placeholders become arguments.
+pub fn is_format_variadic(params: &[Param], _attributes: &[Attribute]) -> bool {
+    params.last().is_some_and(|param| {
+        param.variadic
+            && param
+                .attributes
+                .iter()
+                .any(|attribute| attribute.name == DISPLAY_VARIADIC)
+    })
 }
 
 /// Parse `{}` and `{expr}` / `{expr:spec}` placeholders in a format template string.

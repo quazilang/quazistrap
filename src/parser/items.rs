@@ -58,6 +58,22 @@ impl Parser {
                         self.err_here("variadic parameter must be the last parameter".to_string())
                     );
                 }
+                // `...values: Display` collects any displayable values; the
+                // body sees each one as its text (D-024).
+                let (param_ty, param_attributes) = if variadic
+                    && matches!(&param_ty.node, TypeKind::Named { name, type_args }
+                        if type_args.is_empty() && name.rsplit('.').next() == Some("Display"))
+                {
+                    let mut attributes = param_attributes;
+                    attributes.push(Attribute {
+                        name: crate::parser::format::DISPLAY_VARIADIC.to_string(),
+                        args: Vec::new(),
+                        span: param_ty.span,
+                    });
+                    (Spanned::new(TypeKind::Str, param_ty.span), attributes)
+                } else {
+                    (param_ty, param_attributes)
+                };
                 params.push(Param {
                     name: param_name,
                     name_span: param_name_span,

@@ -59,8 +59,7 @@ impl Analyzer {
                 {
                     attr_names.push("ignore".to_string());
                 }
-                // `any` is only the erased call-site convention of an explicit
-                // `@format` function; it is never a runtime parameter type.
+                self.reject_format_attribute(attributes);
                 let has_str_variadic_param = crate::parser::format::is_format_variadic(params, attributes);
                 if has_str_variadic_param {
                     attr_names.push("str_variadic".to_string());
@@ -712,6 +711,7 @@ impl Analyzer {
                         if is_foreign && !attr_names.contains(&"ignore".to_string()) {
                             attr_names.push("ignore".to_string());
                         }
+                        self.reject_format_attribute(attributes);
                         let has_str_variadic_param2 = crate::parser::format::is_format_variadic(params, attributes);
                         if has_str_variadic_param2 {
                             attr_names.push("str_variadic".to_string());
@@ -768,6 +768,19 @@ impl Analyzer {
                     }
                 }
             }
+        }
+    }
+
+    /// `@format` was a compiler crutch (D-024): a formatting function now
+    /// declares its arguments as `...values: Display` and formats them itself.
+    fn reject_format_attribute(&mut self, attributes: &[crate::parser::ast::Attribute]) {
+        if let Some(attribute) = attributes.iter().find(|attribute| attribute.name == "format") {
+            self.push_error(
+                attribute.span,
+                "S14",
+                "`@format` is removed; declare the arguments as `...args: Display` and format them with `format(template, ...args)`"
+                    .to_string(),
+            );
         }
     }
 

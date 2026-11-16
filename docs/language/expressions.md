@@ -166,6 +166,25 @@ fn sum(first: i32, ...rest: i32) i32 { ... }
 sum(1, 2, 3, 4);
 ```
 
+Inside the function the parameter is a slice (`rest.len()`, `rest[i]`).
+`...rest` as the last argument of another variadic call forwards it:
+
+```quazi
+fn total(...values: i32) i32 { ret sum(0, ...values); }
+```
+
+`...values: Display` accepts any values whose types implement `Display`; each
+arrives as its text. Formatting functions are written this way
+([D-024](../decisions/display-variadics.md)):
+
+```quazi
+fn report(template: str, ...args: Display) void {
+    const text = format(template, ...args);
+    println(text.as_str());
+}
+report("{} of {}", 3, "four");
+```
+
 Bare `...` is reserved for C variadic `@api` declarations.
 
 ## Indexing

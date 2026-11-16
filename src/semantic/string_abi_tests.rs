@@ -105,7 +105,7 @@ fn qualified_alias_cannot_authenticate_a_global_runtime_name() {
 
 #[test]
 fn format_rejects_unsupported_values_before_runtime_lowering() {
-    let definitions = "struct Owner{value:i32,}@format fn sink(...parts:str)void{}";
+    let definitions = "struct Owner{value:i32,}fn sink(...parts:Display)void{}";
     for body in [
         "fn main()void{sink(Owner{value:1});}",
         "fn main()void{var owner=Owner{value:1};sink(&owner);}",

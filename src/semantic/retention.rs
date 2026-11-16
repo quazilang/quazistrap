@@ -776,7 +776,7 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
         let value = match &expr.node {
             ExprKind::Literal(_) => Value::default(),
             ExprKind::Ident(name) => env.get(name),
-            ExprKind::Group(expr) | ExprKind::Cast { expr, .. } => {
+            ExprKind::Group(expr) | ExprKind::Spread(expr) | ExprKind::Cast { expr, .. } => {
                 self.expression(expr, env, depth + 1)?
             }
             ExprKind::Unary { op, expr } => {

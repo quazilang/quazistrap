@@ -49,7 +49,7 @@ prelude.traits — core language traits
 
 ```quazi
 pub trait Display {
-    fn to_string() String;
+    fn to_string(self: &Self) String;
 }
 ```
 
@@ -182,21 +182,19 @@ pub trait Index[I, O] {
 pub trait Write {
     fn write(self: Self, s: str) void;
     fn writeln(self: Self, s: str) void;
-    fn writef(self: Self, s: str) void;
-    fn writelnf(self: Self, s: str) void;
 }
 ```
 
 ── Write ─────────────────────────────────────────────────────────────────────
-Implemented by Stdout and Stderr. writef/writelnf accept a pre-formatted
-string; the compiler auto-formats when called with multiple arguments.
+Implemented by Stdout and Stderr. Their formatting methods (`writef`,
+`writelnf`) take `...args: Display` and are inherent methods.
 
 ## `i8`
 
 ### `i8.to_string`
 
 ```quazi
-pub fn to_string(self: i8) String
+pub fn to_string(self: &i8) String
 ```
 
 The decimal text of the value as an owned String.
@@ -206,7 +204,7 @@ The decimal text of the value as an owned String.
 ### `i16.to_string`
 
 ```quazi
-pub fn to_string(self: i16) String
+pub fn to_string(self: &i16) String
 ```
 
 The decimal text of the value as an owned String.
@@ -216,7 +214,7 @@ The decimal text of the value as an owned String.
 ### `i32.to_string`
 
 ```quazi
-pub fn to_string(self: i32) String
+pub fn to_string(self: &i32) String
 ```
 
 The decimal text of the value as an owned String.
@@ -226,7 +224,7 @@ The decimal text of the value as an owned String.
 ### `i64.to_string`
 
 ```quazi
-pub fn to_string(self: i64) String
+pub fn to_string(self: &i64) String
 ```
 
 The decimal text of the value as an owned String.
@@ -236,7 +234,7 @@ The decimal text of the value as an owned String.
 ### `u8.to_string`
 
 ```quazi
-pub fn to_string(self: u8) String
+pub fn to_string(self: &u8) String
 ```
 
 The decimal text of the value as an owned String.
@@ -246,7 +244,7 @@ The decimal text of the value as an owned String.
 ### `u16.to_string`
 
 ```quazi
-pub fn to_string(self: u16) String
+pub fn to_string(self: &u16) String
 ```
 
 The decimal text of the value as an owned String.
@@ -256,7 +254,7 @@ The decimal text of the value as an owned String.
 ### `u32.to_string`
 
 ```quazi
-pub fn to_string(self: u32) String
+pub fn to_string(self: &u32) String
 ```
 
 The decimal text of the value as an owned String.
@@ -266,7 +264,7 @@ The decimal text of the value as an owned String.
 ### `u64.to_string`
 
 ```quazi
-pub fn to_string(self: u64) String
+pub fn to_string(self: &u64) String
 ```
 
 The decimal text of the value as an owned String.
@@ -276,7 +274,7 @@ The decimal text of the value as an owned String.
 ### `isize.to_string`
 
 ```quazi
-pub fn to_string(self: isize) String
+pub fn to_string(self: &isize) String
 ```
 
 The decimal text of the value as an owned String.
@@ -286,7 +284,7 @@ The decimal text of the value as an owned String.
 ### `usize.to_string`
 
 ```quazi
-pub fn to_string(self: usize) String
+pub fn to_string(self: &usize) String
 ```
 
 The decimal text of the value as an owned String.
@@ -296,7 +294,7 @@ The decimal text of the value as an owned String.
 ### `f16.to_string`
 
 ```quazi
-pub fn to_string(self: f16) String
+pub fn to_string(self: &f16) String
 ```
 
 The decimal text of the value as an owned String.
@@ -306,7 +304,7 @@ The decimal text of the value as an owned String.
 ### `f32.to_string`
 
 ```quazi
-pub fn to_string(self: f32) String
+pub fn to_string(self: &f32) String
 ```
 
 The decimal text of the value as an owned String.
@@ -316,7 +314,7 @@ The decimal text of the value as an owned String.
 ### `f64.to_string`
 
 ```quazi
-pub fn to_string(self: f64) String
+pub fn to_string(self: &f64) String
 ```
 
 The decimal text of the value as an owned String.
@@ -326,7 +324,7 @@ The decimal text of the value as an owned String.
 ### `bool.to_string`
 
 ```quazi
-pub fn to_string(self: bool) String
+pub fn to_string(self: &bool) String
 ```
 
 The decimal text of the value as an owned String.

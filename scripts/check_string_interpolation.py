@@ -171,8 +171,9 @@ struct Bag[T] { first: T, }
 struct Kit { size: i32, }
 
 impl Logger {
-    fn show(self: &Logger, prefix: str, ...args: str) void {
-        io.println("[{}] n={}", prefix, args.len());
+    fn show(self: &Logger, prefix: str, ...args: Display) void {
+        const text = format(prefix, ...args);
+        io.println("[{}] n={}", text, args.len());
     }
 }
 
@@ -254,7 +255,7 @@ def check(qz, root):
     assert output == "a 2\nb 2\nc 3\nd 5\ne 0\nm 2 1 0\nn 8 10\n", output
     case = project(root, "methods", METHODS)
     output = invoke([str(qz), "run", *common], case)
-    assert output == "[p 5 q] n=0\ngeneric 7 6\nstatic 3 0\nstatic receiver 15\n", output
+    assert output == "[p 5 q] n=2\ngeneric 7 6\nstatic 3 0\nstatic receiver 15\n", output
     case = project(root, "try", TRY)
     output = invoke([str(qz), "run", *common], case)
     assert output == "failures 200000 small growth true\n", output

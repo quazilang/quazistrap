@@ -19,8 +19,10 @@ A new String: `a` followed by `b`.
 ### `format`
 
 ```quazi
-pub fn format(template: str, ...args: str) String
+pub fn format(template: str, ...args: Display) String
 ```
 
-Call-site coercion supplies borrowed display views. Copy each view while it
-remains alive and transfer the final owner instead of detaching its buffer.
+Replaces each `{}` in `template` by the text of the next value; `{{` and
+`}}` are literal braces. Without values the template is returned as it is
+(a text that is not a literal template is never re-parsed for braces).
+Each value arrives as its display text (`...args: Display`, D-024).

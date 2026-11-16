@@ -418,7 +418,7 @@ impl Analyzer {
                             is_import: false,
                             import_path: None,
                             const_value: None,
-                            variadic: false,
+                            variadic: p.variadic,
                             attributes: param_attrs,
                             public: false,
                             unsafe_fn: false,
@@ -3229,6 +3229,31 @@ impl Analyzer {
                 let eval = self.type_check_expr(inner, reachable);
                 initialization_condition = Some(self.take_initialization_condition(inner, &eval));
                 eval
+            }
+            // `...values` forwards a variadic parameter of the enclosing
+            // function; its value is the element type (calls check the rest).
+            ExprKind::Spread(inner) => {
+                let eval = self.type_check_expr(inner, reachable);
+                let forwards_variadic = matches!(&inner.node, ExprKind::Ident(name)
+                    if self.resolve_symbol(name).is_some_and(|symbol| {
+                        symbol.kind == SymbolKind::Parameter && symbol.variadic
+                    }));
+                if !forwards_variadic {
+                    self.push_error(
+                        expr.span,
+                        "S08",
+                        "`...` forwards only a variadic parameter of the enclosing function".to_string(),
+                    );
+                }
+                // The parameter is a slice of its elements; each forwarded
+                // element is checked against the callee's variadic type.
+                match eval.ty {
+                    Some(TypeKind::Slice { elem_ty }) => ExprEval {
+                        ty: Some(elem_ty.node),
+                        ..ExprEval::default()
+                    },
+                    _ => eval,
+                }
             }
             ExprKind::Unary { expr: inner, op } => {
                 let inner_eval = self.type_check_expr(inner, reachable);
@@ -7148,7 +7173,7 @@ impl Analyzer {
                                     ),
                                 );
                             }
-                        } else {
+                        } else if !self.types_compatible(at, elem_ty) {
                             self.push_error(
                                 callee_span,
                                 "S08",
@@ -9975,6 +10000,7 @@ fn expr_mutates_ident(expr: &Expr, target: &str) -> bool {
                     .any(|(_, argument)| expr_mutates_ident(argument, target))
         }
         ExprKind::Group(inner)
+        | ExprKind::Spread(inner)
         | ExprKind::Unary { expr: inner, .. }
         | ExprKind::Cast { expr: inner, .. }
         | ExprKind::Try { expr: inner } => expr_mutates_ident(inner, target),
@@ -10043,6 +10069,7 @@ pub(super) fn collect_expr_identifiers(expr: &Expr, names: &mut Vec<String>) {
         }
         ExprKind::Literal(_) => {}
         ExprKind::Group(inner)
+        | ExprKind::Spread(inner)
         | ExprKind::Unary { expr: inner, .. }
         | ExprKind::Cast { expr: inner, .. }
         | ExprKind::IncDec { expr: inner, .. }

@@ -25,6 +25,24 @@ impl Analyzer {
         if self.display_supported(&ty) || matches!(ty, TypeKind::Error) {
             return;
         }
+        // A type implementing `Display` is shown through `to_string(&self)`.
+        let shown = match &ty {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => self.resolve_type_aliases(&inner.node),
+            other => other.clone(),
+        };
+        if let TypeKind::Named { name, .. } = &shown
+            && self
+                .trait_impls
+                .get(name.as_str())
+                .is_some_and(|traits| traits.contains("Display"))
+        {
+            let target = format!("{name}.to_string");
+            self.resolve_for_read(&target);
+            if let Some(function) = self.current_function.last().cloned() {
+                self.add_dependency_edge(super::DependencyKind::Call, &function, &target);
+            }
+            return;
+        }
         let mut cursor = &ty;
         if let TypeKind::Ref { inner } | TypeKind::MutRef { inner } = cursor {
             cursor = &inner.node;

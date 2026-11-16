@@ -365,7 +365,7 @@ See [project and manifest documentation](docs/PROJECTS.md) and
 |--------|-------------|
 | `std.io` | `println`, `print`, `eprintln`, `read_line` |
 | `std.math` | Dependency-free GCD/LCM, combinatorics, floating arithmetic, trig, powers, roots, and logarithms |
-| `std.fmt` | `format("{}", ...)` — `{}` placeholder formatting |
+| `std.fmt` | `format("{}", ...args)` — `{}` placeholder formatting; any function can take `...args: Display` and forward `...args` |
 | `std.string` | `String`: owned heap string with automatic lexical cleanup |
 | `std.collections.array` | `Array[T]`: dynamic array with index, push, iteration |
 | `std.collections.map` | Hash map with open-addressing |

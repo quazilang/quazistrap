@@ -178,7 +178,7 @@ def check(qz, root, before=None):
     print("PASS String ABI: nested forged runtime import and conflicting runtime alias rejected check/native/QZI/COFF", flush=True)
     for name, body in FORMAT_INVALID.items():
         work = root / name
-        project(work, "struct Owner{value:i32,}@format fn sink(...parts:str)void{}" + body)
+        project(work, "struct Owner{value:i32,}fn sink(...parts:Display)void{}" + body)
         for options in [["check"], ["build", *common], ["build", *common, "-i"],
                         ["build", *common, "-c", "--target", "x86_64-windows"]]:
             result = subprocess.run([str(qz), *options], cwd=work, text=True,

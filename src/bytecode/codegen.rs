@@ -2658,6 +2658,9 @@ struct FnCompiler<'a> {
     /// Heap digit buffers of the format calls being compiled (innermost
     /// last); released once the call has copied its arguments.
     format_scratch: Vec<Option<Vec<u8>>>,
+    /// Owned display texts (`T.to_string()` results) of the format call in
+    /// progress, destroyed once the call has used their views.
+    format_owners: Vec<Vec<(u8, DropAction)>>,
 }
 
 /// One guarded owner in the current full expression. A local identifier only
@@ -2911,6 +2914,7 @@ impl<'a> FnCompiler<'a> {
             type_name_bindings,
             struct_generic_params,
             format_scratch: Vec::new(),
+            format_owners: Vec::new(),
         }
     }
 
@@ -5884,6 +5888,7 @@ impl<'a> FnCompiler<'a> {
         );
         match &expr.node {
             ExprKind::Group(inner)
+            | ExprKind::Spread(inner)
             | ExprKind::Unary { expr: inner, .. }
             | ExprKind::Cast { expr: inner, .. }
             | ExprKind::Try { expr: inner }
@@ -7720,7 +7725,7 @@ impl<'a> FnCompiler<'a> {
         let expanded = (name == "fmt.format")
             .then(|| crate::parser::format::expand_format_call_args(args))
             .flatten();
-        self.begin_format_scratch(expanded.is_some());
+        self.begin_format_scratch(expanded.is_some() || self.str_variadic_fns.contains(name));
         // Variadic call: compile fixed args, pack variadic args into
         // consecutive stack slots, pass (ptr, len) as hidden trailing args.
         let fixed_regs: Vec<u8> = args[..fixed_count.min(args.len())]
@@ -7752,7 +7757,9 @@ impl<'a> FnCompiler<'a> {
             .as_ref()
             .map(|expanded| expanded.args.as_slice())
             .unwrap_or(&args[fixed_count.min(args.len())..]);
-        let (r_ptr, r_len) = if var_args.is_empty() {
+        let (r_ptr, r_len) = if let Some(forwarded) = self.forwarded_variadic(var_args) {
+            forwarded
+        } else if var_args.is_empty() {
             // Zero variadic args: pass null ptr + count 0.
             let rp = self.alloc_reg();
             self.chunk.emit(ri16(Opcode::MovI, rp, 0));
@@ -7790,6 +7797,23 @@ impl<'a> FnCompiler<'a> {
         );
         self.end_format_scratch();
         result_dst
+    }
+
+    /// A variadic tail written `...values` forwards the enclosing function's
+    /// variadic parameter: its (pointer, count) pair is passed on unchanged.
+    fn forwarded_variadic(&mut self, tail: &[Expr]) -> Option<(u8, u8)> {
+        let [forwarded] = tail else {
+            return None;
+        };
+        let ExprKind::Spread(inner) = &forwarded.node else {
+            return None;
+        };
+        let ExprKind::Ident(name) = &inner.node else {
+            return None;
+        };
+        let pointer = *self.regs.get(name)?;
+        let count = *self.regs.get(&format!("__len_{name}"))?;
+        Some((pointer, count))
     }
 
     /// Copy `values` into consecutive frame slots and return the (pointer,
@@ -7833,8 +7857,13 @@ impl<'a> FnCompiler<'a> {
         // `fixed` counts the receiver parameter.
         let split = fixed.saturating_sub(1).min(args.len());
         let mut registers: Vec<u8> = args[..split].iter().map(|arg| compile(self, arg)).collect();
-        let tail: Vec<u8> = args[split..].iter().map(|arg| compile(self, arg)).collect();
-        let (pointer, count) = self.pack_variadic_block(&tail);
+        let (pointer, count) = match self.forwarded_variadic(&args[split..]) {
+            Some(forwarded) => forwarded,
+            None => {
+                let tail: Vec<u8> = args[split..].iter().map(|arg| compile(self, arg)).collect();
+                self.pack_variadic_block(&tail)
+            }
+        };
         registers.extend([pointer, count]);
         registers
     }
@@ -7857,22 +7886,29 @@ impl<'a> FnCompiler<'a> {
         let constant = self.chunk.add_constant(ConstPoolEntry::Str(template));
         let template_reg = self.alloc_reg();
         self.chunk.emit(ri16(Opcode::MovConst, template_reg, constant));
+        let _ = span;
         self.begin_format_scratch(true);
-        let formatted = if expanded.args.is_empty() {
-            template_reg
-        } else {
-            let arguments = self.compile_format_arguments(&expanded.args, &expanded.specs);
-            self.emit_format_call(template_reg, &arguments, span)
-        };
-        self.end_format_scratch();
-        let mut call_args = vec![receiver, formatted];
-        if self.variadic_info_for(call_target).is_some() {
-            let (pointer, count) = self.pack_variadic_block(&[]);
-            call_args.extend([pointer, count]);
-        }
+        let arguments = self.compile_format_arguments(&expanded.args, &expanded.specs);
         let result_dst = self.alloc_result_block(call_target);
-        self.emit_call_by_name(call_target, &call_args, result_dst);
+        self.emit_display_call(call_target, Some(receiver), template_reg, &arguments, result_dst);
+        self.end_format_scratch();
         result_dst
+    }
+
+    /// Call a `...values: Display` function with its template and the text
+    /// of each value packed as its variadic tail.
+    fn emit_display_call(
+        &mut self,
+        target: &str,
+        receiver: Option<u8>,
+        template: u8,
+        arguments: &[u8],
+        dst: u8,
+    ) {
+        let (pointer, count) = self.pack_variadic_block(arguments);
+        let mut call_args: Vec<u8> = receiver.into_iter().collect();
+        call_args.extend([template, pointer, count]);
+        self.emit_call_by_name(target, &call_args, dst);
     }
 
     /// Fixed-parameter count of a variadic callable, looked up by its
@@ -7893,11 +7929,15 @@ impl<'a> FnCompiler<'a> {
     /// rather than joining an enclosing format call's buffers.
     fn begin_format_scratch(&mut self, private_buffers: bool) {
         self.format_scratch.push(private_buffers.then(Vec::new));
+        self.format_owners.push(Vec::new());
     }
 
     /// Release the digit buffers of the innermost format call; its result
     /// (an owned String) no longer refers to them.
     fn end_format_scratch(&mut self) {
+        for (owner, action) in self.format_owners.pop().unwrap_or_default() {
+            self.emit_drop_action(owner, action);
+        }
         let Some(Some(buffers)) = self.format_scratch.pop() else {
             return;
         };
@@ -8002,44 +8042,22 @@ impl<'a> FnCompiler<'a> {
         span: Span,
         receiver: Option<u8>,
     ) -> u8 {
-        // D-020: only literals are format templates. A single non-literal
-        // text argument is printed verbatim, never re-parsed for braces.
-        let view = if let [text] = args
-            && !matches!(text.node, ExprKind::Literal(Literal::String(_)))
-        {
-            if self.displays_through_digit_buffer(text.span) {
-                // Formatted like "{}" so the digits land in an owned String
-                // instead of the conversion's shared static buffer.
-                let template = self.chunk.add_constant(ConstPoolEntry::Str("{}".into()));
-                let template_reg = self.alloc_reg();
-                self.chunk.emit(ri16(Opcode::MovConst, template_reg, template));
-                self.begin_format_scratch(true);
-                let arguments = self.compile_format_arguments(std::slice::from_ref(text), &[]);
-                let view = self.emit_format_call(template_reg, &arguments, span);
-                self.end_format_scratch();
-                view
-            } else {
-                self.begin_format_scratch(false);
-                let value = self.compile_value(text);
-                let view = self.coerce_to_display_str(value, text.span);
-                self.end_format_scratch();
-                view
-            }
-        } else {
-            let owner = self.compile_variadic_call("fmt.format", args);
-            self.injected_format_view(span, owner)
+        // A non-literal template is passed as is with each value's text; the
+        // function formats only when values follow, so a lone text argument
+        // is printed verbatim and never re-parsed for braces.
+        let Some(receiver) = receiver else {
+            return self.compile_variadic_call(name, args);
         };
-        let mut arguments = receiver.into_iter().collect::<Vec<_>>();
-        arguments.push(view);
-        if self.variadic_info_for(name).is_some() {
-            let pointer = self.alloc_reg();
-            self.chunk.emit(ri16(Opcode::MovI, pointer, 0));
-            let count = self.alloc_reg();
-            self.chunk.emit(ri16(Opcode::MovI, count, 0));
-            arguments.extend([pointer, count]);
-        }
+        let _ = span;
+        self.begin_format_scratch(true);
+        let template = {
+            let value = self.compile_value(&args[0]);
+            self.coerce_to_display_str(value, args[0].span)
+        };
+        let arguments = self.compile_format_arguments(&args[1..], &[]);
         let result = self.alloc_result_block(name);
-        self.emit_call_by_name(name, &arguments, result);
+        self.emit_display_call(name, Some(receiver), template, &arguments, result);
+        self.end_format_scratch();
         result
     }
 
@@ -8095,6 +8113,8 @@ impl<'a> FnCompiler<'a> {
     fn coerce_to_display_str(&mut self, reg: u8, span: crate::parser::ast::Span) -> u8 {
         let key = (span.start, span.end);
         let source_ty = self.type_of_span(key);
+        let source_reg = reg;
+        let source_ty_kept = source_ty.clone();
         let reg = self.load_reference_value(reg, source_ty.clone());
         let value_ty = source_ty.map(|ty| match ty {
             TypeKind::Ref { inner } | TypeKind::MutRef { inner } => self.resolve_type(&inner.node),
@@ -8107,6 +8127,9 @@ impl<'a> FnCompiler<'a> {
             let data = self.alloc_reg();
             self.chunk.emit(field_load(data, reg, offset));
             return data;
+        }
+        if let Some(text) = self.display_through_to_string(reg, source_reg, &source_ty_kept, &value_ty) {
+            return text;
         }
         let unsigned = matches!(
             &value_ty,
@@ -8181,6 +8204,61 @@ impl<'a> FnCompiler<'a> {
         } else {
             reg
         }
+    }
+
+    /// A value of a type implementing `Display` is shown through its
+    /// `to_string(&self)`: the owned text lives until the format call ends.
+    fn display_through_to_string(
+        &mut self,
+        value: u8,
+        source: u8,
+        source_ty: &Option<TypeKind>,
+        value_ty: &Option<TypeKind>,
+    ) -> Option<u8> {
+        let Some(ty @ TypeKind::Named { name, type_args }) = value_ty else {
+            return None;
+        };
+        if self.owned_string_data_offset(ty).is_some() || is_string_view_type(ty) {
+            return None;
+        }
+        if !self
+            .trait_impls
+            .get(name.as_str())
+            .is_some_and(|traits| traits.contains("Display"))
+        {
+            return None;
+        }
+        let base = format!("{name}.to_string");
+        let target = if type_args.is_empty() {
+            base
+        } else {
+            let kinds: Vec<TypeKind> = type_args.iter().map(|arg| arg.node.clone()).collect();
+            crate::semantic::typecheck::mangle_monomorphized(&base, &kinds)
+        };
+        if !self.fn_index.contains_key(&target) {
+            return None;
+        }
+        // A borrowed argument is already the reference; a value is borrowed
+        // through its slot.
+        let reference = if matches!(source_ty, Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. })) {
+            source
+        } else {
+            let reference = self.alloc_reg();
+            self.chunk.emit(mem_lea_block(value, reference, 0, 1));
+            reference
+        };
+        let owner = self.alloc_reg();
+        self.emit_call_by_name(&target, &[reference], owner);
+        let string_ty = self.format_result_type.clone()?;
+        let offset = self.owned_string_data_offset(&string_ty)?;
+        if let Some(action) = self.drop_action_for_resolved_type(&string_ty)
+            && let Some(owners) = self.format_owners.last_mut()
+        {
+            owners.push((owner, action));
+        }
+        let data = self.alloc_reg();
+        self.chunk.emit(field_load(data, owner, offset));
+        Some(data)
     }
 
     /// Coerce `reg` to str applying a format spec extracted from the template.
@@ -8420,6 +8498,13 @@ impl<'a> FnCompiler<'a> {
                 self.reg_of(name)
             }
 
+            ExprKind::Spread(_) => {
+                self.codegen_error.get_or_insert_with(|| {
+                    "a forwarded variadic `...values` is only valid as a variadic call's tail"
+                        .to_string()
+                });
+                self.alloc_reg()
+            }
             ExprKind::Group(_) => {
                 let ExpressionControl::UnaryChild(inner) = expression_control(expr) else {
                     unreachable!("transparent operand");
@@ -9066,26 +9151,13 @@ impl<'a> FnCompiler<'a> {
                             let template_reg = self.alloc_reg();
                             self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
 
+                            // The function formats its template itself (D-024):
+                            // it receives the template and each value's text.
                             self.begin_format_scratch(true);
                             let coerced_var =
                                 self.compile_format_arguments(&expanded.args, &expanded.specs);
-                            let fmt_dst = if !coerced_var.is_empty() {
-                                self.emit_format_call(template_reg, &coerced_var, expr.span)
-                            } else {
-                                template_reg
-                            };
+                            self.emit_display_call(&call_name, None, template_reg, &coerced_var, dst);
                             self.end_format_scratch();
-
-                            let mut call_args = vec![fmt_dst];
-                            if self.variadic_info_for(call_name.as_str()).is_some() {
-                                let rp = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovI, rp, 0));
-                                let rl = self.alloc_reg();
-                                self.chunk.emit(ri16(Opcode::MovI, rl, 0));
-                                call_args.push(rp);
-                                call_args.push(rl);
-                            }
-                            self.emit_call_by_name(&call_name, &call_args, dst);
                             return dst;
                         }
                     }
@@ -9275,12 +9347,13 @@ impl<'a> FnCompiler<'a> {
                             if is_variadic_intrinsic {
                                 self.emit_call_by_name(&call_target, &coerced, dst);
                             } else {
-                                let fmt_dst = if coerced.len() > 1 {
-                                    self.emit_format_call(template_reg, &coerced[1..], expr.span)
-                                } else {
-                                    template_reg
-                                };
-                                self.emit_call_by_name(&call_target, &[fmt_dst], dst);
+                                self.emit_display_call(
+                                    &call_target,
+                                    None,
+                                    template_reg,
+                                    &coerced[1..],
+                                    dst,
+                                );
                             }
                             self.end_format_scratch();
                             return dst;
@@ -10853,7 +10926,7 @@ fn collect_idents(expr: &Expr, names: &mut Vec<String>) {
             }
         }
         ExprKind::Literal(_) => {}
-        ExprKind::Group(inner) => collect_idents(inner, names),
+        ExprKind::Group(inner) | ExprKind::Spread(inner) => collect_idents(inner, names),
         ExprKind::Unary { expr: inner, .. } => collect_idents(inner, names),
         ExprKind::Cast { expr: inner, .. } => collect_idents(inner, names),
         ExprKind::Binary { left, right, .. } => {
@@ -11808,7 +11881,7 @@ fn main() void { pending(); }
     }
 
     #[test]
-    fn injected_owned_formatter_and_argument_share_full_expression_cleanup() {
+    fn display_argument_owner_is_destroyed_once_after_the_call() {
         let module = "pub fn format(template: str, ...args: str) String { ret String.wrap(template); }";
         let main = r#"
 import fmt;
@@ -11818,7 +11891,7 @@ impl String {
     pub fn wrap(data: str) String { ret String { prefix: 7, data: data }; }
 }
 fn make_text() String { ret String { prefix: 9, data: "owned" }; }
-@format fn show(template: str, ...args: any) void {}
+fn show(template: str, ...args: Display) void {}
 fn main() void { show("{}", make_text()); }
 "#;
         let merged = format!("{module}\n{main}");
@@ -11881,24 +11954,15 @@ fn main() void { show("{}", make_text()); }
                         .get(instruction.ri16().1 as usize)
                         .is_some_and(|target| target.name == "String.free"))
                 .count(),
-            2,
-            "both the source argument owner and injected formatter owner must be destroyed"
-        );
-        assert!(
-            main.code
-                .iter()
-                .filter(|instruction| instruction.opcode == Opcode::FieldLoad as u8
-                    && u16::from_le_bytes([instruction.ops[2], instruction.ops[3]]) == 8)
-                .count()
-                >= 2,
-            "format arguments and formatter results must expose their data, not their header"
+            1,
+            "the source argument owner is destroyed once; the callee formats, so no formatter owner is injected (D-024)"
         );
     }
 
     #[test]
     fn implicit_display_rejects_unproved_pointer_representations() {
         let source = r#"struct Owner { value: i32 }
-@format fn show(template: str, ...args: any) void {}
+fn show(template: str, ...args: Display) void {}
 fn main() void { show("{}", 1); }"#;
         let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
         let report = Analyzer::new().analyze_program(&program);
@@ -11943,7 +12007,7 @@ fn main() void { show("{}", 1); }"#;
 
     #[test]
     fn implicit_display_rejects_slice_views() {
-        let source = r#"@format fn show(template: str, ...args: any) void {}
+        let source = r#"fn show(template: str, ...args: Display) void {}
 fn main() void { show("{}", [1, 2]); }"#;
         let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
         let report = Analyzer::new().analyze_program(&program);

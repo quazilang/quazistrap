@@ -901,6 +901,7 @@ where
                     child!(expr);
                 }
                 ExprKind::Group(expr)
+                | ExprKind::Spread(expr)
                 | ExprKind::Unary { expr, .. }
                 | ExprKind::Cast { expr, .. }
                 | ExprKind::IncDec { expr, .. } => child!(expr),

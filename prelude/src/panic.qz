@@ -79,7 +79,7 @@ pub fn __quazi_panic_handler(info: PanicInfo) ! {
 // Stops the program with a message. The compiler supplies `file` and `line`;
 // write `panic("bad value {}", value)`. The panic handler prints
 // `thread 'main' panicked at '...'` and exits with status 101.
-pub fn panic(msg: str, file: str, line: usize, ...args: str) ! {
+pub fn panic(msg: str, file: str, line: usize, ...args: Display) ! {
     // A panic while a panic is being handled (for example inside a custom
     // `@panic_handler`) does not call the handler again.
     if (__qo_enter_panic()) {

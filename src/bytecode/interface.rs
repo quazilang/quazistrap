@@ -816,13 +816,27 @@ fn render_params(output: &mut String, params: &[Param], c_variadic: bool) {
         if index > 0 {
             output.push_str(", ");
         }
-        output.push_str(&render_attributes(&param.attributes).replace('\n', " "));
+        let display = param
+            .attributes
+            .iter()
+            .any(|attribute| attribute.name == crate::parser::format::DISPLAY_VARIADIC);
+        let attributes: Vec<_> = param
+            .attributes
+            .iter()
+            .filter(|attribute| attribute.name != crate::parser::format::DISPLAY_VARIADIC)
+            .cloned()
+            .collect();
+        output.push_str(&render_attributes(&attributes).replace('\n', " "));
         if param.variadic {
             output.push_str("...");
         }
         output.push_str(&param.name);
         output.push_str(": ");
-        output.push_str(&param.ty.node.to_string());
+        if display {
+            output.push_str("Display");
+        } else {
+            output.push_str(&param.ty.node.to_string());
+        }
     }
     if c_variadic {
         if !params.is_empty() {

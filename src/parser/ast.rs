@@ -110,6 +110,9 @@ pub enum ExprKind {
     Literal(Literal),
     Ident(String),
     Group(Box<Expr>),
+    /// `...values` as the last call argument forwards a variadic parameter
+    /// as the callee's variadic tail.
+    Spread(Box<Expr>),
 
     Unary {
         op: UnaryOpKind,

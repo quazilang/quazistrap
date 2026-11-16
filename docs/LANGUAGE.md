@@ -66,10 +66,9 @@ from the end, and slices follow Python spelling: `text[start:end:step]`.
 
 `any` is reserved syntax, not a runtime value type. Quazi currently has no
 tagged dynamic-value representation, so `any` is rejected in variables,
-fields, parameters, returns, casts, and generic arguments. The sole supported
-use is the final `...args: any` pseudo-parameter of an `@format` function; the
-compiler converts each argument at the call site and the function body cannot
-access that pseudo-parameter. Use a generic parameter for static polymorphism,
+fields, parameters, returns, casts, and generic arguments. Formatting
+functions take `...args: Display` instead ([D-024](decisions/display-variadics.md)).
+Use a generic parameter for static polymorphism,
 `dyn Trait` for trait-object dispatch, or an exact `@repr(C)` callback at a
 foreign boundary.
 

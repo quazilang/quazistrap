@@ -17,6 +17,7 @@ pub import ./option;
 pub import ./result;
 pub import ./traits;
 pub import ./fmt;
+pub import ./fmt.format;
 pub import ./panic.panic;
 pub import ./qoroutine.Qoroutine;
 pub import ./qoroutine.__qo_spawn;

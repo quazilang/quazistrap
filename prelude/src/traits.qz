@@ -9,7 +9,7 @@
 // answer В9В: there is no borrowed `to_str()`; numbers are formatted into
 // their own buffer, which is safe in every thread).
 pub trait Display {
-    fn to_string() String;
+    fn to_string(self: &Self) String;
 }
 
 // ── Debug ────────────────────────────────────────────────────────────────────
@@ -76,85 +76,83 @@ pub trait Index[I, O] {
 }
 
 // ── Write ─────────────────────────────────────────────────────────────────────
-// Implemented by Stdout and Stderr. writef/writelnf accept a pre-formatted
-// string; the compiler auto-formats when called with multiple arguments.
+// Implemented by Stdout and Stderr. Their formatting methods (`writef`,
+// `writelnf`) take `...args: Display` and are inherent methods.
 pub trait Write {
     fn write(self: Self, s: str) void;
     fn writeln(self: Self, s: str) void;
-    fn writef(self: Self, s: str) void;
-    fn writelnf(self: Self, s: str) void;
 }
 
 // ── Display impls for primitives ─────────────────────────────────────────────
 
 impl Display for i8 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: i8) String { ret "{self}"; }
+    pub fn to_string(self: &i8) String { const value: i8 = *self; ret "{value}"; }
 }
 
 impl Display for i16 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: i16) String { ret "{self}"; }
+    pub fn to_string(self: &i16) String { const value: i16 = *self; ret "{value}"; }
 }
 
 impl Display for i32 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: i32) String { ret "{self}"; }
+    pub fn to_string(self: &i32) String { const value: i32 = *self; ret "{value}"; }
 }
 
 impl Display for i64 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: i64) String { ret "{self}"; }
+    pub fn to_string(self: &i64) String { const value: i64 = *self; ret "{value}"; }
 }
 
 impl Display for u8 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: u8) String { ret "{self}"; }
+    pub fn to_string(self: &u8) String { const value: u8 = *self; ret "{value}"; }
 }
 
 impl Display for u16 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: u16) String { ret "{self}"; }
+    pub fn to_string(self: &u16) String { const value: u16 = *self; ret "{value}"; }
 }
 
 impl Display for u32 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: u32) String { ret "{self}"; }
+    pub fn to_string(self: &u32) String { const value: u32 = *self; ret "{value}"; }
 }
 
 impl Display for u64 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: u64) String { ret "{self}"; }
+    pub fn to_string(self: &u64) String { const value: u64 = *self; ret "{value}"; }
 }
 
 impl Display for isize {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: isize) String { ret "{self}"; }
+    pub fn to_string(self: &isize) String { const value: isize = *self; ret "{value}"; }
 }
 
 impl Display for usize {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: usize) String { ret "{self}"; }
+    pub fn to_string(self: &usize) String { const value: usize = *self; ret "{value}"; }
 }
 
 impl Display for f16 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: f16) String { ret (self as f64).to_string(); }
+    pub fn to_string(self: &f16) String { const value: f64 = (*self) as f64; ret value.to_string(); }
 }
 
 impl Display for f32 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: f32) String { ret "{self}"; }
+    pub fn to_string(self: &f32) String { const value: f32 = *self; ret "{value}"; }
 }
 
 impl Display for f64 {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: f64) String { ret "{self}"; }
+    pub fn to_string(self: &f64) String { const value: f64 = *self; ret "{value}"; }
 }
 
 impl Display for bool {
     // The decimal text of the value as an owned String.
-    pub fn to_string(self: bool) String { ret "{self}"; }
+    pub fn to_string(self: &bool) String { const value: bool = *self; ret "{value}"; }
 }
 
 impl Display for str {

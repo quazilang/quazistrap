@@ -260,6 +260,7 @@ impl Visibility<'_> {
             ExprKind::Literal(_) => {}
             ExprKind::Ident(name) => self.check_type_head(name, expr.span, scope),
             ExprKind::Group(inner)
+            | ExprKind::Spread(inner)
             | ExprKind::Unary { expr: inner, .. }
             | ExprKind::IncDec { expr: inner, .. }
             | ExprKind::Try { expr: inner } => self.check_expr(inner, scope),
