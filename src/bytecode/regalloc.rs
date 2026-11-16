@@ -338,6 +338,37 @@ pub fn linear_scan_alloc(chunk: &mut Chunk) {
     chunk.reg_count = max_slot + 1;
 }
 
+/// Gives the most used registers the lowest free slot numbers. A native
+/// slot within 128 bytes of the frame pointer is addressed with a one-byte
+/// displacement instead of four, so frequent slots shrink every access.
+/// Pinned registers (parameters, contiguous blocks) keep their numbers; the
+/// others are permuted among the numbers they already occupy, which cannot
+/// create a collision.
+pub fn order_slots_by_use(chunk: &mut Chunk) {
+    let pinned = compute_pinned(chunk);
+    let mut uses: HashMap<u8, usize> = HashMap::new();
+    for instr in &chunk.code {
+        for register in instruction_registers(instr) {
+            if !pinned.contains(&register) {
+                *uses.entry(register).or_default() += 1;
+            }
+        }
+    }
+    let mut numbers: Vec<u8> = uses.keys().copied().collect();
+    numbers.sort_unstable();
+    let mut by_use: Vec<(usize, u8)> = uses.iter().map(|(&register, &count)| (count, register)).collect();
+    // Most used first; ties keep the lower register first (deterministic).
+    by_use.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let remap: HashMap<u8, u8> = by_use
+        .into_iter()
+        .zip(numbers)
+        .map(|((_, register), number)| (register, number))
+        .collect();
+    for instr in &mut chunk.code {
+        super::codegen::remap_instr_regs(instr, |r| *remap.get(&r).unwrap_or(&r));
+    }
+}
+
 // Registers that must keep their current slot numbers.
 // Params obey the calling convention. Consecutive groups and the multi-slot
 // return ABI must stay consecutive because the encoder infers adjacent slots by
@@ -750,6 +781,23 @@ mod tests {
             .find(|instruction| instruction.opcode() == Some(Opcode::Jz))
             .expect("jump");
         assert_eq!(condition_def.ops[0], jump.ops[0], "the jump must test the condition's slot");
+    }
+
+    #[test]
+    fn frequently_used_registers_get_the_lowest_slots() {
+        // r0 is a parameter (pinned); r1 is used once, r2 four times.
+        let mut chunk = Chunk::with_params("hot", 1);
+        chunk.reg_count = 3;
+        chunk.emit(ri16(Opcode::MovI, 1, 5));
+        chunk.emit(ri16(Opcode::MovI, 2, 7));
+        chunk.emit(rrr(Opcode::Add, 2, 2, 0));
+        chunk.emit(rrr(Opcode::Add, 2, 2, 1));
+        chunk.emit(rrr(Opcode::Ret, 2, 0, 0));
+        order_slots_by_use(&mut chunk);
+        assert_eq!(chunk.code[1].ri16().0, 1, "the hot register takes the lowest free slot");
+        assert_eq!(chunk.code[0].ri16().0, 2);
+        assert_eq!(chunk.code[2].rrr(), (1, 1, 0), "the parameter keeps slot 0");
+        assert_eq!(chunk.code[3].rrr(), (1, 1, 2));
     }
 
     #[test]

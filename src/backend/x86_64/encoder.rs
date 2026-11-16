@@ -839,6 +839,8 @@ impl<'a> FnEncoder<'a> {
                 // Another path can reach this instruction.
                 self.rax_slot.set(None);
             }
+            // The slot rax holds as this instruction starts (after labels).
+            let rax_on_entry = self.rax_slot.get();
             // Only `emit_instr` (and the emission-free CallArg) keep the cache.
             let opcode = Opcode::from_u8(instr.opcode);
             if !matches!(opcode, Some(Opcode::CallArg)) {
@@ -880,8 +882,14 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rax, slot(vreg)));
                             emit!(asm.mov(qword_ptr(rsp + 32 + ((i - 4) * 8) as i32), rax));
                         }
+                        // Stack arguments are staged through rax.
+                        let rax_value = rax_on_entry.filter(|_| pending_args.len() <= 4);
                         for (i, &vreg) in pending_args.iter().enumerate().take(4) {
-                            emit!(asm.mov(WIN64_REGS[i], slot(vreg)));
+                            if rax_value == Some(vreg) {
+                                emit!(asm.mov(WIN64_REGS[i], rax));
+                            } else {
+                                emit!(asm.mov(WIN64_REGS[i], slot(vreg)));
+                            }
                         }
                         let call_idx = asm.instructions().len();
                         emit!(asm.call(fn_start));
@@ -896,8 +904,14 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rax, slot(vreg)));
                             emit!(asm.mov(qword_ptr(rsp + ((i - 6) * 8) as i32), rax));
                         }
+                        // Stack arguments are staged through rax.
+                        let rax_value = rax_on_entry.filter(|_| pending_args.len() <= 6);
                         for (i, &vreg) in pending_args.iter().enumerate().take(6) {
-                            emit!(asm.mov(SYSV_REGS[i], slot(vreg)));
+                            if rax_value == Some(vreg) {
+                                emit!(asm.mov(SYSV_REGS[i], rax));
+                            } else {
+                                emit!(asm.mov(SYSV_REGS[i], slot(vreg)));
+                            }
                         }
                         let call_idx = asm.instructions().len();
                         emit!(asm.call(fn_start));

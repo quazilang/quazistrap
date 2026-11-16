@@ -1851,6 +1851,7 @@ impl<'a> Codegen<'a> {
             // Removing dead definitions can leave a jump to the next instruction.
             crate::bytecode::regalloc::simplify_control_flow(chunk);
             crate::bytecode::regalloc::linear_scan_alloc(chunk);
+            crate::bytecode::regalloc::order_slots_by_use(chunk);
         }
 
         // Reorder chunks so regular functions occupy their fn_index slot.
