@@ -114,14 +114,13 @@ interface overrides for targets whose public interface differs, and a
 SHA-256 of the whole file. Integrity verification does not establish
 ownership safety. `scripts/check_universal_qzi.py` checks the contract.
 
-### Packages of independent QZI artifacts (format 15)
+### Dependencies inside a project QZI
 
-`qz pack a.qzi b.qzi -o bundle.qzi` keeps several independent programs or
-libraries whole in one container, each under its file stem;
-`qz pack --list bundle.qzi` lists them and
-`qz pack --extract a bundle.qzi -o a.qzi` restores one unchanged. A package
-is not compiled directly. (QZI files that an earlier compiler produced as
-one package entry per operating system still load for their systems.)
+Projects are combined through dependencies, not through a separate
+container: a project's QZI links the code of its `quazi.toml` dependencies
+(recursively) into the same one artifact, which compiles without them.
+Format 15, an early container holding one complete program per operating
+system, is retired; reading such a file asks to rebuild it from source.
 
 ## Single-target modules (QZI v14)
 

@@ -10,7 +10,8 @@ C. native generation needs no source files;
 D. shared code calls target-specific code and passes owned values across;
    a program without a Windows implementation yields a QZI without that
    target and a clear error when compiling it for Windows;
-E. `qz pack` keeps independent QZI artifacts whole and distinguishable.
+E. a project's dependencies are linked into its one QZI, which compiles
+   without the dependency; a retired format 15 file is rejected.
 """
 
 import argparse
@@ -128,17 +129,29 @@ def main():
                       "-o", str(out / "partial")], out, ok=False)
         assert failed.returncode != 0 and b"has no `windows` target" in failed.stderr, failed.stderr
 
-        # E: packaging independent artifacts.
-        run([qz, "pack", str(root / "app.qzi"), str(root / "partial.qzi"), "-o", str(root / "bundle.qzi")], root)
-        listing = run([qz, "pack", "--list", str(root / "bundle.qzi")], root).stdout.decode()
-        assert listing.splitlines()[0].startswith("app\t") and listing.splitlines()[1].startswith("partial\t"), listing
-        run([qz, "pack", "--extract", "app", str(root / "bundle.qzi"), "-o", str(root / "extracted.qzi")], root)
-        assert (root / "extracted.qzi").read_bytes() == data, "a packaged artifact changed"
-        direct = run([qz, "build", str(root / "bundle.qzi"), "-o", str(out / "bundle")], out, ok=False)
-        assert direct.returncode != 0 and b"QZI package" in direct.stderr, direct.stderr
+        # E: a dependency is part of the project's single QZI.
+        library = root / "mylib"
+        (library / "src").mkdir(parents=True)
+        (library / "quazi.toml").write_text('[package]\nname="mylib"\n\n[lib]\npath="src/lib.qz"\n')
+        (library / "src/lib.qz").write_text("pub fn twice(x: i32) i32 { ret x * 2; }\n")
+        consumer = root / "consumer"
+        (consumer / "src").mkdir(parents=True)
+        (consumer / "quazi.toml").write_text(
+            '[package]\nname="consumer"\n\n[dependencies]\nmylib = { path = "../mylib" }\n\n'
+            '[build]\nentry="src/main.qz"\n')
+        (consumer / "src/main.qz").write_text("import mylib;\nfn main() i32 { ret mylib.twice(21); }\n")
+        run([qz, "build", "--no-incremental", "-i", "-o", str(root / "consumer.qzi")], consumer)
+        shutil.rmtree(library)
+        shutil.rmtree(consumer)
+        run([qz, "build", str(root / "consumer.qzi"), "-o", str(out / "consumer")], out)
+        linked = subprocess.run([str(out / "consumer")], timeout=60)
+        assert linked.returncode == 42, linked.returncode
+        (root / "retired.qzi").write_bytes(b"\x00QZI\x0f\x00\x00")
+        retired = run([qz, "build", str(root / "retired.qzi"), "-o", str(out / "retired")], out, ok=False)
+        assert retired.returncode != 0 and b"format 15" in retired.stderr, retired.stderr
     print("PASS unified QZI: one artifact with shared bodies once and per-target alternatives; "
           f"linux/windows/netbsd natives without sources{' (windows under Wine)' if args.wine else ''}; "
-          "missing target diagnosed; qz pack keeps artifacts whole")
+          "missing target diagnosed; dependencies linked into the one QZI; format 15 rejected")
 
 
 if __name__ == "__main__":

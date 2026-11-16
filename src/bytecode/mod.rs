@@ -15,7 +15,7 @@ pub use chunk::{
     Chunk, ConstPoolEntry, QziCallRelocation, QziContentBinding, QziMetadata, QziModule,
     QziModuleKind, QziOwnershipArtifact,
     deserialize_qzi, deserialize_qzi_module, link_qzi_modules, select_qzi_target, serialize_qzi,
-    serialize_qzi_module, serialize_unified_qzi, serialize_universal_qzi, universal_qzi_variants,
+    serialize_qzi_module, serialize_unified_qzi,
 };
 pub use codegen::Codegen;
 pub use instruction::Instruction;

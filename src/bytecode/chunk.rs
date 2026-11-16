@@ -1298,12 +1298,10 @@ pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
     serialize_qzi_module(&QziModule::from_chunks(chunks.to_vec()))
 }
 
-/// QZI package (format 15): a container of several independent QZI artifacts,
-/// each kept whole under a label (`qz pack`). Packaging never merges them.
-/// Layout: magic, 15, u16 entry count, then per entry a u8-length label and a
-/// u32-length artifact. (Before format 16, one-project multi-target QZI used
-/// this container with operating-system labels; such files still load.)
-pub const QZI_UNIVERSAL_VERSION: u8 = 15;
+/// Retired format 15: one complete program per operating system in a
+/// container. A project now compiles to one unified QZI (format 16); such
+/// files are rejected with a request to rebuild.
+const QZI_RETIRED_PER_OS_VERSION: u8 = 15;
 
 /// Unified multi-target QZI (format 16): ONE program or library. Every
 /// function body appears once with the set of target operating systems it
@@ -1596,7 +1594,7 @@ fn select_unified_target(unified: UnifiedQzi, os: &str) -> Result<QziModule, Str
 
 static SELECTED_QZI_TARGET: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 
-/// The operating system whose variant universal QZI inputs provide (set by
+/// The operating system a unified QZI is compiled for (set by
 /// the driver from `--target`; otherwise the host).
 pub fn select_qzi_target(os: &str) {
     if let Ok(mut selected) = SELECTED_QZI_TARGET.write() {
@@ -1620,74 +1618,15 @@ fn selected_qzi_target() -> String {
     .to_string()
 }
 
-pub fn serialize_universal_qzi(variants: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
-    if variants.is_empty() {
-        return Err("a universal QZI needs at least one target variant".to_string());
-    }
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(QZI_MAGIC);
-    bytes.push(QZI_UNIVERSAL_VERSION);
-    bytes.extend_from_slice(&(variants.len() as u16).to_le_bytes());
-    for (os, module) in variants {
-        if module.len() < 5 || module[4] == QZI_UNIVERSAL_VERSION {
-            return Err(format!("packaged artifact `{os}` must be a QZI program or library, not a package"));
-        }
-        let name = u8::try_from(os.len()).map_err(|_| "QZI target name too long".to_string())?;
-        bytes.push(name);
-        bytes.extend_from_slice(os.as_bytes());
-        let length = u32::try_from(module.len())
-            .map_err(|_| "QZI variant exceeds the 4 GiB limit".to_string())?;
-        bytes.extend_from_slice(&length.to_le_bytes());
-        bytes.extend_from_slice(module);
-    }
-    Ok(bytes)
-}
-
-/// The variants of a universal QZI, as (operating system, module bytes);
-/// `None` for a single-target QZI.
-pub fn universal_qzi_variants(bytes: &[u8]) -> Result<Option<Vec<(String, &[u8])>>, String> {
-    if bytes.len() < 7 || &bytes[..4] != QZI_MAGIC.as_slice() || bytes[4] != QZI_UNIVERSAL_VERSION {
-        return Ok(None);
-    }
-    let count = u16::from_le_bytes([bytes[5], bytes[6]]) as usize;
-    let mut offset = 7usize;
-    let mut variants = Vec::with_capacity(count);
-    let truncated = || "truncated universal QZI".to_string();
-    for _ in 0..count {
-        let name_len = *bytes.get(offset).ok_or_else(truncated)? as usize;
-        offset += 1;
-        let name = bytes.get(offset..offset + name_len).ok_or_else(truncated)?;
-        let name = std::str::from_utf8(name)
-            .map_err(|_| "universal QZI target name is not UTF-8".to_string())?
-            .to_string();
-        offset += name_len;
-        let length = bytes.get(offset..offset + 4).ok_or_else(truncated)?;
-        let length = u32::from_le_bytes([length[0], length[1], length[2], length[3]]) as usize;
-        offset += 4;
-        let module = bytes.get(offset..offset + length).ok_or_else(truncated)?;
-        offset += length;
-        variants.push((name, module));
-    }
-    if offset != bytes.len() {
-        return Err("universal QZI has trailing bytes".to_string());
-    }
-    Ok(Some(variants))
-}
-
 pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
     if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_UNIFIED_VERSION {
         return select_unified_target(decode_unified_qzi(bytes)?, &selected_qzi_target());
     }
-    if let Some(variants) = universal_qzi_variants(bytes)? {
-        let target = selected_qzi_target();
-        let available: Vec<&str> = variants.iter().map(|(os, _)| os.as_str()).collect();
-        let Some((_, module)) = variants.iter().find(|(os, _)| *os == target) else {
-            return Err(format!(
-                "this is a QZI package of independent artifacts ({}), not a program; extract one with `qz pack --extract NAME -o FILE`",
-                available.join(", ")
-            ));
-        };
-        return deserialize_qzi_module(module);
+    if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_RETIRED_PER_OS_VERSION {
+        return Err(
+            "QZI format 15 (one program copy per operating system) is no longer supported; rebuild it from source"
+                .to_string(),
+        );
     }
     if bytes.len() < 5 || &bytes[..4] != QZI_MAGIC.as_slice() {
         return Err("invalid QZI magic".to_string());

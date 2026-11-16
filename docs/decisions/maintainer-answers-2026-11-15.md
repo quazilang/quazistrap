@@ -32,3 +32,10 @@ Status: decided by the maintainers on 2026-11-15 (asks.txt rounds 4-6).
   (2026-11-16, `docs/language/types.md#trait-bounds`, `scripts/check_trait_bounds.py`);
   the generic `Map` is pending. Generic values are still treated as copyable
   by the ownership pass (asks В23).
+
+## 2026-11-16 follow-up
+
+- **QZI packaging.** `qz pack` and QZI format 15 are removed. One project is
+  one unified QZI (format 16), and projects are combined through
+  `quazi.toml` dependencies, which are linked into that artifact. This
+  replaces the qzifix.txt request to keep a separate multi-QZI container.

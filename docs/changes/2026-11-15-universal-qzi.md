@@ -36,7 +36,8 @@ program. Format 16 merges the per-target compilations into one module in
 which each function body appears once with its target mask: for quazifetch,
 109 bodies are shared by all three systems, 28 by two, and 40-44 are
 specific to one; the file is 139 KB instead of 258 KB. The format 15
-container remains as `qz pack`, the separate packaging of independent
-artifacts. Limitation: each target is still analyzed and compiled once
+container and the short-lived `qz pack` command are removed (2026-11-16,
+maintainer decision): projects are combined through dependencies, which
+are linked into the one QZI. Limitation: each target is still analyzed and compiled once
 (the merge happens on the compiled bodies), which costs build time but not
 artifact size.

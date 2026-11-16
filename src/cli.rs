@@ -233,20 +233,6 @@ pub enum Command {
         #[arg(long = "package", requires = "src")]
         package: Option<String>,
     },
-    /// Package independent QZI artifacts into one container, list one, or extract an entry
-    Pack {
-        /// QZI files to package (with -o), or the package (with --list / --extract)
-        inputs: Vec<PathBuf>,
-        /// package or extracted file to write
-        #[arg(short = 'o', long = "output")]
-        output: Option<PathBuf>,
-        /// list the entries of a package
-        #[arg(long)]
-        list: bool,
-        /// write the entry with this label to -o
-        #[arg(long)]
-        extract: Option<String>,
-    },
     /// Remove project build artifacts
     Clean,
     /// Run the compiler's internal debug program
