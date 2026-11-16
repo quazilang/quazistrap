@@ -127,26 +127,44 @@ fn emit_native_object(
         )));
     }
 
+    // Encode every function first, then fold identical bodies (ICF):
+    // monomorphization emits copies such as `Result.is_err<A, E>` for every
+    // `A` whose machine code and relocations are identical. Calls to folded
+    // copies are compared through their canonical function, so folding runs
+    // to a fixed point. A folded function's symbol names the first copy.
+    // Exported functions keep their own body (a C caller may compare addresses).
+    let mut encoded = Vec::with_capacity(chunks.len());
     for (chunk_idx, chunk) in chunks.iter().enumerate() {
-        let fn_offset = text_bytes.len();
         let encoder = FnEncoder {
             chunk,
             fn_table: &fn_names,
-            fn_offset,
+            fn_offset: 0,
             str_syms: &str_syms_per_chunk[chunk_idx],
             bss_syms: &bss_syms_per_chunk[chunk_idx],
             target,
             rax_slot: Default::default(),
         };
-
         let (fn_bytes, fn_relocs) = encoder.encode()?;
-
         let is_exported = chunk.export.is_some()
             || report.is_some_and(|r| {
                 r.exported_symbols
                     .get(&chunk.name)
                     .is_some_and(|symbol| !embedded_export_symbols.contains(symbol.as_str()))
             });
+        encoded.push((fn_bytes, fn_relocs, is_exported));
+    }
+    let canonical = fold_identical_functions(&encoded, &fn_names, |symbol| {
+        // Interned strings share rodata bytes under per-chunk names.
+        sym_table
+            .get_defined(symbol)
+            .filter(|_| symbol.starts_with("__quazi_str_"))
+            .map(|id| obj.symbol(id).value)
+    });
+
+    let mut emitted_at: Vec<(usize, usize)> = vec![(0, 0); chunks.len()];
+    for (chunk_idx, (chunk, (fn_bytes, fn_relocs, is_exported))) in
+        chunks.iter().zip(encoded).enumerate()
+    {
         let scope = if chunk.intrinsic {
             SymbolScope::Compilation
         } else if is_exported {
@@ -154,6 +172,20 @@ fn emit_native_object(
         } else {
             SymbolScope::Linkage
         };
+        if canonical[chunk_idx] != chunk_idx {
+            let (offset, length) = emitted_at[canonical[chunk_idx]];
+            sym_table.define_function(
+                &mut obj,
+                section_acc.text_id,
+                &fn_names[chunk_idx],
+                offset as u64,
+                length as u64,
+                scope,
+            );
+            continue;
+        }
+        let fn_offset = text_bytes.len();
+        emitted_at[chunk_idx] = (fn_offset, fn_bytes.len());
         sym_table.define_function(
             &mut obj,
             section_acc.text_id,
@@ -179,7 +211,8 @@ fn emit_native_object(
             }
         }
 
-        for reloc in fn_relocs {
+        for mut reloc in fn_relocs {
+            reloc.offset_in_text += fn_offset;
             all_relocs.push((reloc, None));
         }
         text_bytes.extend_from_slice(&fn_bytes);
@@ -362,11 +395,86 @@ impl Backend for PeBackend {
     }
 }
 
+
+/// For each function, the index of the first function whose machine code
+/// and relocations are identical (itself when unique). Relocations to
+/// functions compare through the callee's canonical index, and interned
+/// data through `data_identity`. Exported functions are never folded.
+fn fold_identical_functions(
+    encoded: &[(Vec<u8>, Vec<relocations::PendingReloc>, bool)],
+    fn_names: &[String],
+    data_identity: impl Fn(&str) -> Option<u64>,
+) -> Vec<usize> {
+    let index_of: std::collections::HashMap<&str, usize> = fn_names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index))
+        .collect();
+    let mut canonical: Vec<usize> = (0..encoded.len()).collect();
+    // Each round can only merge more functions; a small bound keeps
+    // pathological inputs linear.
+    for _ in 0..8 {
+        let mut first: std::collections::HashMap<(&[u8], Vec<(usize, relocations::RelocKind, String, i64)>), usize> =
+            std::collections::HashMap::new();
+        let mut next = canonical.clone();
+        for (index, (bytes, relocs, exported)) in encoded.iter().enumerate() {
+            if *exported {
+                continue;
+            }
+            let normalized = relocs
+                .iter()
+                .map(|reloc| {
+                    let target = if let Some(&callee) = index_of.get(reloc.symbol.as_str()) {
+                        format!("fn#{}", canonical[callee])
+                    } else if let Some(offset) = data_identity(&reloc.symbol) {
+                        format!("rodata+{offset}")
+                    } else {
+                        reloc.symbol.clone()
+                    };
+                    (reloc.offset_in_text, reloc.kind, target, reloc.addend)
+                })
+                .collect();
+            next[index] = *first.entry((bytes.as_slice(), normalized)).or_insert(index);
+        }
+        if next == canonical {
+            break;
+        }
+        canonical = next;
+    }
+    canonical
+}
+
 #[cfg(test)]
 mod tests {
     use object::{Object as _, ObjectSymbol as _};
 
     use super::*;
+
+    #[test]
+    fn identical_functions_fold_through_folded_callees() {
+        let call = |symbol: &str| relocations::PendingReloc {
+            offset_in_text: 1,
+            kind: relocations::RelocKind::Plt32,
+            symbol: symbol.to_string(),
+            addend: -4,
+        };
+        let names: Vec<String> = ["leaf_a", "leaf_b", "caller_a", "caller_b", "export", "export_copy"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let encoded = vec![
+            (vec![0xC3], vec![], false),
+            (vec![0xC3], vec![], false),
+            (vec![0xE8, 0, 0, 0, 0, 0xC3], vec![call("leaf_a")], false),
+            (vec![0xE8, 0, 0, 0, 0, 0xC3], vec![call("leaf_b")], false),
+            (vec![0x90, 0xC3], vec![], true),
+            (vec![0x90, 0xC3], vec![], true),
+        ];
+        let canonical = fold_identical_functions(&encoded, &names, |_| None);
+        // Leaves fold first; callers then fold because their callees did.
+        // Exported functions keep their own addresses.
+        assert_eq!(canonical, vec![0, 0, 2, 2, 4, 5]);
+    }
     use crate::abi::{AbiSignature, AbiType, ForeignSymbol};
     use crate::backend::target::{Abi, Arch, Os};
     use crate::bytecode::chunk::ConstPoolEntry;

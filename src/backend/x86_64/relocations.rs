@@ -5,7 +5,7 @@
 use object::write::{Object, Relocation, SectionId, SymbolId};
 use object::{BinaryFormat, RelocationEncoding, RelocationFlags, RelocationKind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RelocKind {
     /// R_X86_64_PLT32 — relative call to function symbol.
     Plt32,
