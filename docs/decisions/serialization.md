@@ -92,7 +92,15 @@ source declaration order. Borrowed `str`, other integer widths, floats,
 ownership and error contracts are added deliberately. Decode policy, including
 unknown and missing fields, remains a step-4 prerequisite.
 
-`@derive(Deserialize)` is therefore rejected with `S14`, rather than silently
+`@derive(Deserialize)` was rejected with `S14` until the decode policy was
+decided. Step 4 is now implemented (2026-11-16, maintainer answer В19В): it
+generates `Type.from_json(source)` for `bool`, `i64`, `String` and `Option`
+fields with strict unknown/duplicate/missing-key errors; see
+[`docs/api/codec.md`](../api/codec.md#derived-decoding) and
+`scripts/check_deserialize.py`. Generated `Serialize` encodes `String` fields
+through their borrowed view.
+
+Historically, `@derive(Deserialize)` was rejected, rather than silently
 recorded as a no-op. The compiler retains its ordered metadata internally so a
 future, fully specified decoder can consume it, but users must call the
 explicit `codec.decode_bool`, `codec.decode_i64`, or `codec.decode_string`

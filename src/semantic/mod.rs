@@ -746,14 +746,18 @@ fn expand_serialize_derives(program: &Program) -> Program {
         }
     }
 
-    fn serialize_derive_span(attributes: &[Attribute]) -> Option<Span> {
+    fn derive_span(attributes: &[Attribute], trait_name: &str) -> Option<Span> {
         attributes.iter().find_map(|attribute| {
             (attribute.name == "derive"
                 && attribute.args.iter().any(|argument| {
-                    matches!(argument, AttrArg::Positional(AttrVal::Ident(name)) if name == "Serialize")
+                    matches!(argument, AttrArg::Positional(AttrVal::Ident(name)) if name == trait_name)
                 }))
             .then_some(attribute.span)
         })
+    }
+
+    fn serialize_derive_span(attributes: &[Attribute]) -> Option<Span> {
+        derive_span(attributes, "Serialize")
     }
 
     fn json_field_name(field: &AggregateField) -> String {
@@ -768,6 +772,121 @@ fn expand_serialize_derives(program: &Program) -> Program {
                 _ => None,
             })
             .unwrap_or_else(|| field.name.clone())
+    }
+
+    /// `impl Type { pub fn from_json(source: str) Result[Type, DecodeError] }`:
+    /// one pass over the object finds every expected key (unknown and
+    /// repeated keys are errors, maintainer answer В19В), then each field is
+    /// decoded by its type; an `Option` field is `None` when missing or null.
+    fn deserialize_impl(
+        builder: &mut Builder,
+        name: &str,
+        fields: &[AggregateField],
+        derive_span: Span,
+    ) -> Item {
+        let mut statements = Vec::new();
+        let array_type = builder.ident("Array");
+        let keys_value = builder.method_call(array_type, "new", Vec::new());
+        let keys_type = builder.array_ty(TypeKind::Str);
+        statements.push(builder.stmt(StmtKind::Var {
+            name: "__quazi_json_keys".to_string(),
+            ty: Some(keys_type),
+            value: Some(keys_value),
+            attributes: Vec::new(),
+        }));
+        for field in fields {
+            let key = builder.string_literal(json_field_name(field));
+            let keys = builder.ident("__quazi_json_keys");
+            let call = builder.method_call(keys, "push", vec![key]);
+            statements.push(builder.stmt(StmtKind::ExprStmt(call)));
+        }
+        let codec = builder.ident("codec");
+        let source = builder.ident("source");
+        let keys = builder.ident("__quazi_json_keys");
+        let keys_ref = builder.expr(ExprKind::Unary {
+            op: UnaryOpKind::Ref,
+            expr: Box::new(keys),
+        });
+        let spans = builder.method_call(codec, "object_fields", vec![source, keys_ref]);
+        let spans = builder.expr(ExprKind::Try {
+            expr: Box::new(spans),
+        });
+        statements.push(builder.stmt(StmtKind::Var {
+            name: "__quazi_json_spans".to_string(),
+            ty: None,
+            value: Some(spans),
+            attributes: Vec::new(),
+        }));
+        let mut values = Vec::new();
+        for (index, field) in fields.iter().enumerate() {
+            let decoder = deserialize_field_decoder(&field.ty.node).unwrap_or("field_bool");
+            let codec = builder.ident("codec");
+            let source = builder.ident("source");
+            let spans = builder.ident("__quazi_json_spans");
+            let spans_ref = builder.expr(ExprKind::Unary {
+                op: UnaryOpKind::Ref,
+                expr: Box::new(spans),
+            });
+            let position = builder.expr(ExprKind::Literal(Literal::Int(index as u64)));
+            let decoded = builder.method_call(codec, decoder, vec![source, spans_ref, position]);
+            let decoded = builder.expr(ExprKind::Try {
+                expr: Box::new(decoded),
+            });
+            values.push((field.name.clone(), decoded));
+        }
+        let value = builder.expr(ExprKind::StructInit {
+            name: name.to_string(),
+            fields: values,
+        });
+        let ok = builder.ident("Ok");
+        let result = builder.expr(ExprKind::Call {
+            callee: Box::new(ok),
+            type_args: Vec::new(),
+            args: vec![value],
+            named_args: Vec::new(),
+        });
+        statements.push(builder.stmt(StmtKind::Return(Some(result))));
+        let body_span = builder.span();
+        let source_type = builder.ty(TypeKind::Str);
+        let value_type = builder.named_ty(name);
+        let error_type = builder.named_ty("DecodeError");
+        let result_type = builder.ty(TypeKind::Named {
+            name: "Result".to_string(),
+            type_args: vec![value_type, error_type],
+        });
+        let for_type = builder.named_ty(name);
+        let method = Spanned::new(
+            ItemKind::Fn {
+                name: "from_json".to_string(),
+                name_span: None,
+                generic_params: Vec::new(),
+                params: vec![Param {
+                    name: "source".to_string(),
+                    name_span: builder.span(),
+                    ty: source_type,
+                    variadic: false,
+                    attributes: Vec::new(),
+                }],
+                return_ty: result_type,
+                body: Some(Block {
+                    stmts: statements,
+                    span: body_span,
+                }),
+                attributes: Vec::new(),
+                unsafe_fn: false,
+                pub_fn: true,
+                c_variadic: false,
+            },
+            derive_span,
+        );
+        Spanned::new(
+            ItemKind::Impl {
+                trait_ty: None,
+                for_ty: for_type,
+                methods: vec![method],
+            },
+            derive_span,
+        )
     }
 
     let mut builder = Builder {
@@ -786,12 +905,15 @@ fn expand_serialize_derives(program: &Program) -> Program {
         else {
             continue;
         };
-        let Some(derive_span) = serialize_derive_span(attributes) else {
-            continue;
-        };
         if *is_union || !generic_params.is_empty() {
             continue;
         }
+        if let Some(derive_span) = derive_span(attributes, "Deserialize") {
+            items.push(deserialize_impl(&mut builder, name, fields, derive_span));
+        }
+        let Some(derive_span) = serialize_derive_span(attributes) else {
+            continue;
+        };
 
         let mut statements = Vec::new();
         let array_type = builder.ident("Array");
@@ -826,7 +948,14 @@ fn expand_serialize_derives(program: &Program) -> Program {
         statements.push(values_statement);
         for field in fields {
             let receiver = builder.ident("self");
-            let field_value = builder.field(receiver, &field.name);
+            let mut field_value = builder.field(receiver, &field.name);
+            // An owned String field is encoded through its borrowed view: the
+            // field stays in the struct.
+            if matches!(&field.ty.node, TypeKind::Named { name, type_args }
+                if name == "String" && type_args.is_empty())
+            {
+                field_value = builder.method_call(field_value, "as_str", Vec::new());
+            }
             let encoded = builder.method_call(field_value, "to_json", Vec::new());
             let value = builder.expr(ExprKind::Try {
                 expr: Box::new(encoded),
@@ -896,6 +1025,33 @@ fn expand_serialize_derives(program: &Program) -> Program {
     }
 }
 
+/// The `std.codec` decoder for a `@derive(Deserialize)` field type: `bool`,
+/// `i64`, `String` and `Option` of those (maintainer answer В19В).
+pub(super) fn deserialize_field_decoder(ty: &TypeKind) -> Option<&'static str> {
+    let scalar = |ty: &TypeKind| match ty {
+        TypeKind::Bool => Some("bool"),
+        TypeKind::Int64 => Some("i64"),
+        TypeKind::Named { name, type_args } if name == "String" && type_args.is_empty() => {
+            Some("string")
+        }
+        _ => None,
+    };
+    match ty {
+        TypeKind::Named { name, type_args } if name == "Option" && type_args.len() == 1 => {
+            match scalar(&type_args[0].node)? {
+                "bool" => Some("optional_bool"),
+                "i64" => Some("optional_i64"),
+                _ => Some("optional_string"),
+            }
+        }
+        other => match scalar(other)? {
+            "bool" => Some("field_bool"),
+            "i64" => Some("field_i64"),
+            _ => Some("field_string"),
+        },
+    }
+}
+
 /// The initial compiler-generated JSON serializer is deliberately narrow. Keep
 /// this check shared by declaration diagnostics and lowering so an unsupported
 /// source field never reaches code generation as a half-formed method.
@@ -911,6 +1067,25 @@ impl Analyzer {
     fn validate_initial_serialize_fields(&mut self) {
         let derives: Vec<_> = self.serialization_derives.values().cloned().collect();
         for derive in derives {
+            if derive
+                .requested_traits
+                .iter()
+                .any(|trait_name| trait_name == "Deserialize")
+            {
+                for field in &derive.fields {
+                    let resolved = self.resolve_type_aliases(&field.ty);
+                    if deserialize_field_decoder(&resolved).is_none() {
+                        self.push_error(
+                            field.span,
+                            "S14",
+                            format!(
+                                "Deserialize does not support field '{}' of type {}; supported field types are bool, i64, String and Option of those",
+                                field.name, resolved
+                            ),
+                        );
+                    }
+                }
+            }
             if !derive
                 .requested_traits
                 .iter()
@@ -3813,6 +3988,7 @@ struct User {
 fn main() void {}
 "#;
         let report = analyze(source);
+        // A borrowed `str` field cannot own decoded text (В19В matrix).
         let error = report
             .errors
             .iter()
@@ -3820,10 +3996,10 @@ fn main() void {}
                 error.code == "S14"
                     && error
                         .message
-                        .contains("Deserialize derive is not implemented")
+                        .contains("Deserialize does not support field 'name' of type str")
             })
-            .expect("Deserialize must be rejected until bounded struct decoding exists");
-        assert_eq!(error.span.start, source.find("@derive").unwrap());
+            .expect("a borrowed str field must be rejected by Deserialize");
+        assert_eq!(error.span.start, source.find("UserName @json").unwrap());
         let metadata = report
             .serialization_derives
             .get("User")
@@ -3843,28 +4019,22 @@ fn main() void {}
     }
 
     #[test]
-    fn rejects_deserialize_even_when_serialize_is_also_requested() {
+    fn serialize_and_deserialize_can_be_derived_together() {
         let source = r#"
 @derive(Serialize, Deserialize)
 struct Request { value: bool, }
 fn main() void {}
 "#;
         let report = analyze(source);
-        let error = report
-            .errors
-            .iter()
-            .find(|error| {
-                error.code == "S14"
-                    && error
-                        .message
-                        .contains("Deserialize derive is not implemented")
-            })
-            .expect("combined derive must not compile with a non-existent decoder");
-        assert_eq!(error.span.start, source.find("@derive").unwrap());
+        assert!(
+            !report.errors.iter().any(|error| error.message.contains("Deserialize")),
+            "{:?}",
+            report.errors
+        );
         let metadata = report
             .serialization_derives
             .get("Request")
-            .expect("derive metadata remains available for the later decoder implementation");
+            .expect("derive metadata for the generated codec methods");
         assert_eq!(metadata.requested_traits, ["Serialize", "Deserialize"]);
     }
 

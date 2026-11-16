@@ -98,15 +98,44 @@ limit-aware form preserves `InputLimit` and `DepthLimit`.
 const offset: i64 = codec.decode_i64("-42").unwrap();
 ```
 
-The language currently requires every trait method to have a receiver, so it
-cannot express a sound static `Deserialize.from_json(source)` trait method.
-`@derive(Deserialize)` is reserved but rejected with `S14`; it is not a no-op
-marker. Decode entry points remain explicit functions until receiverless trait
-methods and bounded object-decoding policy are available. This is a language
-limitation, not a promise that generic `Deserialize` already works.
+## Derived decoding
 
-`DecodeError` also reserves limit, missing/duplicate/unknown field, and
-invalid-value variants for bounded struct decoding. Those cases are not yet
-produced by the current scalar decoder. `EncodeError.message()` and
+`@derive(Deserialize)` on a non-generic struct generates an associated
+function `Type.from_json(source: str) Result[Type, DecodeError]`. Fields may
+be `bool`, `i64`, `String`, or `Option` of those; `@json(name="...")`
+renames the key as for `Serialize`. The object policy (maintainer answer
+В19В) is strict rather than silent:
+
+- a key the struct does not declare is `UnknownField`;
+- a repeated key is `DuplicateField`;
+- a missing required field is `MissingField`;
+- an `Option` field is `None` when its key is missing or its value is
+  `null`;
+- a value of the wrong JSON type is `TypeMismatch`.
+
+`Serialize` does not yet encode `Option` fields.
+
+```quazi
+import std.codec;
+
+@derive(Deserialize)
+struct Profile {
+    name: String,
+    age: Option[i64],
+}
+
+fn main() i32 {
+    const profile = Profile.from_json("{{\"name\": \"Bo\"}}").unwrap();
+    if profile.age.is_some() { ret 1; }
+    ret 0;
+}
+```
+
+The generated function calls ordinary `std.codec` helpers:
+`object_fields(source, keys)` finds each expected key in one pass and
+`field_*`/`optional_*` decode the values. Individual keys can also be read
+with `json.object_field(source, key)`, which returns `Option` for a missing
+key. Since a trait method needs a receiver, `from_json` is an associated
+function rather than a `Deserialize` trait method. `EncodeError.message()` and
 `DecodeError.message()` provide display text; callers should make policy from
 the structured variants instead of matching the message.

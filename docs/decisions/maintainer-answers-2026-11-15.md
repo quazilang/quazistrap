@@ -24,7 +24,9 @@ Status: decided by the maintainers on 2026-11-15 (asks.txt rounds 4-6).
   deferral.
 - **В18А.** Safety fixes may reject programs that relied on the holes.
 - **В19В.** Deserialization: field access uses `Option`, and an unknown key is
-  an error rather than silently ignored (pending, D-012).
+  an error rather than silently ignored (implemented 2026-11-16:
+  `@derive(Deserialize)` with UnknownField/DuplicateField/MissingField and
+  `Option` fields, `json.object_field` returns `Option`; D-012 step 4).
 - **В20А.** Module-level constants, and more of them in std (implemented,
   `0f8fe6e`).
 - **В21А.** `RESUME.md` is not kept in product repositories; session notes
