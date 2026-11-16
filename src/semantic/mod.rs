@@ -205,6 +205,8 @@ pub struct Analyzer {
     /// Spans of bounded calls whose trait method takes `self` by value; the
     /// ownership pass treats them as consuming the receiver.
     pub(super) consuming_bound_calls: std::collections::HashSet<(usize, usize)>,
+    /// Specializations whose bounds were already checked (diagnostics once).
+    pub(super) bound_checked_monos: HashSet<String>,
     /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
     pub(super) trait_method_slots: HashMap<String, Vec<String>>,
     /// Declared signatures used to type-check dynamic trait dispatch.
@@ -1010,6 +1012,7 @@ impl Analyzer {
             generic_bounds: HashMap::new(),
             bound_method_calls: HashMap::new(),
             consuming_bound_calls: std::collections::HashSet::new(),
+            bound_checked_monos: HashSet::new(),
             trait_method_slots: HashMap::new(),
             trait_method_signatures: HashMap::new(),
             current_fn_name_override: None,
@@ -1199,6 +1202,7 @@ impl Analyzer {
         // Instantiations must satisfy the bounds of their generic parameters,
         // and keep the concrete trait methods they call.
         self.check_generic_bound_instantiations();
+        self.check_bounded_declarations_and_types();
 
         // A direct source call may end a temporary loan only after every
         // resolved callee in its source call graph has the same property.
@@ -1289,6 +1293,11 @@ impl Analyzer {
         // `Array.get<str>` chunk.
         checkpoint()?;
         self.close_monomorphization_dependencies(&mut concrete_specializations, &mut checkpoint)?;
+        // Bounded calls inside specializations the closure created need their
+        // concrete trait methods, which may be further specializations.
+        while self.check_generic_bound_instantiations() {
+            self.close_monomorphization_dependencies(&mut concrete_specializations, &mut checkpoint)?;
+        }
         self.validate_contiguous_value_read_specializations(
             &concrete_specializations,
             &mut checkpoint,
@@ -1639,6 +1648,7 @@ impl Analyzer {
         self.generic_bounds.clear();
         self.bound_method_calls.clear();
         self.consuming_bound_calls.clear();
+        self.bound_checked_monos.clear();
         self.trait_method_slots.clear();
         self.trait_method_signatures.clear();
         self.monomorphizations.clear();

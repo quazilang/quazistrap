@@ -230,11 +230,20 @@ impl Holder[T] {
 }
 ```
 
-Each specialization calls the concrete implementation (`i64.hash_code`).
-The bounds are checked when the type parameter is instantiated: using
-`code[bool]` without `impl Hashed for bool` is S04. Calling a method that no
+Each specialization calls the concrete implementation (`i64.hash_code`),
+including through nested bounded calls and nested bounded types
+(`Wrap[Wrap[P]]`). Bounds are checked when the type parameter is
+instantiated, for functions and for every use of a bounded struct or enum
+type: using `code[bool]` without `impl Hashed for bool` is S04. A bound must
+name a trait (`T: Hashed` or `T: codec.Serialize`). Calling a method that no
 bound declares is S04, and so is calling any method on an unbounded type
 parameter. Methods of a type with bounds have code only per specialization.
+
+Functions, structs, enums and impl methods take bounds. Trait parameters,
+trait-method parameters and type aliases do not yet (E02). Known limits:
+method-level type parameters inside `impl` blocks are not usable yet, and a
+bounded call returning an aggregate that holds string views is rejected
+(S10) because no result-retention facts exist for it.
 
 Known limit (asks В23): the ownership pass treats a value of an unbounded
 or bounded type parameter as copyable, so a generic body can use an owned `T`

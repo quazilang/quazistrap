@@ -505,6 +505,10 @@ impl Analyzer {
                 public,
                 ..
             } => {
+                let bounds = super::bound_attributes(attributes);
+                if !bounds.is_empty() {
+                    self.generic_bounds.insert(name.clone(), bounds);
+                }
                 self.declare(
                     name.clone(),
                     Symbol {
@@ -696,6 +700,10 @@ impl Analyzer {
                         );
                         if body.is_some() {
                             self.source_function_symbols.insert(mangled.clone());
+                        }
+                        let bounds = super::bound_attributes(attributes);
+                        if !bounds.is_empty() {
+                            self.generic_bounds.insert(mangled.clone(), bounds);
                         }
                         let mut attr_names = extract_attribute_names(attributes);
                         let is_foreign = attr_names

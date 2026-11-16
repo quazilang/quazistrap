@@ -1526,8 +1526,7 @@ impl Analyzer {
             .into_iter()
             .filter(|(bounded, _)| bounded == param)
             .find_map(|(_, bound)| {
-                self.trait_method_signatures
-                    .get(&bound)
+                self.bound_trait_signatures(&bound)
                     .and_then(|methods| methods.get(method))
                     .cloned()
             })?;
@@ -5504,7 +5503,17 @@ impl Analyzer {
                             .unwrap_or(usize::MAX)
                     });
                     for (fname, fval) in scheduled_fields {
+                        // A field value sees its own field type as context,
+                        // never the enclosing literal's (`Box2 { item: Box2 {..} }`).
+                        let field_context = field_defs
+                            .iter()
+                            .find(|(declared, _)| declared == fname)
+                            .map(|(_, ty)| substitute_type_kind(ty, &substitution))
+                            .filter(|ty| !type_mentions_params(ty, &generic_params))
+                            .unwrap_or(TypeKind::Void);
+                        self.contextual_expected_types.push(field_context);
                         let val_eval = self.type_check_expr(fval, reachable);
+                        self.contextual_expected_types.pop();
                         if let Some((_, expected_ty)) =
                             field_defs.iter().find(|(fn_, _)| fn_ == fname)
                         {
@@ -7855,8 +7864,7 @@ impl Analyzer {
         }
         for bound in &bounds {
             if let Some(signature) = self
-                .trait_method_signatures
-                .get(bound)
+                .bound_trait_signatures(bound)
                 .and_then(|methods| methods.get(method))
             {
                 let result = signature.return_ty.clone();
@@ -7890,12 +7898,21 @@ impl Analyzer {
         Some(None)
     }
 
-    /// Every instantiation of a bounded generic function (or of a method of
-    /// a bounded generic type) uses types that implement the bounds; the
-    /// concrete trait methods its body calls are kept (dependency edges).
-    pub(super) fn check_generic_bound_instantiations(&mut self) {
-        let monos = self.monomorphizations.clone();
-        for mono in &monos {
+    /// Every instantiation of a bounded generic function or type uses types
+    /// that implement the bounds, and keeps the concrete trait methods its
+    /// body calls (dependency edges). Runs before the specialization closure
+    /// (diagnostics, used methods) and again after it, where it returns the
+    /// specializations of generic impl methods that bounded calls need
+    /// (`Holder.hash_code<P>` for `T = Holder[P]`) so the closure can run again.
+    pub(super) fn check_generic_bound_instantiations(&mut self) -> bool {
+        let known: HashSet<String> = self
+            .monomorphizations
+            .iter()
+            .map(|mono| mono.mangled_name.clone())
+            .collect();
+        let mut added = Vec::new();
+        for mono in self.monomorphizations.clone() {
+            let first_visit = self.bound_checked_monos.insert(mono.mangled_name.clone());
             let mut bounds = self.generic_bounds.get(&mono.fn_name).cloned().unwrap_or_default();
             if let Some((owner, _)) = mono.fn_name.rsplit_once('.')
                 && let Some(owner_bounds) = self.generic_bounds.get(owner)
@@ -7913,45 +7930,155 @@ impl Analyzer {
                     .and_then(|index| mono.type_args.get(index))
                     .cloned()
             };
-            let span = self
-                .resolve_symbol(&mono.fn_name)
-                .map(|symbol| symbol.span)
-                .unwrap_or(Span::new(0, 0, 0, 0));
-            for (param, bound) in &bounds {
-                let Some(argument) = concrete(param) else {
+            if first_visit {
+                let span = self
+                    .resolve_symbol(&mono.fn_name)
+                    .map(|symbol| symbol.span)
+                    .unwrap_or(Span::new(0, 0, 0, 0));
+                for (param, bound) in &bounds {
+                    if let Some(argument) = concrete(param) {
+                        self.check_bound(&argument, param, bound, &mono.fn_name, span);
+                    }
+                }
+            }
+            for (param, method) in self.bound_method_calls.get(&mono.fn_name).cloned().unwrap_or_default() {
+                let Some(argument) = concrete(&param) else {
                     continue;
                 };
                 let argument = self.resolve_type_aliases(&argument);
-                if let TypeKind::Named { name, type_args } = &argument
-                    && type_args.is_empty()
-                    && params.contains(name)
-                {
+                if self.is_unresolved_type_parameter(&argument) {
                     continue;
                 }
-                let type_name = super::declare::type_kind_base_name(&argument);
-                if !self
-                    .trait_impls
-                    .get(&type_name)
-                    .is_some_and(|traits| traits.contains(bound))
+                let base = format!("{}.{method}", super::declare::type_kind_base_name(&argument));
+                let target = match &argument {
+                    TypeKind::Named { type_args, .. }
+                        if !type_args.is_empty()
+                            && !self.generic_params_for_function(&base).is_empty() =>
+                    {
+                        let type_args: Vec<TypeKind> =
+                            type_args.iter().map(|arg| arg.node.clone()).collect();
+                        let mangled = mangle_monomorphized(&base, &type_args);
+                        if !known.contains(&mangled)
+                            && !added.iter().any(|mono: &MonomorphizationInfo| mono.mangled_name == mangled)
+                        {
+                            added.push(MonomorphizationInfo {
+                                fn_name: base.clone(),
+                                type_args,
+                                mangled_name: mangled.clone(),
+                            });
+                        }
+                        mangled
+                    }
+                    _ => base.clone(),
+                };
+                self.resolve_for_read(&base);
+                self.add_dependency_edge(DependencyKind::Call, &mono.mangled_name, &target);
+            }
+        }
+        let grew = !added.is_empty();
+        self.monomorphizations.extend(added);
+        grew
+    }
+
+    /// A type parameter not yet substituted (a caller's own `U`): its bounds
+    /// are checked where the caller is instantiated.
+    fn is_unresolved_type_parameter(&self, ty: &TypeKind) -> bool {
+        matches!(ty, TypeKind::Named { name, type_args }
+            if type_args.is_empty()
+                && !self.resolve_symbol(name).is_some_and(|symbol| symbol.kind == SymbolKind::TypeName))
+    }
+
+    /// The method signatures of a bound's trait, named plainly or through
+    /// its module (`marks.Tag`).
+    fn bound_trait_signatures(
+        &self,
+        bound: &str,
+    ) -> Option<&HashMap<String, super::TraitMethodSignature>> {
+        self.trait_method_signatures
+            .get(bound)
+            .or_else(|| self.trait_method_signatures.get(bound.rsplit('.').next()?))
+    }
+
+    fn check_bound(&mut self, argument: &TypeKind, param: &str, bound: &str, owner: &str, span: Span) {
+        let argument = self.resolve_type_aliases(argument);
+        if self.is_unresolved_type_parameter(&argument) {
+            return;
+        }
+        let trait_name = bound.rsplit('.').next().unwrap_or(bound);
+        let type_name = super::declare::type_kind_base_name(&argument);
+        if !self
+            .trait_impls
+            .get(&type_name)
+            .is_some_and(|traits| traits.contains(trait_name) || traits.contains(bound))
+        {
+            self.push_error(
+                span,
+                "S04",
+                format!("`{type_name}` does not implement `{bound}`, required by `{param}` of `{owner}`"),
+            );
+        }
+    }
+
+    /// Bounds name declared traits, and a bounded type used anywhere (not
+    /// only through its methods) satisfies them.
+    pub(super) fn check_bounded_declarations_and_types(&mut self) {
+        let mut declared: Vec<(String, Vec<(String, String)>)> = self
+            .generic_bounds
+            .iter()
+            .map(|(owner, bounds)| (owner.clone(), bounds.clone()))
+            .collect();
+        declared.sort();
+        for (owner, bounds) in &declared {
+            let span = self
+                .resolve_symbol(owner)
+                .map(|symbol| symbol.span)
+                .unwrap_or(Span::new(0, 0, 0, 0));
+            for (param, bound) in bounds {
+                let trait_name = bound.rsplit('.').next().unwrap_or(bound);
+                if !self.trait_method_slots.contains_key(trait_name)
+                    && !self.trait_method_slots.contains_key(bound.as_str())
+                    && self.bound_trait_signatures(bound).is_none()
                 {
                     self.push_error(
                         span,
                         "S04",
-                        format!(
-                            "`{type_name}` does not implement `{bound}`, required by `{param}` of `{}`",
-                            mono.fn_name
-                        ),
+                        format!("bound `{param}: {bound}` of `{owner}` does not name a trait"),
                     );
                 }
             }
-            for (param, method) in self.bound_method_calls.get(&mono.fn_name).cloned().unwrap_or_default() {
-                if let Some(argument) = concrete(&param) {
-                    let type_name =
-                        super::declare::type_kind_base_name(&self.resolve_type_aliases(&argument));
-                    let target = format!("{type_name}.{method}");
-                    self.resolve_for_read(&target);
-                    self.add_dependency_edge(DependencyKind::Call, &mono.mangled_name, &target);
+        }
+        let mut seen = HashSet::new();
+        let mut pending: Vec<(TypeKind, Span)> = self
+            .annotated_exprs
+            .iter()
+            .filter_map(|annotation| annotation.ty.clone().map(|ty| (ty, annotation.span)))
+            .collect();
+        while let Some((ty, span)) = pending.pop() {
+            match ty {
+                TypeKind::Named { name, type_args } if !type_args.is_empty() => {
+                    for arg in &type_args {
+                        pending.push((arg.node.clone(), span));
+                    }
+                    let key = format!("{name}{type_args:?}");
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                    let Some(bounds) = self.generic_bounds.get(&name).cloned() else {
+                        continue;
+                    };
+                    let params = self.declared_type_parameters(&name).cloned().unwrap_or_default();
+                    for (param, bound) in &bounds {
+                        if let Some(index) = params.iter().position(|candidate| candidate == param)
+                            && let Some(argument) = type_args.get(index)
+                        {
+                            self.check_bound(&argument.node, param, bound, &name, span);
+                        }
+                    }
                 }
+                TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                    pending.push((inner.node, span));
+                }
+                _ => {}
             }
         }
     }

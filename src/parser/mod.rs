@@ -2354,6 +2354,21 @@ impl Parser {
             .collect()
     }
 
+    /// Trait parameters, trait-method parameters and type aliases cannot
+    /// carry bounds yet; reject them instead of ignoring them.
+    pub(crate) fn reject_bounds(&mut self, owner: &str) -> Result<(), String> {
+        match std::mem::take(&mut self.pending_bounds).into_iter().next() {
+            Some((param, bound, span)) => Err(self.render_ast_diagnostic(
+                "E02",
+                format!(
+                    "a {owner} cannot bound `{param}` by `{bound}` yet; bound the functions or types that use it"
+                ),
+                span,
+            )),
+            None => Ok(()),
+        }
+    }
+
     pub(crate) fn parse_optional_generic_params(&mut self) -> Result<Vec<String>, String> {
         if !self.at(TokenKind::LBracket) {
             return Ok(Vec::new());
@@ -2368,7 +2383,14 @@ impl Parser {
             if self.at(TokenKind::Colon) {
                 self.advance();
                 loop {
-                    let (bound, bound_span) = self.parse_ident_with_span()?;
+                    // A bound names a trait, possibly through its module
+                    // (`codec.Serialize`).
+                    let (mut bound, bound_span) = self.parse_ident_with_span()?;
+                    while self.at(TokenKind::Dot) {
+                        self.advance();
+                        bound.push('.');
+                        bound.push_str(&self.parse_ident()?);
+                    }
                     self.pending_bounds.push((param.clone(), bound, bound_span));
                     if self.at(TokenKind::Plus) {
                         self.advance();

@@ -228,8 +228,7 @@ impl Parser {
         let start = self.expect(TokenKind::Trait)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
-        let mut attributes = attributes;
-        attributes.extend(self.take_bound_attributes());
+        self.reject_bounds("trait")?;
 
         self.expect(TokenKind::LBrace)?;
         let mut methods = Vec::new();
@@ -243,6 +242,7 @@ impl Parser {
             self.expect(TokenKind::Fn)?;
             let method_name = self.parse_ident()?;
             let method_generic_params = self.parse_optional_generic_params()?;
+            self.reject_bounds("trait method")?;
 
             self.expect(TokenKind::LParen)?;
             let mut params = Vec::new();
@@ -436,8 +436,7 @@ impl Parser {
         let start = self.expect(TokenKind::Type)?.span;
         let name = self.parse_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
-        let mut attributes = attributes;
-        attributes.extend(self.take_bound_attributes());
+        self.reject_bounds("type alias")?;
         self.expect(TokenKind::Eq)?;
         let aliased_type = self.parse_type()?;
         let end = self.expect(TokenKind::Semicolon)?.span;
