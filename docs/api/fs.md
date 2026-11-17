@@ -82,6 +82,8 @@ use raw `File.read` for binary input. `read_to_string` has no size limit; for
 untrusted or possibly large files use `read_to_string_with_limit(path,
 max_bytes)`, which reads at most `max_bytes + 1` bytes and returns
 `FsError.TooLarge` when the file is longer.
+`read_bytes_with_limit(path, max_bytes)` reads a binary file into an
+`Array[u8]` under the same limit.
 
 ```quazi
 const config: Result[String, fs.FsError] = fs.read_to_string("settings.qz");

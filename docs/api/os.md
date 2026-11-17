@@ -57,7 +57,8 @@ publishes a new copy of the environment under a writer lock, so concurrent
 readers and writers in other threads are safe; replaced copies stay allocated
 because a reader may still hold one
 ([runtime state](../internals/runtime-state.md)). Windows uses
-`SetEnvironmentVariableA`, NetBSD libc `setenv`/`unsetenv`.
+`SetEnvironmentVariableA` (ANSI code page: non-ASCII text is not preserved),
+NetBSD libc `setenv`/`unsetenv`; other targets return `Native(38)` (ENOSYS).
 
 | API | Current behavior |
 | --- | --- |

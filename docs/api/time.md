@@ -101,7 +101,45 @@ carry the sign, `-23..23`; minutes `0..59`; otherwise `None`) describe a fixed
 offset, not a time zone. `SystemTime.to_offset(&offset)` returns the wall-clock
 `DateTime` fields at that offset and `format_rfc3339_at(&offset)` returns text
 such as `2000-02-29T07:04:56-05:30` (`Z` for a zero offset); both return `None`
-when the local fields leave years 0001-9999.
+when the local fields leave years 0001-9999. `UtcOffset.from_seconds(seconds)`
+accepts any offset under one day either way, such as the local mean time
+offsets of historical time zone data.
+
+## Time zones (`std.timezone`)
+
+`TimeZone` maps an instant to the offset, abbreviation and daylight flag of a
+named zone:
+
+```quazi
+import std.time.SystemTime;
+import std.timezone.TimeZone;
+
+fn main() i32 {
+    const kyiv = TimeZone.load("Europe/Kyiv").unwrap();
+    const instant = SystemTime.parse_rfc3339("2024-07-01T12:00:00Z").unwrap();
+    // "2024-07-01T15:00:00+03:00", abbreviation "EEST"
+    const text = kyiv.format_rfc3339(&instant).unwrap();
+    ret 0;
+}
+```
+
+- `TimeZone.load(name)` reads IANA TZif data (RFC 8536, versions 1-4) from
+  `$TZDIR`, `/usr/share/zoneinfo`, `/etc/zoneinfo` (NixOS) or
+  `/usr/share/lib/zoneinfo`. A missing file, or a name that starts with `/`
+  or contains `..`, is `UnknownZone`; malformed data is `InvalidZone`.
+- `TimeZone.local()` uses `TZ` (`:Name`, an IANA name, or a POSIX rule), then
+  `/etc/localtime`, then UTC. `TimeZone.utc()` is UTC.
+- `TimeZone.from_posix(rule)` builds a zone from a POSIX TZ rule such as
+  `CET-1CEST,M3.5.0,M10.5.0/3` (`Jn`, `n` and `Mm.w.d` dates, `<+03>`-quoted
+  names, transition times up to ±167 hours); `TimeZone.from_tzif(name, &bytes)`
+  decodes TZif bytes directly.
+- `offset_at`, `abbreviation_at`, `is_dst_at`, `local_time` (a `DateTime`) and
+  `format_rfc3339` answer for an instant. After the last stored transition the
+  file's POSIX footer rule applies, so slim TZif files cover future years.
+
+Leap-second records are ignored, since `SystemTime` counts POSIX seconds.
+Windows has no TZif database of its own: `load` works only when `TZDIR` (or
+one of the paths above) holds one; `from_posix` always works.
 
 ## `DateTime`
 
@@ -118,6 +156,8 @@ weekday (1 = Monday ... 7 = Sunday); `to_system_time()` and
   `duration_since`.
 - `InvalidFormat` reports text that is not a supported RFC 3339 timestamp.
 - `OutOfRange` reports a valid time outside years 0001-9999.
+- `UnknownZone` means no time zone data was found for a name.
+- `InvalidZone` reports malformed TZif data or POSIX TZ rule text.
 
 `TimeError.message()` provides display text; applications should generally
 propagate the structured variant instead of matching error strings.
