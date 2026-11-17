@@ -47,6 +47,18 @@ unsafe getenv(name) exposes a borrowed native null-terminated pointer. It is
 unsafe because native lifetime and encoding rules apply; ordinary code should
 use env instead.
 
+set_env(name, value) and remove_env(name) change this process's environment
+and that of children started afterwards; env_present(name) reports whether a
+variable is set, even to an empty value. They return `Result[bool, EnvError]`:
+`set_env` gives `Ok(true)`, `remove_env` gives `Ok(true)` when the variable was
+set and `Ok(false)` when it was not. A name that is empty or contains `=` is
+`InvalidName`; `Native(code)` carries a platform error. On Linux each change
+publishes a new copy of the environment under a writer lock, so concurrent
+readers and writers in other threads are safe; replaced copies stay allocated
+because a reader may still hold one
+([runtime state](../internals/runtime-state.md)). Windows uses
+`SetEnvironmentVariableA`, NetBSD libc `setenv`/`unsetenv`.
+
 | API | Current behavior |
 | --- | --- |
 | name() | "Linux" or "Windows" on supported targets, otherwise "Unknown". |

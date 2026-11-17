@@ -225,12 +225,13 @@ impl SectionAccumulator {
         // Trace-enable flag (set by _start when QUAZI_TRACE=1).
         let trace_offset = obj.append_section_data(self.data_id, &[0u8], 1);
         sym_table.define_data(obj, self.data_id, "__quazi_trace_enabled", trace_offset, 1);
-        let envp_offset = obj.append_section_data(self.data_id, &[0u8; 8], 8);
-        sym_table.define_data(obj, self.data_id, "__quazi_envp", envp_offset, 8);
         // Zeroed process-wide runtime state (`quazi.runtime.state`), e.g. the
-        // qoroutine scheduler; Quazi has no global variables.
+        // qoroutine scheduler; Quazi has no global variables. The Linux
+        // environment pointer lives at +112 so `std.os` can replace it (and
+        // takes its writer lock at +104); see docs/internals/runtime-state.md.
         let state_offset = obj.append_section_data(self.data_id, &[0u8; 128], 16);
         sym_table.define_data(obj, self.data_id, "__quazi_runtime_state", state_offset, 128);
+        sym_table.define_data(obj, self.data_id, "__quazi_envp", state_offset + 112, 8);
         // Embedded heap: spin lock and seven size-class free lists (runtime.rs).
         let heap_offset = obj.append_section_data(self.data_id, &[0u8; 64], 64);
         sym_table.define_data(obj, self.data_id, "__quazi_heap_state", heap_offset, 64);

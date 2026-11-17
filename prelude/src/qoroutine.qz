@@ -16,6 +16,7 @@
 //   +40 free slot indexes (i64 array), +48 free slot count,
 //   +56 preemption enabled (the signal handler was installed),
 //   +64 panics entered outside qoroutines (see `__qo_enter_panic`).
+// (+104 and +112 belong to the environment: docs/internals/runtime-state.md.)
 // All stacks are slots of one arena; a slot's first word is its task, so code
 // running on a qoroutine finds its task from the stack pointer
 // (`quazi.stack.pointer` + `quazi.ptr.offset_from`, no thread-local storage).

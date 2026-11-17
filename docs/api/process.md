@@ -32,7 +32,7 @@ fn main() i32 {
 | `Command.new(program)` | A program name without `/` is looked up in the `PATH` the child will see (an `env("PATH", ...)` override first); a path is used as is. |
 | `arg(value)` / `args(values)` | Append arguments; `program` is `argv[0]`. |
 | `current_dir(dir)` | Working directory of the child; a failing `chdir` is reported as `SpawnFailed`. |
-| `env(name, value)` / `env_remove(name)` / `env_clear()` | Adjust the inherited environment; later calls win. |
+| `env(name, value)` / `env_remove(name)` / `env_clear()` | Adjust the inherited environment (the current one, including `os.set_env` changes); later calls win. On Windows names compare ASCII case-insensitively and the child gets an ANSI environment block. |
 | `spawn()` | Starts the child and returns a `Child`; a failed `execve` (missing program, no permission) is reported before returning. |
 | `status()` | Spawns and waits, returning the `ExitStatus`. |
 
@@ -94,8 +94,9 @@ recommendation to construct a command string or rely on a shell.
 `TerminateFailed(i32)`, and `CloseFailed(i32)`. `message()` produces a
 display-oriented summary; `native_code()` exposes the native number.
 
-Working-directory selection, custom environments, redirected pipes, captured
-output, timeouts, and cancellation are not implemented. Native-library and
+Working directories, custom environments, captured output (`output()`), and
+timeouts (`wait_timeout`, `wait_or_terminate`) are implemented; arbitrary
+standard-stream redirection beyond `output()` is not. Native-library and
 object-only Linux embeddings do not have Quazi’s captured startup environment;
 their spawn attempt returns `SpawnFailed(ENOSYS)` rather than launching with an
 empty environment. The complete design and portability requirements are in
