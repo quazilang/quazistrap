@@ -24,6 +24,9 @@ fn larger(a: &Inner, b: &Inner) &Inner {
     ret b;
 }
 fn total(p: &Point) i32 { ret p.y + p.inner.value; }
+impl Inner { fn label(self: &Inner) &String { ret &self.label; } }
+fn chained(p: &Point) &String { ret p.inner_ref().label(); }
+fn passed(p: &Point) &String { ret larger(&p.inner, &p.inner).label(); }
 fn main() i32 {
     var point = Point { inner: Inner { value: 1, label: String.from("first") }, y: 2 };
     const y: &i32 = &point.y;
@@ -32,10 +35,11 @@ fn main() i32 {
     const best = larger(inner, &other);
     println("{} {} {} {}", *y, best.value, best.label, point.me().y);
     println("{} {}", point.label_ref().len(), total(point.me()));
+    println("{} {}", chained(&point), passed(&point));
     ret 0;
 }
 """
-EXPECTED = "2 5 other 2\n5 3\n"
+EXPECTED = "2 5 other 2\n5 3\nfirst first\n"
 
 INVALID = [
     ("struct P { y: i32 } fn f(p: P) &i32 { ret &p.y; } fn main() void {}",
@@ -51,6 +55,16 @@ INVALID = [
      "cannot move `p` while it is shared-borrowed"),
     ("fn f() Option[&i32] { ret None; } fn main() void {}",
      "may return only a plain shared reference"),
+    # A returned call result must derive from the caller's own reference parameters.
+    ("struct I { s: String } impl I { fn r(self: &I) &String { ret &self.s; } }\n"
+     "fn f(h: &I) &String { const l = I { s: String.from(\"x\") }; ret l.r(); } fn main() void {}",
+     "a returned reference must be a reference parameter"),
+    ("fn pick(a: &String) &String { ret a; }\n"
+     "fn f(h: &String) &String { const s = String.from(\"x\"); ret pick(&s); } fn main() void {}",
+     "a returned reference must be a reference parameter"),
+    ("struct I { s: String } impl I { fn r(self: &I) &String { ret &self.s; } }\n"
+     "fn f(h: I) &String { ret h.r(); } fn main() void {}",
+     "a returned reference must be a reference parameter"),
     # Exclusive access may not be minted through a shared reference.
     ("struct S { y: i32 } fn poke(p: &S) void { const q = &p.y!; *q = 99; }\n"
      "fn main() i32 { const a = S { y: 1 }; poke(&a); ret a.y; }",

@@ -2317,17 +2317,9 @@ impl Analyzer {
             StmtKind::Return(expr) => {
                 match (expected_return, expr) {
                     (Some(expected), Some(return_expr)) => {
-                        if matches!(self.resolve_type_aliases(expected), TypeKind::Ref { ref inner }
-                            if !matches!(inner.node, TypeKind::Str))
-                            && !self.is_parameter_reference(return_expr)
-                        {
-                            self.push_error(
-                                return_expr.span,
-                                "S10",
-                                "a returned reference must be a reference parameter or `&parameter.field` reached through one, so its caller can keep the borrowed argument alive"
-                                    .to_string(),
-                            );
-                        } else if address_of_ident(return_expr).is_some() {
+                        let returns_reference = matches!(self.resolve_type_aliases(expected), TypeKind::Ref { ref inner }
+                            if !matches!(inner.node, TypeKind::Str));
+                        if !returns_reference && address_of_ident(return_expr).is_some() {
                             self.push_error(
                                 return_expr.span,
                                 "S10",
@@ -2338,6 +2330,15 @@ impl Analyzer {
                         let actual = self
                             .type_check_expr_expected(return_expr, true, Some(expected))
                             .ty;
+                        // Checked after typing, so calls' argument types are known.
+                        if returns_reference && !self.is_parameter_reference(return_expr) {
+                            self.push_error(
+                                return_expr.span,
+                                "S10",
+                                "a returned reference must be a reference parameter, `&parameter.field` reached through one, or a reference-returning call whose reference arguments are such; its caller then keeps the borrowed argument alive"
+                                    .to_string(),
+                            );
+                        }
                         if let Some(actual) = actual
                             && !self.check_expr_compat(return_expr, expected, &actual)
                         {
@@ -10018,8 +10019,42 @@ impl Analyzer {
             {
                 addressable_place_root(inner).is_some_and(reference_parameter)
             }
+            // A reference-returning call derives its result from its reference
+            // arguments and borrowed receiver (checked at its own `ret`).
+            ExprKind::Call { args, named_args, .. } => args
+                .iter()
+                .chain(named_args.iter().map(|(_, arg)| arg))
+                .all(|argument| self.is_parameter_derived_argument(argument)),
+            ExprKind::MethodCall { object, args, named_args, .. } => {
+                let static_call = addressable_place_root(object).is_some_and(|root| {
+                    self.resolve_symbol(root)
+                        .is_some_and(|symbol| !matches!(symbol.kind, SymbolKind::Variable { .. } | SymbolKind::Parameter))
+                });
+                (static_call
+                    || addressable_place_root(object).is_some_and(reference_parameter)
+                    || self.is_parameter_reference(object))
+                    && args
+                        .iter()
+                        .chain(named_args.iter().map(|(_, arg)| arg))
+                        .all(|argument| self.is_parameter_derived_argument(argument))
+            }
             _ => false,
         }
+    }
+
+    /// A call argument that cannot be the source of a reference result
+    /// (a non-reference value) or a reference derived from a parameter.
+    fn is_parameter_derived_argument(&self, argument: &Expr) -> bool {
+        let reference = self
+            .annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| annotation.span == argument.span)
+            .and_then(|annotation| annotation.ty.as_ref())
+            .is_none_or(|ty| {
+                matches!(self.resolve_type_aliases(ty), TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+            });
+        !reference || self.is_parameter_reference(argument)
     }
 }
 

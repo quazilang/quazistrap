@@ -70,7 +70,9 @@ tag using unit or wildcard payload patterns (for example `Some(_)`), but it
 cannot bind a payload. This supports read-only status queries without creating
 an aggregate alias or a payload reference with unknown provenance.
 A function may return a plain `&T` only when every `ret` is a reference
-parameter or a field reached through one (`ret &self.name;`); the caller then
+parameter, a field reached through one (`ret &self.name;`), or a call returning
+`&T` whose reference arguments and borrowed receiver are such
+(`ret self.inner_ref().label();`); the caller then
 keeps each reference argument's root (and a borrowed receiver) borrowed for the
 rest of its enclosing scope (D-014). Other returned references (`Option[&T]`,
 references to by-value parameters or locals) are errors. Non-string references

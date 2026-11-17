@@ -16,7 +16,8 @@ relying on integer widening through a reference. Reference bindings are lexical
 and cannot be rebound. Create a new binding in the narrower scope instead.
 
 Since 2026-11-17 a function may return a plain `&T` that is a reference
-parameter or `&parameter.field` through one; any other non-string reference
+parameter, `&parameter.field` through one, or a reference-returning call made
+only with such reference arguments; any other non-string reference
 result is an error. Structs, enums, arrays, owned generic values, and closures
 cannot retain references. Return an owned
 value or redesign the operation as a callback that consumes the reference
