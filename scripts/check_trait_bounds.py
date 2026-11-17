@@ -42,6 +42,10 @@ fn main() i32 {
     const x: i64 = 9;
     const b: Box2[Box2[i64]] = Box2 { item: Box2 { item: x } };
     println("{outer(&p)} {w.hash_code()} {b.item.item} {tagged(&p)}");
+    const plain: dyn Hashed = Point { x: 6 };
+    const wrapped: Wrap[Point] = Wrap { item: Point { x: 7 } };
+    const dynamic: dyn Hashed = wrapped;
+    println("{plain.hash_code()} {dynamic.hash_code()}");
     ret 0;
 }
 """
@@ -88,7 +92,7 @@ def main():
         result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=valid,
                                 text=True, capture_output=True, timeout=600)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert result.stdout == "pt\nint\n42 22 102 115\n42 2003 9 4\n", result.stdout
+        assert result.stdout == "pt\nint\n42 22 102 115\n42 2003 9 4\n6 1007\n", result.stdout
         for index, (source, message) in enumerate(INVALID):
             invalid = project(root, f"invalid{index}", PRELUDE + source)
             result = subprocess.run([qz, "check"], cwd=invalid, text=True,

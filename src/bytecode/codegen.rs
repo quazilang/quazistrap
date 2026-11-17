@@ -6492,24 +6492,7 @@ impl<'a> FnCompiler<'a> {
                 if let Some(expr) = value {
                     self.mark_consumed_expr(expr);
                     let src = self.compile_expr(expr);
-                    // Coerce concrete Named type → dyn Trait fat pointer when declared type is Dyn.
-                    let coerced = if let Some(ty_ann) = ty {
-                        if let TypeKind::Dyn { trait_name } = &ty_ann.node {
-                            let key = (expr.span.start, expr.span.end);
-                            if let Some(TypeKind::Named {
-                                name: type_name, ..
-                            }) = self.type_of_span(key)
-                            {
-                                self.coerce_to_dyn(src, &type_name, trait_name)
-                            } else {
-                                src
-                            }
-                        } else {
-                            src
-                        }
-                    } else {
-                        src
-                    };
+                    let coerced = self.coerce_declared_value(src, expr, ty.as_ref());
                     let local_ty = ty
                         .as_ref()
                         .map(|t| self.resolve_type(&t.node))
@@ -6573,10 +6556,14 @@ impl<'a> FnCompiler<'a> {
                 }
                 false
             }
-            StmtKind::Const { name, value, .. } => {
+            StmtKind::Const { name, ty, value, .. } => {
                 self.mark_consumed_expr(value);
                 let src = self.compile_expr(value);
-                let local_ty = self.type_of_span((value.span.start, value.span.end));
+                let src = self.coerce_declared_value(src, value, ty.as_ref());
+                let local_ty = match ty.as_ref().map(|ty| self.resolve_type(&ty.node)) {
+                    Some(declared @ TypeKind::Dyn { .. }) => Some(declared),
+                    _ => self.type_of_span((value.span.start, value.span.end)),
+                };
                 let slots = self.value_slot_count(value);
                 let reg = if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =
                     &local_ty
@@ -8332,7 +8319,28 @@ impl<'a> FnCompiler<'a> {
 
     /// Box a concrete struct pointer into a 16-byte fat pointer for `dyn Trait`.
     /// Layout: word[0] = concrete ptr, word[1] = vtable ptr.
-    fn coerce_to_dyn(&mut self, obj_reg: u8, type_name: &str, trait_name: &str) -> u8 {
+    /// A concrete value bound to a `dyn Trait` declaration becomes a fat
+    /// pointer (value, vtable); other declarations take the value as is.
+    fn coerce_declared_value(&mut self, src: u8, value: &Expr, declared: Option<&Type>) -> u8 {
+        let Some(TypeKind::Dyn { trait_name }) = declared.map(|ty| &ty.node) else {
+            return src;
+        };
+        let Some(TypeKind::Named { name, type_args }) =
+            self.type_of_span((value.span.start, value.span.end))
+        else {
+            return src;
+        };
+        let type_args: Vec<TypeKind> = type_args.iter().map(|arg| arg.node.clone()).collect();
+        self.coerce_to_dyn(src, &name, &type_args, trait_name)
+    }
+
+    fn coerce_to_dyn(
+        &mut self,
+        obj_reg: u8,
+        type_name: &str,
+        type_args: &[TypeKind],
+        trait_name: &str,
+    ) -> u8 {
         let fat = self.alloc_reg();
         self.chunk.emit(ri16(Opcode::New, fat, 16));
         // fat[0] = concrete ptr
@@ -8342,7 +8350,15 @@ impl<'a> FnCompiler<'a> {
         let methods = self.trait_method_slots.get(trait_name).map(|slots| {
             slots
                 .iter()
-                .map(|method| format!("{type_name}.{method}"))
+                .map(|method| {
+                    // A generic type's vtable holds its specialized methods.
+                    let base = format!("{type_name}.{method}");
+                    if type_args.is_empty() {
+                        base
+                    } else {
+                        crate::semantic::typecheck::mangle_monomorphized(&base, type_args)
+                    }
+                })
                 .collect::<Vec<_>>()
         });
         let Some(methods) = methods else {

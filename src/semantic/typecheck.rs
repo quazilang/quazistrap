@@ -2175,6 +2175,7 @@ impl Analyzer {
                     );
                 }
                 if let (Some(ann), Some(val)) = (&declared_ty, &value_eval.ty) {
+                    self.request_dyn_vtable_specializations(ann, val);
                     if let Some(v) = value.as_ref() {
                         if !self.check_expr_compat(v, ann, val) {
                             self.push_error(
@@ -2222,6 +2223,9 @@ impl Analyzer {
             } => {
                 let declared_ty = ty.as_ref().map(|t| t.node.clone());
                 let value_eval = self.type_check_expr_expected(value, true, declared_ty.as_ref());
+                if let (Some(declared), Some(actual)) = (&declared_ty, &value_eval.ty) {
+                    self.request_dyn_vtable_specializations(declared, actual);
+                }
                 if value_eval.ty.as_ref().is_some_and(|value_ty| {
                     matches!(
                         self.resolve_type_aliases(value_ty),
@@ -8098,6 +8102,42 @@ impl Analyzer {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// A generic value coerced to `dyn Trait` dispatches to its specialized
+    /// methods (`Holder.hash_code<P>`): request them and keep them reachable.
+    fn request_dyn_vtable_specializations(&mut self, declared: &TypeKind, value: &TypeKind) {
+        let TypeKind::Dyn { trait_name } = self.resolve_type_aliases(declared) else {
+            return;
+        };
+        let TypeKind::Named { name, type_args } = self.resolve_type_aliases(value) else {
+            return;
+        };
+        if type_args.is_empty() {
+            return;
+        }
+        let type_args: Vec<TypeKind> = type_args.into_iter().map(|arg| arg.node).collect();
+        let methods = self.trait_method_slots.get(&trait_name).cloned().unwrap_or_default();
+        let from = self
+            .current_function
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "__program__".to_string());
+        for method in methods {
+            let fn_name = format!("{name}.{method}");
+            let mangled = mangle_monomorphized(&fn_name, &type_args);
+            if !self.monomorphizations.iter().any(|mono| mono.mangled_name == mangled) {
+                let params = self.generic_params_for_function(&fn_name);
+                self.record_specialization_layout(&fn_name, &params, &type_args);
+                self.monomorphizations.push(MonomorphizationInfo {
+                    fn_name: fn_name.clone(),
+                    type_args: type_args.clone(),
+                    mangled_name: mangled.clone(),
+                });
+            }
+            self.resolve_for_read(&fn_name);
+            self.add_dependency_edge(DependencyKind::Call, &from, &mangled);
         }
     }
 
