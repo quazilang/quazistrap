@@ -521,36 +521,43 @@ impl str {
     }
 
     // Parses decimal floating-point text such as `-1.5` or `2.5e10` as `f64`.
+    // The result is the nearest f64 (computed in double-double precision; the
+    // first 19 significant digits are used).
     pub fn parse_f64(self: str) Result[f64, ParseError] {
         const length: usize = __string_strlen(self);
         if (length == 0) { ret Err(ParseError.Empty); }
         var index: usize = 0;
-        var sign: f64 = 1.0;
+        var negative: bool = false;
         const first: u8 = __string_byte_at(self, 0);
         if (first == 43 || first == 45) {
-            if (first == 45) { sign = -1.0; }
+            negative = first == 45;
             index = 1;
         }
-        var value: f64 = 0.0;
+        // mantissa * 10^scale, keeping at most 19 significant digits.
+        var mantissa: u64 = 0;
+        var kept: usize = 0;
+        var scale: i64 = 0;
         var digits: usize = 0;
+        var fraction: bool = false;
         for (index < length) {
             const byte: u8 = __string_byte_at(self, index);
-            if (byte < 48 || byte > 57) { break; }
-            value = value * 10.0 + __digit_f64(byte);
-            digits++;
-            index++;
-        }
-        if (index < length && __string_byte_at(self, index) == 46) {
-            index++;
-            var place: f64 = 0.1;
-            for (index < length) {
-                const byte: u8 = __string_byte_at(self, index);
-                if (byte < 48 || byte > 57) { break; }
-                value = value + __digit_f64(byte) * place;
-                place = place * 0.1;
-                digits++;
+            if (byte == 46 && !fraction) {
+                fraction = true;
                 index++;
+                continue;
             }
+            if (byte < 48 || byte > 57) { break; }
+            digits++;
+            if (mantissa == 0 && byte == 48) {
+                if (fraction) { scale = scale - 1; }
+            } else if (kept < 19) {
+                mantissa = mantissa * 10 + ((byte - 48) as u64);
+                kept++;
+                if (fraction) { scale = scale - 1; }
+            } else if (!fraction) {
+                scale = scale + 1;
+            }
+            index++;
         }
         if (digits == 0) { ret Err(ParseError.InvalidDigit(index)); }
         if (index < length) {
@@ -566,29 +573,123 @@ impl str {
                     }
                 }
                 const exponent_start: usize = index;
-                var exponent: usize = 0;
+                var exponent: i64 = 0;
                 for (index < length) {
                     const byte: u8 = __string_byte_at(self, index);
                     if (byte < 48 || byte > 57) { break; }
-                    exponent = exponent * 10 + ((byte - 48) as usize);
+                    if (exponent < 100000) { exponent = exponent * 10 + ((byte - 48) as i64); }
                     index++;
                 }
                 if (index == exponent_start) { ret Err(ParseError.InvalidDigit(index)); }
-                var factor: f64 = 1.0;
-                var power: usize = 0;
-                for (power < exponent) { factor = factor * 10.0; power++; }
-                if (exponent_negative) { value = value / factor; }
-                else { value = value * factor; }
+                if (exponent_negative) { scale = scale - exponent; } else { scale = scale + exponent; }
             }
         }
         if (index != length) { ret Err(ParseError.InvalidDigit(index)); }
-        ret Ok(sign * value);
+        const value: f64 = __decimal_to_f64(mantissa, scale);
+        if (negative) { ret Ok(-value); }
+        ret Ok(value);
     }
 
     // Parses decimal floating-point text as `f32`.
     pub fn parse_f32(self: str) Result[f32, ParseError] {
         ret Ok(self.parse_f64()? as f32);
     }
+}
+
+// Double-double arithmetic for correctly rounded decimal parsing: a value is
+// `hi + lo` with |lo| at most half an ulp of `hi` (Dekker; Hida, Li, Bailey).
+struct __Fdd { hi: f64, lo: f64, }
+
+fn __fdd_quick(hi: f64, lo: f64) __Fdd {
+    const sum: f64 = hi + lo;
+    ret __Fdd { hi: sum, lo: lo - (sum - hi) };
+}
+
+fn __fdd_split_hi(value: f64) f64 {
+    const scaled: f64 = 134217729.0 * value;
+    ret scaled - (scaled - value);
+}
+
+// The exact product of two f64 values.
+fn __fdd_product(left: f64, right: f64) __Fdd {
+    const product: f64 = left * right;
+    const left_hi: f64 = __fdd_split_hi(left);
+    const left_lo: f64 = left - left_hi;
+    const right_hi: f64 = __fdd_split_hi(right);
+    const right_lo: f64 = right - right_hi;
+    const error: f64 = ((left_hi * right_hi - product) + left_hi * right_lo + left_lo * right_hi) + left_lo * right_lo;
+    ret __Fdd { hi: product, lo: error };
+}
+
+fn __fdd_add_f64(value: &__Fdd, addend: f64) __Fdd {
+    const sum: f64 = value.hi + addend;
+    const virtual: f64 = sum - value.hi;
+    const error: f64 = (value.hi - (sum - virtual)) + (addend - virtual);
+    ret __fdd_quick(sum, error + value.lo);
+}
+
+fn __fdd_mul(left: &__Fdd, right: &__Fdd) __Fdd {
+    const product: __Fdd = __fdd_product(left.hi, right.hi);
+    ret __fdd_quick(product.hi, product.lo + (left.hi * right.lo + left.lo * right.hi));
+}
+
+fn __fdd_sub(left: &__Fdd, right: &__Fdd) __Fdd {
+    const sum: __Fdd = __fdd_add_f64(left, -right.hi);
+    ret __fdd_quick(sum.hi, sum.lo - right.lo);
+}
+
+fn __fdd_div(left: &__Fdd, right: &__Fdd) __Fdd {
+    const first: f64 = left.hi / right.hi;
+    const first_part: __Fdd = __Fdd { hi: first, lo: 0.0 };
+    const first_product: __Fdd = __fdd_mul(right, &first_part);
+    const rest: __Fdd = __fdd_sub(left, &first_product);
+    const second: f64 = rest.hi / right.hi;
+    const second_part: __Fdd = __Fdd { hi: second, lo: 0.0 };
+    const second_product: __Fdd = __fdd_mul(right, &second_part);
+    const remainder: __Fdd = __fdd_sub(&rest, &second_product);
+    const third: f64 = remainder.hi / right.hi;
+    const quotient: __Fdd = __fdd_quick(first, second);
+    ret __fdd_add_f64(&quotient, third);
+}
+
+// 10^power for 0 <= power <= 256.
+fn __fdd_power_of_ten(power: i64) __Fdd {
+    var result: __Fdd = __Fdd { hi: 1.0, lo: 0.0 };
+    var base: __Fdd = __Fdd { hi: 10.0, lo: 0.0 };
+    var bits: i64 = power;
+    for (bits > 0) {
+        if (bits % 2 == 1) { result = __fdd_mul(&result, &base); }
+        bits = bits / 2;
+        if (bits > 0) { base = __fdd_mul(&base, &base); }
+    }
+    ret result;
+}
+
+// The f64 nearest to mantissa * 10^scale.
+fn __decimal_to_f64(mantissa: u64, scale: i64) f64 {
+    if (mantissa == 0) { ret 0.0; }
+    if (scale > 330) { ret 1.0 / 0.0; }
+    if (scale < -360) { ret 0.0; }
+    const upper: u64 = mantissa / 1000000000;
+    const lower: u64 = mantissa % 1000000000;
+    const high: __Fdd = __fdd_product(upper as f64, 1000000000.0);
+    var value: __Fdd = __fdd_add_f64(&high, lower as f64);
+    var remaining: i64 = scale;
+    for (remaining > 0) {
+        var step: i64 = remaining;
+        if (step > 200) { step = 200; }
+        const power: __Fdd = __fdd_power_of_ten(step);
+        value = __fdd_mul(&value, &power);
+        remaining = remaining - step;
+    }
+    for (remaining < 0) {
+        var step: i64 = -remaining;
+        if (step > 200) { step = 200; }
+        const power: __Fdd = __fdd_power_of_ten(step);
+        value = __fdd_div(&value, &power);
+        remaining = remaining + step;
+    }
+    ret value.hi;
 }
 
 fn __string_index(text: str, index: isize) Rune {

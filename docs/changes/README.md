@@ -1,5 +1,7 @@
 # Change records
 
+- [2026-11-17: Derived codecs cover numbers, nested structs, `Option` and `Array`](2026-11-17-derived-codec-matrix.md)
+
 - [2026-11-15: Module constants; no implicit numeric conversions](2026-11-15-module-constants-and-numeric-conversions.md)
 
 - [2026-11-15: Universal QZI](2026-11-15-universal-qzi.md)

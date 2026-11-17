@@ -586,6 +586,8 @@ pub fn parse_f64(self: str) Result[f64, ParseError]
 ```
 
 Parses decimal floating-point text such as `-1.5` or `2.5e10` as `f64`.
+The result is the nearest f64 (computed in double-double precision; the
+first 19 significant digits are used).
 
 ### `str.parse_f32`
 

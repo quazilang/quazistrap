@@ -2583,6 +2583,9 @@ struct FnCompiler<'a> {
     /// (see `release_statement_temporaries`), so the frame size and the
     /// inliner's register offset must use this high-water mark.
     reg_high_water: u16,
+    /// Drop-guard register reserved with the binding being declared; see
+    /// `reserve_scalar_binding`.
+    reserved_drop_guard: Option<u8>,
     codegen_error: Option<String>,
     resolution_errors: Rc<RefCell<Vec<String>>>,
     bound_names: HashSet<String>,
@@ -2873,6 +2876,7 @@ impl<'a> FnCompiler<'a> {
             binding_slots: HashMap::new(),
             next_reg: 0,
             reg_high_water: 0,
+            reserved_drop_guard: None,
             codegen_error: None,
             resolution_errors,
             bound_names,
@@ -5151,6 +5155,47 @@ impl<'a> FnCompiler<'a> {
         r
     }
 
+    /// Reserve the registers of a single-register binding and its drop guard
+    /// before the initializer is compiled. They then sit below the
+    /// initializer's temporaries, which the end of the statement releases;
+    /// allocated after them, they would keep them all reserved.
+    fn reserve_scalar_binding(
+        &mut self,
+        declared: Option<&TypeKind>,
+        value: &Expr,
+    ) -> Option<(u8, u8)> {
+        let ty = declared
+            .cloned()
+            .or_else(|| self.type_of_span((value.span.start, value.span.end)));
+        if matches!(ty, Some(TypeKind::Array { .. } | TypeKind::Slice { .. })) {
+            return None;
+        }
+        let binding = self.alloc_reg();
+        Some((binding, self.alloc_reg()))
+    }
+
+    fn bind_reserved(&mut self, name: String, reserved: Option<(u8, u8)>) -> u8 {
+        match reserved {
+            Some((register, _)) => {
+                self.regs.insert(name, register);
+                register
+            }
+            None => self.bind(name),
+        }
+    }
+
+    fn register_reserved_drop_local(
+        &mut self,
+        name: &str,
+        reg: u8,
+        ty: Option<TypeKind>,
+        reserved: Option<(u8, u8)>,
+    ) {
+        self.reserved_drop_guard = reserved.map(|(_, guard)| guard);
+        self.register_drop_local(name, reg, ty);
+        self.reserved_drop_guard = None;
+    }
+
     fn reg_of(&mut self, name: &str) -> u8 {
         match self.regs.get(name).copied() {
             Some(register) => register,
@@ -5475,7 +5520,10 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn register_drop_action(&mut self, name: &str, reg: u8, action: DropAction, initialized: bool) {
-        let guard = self.alloc_reg();
+        let guard = self
+            .reserved_drop_guard
+            .take()
+            .unwrap_or_else(|| self.alloc_reg());
         self.chunk
             .emit(ri16(Opcode::MovI, guard, u16::from(initialized)));
         if let Some(scope) = self.drop_scopes.last_mut() {
@@ -6582,6 +6630,8 @@ impl<'a> FnCompiler<'a> {
                 name, ty, value, ..
             } => {
                 if let Some(expr) = value {
+                    let declared = ty.as_ref().map(|t| self.resolve_type(&t.node));
+                    let early = self.reserve_scalar_binding(declared.as_ref(), expr);
                     self.mark_consumed_expr(expr);
                     let src = self.compile_expr(expr);
                     let coerced = self.coerce_declared_value(src, expr, ty.as_ref());
@@ -6610,7 +6660,7 @@ impl<'a> FnCompiler<'a> {
                             base
                         }
                     } else {
-                        let reg = self.bind(name.clone());
+                        let reg = self.bind_reserved(name.clone(), early);
                         if reg != coerced {
                             self.chunk.emit(rrr(Opcode::Mov, reg, coerced, 0));
                         }
@@ -6620,7 +6670,7 @@ impl<'a> FnCompiler<'a> {
                         self.local_types.insert(name.clone(), local_ty);
                     }
                     self.binding_slots.insert(reg, slots);
-                    self.register_drop_local(name, reg, local_ty);
+                    self.register_reserved_drop_local(name, reg, local_ty, early);
                 } else {
                     let local_ty = ty.as_ref().map(|t| self.resolve_type(&t.node));
                     let reg = if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =
@@ -6649,6 +6699,11 @@ impl<'a> FnCompiler<'a> {
                 false
             }
             StmtKind::Const { name, ty, value, .. } => {
+                let declared = match ty.as_ref().map(|ty| self.resolve_type(&ty.node)) {
+                    declared @ Some(TypeKind::Dyn { .. }) => declared,
+                    _ => None,
+                };
+                let early = self.reserve_scalar_binding(declared.as_ref(), value);
                 self.mark_consumed_expr(value);
                 let src = self.compile_expr(value);
                 let src = self.coerce_declared_value(src, value, ty.as_ref());
@@ -6673,7 +6728,7 @@ impl<'a> FnCompiler<'a> {
                         base
                     }
                 } else {
-                    let reg = self.bind(name.clone());
+                    let reg = self.bind_reserved(name.clone(), early);
                     if reg != src {
                         self.chunk.emit(rrr(Opcode::Mov, reg, src, 0));
                     }
@@ -6683,7 +6738,7 @@ impl<'a> FnCompiler<'a> {
                     self.local_types.insert(name.clone(), local_ty);
                 }
                 self.binding_slots.insert(reg, slots);
-                self.register_drop_local(name, reg, local_ty);
+                self.register_reserved_drop_local(name, reg, local_ty, early);
                 false
             }
             StmtKind::Return(expr) => {
@@ -10343,8 +10398,10 @@ impl<'a> FnCompiler<'a> {
                 }
                 let jmp_end = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
 
-                // Failure path: build failure variant and early-return.
+                // Failure path: build failure variant and early-return. Its
+                // registers are dead after the return, so later code reuses them.
                 self.chunk.patch_jump(jne, self.chunk.len() as u16);
+                let failure_mark = self.next_reg;
                 if enum_name == "Option" {
                     // Return None — zero-arg variant.
                     let none_ptr = self.alloc_reg();
@@ -10395,6 +10452,7 @@ impl<'a> FnCompiler<'a> {
                 self.emit_all_cleanup();
                 self.chunk.emit(rrr(Opcode::Mov, 0, failure, 0));
                 self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+                self.release_scratch_registers(failure_mark);
 
                 self.chunk.patch_jump(jmp_end, self.chunk.len() as u16);
                 val

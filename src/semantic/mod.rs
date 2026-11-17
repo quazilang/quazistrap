@@ -205,6 +205,10 @@ pub struct Analyzer {
     /// Spans of bounded calls whose trait method takes `self` by value; the
     /// ownership pass treats them as consuming the receiver.
     pub(super) consuming_bound_calls: std::collections::HashSet<(usize, usize)>,
+    /// Spans of every call resolved through a trait bound. Each impl body is
+    /// checked on its own, so such a result can only retain its receiver and
+    /// arguments, never an unverified source.
+    pub(super) bounded_trait_calls: std::collections::HashSet<(usize, usize)>,
     /// Specializations whose bounds were already checked (diagnostics once).
     pub(super) bound_checked_monos: HashSet<String>,
     /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
@@ -744,6 +748,84 @@ fn expand_serialize_derives(program: &Program) -> Program {
         fn string_literal(&mut self, value: String) -> Expr {
             self.expr(ExprKind::Literal(Literal::String(value)))
         }
+
+        fn try_expr(&mut self, value: Expr) -> Expr {
+            self.expr(ExprKind::Try {
+                expr: Box::new(value),
+            })
+        }
+
+        fn reference(&mut self, value: Expr) -> Expr {
+            self.expr(ExprKind::Unary {
+                op: UnaryOpKind::Ref,
+                expr: Box::new(value),
+            })
+        }
+
+        fn call(&mut self, callee: &str, args: Vec<Expr>) -> Expr {
+            let callee = self.ident(callee);
+            self.expr(ExprKind::Call {
+                callee: Box::new(callee),
+                type_args: Vec::new(),
+                args,
+                named_args: Vec::new(),
+            })
+        }
+
+        /// `codec.<function>(args)`.
+        fn codec_call(&mut self, function: &str, args: Vec<Expr>) -> Expr {
+            let codec = self.ident("codec");
+            self.method_call(codec, function, args)
+        }
+
+        /// A (possibly module-qualified) type name as an expression.
+        fn type_path(&mut self, name: &str) -> Expr {
+            let mut segments = name.split('.');
+            let first = segments.next().unwrap_or(name);
+            let mut path = self.ident(first);
+            for segment in segments {
+                path = self.field(path, segment);
+            }
+            path
+        }
+
+        fn local(&mut self, name: &str, ty: Option<TypeKind>, value: Expr, mutable: bool) -> Stmt {
+            let ty = ty.map(|ty| self.ty(ty));
+            let node = if mutable {
+                StmtKind::Var {
+                    name: name.to_string(),
+                    ty,
+                    value: Some(value),
+                    attributes: Vec::new(),
+                }
+            } else {
+                StmtKind::Const {
+                    name: name.to_string(),
+                    ty,
+                    value,
+                    attributes: Vec::new(),
+                }
+            };
+            self.stmt(node)
+        }
+
+        fn block(&mut self, stmts: Vec<Stmt>) -> Block {
+            let span = self.span();
+            Block { stmts, span }
+        }
+
+        /// `<decoder>(text)?` for one JSON value of the codec element type.
+        fn decode_value(&mut self, value: &CodecValue, text: Expr) -> Expr {
+            let decoded = match value {
+                CodecValue::Scalar(scalar) => self.codec_call(&format!("decode_{scalar}"), vec![text]),
+                CodecValue::Text => self.codec_call("decode_string", vec![text]),
+                CodecValue::Struct(name) => {
+                    let ty = self.type_path(name);
+                    self.method_call(ty, "from_json", vec![text])
+                }
+            };
+            self.try_expr(decoded)
+        }
     }
 
     fn derive_span(attributes: &[Attribute], trait_name: &str) -> Option<Span> {
@@ -817,21 +899,174 @@ fn expand_serialize_derives(program: &Program) -> Program {
             value: Some(spans),
             attributes: Vec::new(),
         }));
+        // Each field decodes in its own generated method, which keeps every
+        // function small however many fields the struct has.
         let mut values = Vec::new();
+        let mut helpers = Vec::new();
         for (index, field) in fields.iter().enumerate() {
-            let decoder = deserialize_field_decoder(&field.ty.node).unwrap_or("field_bool");
-            let codec = builder.ident("codec");
+            let Some(shape) = codec_field(&field.ty.node) else {
+                // Rejected by `validate_derived_codec_fields`.
+                continue;
+            };
+            let value_name = format!("__quazi_json_value_{index}");
+            let raw_name = format!("__quazi_json_raw_{index}");
+            let mut field_statements = Vec::new();
+            let raw_function = match shape {
+                CodecField::Optional(_) => "optional_raw",
+                _ => "field_raw",
+            };
             let source = builder.ident("source");
             let spans = builder.ident("__quazi_json_spans");
-            let spans_ref = builder.expr(ExprKind::Unary {
-                op: UnaryOpKind::Ref,
-                expr: Box::new(spans),
-            });
             let position = builder.expr(ExprKind::Literal(Literal::Int(index as u64)));
-            let decoded = builder.method_call(codec, decoder, vec![source, spans_ref, position]);
-            let decoded = builder.expr(ExprKind::Try {
-                expr: Box::new(decoded),
+            let raw = builder.codec_call(raw_function, vec![source, spans, position]);
+            let raw = builder.try_expr(raw);
+            field_statements.push(builder.local(&raw_name, None, raw, false));
+            match &shape {
+                CodecField::Required(value) => {
+                    let raw = builder.ident(&raw_name);
+                    let text = builder.method_call(raw, "as_str", Vec::new());
+                    let decoded = builder.decode_value(value, text);
+                    field_statements.push(builder.local(
+                        &value_name,
+                        Some(field.ty.node.clone()),
+                        decoded,
+                        false,
+                    ));
+                }
+                CodecField::Optional(value) => {
+                    // var value: Option[T] = None;
+                    // if (raw.is_some()) { const text = raw.unwrap(); value = Some(decode(text)?); }
+                    let none = builder.ident("None");
+                    field_statements.push(builder.local(
+                        &value_name,
+                        Some(field.ty.node.clone()),
+                        none,
+                        true,
+                    ));
+                    let raw = builder.ident(&raw_name);
+                    let present = builder.method_call(raw, "is_some", Vec::new());
+                    let text_name = format!("__quazi_json_text_{index}");
+                    let raw = builder.ident(&raw_name);
+                    let text = builder.method_call(raw, "unwrap", Vec::new());
+                    let text_ty = TypeKind::Named {
+                        name: "String".to_string(),
+                        type_args: Vec::new(),
+                    };
+                    let text_statement = builder.local(&text_name, Some(text_ty), text, false);
+                    let text = builder.ident(&text_name);
+                    let text = builder.method_call(text, "as_str", Vec::new());
+                    let decoded = builder.decode_value(value, text);
+                    let some = builder.call("Some", vec![decoded]);
+                    let target = builder.ident(&value_name);
+                    let assign = builder.expr(ExprKind::Assign {
+                        target: Box::new(target),
+                        value: Box::new(some),
+                    });
+                    let assign = builder.stmt(StmtKind::ExprStmt(assign));
+                    let then_block = builder.block(vec![text_statement, assign]);
+                    field_statements.push(builder.stmt(StmtKind::If {
+                        condition: present,
+                        then_block,
+                        else_if: Vec::new(),
+                        else_block: None,
+                    }));
+                }
+                CodecField::Array(value) => {
+                    // const items = codec.array_items(raw.as_str())?;
+                    // var value: Array[T] = Array.new();
+                    // for item : items { value.push(decode(item.as_str())?); }
+                    let items_name = format!("__quazi_json_items_{index}");
+                    let raw = builder.ident(&raw_name);
+                    let text = builder.method_call(raw, "as_str", Vec::new());
+                    let items = builder.codec_call("array_items", vec![text]);
+                    let items = builder.try_expr(items);
+                    field_statements.push(builder.local(&items_name, None, items, false));
+                    let array = builder.ident("Array");
+                    let empty = builder.method_call(array, "new", Vec::new());
+                    field_statements.push(builder.local(
+                        &value_name,
+                        Some(field.ty.node.clone()),
+                        empty,
+                        true,
+                    ));
+                    let item_name = format!("__quazi_json_item_{index}");
+                    let item = builder.ident(&item_name);
+                    let text = builder.method_call(item, "as_str", Vec::new());
+                    let decoded = builder.decode_value(value, text);
+                    let target = builder.ident(&value_name);
+                    let push = builder.method_call(target, "push", vec![decoded]);
+                    let push = builder.stmt(StmtKind::ExprStmt(push));
+                    let body = builder.block(vec![push]);
+                    let items = builder.ident(&items_name);
+                    let var_span = builder.span();
+                    field_statements.push(builder.stmt(StmtKind::For {
+                        kind: ForLoop::Each {
+                            vars: vec![item_name],
+                            var_spans: vec![var_span],
+                            iter: ForIter::Iter(Box::new(items)),
+                        },
+                        body,
+                    }));
+                }
+            }
+            let value = builder.ident(&value_name);
+            let result = builder.call("Ok", vec![value]);
+            field_statements.push(builder.stmt(StmtKind::Return(Some(result))));
+            let helper_name = format!("__quazi_json_field_{index}");
+            let source_type = builder.ty(TypeKind::Str);
+            let spans_element = builder.ty(TypeKind::Usize);
+            let spans_array = builder.ty(TypeKind::Named {
+                name: "Array".to_string(),
+                type_args: vec![spans_element],
             });
+            let spans_type = builder.ty(TypeKind::Ref {
+                inner: Box::new(spans_array),
+            });
+            let value_type = builder.ty(field.ty.node.clone());
+            let error_type = builder.named_ty("DecodeError");
+            let result_type = builder.ty(TypeKind::Named {
+                name: "Result".to_string(),
+                type_args: vec![value_type, error_type],
+            });
+            let body = builder.block(field_statements);
+            let source_span = builder.span();
+            let spans_span = builder.span();
+            helpers.push(Spanned::new(
+                ItemKind::Fn {
+                    name: helper_name.clone(),
+                    name_span: None,
+                    generic_params: Vec::new(),
+                    params: vec![
+                        Param {
+                            name: "source".to_string(),
+                            name_span: source_span,
+                            ty: source_type,
+                            variadic: false,
+                            attributes: Vec::new(),
+                        },
+                        Param {
+                            name: "__quazi_json_spans".to_string(),
+                            name_span: spans_span,
+                            ty: spans_type,
+                            variadic: false,
+                            attributes: Vec::new(),
+                        },
+                    ],
+                    return_ty: result_type,
+                    body: Some(body),
+                    attributes: Vec::new(),
+                    unsafe_fn: false,
+                    pub_fn: false,
+                    c_variadic: false,
+                },
+                derive_span,
+            ));
+            let owner = builder.type_path(name);
+            let source = builder.ident("source");
+            let spans = builder.ident("__quazi_json_spans");
+            let spans = builder.reference(spans);
+            let decoded = builder.method_call(owner, &helper_name, vec![source, spans]);
+            let decoded = builder.try_expr(decoded);
             values.push((field.name.clone(), decoded));
         }
         let value = builder.expr(ExprKind::StructInit {
@@ -883,12 +1118,13 @@ fn expand_serialize_derives(program: &Program) -> Program {
             ItemKind::Impl {
                 trait_ty: None,
                 for_ty: for_type,
-                methods: vec![method],
+                methods: std::iter::once(method).chain(helpers).collect(),
             },
             derive_span,
         )
     }
 
+    let aliases = derive_alias_map(program);
     let mut builder = Builder {
         next: 1_000_000_000,
     };
@@ -908,6 +1144,15 @@ fn expand_serialize_derives(program: &Program) -> Program {
         if *is_union || !generic_params.is_empty() {
             continue;
         }
+        let fields: Vec<AggregateField> = fields
+            .iter()
+            .map(|field| {
+                let mut field = field.clone();
+                field.ty.node = derive_field_type(&field.ty.node, &aliases, 0);
+                field
+            })
+            .collect();
+        let fields = fields.as_slice();
         if let Some(derive_span) = derive_span(attributes, "Deserialize") {
             items.push(deserialize_impl(&mut builder, name, fields, derive_span));
         }
@@ -947,16 +1192,23 @@ fn expand_serialize_derives(program: &Program) -> Program {
         });
         statements.push(values_statement);
         for field in fields {
+            let Some(shape) = codec_field(&field.ty.node) else {
+                // Rejected by `validate_derived_codec_fields`.
+                continue;
+            };
             let receiver = builder.ident("self");
-            let mut field_value = builder.field(receiver, &field.name);
-            // An owned String field is encoded through its borrowed view: the
-            // field stays in the struct.
-            if matches!(&field.ty.node, TypeKind::Named { name, type_args }
-                if name == "String" && type_args.is_empty())
-            {
-                field_value = builder.method_call(field_value, "as_str", Vec::new());
-            }
-            let encoded = builder.method_call(field_value, "to_json", Vec::new());
+            let field_value = builder.field(receiver, &field.name);
+            // A String field is encoded through its borrowed view; every other
+            // field moves out of the consumed receiver into its encoder.
+            let encoded = match shape {
+                CodecField::Required(CodecValue::Text) => {
+                    let view = builder.method_call(field_value, "as_str", Vec::new());
+                    builder.method_call(view, "to_json", Vec::new())
+                }
+                CodecField::Required(_) => builder.method_call(field_value, "to_json", Vec::new()),
+                CodecField::Optional(_) => builder.codec_call("optional_json", vec![field_value]),
+                CodecField::Array(_) => builder.codec_call("array_json", vec![field_value]),
+            };
             let value = builder.expr(ExprKind::Try {
                 expr: Box::new(encoded),
             });
@@ -1025,85 +1277,218 @@ fn expand_serialize_derives(program: &Program) -> Program {
     }
 }
 
-/// The `std.codec` decoder for a `@derive(Deserialize)` field type: `bool`,
-/// `i64`, `String` and `Option` of those (maintainer answer В19В).
-pub(super) fn deserialize_field_decoder(ty: &TypeKind) -> Option<&'static str> {
-    let scalar = |ty: &TypeKind| match ty {
-        TypeKind::Bool => Some("bool"),
-        TypeKind::Int64 => Some("i64"),
-        TypeKind::Named { name, type_args } if name == "String" && type_args.is_empty() => {
-            Some("string")
-        }
-        _ => None,
+/// Type aliases declared in the program being expanded: name → (parameters,
+/// aliased type). Derived codecs choose a field's shape before semantic
+/// analysis, so they expand these aliases syntactically.
+type DeriveAliases<'a> = HashMap<&'a str, (&'a [String], &'a TypeKind)>;
+
+fn derive_alias_map(program: &Program) -> DeriveAliases<'_> {
+    program
+        .items
+        .iter()
+        .filter_map(|item| match &item.node {
+            ItemKind::TypeAlias {
+                name,
+                generic_params,
+                aliased_type,
+                ..
+            } => Some((name.as_str(), (generic_params.as_slice(), &aliased_type.node))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `ty` with the program's aliases expanded, as derived codecs see it.
+fn derive_field_type(ty: &TypeKind, aliases: &DeriveAliases<'_>, depth: usize) -> TypeKind {
+    let TypeKind::Named { name, type_args } = ty else {
+        return ty.clone();
     };
-    match ty {
-        TypeKind::Named { name, type_args } if name == "Option" && type_args.len() == 1 => {
-            match scalar(&type_args[0].node)? {
-                "bool" => Some("optional_bool"),
-                "i64" => Some("optional_i64"),
-                _ => Some("optional_string"),
-            }
-        }
-        other => match scalar(other)? {
-            "bool" => Some("field_bool"),
-            "i64" => Some("field_i64"),
-            _ => Some("field_string"),
-        },
+    let arguments: Vec<Type> = type_args
+        .iter()
+        .map(|argument| Spanned::new(derive_field_type(&argument.node, aliases, depth + 1), argument.span))
+        .collect();
+    if depth < 16
+        && let Some((params, aliased)) = aliases.get(name.as_str())
+        && params.len() == arguments.len()
+    {
+        let substitution: HashMap<String, TypeKind> = params
+            .iter()
+            .cloned()
+            .zip(arguments.iter().map(|argument| argument.node.clone()))
+            .collect();
+        return derive_field_type(&substitute_type_kind(aliased, &substitution), aliases, depth + 1);
+    }
+    TypeKind::Named {
+        name: name.clone(),
+        type_args: arguments,
     }
 }
 
-/// The initial compiler-generated JSON serializer is deliberately narrow. Keep
-/// this check shared by declaration diagnostics and lowering so an unsupported
-/// source field never reaches code generation as a half-formed method.
-pub(super) fn initial_serialize_field_supported(ty: &TypeKind) -> bool {
+/// One JSON value of a derived codec field: a primitive number or `bool`
+/// (named by its `std.codec` decoder suffix), a `String`, or a struct with its
+/// own Serialize impl or `from_json`.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum CodecValue {
+    Scalar(&'static str),
+    Text,
+    Struct(String),
+}
+
+/// How a derived codec encodes a field: one value, an `Option` that is `null`
+/// or missing for `None`, or an `Array` of values.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum CodecField {
+    Required(CodecValue),
+    Optional(CodecValue),
+    Array(CodecValue),
+}
+
+fn codec_value(ty: &TypeKind) -> Option<CodecValue> {
+    let scalar = match ty {
+        TypeKind::Bool => "bool",
+        TypeKind::Int8 => "i8",
+        TypeKind::Int16 => "i16",
+        TypeKind::Int32 => "i32",
+        TypeKind::Int64 => "i64",
+        TypeKind::Uint8 => "u8",
+        TypeKind::Uint16 => "u16",
+        TypeKind::Uint32 => "u32",
+        TypeKind::Uint64 => "u64",
+        TypeKind::Isize => "isize",
+        TypeKind::Usize => "usize",
+        TypeKind::Float32 => "f32",
+        TypeKind::Float64 => "f64",
+        TypeKind::Named { name, type_args } if type_args.is_empty() => {
+            return Some(if name == "String" {
+                CodecValue::Text
+            } else {
+                CodecValue::Struct(name.clone())
+            });
+        }
+        _ => return None,
+    };
+    Some(CodecValue::Scalar(scalar))
+}
+
+/// The derived codec shape of a field type, or `None` when unsupported.
+pub(super) fn codec_field(ty: &TypeKind) -> Option<CodecField> {
     match ty {
-        TypeKind::Bool | TypeKind::Int64 => true,
-        TypeKind::Named { name, type_args } => name == "String" && type_args.is_empty(),
+        TypeKind::Named { name, type_args } if type_args.len() == 1 && name == "Option" => {
+            codec_value(&type_args[0].node).map(CodecField::Optional)
+        }
+        TypeKind::Named { name, type_args } if type_args.len() == 1 && name == "Array" => {
+            codec_value(&type_args[0].node).map(CodecField::Array)
+        }
+        other => codec_value(other).map(CodecField::Required),
+    }
+}
+
+/// Whether two field shapes generate the same code: the same container and
+/// the same element kind (structs compare equal whatever their spelling).
+fn same_codec_shape(left: Option<&CodecField>, right: Option<&CodecField>) -> bool {
+    let kind = |value: &CodecValue| match value {
+        CodecValue::Struct(_) => None,
+        other => Some(other.clone()),
+    };
+    match (left, right) {
+        (Some(CodecField::Required(a)), Some(CodecField::Required(b)))
+        | (Some(CodecField::Optional(a)), Some(CodecField::Optional(b)))
+        | (Some(CodecField::Array(a)), Some(CodecField::Array(b))) => kind(a) == kind(b),
         _ => false,
     }
 }
 
 impl Analyzer {
-    fn validate_initial_serialize_fields(&mut self) {
+    /// A derived codec field must have a supported shape; a nested struct
+    /// must implement `Serialize` (or define `from_json` for Deserialize).
+    fn validate_derived_codec_fields(&mut self, program: &Program) {
+        let aliases = derive_alias_map(program);
+        // The shape each field is generated with, from its source spelling.
+        let generated: HashMap<(&str, &str), Option<CodecField>> = program
+            .items
+            .iter()
+            .filter_map(|item| match &item.node {
+                ItemKind::Struct { name, fields, .. } => Some((name, fields)),
+                _ => None,
+            })
+            .flat_map(|(name, fields)| {
+                let aliases = &aliases;
+                fields.iter().map(move |field| {
+                    (
+                        (name.as_str(), field.name.as_str()),
+                        codec_field(&derive_field_type(&field.ty.node, aliases, 0)),
+                    )
+                })
+            })
+            .collect();
         let derives: Vec<_> = self.serialization_derives.values().cloned().collect();
         for derive in derives {
-            if derive
-                .requested_traits
-                .iter()
-                .any(|trait_name| trait_name == "Deserialize")
-            {
+            for trait_name in ["Serialize", "Deserialize"] {
+                if !derive.requested_traits.iter().any(|name| name == trait_name) {
+                    continue;
+                }
                 for field in &derive.fields {
                     let resolved = self.resolve_type_aliases(&field.ty);
-                    if deserialize_field_decoder(&resolved).is_none() {
+                    let shape = codec_field(&resolved);
+                    // A struct this program does not spell was expanded elsewhere.
+                    let source_shape = generated
+                        .get(&(derive.type_name.as_str(), field.name.as_str()))
+                        .cloned()
+                        .unwrap_or_else(|| shape.clone());
+                    if shape.is_some() && !same_codec_shape(shape.as_ref(), source_shape.as_ref()) {
                         self.push_error(
                             field.span,
                             "S14",
                             format!(
-                                "Deserialize does not support field '{}' of type {}; supported field types are bool, i64, String and Option of those",
-                                field.name, resolved
+                                "{trait_name} cannot see through the alias used by field '{}'; write its type {resolved} directly or through an alias declared in the same file",
+                                field.name
+                            ),
+                        );
+                        continue;
+                    }
+                    let value = match shape {
+                        Some(
+                            CodecField::Required(value)
+                            | CodecField::Optional(value)
+                            | CodecField::Array(value),
+                        ) => value,
+                        None => {
+                            self.push_error(
+                                field.span,
+                                "S14",
+                                format!(
+                                    "{trait_name} does not support field '{}' of type {resolved}; supported fields are bool, integers, f32, f64, String, structs implementing it, and Option or Array of those",
+                                    field.name
+                                ),
+                            );
+                            continue;
+                        }
+                    };
+                    let CodecValue::Struct(name) = value else {
+                        continue;
+                    };
+                    let implemented = if trait_name == "Serialize" {
+                        self.trait_impls
+                            .get(&name)
+                            .is_some_and(|traits| traits.contains("Serialize"))
+                    } else {
+                        self.resolve_symbol(&format!("{name}.from_json")).is_some()
+                    };
+                    if !implemented {
+                        let requirement = if trait_name == "Serialize" {
+                            "implement Serialize"
+                        } else {
+                            "define `from_json` (for example with @derive(Deserialize))"
+                        };
+                        self.push_error(
+                            field.span,
+                            "S14",
+                            format!(
+                                "{trait_name} field '{}' has type {name}, which does not {requirement}",
+                                field.name
                             ),
                         );
                     }
-                }
-            }
-            if !derive
-                .requested_traits
-                .iter()
-                .any(|trait_name| trait_name == "Serialize")
-            {
-                continue;
-            }
-            for field in derive.fields {
-                let resolved = self.resolve_type_aliases(&field.ty);
-                if !initial_serialize_field_supported(&resolved) {
-                    self.push_error(
-                        field.span,
-                        "S14",
-                        format!(
-                            "Serialize does not support field '{}' of type {}; supported field types are bool, i64, and String",
-                            field.name, resolved
-                        ),
-                    );
                 }
             }
         }
@@ -1187,6 +1572,7 @@ impl Analyzer {
             generic_bounds: HashMap::new(),
             bound_method_calls: HashMap::new(),
             consuming_bound_calls: std::collections::HashSet::new(),
+            bounded_trait_calls: std::collections::HashSet::new(),
             bound_checked_monos: HashSet::new(),
             trait_method_slots: HashMap::new(),
             trait_method_signatures: HashMap::new(),
@@ -1357,7 +1743,7 @@ impl Analyzer {
             checkpoint()?;
             self.validate_declaration_aliases(item, &[], &mut checkpoint)?;
         }
-        self.validate_initial_serialize_fields();
+        self.validate_derived_codec_fields(program);
         self.ownership_signature_index = self
             .derive_callable_ownership_summaries(&self.build_symbol_table())
             .into_iter()
@@ -1823,6 +2209,7 @@ impl Analyzer {
         self.generic_bounds.clear();
         self.bound_method_calls.clear();
         self.consuming_bound_calls.clear();
+        self.bounded_trait_calls.clear();
         self.bound_checked_monos.clear();
         self.trait_method_slots.clear();
         self.trait_method_signatures.clear();
@@ -4019,6 +4406,53 @@ fn main() void {}
         assert_eq!(metadata.fields[0].attributes[1].name, "community_format");
         assert_eq!(metadata.fields[1].name, "active");
         assert_eq!(metadata.fields[1].json_name, None);
+    }
+
+    #[test]
+    fn derived_codec_fields_cover_the_wide_matrix() {
+        let source = r#"
+import std.codec;
+type Count = u16;
+type Maybe[T] = Option[T];
+@derive(Serialize, Deserialize)
+struct Inner { x: i32, }
+@derive(Serialize, Deserialize)
+struct Outer {
+    count: Count,
+    ratio: f32,
+    inner: Inner,
+    items: Array[Inner],
+    maybe: Option[Count],
+    later: Maybe[Inner],
+}
+struct Plain { x: i64, }
+@derive(Serialize, Deserialize)
+struct Rejected { grid: Array[Array[i64]], plain: Plain, }
+fn main() void {}
+"#;
+        let mut analyzer = Analyzer::new();
+        let report = analyzer.analyze_program(&super::expand_serialize_derives(&parse_program(source)));
+        let messages: Vec<&str> = report.errors.iter().map(|error| error.message.as_str()).collect();
+        assert!(
+            !messages.iter().any(|message| message.contains("'count'")
+                || message.contains("'ratio'")
+                || message.contains("'inner'")
+                || message.contains("'items'")
+                || message.contains("'maybe'")
+                || message.contains("'later'")),
+            "{messages:?}"
+        );
+        for expected in [
+            "Serialize does not support field 'grid'",
+            "Deserialize does not support field 'grid'",
+            "Serialize field 'plain' has type Plain, which does not implement Serialize",
+            "Deserialize field 'plain' has type Plain, which does not define `from_json`",
+        ] {
+            assert!(
+                messages.iter().any(|message| message.contains(expected)),
+                "{expected}: {messages:?}"
+            );
+        }
     }
 
     #[test]

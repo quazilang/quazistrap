@@ -3,7 +3,10 @@
 @derive(Deserialize) generates Type.from_json(source); an unknown key is
 UnknownField, a repeated key DuplicateField, a missing required field
 MissingField, a value of the wrong JSON type TypeMismatch, and an Option
-field is None when missing or null. Serialize output decodes back."""
+field is None when missing or null. Serialize output decodes back. The wider
+matrix (every integer width, floats, nested structs, Option and Array fields)
+round-trips, range and element errors propagate, and repeated decoding of a
+large struct does not leak."""
 
 import argparse
 import subprocess
@@ -22,9 +25,70 @@ err JSON object contains a duplicate field
 err JSON value has an incompatible type
 """
 
+MATRIX = r"""import std.io.println;
+import std.codec;
+
+@derive(Serialize, Deserialize)
+struct Point { x: i32, y: f64, }
+
+@derive(Serialize, Deserialize)
+struct Shape {
+    name: String,
+    small: u8,
+    big: u64,
+    wide: isize,
+    ratio: f32,
+    origin: Point,
+    tags: Array[String],
+    counts: Array[i16],
+    path: Array[Point],
+    label: Option[String],
+    weight: Option[f32],
+    anchor: Option[Point],
+    flag: bool,
+}
+
+fn main() i32 {
+    const source = "{{\"name\": \"tri\", \"small\": 255, \"big\": 18446744073709551615, \"wide\": -9, \"ratio\": 0.5, \"origin\": {{\"x\": -3, \"y\": 1.5}}, \"tags\": [\"a\", \"b\\n\"], \"counts\": [1, -2], \"path\": [{{\"x\": 1, \"y\": 2.25}}, {{\"x\": 4, \"y\": -1}}], \"weight\": null, \"anchor\": {{\"x\": 9, \"y\": 0.25}}, \"flag\": true}}";
+    const shape: Shape = Shape.from_json(source).unwrap();
+    println("{} {} {} {}", shape.small, shape.origin.x, shape.tags.len(), shape.path.len());
+    const encoded: String = shape.to_json().unwrap();
+    println("{}", encoded);
+    const again: Shape = Shape.from_json(encoded.as_str()).unwrap();
+    const twice: String = again.to_json().unwrap();
+    println("{}", twice.as_str() == encoded.as_str());
+    println("{}", Point.from_json("{{\"x\": 2147483648, \"y\": 0}}").unwrap_err().message());
+    println("{}", Shape.from_json("{{\"name\": \"x\", \"small\": 1, \"big\": 1, \"wide\": 1, \"ratio\": 1, \"origin\": {{\"x\": 1, \"y\": 1}}, \"tags\": [1], \"counts\": [], \"path\": [], \"flag\": false}}").unwrap_err().message());
+    println("{}", Shape.from_json("{{\"name\": \"x\", \"small\": 1, \"big\": 1, \"wide\": 1, \"ratio\": 1, \"origin\": {{\"x\": 1}}, \"tags\": [], \"counts\": [], \"path\": [], \"flag\": false}}").unwrap_err().message());
+    var failures: i32 = 0;
+    var i: i32 = 0;
+    for (i < 2000) {
+        const copy: Shape = Shape.from_json(source).unwrap();
+        const text: String = copy.to_json().unwrap();
+        if (text.bytes_len() != encoded.bytes_len()) { failures += 1; }
+        if (Shape.from_json("{{\"name\": \"x\", \"small\": 1, \"big\": 1, \"wide\": 1, \"ratio\": 1, \"origin\": {{\"x\": 1, \"y\": 1}}, \"tags\": [\"a\"], \"counts\": [1], \"path\": [], \"flag\": 3}}").is_ok()) { failures += 1; }
+        i++;
+    }
+    println("failures {failures}");
+    ret 0;
+}
+"""
+
+MATRIX_EXPECTED = """255 -3 2 2
+{"name":"tri","small":255,"big":18446744073709551615,"wide":-9,"ratio":0.5,"origin":{"x":-3,"y":1.5},"tags":["a","b\\n"],"counts":[1,-2],"path":[{"x":1,"y":2.25},{"x":4,"y":-1}],"label":null,"weight":null,"anchor":{"x":9,"y":0.25},"flag":true}
+true
+JSON value is not valid for the destination type
+JSON value has an incompatible type
+JSON object is missing a required field
+failures 0
+"""
+
 UNSUPPORTED = """import std.codec;
 @derive(Deserialize)
-struct Wide { ratio: f64 }
+struct Wide { grid: Array[Array[i64]] }
+struct Plain { x: i64 }
+@derive(Serialize)
+struct Outer { inner: Plain }
 fn main() i32 { ret 0; }
 """
 
@@ -58,11 +122,23 @@ def main():
         assert portable.returncode == 0, portable.stdout + portable.stderr
         rerun = subprocess.run([str(root / "portable")], text=True, capture_output=True, timeout=60)
         assert rerun.stdout == EXPECTED, rerun.stdout
+        matrix = project(root, "matrix", MATRIX)
+        build = subprocess.run([qz, "build", "--silent", "--no-incremental", "-o",
+                                str(root / "matrix-bin")], cwd=matrix, text=True,
+                               capture_output=True, timeout=600)
+        assert build.returncode == 0, build.stdout + build.stderr
+        run = subprocess.run(["/usr/bin/env", "time", "-f", "%M", str(root / "matrix-bin")],
+                             text=True, capture_output=True, timeout=300)
+        assert run.returncode == 0, run.stdout + run.stderr
+        assert run.stdout == MATRIX_EXPECTED, run.stdout
+        assert int(run.stderr.strip().splitlines()[-1]) < 20000, run.stderr
         invalid = project(root, "unsupported", UNSUPPORTED)
         result = subprocess.run([qz, "check"], cwd=invalid, text=True, capture_output=True, timeout=600)
         output = result.stdout + result.stderr
-        assert result.returncode != 0 and "Deserialize does not support field 'ratio'" in output, output
-    print("PASS deserialize: round trip, key policy, Option fields, QZI without sources; unsupported field rejected")
+        assert result.returncode != 0 and "Deserialize does not support field 'grid'" in output, output
+        assert "Serialize field 'inner' has type Plain, which does not implement Serialize" in output, output
+    print("PASS deserialize: round trip, key policy, Option fields, QZI without sources; wide numeric, "
+          "nested struct, Option and Array matrix without leaks; unsupported fields rejected")
 
 
 if __name__ == "__main__":

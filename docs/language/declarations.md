@@ -216,10 +216,12 @@ struct Point { x: f64, y: f64, }
 `@derive(Trait, ...)` registers derived traits for a struct. Currently
 supported:
 
-- `Serialize` — compiler-generated JSON serialization for non-generic structs
-  with `bool`, `i64`, and owned `String` fields. Respects `@json(name="...")`
-  field attributes for wire names. Unsupported field types produce an `S14`
-  diagnostic.
+- `Serialize` and `Deserialize` — compiler-generated JSON encoding
+  (`to_json`) and decoding (`Type.from_json`) for non-generic structs whose
+  fields are scalars, `String`, nested structs, or `Option`/`Array` of those
+  ([field matrix](../api/codec.md#derived-field-matrix)). Respects
+  `@json(name="...")` field attributes for wire names. Unsupported field types
+  produce an `S14` diagnostic.
 
 Other derive names are recorded as metadata but do not generate
 implementations.

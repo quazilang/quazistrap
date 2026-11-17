@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Check trait bounds on generic parameters (D-023, maintainer answer В22Б):
 bounded functions and bounded generic types call trait methods on `T` for
-each specialization; methods outside the bounds, methods on unbounded
+each specialization (`Some(x)` for an `Option[T]` parameter infers `T`, and
+an owned bounded-call result is a fresh value); methods outside the bounds, methods on unbounded
 parameters and instantiations with a type that lacks the trait are errors."""
 
 import argparse
@@ -34,6 +35,17 @@ impl Shelf[A] {
     fn code[T: Hashed](self: &Shelf[A], x: &T) u64 { ret x.hash_code() + 1; }
     fn first[T](self: &Shelf[A], x: T) T { ret x; }
 }
+trait Text { fn text(self: Self) String; }
+impl Text for Point { fn text(self: Point) String { ret String.from(self.label()); } }
+fn first[T: Text](value: Option[T]) String {
+    const none: String = String.from("none");
+    ret match value { Some(inner) => inner.text(), None => none };
+}
+fn joined[T: Text](values: Array[T]) String {
+    var out = String.new();
+    for value : values { const piece: String = value.text(); out.push_str(piece.as_str()); }
+    ret out;
+}
 fn describe[T: Hashed + Named](x: &T) u64 { println("{x.label()}"); ret x.hash_code() + 1; }
 fn inner[T: Hashed](x: &T) u64 { ret x.hash_code(); }
 fn outer[U: Hashed](x: &U) u64 { ret inner[U](x) + 1; }
@@ -55,6 +67,11 @@ fn main() i32 {
     const flag: bool = shelf.first[bool](true);
     const three: i64 = shelf.first(3 as i64);
     println("{shelf.code(&p)} {flag} {three}");
+    var points: Array[Point] = Array.new();
+    points.push(Point { x: 1 });
+    points.push(Point { x: 2 });
+    const none: Option[Point] = None;
+    println("{} {} {}", first(Some(Point { x: 5 })), first(none), joined(points));
     ret 0;
 }
 """
@@ -104,7 +121,7 @@ def main():
         result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=valid,
                                 text=True, capture_output=True, timeout=600)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert result.stdout == "pt\nint\n42 22 102 115\n42 2003 9 4\n6 1007\n42 true 3\n", result.stdout
+        assert result.stdout == "pt\nint\n42 22 102 115\n42 2003 9 4\n6 1007\n42 true 3\npt none ptpt\n", result.stdout
         for index, (source, message) in enumerate(INVALID):
             invalid = project(root, f"invalid{index}", PRELUDE + source)
             result = subprocess.run([qz, "check"], cwd=invalid, text=True,

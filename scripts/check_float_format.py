@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Check f64 formatting of values beyond the i64 range and exponent/hex literals."""
+"""Check f64 formatting of values beyond the i64 range and exponent/hex literals,
+and that `parse_f64` returns the nearest f64 (randomized against Python)."""
 
 import argparse
+import math
+import random
+import struct
 import subprocess
 import tempfile
 from pathlib import Path
@@ -14,6 +18,30 @@ fn main() i32 {
 }
 """
 EXPECTED = "1e+300 -2.5e+20 1e+18 123456789012.5\n6.02e+23 1.797693e+308 0.5 255\n"
+
+
+def parse_program():
+    """Every check compares `parse_f64(repr(x))` with the literal `x`."""
+    random.seed(11)
+    values = [0.3, -0.3, 0.1, 1e23, 5e-324, 2.2250738585072014e-308, 1.7976931348623157e308,
+              9007199254740993.0, 123.456789012345678, 3.14159265358979323846]
+    while len(values) < 400:
+        x = struct.unpack("<d", struct.pack("<Q", random.getrandbits(64)))[0]
+        if math.isfinite(x):
+            values.append(x)
+    lines = ["import std.io;", "fn check(text: str, expected: f64) i32 {",
+             "    const owned = String.from(text);",
+             "    if (owned.parse_f64().unwrap() != expected) { io.println(\"wrong {}\", text); ret 1; }",
+             "    ret 0;", "}", "fn main() i32 {", "    var wrong: i32 = 0;"]
+    for x in values:
+        literal = repr(x)
+        mantissa, _, exponent = literal.partition("e")
+        if "." not in mantissa:
+            mantissa += ".0"
+        literal = mantissa + ("e" + exponent if exponent else "")
+        lines.append(f'    wrong += check("{repr(x)}", {literal});')
+    lines += ['    io.println("wrong {}", wrong);', "    ret 0;", "}"]
+    return "\n".join(lines) + "\n"
 
 
 def run(command, root):
@@ -38,7 +66,13 @@ def main():
         run([str(qz), "build", *common, "-i", "-o", str(root / "program.qzi")], root)
         run([str(qz), "build", str(root / "program.qzi"), *common, "-o", str(root / "portable")], root)
         assert run([str(root / "portable")], root) == EXPECTED
-    print("PASS float format: values >= 1e18 use scientific notation; hex/exponent literals; native and QZI")
+        parse = root / "parse"
+        (parse / "src").mkdir(parents=True)
+        (parse / "quazi.toml").write_text('[package]\nname="float_parse"\n[build]\nentry="src/main.qz"\n')
+        (parse / "src/main.qz").write_text(parse_program())
+        run([str(qz), "build", *common, "-o", str(parse / "native")], parse)
+        assert run([str(parse / "native")], parse) == "wrong 0\n"
+    print("PASS float format: parse_f64 is nearest for 400 values; values >= 1e18 use scientific notation; hex/exponent literals; native and QZI")
 
 
 if __name__ == "__main__":

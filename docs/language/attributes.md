@@ -178,9 +178,13 @@ struct Config {
 
 Currently generates implementations for:
 
-- `Serialize` — JSON serialization for non-generic structs with `bool`,
-  `i64`, and owned `String` fields. Respects `@json(name="...")` field
-  attributes. Unsupported field types produce an `S14` diagnostic.
+- `Serialize` — JSON serialization (`to_json`) for non-generic structs.
+- `Deserialize` — JSON decoding (`Type.from_json`) for non-generic structs.
+
+  Fields may be `bool`, integers, `f32`, `f64`, `String`, nested structs, and
+  `Option` or `Array` of those ([field matrix](../api/codec.md#derived-field-matrix)).
+  Both respect `@json(name="...")` field attributes. Unsupported field types
+  produce an `S14` diagnostic.
 
 Other derived trait names are recorded as metadata but do not generate code.
 

@@ -100,6 +100,12 @@ fields with strict unknown/duplicate/missing-key errors; see
 `scripts/check_deserialize.py`. Generated `Serialize` encodes `String` fields
 through their borrowed view.
 
+The field matrix was widened on 2026-11-17: every integer width, `f32`, `f64`,
+nested structs, and `Option`/`Array` of those in both directions (see the
+[field matrix](../api/codec.md#derived-field-matrix) and
+`scripts/check_deserialize.py`). Enums, generic structs, maps, and nested
+containers remain unsupported.
+
 Historically, `@derive(Deserialize)` was rejected, rather than silently
 recorded as a no-op. The compiler retains its ordered metadata internally so a
 future, fully specified decoder can consume it, but users must call the

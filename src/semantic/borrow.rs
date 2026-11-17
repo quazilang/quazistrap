@@ -828,9 +828,12 @@ impl Analyzer {
                 for argument in args.iter().chain(named_args.iter().map(|(_, arg)| arg)) {
                     roots.extend(self.bc_borrowed_argument_origins(argument, env));
                 }
-                if self
-                    .bc_annotated_type(expr)
-                    .is_some_and(|ty| !self.bc_is_string_view(&ty))
+                if !self
+                    .bounded_trait_calls
+                    .contains(&(expr.span.start, expr.span.end))
+                    && self
+                        .bc_annotated_type(expr)
+                        .is_some_and(|ty| !self.bc_is_string_view(&ty))
                 {
                     roots.insert(ViewOrigin::UnverifiedCall);
                 }

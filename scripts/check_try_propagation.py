@@ -54,7 +54,22 @@ impl Mapper {
         ret Ok(result(succeed)? > 0);
     }
 }
+fn step(index: i32, fail: i32) Result[i32, i32] {
+    if index == fail { ret Err(index); }
+    ret Ok(index);
+}
+fn many(fail: i32) Result[i32, i32] {
+""" + "".join(
+    # Each `?` failure path releases every earlier owned local; its scratch
+    # registers must be reusable, or long functions exceed the QZI frame.
+    f"    const held{index}: Option[i32] = Some({index});\n"
+    f"    const value{index}: i32 = step({index}, fail)?;\n"
+    for index in range(48)
+) + """    ret Ok(value47);
+}
 fn main() i32 {
+    if match many(-1) { Ok(value) => value != 47, Err(error) => true, } { ret 9; }
+    if match many(40) { Ok(value) => true, Err(error) => error != 40, } { ret 10; }
     var success = mapped(true);
     if match success { Ok(value) => !value, Err(error) => true, } { ret 1; }
     var failure = mapped(false);
@@ -129,7 +144,8 @@ def check(qz, root, before):
     invoke([str(qz), "build", str(artifact), *common, "-c", "--target",
             "x86_64-windows", "-o", str(coff)], root)
     assert coff.read_bytes()[:2] == b"\x64\x86"
-    print("PASS try propagation: 8 success/failure/discriminant checks, aliases/generics/methods, native/QZI-only/COFF")
+    print("PASS try propagation: 10 success/failure/discriminant checks, aliases/generics/methods, "
+          "48 failure paths in one function, native/QZI-only/COFF")
 
     if before is not None:
         cached = root / "cached"

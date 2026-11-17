@@ -1,10 +1,11 @@
 # `std.codec`
 
-`std.codec` defines the typed boundary above `std.json`. Its current scope is
-deliberately small: `Serialize` is usable for booleans, signed 64-bit integers,
-and text, while decoding is exposed through explicit scalar functions.
-`@derive(Serialize)` supports non-generic structs whose fields are all `bool`,
-`i64`, or owned `String`; general typed decoding is not implemented yet.
+`std.codec` defines the typed boundary above `std.json`. `Serialize` covers
+booleans, every integer width, `f32`/`f64`, and text; typed decoding is exposed
+through explicit `decode_*` functions. `@derive(Serialize)` and
+`@derive(Deserialize)` support non-generic structs whose fields are scalars,
+`String`, nested structs, and `Option` or `Array` of those (see
+[the field matrix](#derived-field-matrix)).
 
 ## Encoding
 
@@ -23,13 +24,18 @@ fn main() i32 {
 }
 ```
 
-The current implementations cover `bool`, `i64`, `str`, owned `String`, and
-`time.SystemTime`, which encodes as an RFC 3339 UTC JSON string such as
+The current implementations cover `bool`, `i8`–`i64`, `u8`–`u64`, `isize`,
+`usize`, `f32`, `f64`, `str`, owned `String`, and `time.SystemTime`, which encodes as an RFC 3339 UTC JSON string such as
 `"2000-02-29T12:34:56Z"`; `codec.decode_system_time(source)` decodes it
 (numeric offsets are normalized to UTC, malformed text is `InvalidValue`).
-`i64` uses its exact base-10 representation. Text is escaped through
-`std.json.quote`; encoding a `String` produces a new JSON token and does not
-expose mutable aliases. Current scalar encoders do not fail.
+Integers use their exact base-10 representation. A float uses the shortest
+decimal (at most 17 significant digits for `f64`, 9 for `f32`) that decodes
+back to the same value, in plain notation for moderate exponents and
+scientific notation (`1.23e-7`) otherwise; a NaN or infinite float has no JSON
+form and is `EncodeError.InvalidValue`. Text is escaped through `std.json.quote`; encoding a
+`String` produces a new JSON token and does not expose mutable aliases.
+`codec.optional_json(value)` encodes an `Option` (`null` for `None`) and
+`codec.array_json(values)` an `Array` of any `Serialize` element type.
 `EncodeError.UnsupportedType` is reserved for a later dynamic codec boundary;
 unsupported derived fields will remain compile-time diagnostics.
 
@@ -62,9 +68,10 @@ const encoded: String = request.to_json().unwrap();
 // Exactly: {"active":true,"offset":-42,"label":"Ada"}
 ```
 
-Borrowed `str`, other integer widths, floats, options, collections, nested
-structs, and enums are rejected with a field-level compiler diagnostic. The
-generated method emits a fresh quoted token for every `String` field. A type
+Unsupported fields (borrowed `str`, enums, generic structs, nested `Option` or
+`Array` such as `Array[Array[i64]]`) are rejected with a field-level compiler
+diagnostic. The generated method emits a fresh quoted token for every `String`
+field and moves every other field out of the consumed receiver. A type
 must choose either `@derive(Serialize)` or its own `impl Serialize`: combining
 them is rejected as a duplicate `Type.to_json` declaration, diagnosed at the
 derive attribute.
@@ -98,12 +105,20 @@ limit-aware form preserves `InputLimit` and `DepthLimit`.
 const offset: i64 = codec.decode_i64("-42").unwrap();
 ```
 
+`decode_i8`, `decode_i16`, `decode_i32`, `decode_u8`, `decode_u16`,
+`decode_u32`, `decode_u64`, `decode_isize`, and `decode_usize` decode a JSON
+integer of that width; an integer outside the width's range is
+`InvalidValue`. `decode_f64` and `decode_f32` accept any JSON number within
+their finite range; a larger one such as `1e999` is `InvalidValue`.
+`array_items(source)` returns the raw JSON text of each element of an array
+(`TypeMismatch` for another JSON value).
+
 ## Derived decoding
 
 `@derive(Deserialize)` on a non-generic struct generates an associated
-function `Type.from_json(source: str) Result[Type, DecodeError]`. Fields may
-be `bool`, `i64`, `String`, or `Option` of those; `@json(name="...")`
-renames the key as for `Serialize`. The object policy (maintainer answer
+function `Type.from_json(source: str) Result[Type, DecodeError]`. Fields follow
+the [field matrix](#derived-field-matrix); `@json(name="...")` renames the key as
+for `Serialize`. The object policy (maintainer answer
 В19В) is strict rather than silent:
 
 - a key the struct does not declare is `UnknownField`;
@@ -113,7 +128,17 @@ renames the key as for `Serialize`. The object policy (maintainer answer
   `null`;
 - a value of the wrong JSON type is `TypeMismatch`.
 
-`Serialize` does not yet encode `Option` fields.
+### Derived field matrix
+
+| Field type | JSON | Serialize | Deserialize |
+| --- | --- | --- | --- |
+| `bool`, integers, `f32`, `f64` | number or boolean | `to_json` | `decode_<type>` |
+| `String` | string | through its `str` view | `decode_string` |
+| struct `S` | object | `S` must implement `Serialize` | `S.from_json` must exist |
+| `Option[T]` | `T` or `null` | `null` for `None` | `None` when missing or `null` |
+| `Array[T]` | array of `T` | `codec.array_json` | each element decoded as `T` |
+
+`T` above is any non-container row (a scalar, `String`, or a struct).
 
 ```quazi
 import std.codec;
@@ -132,8 +157,11 @@ fn main() i32 {
 ```
 
 The generated function calls ordinary `std.codec` helpers:
-`object_fields(source, keys)` finds each expected key in one pass and
-`field_*`/`optional_*` decode the values. Individual keys can also be read
+`object_fields(source, keys)` finds each expected key in one pass,
+`field_raw`/`optional_raw` return a field's raw JSON value, and the element
+decoders above convert it. Each field is decoded by its own generated private
+method, so the size of every generated function is independent of the number
+of fields. Individual keys can also be read
 with `json.object_field(source, key)`, which returns `Option` for a missing
 key. Since a trait method needs a receiver, `from_json` is an associated
 function rather than a `Deserialize` trait method. `EncodeError.message()` and

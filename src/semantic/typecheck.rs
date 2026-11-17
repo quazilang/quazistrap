@@ -2614,6 +2614,9 @@ impl Analyzer {
         reachable: bool,
         expected: Option<&TypeKind>,
     ) -> ExprEval {
+        // `Error` marks a parameter whose type still mentions an uninferred
+        // binder: the argument is checked on its own and inference follows.
+        let expected = expected.filter(|ty| !matches!(ty, TypeKind::Error));
         if let Some(eval) = self.type_check_contextual_none_value(expr, reachable, expected) {
             self.reject_nested_owned_function_expression(expr, &eval);
             return eval;
@@ -7960,6 +7963,7 @@ impl Analyzer {
                 if by_value {
                     self.consuming_bound_calls.insert((span.start, span.end));
                 }
+                self.bounded_trait_calls.insert((span.start, span.end));
                 if let Some(function) = self.current_function.last().cloned() {
                     self.bound_method_calls
                         .entry(function)
@@ -9752,6 +9756,9 @@ fn infer_closure_result_binder(param: TypeKind, binders: &[String]) -> TypeKind 
             };
             TypeKind::Fn { params, return_ty }
         }
+        // A non-function parameter that still mentions a binder cannot give
+        // its argument an expected type yet.
+        other if super::type_mentions_params(&other, binders) => TypeKind::Error,
         other => other,
     }
 }
