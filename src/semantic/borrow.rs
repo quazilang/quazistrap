@@ -1586,6 +1586,63 @@ impl Analyzer {
     }
 
     fn bc_expr(&mut self, expr: &Expr, env: &mut MoveEnv, consumed: bool) {
+        self.bc_expr_node(expr, env, consumed);
+        if matches!(expr.node, ExprKind::Call { .. } | ExprKind::MethodCall { .. })
+            && self.bc_annotated_type(expr).is_some_and(|ty| {
+                matches!(self.resolve_type_aliases(&ty), TypeKind::Ref { inner }
+                    if !matches!(inner.node, TypeKind::Str))
+            })
+        {
+            self.bc_loan_reference_result(expr, env);
+        }
+    }
+
+    /// A reference result derives from the call's reference arguments
+    /// (D-014; checked at the callee's `ret`). Until loan regions are
+    /// flow-sensitive, each such argument's root stays borrowed for the rest
+    /// of the enclosing scope, in the argument's own mode.
+    fn bc_loan_reference_result(&mut self, expr: &Expr, env: &mut MoveEnv) {
+        let mut borrowed: Vec<(&Expr, bool)> = Vec::new();
+        let arguments: Vec<&Expr> = match &expr.node {
+            ExprKind::Call { args, named_args, .. } => {
+                args.iter().chain(named_args.iter().map(|(_, arg)| arg)).collect()
+            }
+            ExprKind::MethodCall { object, args, named_args, .. } => {
+                if !self.bc_has_consuming_receiver(expr) {
+                    borrowed.push((object.as_ref(), self.bc_has_explicit_exclusive_receiver(expr)));
+                }
+                args.iter().chain(named_args.iter().map(|(_, arg)| arg)).collect()
+            }
+            _ => Vec::new(),
+        };
+        for argument in arguments {
+            match self.bc_annotated_type(argument).map(|ty| self.resolve_type_aliases(&ty)) {
+                Some(TypeKind::Ref { inner }) if !matches!(inner.node, TypeKind::Str) => {
+                    borrowed.push((argument, false));
+                }
+                Some(TypeKind::MutRef { .. }) => borrowed.push((argument, true)),
+                _ => {}
+            }
+        }
+        for (argument, exclusive) in borrowed {
+            let mut place = argument;
+            loop {
+                match &place.node {
+                    ExprKind::Group(inner) => place = inner,
+                    ExprKind::Field { object, .. } => place = object,
+                    ExprKind::Unary { op: UnaryOpKind::Ref | UnaryOpKind::RefMut, expr: inner } => place = inner,
+                    _ => break,
+                }
+            }
+            if let ExprKind::Ident(name) = &place.node
+                && env.lookup(name).is_some()
+            {
+                env.mark_reference_borrowed(name, expr.span, exclusive);
+            }
+        }
+    }
+
+    fn bc_expr_node(&mut self, expr: &Expr, env: &mut MoveEnv, consumed: bool) {
         match &expr.node {
             ExprKind::Ident(name) => {
                 let Some(var) = env.lookup(name) else { return };
@@ -2015,9 +2072,15 @@ impl Analyzer {
                 // Evaluate the place before recording the new loan so taking
                 // an exclusive reference does not conflict with its own read.
                 self.bc_expr(inner, env, false);
+                // `&p.a.b` borrows its root `p` as a whole (lexical loans do
+                // not yet distinguish disjoint fields).
                 let mut place = inner;
-                while let ExprKind::Group(grouped) = &place.node {
-                    place = grouped;
+                loop {
+                    match &place.node {
+                        ExprKind::Group(grouped) => place = grouped,
+                        ExprKind::Field { object, .. } => place = object,
+                        _ => break,
+                    }
                 }
                 if let ExprKind::Ident(name) = &place.node {
                     let existing = env.lookup(name).cloned();

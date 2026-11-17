@@ -8773,6 +8773,35 @@ impl<'a> FnCompiler<'a> {
                     unreachable!("unary operand");
                 };
                 match op {
+                    UnaryOpKind::Ref | UnaryOpKind::RefMut
+                        if matches!(&inner.node, ExprKind::Field { .. })
+                            && !self
+                                .type_of_expr(inner)
+                                .as_ref()
+                                .is_some_and(is_string_view_type) =>
+                    {
+                        // `&place.field`: the address of the field's slot in
+                        // its struct's storage.
+                        let ExprKind::Field { object, name } = &inner.node else {
+                            unreachable!("matched a field place");
+                        };
+                        if self.bit_field_layout(object, name).is_some()
+                            || self.ffi_field_access(object, name).0 != MemWidth::Qword
+                            || self.value_slot_count(inner) != 1
+                        {
+                            self.codegen_error.get_or_insert_with(|| {
+                                format!("cannot take the address of field `{name}`: only one-slot fields of ordinary structs are addressable")
+                            });
+                            return 0;
+                        }
+                        let object_reg = self.compile_aggregate_object(object);
+                        let offset = self.field_offset(object, name);
+                        let distance = self.alloc_reg();
+                        self.chunk.emit(ri16(Opcode::MovI, distance, offset));
+                        let address = self.alloc_reg();
+                        self.chunk.emit(rrr(Opcode::Add, address, object_reg, distance));
+                        address
+                    }
                     UnaryOpKind::Ref | UnaryOpKind::RefMut => {
                         let src = self.compile_expr(inner);
                         if matches!(op, UnaryOpKind::Ref)

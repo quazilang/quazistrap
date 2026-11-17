@@ -15,8 +15,10 @@ Reference pointees are invariant, so use the exact target type instead of
 relying on integer widening through a reference. Reference bindings are lexical
 and cannot be rebound. Create a new binding in the narrower scope instead.
 
-Functions cannot return non-string shared references, and structs, enums,
-arrays, owned generic values, and closures cannot retain them. Return an owned
+Since 2026-11-17 a function may return a plain `&T` that is a reference
+parameter or `&parameter.field` through one; any other non-string reference
+result is an error. Structs, enums, arrays, owned generic values, and closures
+cannot retain references. Return an owned
 value or redesign the operation as a callback that consumes the reference
 synchronously. `str` and `&str` keep their existing string-view compatibility.
 
@@ -25,10 +27,11 @@ an operation that needs aggregate methods, or expose a scalar read API until
 Quazi gains immutable aggregate receivers and lifetime-aware views. This makes
 `std.random.choose` consume its `Array[T]` for now.
 
-Address-of currently supports only local variables and parameters. Code such as
-`&record.field`, `&items[index]`, `&*pointer`, or `&(left + right)` must be
-rewritten to borrow a named local copy, with the understanding that it is a copy
-rather than an alias to the original field or element.
+Address-of supports local variables, parameters, and fields of them
+(`&record.field`, borrowing all of `record`). Code such as `&items[index]`,
+`&*pointer`, or `&(left + right)` must be rewritten to borrow a named local
+copy, with the understanding that it is a copy rather than an alias to the
+original element.
 
 QZI dependencies containing `Lea` instructions without explicit address-taken
 block metadata cannot be repaired after register allocation. Rebuild those

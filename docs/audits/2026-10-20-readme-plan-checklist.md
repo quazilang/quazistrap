@@ -401,7 +401,10 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
 - [x] Dense owned-element replacement/removal lowering.
 - [x] Checked dense-element-address bytecode/backend foundation.
 - [x] Recursive owned dense-container element destruction.
-- [ ] Flow-sensitive interprocedural loan regions.
+- [ ] Flow-sensitive interprocedural loan regions (2026-11-17 slice: field
+  addresses and parameter-derived `&T` results whose callers keep the argument
+  roots borrowed lexically, `scripts/check_reference_results.py`; regions are
+  still lexical).
 - [ ] Transitive fixed-point call-effect solver.
 - [ ] Closed-target indirect/callback/trait effects.
 - [ ] Verified QZI-only ownership certificates.

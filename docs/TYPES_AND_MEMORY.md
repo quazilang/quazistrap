@@ -60,8 +60,8 @@ FFI boundaries, but typed wrappers remain preferred.
 
 Until lifetime parameters and mutable references are designed, safe references
 are deliberately lexical and restrictive. Address-of accepts a named local or
-parameter, pointee types are invariant, and a reference binding cannot be
-rebound. Shared aggregate references cannot be dereferenced into owned-looking
+parameter or a field of one (`&point.y`, `&self.inner.label`), pointee types
+are invariant, and a reference binding cannot be rebound. Shared aggregate references cannot be dereferenced into owned-looking
 values because current aggregate storage is address-based and that would create
 a mutable alias. Scalar and representation-identical string reads remain
 available.
@@ -69,8 +69,12 @@ Borrowed enums are the narrow aggregate exception: a match may read a variant
 tag using unit or wildcard payload patterns (for example `Some(_)`), but it
 cannot bind a payload. This supports read-only status queries without creating
 an aggregate alias or a payload reference with unknown provenance.
-Non-string references cannot be returned, stored in owned aggregates,
-or captured by closures. Once a local is address-taken, safe code cannot mutate,
+A function may return a plain `&T` only when every `ret` is a reference
+parameter or a field reached through one (`ret &self.name;`); the caller then
+keeps each reference argument's root (and a borrowed receiver) borrowed for the
+rest of its enclosing scope (D-014). Other returned references (`Option[&T]`,
+references to by-value parameters or locals) are errors. Non-string references
+cannot be stored in owned aggregates or captured by closures. Once a local is address-taken, safe code cannot mutate,
 move, or invoke methods on it for the rest of that function. `str`/`&str` is the
 representation-identical string-view exception. See the
 [reference migration guide](migrations/references.md).

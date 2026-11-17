@@ -242,14 +242,17 @@ impl Analyzer {
                         ),
                     );
                 }
-                if contains_non_string_reference(
-                    &self.resolve_type_aliases(&self.source_type(return_ty)),
-                ) {
+                let returned = self.resolve_type_aliases(&self.source_type(return_ty));
+                // A plain `&T` result is allowed when every return derives it
+                // from a reference parameter (checked at each `ret`, D-014).
+                let parameter_reference = matches!(&returned, TypeKind::Ref { inner }
+                    if !contains_non_string_reference(&inner.node));
+                if contains_non_string_reference(&returned) && !parameter_reference {
                     self.push_error(
                         return_ty.span,
                         "S10",
                         format!(
-                            "function `{name}` cannot return a shared reference before Quazi has lifetime parameters; return an owned value instead"
+                            "function `{name}` may return only a plain shared reference `&T` derived from a reference parameter; return an owned value instead"
                         ),
                     );
                 }
@@ -2314,7 +2317,17 @@ impl Analyzer {
             StmtKind::Return(expr) => {
                 match (expected_return, expr) {
                     (Some(expected), Some(return_expr)) => {
-                        if address_of_ident(return_expr).is_some() {
+                        if matches!(self.resolve_type_aliases(expected), TypeKind::Ref { ref inner }
+                            if !matches!(inner.node, TypeKind::Str))
+                            && !self.is_parameter_reference(return_expr)
+                        {
+                            self.push_error(
+                                return_expr.span,
+                                "S10",
+                                "a returned reference must be a reference parameter or `&parameter.field` reached through one, so its caller can keep the borrowed argument alive"
+                                    .to_string(),
+                            );
+                        } else if address_of_ident(return_expr).is_some() {
                             self.push_error(
                                 return_expr.span,
                                 "S10",
@@ -3281,7 +3294,7 @@ impl Analyzer {
 
                 match op {
                     UnaryOpKind::Ref | UnaryOpKind::RefMut => {
-                        let addressable = addressable_ident(inner).and_then(|name| {
+                        let addressable = addressable_place_root(inner).and_then(|name| {
                             self.resolve_symbol(name).filter(|symbol| {
                                 matches!(
                                     symbol.kind,
@@ -3293,11 +3306,25 @@ impl Analyzer {
                             self.push_error(
                                 inner.span,
                                 "S14",
-                                "address-of currently requires a local variable or parameter; fields, indexes, dereferences, calls, and temporaries are not addressable yet"
+                                "address-of currently requires a local variable, a parameter, or a field of one; indexes, dereferences, calls, and temporaries are not addressable yet"
                                     .to_string(),
                             );
                         }
-                        if matches!(op, UnaryOpKind::RefMut)
+                        // A field reached through a shared `&T` root is read-only:
+                        // `&p.field!` must not mint exclusive access from it.
+                        let through_shared_reference = matches!(&inner.node, ExprKind::Field { .. })
+                            && addressable.as_ref().is_some_and(|symbol| {
+                                symbol.ty.as_ref().is_some_and(|ty| {
+                                    matches!(self.resolve_type_aliases(ty), TypeKind::Ref { .. })
+                                })
+                            });
+                        if matches!(op, UnaryOpKind::RefMut) && through_shared_reference {
+                            self.push_error(
+                                inner.span,
+                                "S07",
+                                "exclusive address-of cannot reach a field through a shared reference `&T`".to_string(),
+                            );
+                        } else if matches!(op, UnaryOpKind::RefMut)
                             && !addressable.is_some_and(|symbol| {
                                 matches!(
                                     symbol.kind,
@@ -9972,6 +9999,39 @@ fn addressable_ident(expr: &Expr) -> Option<&str> {
     }
 }
 
+impl Analyzer {
+    /// A reference parameter (`p`) or a field reached through one (`&p.a.b`).
+    fn is_parameter_reference(&self, expr: &Expr) -> bool {
+        let reference_parameter = |name: &str| {
+            self.resolve_symbol(name).is_some_and(|symbol| {
+                symbol.kind == SymbolKind::Parameter
+                    && symbol.ty.as_ref().is_some_and(|ty| {
+                        matches!(self.resolve_type_aliases(ty), TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+                    })
+            })
+        };
+        match &expr.node {
+            ExprKind::Group(inner) => self.is_parameter_reference(inner),
+            ExprKind::Ident(name) => reference_parameter(name),
+            ExprKind::Unary { op: UnaryOpKind::Ref, expr: inner }
+                if matches!(inner.node, ExprKind::Field { .. }) =>
+            {
+                addressable_place_root(inner).is_some_and(reference_parameter)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// The local or parameter at the root of an addressable place: `x` or a
+/// field chain `x.a.b` (fields of a struct reached through a reference too).
+pub(super) fn addressable_place_root(expr: &Expr) -> Option<&str> {
+    match &expr.node {
+        ExprKind::Field { object, .. } => addressable_place_root(object),
+        _ => addressable_ident(expr),
+    }
+}
+
 fn address_of_ident(expr: &Expr) -> Option<&str> {
     match &expr.node {
         ExprKind::Group(inner) => address_of_ident(inner),
@@ -10305,9 +10365,29 @@ fn is_lexical_reference_expr(expr: &Expr) -> bool {
         ExprKind::Unary {
             op: UnaryOpKind::Ref | UnaryOpKind::RefMut,
             expr: inner,
-        } => addressable_ident(inner).is_some(),
+        } => addressable_place_root(inner).is_some(),
+        // A reference returned by a call derives from its reference
+        // arguments; their roots must be named places so the ownership pass
+        // can keep them borrowed.
+        ExprKind::Call { args, named_args, .. } => args
+            .iter()
+            .chain(named_args.iter().map(|(_, arg)| arg))
+            .all(is_simple_call_argument),
+        ExprKind::MethodCall { object, args, named_args, .. } => {
+            addressable_place_root(object).is_some()
+                && args
+                    .iter()
+                    .chain(named_args.iter().map(|(_, arg)| arg))
+                    .all(is_simple_call_argument)
+        }
         _ => false,
     }
+}
+
+fn is_simple_call_argument(expr: &Expr) -> bool {
+    matches!(expr.node, ExprKind::Literal(_))
+        || addressable_place_root(expr).is_some()
+        || is_lexical_reference_expr(expr)
 }
 
 pub(super) fn infer_type_subst(

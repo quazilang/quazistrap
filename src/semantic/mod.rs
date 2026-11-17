@@ -6843,8 +6843,56 @@ fn main() void {
     }
 
     #[test]
+    fn references_to_fields_and_from_reference_parameters() {
+        let valid = analyze(
+            r#"
+struct Inner { value: i32 }
+struct Point { inner: Inner, y: i32 }
+impl Point {
+    fn inner_ref(self: &Point) &Inner { ret &self.inner; }
+    fn me(self: &Point) &Point { ret self; }
+}
+fn larger(a: &Inner, b: &Inner) &Inner {
+    if a.value >= b.value { ret a; }
+    ret b;
+}
+fn main() i32 {
+    var point = Point { inner: Inner { value: 1 }, y: 2 };
+    const y: &i32 = &point.y;
+    const inner = point.inner_ref();
+    const other = Inner { value: 5 };
+    const best = larger(inner, &other);
+    ret *y + best.value + point.me().y;
+}
+"#,
+        );
+        assert!(valid.errors.is_empty(), "{:?}", valid.errors);
+        for (source, message) in [
+            (
+                "struct P { y: i32 } fn f(p: P) &i32 { ret &p.y; } fn main() void {}",
+                "a returned reference must be a reference parameter",
+            ),
+            (
+                "struct P { y: i32 } impl P { fn y_ref(self: &P) &i32 { ret &self.y; } } fn main() i32 { var p = P { y: 1 }; const r = p.y_ref(); p.y = 2; ret *r; }",
+                "cannot mutate `p` while it is shared-borrowed",
+            ),
+            (
+                "fn f() Option[&i32] { ret None; } fn main() void {}",
+                "may return only a plain shared reference",
+            ),
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| error.message.contains(message)),
+                "{source}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
     fn address_of_rejects_non_place_expressions() {
-        for expression in ["&42", "&(value + 1)", "&point.value", "&values[0]"] {
+        for expression in ["&42", "&(value + 1)", "&values[0]", "&Point.missing"] {
             let source = format!(
                 "struct Point {{ value: i32, }} fn main() void {{ var value: i32 = 1; var point = Point {{ value: 1 }}; var values = [1, 2]; var invalid = {expression}; }}"
             );
