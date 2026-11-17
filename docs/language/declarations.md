@@ -242,6 +242,9 @@ supported:
 Other derive names are recorded as metadata but do not generate
 implementations.
 
+`@derive(Copy)` makes a struct whose fields are all `Copy` a `Copy` type: using
+it by value copies it instead of moving it ([safety](safety.md)).
+
 ## Constants
 
 A module may declare compile-time constants (maintainer answer В20А):

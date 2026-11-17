@@ -8650,8 +8650,18 @@ impl<'a> FnCompiler<'a> {
         }
         self.expression_depth += 1;
         let reg = self.compile_expr_inner(expr);
-        let reg = self.emit_autoderef_load(expr.span, reg);
-        if consumed {
+        let mut reg = self.emit_autoderef_load(expr.span, reg);
+        let copied_place = consumed
+            && matches!(expr.node, ExprKind::Ident(_) | ExprKind::Field { .. })
+            && self
+                .type_of_expr(expr)
+                .is_some_and(|ty| self.is_copy_struct(&ty));
+        if copied_place {
+            // A `Copy` struct place stays usable: the consumer receives its
+            // own storage shell (D-025).
+            let ty = self.type_of_expr(expr).expect("copied place has a type");
+            reg = self.emit_struct_copy(reg, &ty);
+        } else if consumed {
             // Pending argument ownership remains in a full-expression slot
             // until the call commits, including through groups and match arms.
             self.mark_consumed_binding(expr, reg);
@@ -8681,6 +8691,53 @@ impl<'a> FnCompiler<'a> {
             self.pending_consumption.clear();
         }
         reg
+    }
+
+    /// Whether `ty` is a struct with an `impl Copy` (`@derive(Copy)`).
+    fn is_copy_struct(&self, ty: &TypeKind) -> bool {
+        let TypeKind::Named { name, .. } = self.resolve_type(ty) else {
+            return false;
+        };
+        self.struct_defs.contains_key(name.as_str())
+            && self.trait_impls.get(&name).is_some_and(|traits| traits.contains("Copy"))
+    }
+
+    /// A new storage shell holding a copy of the `Copy` struct in `src`;
+    /// nested `Copy` struct fields are copied recursively.
+    fn emit_struct_copy(&mut self, src: u8, ty: &TypeKind) -> u8 {
+        let TypeKind::Named { name, type_args } = self.resolve_type(ty) else {
+            return src;
+        };
+        let Some(fields) = self.struct_defs.get(name.as_str()).cloned() else {
+            return src;
+        };
+        let params = self.struct_generic_params.get(&name).cloned().unwrap_or_default();
+        let substitution: HashMap<String, TypeKind> = params
+            .iter()
+            .cloned()
+            .zip(type_args.iter().map(|argument| argument.node.clone()))
+            .collect();
+        let size = self
+            .struct_sizes
+            .get(name.as_str())
+            .copied()
+            .unwrap_or(fields.len() * 8);
+        let size = u16::try_from(size).unwrap_or(0);
+        let copy = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::New, copy, size));
+        for (field, field_ty) in fields {
+            let offset = self.field_offset_by_name(&name, &field);
+            let value = self.alloc_reg();
+            self.chunk.emit(field_load(value, src, offset));
+            let field_ty = crate::semantic::typecheck::substitute_type_kind(&field_ty, &substitution);
+            let value = if self.is_copy_struct(&field_ty) {
+                self.emit_struct_copy(value, &field_ty)
+            } else {
+                value
+            };
+            self.chunk.emit(field_store(value, copy, offset));
+        }
+        copy
     }
 
     fn compile_expr_inner(&mut self, expr: &Expr) -> u8 {

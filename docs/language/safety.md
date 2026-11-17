@@ -72,6 +72,12 @@ references and raw pointers are `Copy`. Returning `self.value` of type `T`
 from `self: &S[T]` is rejected; bound `T` with `Copy` or return
 `&self.value`.
 
+A struct becomes `Copy` with `@derive(Copy)` (or `impl Copy for S {}`) when
+every field is `Copy` and it has no `free` hook; a generic `P[T]` with
+`@derive(Copy)` is `Copy` exactly when `T` is. Using a `Copy` struct place
+by value gives the receiver its own copy (nested `Copy` structs are copied
+too), so the original stays usable and each copy is released on its own.
+
 A field can move out of a local struct (a place-level move), for example
 `const name: String = person.name;`, `take(person.badge)` or, through nested
 structs, `take(order.customer.badge)`. The local then

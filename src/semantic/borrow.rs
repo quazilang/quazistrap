@@ -1761,7 +1761,8 @@ impl Analyzer {
                     && (self.struct_defs.contains_key(name) || self.enums.contains_key(name))
                     && !self.trait_impls.get(name).is_some_and(|traits| traits.contains("Copy"))
             }
-            // All other types (structs, enums, arrays, slices, dyn Trait, etc.) are move types.
+            TypeKind::Named { .. } => !self.is_copy_type(&resolved),
+            // All other types (arrays, slices, dyn Trait, etc.) are move types.
             _ => true,
         }
     }

@@ -1415,6 +1415,17 @@ fn expand_serialize_derives(program: &Program) -> Program {
         else {
             continue;
         };
+        // `@derive(Copy)`: an empty `impl Copy` (fields are checked in
+        // `validate_copy_impls`).
+        if let Some(copy_span) = derive_span(attributes, "Copy") {
+            let type_args = generic_params.iter().map(|param| builder.named_ty(param)).collect();
+            let for_ty = builder.ty(TypeKind::Named { name: name.clone(), type_args });
+            let copy_trait = builder.named_ty("Copy");
+            items.push(Spanned::new(
+                ItemKind::Impl { trait_ty: Some(copy_trait), for_ty, methods: Vec::new() },
+                copy_span,
+            ));
+        }
         if *is_union || !generic_params.is_empty() {
             continue;
         }
@@ -1755,7 +1766,39 @@ impl Analyzer {
         }
     }
 
+    /// `impl Copy for S` (derived or written) needs every field of `S` to be
+    /// `Copy` (its own type parameters count as Copy: `P[T]` is Copy exactly
+    /// when `T` is) and no consuming `free` hook.
+    fn validate_copy_impls(&mut self, program: &Program) {
+        for item in &program.items {
+            let ItemKind::Impl { trait_ty: Some(trait_ty), for_ty, .. } = &item.node else {
+                continue;
+            };
+            if semantic_trait_short_name(&trait_ty.node) != Some("Copy") {
+                continue;
+            }
+            let name = declare::type_kind_base_name(&for_ty.node);
+            let Some(fields) = self.struct_defs.get(&name).cloned() else {
+                self.push_error(item.span, "S14", format!("`Copy` can only be implemented for structs here, not `{name}`"));
+                continue;
+            };
+            if self.consuming_receiver_methods.contains(&format!("{name}.free")) {
+                self.push_error(item.span, "S14", format!("`{name}` has a `free` hook, so it cannot be `Copy`"));
+            }
+            let params = self.struct_generic_params.get(&name).cloned().unwrap_or_default();
+            for (field, ty) in fields {
+                let resolved = self.resolve_type_aliases(&ty);
+                let own_param = matches!(&resolved, TypeKind::Named { name, type_args }
+                    if type_args.is_empty() && params.contains(name));
+                if !own_param && !self.is_copy_type(&resolved) {
+                    self.push_error(item.span, "S14", format!("`{name}` cannot be `Copy`: field `{field}` has type `{resolved}`, which is not `Copy`"));
+                }
+            }
+        }
+    }
+
     fn validate_derived_codec_fields(&mut self, program: &Program) {
+        self.validate_copy_impls(program);
         self.validate_serde_attributes(program);
         let aliases = derive_alias_map(program);
         // The shape each field is generated with, from its source spelling.
@@ -11536,5 +11579,13 @@ fn main() void {
                     .any(|error| error.message.contains(field))
             );
         }
+    }
+}
+
+/// The short name of a trait type (`Copy` for `Copy` or `prelude.Copy`).
+fn semantic_trait_short_name(ty: &TypeKind) -> Option<&str> {
+    match ty {
+        TypeKind::Named { name, .. } => Some(name.rsplit('.').next().unwrap_or(name)),
+        _ => None,
     }
 }

@@ -8201,6 +8201,11 @@ impl Analyzer {
                 }
                 self.trait_impls.get(&name).is_some_and(|traits| traits.contains("Copy"))
             }
+            // `P[T]` with `impl Copy for P[T]` is Copy when its arguments are.
+            TypeKind::Named { name, type_args } => {
+                self.trait_impls.get(&name).is_some_and(|traits| traits.contains("Copy"))
+                    && type_args.iter().all(|argument| self.is_copy_type(&argument.node))
+            }
             _ => false,
         }
     }
