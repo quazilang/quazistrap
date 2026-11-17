@@ -137,9 +137,9 @@ summaries. A read-only method may explicitly declare `self: &T`; it can be
 called through a shared reference and may not write through that receiver. An
 exclusive method may declare `self: &T!`; it borrows the owner exclusively for
 the call and may write through that receiver. A direct inherent call to a bare
-move-only `self: T` receiver consumes a local or temporary owner; fields,
-indexed elements, and dereferences remain unavailable until place-level moves
-exist.
+move-only `self: T` receiver consumes a local or temporary owner. A field of
+a struct local can move out (see [place-level moves](safety.md#move-types));
+indexed elements and dereferences cannot.
 Those D-014 requirements remain incomplete; do not treat `&T!` as evidence
 that arbitrary reference escape or safe concurrent sharing is supported.
 

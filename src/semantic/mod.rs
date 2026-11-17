@@ -6013,18 +6013,34 @@ fn main() void {
 "#,
         );
         assert!(
-            field.errors.iter().any(|error| {
-                error.code == "S10" && error.message.contains("cannot move out of a field")
-            }),
-            "consuming receiver accepted a field move before place moves exist: {:?}",
+            field.errors.is_empty(),
+            "a consuming method on a field is a place-level move: {:?}",
             field.errors
         );
     }
 
     #[test]
-    fn rejects_partial_moves_of_owned_places_until_structural_destruction_exists() {
+    fn rejects_unsupported_partial_moves_of_owned_places() {
+        // A straight-line field move out of a structural local is a
+        // place-level move: the local keeps (and later destroys) its other
+        // fields, and cannot be used whole afterwards.
+        let moved = analyze(
+            r#"struct Token { value: i32, } struct Holder { token: Token, other: Token, } fn take(token: Token) void {} fn main() void { var holder = Holder { token: Token { value: 1 }, other: Token { value: 2 } }; take(holder.token); take(holder.other); }"#,
+        );
+        assert!(moved.errors.is_empty(), "{:?}", moved.errors);
+        for (source, message) in [
+            (r#"struct Token { value: i32, } struct Holder { token: Token, } fn take(token: Token) void {} fn consume(holder: Holder) void {} fn main() void { var holder = Holder { token: Token { value: 1 } }; take(holder.token); consume(holder); }"#, "use of partially moved value 'holder'"),
+            (r#"struct Token { value: i32, } struct Holder { token: Token, } fn take(token: Token) void {} fn main() void { var holder = Holder { token: Token { value: 1 } }; take(holder.token); take(holder.token); }"#, "use of moved field `holder.token`"),
+            (r#"struct Token { value: i32, } struct Holder { token: Token, } fn take(token: Token) void {} fn main() void { var holder = Holder { token: Token { value: 1 } }; if true { take(holder.token); } }"#, "a field moves out of a local struct only unconditionally"),
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| error.code == "S10" && error.message.contains(message)),
+                "{source}: {:?}",
+                report.errors
+            );
+        }
         for source in [
-            r#"struct Token { value: i32, } struct Holder { token: Token, } fn take(token: Token) void {} fn main() void { var holder = Holder { token: Token { value: 1 } }; take(holder.token); }"#,
             r#"struct Token { value: i32, } fn take(token: Token) void {} fn main() void { var tokens = [Token { value: 1 }]; take(tokens[0]); }"#,
             r#"struct Token { value: i32, } fn take(token: Token) void {} fn main() void { var token = Token { value: 1 }; var view: &Token = &token; take(*view); }"#,
         ] {
@@ -6325,8 +6341,12 @@ impl Outer { fn take(self: Outer) Item { ret self.item; } }
             accepted.errors
         );
 
-        for source in [
+        // Moving a receiver field into a local is a place-level move.
+        let saved = analyze(
             r#"struct Item { value: i32 } struct Outer { item: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn take(self: Outer) Item { const saved = self.item; ret saved; } }"#,
+        );
+        assert!(saved.errors.is_empty(), "{:?}", saved.errors);
+        for source in [
             r#"struct Item { value: i32 } struct Inner { item: Item } struct Outer { inner: Inner } impl Item { fn free(self: Item) void {} } impl Outer { fn take(self: Outer) Item { ret self.inner.item; } }"#,
             r#"struct Item { value: i32 } struct Outer { item: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn free(self: Outer) void {} fn take(self: Outer) Item { ret self.item; } }"#,
             r#"struct Item { value: i32 } struct Outer[T] { item: Item, marker: T } impl Item { fn free(self: Item) void {} } impl Outer[T] { fn take(self: Outer[T]) Item { ret self.item; } }"#,
@@ -6334,7 +6354,9 @@ impl Outer { fn take(self: Outer) Item { ret self.item; } }
             let report = analyze(source);
             assert!(
                 report.errors.iter().any(|error| {
-                    error.code == "S10" && error.message.contains("cannot move out of a field")
+                    error.code == "S10"
+                        && (error.message.contains("cannot move out of a field")
+                            || error.message.contains("a field moves out of a local struct only"))
                 }),
                 "unsupported receiver projection was accepted: {source}\n{:?}",
                 report.errors

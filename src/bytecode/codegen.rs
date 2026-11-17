@@ -2724,9 +2724,10 @@ enum DropAction {
     FreeClosureEnv,
     /// Destroy the active variant's owned payloads, then the enum storage.
     EnumPayloads(Vec<EnumVariantDrop>),
-    /// A value of a recursive enum (`List` inside `List`): its generated
-    /// drop function, called through its address, destroys it.
-    RecursiveEnum { glue: String, ty: TypeKind },
+    /// A value of a recursive type (`List` in `List`, `Node` in
+    /// `Option[Node]`): its generated drop function, called through its
+    /// address, destroys it.
+    RecursiveDrop { glue: String, ty: TypeKind },
 }
 
 /// The owned payload slots of one enum variant.
@@ -5287,9 +5288,11 @@ impl<'a> FnCompiler<'a> {
             .iter()
             .any(|argument| type_kind_mentions_unresolved_param(&argument.node))
             || self.repr_c_structs.contains(name)
-            || !visiting.insert(name.to_string())
         {
             return None;
+        }
+        if !visiting.insert(name.to_string()) {
+            return Some(recursive_drop(name, type_args));
         }
         let substitution: HashMap<String, TypeKind> = self
             .struct_generic_params
@@ -5369,17 +5372,7 @@ impl<'a> FnCompiler<'a> {
         if !visiting.insert(key.clone()) {
             // A nested occurrence of an enum being described recurses
             // through a generated drop function.
-            let glue: String = key
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect();
-            return Some(DropAction::RecursiveEnum {
-                glue: format!("__quazi_drop_{glue}"),
-                ty: TypeKind::Named {
-                    name: name.to_string(),
-                    type_args: type_args.to_vec(),
-                },
-            });
+            return Some(recursive_drop(name, type_args));
         }
         let result = self.enum_variant_drops(name, type_args, visiting);
         visiting.remove(&key);
@@ -5564,7 +5557,12 @@ impl<'a> FnCompiler<'a> {
         self.reg_high_water = 0;
         let value = self.alloc_reg();
         let mut visiting = HashSet::new();
-        match self.enum_drop_action(name, type_args, &mut visiting) {
+        let action = if self.enum_defs.contains_key(name.as_str()) {
+            self.enum_drop_action(name, type_args, &mut visiting)
+        } else {
+            self.structural_drop_action_for_named(name, type_args, &mut visiting)
+        };
+        match action {
             Some(action) => self.emit_drop_action(value, action),
             None => self.emit_drop_action(value, DropAction::ReleaseStorage),
         }
@@ -5668,7 +5666,7 @@ impl<'a> FnCompiler<'a> {
                 instruction.flags = 1;
                 self.chunk.emit(instruction);
             }
-            DropAction::RecursiveEnum { glue, ty } => {
+            DropAction::RecursiveDrop { glue, ty } => {
                 self.ensure_recursive_drop_glue(&glue, &ty);
                 let address = self.alloc_reg();
                 let constant = self.chunk.add_constant(ConstPoolEntry::FnAddr(glue));
@@ -6245,6 +6243,38 @@ impl<'a> FnCompiler<'a> {
         self.mark_consumed_binding(expr, value);
     }
 
+    /// A field moved out of a struct local (analysis allows it only in the
+    /// local's own straight-line region): the local's cleanup now destroys
+    /// the remaining fields and the storage shell, not the moved field.
+    fn move_field_out_of_local(&mut self, root: &str, object: &Expr, field: &str) {
+        let Some(local) = self.drop_local(root).cloned() else {
+            return;
+        };
+        let DropAction::Structural(fields) = &local.action else {
+            return;
+        };
+        let offset = self.field_offset(object, field);
+        let remaining: Vec<StructuralFieldDrop> = fields
+            .iter()
+            .filter(|drop| drop.offset != offset)
+            .cloned()
+            .collect();
+        let Some(depth) = self.drop_scopes.iter().rposition(|scope| {
+            scope.iter().any(|entry| entry.name == local.name && entry.reg == local.reg)
+        }) else {
+            return;
+        };
+        self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
+        let guard = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, guard, 1));
+        self.drop_scopes[depth].push(DropLocal {
+            name: local.name.clone(),
+            reg: local.reg,
+            action: DropAction::Structural(remaining),
+            initialized: guard,
+        });
+    }
+
     fn mark_consumed_binding(&mut self, expr: &Expr, value: u8) {
         match &expr.node {
             ExprKind::Ident(name) => {
@@ -6262,6 +6292,11 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.patch_jump(empty, end);
                         self.chunk.patch_jump(different, end);
                     }
+                }
+            }
+            ExprKind::Field { object, name } => {
+                if let ExprKind::Ident(root) = &object.node {
+                    self.move_field_out_of_local(root, object, name);
                 }
             }
             ExprKind::Group(inner)
@@ -6314,14 +6349,10 @@ impl<'a> FnCompiler<'a> {
                         });
                         continue;
                     };
+                    // A field already moved out of the local (place-level
+                    // move) is no longer part of its cleanup.
                     let mut remaining = fields.clone();
-                    let before = remaining.len();
                     remaining.retain(|field| field.offset != offset);
-                    if remaining.len() == before {
-                        self.codegen_error.get_or_insert_with(|| {
-                            format!("returned field of `{local_name}` is absent from its structural cleanup")
-                        });
-                    }
                     DropAction::Structural(remaining)
                 } else {
                     local.action.clone()
@@ -15546,5 +15577,23 @@ fn pattern_binds_names(pattern: &Pattern) -> bool {
         PatternKind::Wildcard | PatternKind::Literal(_) => false,
         PatternKind::Variant { sub_patterns, .. } => sub_patterns.iter().any(pattern_binds_names),
         PatternKind::Struct { fields, .. } => fields.iter().any(|(_, sub)| pattern_binds_names(sub)),
+    }
+}
+
+/// The drop action of a nested occurrence of a recursive type: a call to its
+/// generated drop function.
+fn recursive_drop(name: &str, type_args: &[Type]) -> DropAction {
+    let ty = TypeKind::Named {
+        name: name.to_string(),
+        type_args: type_args.to_vec(),
+    };
+    let glue: String = ty
+        .to_string()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    DropAction::RecursiveDrop {
+        glue: format!("__quazi_drop_{glue}"),
+        ty,
     }
 }

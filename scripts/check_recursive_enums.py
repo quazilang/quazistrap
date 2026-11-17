@@ -14,6 +14,33 @@ SOURCE = 'import std.io.println;\nstruct Res { id: i32 }\nimpl Res { fn free(sel
 EXPECTED = "drop 2\ndrop 1\nhead 1\ntrees 200000\nnested 1\ndrop 3\ndrop 4\ndrop 5\n"
 
 
+STRUCTS = """import std.io.println;
+struct Res { id: i32 }
+impl Res { fn free(self: Res) void { println("drop {self.id}"); } }
+struct Node { value: Res, next: Option[Node] }
+struct Pair[A, B] { first: A, second: B }
+fn main() i32 {
+    const chain = Node { value: Res { id: 1 }, next: Some(Node { value: Res { id: 2 }, next: None }) };
+    const pair: Pair[Res, String] = Pair { first: Res { id: 3 }, second: String.from("x") };
+    println("{} {}", chain.value.id, pair.first.id);
+    ret 0;
+}
+"""
+
+STRUCTS_EXPECTED = "1 3\ndrop 3\ndrop 2\ndrop 1\n"
+
+
+def run_program(qz, root, name, source):
+    path = root / name
+    (path / "src").mkdir(parents=True)
+    (path / "quazi.toml").write_text(f'[package]\nname="{name}"\n[build]\nentry="src/main.qz"\n')
+    (path / "src/main.qz").write_text(source)
+    result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=path, text=True,
+                            capture_output=True, timeout=600)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
@@ -31,7 +58,9 @@ def main():
         assert run.returncode == 0, run.stdout + run.stderr
         assert run.stdout == EXPECTED, run.stdout
         assert int(run.stderr.strip().splitlines()[-1]) < 20000, run.stderr
-    print("PASS recursive enums: nested payloads destroyed once, consuming match, no leak")
+        structs = run_program(qz, root, "structs", STRUCTS)
+        assert structs == STRUCTS_EXPECTED, structs
+    print("PASS recursive types: nested enum and struct payloads destroyed once, consuming match, no leak")
 
 
 if __name__ == "__main__":

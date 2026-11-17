@@ -5604,9 +5604,14 @@ impl Analyzer {
                             .map(|(_, ty)| substitute_type_kind(ty, &substitution))
                             .filter(|ty| !type_mentions_params(ty, &generic_params))
                             .unwrap_or(TypeKind::Void);
-                        self.contextual_expected_types.push(field_context);
-                        let val_eval = self.type_check_expr(fval, reachable);
-                        self.contextual_expected_types.pop();
+                        let val_eval = if matches!(field_context, TypeKind::Void) {
+                            self.contextual_expected_types.push(field_context);
+                            let eval = self.type_check_expr(fval, reachable);
+                            self.contextual_expected_types.pop();
+                            eval
+                        } else {
+                            self.type_check_expr_expected(fval, reachable, Some(&field_context))
+                        };
                         if let Some((_, expected_ty)) =
                             field_defs.iter().find(|(fn_, _)| fn_ == fname)
                         {

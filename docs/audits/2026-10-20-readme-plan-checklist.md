@@ -5,7 +5,12 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 98.1%. Remaining: 1.9%.**
+**Complete: 98.3%. Remaining: 1.7%.**
+
+On 2026-11-17 structural destruction was completed (Ownership 10/16, 98.3%):
+recursive enums and structs drop through generated functions, and a struct
+local's field can move out in its own straight-line region (place-level move;
+the general partial-move requirement stays open).
 
 On 2026-11-09 format string literals (1/1) were completed under D-020
 ([change record](../changes/2026-11-09-string-interpolation.md)).
@@ -215,7 +220,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Threshold-based auto-inline | 1/1 | 100.0% | 0.0% |
 | Cross-basic-block const folding | 1/1 | 100.0% | 0.0% |
 | Strength reduction | 1/1 | 100.0% | 0.0% |
-| Ownership / RAII bytecode | 9/16 | 56.2% | 43.8% |
+| Ownership / RAII bytecode | 10/16 | 62.5% | 37.5% |
 | Atomic opcodes | 2/2 | 100.0% | 0.0% |
 | Format string literals | 1/1 | 100.0% | 0.0% |
 | Nested struct patterns | 1/1 | 100.0% | 0.0% |
@@ -396,7 +401,11 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
 - [ ] Transitive fixed-point call-effect solver.
 - [ ] Closed-target indirect/callback/trait effects.
 - [ ] Verified QZI-only ownership certificates.
-- [ ] Complete structural destruction including generic/enum/scalar shells.
+- [x] Complete structural destruction including generic/enum/scalar shells
+  (2026-11-17: enum payload drop glue, recursive enums and structs through
+  generated drop functions, concrete generic structs, struct shells, Option
+  and Array fields; `scripts/check_consuming_match.py`,
+  `scripts/check_recursive_enums.py`).
 - [ ] General place-level partial-move state.
 - [ ] Safe provenance-tracked dense-element source borrowing.
 

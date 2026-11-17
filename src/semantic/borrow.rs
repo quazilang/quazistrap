@@ -29,6 +29,8 @@ struct OwnedVar {
     pending_storage: Option<Loan>,
     /// Conservative roots of a string view or a reference used to derive one.
     view_origins: BTreeSet<ViewOrigin>,
+    /// Fields moved out of this struct local (place-level partial moves).
+    moved_fields: Vec<(String, Span)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -248,6 +250,7 @@ impl MoveEnv {
                     exclusive_borrow: None,
                     pending_storage: None,
                     view_origins: BTreeSet::new(),
+                    moved_fields: Vec::new(),
                 },
             );
         }
@@ -298,6 +301,10 @@ impl MoveEnv {
                 .expect("binding exists")
                 .view_origins = origins;
         }
+    }
+
+    fn lookup_mut(&mut self, name: &str) -> Option<&mut OwnedVar> {
+        self.scopes.iter_mut().rev().find_map(|scope| scope.get_mut(name))
     }
 
     fn mark_moved(&mut self, name: &str, at: Span) {
@@ -715,6 +722,15 @@ impl Analyzer {
     }
 
     fn bc_view_origins(&self, expr: &Expr, env: &MoveEnv) -> BTreeSet<ViewOrigin> {
+        // A field just moved out of its local owns its storage: no view.
+        if let ExprKind::Field { object, name } = &expr.node
+            && let ExprKind::Ident(root) = &object.node
+            && env
+                .lookup(root)
+                .is_some_and(|var| var.moved_fields.iter().any(|(field, _)| field == name))
+        {
+            return BTreeSet::new();
+        }
         if self
             .bc_resolved_call_name(expr)
             .is_some_and(|name| self.fresh_result_intrinsics.contains(name))
@@ -1207,6 +1223,15 @@ impl Analyzer {
     /// operation commits. The caller supplies a synthetic evaluation scope;
     /// these loans do not imply that an opaque callee retains no references.
     fn bc_loan_observation(&self, value: &Expr, env: &mut MoveEnv) {
+        // A field just moved out of its local is an independent owner.
+        if let ExprKind::Field { object, name } = &value.node
+            && let ExprKind::Ident(root) = &object.node
+            && env
+                .lookup(root)
+                .is_some_and(|var| var.moved_fields.iter().any(|(field, _)| field == name))
+        {
+            return;
+        }
         if self.bc_annotated_type(value).is_some_and(|ty| {
             let ty = self.resolve_type_aliases(&ty);
             !matches!(
@@ -1604,6 +1629,19 @@ impl Analyzer {
                 } // Copy type or unresolved generic: no tracking needed.
 
                 // Use-after-move check (both consuming and non-consuming reads).
+                if let Some((field, moved_at)) = var.moved_fields.first() {
+                    self.push_error(
+                        expr.span,
+                        "S10",
+                        format!(
+                            "use of partially moved value '{}' (field `{}` moved at {})",
+                            name,
+                            field,
+                            self.span_label(*moved_at)
+                        ),
+                    );
+                    return;
+                }
                 if let Some(moved_at) = var.moved_at {
                     self.push_error(
                         expr.span,
@@ -2066,6 +2104,23 @@ impl Analyzer {
             ExprKind::Spread(inner) => self.bc_expr(inner, env, false),
 
             ExprKind::Field { object, name } => {
+                // A field of a partially moved local is still readable unless
+                // it is the moved one.
+                if let ExprKind::Ident(root) = &object.node
+                    && let Some(moved) = env.lookup(root).and_then(|var| {
+                        var.moved_fields.iter().find(|(field, _)| field == name).map(|(_, at)| *at)
+                    })
+                {
+                    self.push_error(
+                        expr.span,
+                        "S10",
+                        format!(
+                            "use of moved field `{root}.{name}` (moved at {})",
+                            self.span_label(moved)
+                        ),
+                    );
+                    return;
+                }
                 // `Enum.Variant` constructs a value; it is not a field place.
                 if consumed
                     && self.unit_variant_type(object, name).is_none()
@@ -2073,7 +2128,34 @@ impl Analyzer {
                     && !env.allows_destructor_projection_move(expr)
                     && !env.allows_returned_receiver_field_move(expr)
                 {
+                    if let ExprKind::Ident(root) = &object.node
+                        && self.bc_can_move_field(root, env)
+                    {
+                        // Place-level move: the local keeps its other fields.
+                        if let Some(var) = env.lookup_mut(root) {
+                            var.moved_fields.push((name.clone(), expr.span));
+                        }
+                        return;
+                    }
+                    if let ExprKind::Ident(root) = &object.node
+                        && env.lookup(root).is_some()
+                    {
+                        self.push_error(
+                            expr.span,
+                            "S10",
+                            format!(
+                                "cannot move `{root}.{name}` here: a field moves out of a local struct only unconditionally in the block that declares it, while the local is not borrowed, and when its type has no `free` hook"
+                            ),
+                        );
+                        return;
+                    }
                     self.bc_reject_partial_move(expr);
+                }
+                if let ExprKind::Ident(root) = &object.node
+                    && env.lookup(root).is_some_and(|var| !var.moved_fields.is_empty())
+                {
+                    // Reading another field of a partially moved local.
+                    return;
                 }
                 self.bc_expr(object, env, false);
             }
@@ -2780,6 +2862,36 @@ impl Analyzer {
         name == "Array"
             && type_args.len() == 1
             && self.bc_is_move_type(&self.resolve_type_aliases(&type_args[0].node))
+    }
+
+    /// A field may move out of a struct local whose destruction is structural
+    /// (no source `free` hook) when the move runs unconditionally in the
+    /// local's own control region: the code generator then destroys only the
+    /// remaining fields. Branch- or loop-dependent moves stay rejected.
+    fn bc_can_move_field(&self, root: &str, env: &MoveEnv) -> bool {
+        let Some(var) = env.lookup(root) else {
+            return false;
+        };
+        if var.moved_at.is_some()
+            || var.control_depth_at_decl != env.control_depth
+            || var.loop_depth_at_decl != env.loop_depth
+            || var.shared_borrow.is_some()
+            || var.exclusive_borrow.is_some()
+            || env.capture_boundary.is_some()
+        {
+            return false;
+        }
+        // Generic structs keep the whole-value rule until their erased
+        // templates carry a structural cleanup plan.
+        let Some(TypeKind::Named { name, type_args }) =
+            var.ty.as_ref().map(|ty| self.resolve_type_aliases(ty))
+        else {
+            return false;
+        };
+        type_args.is_empty()
+            && self.struct_defs.contains_key(&name)
+            && !self.consuming_receiver_methods.contains(&format!("{name}.free"))
+            && !self.repr_c_structs.contains(&name)
     }
 
     fn bc_reject_partial_move(&mut self, expr: &Expr) {
