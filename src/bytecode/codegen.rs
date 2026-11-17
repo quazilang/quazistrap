@@ -2586,6 +2586,11 @@ struct FnCompiler<'a> {
     /// Drop-guard register reserved with the binding being declared; see
     /// `reserve_scalar_binding`.
     reserved_drop_guard: Option<u8>,
+    /// Drop guards of locals some field has moved out of so far (in code
+    /// order). Only their cleanup consults the moved-field mask; a move can
+    /// precede a cleanup at run time only if it precedes it in code, since a
+    /// loop cannot move out of a local declared outside it.
+    field_moved_guards: HashSet<u8>,
     codegen_error: Option<String>,
     resolution_errors: Rc<RefCell<Vec<String>>>,
     bound_names: HashSet<String>,
@@ -2877,6 +2882,7 @@ impl<'a> FnCompiler<'a> {
             next_reg: 0,
             reg_high_water: 0,
             reserved_drop_guard: None,
+            field_moved_guards: HashSet::new(),
             codegen_error: None,
             resolution_errors,
             bound_names,
@@ -5581,7 +5587,9 @@ impl<'a> FnCompiler<'a> {
     fn emit_guarded_local_drop(&mut self, local: &DropLocal, action: DropAction) {
         let empty = self.chunk.emit(ri16(Opcode::Jz, local.initialized, 0));
         match (&local.action, action) {
-            (DropAction::Structural(declared), DropAction::Structural(fields)) => {
+            (DropAction::Structural(declared), DropAction::Structural(fields))
+                if self.field_moved_guards.contains(&local.initialized) =>
+            {
                 // Skip each field whose moved bit (see
                 // `move_field_out_of_local`) is set.
                 let mask = self.alloc_reg();
@@ -6372,6 +6380,7 @@ impl<'a> FnCompiler<'a> {
         self.chunk.emit(ri16(Opcode::MovI, shift, (index + 1) as u16));
         self.chunk.emit(rrr(Opcode::Shl, bit, bit, shift));
         self.chunk.emit(rrr(Opcode::Or, local.initialized, local.initialized, bit));
+        self.field_moved_guards.insert(local.initialized);
     }
 
     /// The local and field offsets of a field chain `root.a.b`.
