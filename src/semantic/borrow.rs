@@ -2,7 +2,7 @@
 // Copyright (c) 2026 quazilang
 // SPDX-License-Identifier: 0BSD
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 
 use super::*;
@@ -120,6 +120,11 @@ struct MoveEnv {
     /// The closure being checked runs at most once (`qo`): it may move its
     /// owned captures out. Any other closure only borrows them.
     capture_once: bool,
+    /// Flow-sensitive loan regions (D-014): the local bindings that may hold
+    /// a value derived from a root's loan, keyed by (root, exclusive). A loan
+    /// with an entry ends after the last statement that mentions any holder;
+    /// a loan without one stays lexical.
+    loan_holders: BTreeMap<(BindingId, bool), BTreeSet<(BindingId, String)>>,
 }
 
 impl MoveEnv {
@@ -135,6 +140,7 @@ impl MoveEnv {
             returning_receiver_field: None,
             capture_boundary: None,
             capture_once: false,
+            loan_holders: BTreeMap::new(),
         }
     }
 
@@ -200,6 +206,122 @@ impl MoveEnv {
                 loan.scope_depth = loan.scope_depth.min(depth);
             }
         }
+    }
+
+    /// Every live shared/exclusive loan: (root, exclusive) → (name, start).
+    fn loan_snapshot(&self) -> BTreeMap<(BindingId, bool), (String, Span)> {
+        let mut loans = BTreeMap::new();
+        for scope in &self.scopes {
+            for (name, var) in scope {
+                if let Some(loan) = var.shared_borrow {
+                    loans.insert((var.binding, false), (name.clone(), loan.at));
+                }
+                if let Some(loan) = var.exclusive_borrow {
+                    loans.insert((var.binding, true), (name.clone(), loan.at));
+                }
+            }
+        }
+        loans
+    }
+
+    /// After `stmt`: a loan it created is held by the local bindings it
+    /// mentions; a statement that mentions a root or a holder makes its other
+    /// locals holders too (they may now carry a derived reference or view).
+    /// Holders declared in this block and not mentioned by `rest` are done;
+    /// a loan left without holders ends here.
+    fn track_loan_holders(
+        &mut self,
+        stmt: &Stmt,
+        rest: &[Stmt],
+        before: &BTreeMap<(BindingId, bool), (String, Span)>,
+        depth: usize,
+    ) {
+        let mut names = Vec::new();
+        collect_stmt_identifiers(stmt, &mut names);
+        // Holders are identified by binding, so a shadowing declaration in a
+        // nested block never stands in for them. A mention resolves to the
+        // binding visible after the statement; a scalar cannot carry a
+        // reference or a view.
+        let mut mentioned: BTreeSet<(BindingId, String)> = BTreeSet::new();
+        let mut opaque = false;
+        for name in names {
+            let Some(var) = self.lookup(&name) else {
+                continue;
+            };
+            let ty = var.ty.as_ref();
+            if ty.is_some_and(|ty| matches!(ty, TypeKind::Fn { .. } | TypeKind::CFn { .. })) {
+                opaque = true;
+            }
+            let scalar = ty.is_some_and(|ty| {
+                matches!(
+                    ty,
+                    TypeKind::Int8 | TypeKind::Int16 | TypeKind::Int32 | TypeKind::Int64
+                        | TypeKind::Uint8 | TypeKind::Uint16 | TypeKind::Uint32 | TypeKind::Uint64
+                        | TypeKind::Isize | TypeKind::Usize | TypeKind::Float16 | TypeKind::Float32
+                        | TypeKind::Float64 | TypeKind::Bool
+                )
+            });
+            if !scalar {
+                mentioned.insert((var.binding, name));
+            }
+        }
+        let now = self.loan_snapshot();
+        for (key, (_, at)) in &now {
+            let fresh = before.get(key).is_none_or(|(_, previous)| previous != at);
+            // A call through a function value is an opaque boundary (D-014):
+            // its new loans stay lexical.
+            if fresh && opaque {
+                self.loan_holders.remove(key);
+                continue;
+            }
+            let holders: BTreeSet<(BindingId, String)> =
+                mentioned.iter().filter(|(binding, _)| *binding != key.0).cloned().collect();
+            if fresh {
+                self.loan_holders.insert(*key, holders);
+            } else if let Some(existing) = self.loan_holders.get_mut(key)
+                && mentioned.iter().any(|(binding, _)| {
+                    *binding == key.0 || existing.iter().any(|(holder, _)| holder == binding)
+                })
+            {
+                existing.extend(holders);
+            }
+        }
+        let mut later = Vec::new();
+        for statement in rest {
+            collect_stmt_identifiers(statement, &mut later);
+        }
+        let declared_here: BTreeSet<BindingId> =
+            self.scopes[depth].values().map(|var| var.binding).collect();
+        let mut ended = Vec::new();
+        for (key, holders) in self.loan_holders.iter_mut() {
+            if !now.contains_key(key) {
+                continue;
+            }
+            holders.retain(|(binding, name)| !declared_here.contains(binding) || later.contains(name));
+            if holders.is_empty() {
+                ended.push(*key);
+            }
+        }
+        for (binding, exclusive) in ended {
+            self.loan_holders.remove(&(binding, exclusive));
+            for scope in &mut self.scopes {
+                for var in scope.values_mut() {
+                    if var.binding == binding {
+                        if exclusive {
+                            var.exclusive_borrow = None;
+                        } else {
+                            var.shared_borrow = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drop holder entries whose loan has ended.
+    fn prune_loan_holders(&mut self) {
+        let live = self.loan_snapshot();
+        self.loan_holders.retain(|key, _| live.contains_key(key));
     }
 
     fn exit_scope(&mut self) {
@@ -509,10 +631,14 @@ impl Analyzer {
 
     fn bc_block(&mut self, block: &Block, env: &mut MoveEnv) {
         env.enter_scope();
-        for stmt in &block.stmts {
+        let depth = env.scopes.len() - 1;
+        for (index, stmt) in block.stmts.iter().enumerate() {
+            let before = env.loan_snapshot();
             self.bc_stmt(stmt, env);
+            env.track_loan_holders(stmt, &block.stmts[index + 1..], &before, depth);
         }
         env.exit_scope();
+        env.prune_loan_holders();
     }
 
     /// Whether control leaves the function before reaching the end of `block`.
@@ -1210,6 +1336,50 @@ impl Analyzer {
         env.set_view_origins(name, roots);
     }
 
+    /// One pass over a loop's condition, body and update.
+    fn bc_loop_iteration(
+        &mut self,
+        stmt: &Stmt,
+        kind: &ForLoop,
+        body: &Block,
+        outer: &MoveEnv,
+        loop_env: &mut MoveEnv,
+    ) {
+        match kind {
+            ForLoop::Each { vars, iter, .. } => {
+                loop_env.enter_scope();
+                for (ordinal, var) in vars.iter().enumerate() {
+                    loop_env.declare(var.clone(), None, stmt.span, ordinal);
+                    if let ForIter::Iter(iter) = iter
+                        && !self.bc_moves_owned_array_elements(iter)
+                    {
+                        let origins = self.bc_owner_origins(iter, outer);
+                        loop_env.set_view_origins(var, origins);
+                    }
+                }
+                for s in &body.stmts {
+                    self.bc_stmt(s, loop_env);
+                }
+                loop_env.exit_scope();
+            }
+            ForLoop::CStyle { condition, update, .. } => {
+                if let Some(cond) = condition {
+                    self.bc_expr(cond, loop_env, false);
+                }
+                self.bc_block(body, loop_env);
+                if let Some(upd) = update {
+                    self.bc_expr(upd, loop_env, false);
+                }
+            }
+            ForLoop::Cond { condition } => {
+                if let Some(cond) = condition {
+                    self.bc_expr(cond, loop_env, false);
+                }
+                self.bc_block(body, loop_env);
+            }
+        }
+    }
+
     fn bc_loan_view_argument(&self, value: &Expr, env: &mut MoveEnv) {
         let depth = env.scopes.len().saturating_sub(1);
         for origin in self.bc_view_origins(value, env) {
@@ -1483,44 +1653,46 @@ impl Analyzer {
                 }
                 loop_env.loop_depth += 1;
                 loop_env.control_depth += 1;
-                match kind {
-                    ForLoop::Each { vars, .. } => {
-                        loop_env.enter_scope();
-                        for (ordinal, var) in vars.iter().enumerate() {
-                            loop_env.declare(var.clone(), None, stmt.span, ordinal);
-                            if let ForLoop::Each {
-                                iter: ForIter::Iter(iter),
-                                ..
-                            } = kind
-                                && !self.bc_moves_owned_array_elements(iter)
-                            {
-                                let origins = self.bc_owner_origins(iter, env);
-                                loop_env.set_view_origins(var, origins);
-                            }
+                let outer = env.clone();
+                let at_entry = loop_env.loan_snapshot();
+                self.bc_loop_iteration(stmt, kind, body, &outer, &mut loop_env);
+                // A loan created in the body that outlives the iteration is
+                // live on the back edge: check the body once more under it,
+                // keeping only the borrow conflicts this second pass finds.
+                // Only a reassignable view (`str`) declared outside the loop
+                // can carry a loan into the next iteration: references cannot
+                // be rebound, and owned values hold no views.
+                let mut body_names = Vec::new();
+                for s in &body.stmts {
+                    collect_stmt_identifiers(s, &mut body_names);
+                }
+                let outer_view = body_names.iter().any(|name| {
+                    outer.lookup(name).is_some_and(|var| {
+                        var.ty.as_ref().is_some_and(|ty| self.bc_is_string_view(&self.resolve_type_aliases(ty)))
+                    })
+                });
+                let carried = outer_view
+                    && loop_env
+                        .loan_snapshot()
+                        .into_iter()
+                        .any(|(key, value)| at_entry.get(&key) != Some(&value));
+                if carried {
+                    let known: BTreeSet<(usize, usize, String)> = self
+                        .errors
+                        .iter()
+                        .map(|error| (error.span.start, error.span.end, error.message.clone()))
+                        .collect();
+                    let first_new = self.errors.len();
+                    let mut second = loop_env.clone();
+                    self.bc_loop_iteration(stmt, kind, body, &outer, &mut second);
+                    let found: Vec<_> = self.errors.drain(first_new..).collect();
+                    for error in found {
+                        let conflict = error.message.contains("borrowed")
+                            || error.message.contains("string view");
+                        let key = (error.span.start, error.span.end, error.message.clone());
+                        if conflict && !known.contains(&key) {
+                            self.errors.push(error);
                         }
-                        for s in &body.stmts {
-                            self.bc_stmt(s, &mut loop_env);
-                        }
-                        loop_env.exit_scope();
-                    }
-                    ForLoop::CStyle {
-                        condition,
-                        update,
-                        ..
-                    } => {
-                        if let Some(cond) = condition {
-                            self.bc_expr(cond, &mut loop_env, false);
-                        }
-                        self.bc_block(body, &mut loop_env);
-                        if let Some(upd) = update {
-                            self.bc_expr(upd, &mut loop_env, false);
-                        }
-                    }
-                    ForLoop::Cond { condition } => {
-                        if let Some(cond) = condition {
-                            self.bc_expr(cond, &mut loop_env, false);
-                        }
-                        self.bc_block(body, &mut loop_env);
                     }
                 }
                 loop_env.exit_scope();
@@ -3660,5 +3832,77 @@ fn field_place(expr: &Expr) -> Option<(String, String)> {
             Some((root, format!("{path}.{name}")))
         }
         _ => None,
+    }
+}
+
+/// Every identifier a statement mentions, including nested blocks.
+fn collect_stmt_identifiers(stmt: &Stmt, names: &mut Vec<String>) {
+    use super::typecheck::collect_expr_identifiers as expr;
+    let block = |block: &Block, names: &mut Vec<String>| {
+        for statement in &block.stmts {
+            collect_stmt_identifiers(statement, names);
+        }
+    };
+    match &stmt.node {
+        StmtKind::Var { name, value, .. } => {
+            names.push(name.clone());
+            if let Some(value) = value {
+                expr(value, names);
+            }
+        }
+        StmtKind::Const { name, value, .. } => {
+            names.push(name.clone());
+            expr(value, names);
+        }
+        StmtKind::Return(value) => {
+            if let Some(value) = value {
+                expr(value, names);
+            }
+        }
+        StmtKind::If { condition, then_block, else_if, else_block } => {
+            expr(condition, names);
+            block(then_block, names);
+            for (condition, body) in else_if {
+                expr(condition, names);
+                block(body, names);
+            }
+            if let Some(body) = else_block {
+                block(body, names);
+            }
+        }
+        StmtKind::For { kind, body } => {
+            match kind {
+                ForLoop::Each { vars, iter, .. } => {
+                    names.extend(vars.iter().cloned());
+                    match iter {
+                        ForIter::Range { start, end } => {
+                            expr(start, names);
+                            expr(end, names);
+                        }
+                        ForIter::Iter(value) => expr(value, names),
+                    }
+                }
+                ForLoop::CStyle { init, condition, update } => {
+                    if let Some(init) = init {
+                        collect_stmt_identifiers(init, names);
+                    }
+                    if let Some(condition) = condition {
+                        expr(condition, names);
+                    }
+                    if let Some(update) = update {
+                        expr(update, names);
+                    }
+                }
+                ForLoop::Cond { condition } => {
+                    if let Some(condition) = condition {
+                        expr(condition, names);
+                    }
+                }
+            }
+            block(body, names);
+        }
+        StmtKind::ExprStmt(value) => expr(value, names),
+        StmtKind::CfgBlock { body, .. } | StmtKind::UnsafeBlock { body } => block(body, names),
+        StmtKind::Break | StmtKind::Continue => {}
     }
 }

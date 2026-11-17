@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Check D-014 reference results: `&place.field` addresses a field, a function
+"""Check D-014 reference results and flow-sensitive loan regions (a loan ends
+after the last statement that mentions a binding derived from it): `&place.field` addresses a field, a function
 may return a reference parameter or `&parameter.field`, and the caller keeps
 every reference argument's root borrowed; escapes and conflicting uses are
 rejected. Runs natively, from QZI without sources, and (with --wine) on
@@ -36,10 +37,22 @@ fn main() i32 {
     println("{} {} {} {}", *y, best.value, best.label, point.me().y);
     println("{} {}", point.label_ref().len(), total(point.me()));
     println("{} {}", chained(&point), passed(&point));
+    // Each loan ends after the last use of the reference or view that holds it.
+    const r = point.label_ref();
+    println("{}", r.len());
+    point.y = 7;
+    const v = point.inner.label.as_str();
+    const w = v;
+    println("{} {}", w, point.y);
+    point.y = 8;
+    const k: &i32 = &point.y;
+    const copied: i32 = *k;
+    point.y = copied + 1;
+    println("{}", point.y);
     ret 0;
 }
 """
-EXPECTED = "2 5 other 2\n5 3\nfirst first\n"
+EXPECTED = "2 5 other 2\n5 3\nfirst first\n5\nfirst 7\n9\n"
 
 INVALID = [
     ("struct P { y: i32 } fn f(p: P) &i32 { ret &p.y; } fn main() void {}",
@@ -65,6 +78,19 @@ INVALID = [
     ("struct I { s: String } impl I { fn r(self: &I) &String { ret &self.s; } }\n"
      "fn f(h: I) &String { ret h.r(); } fn main() void {}",
      "a returned reference must be a reference parameter"),
+    # Flow-sensitive loans still cover every later use, alias, shadow and back edge.
+    ("struct P { y: i32 } fn main() i32 { var p = P { y: 1 }; const r: &i32 = &p.y; p.y = 2; ret *r; }",
+     "cannot mutate `p` while it is shared-borrowed"),
+    ("struct P { y: i32 } fn main() i32 { var p = P { y: 1 }; const r: &i32 = &p.y; const s = r; p.y = 2; ret *s; }",
+     "cannot mutate `p` while it is shared-borrowed"),
+    ("fn main() i32 { var value: i32 = 1; const r: &i32 = &value; if true { const r: i32 = 7; value = r; } ret *r; }",
+     "cannot mutate `value` while it is shared-borrowed"),
+    ("import std.io;\nfn main() void { var owner = \"first {1}\"; const view: str = owner.as_str();\n"
+     "if true { const view: i32 = 0; owner = \"replaced {2}\"; } io.println(view); }",
+     "cannot mutate `owner` while it is shared-borrowed"),
+    ("import std.io;\nfn main() void { var owner = \"first {1}\"; var v: str = \"\";\n"
+     "for i : 0..2 { owner = \"replacement {i}\"; io.println(v); v = owner.as_str(); } }",
+     "cannot mutate `owner` while it is shared-borrowed"),
     # Exclusive access may not be minted through a shared reference.
     ("struct S { y: i32 } fn poke(p: &S) void { const q = &p.y!; *q = 99; }\n"
      "fn main() i32 { const a = S { y: 1 }; poke(&a); ret a.y; }",

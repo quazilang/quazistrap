@@ -156,17 +156,19 @@ and borrowed `CStr` never gain ownership automatically.
 
 ## Safe references
 
-`&T` is a shared safe reference with conservative lexical restrictions:
+`&T` is a shared safe reference with conservative restrictions:
 
-- `&value` accepts only a local variable or parameter (parentheses are fine).
+- `&value` accepts a local variable or parameter, or a field reached from one
+  (`&point.y`); a field borrow borrows the whole root.
 - A value never converts into a reference. Pointee types are invariant:
   `&i32` is not `&u64`.
-- A shared-reference binding cannot be rebound, returned, stored in an owned
-  aggregate, or captured by a closure.
+- A shared-reference binding cannot be rebound, stored in an owned aggregate,
+  or captured by a closure. A function may return `&T` only when it derives
+  from a reference parameter (see [types and memory](../TYPES_AND_MEMORY.md)).
 - The referenced owner cannot be mutated or moved while the borrow exists.
   A read-only method declared with `self: &T` is permitted.
-- Fields, indexes, dereferences, calls, and temporaries are not valid
-  address-of operands.
+- Indexes, dereferences, calls, and temporaries are not valid address-of
+  operands.
 - Dereferencing a shared reference works for scalar pointees. Aggregate
   pointees require immutable receiver semantics.
 - `str`/`&str` are the representation-identical string-view exception.
@@ -175,12 +177,17 @@ and borrowed `CStr` never gain ownership automatically.
 local variable or parameter through `&value!`, and assignment through
 `*reference` is allowed.
 The conservative local checker rejects owner reads, moves, mutation, and any
-overlapping shared or exclusive borrow while the loan's lexical scope is live.
+overlapping shared or exclusive borrow while the loan is live.
 For a temporary `&value` or `&value!` argument to a resolved direct Quazi call,
 the checker ends the loan after that call; current safe references cannot
 escape such a callee.
-It does not yet derive shorter use-based regions, support reborrowing, model
-flow-sensitive or cross-call effects, or verify QZI-only summaries; those
+A loan ends after the last statement of its block that mentions a binding
+holding a reference or view derived from it (a statement mentioning a holder
+or the root makes its other non-scalar locals holders too), so
+`const r = &p.y; use(r); p.y = 2;` is accepted. A loan created next to a
+call through a function value stays until the end of its scope, and a loan
+that a loop body leaves to an outer `str` variable is checked against the next
+iteration as well. Reborrowing, cross-call effects, and QZI-only summaries
 remain D-014 implementation work.
 
 These restrictions keep references sound while whole-program ownership is
@@ -192,7 +199,7 @@ implemented. See
 A source helper returning a struct, enum, or array that retains a borrowed
 string view also retains its caller's owner root. For example, after
 `const view = wrap(owner.as_str())`, releasing or moving `owner` is rejected
-while `view`'s lexical scope remains live. Returning such a result from a local
+while `view` is still used. Returning such a result from a local
 owner, or assigning it beyond that owner's scope, is also rejected. A source
 helper that copies its input into a fresh owned allocation does not retain the
 input loan. Static-only results and synchronous observation remain supported.

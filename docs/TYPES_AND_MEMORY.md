@@ -73,11 +73,12 @@ A function may return a plain `&T` only when every `ret` is a reference
 parameter, a field reached through one (`ret &self.name;`), or a call returning
 `&T` whose reference arguments and borrowed receiver are such
 (`ret self.inner_ref().label();`); the caller then
-keeps each reference argument's root (and a borrowed receiver) borrowed for the
-rest of its enclosing scope (D-014). Other returned references (`Option[&T]`,
+keeps each reference argument's root (and a borrowed receiver) borrowed while
+the result, or anything derived from it, is still used (D-014). Other returned references (`Option[&T]`,
 references to by-value parameters or locals) are errors. Non-string references
-cannot be stored in owned aggregates or captured by closures. Once a local is address-taken, safe code cannot mutate,
-move, or invoke methods on it for the rest of that function. `str`/`&str` is the
+cannot be stored in owned aggregates or captured by closures. While a reference or view derived from a local is still used later in its
+block, safe code cannot mutate, move, or invoke mutating methods on that
+local; after its last use the loan ends. `str`/`&str` is the
 representation-identical string-view exception. See the
 [reference migration guide](migrations/references.md).
 

@@ -5983,9 +5983,9 @@ fn main() void {
 
         for source in [
             "fn main() void { const value: i32 = 1; var reference: &i32! = &value!; }",
-            "fn main() void { var value: i32 = 1; var reference: &i32! = &value!; value = 2; }",
-            "fn main() void { var value: i32 = 1; var shared: &i32 = &value; var exclusive: &i32! = &value!; }",
-            "fn main() void { var value: i32 = 1; var exclusive: &i32! = &value!; var shared: &i32 = &value; }",
+            "fn main() void { var value: i32 = 1; var reference: &i32! = &value!; value = 2; const after: i32 = *reference; }",
+            "fn main() void { var value: i32 = 1; var shared: &i32 = &value; var exclusive: &i32! = &value!; const after: i32 = *shared; }",
+            "fn main() void { var value: i32 = 1; var exclusive: &i32! = &value!; var shared: &i32 = &value; const after: i32 = *exclusive; }",
         ] {
             let report = analyze(source);
             assert!(
@@ -6260,6 +6260,7 @@ fn main() void {
     var counter = Counter { value: 1 };
     var view = &counter;
     counter.write();
+    const after: i32 = view.value;
 }
 "#,
         );
@@ -6421,6 +6422,7 @@ fn main() void {
     var token = Token { value: 1 };
     var view: &Token = &token;
     token.consume();
+    const after: i32 = view.value;
 }
 "#,
         );
@@ -6924,7 +6926,7 @@ fn main() i32 {
             "fn main() void { var items: Array[&i32]; }",
             "fn main() void { var first: i32 = 1; var second: i32 = 2; var reference: &i32 = &first; reference = &second; }",
             "fn main() void { var value: i32 = 1; var reference: &i32 = &value; var closure: fn() i32 = || reference; }",
-            "fn main() void { var value: i32 = 1; var reference: &i32 = &value; value = 2; }",
+            "fn main() void { var value: i32 = 1; var reference: &i32 = &value; value = 2; const after: i32 = *reference; }",
         ] {
             let report = analyze(source);
             assert!(

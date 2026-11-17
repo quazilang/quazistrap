@@ -5,7 +5,11 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 98.5%. Remaining: 1.5%.**
+**Complete: 98.7%. Remaining: 1.3%.**
+
+On 2026-11-18 flow-sensitive loan regions were completed (Ownership 12/16,
+98.7%): field addresses, parameter-derived reference results and last-use
+loan ends ([safety](../language/safety.md#safe-references)).
 
 On 2026-11-17 general place-level partial moves were completed (Ownership
 11/16, 98.5%): conditional and nested field moves use a runtime drop-guard
@@ -401,10 +405,11 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
 - [x] Dense owned-element replacement/removal lowering.
 - [x] Checked dense-element-address bytecode/backend foundation.
 - [x] Recursive owned dense-container element destruction.
-- [ ] Flow-sensitive interprocedural loan regions (2026-11-17 slice: field
-  addresses and parameter-derived `&T` results whose callers keep the argument
-  roots borrowed lexically, `scripts/check_reference_results.py`; regions are
-  still lexical).
+- [x] Flow-sensitive interprocedural loan regions (2026-11-18: a loan ends after
+  the last statement mentioning a binding derived from it, tracked by binding
+  identity; parameter-derived `&T` results carry their arguments' loans into
+  the caller; loops recheck loans carried by outer views over the back edge;
+  calls through function values stay lexical; `scripts/check_reference_results.py`).
 - [ ] Transitive fixed-point call-effect solver.
 - [ ] Closed-target indirect/callback/trait effects.
 - [ ] Verified QZI-only ownership certificates.
