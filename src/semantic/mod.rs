@@ -6760,7 +6760,7 @@ fn entry(wrapper: Wrapper[Token]) Token {{ ret wrapper.read(); }}
     }
 
     #[test]
-    fn allows_only_direct_structural_receiver_field_returns() {
+    fn allows_only_structural_receiver_field_returns() {
         let accepted = analyze(
             r#"
 struct Item { value: i32 }
@@ -6780,8 +6780,12 @@ impl Outer { fn take(self: Outer) Item { ret self.item; } }
             r#"struct Item { value: i32 } struct Outer { item: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn take(self: Outer) Item { const saved = self.item; ret saved; } }"#,
         );
         assert!(saved.errors.is_empty(), "{:?}", saved.errors);
-        for source in [
+        // A nested receiver field moves out through the drop-guard mask.
+        let nested = analyze(
             r#"struct Item { value: i32 } struct Inner { item: Item } struct Outer { inner: Inner } impl Item { fn free(self: Item) void {} } impl Outer { fn take(self: Outer) Item { ret self.inner.item; } }"#,
+        );
+        assert!(nested.errors.is_empty(), "{:?}", nested.errors);
+        for source in [
             r#"struct Item { value: i32 } struct Outer { item: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn free(self: Outer) void {} fn take(self: Outer) Item { ret self.item; } }"#,
             r#"struct Item { value: i32 } struct Outer[T] { item: Item, marker: T } impl Item { fn free(self: Item) void {} } impl Outer[T] { fn take(self: Outer[T]) Item { ret self.item; } }"#,
         ] {

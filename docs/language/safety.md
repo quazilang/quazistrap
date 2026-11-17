@@ -66,9 +66,11 @@ var b: String = a;  // ownership moves to b
 Use-after-move is a compile-time error.
 
 A field can move out of a local struct (a place-level move), for example
-`const name: String = person.name;` or `take(person.badge)`. The local then
+`const name: String = person.name;`, `take(person.badge)` or, through nested
+structs, `take(order.customer.badge)`. The local then
 destroys only its remaining fields; using it whole afterwards, moving the same
-field again, or reading the moved field is an error. The move may happen on
+field again, reading the moved field, or using a struct that contains it
+(`order.customer` after `order.customer.badge` moved) is an error. The move may happen on
 only some paths (inside an `if`, `else` or before an early return): after the
 branches join, the field counts as moved, and scope cleanup consults a runtime
 mask so each remaining field is destroyed exactly once on every path.

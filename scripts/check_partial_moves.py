@@ -106,6 +106,63 @@ fn main() i32 {
 }
 """
 GENERIC_EXPECTED = "drop 1\ndrop 2\n1\ndrop 2\ndrop 1\n0\n1700000\n"
+NESTED = r"""import std.io.println;
+struct Res { id: i32 }
+impl Res { fn free(self: Res) void { println("drop {self.id}"); } }
+struct Inner { a: Res, b: Res }
+struct Outer { inner: Inner, c: Res, n: i32 }
+fn keep(r: Res) i32 { ret r.id; }
+fn nested(flag: bool) i32 {
+    const o = Outer { inner: Inner { a: Res { id: 1 }, b: Res { id: 2 } }, c: Res { id: 3 }, n: 5 };
+    var got: i32 = 0;
+    if flag { got = keep(o.inner.a); }
+    println("b {} n {}", o.inner.b.id, o.n);
+    ret got;
+}
+fn whole_inner() i32 {
+    const o = Outer { inner: Inner { a: Res { id: 4 }, b: Res { id: 5 } }, c: Res { id: 6 }, n: 0 };
+    const inner: Inner = o.inner;
+    ret keep(inner.b);
+}
+fn main() i32 {
+    println("== t"); println("{}", nested(true));
+    println("== f"); println("{}", nested(false));
+    println("== w"); println("{}", whole_inner());
+    ret 0;
+}
+"""
+NESTED_EXPECTED = "== t\ndrop 1\nb 2 n 5\ndrop 3\ndrop 2\n1\n== f\nb 2 n 5\ndrop 3\ndrop 2\ndrop 1\n0\n== w\ndrop 5\ndrop 4\ndrop 6\n5\n"
+RECEIVER = r"""import std.io.println;
+struct Item { value: i32 }
+impl Item { fn free(self: Item) void { println("drop item {self.value}"); } }
+struct Inner { item: Item, other: Item }
+struct Outer { inner: Inner, last: Item }
+impl Outer { fn take(self: Outer) Item { ret self.inner.item; } }
+fn main() i32 {
+    const o = Outer { inner: Inner { item: Item { value: 1 }, other: Item { value: 2 } }, last: Item { value: 3 } };
+    const item: Item = o.take();
+    println("got {}", item.value);
+    ret 0;
+}
+"""
+RECEIVER_EXPECTED = "drop item 3\ndrop item 2\ngot 1\ndrop item 1\n"
+NESTED_INVALID = """struct Res { id: i32 }
+struct Inner { a: Res, b: Res }
+struct Outer { inner: Inner }
+fn keep(r: Res) i32 { ret r.id; }
+fn take(i: Inner) i32 { ret 0; }
+fn parent() i32 {
+    const o = Outer { inner: Inner { a: Res { id: 1 }, b: Res { id: 2 } } };
+    keep(o.inner.a);
+    ret take(o.inner);
+}
+fn child() i32 {
+    const o = Outer { inner: Inner { a: Res { id: 1 }, b: Res { id: 2 } } };
+    take(o.inner);
+    ret keep(o.inner.a);
+}
+fn main() i32 { ret parent() + child(); }
+"""
 TEMPLATE = """struct Res { id: i32 }
 struct Pair[A, B] { first: A, second: B }
 fn keep(r: Res) i32 { ret r.id; }
@@ -156,6 +213,22 @@ def main():
                              text=True, capture_output=True, timeout=120)
         assert run.stdout == GENERIC_EXPECTED, run.stdout + run.stderr
         assert int(run.stderr.strip().splitlines()[-1]) < 20000, run.stderr
+        nested = project(root, "nested", NESTED)
+        result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=nested,
+                                text=True, capture_output=True, timeout=600)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout == NESTED_EXPECTED, result.stdout
+        receiver = project(root, "receiver", RECEIVER)
+        result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=receiver,
+                                text=True, capture_output=True, timeout=600)
+        assert result.stdout == RECEIVER_EXPECTED, result.stdout + result.stderr
+        nested_invalid = project(root, "nested-invalid", NESTED_INVALID)
+        check = subprocess.run([qz, "check"], cwd=nested_invalid, text=True,
+                               capture_output=True, timeout=600)
+        output = check.stdout + check.stderr
+        assert check.returncode != 0, output
+        assert "use of partially moved field `o.inner`" in output, output
+        assert "use of moved field `o.inner`" in output, output
         template = project(root, "template", TEMPLATE)
         check = subprocess.run([qz, "check"], cwd=template, text=True, capture_output=True,
                                timeout=600)
@@ -168,7 +241,7 @@ def main():
         for message in MESSAGES:
             assert message in output, (message, output)
     print("PASS partial moves: fields move out of struct locals, also conditionally and from "
-          "concrete generic structs; remaining fields destroyed exactly once; misuse rejected")
+          "concrete generic structs and nested fields; remaining fields destroyed exactly once; misuse rejected")
 
 
 if __name__ == "__main__":

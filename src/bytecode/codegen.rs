@@ -5587,23 +5587,8 @@ impl<'a> FnCompiler<'a> {
                 let mask = self.alloc_reg();
                 self.chunk.emit(rrr(Opcode::Mov, mask, local.initialized, 0));
                 self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
-                for field in fields {
-                    let Some(index) = declared.iter().position(|drop| drop.offset == field.offset) else {
-                        continue;
-                    };
-                    let bit = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::MovI, bit, 1));
-                    let shift = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::MovI, shift, (index + 1) as u16));
-                    self.chunk.emit(rrr(Opcode::Shl, bit, bit, shift));
-                    self.chunk.emit(rrr(Opcode::And, bit, bit, mask));
-                    let moved = self.chunk.emit(ri16(Opcode::Jnz, bit, 0));
-                    let field_reg = self.alloc_reg();
-                    self.chunk.emit(field_load(field_reg, local.reg, field.offset));
-                    self.emit_drop_action(field_reg, *field.action);
-                    self.chunk.patch_jump(moved, self.chunk.len() as u16);
-                }
-                self.emit_drop_action(local.reg, DropAction::ReleaseStorage);
+                let bits = structural_bit_paths(declared);
+                self.emit_masked_structural_drop(local.reg, &fields, &[], &bits, mask);
             }
             (_, action) => {
                 self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
@@ -5611,6 +5596,43 @@ impl<'a> FnCompiler<'a> {
             }
         }
         self.chunk.patch_jump(empty, self.chunk.len() as u16);
+    }
+
+    /// Destroy `fields` of the struct in `reg` (at nested `prefix`), skipping
+    /// those whose bit in `mask` marks them moved, then release its storage.
+    fn emit_masked_structural_drop(
+        &mut self,
+        reg: u8,
+        fields: &[StructuralFieldDrop],
+        prefix: &[u16],
+        bits: &[Vec<u16>],
+        mask: u8,
+    ) {
+        for field in fields {
+            let mut path = prefix.to_vec();
+            path.push(field.offset);
+            let Some(index) = bits.iter().position(|bit_path| *bit_path == path) else {
+                continue;
+            };
+            let bit = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, bit, 1));
+            let shift = self.alloc_reg();
+            self.chunk.emit(ri16(Opcode::MovI, shift, (index + 1) as u16));
+            self.chunk.emit(rrr(Opcode::Shl, bit, bit, shift));
+            self.chunk.emit(rrr(Opcode::And, bit, bit, mask));
+            let moved = self.chunk.emit(ri16(Opcode::Jnz, bit, 0));
+            let field_reg = self.alloc_reg();
+            self.chunk.emit(field_load(field_reg, reg, field.offset));
+            match field.action.as_ref() {
+                DropAction::Structural(nested) => {
+                    let nested = nested.clone();
+                    self.emit_masked_structural_drop(field_reg, &nested, &path, bits, mask);
+                }
+                action => self.emit_drop_action(field_reg, action.clone()),
+            }
+            self.chunk.patch_jump(moved, self.chunk.len() as u16);
+        }
+        self.emit_drop_action(reg, DropAction::ReleaseStorage);
     }
 
     /// Emit (once) the drop function of a recursive enum: `fn(value)` that
@@ -6323,18 +6345,19 @@ impl<'a> FnCompiler<'a> {
     /// local's own straight-line region): the local's cleanup now destroys
     /// the remaining fields and the storage shell, not the moved field.
     /// A place-level move clears the field's ownership in the local's drop
-    /// guard: bit 0 means the value is live and bit `i + 1` that structural
-    /// field `i` has moved out. Being a runtime mask, it is exact when the
-    /// move happens on only some paths (inside an `if` or `match` arm).
-    fn move_field_out_of_local(&mut self, root: &str, object: &Expr, field: &str) {
+    /// guard: bit 0 means the value is live and bit `i + 1` that the i-th
+    /// field of the local's structural plan (numbered depth first, so nested
+    /// fields such as `p.inner.name` have their own bits) has moved out.
+    /// Being a runtime mask, it is exact when the move happens on only some
+    /// paths (inside an `if` or `match` arm).
+    fn move_field_out_of_local(&mut self, root: &str, path: &[u16]) {
         let Some(local) = self.drop_local(root).cloned() else {
             return;
         };
         let DropAction::Structural(fields) = &local.action else {
             return;
         };
-        let offset = self.field_offset(object, field);
-        let Some(index) = fields.iter().position(|drop| drop.offset == offset) else {
+        let Some(index) = structural_bit_paths(fields).iter().position(|bits| bits == path) else {
             return;
         };
         if index + 1 >= 63 {
@@ -6349,6 +6372,20 @@ impl<'a> FnCompiler<'a> {
         self.chunk.emit(ri16(Opcode::MovI, shift, (index + 1) as u16));
         self.chunk.emit(rrr(Opcode::Shl, bit, bit, shift));
         self.chunk.emit(rrr(Opcode::Or, local.initialized, local.initialized, bit));
+    }
+
+    /// The local and field offsets of a field chain `root.a.b`.
+    fn field_chain_offsets(&mut self, expr: &Expr) -> Option<(String, Vec<u16>)> {
+        let ExprKind::Field { object, name } = &expr.node else {
+            return None;
+        };
+        let (root, mut path) = match &object.node {
+            ExprKind::Ident(root) => (root.clone(), Vec::new()),
+            ExprKind::Field { .. } => self.field_chain_offsets(object)?,
+            _ => return None,
+        };
+        path.push(self.field_offset(object, name));
+        Some((root, path))
     }
 
     fn mark_consumed_binding(&mut self, expr: &Expr, value: u8) {
@@ -6370,9 +6407,9 @@ impl<'a> FnCompiler<'a> {
                     }
                 }
             }
-            ExprKind::Field { object, name } => {
-                if let ExprKind::Ident(root) = &object.node {
-                    self.move_field_out_of_local(root, object, name);
+            ExprKind::Field { .. } => {
+                if let Some((root, path)) = self.field_chain_offsets(expr) {
+                    self.move_field_out_of_local(&root, &path);
                 }
             }
             ExprKind::Group(inner)
@@ -15682,4 +15719,22 @@ fn recursive_drop(name: &str, type_args: &[Type]) -> DropAction {
         glue: format!("__quazi_drop_{glue}"),
         ty,
     }
+}
+
+/// Field offset paths of a structural plan, depth first: the bit of entry
+/// `i` in a drop-guard mask is `1 << (i + 1)`.
+fn structural_bit_paths(fields: &[StructuralFieldDrop]) -> Vec<Vec<u16>> {
+    fn walk(fields: &[StructuralFieldDrop], prefix: &[u16], out: &mut Vec<Vec<u16>>) {
+        for field in fields {
+            let mut path = prefix.to_vec();
+            path.push(field.offset);
+            out.push(path.clone());
+            if let DropAction::Structural(nested) = field.action.as_ref() {
+                walk(nested, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(fields, &[], &mut out);
+    out
 }
