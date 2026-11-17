@@ -22,7 +22,7 @@ fn update_array(values: &Array[i32]!) void {
 }
 fn inspect_array(values: &Array[i32]) i32 { ret values[0] + values.get(1); }
 struct Holder[T] { value: T }
-impl Holder[T] { fn read(self: &Holder[T]) T { ret self.value; } }
+impl Holder[T] { fn read(self: &Holder[T]) &T { ret &self.value; } }
 impl i32 {
     fn read_slot(self: &i32) i32 { ret *self; }
     fn bump_slot(self: &i32!) void { *self += 1; }
@@ -52,7 +52,7 @@ fn exercise_reference_receivers() i32 {
     values[0]++;
     if (values[0] != 9) { ret 8; }
     var holder: Holder[i32] = Holder { value: 17 };
-    if (holder.read() != 17) { ret 9; }
+    if (*holder.read() != 17) { ret 9; }
     var number: i32 = 19;
     number.bump_slot();
     if (number.read_slot() != 20) { ret 10; }

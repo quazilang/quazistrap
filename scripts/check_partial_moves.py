@@ -229,11 +229,12 @@ def main():
         assert check.returncode != 0, output
         assert "use of partially moved field `o.inner`" in output, output
         assert "use of moved field `o.inner`" in output, output
+        # A struct over the function's own type parameters: each concrete
+        # specialization has its own cleanup plan (maintainer answer В23А).
         template = project(root, "template", TEMPLATE)
-        check = subprocess.run([qz, "check"], cwd=template, text=True, capture_output=True,
-                               timeout=600)
-        output = check.stdout + check.stderr
-        assert check.returncode != 0 and "does not depend on the function's type parameters" in output, output
+        result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=template,
+                                text=True, capture_output=True, timeout=600)
+        assert result.returncode == 1, result.stdout + result.stderr
         invalid = project(root, "invalid", INVALID)
         check = subprocess.run([qz, "check"], cwd=invalid, text=True, capture_output=True, timeout=600)
         output = check.stdout + check.stderr
@@ -241,7 +242,7 @@ def main():
         for message in MESSAGES:
             assert message in output, (message, output)
     print("PASS partial moves: fields move out of struct locals, also conditionally and from "
-          "concrete generic structs and nested fields; remaining fields destroyed exactly once; misuse rejected")
+          "generic structs and nested fields; remaining fields destroyed exactly once; misuse rejected")
 
 
 if __name__ == "__main__":

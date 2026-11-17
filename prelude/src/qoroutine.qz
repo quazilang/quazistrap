@@ -515,6 +515,8 @@ impl Channel[T] {
     pub fn send(self: &Channel[T], value: T) void {
         unsafe {
             const block = self.block;
+            // Find a free slot with the lock held, then move `value` in once.
+            var slot: *u8 = 0;
             for (true) {
                 __qo_channel_lock(block);
                 if (*((block + 40) as *i64) != 0) {
@@ -525,14 +527,15 @@ impl Channel[T] {
                 const count: i64 = *((block + 24) as *i64);
                 if (count < capacity) {
                     const tail: i64 = (*((block + 32) as *i64) + count) % capacity;
-                    *((*((block + 48) as **u8) + (tail as usize) * 8) as *T) = value;
+                    slot = *((block + 48) as **u8) + (tail as usize) * 8;
                     *((block + 24) as *i64) = count + 1;
-                    __qo_channel_unlock(block);
-                    ret;
+                    break;
                 }
                 __qo_channel_unlock(block);
                 __qo_yield();
             }
+            *(slot as *T) = value;
+            __qo_channel_unlock(block);
         }
     }
 

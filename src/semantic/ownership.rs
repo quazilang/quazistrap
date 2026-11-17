@@ -1219,7 +1219,7 @@ fn main() void {
     #[test]
     fn generic_copy_templates_ignore_same_named_global_owners() {
         let report = analyze(
-            "struct T { value: i32 } fn repeat[T](value: T) T { const again = value; ret value; } fn main() void { repeat[i32](7); }",
+            "struct T { value: i32 } fn repeat[T: Copy](value: T) T { const again = value; ret value; } fn main() void { repeat[i32](7); }",
         );
         assert!(report.errors.is_empty(), "{:?}", report.errors);
     }

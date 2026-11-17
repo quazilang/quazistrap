@@ -1740,8 +1740,15 @@ impl Analyzer {
             | TypeKind::CFn { .. }
             | TypeKind::Ref { .. } => false,
             TypeKind::Named { name, type_args } if type_args.is_empty() => {
+                // A generic parameter moves unless it is bounded by `Copy`
+                // (maintainer answer В23А): a template cannot know that an
+                // owned argument is safe to duplicate.
+                if self.current_generic_params.iter().any(|scope| scope.contains(name)) {
+                    return !self.is_copy_type(&resolved);
+                }
                 self.is_declared_type_name(name)
                     && (self.struct_defs.contains_key(name) || self.enums.contains_key(name))
+                    && !self.trait_impls.get(name).is_some_and(|traits| traits.contains("Copy"))
             }
             // All other types (structs, enums, arrays, slices, dyn Trait, etc.) are move types.
             _ => true,
@@ -2399,13 +2406,33 @@ impl Analyzer {
                         return;
                     }
                     if let Some((root, path)) = &place
+                        && env.lookup(root).is_some_and(|var| {
+                            var.ty.as_ref().is_some_and(|ty| {
+                                matches!(self.resolve_type_aliases(ty), TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+                            })
+                        })
+                    {
+                        let field_ty = self
+                            .bc_annotated_type(expr)
+                            .map(|ty| ty.to_string())
+                            .unwrap_or_else(|| "the field".to_string());
+                        self.push_error(
+                            expr.span,
+                            "S10",
+                            format!(
+                                "cannot move `{root}.{path}` out of a reference: `{field_ty}` is not `Copy`; bound it with `Copy`, or return `&{root}.{path}`"
+                            ),
+                        );
+                        return;
+                    }
+                    if let Some((root, path)) = &place
                         && env.lookup(root).is_some()
                     {
                         self.push_error(
                             expr.span,
                             "S10",
                             format!(
-                                "cannot move `{root}.{path}` here: a field moves out of a local struct only outside loops that do not declare it, while the local is not borrowed, and when its type has no `free` hook and does not depend on the function's type parameters"
+                                "cannot move `{root}.{path}` here: a field moves out of a local struct only outside loops that do not declare it, while the local is not borrowed, and when its type has no `free` hook"
                             ),
                         );
                         return;
@@ -2909,7 +2936,12 @@ impl Analyzer {
         let Some(element) = self.bc_contiguous_element_value_type(expr, object) else {
             return;
         };
-        if self.bc_is_move_type(&element) {
+        // A template element (`T`) is decided per concrete specialization
+        // below; a known owned element is rejected now.
+        let template_element = matches!(&element, TypeKind::Named { name, type_args }
+            if type_args.is_empty()
+                && self.current_generic_params.iter().any(|scope| scope.contains(name)));
+        if !template_element && self.bc_is_move_type(&element) {
             self.push_error(expr.span, "S10", "cannot read an owned contiguous-container element by value before borrowed-element access is implemented".to_string());
         } else if self
             .current_generic_params
@@ -3143,18 +3175,15 @@ impl Analyzer {
         {
             return false;
         }
-        // A concrete generic struct (`Pair[String]`) has a structural
-        // cleanup plan; one still mentioning a type parameter of the current
-        // function may be compiled as an erased template, so it keeps the
-        // whole-value rule.
+        // Generic structs qualify too: code generation compiles each concrete
+        // specialization with its own structural cleanup plan.
         let Some(resolved) = var.ty.as_ref().map(|ty| self.resolve_type_aliases(ty)) else {
             return false;
         };
         let TypeKind::Named { name, .. } = &resolved else {
             return false;
         };
-        let params: Vec<String> = self.current_generic_params.iter().flatten().cloned().collect();
-        !super::type_mentions_params(&resolved, &params)
+        true
             && self.struct_defs.contains_key(name)
             && !self.consuming_receiver_methods.contains(&format!("{name}.free"))
             && !self.repr_c_structs.contains(name)

@@ -17,4 +17,4 @@ and Windows limits, is in [`std.time`](time.md#time-zones-stdtimezone).
 | `offset_at(&instant)` / `abbreviation_at(&instant)` / `is_dst_at(&instant)` | The local time type at an instant. |
 | `local_time(&instant)` / `format_rfc3339(&instant)` | Wall-clock fields or RFC 3339 text in the zone. |
 
-The data source is provisional pending maintainer decision D-009.
+The data source follows D-009 as resolved by [D-025](../decisions/maintainer-answers-2026-11-18.md).

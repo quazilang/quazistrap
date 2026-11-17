@@ -8113,6 +8113,41 @@ impl Analyzer {
             .or_else(|| self.trait_method_signatures.get(bound.rsplit('.').next()?))
     }
 
+    /// Whether values of `ty` are duplicated rather than moved (`Copy`).
+    pub(super) fn is_copy_type(&self, ty: &TypeKind) -> bool {
+        match self.resolve_type_aliases(ty) {
+            TypeKind::Bool
+            | TypeKind::Int8
+            | TypeKind::Int16
+            | TypeKind::Int32
+            | TypeKind::Int64
+            | TypeKind::Uint8
+            | TypeKind::Uint16
+            | TypeKind::Uint32
+            | TypeKind::Uint64
+            | TypeKind::Isize
+            | TypeKind::Usize
+            | TypeKind::Float16
+            | TypeKind::Float32
+            | TypeKind::Float64
+            | TypeKind::Str
+            | TypeKind::Bytes
+            | TypeKind::RawPtr { .. }
+            | TypeKind::CFn { .. }
+            | TypeKind::Ref { .. } => true,
+            TypeKind::Named { name, type_args } if type_args.is_empty() => {
+                // A generic parameter is Copy only under a `Copy` bound.
+                if self.current_generic_params.iter().any(|scope| scope.contains(&name)) {
+                    return self.current_generic_bounds().iter().any(|(param, bound)| {
+                        *param == name && bound.rsplit('.').next() == Some("Copy")
+                    });
+                }
+                self.trait_impls.get(&name).is_some_and(|traits| traits.contains("Copy"))
+            }
+            _ => false,
+        }
+    }
+
     fn check_bound(&mut self, argument: &TypeKind, param: &str, bound: &str, owner: &str, span: Span) {
         let argument = self.resolve_type_aliases(argument);
         if self.is_unresolved_type_parameter(&argument) {
@@ -8120,6 +8155,16 @@ impl Analyzer {
         }
         let trait_name = bound.rsplit('.').next().unwrap_or(bound);
         let type_name = super::declare::type_kind_base_name(&argument);
+        if trait_name == "Copy" {
+            if !self.is_copy_type(&argument) {
+                self.push_error(
+                    span,
+                    "S04",
+                    format!("`{argument}` is not `Copy`, required by `{param}` of `{owner}`"),
+                );
+            }
+            return;
+        }
         if !self
             .trait_impls
             .get(&type_name)
@@ -8149,7 +8194,9 @@ impl Analyzer {
                 .unwrap_or(Span::new(0, 0, 0, 0));
             for (param, bound) in bounds {
                 let trait_name = bound.rsplit('.').next().unwrap_or(bound);
-                if !self.trait_method_slots.contains_key(trait_name)
+                // `Copy` is a compiler-known marker trait (В23А).
+                if trait_name != "Copy"
+                    && !self.trait_method_slots.contains_key(trait_name)
                     && !self.trait_method_slots.contains_key(bound.as_str())
                     && self.bound_trait_signatures(bound).is_none()
                 {

@@ -3654,7 +3654,7 @@ mod tests {
     #[test]
     fn shared_index_receiver_infers_concrete_element_and_keeps_owner_live() {
         let report = analyze(
-            "trait Index[I, O] { fn index(self: &Self, i: I) O; } struct Buffer[T] { value: T, } impl Index[usize, T] for Buffer[T] { fn index(self: &Buffer[T], i: usize) T { ret self.value; } } fn main() i32 { const items: Buffer[i32] = Buffer { value: 7 }; const first: i32 = items[0]; const second: i32 = items[0]; ret first + second; }",
+            "trait Index[I, O] { fn index(self: &Self, i: I) O; } struct Buffer[T] { value: T, ptr: *u8, } @intrinsic(\"quazi.array.load\") fn load[T](base: *u8, index: usize) T; impl Index[usize, T] for Buffer[T] { fn index(self: &Buffer[T], i: usize) T { ret load(self.ptr, i); } } fn main() i32 { const items: Buffer[i32] = Buffer { value: 7, ptr: 0 }; const first: i32 = items[0]; const second: i32 = items[0]; ret first + second; }",
         );
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(
@@ -6789,7 +6789,6 @@ impl Outer { fn take(self: Outer) Item { ret self.item; } }
         assert!(nested.errors.is_empty(), "{:?}", nested.errors);
         for source in [
             r#"struct Item { value: i32 } struct Outer { item: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn free(self: Outer) void {} fn take(self: Outer) Item { ret self.item; } }"#,
-            r#"struct Item { value: i32 } struct Outer[T] { item: Item, marker: T } impl Item { fn free(self: Item) void {} } impl Outer[T] { fn take(self: Outer[T]) Item { ret self.item; } }"#,
         ] {
             let report = analyze(source);
             assert!(
@@ -10893,9 +10892,10 @@ fn main() void {
             r#"
 trait Index[I, O] { fn index(i: I) O; }
 struct Array[T] { value: T, ptr: *u8, }
+@intrinsic("quazi.array.load") fn load[T](base: *u8, index: usize) T;
 
 impl Array[T] {
-    fn get(self: &Array[T], i: usize) T { ret self.value; }
+    fn get(self: &Array[T], i: usize) T { ret load(self.ptr, i); }
     fn len(self: &Array[T]) usize { ret 1; }
     fn is_empty(self: &Array[T]) bool { ret false; }
     unsafe fn as_ptr(self: &Array[T]) *T { ret self.ptr as *T; }

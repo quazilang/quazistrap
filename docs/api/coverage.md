@@ -17,7 +17,7 @@ prevents the API index from implying that undocumented modules are stable.
 | `std.process` | [process](process.md) | Child processes and `Command` on Linux and Windows (Windows verified under Wine). |
 | `std.thread` | [thread](thread.md) | Experimental native-thread ABI. |
 | `std.time` | [time](time.md) | Durations, instants, civil time, RFC 3339 and fixed offsets. |
-| `std.timezone` | [timezone](timezone.md) | Named IANA zones (TZif + POSIX rules); data source pending D-009. |
+| `std.timezone` | [timezone](timezone.md) | Named IANA zones (TZif + POSIX rules) from the system database (D-009, D-025). |
 | `std.posix` | [posix](posix.md) | Unix-specific identities, signals, umask and raw cwd. |
 | `std.core` | [core](core.md) | Low-level intrinsic, allocation, and UTF-8 safety boundary; allocation-backed `str` results remain unstable under D-013. |
 | `std.io` | [io](io.md) | Current UTF-8 console input/output and writer contracts. |

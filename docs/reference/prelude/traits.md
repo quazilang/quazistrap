@@ -9,6 +9,7 @@ prelude.traits — core language traits
 - [`Eq`](#eq) (trait)
 - [`Ord`](#ord) (trait)
 - [`Clone`](#clone) (trait)
+- [`Copy`](#copy) (trait)
 - [`Default`](#default) (trait)
 - [`Hash`](#hash) (trait)
 - [`Iterator`](#iterator) (trait)
@@ -104,6 +105,19 @@ pub trait Clone {
 ```
 
 ── Clone ────────────────────────────────────────────────────────────────────
+
+## `Copy`
+
+```quazi
+pub trait Copy {
+}
+```
+
+── Copy ─────────────────────────────────────────────────────────────────────
+A value that may be duplicated bit for bit: using it does not move it.
+Integers, floats, `bool`, `str`, shared references and raw pointers are
+Copy; a struct is Copy through `@derive(Copy)` or `impl Copy for S {}` when
+every field is Copy. A generic parameter is Copy only under `T: Copy`.
 
 ## `Default`
 
