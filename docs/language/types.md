@@ -240,9 +240,10 @@ bound declares is S04, and so is calling any method on an unbounded type
 parameter. Methods of a type with bounds have code only per specialization.
 
 Functions, structs, enums and impl methods take bounds. Trait parameters,
-trait-method parameters and type aliases do not yet (E02). Known limits:
-method-level type parameters inside `impl` blocks are not usable yet, and a
-bounded call returning an aggregate that holds string views is rejected
+trait-method parameters and type aliases do not yet (E02). A method's own
+type parameters (`fn first[T](self: &Shelf[A], x: T) T`) are inferred from
+its arguments or given explicitly (`shelf.first[bool](true)`). Known limit:
+a bounded call returning an aggregate that holds string views is rejected
 (S10) because no result-retention facts exist for it.
 
 Known limit (asks В23): the ownership pass treats a value of an unbounded

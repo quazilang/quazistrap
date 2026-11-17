@@ -4798,6 +4798,9 @@ impl Analyzer {
                         } else {
                             let type_name =
                                 super::declare::type_kind_base_name(&resolved_object_ty);
+                            // Explicit `value.method[T](...)` arguments of a generic method.
+                            let explicit_method_type_args: Vec<TypeKind> =
+                                type_args.iter().map(|arg| arg.node.clone()).collect();
                             let type_args = receiver_named_type_args(&resolved_object_ty);
                             let mangled = format!("{}.{}", type_name, method);
                             // Impl chunks are indexed by their declared type name. An
@@ -4860,8 +4863,49 @@ impl Analyzer {
                                         return ExprEval::default();
                                     }
                                 }
+                                // A generic method's own parameters come from explicit
+                                // type arguments or from its arguments.
+                                let method_generics = sym.generic_params.clone();
+                                if !method_generics.is_empty() {
+                                    if !explicit_method_type_args.is_empty() {
+                                        if explicit_method_type_args.len() != method_generics.len() {
+                                            self.push_error(
+                                                expr.span,
+                                                "S08",
+                                                format!(
+                                                    "method `{codegen_mangled}` takes {} type argument(s), got {}",
+                                                    method_generics.len(),
+                                                    explicit_method_type_args.len()
+                                                ),
+                                            );
+                                        }
+                                        for (param, argument) in
+                                            method_generics.iter().zip(&explicit_method_type_args)
+                                        {
+                                            subst.insert(param.clone(), argument.clone());
+                                        }
+                                    } else {
+                                        for (param, eval) in sym.params.iter().skip(1).zip(arg_evals.iter()) {
+                                            if let Some(actual) = &eval.ty {
+                                                infer_type_subst(param, actual, &method_generics, &mut subst);
+                                            }
+                                        }
+                                    }
+                                    if let Some(missing) =
+                                        method_generics.iter().find(|param| !subst.contains_key(*param))
+                                    {
+                                        self.push_error(
+                                            expr.span,
+                                            "S14",
+                                            format!(
+                                                "cannot infer type parameter `{missing}` of `{codegen_mangled}`; write `.{method}[Type](...)`"
+                                            ),
+                                        );
+                                    }
+                                }
                                 let ownership_type_args = impl_params
                                     .iter()
+                                    .chain(&method_generics)
                                     .filter_map(|param| subst.get(param).cloned())
                                     .collect::<Vec<_>>();
                                 self.record_ownership_call_site(
@@ -4994,14 +5038,22 @@ impl Analyzer {
                                 }
                                 // Apply type substitution to the result and validate the
                                 // physical ABI before recording a specialization.
-                                let ret_ty = if !type_args.is_empty() {
+                                let generic_call = !type_args.is_empty() || !method_generics.is_empty();
+                                let ret_ty = if generic_call {
                                     sym.ty.as_ref().map(|ty| substitute_type_kind(ty, &subst))
                                 } else {
                                     sym.ty.clone()
                                 };
-                                if !type_args.is_empty() {
-                                    let type_kinds: Vec<TypeKind> =
+                                let mut resolved_target = codegen_mangled.clone();
+                                if generic_call {
+                                    // Receiver type arguments, then the method's own.
+                                    let mut type_kinds: Vec<TypeKind> =
                                         type_args.iter().map(|t| t.node.clone()).collect();
+                                    type_kinds.extend(
+                                        method_generics
+                                            .iter()
+                                            .filter_map(|param| subst.get(param).cloned()),
+                                    );
                                     self.record_fn_value_layout(
                                         &codegen_mangled,
                                         &type_kinds,
@@ -5028,6 +5080,9 @@ impl Analyzer {
                                         &from,
                                         &mono_name,
                                     );
+                                    if !method_generics.is_empty() {
+                                        resolved_target = mono_name.clone();
+                                    }
                                 }
                                 self.add_dependency_edge(
                                     DependencyKind::Call,
@@ -5062,7 +5117,7 @@ impl Analyzer {
                                         ),
                                     );
                                 }
-                                Some((ret_ty, codegen_mangled))
+                                Some((ret_ty, resolved_target))
                             } else {
                                 None
                             }

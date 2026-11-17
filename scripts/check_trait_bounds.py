@@ -29,6 +29,11 @@ impl Holder[T] {
 struct Wrap[T: Hashed] { item: T }
 impl Hashed for Wrap[T] { fn hash_code(self: &Wrap[T]) u64 { ret self.item.hash_code() + 1000; } }
 struct Box2[T] { item: T }
+struct Shelf[A] { a: A }
+impl Shelf[A] {
+    fn code[T: Hashed](self: &Shelf[A], x: &T) u64 { ret x.hash_code() + 1; }
+    fn first[T](self: &Shelf[A], x: T) T { ret x; }
+}
 fn describe[T: Hashed + Named](x: &T) u64 { println("{x.label()}"); ret x.hash_code() + 1; }
 fn inner[T: Hashed](x: &T) u64 { ret x.hash_code(); }
 fn outer[U: Hashed](x: &U) u64 { ret inner[U](x) + 1; }
@@ -46,6 +51,10 @@ fn main() i32 {
     const wrapped: Wrap[Point] = Wrap { item: Point { x: 7 } };
     const dynamic: dyn Hashed = wrapped;
     println("{plain.hash_code()} {dynamic.hash_code()}");
+    const shelf: Shelf[i64] = Shelf { a: 1 };
+    const flag: bool = shelf.first[bool](true);
+    const three: i64 = shelf.first(3 as i64);
+    println("{shelf.code(&p)} {flag} {three}");
     ret 0;
 }
 """
@@ -66,6 +75,9 @@ INVALID = [
      "`i32` does not implement `Named`, required by `T` of `Maybe`"),
     ("fn code[T: Missing](x: &T) u64 { ret 1; }\nfn main() i32 { ret 0; }\n",
      "bound `T: Missing` of `code` does not name a trait"),
+    ("struct Maker {}\nimpl Maker { fn make[T](self: &Maker) i32 { ret 0; } }\n"
+     "fn main() i32 { const m = Maker {}; ret m.make(); }\n",
+     "cannot infer type parameter `T` of `Maker.make`"),
     ("type Alias[T: Named] = Holder[T];\nfn main() i32 { ret 0; }\n",
      "a type alias cannot bound `T` by `Named` yet"),
     ("trait Visit { fn visit[V: Named](self: &Self, v: &V) u64; }\nfn main() i32 { ret 0; }\n",
@@ -92,7 +104,7 @@ def main():
         result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=valid,
                                 text=True, capture_output=True, timeout=600)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert result.stdout == "pt\nint\n42 22 102 115\n42 2003 9 4\n6 1007\n", result.stdout
+        assert result.stdout == "pt\nint\n42 22 102 115\n42 2003 9 4\n6 1007\n42 true 3\n", result.stdout
         for index, (source, message) in enumerate(INVALID):
             invalid = project(root, f"invalid{index}", PRELUDE + source)
             result = subprocess.run([qz, "check"], cwd=invalid, text=True,

@@ -9564,6 +9564,8 @@ impl<'a> FnCompiler<'a> {
                         receiver_place,
                     );
                     let call_target = match self.receiver_value_type(object) {
+                        // Analysis already named a generic method's specialization.
+                        _ if resolved_target.contains('<') => resolved_target,
                         Some(TypeKind::Named { type_args, .. }) if !type_args.is_empty() => {
                             let Some(target) =
                                 self.require_monomorphized_name(&resolved_target, &type_args)
