@@ -407,8 +407,9 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
   and Array fields; `scripts/check_consuming_match.py`,
   `scripts/check_recursive_enums.py`).
 - [ ] General place-level partial-move state (2026-11-17: conditional field moves
-  with a runtime drop-guard mask, `scripts/check_partial_moves.py`; generic
-  structs, nested projections and moves in loops remain).
+  with a runtime drop-guard mask and from concrete generic structs,
+  `scripts/check_partial_moves.py`; template-typed structs, nested projections
+  and moves in loops remain).
 - [ ] Safe provenance-tracked dense-element source borrowing.
 
 ### Atomic opcodes

@@ -74,8 +74,10 @@ branches join, the field counts as moved, and scope cleanup consults a runtime
 mask so each remaining field is destroyed exactly once on every path.
 Reassigning the whole local destroys its remaining fields first. A move
 inside a loop that does not declare the local is rejected (it would repeat),
-the local must not be borrowed, and its type must be a non-generic struct
-without its own `free` hook.
+the local must not be borrowed, and its type must be a struct without its own
+`free` hook. A generic struct qualifies once its type arguments are concrete
+(`Pair[String, Res]`), but not while they mention the enclosing function's
+type parameters.
 
 ### Borrowed method receivers
 

@@ -2154,7 +2154,7 @@ impl Analyzer {
                             expr.span,
                             "S10",
                             format!(
-                                "cannot move `{root}.{name}` here: a field moves out of a local struct only outside loops that do not declare it, while the local is not borrowed, and when its type has no `free` hook"
+                                "cannot move `{root}.{name}` here: a field moves out of a local struct only outside loops that do not declare it, while the local is not borrowed, and when its type has no `free` hook and does not depend on the function's type parameters"
                             ),
                         );
                         return;
@@ -2892,17 +2892,21 @@ impl Analyzer {
         {
             return false;
         }
-        // Generic structs keep the whole-value rule until their erased
-        // templates carry a structural cleanup plan.
-        let Some(TypeKind::Named { name, type_args }) =
-            var.ty.as_ref().map(|ty| self.resolve_type_aliases(ty))
-        else {
+        // A concrete generic struct (`Pair[String]`) has a structural
+        // cleanup plan; one still mentioning a type parameter of the current
+        // function may be compiled as an erased template, so it keeps the
+        // whole-value rule.
+        let Some(resolved) = var.ty.as_ref().map(|ty| self.resolve_type_aliases(ty)) else {
             return false;
         };
-        type_args.is_empty()
-            && self.struct_defs.contains_key(&name)
+        let TypeKind::Named { name, .. } = &resolved else {
+            return false;
+        };
+        let params: Vec<String> = self.current_generic_params.iter().flatten().cloned().collect();
+        !super::type_mentions_params(&resolved, &params)
+            && self.struct_defs.contains_key(name)
             && !self.consuming_receiver_methods.contains(&format!("{name}.free"))
-            && !self.repr_c_structs.contains(&name)
+            && !self.repr_c_structs.contains(name)
     }
 
     fn bc_reject_partial_move(&mut self, expr: &Expr) {

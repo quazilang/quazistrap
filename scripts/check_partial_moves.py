@@ -76,6 +76,45 @@ reassigned
 drop 8
 drop 7
 """
+GENERIC = r"""import std.io.println;
+struct Res { id: i32 }
+impl Res { fn free(self: Res) void { println("drop {self.id}"); } }
+struct Pair[A, B] { first: A, second: B }
+fn keep(r: Res) i32 { ret r.id; }
+fn branch(flag: bool) i32 {
+    const p: Pair[Res, Res] = Pair { first: Res { id: 1 }, second: Res { id: 2 } };
+    var got: i32 = 0;
+    if flag { got = keep(p.first); }
+    ret got;
+}
+fn text(flag: bool) usize {
+    const p: Pair[String, String] = Pair { first: String.from("hello world"), second: String.from("second") };
+    if flag {
+        const s: String = p.first;
+        ret s.bytes_len();
+    }
+    ret p.second.bytes_len();
+}
+fn main() i32 {
+    println("{}", branch(true));
+    println("{}", branch(false));
+    var total: usize = 0;
+    var i: i32 = 0;
+    for (i < 200000) { total = total + text(i % 2 == 0); i++; }
+    println("{}", total);
+    ret 0;
+}
+"""
+GENERIC_EXPECTED = "drop 1\ndrop 2\n1\ndrop 2\ndrop 1\n0\n1700000\n"
+TEMPLATE = """struct Res { id: i32 }
+struct Pair[A, B] { first: A, second: B }
+fn keep(r: Res) i32 { ret r.id; }
+fn generic[T](value: T) i32 {
+    const p: Pair[Res, T] = Pair { first: Res { id: 1 }, second: value };
+    ret keep(p.first);
+}
+fn main() i32 { ret generic(5); }
+"""
 MESSAGES = [
     "use of partially moved value 'p'",
     "use of moved field `p.badge`",
@@ -108,14 +147,28 @@ def main():
                                 text=True, capture_output=True, timeout=600)
         assert result.returncode == 0, result.stdout + result.stderr
         assert result.stdout == CONDITIONAL_EXPECTED, result.stdout
+        generic = project(root, "generic", GENERIC)
+        build = subprocess.run([qz, "build", "--silent", "--no-incremental", "-o",
+                                str(root / "generic-bin")], cwd=generic, text=True,
+                               capture_output=True, timeout=600)
+        assert build.returncode == 0, build.stdout + build.stderr
+        run = subprocess.run(["/usr/bin/env", "time", "-f", "%M", str(root / "generic-bin")],
+                             text=True, capture_output=True, timeout=120)
+        assert run.stdout == GENERIC_EXPECTED, run.stdout + run.stderr
+        assert int(run.stderr.strip().splitlines()[-1]) < 20000, run.stderr
+        template = project(root, "template", TEMPLATE)
+        check = subprocess.run([qz, "check"], cwd=template, text=True, capture_output=True,
+                               timeout=600)
+        output = check.stdout + check.stderr
+        assert check.returncode != 0 and "does not depend on the function's type parameters" in output, output
         invalid = project(root, "invalid", INVALID)
         check = subprocess.run([qz, "check"], cwd=invalid, text=True, capture_output=True, timeout=600)
         output = check.stdout + check.stderr
         assert check.returncode != 0, output
         for message in MESSAGES:
             assert message in output, (message, output)
-    print("PASS partial moves: fields move out of struct locals, also conditionally; remaining "
-          "fields destroyed exactly once; misuse rejected")
+    print("PASS partial moves: fields move out of struct locals, also conditionally and from "
+          "concrete generic structs; remaining fields destroyed exactly once; misuse rejected")
 
 
 if __name__ == "__main__":
