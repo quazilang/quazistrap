@@ -26,6 +26,15 @@ buffer capacity. `memory_total()` and `memory_available()` return bytes or zero
 when the host query fails. `windows_build()` and `windows_product()` return
 zero outside Windows.
 
+Runtime-private operations are declared in `std.core` so other std modules
+can reach them, but they are not application APIs: `process_spawn`,
+`process_wait`, `process_try_wait`, `process_terminate` and `process_close`
+(the child-process runtime behind `std.process`), `atomic_add` and
+`atomic_cas` (behind `std.thread` atomics and locks), `context_switch`
+(behind qoroutines) and `runtime_state` (the process runtime state block; see
+[runtime state](../internals/runtime-state.md)). Their contracts can change
+with the compiler runtime.
+
 ## Raw allocation and memory
 
 `unsafe malloc(size)` returns an allocated block or null. `unsafe realloc(ptr,

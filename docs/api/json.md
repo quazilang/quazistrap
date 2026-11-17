@@ -82,6 +82,14 @@ and nesting policy. It decodes Unicode key escapes before comparison and
 rejects duplicate occurrences of the requested wire key rather than selecting
 a winner. It is a field-extraction primitive, not a JSON DOM.
 
+`object_fields(source, keys)` (and `object_fields_with_limits`) scans one
+object once and returns `Array[usize]` spans: entries `2 * i` and `2 * i + 1`
+hold the byte range of `keys[i]`'s raw value, both zero when the key is
+missing. A key outside `keys` is `UnknownKey`, a repeated key `DuplicateKey`.
+`array_items(source)` (and `array_items_with_limits`) returns the byte ranges
+of each element of one JSON array in the same pair layout; a valid non-array
+value is `InvalidToken`. Derived codecs build on both.
+
 ## Error handling
 
 Validation returns `Result[bool, JsonError]`. `JsonError` distinguishes input

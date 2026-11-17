@@ -93,6 +93,7 @@ const config: Result[String, fs.FsError] = fs.read_to_string("settings.qz");
 
 | API | Semantics and platform notes |
 | --- | --- |
+| `current_dir()` / `set_current_dir(path)` | The process-wide working directory as an owned `String` (`Result[String, FsError]`), and changing it (`Result[bool, FsError]`); `getcwd`/`chdir` on Linux and NetBSD, `GetCurrentDirectoryA`/`SetCurrentDirectoryA` on Windows. `std.os` re-exports both. |
 | `exists(path)` | Returns whether a native existence query succeeds. It conflates absence, permission failures, and other errors. |
 | `readable(path)` / `writable(path)` | Best-effort access probes, not a guarantee that a later open or write will succeed. Windows `writable` currently reports existence rather than testing write access. |
 | `walk(root)` | `Result[Array[String], FsError]`: every entry below `root` as a `/`-separated relative path, depth first, directories before their contents. Symbolic links are listed but not followed, so link cycles cannot recur. |

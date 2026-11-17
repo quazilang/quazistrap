@@ -21,7 +21,9 @@ Documented modules:
 - [`std.dylib`](dylib.md) — owned native-library handles and unsafe symbols.
 - [Platform implementation boundaries](platform-internals.md) — unsafe Unix and Win32 internals.
 - [`std.thread`](thread.md) — experimental native threads and callback ABI.
-- [`std.time`](time.md) — monotonic durations and elapsed-time instants.
+- [`std.time`](time.md) — durations, instants, civil time and RFC 3339.
+- [`std.timezone`](timezone.md) — named IANA time zones.
+- [`std.posix`](posix.md) — Unix-specific identities, signals and umask.
 - [`std.json`](json.md) — bounded JSON validation and token encoding.
 - [`std.codec`](codec.md) — typed JSON serialization foundation.
 - [`std.ini`](ini.md) — deterministic, source-backed INI documents.
@@ -29,4 +31,4 @@ Documented modules:
 - [`std.path`](path.md) — lexical path manipulation.
 - [`std.net`](net.md) — IPv4 TCP/UDP and bounded HTTP/1.1 helpers.
 - [`std.os`](os.md) — host information and current-process boundaries.
-- [`std.process`](process.md) — Linux shell-free child-process management.
+- [`std.process`](process.md) — shell-free child processes and `Command` (Linux, Windows).

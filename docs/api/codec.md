@@ -156,6 +156,11 @@ fn main() i32 {
 }
 ```
 
+For hand-written decoders, `field_bool`, `field_i64` and `field_string`
+decode a required field from `object_fields` spans (`MissingField` when
+absent), and `optional_bool`, `optional_i64` and `optional_string` return
+`None` for a missing or `null` field.
+
 The generated function calls ordinary `std.codec` helpers:
 `object_fields(source, keys)` finds each expected key in one pass,
 `field_raw`/`optional_raw` return a field's raw JSON value, and the element

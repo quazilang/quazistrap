@@ -52,7 +52,8 @@ and that of children started afterwards; env_present(name) reports whether a
 variable is set, even to an empty value. They return `Result[bool, EnvError]`:
 `set_env` gives `Ok(true)`, `remove_env` gives `Ok(true)` when the variable was
 set and `Ok(false)` when it was not. A name that is empty or contains `=` is
-`InvalidName`; `Native(code)` carries a platform error. On Linux each change
+`InvalidName`; `Native(code)` carries a platform error; `EnvError.message()`
+gives display text. On Linux each change
 publishes a new copy of the environment under a writer lock, so concurrent
 readers and writers in other threads are safe; replaced copies stay allocated
 because a reader may still hold one
