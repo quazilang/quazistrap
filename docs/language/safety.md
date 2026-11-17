@@ -68,10 +68,14 @@ Use-after-move is a compile-time error.
 A field can move out of a local struct (a place-level move), for example
 `const name: String = person.name;` or `take(person.badge)`. The local then
 destroys only its remaining fields; using it whole afterwards, moving the same
-field again, or reading the moved field is an error. The move must run
-unconditionally in the block that declares the local (not in a branch or
-loop), the local must not be borrowed, and its type must be a non-generic
-struct without its own `free` hook.
+field again, or reading the moved field is an error. The move may happen on
+only some paths (inside an `if`, `else` or before an early return): after the
+branches join, the field counts as moved, and scope cleanup consults a runtime
+mask so each remaining field is destroyed exactly once on every path.
+Reassigning the whole local destroys its remaining fields first. A move
+inside a loop that does not declare the local is rejected (it would repeat),
+the local must not be borrowed, and its type must be a non-generic struct
+without its own `free` hook.
 
 ### Borrowed method receivers
 
@@ -91,8 +95,8 @@ exclusively borrows the owner for the call. A bare move-only receiver transfers
 its cleanup responsibility to the callee. A field of a struct local may move
 out (see Move types); a move-only indexed element or a value reached through a
 safe dereference cannot be moved in any consuming position yet. Scalar
-projections and whole-owner moves remain valid. Branch-dependent place moves,
-whole-program, and cross-call effects remain D-014 work.
+projections and whole-owner moves remain valid. Whole-program and cross-call
+effects remain D-014 work.
 A consuming `free(self: T)` hook may consume projections rooted in that
 receiver while performing its own cleanup, because the complete receiver was
 already transferred to the hook.

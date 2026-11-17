@@ -345,6 +345,7 @@ impl MoveEnv {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(v) = scope.get_mut(name) {
                 v.moved_at = None;
+                v.moved_fields.clear();
                 return;
             }
         }
@@ -365,6 +366,12 @@ impl MoveEnv {
                 };
                 if let Some(at) = var.moved_at {
                     current.moved_at = Some(at);
+                }
+                // A field moved on any path is unavailable after the join.
+                for (field, at) in &var.moved_fields {
+                    if !current.moved_fields.iter().any(|(moved, _)| moved == field) {
+                        current.moved_fields.push((field.clone(), *at));
+                    }
                 }
                 for (current_loan, branch_loan) in [
                     (&mut current.shared_borrow, var.shared_borrow),
@@ -2147,7 +2154,7 @@ impl Analyzer {
                             expr.span,
                             "S10",
                             format!(
-                                "cannot move `{root}.{name}` here: a field moves out of a local struct only unconditionally in the block that declares it, while the local is not borrowed, and when its type has no `free` hook"
+                                "cannot move `{root}.{name}` here: a field moves out of a local struct only outside loops that do not declare it, while the local is not borrowed, and when its type has no `free` hook"
                             ),
                         );
                         return;
@@ -2875,8 +2882,9 @@ impl Analyzer {
         let Some(var) = env.lookup(root) else {
             return false;
         };
+        // Conditional moves are tracked by the runtime drop-guard mask; a
+        // move inside a loop that does not declare the local would repeat.
         if var.moved_at.is_some()
-            || var.control_depth_at_decl != env.control_depth
             || var.loop_depth_at_decl != env.loop_depth
             || var.shared_borrow.is_some()
             || var.exclusive_borrow.is_some()

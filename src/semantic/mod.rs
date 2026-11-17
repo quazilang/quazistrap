@@ -6465,7 +6465,7 @@ fn main() void {
         for (source, message) in [
             (r#"struct Token { value: i32, } struct Holder { token: Token, } fn take(token: Token) void {} fn consume(holder: Holder) void {} fn main() void { var holder = Holder { token: Token { value: 1 } }; take(holder.token); consume(holder); }"#, "use of partially moved value 'holder'"),
             (r#"struct Token { value: i32, } struct Holder { token: Token, } fn take(token: Token) void {} fn main() void { var holder = Holder { token: Token { value: 1 } }; take(holder.token); take(holder.token); }"#, "use of moved field `holder.token`"),
-            (r#"struct Token { value: i32, } struct Holder { token: Token, } fn take(token: Token) void {} fn main() void { var holder = Holder { token: Token { value: 1 } }; if true { take(holder.token); } }"#, "a field moves out of a local struct only unconditionally"),
+            (r#"struct Token { value: i32, } struct Holder { token: Token, } fn take(token: Token) void {} fn main() void { var holder = Holder { token: Token { value: 1 } }; var i: i32 = 0; for (i < 2) { take(holder.token); i = i + 1; } }"#, "a field moves out of a local struct only outside loops that do not declare it"),
         ] {
             let report = analyze(source);
             assert!(

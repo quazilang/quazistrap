@@ -5580,8 +5580,36 @@ impl<'a> FnCompiler<'a> {
 
     fn emit_guarded_local_drop(&mut self, local: &DropLocal, action: DropAction) {
         let empty = self.chunk.emit(ri16(Opcode::Jz, local.initialized, 0));
-        self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
-        self.emit_drop_action(local.reg, action);
+        match (&local.action, action) {
+            (DropAction::Structural(declared), DropAction::Structural(fields)) => {
+                // Skip each field whose moved bit (see
+                // `move_field_out_of_local`) is set.
+                let mask = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Mov, mask, local.initialized, 0));
+                self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
+                for field in fields {
+                    let Some(index) = declared.iter().position(|drop| drop.offset == field.offset) else {
+                        continue;
+                    };
+                    let bit = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, bit, 1));
+                    let shift = self.alloc_reg();
+                    self.chunk.emit(ri16(Opcode::MovI, shift, (index + 1) as u16));
+                    self.chunk.emit(rrr(Opcode::Shl, bit, bit, shift));
+                    self.chunk.emit(rrr(Opcode::And, bit, bit, mask));
+                    let moved = self.chunk.emit(ri16(Opcode::Jnz, bit, 0));
+                    let field_reg = self.alloc_reg();
+                    self.chunk.emit(field_load(field_reg, local.reg, field.offset));
+                    self.emit_drop_action(field_reg, *field.action);
+                    self.chunk.patch_jump(moved, self.chunk.len() as u16);
+                }
+                self.emit_drop_action(local.reg, DropAction::ReleaseStorage);
+            }
+            (_, action) => {
+                self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
+                self.emit_drop_action(local.reg, action);
+            }
+        }
         self.chunk.patch_jump(empty, self.chunk.len() as u16);
     }
 
@@ -6294,6 +6322,10 @@ impl<'a> FnCompiler<'a> {
     /// A field moved out of a struct local (analysis allows it only in the
     /// local's own straight-line region): the local's cleanup now destroys
     /// the remaining fields and the storage shell, not the moved field.
+    /// A place-level move clears the field's ownership in the local's drop
+    /// guard: bit 0 means the value is live and bit `i + 1` that structural
+    /// field `i` has moved out. Being a runtime mask, it is exact when the
+    /// move happens on only some paths (inside an `if` or `match` arm).
     fn move_field_out_of_local(&mut self, root: &str, object: &Expr, field: &str) {
         let Some(local) = self.drop_local(root).cloned() else {
             return;
@@ -6302,25 +6334,21 @@ impl<'a> FnCompiler<'a> {
             return;
         };
         let offset = self.field_offset(object, field);
-        let remaining: Vec<StructuralFieldDrop> = fields
-            .iter()
-            .filter(|drop| drop.offset != offset)
-            .cloned()
-            .collect();
-        let Some(depth) = self.drop_scopes.iter().rposition(|scope| {
-            scope.iter().any(|entry| entry.name == local.name && entry.reg == local.reg)
-        }) else {
+        let Some(index) = fields.iter().position(|drop| drop.offset == offset) else {
             return;
         };
-        self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
-        let guard = self.alloc_reg();
-        self.chunk.emit(ri16(Opcode::MovI, guard, 1));
-        self.drop_scopes[depth].push(DropLocal {
-            name: local.name.clone(),
-            reg: local.reg,
-            action: DropAction::Structural(remaining),
-            initialized: guard,
-        });
+        if index + 1 >= 63 {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("`{root}` has too many owned fields for place-level moves")
+            });
+            return;
+        }
+        let bit = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, bit, 1));
+        let shift = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, shift, (index + 1) as u16));
+        self.chunk.emit(rrr(Opcode::Shl, bit, bit, shift));
+        self.chunk.emit(rrr(Opcode::Or, local.initialized, local.initialized, bit));
     }
 
     fn mark_consumed_binding(&mut self, expr: &Expr, value: u8) {
