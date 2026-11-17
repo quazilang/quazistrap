@@ -82,6 +82,13 @@ Define whether civil-time support bundles, discovers, or delegates an IANA time
 zone database and how updates/versioning work. Monotonic duration APIs can proceed
 independently of this decision.
 
+Provisional implementation (2026-11-17, awaiting maintainer question В25):
+`std.timezone` discovers the system IANA database (`$TZDIR`,
+`/usr/share/zoneinfo`, `/etc/zoneinfo`, `/usr/share/lib/zoneinfo`), so updates
+come with the operating system; nothing is bundled. Windows has no database
+unless `TZDIR` names one; POSIX TZ rules work everywhere. The decision stays
+open until the maintainers confirm or replace this approach.
+
 ## D-010: runtime dynamic values
 
 Current stabilization rule: `any` is reserved and cannot carry runtime values
