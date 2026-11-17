@@ -78,17 +78,19 @@ Both are implemented in `std.fs` (`fs.current_dir`, `fs.set_current_dir`):
 `getcwd`/`chdir` on Linux and NetBSD, `GetCurrentDirectoryA` /
 `SetCurrentDirectoryA` (ANSI code page paths) on Windows.
 
-## Unix-specific low-level functions
+## Unix-specific functions (`std.posix`)
 
-The following APIs directly use Linux syscalls even though they are currently
-exported through std.os. They are target-specific and return raw native results
-rather than structured errors. On Windows they do not issue Linux syscalls:
+These live in `std.posix` (since 2026-11-17; they used to be exported through
+std.os). They wrap Linux syscalls or NetBSD libc and return raw native results
+rather than structured errors. On Windows they issue no native call:
 signed-result APIs return `-1`, while the unsigned identity and umask APIs
-return `u32::MAX` as an unsupported-target sentinel.
+return `u32::MAX` as an unsupported-target sentinel. `unsafe
+linux_environment()` returns the current Linux `envp` array (see
+[runtime state](../internals/runtime-state.md)).
 
 - unsafe cwd(buf, size) writes a null-terminated current-directory path to
   caller-provided storage and returns a byte count including the terminator or a
-  negative failure value. It is Linux-only; the caller must allocate writable
+  negative failure value. It is Unix-only; the caller must allocate writable
   storage of at least size bytes.
 - getuid(), getgid(), geteuid(), and getegid() return Linux numeric identities.
   They do not model Windows security tokens.
@@ -99,7 +101,7 @@ return `u32::MAX` as an unsupported-target sentinel.
   the previous mask. It affects other threads and all subsequent file creation,
   so libraries should not modify it implicitly.
 
-The std.fs page documents the portable filesystem surface. Code that requires
-portable current directories, identities, environment mutation, arguments, or
-working-directory changes must wait for an explicitly designed API rather than
-depending on these syscall wrappers.
+Portable code uses std.os: `current_dir`/`set_current_dir`, `args`,
+`env`/`set_env`/`remove_env`, `getpid`/`getppid`. Migration: replace
+`os.getuid()` (and `getgid`, `geteuid`, `getegid`, `kill`, `umask`, `cwd`)
+with `posix.getuid()` after `import std.posix;`.
