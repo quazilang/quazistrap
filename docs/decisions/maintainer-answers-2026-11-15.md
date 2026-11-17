@@ -9,7 +9,8 @@ Status: decided by the maintainers on 2026-11-15 (asks.txt rounds 4-6).
   bindings own payloads, `?` consumes owned operands;
   `scripts/check_consuming_match.py`). Struct patterns move bound fields
   out; a struct with its own `free` hook cannot be destructured that way.
-  Recursive enums keep shell-only release.
+  Recursive enums (`List` inside `List`) are destroyed through a generated
+  drop function (`scripts/check_recursive_enums.py`).
 - **В11В.** No `@format`: variadics must work normally and formatting must not
   need an attribute (implemented 2026-11-16 as `...args: Display` and `...args`
   forwarding, [D-024](display-variadics.md)).

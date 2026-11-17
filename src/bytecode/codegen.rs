@@ -2635,6 +2635,8 @@ struct FnCompiler<'a> {
     /// Tracks which local variable registers hold closure environment struct pointers.
     /// Used at call sites to dispatch through the env-wrapper convention.
     closure_env_regs: HashSet<u8>,
+    /// Drop functions of recursive enums whose bodies are being emitted.
+    generating_drop_glue: HashSet<String>,
     /// Type substitution map for monomorphized functions: generic param name → concrete type.
     type_subst: HashMap<String, TypeKind>,
     /// Semantic declaration-slot mappings for source call sites.
@@ -2722,6 +2724,9 @@ enum DropAction {
     FreeClosureEnv,
     /// Destroy the active variant's owned payloads, then the enum storage.
     EnumPayloads(Vec<EnumVariantDrop>),
+    /// A value of a recursive enum (`List` inside `List`): its generated
+    /// drop function, called through its address, destroys it.
+    RecursiveEnum { glue: String, ty: TypeKind },
 }
 
 /// The owned payload slots of one enum variant.
@@ -2902,6 +2907,7 @@ impl<'a> FnCompiler<'a> {
             output_chunks,
             next_closure_idx,
             closure_env_regs: HashSet::new(),
+            generating_drop_glue: HashSet::new(),
             type_subst,
             named_call_slots,
             source_files,
@@ -5357,9 +5363,23 @@ impl<'a> FnCompiler<'a> {
         if type_args
             .iter()
             .any(|argument| type_kind_mentions_unresolved_param(&argument.node))
-            || !visiting.insert(key.clone())
         {
             return None;
+        }
+        if !visiting.insert(key.clone()) {
+            // A nested occurrence of an enum being described recurses
+            // through a generated drop function.
+            let glue: String = key
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            return Some(DropAction::RecursiveEnum {
+                glue: format!("__quazi_drop_{glue}"),
+                ty: TypeKind::Named {
+                    name: name.to_string(),
+                    type_args: type_args.to_vec(),
+                },
+            });
         }
         let result = self.enum_variant_drops(name, type_args, visiting);
         visiting.remove(&key);
@@ -5524,6 +5544,38 @@ impl<'a> FnCompiler<'a> {
         self.chunk.patch_jump(empty, self.chunk.len() as u16);
     }
 
+    /// Emit (once) the drop function of a recursive enum: `fn(value)` that
+    /// destroys the active payload, calling itself for nested values.
+    fn ensure_recursive_drop_glue(&mut self, glue: &str, ty: &TypeKind) {
+        if self.generating_drop_glue.contains(glue)
+            || self.output_chunks.iter().any(|chunk| chunk.name == glue)
+        {
+            return;
+        }
+        let TypeKind::Named { name, type_args } = ty else {
+            return;
+        };
+        self.generating_drop_glue.insert(glue.to_string());
+        // Emit the body into a fresh chunk with its own registers.
+        let saved_chunk = std::mem::replace(&mut self.chunk, Chunk::with_params(glue, 1));
+        let saved_next = self.next_reg;
+        let saved_high = self.reg_high_water;
+        self.next_reg = 0;
+        self.reg_high_water = 0;
+        let value = self.alloc_reg();
+        let mut visiting = HashSet::new();
+        match self.enum_drop_action(name, type_args, &mut visiting) {
+            Some(action) => self.emit_drop_action(value, action),
+            None => self.emit_drop_action(value, DropAction::ReleaseStorage),
+        }
+        self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+        self.chunk.reg_count = self.next_reg.max(self.reg_high_water).min(u8::MAX as u16) as u8;
+        let glue_chunk = std::mem::replace(&mut self.chunk, saved_chunk);
+        self.next_reg = saved_next;
+        self.reg_high_water = saved_high;
+        self.output_chunks.push(glue_chunk);
+    }
+
     fn emit_drop_action(&mut self, reg: u8, action: DropAction) {
         match action {
             DropAction::ReleaseStorage => {
@@ -5615,6 +5667,15 @@ impl<'a> FnCompiler<'a> {
                 let mut instruction = ri16(Opcode::Intrinsic, reg, 4);
                 instruction.flags = 1;
                 self.chunk.emit(instruction);
+            }
+            DropAction::RecursiveEnum { glue, ty } => {
+                self.ensure_recursive_drop_glue(&glue, &ty);
+                let address = self.alloc_reg();
+                let constant = self.chunk.add_constant(ConstPoolEntry::FnAddr(glue));
+                self.chunk.emit(ri16(Opcode::MovConst, address, constant));
+                let ignored = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::CallArg, reg, 0, 0));
+                self.chunk.emit(rrr(Opcode::CallReg, ignored, address, 0));
             }
             DropAction::EnumPayloads(variants) => {
                 let disc = self.alloc_reg();
