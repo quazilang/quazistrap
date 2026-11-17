@@ -77,8 +77,8 @@ bound (`T.from_json(text)`). `codec.Document` holds one JSON value and the
 file it came from: `Document.load(path)`, `Document.parse(text)`,
 `decode[T]()`, `encode(value)` (consumes the value), `text()`, `save()` and
 `save_as(path)`; failures are `DocumentError` (`Io`, `Decode`, `Encode`,
-`NoPath`). The formats `ini`, `yml` and `hocon` are reserved and rejected
-until implemented. The older `@derive(Serialize, Deserialize)` with
+`NoPath`). `@serde("ini")` is described in [`std.ini`](ini.md); `yml` and
+`hocon` are reserved and rejected until implemented. The older `@derive(Serialize, Deserialize)` with
 `@json(name="...")` remains a JSON-only shorthand.
 
 ## Derived structs

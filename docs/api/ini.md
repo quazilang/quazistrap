@@ -70,3 +70,36 @@ syntax failures as `IniDecodeError.Syntax(IniError)`.
 The returned strings and error section/key names are owned values. Keep the
 document alive only for subsequent queries; values returned from `get` or
 `require_string` do not borrow its backing source.
+
+## Typed marshalling (`@serde("ini")`)
+
+`@serde("ini")` on a struct (D-026) generates `IniSerialize` and
+`IniDeserialize`. Scalar and `String` fields are `key = value` lines before
+the first section, `Option` fields may be absent, and a struct field is the
+section `[key]`; keys default to field names and `@serde("key")` or
+`@serde("ini:key")` renames them.
+
+```quazi
+import std.ini;
+
+@serde("ini")
+struct Server { host: String, port: u16, }
+
+@serde("ini")
+struct Config { name: String, @serde("max_users") limit: u32, server: Server, }
+
+fn main() i32 {
+    var doc = ini.IniDocument.parse("name = demo\nmax_users = 40\n\n[server]\nhost = localhost\nport = 8080\n").unwrap();
+    var config: Config = doc.decode[Config]().unwrap();
+    config.limit = config.limit + 1;
+    doc.encode(config).unwrap();
+    ret 0;
+}
+```
+
+`IniDocument.load(path)`, `decode[T]()`, `encode(value)` (consumes it),
+`save()` and `save_as(path)` work like `codec.Document`. `ini.read[T]` and
+`ini.read_optional[T]` read one value through `IniValue` (integers, floats,
+`bool`, `String`); a missing key is `MissingValue`, a malformed one
+`InvalidValue`, a value with a line break `MultilineValue`, and file errors
+`Io`. Sections do not nest and INI has no arrays; both are compile errors.

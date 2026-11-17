@@ -941,6 +941,181 @@ fn expand_serialize_derives(program: &Program) -> Program {
             .unwrap_or_else(|| field.name.clone())
     }
 
+    /// The formats listed by a struct's `@serde(...)` attribute.
+    fn serde_formats(attributes: &[Attribute]) -> Vec<String> {
+        attributes
+            .iter()
+            .filter(|attribute| attribute.name == "serde")
+            .flat_map(|attribute| attribute.args.iter())
+            .filter_map(|argument| match argument {
+                AttrArg::Positional(AttrVal::Str(value)) => Some(value.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A field's key in `format`: `@serde("format:key")`, else `@serde("key")`,
+    /// else the field name.
+    fn serde_field_key(field: &AggregateField, format: &str) -> String {
+        let names: Vec<String> = field
+            .attributes
+            .iter()
+            .filter(|attribute| attribute.name == "serde")
+            .flat_map(|attribute| attribute.args.iter())
+            .filter_map(|argument| match argument {
+                AttrArg::Positional(AttrVal::Str(value)) => Some(value.clone()),
+                _ => None,
+            })
+            .collect();
+        let prefix = format!("{format}:");
+        names
+            .iter()
+            .find_map(|name| name.strip_prefix(&prefix).map(str::to_string))
+            .or_else(|| names.iter().find(|name| !name.contains(':')).cloned())
+            .unwrap_or_else(|| field.name.clone())
+    }
+
+    /// `@serde("ini")`: `impl IniSerialize` (`to_ini_writer`) and
+    /// `impl IniDeserialize` (`from_ini_section`). Scalar and `String` fields
+    /// are `key = value` lines, `Option` fields may be absent, and struct
+    /// fields are `[key]` sections.
+    fn ini_impls(builder: &mut Builder, name: &str, fields: &[AggregateField], span: Span) -> Vec<Item> {
+        let module_call = |builder: &mut Builder, function: &str, type_args: Vec<Type>, args: Vec<Expr>| {
+            let module = builder.ident("ini");
+            builder.expr(ExprKind::MethodCall {
+                object: Box::new(module),
+                method: function.to_string(),
+                type_args,
+                args,
+                named_args: Vec::new(),
+            })
+        };
+        // to_ini_writer
+        let mut statements = Vec::new();
+        let writer_type = builder.ident("IniWriter");
+        let writer_value = builder.method_call(writer_type, "new", Vec::new());
+        statements.push(builder.local("__quazi_ini", None, writer_value, true));
+        let mut values = Vec::new();
+        for field in fields {
+            let Some(shape) = codec_field(&field.ty.node) else {
+                continue;
+            };
+            let key = serde_field_key(field, "ini");
+            let receiver = builder.ident("self");
+            let value = builder.field(receiver, &field.name);
+            let key_literal = builder.string_literal(key.clone());
+            let writer = builder.ident("__quazi_ini");
+            let method = match &shape {
+                CodecField::Required(CodecValue::Struct(_)) => "section",
+                CodecField::Required(_) => "entry",
+                CodecField::Optional(_) => "optional",
+                CodecField::Array(_) => continue,
+            };
+            let call = builder.method_call(writer, method, vec![key_literal, value]);
+            statements.push(builder.stmt(StmtKind::ExprStmt(call)));
+            // from_ini_section value for this field.
+            let document = builder.ident("document");
+            let key_literal = builder.string_literal(key);
+            let decoded = match &shape {
+                CodecField::Required(CodecValue::Struct(nested)) => {
+                    let owner = builder.type_path(nested);
+                    builder.method_call(owner, "from_ini_section", vec![document, key_literal])
+                }
+                CodecField::Required(_) | CodecField::Optional(_) => {
+                    let section = builder.ident("section");
+                    let element = match &shape {
+                        CodecField::Optional(_) => match &field.ty.node {
+                            TypeKind::Named { type_args, .. } => type_args[0].clone(),
+                            _ => continue,
+                        },
+                        _ => field.ty.clone(),
+                    };
+                    let function = if matches!(shape, CodecField::Optional(_)) { "read_optional" } else { "read" };
+                    module_call(builder, function, vec![element], vec![document, section, key_literal])
+                }
+                CodecField::Array(_) => continue,
+            };
+            let decoded = builder.try_expr(decoded);
+            values.push((field.name.clone(), decoded));
+        }
+        let writer = builder.ident("__quazi_ini");
+        statements.push(builder.stmt(StmtKind::Return(Some(writer))));
+        let body = builder.block(statements);
+        let self_type = builder.named_ty(name);
+        let writer_result = builder.named_ty("IniWriter");
+        let self_span = builder.span();
+        let to_ini = Spanned::new(
+            ItemKind::Fn {
+                name: "to_ini_writer".to_string(),
+                name_span: None,
+                generic_params: Vec::new(),
+                params: vec![Param {
+                    name: "self".to_string(),
+                    name_span: self_span,
+                    ty: self_type,
+                    variadic: false,
+                    attributes: Vec::new(),
+                }],
+                return_ty: writer_result,
+                body: Some(body),
+                attributes: vec![Attribute { name: "ignore".to_string(), args: Vec::new(), span }],
+                unsafe_fn: false,
+                pub_fn: true,
+                c_variadic: false,
+            },
+            span,
+        );
+        let value = builder.expr(ExprKind::StructInit {
+            name: name.to_string(),
+            fields: values,
+        });
+        let result = builder.call("Ok", vec![value]);
+        let return_statement = builder.stmt(StmtKind::Return(Some(result)));
+        let body = builder.block(vec![return_statement]);
+        let document_inner = builder.named_ty("IniDocument");
+        let document_type = builder.ty(TypeKind::Ref { inner: Box::new(document_inner) });
+        let section_type = builder.ty(TypeKind::Str);
+        let value_type = builder.named_ty(name);
+        let error_type = builder.named_ty("IniDecodeError");
+        let result_type = builder.ty(TypeKind::Named {
+            name: "Result".to_string(),
+            type_args: vec![value_type, error_type],
+        });
+        let document_span = builder.span();
+        let section_span = builder.span();
+        // Only scalar fields read their own section.
+        let reads_section = fields.iter().any(|field| {
+            matches!(codec_field(&field.ty.node), Some(CodecField::Optional(_)) | Some(CodecField::Required(CodecValue::Scalar(_) | CodecValue::Text)))
+        });
+        let section_name = if reads_section { "section" } else { "_section" };
+        let from_ini = Spanned::new(
+            ItemKind::Fn {
+                name: "from_ini_section".to_string(),
+                name_span: None,
+                generic_params: Vec::new(),
+                params: vec![
+                    Param { name: "document".to_string(), name_span: document_span, ty: document_type, variadic: false, attributes: Vec::new() },
+                    Param { name: section_name.to_string(), name_span: section_span, ty: section_type, variadic: false, attributes: vec![Attribute { name: "ignore".to_string(), args: Vec::new(), span }] },
+                ],
+                return_ty: result_type,
+                body: Some(body),
+                attributes: vec![Attribute { name: "ignore".to_string(), args: Vec::new(), span }],
+                unsafe_fn: false,
+                pub_fn: true,
+                c_variadic: false,
+            },
+            span,
+        );
+        let serialize_trait = builder.named_ty("IniSerialize");
+        let deserialize_trait = builder.named_ty("IniDeserialize");
+        let for_serialize = builder.named_ty(name);
+        let for_deserialize = builder.named_ty(name);
+        vec![
+            Spanned::new(ItemKind::Impl { trait_ty: Some(serialize_trait), for_ty: for_serialize, methods: vec![to_ini] }, span),
+            Spanned::new(ItemKind::Impl { trait_ty: Some(deserialize_trait), for_ty: for_deserialize, methods: vec![from_ini] }, span),
+        ]
+    }
+
     /// `impl Type { pub fn from_json(source: str) Result[Type, DecodeError] }`:
     /// one pass over the object finds every expected key (unknown and
     /// repeated keys are errors, maintainer answer В19В), then each field is
@@ -1252,6 +1427,13 @@ fn expand_serialize_derives(program: &Program) -> Program {
             })
             .collect();
         let fields = fields.as_slice();
+        if serde_formats(attributes).iter().any(|format| format == "ini") {
+            let span = attributes
+                .iter()
+                .find(|attribute| attribute.name == "serde")
+                .map_or(item.span, |attribute| attribute.span);
+            items.extend(ini_impls(&mut builder, name, fields, span));
+        }
         if let Some(derive_span) = derive_span(attributes, "Deserialize") {
             items.extend(deserialize_impl(&mut builder, name, fields, derive_span));
         }
@@ -1502,8 +1684,8 @@ impl Analyzer {
     /// must implement `Serialize` (or define `from_json` for Deserialize).
     /// D-026 `@serde` arguments: struct formats and field keys.
     fn validate_serde_attributes(&mut self, program: &Program) {
-        const IMPLEMENTED: [&str; 1] = ["json"];
-        const RESERVED: [&str; 3] = ["ini", "yml", "hocon"];
+        const IMPLEMENTED: [&str; 2] = ["json", "ini"];
+        const RESERVED: [&str; 2] = ["yml", "hocon"];
         for item in &program.items {
             let ItemKind::Struct { attributes, fields, .. } = &item.node else {
                 continue;
@@ -1517,9 +1699,34 @@ impl Analyzer {
                     match argument {
                         AttrArg::Positional(AttrVal::Str(format)) if IMPLEMENTED.contains(&format.as_str()) => {}
                         AttrArg::Positional(AttrVal::Str(format)) if RESERVED.contains(&format.as_str()) => {
-                            self.push_error(serde.span, "S14", format!("@serde format \"{format}\" is not implemented yet; supported: json"));
+                            self.push_error(serde.span, "S14", format!("@serde format \"{format}\" is not implemented yet; supported: json, ini"));
                         }
                         _ => self.push_error(serde.span, "S06", "@serde formats are strings such as \"json\"".to_string()),
+                    }
+                }
+            }
+            let ini = serde.is_some_and(|serde| {
+                serde.args.iter().any(|argument| matches!(argument, AttrArg::Positional(AttrVal::Str(format)) if format == "ini"))
+            });
+            if ini {
+                for field in fields {
+                    let resolved = self.resolve_type_aliases(&field.ty.node);
+                    let message = match codec_field(&resolved) {
+                        Some(CodecField::Array(_)) => Some("INI has no arrays".to_string()),
+                        Some(CodecField::Optional(CodecValue::Struct(_))) => Some("an INI section cannot be optional".to_string()),
+                        Some(CodecField::Required(CodecValue::Struct(nested))) => {
+                            let nested_has_section = self.struct_defs.get(&nested).is_some_and(|nested_fields| {
+                                nested_fields.iter().any(|(_, ty)| {
+                                    matches!(codec_field(&self.resolve_type_aliases(ty)), Some(CodecField::Required(CodecValue::Struct(_))) | Some(CodecField::Optional(CodecValue::Struct(_))))
+                                })
+                            });
+                            nested_has_section.then(|| format!("`{nested}` is an INI section, so it cannot contain struct fields (sections do not nest)"))
+                        }
+                        None => Some("unsupported field type".to_string()),
+                        _ => None,
+                    };
+                    if let Some(message) = message {
+                        self.push_error(field.ty.span, "S14", format!("@serde(\"ini\") field '{}': {message}", field.name));
                     }
                 }
             }

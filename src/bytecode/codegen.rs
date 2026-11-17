@@ -1327,6 +1327,14 @@ impl<'a> Codegen<'a> {
                                 if name != method_part {
                                     continue;
                                 }
+                                // A bounded method's symbolic specialization
+                                // (`entry<T>` recorded inside another generic
+                                // body) has no concrete bound targets; each
+                                // concrete specialization is compiled instead.
+                                if self.symbolic_bounded_specialization(attributes, &mono.type_args) {
+                                    found = true;
+                                    break;
+                                }
                                 // Build substitution: struct-level generic params first, then method-level.
                                 let struct_params = self
                                     .report
@@ -1409,6 +1417,9 @@ impl<'a> Codegen<'a> {
                         ..
                     }) = original
                     {
+                        if self.symbolic_bounded_specialization(attributes, &mono.type_args) {
+                            continue;
+                        }
                         let subst: HashMap<String, TypeKind> = generic_params
                             .iter()
                             .zip(mono.type_args.iter())
@@ -1455,6 +1466,9 @@ impl<'a> Codegen<'a> {
                     ..
                 }) = original
                 {
+                    if self.symbolic_bounded_specialization(attributes, &mono.type_args) {
+                        continue;
+                    }
                     let subst: HashMap<String, TypeKind> = generic_params
                         .iter()
                         .zip(mono.type_args.iter())
@@ -2466,6 +2480,19 @@ impl<'a> Codegen<'a> {
                 TypeKind::Error
             }
         }
+    }
+
+    /// A bounded generic's specialization recorded with a still-symbolic type
+    /// argument (inside another generic body) has no concrete bound targets;
+    /// only its concrete specializations are compiled.
+    fn symbolic_bounded_specialization(&self, attributes: &[Attribute], type_args: &[TypeKind]) -> bool {
+        attributes.iter().any(|attribute| attribute.name == "bound")
+            && type_args.iter().any(|argument| {
+                matches!(argument, TypeKind::Named { name, type_args }
+                    if type_args.is_empty()
+                        && !self.report.struct_defs.contains_key(name.as_str())
+                        && !self.report.enum_defs.contains_key(name.as_str()))
+            })
     }
 
     fn callable_bound_names(&self, emitted: &str) -> HashSet<String> {
@@ -9718,11 +9745,18 @@ impl<'a> FnCompiler<'a> {
                         name: source_name.clone(),
                         type_args: vec![],
                     });
-                    let type_name = match &canonical {
-                        TypeKind::Named { name, .. } => name,
+                    // A type parameter substituted by a primitive (`T` = `u32`)
+                    // names that primitive's impl (`u32.from_ini_text`).
+                    let primitive_name = (!matches!(canonical, TypeKind::Named { .. })
+                        && self.type_subst.contains_key(source_name))
+                    .then(|| type_kind_base_name(&canonical));
+                    let type_name = match (&canonical, &primitive_name) {
+                        (TypeKind::Named { name, .. }, _) => name,
+                        (_, Some(primitive)) => primitive,
                         _ => source_name,
                     };
-                    let is_type_ns = self.struct_defs.contains_key(type_name.as_str())
+                    let is_type_ns = (self.struct_defs.contains_key(type_name.as_str())
+                        || primitive_name.is_some())
                         && !(self.bound_names.contains(source_name)
                             && !self.type_subst.contains_key(source_name))
                         && !self.regs.contains_key(source_name.as_str());

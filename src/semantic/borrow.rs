@@ -916,6 +916,16 @@ impl Analyzer {
         {
             return BTreeSet::new();
         }
+        // A call result whose type cannot hold a borrowed view (owned checked
+        // Strings included) borrows nothing, whatever its retention facts say.
+        if matches!(expr.node, ExprKind::Call { .. } | ExprKind::MethodCall { .. })
+            && self
+                .bc_annotated_type(expr)
+                .as_ref()
+                .is_some_and(|ty| !self.bc_may_hold_borrowed_views(ty))
+        {
+            return BTreeSet::new();
+        }
         if let Some(slots) = self.retention_call_slots(expr)
             && let Some(name) = self.retention_call_name(expr)
             && let Some(retained) = self.result_retention.get(name)

@@ -126,6 +126,49 @@ true
 9 4
 """
 
+INI = r"""import std.io.println;
+import std.ini;
+import std.codec;
+@serde("json", "ini")
+struct Server { host: String, port: u16, }
+@serde("json", "ini")
+struct Config {
+    name: String,
+    @serde("max_users")
+    limit: u32,
+    debug: bool,
+    ratio: f64,
+    note: Option[String],
+    server: Server,
+}
+fn main() i32 {
+    const text = "name = demo\nmax_users = 40\ndebug = true\nratio = 0.5\n\n[server]\nhost = localhost\nport = 8080\n";
+    var doc = ini.IniDocument.parse(text).unwrap();
+    var config: Config = doc.decode[Config]().unwrap();
+    println("{} {} {} {} {} {}", config.name, config.limit, config.debug, config.note.is_none(), config.server.host, config.server.port);
+    config.limit = config.limit + 1;
+    doc.encode(config).unwrap();
+    const path = "/tmp/quazi-serde-config.ini";
+    doc.save_as(path).unwrap();
+    const loaded = ini.IniDocument.load(path).unwrap();
+    const again: Config = loaded.decode[Config]().unwrap();
+    println("{} {}", again.limit, again.server.port);
+    println("{}", ini.IniDocument.parse("name = x\n").unwrap().decode[Config]().is_err());
+    ret 0;
+}
+"""
+INI_EXPECTED = "demo 40 true true localhost 8080\n41 8080\ntrue\n"
+
+INI_INVALID = """import std.ini;
+@serde("ini")
+struct Leaf { x: i32, }
+@serde("ini")
+struct Mid { leaf: Leaf, }
+@serde("ini")
+struct Top { mid: Mid, list: Array[i32], }
+fn main() i32 { ret 0; }
+"""
+
 SERDE_INVALID = """import std.codec;
 @serde("yml")
 struct A { x: i32 }
@@ -223,6 +266,16 @@ def main():
                                 text=True, capture_output=True, timeout=600)
         assert result.returncode == 0, result.stdout + result.stderr
         assert result.stdout == SERDE_EXPECTED, result.stdout
+        ini_valid = project(root, "ini", INI)
+        result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=ini_valid,
+                                text=True, capture_output=True, timeout=600)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout == INI_EXPECTED, result.stdout
+        ini_invalid = project(root, "ini-invalid", INI_INVALID)
+        result = subprocess.run([qz, "check"], cwd=ini_invalid, text=True,
+                                capture_output=True, timeout=600)
+        output = result.stdout + result.stderr
+        assert "sections do not nest" in output and "INI has no arrays" in output, output
         serde_invalid = project(root, "serde-invalid", SERDE_INVALID)
         result = subprocess.run([qz, "check"], cwd=serde_invalid, text=True,
                                 capture_output=True, timeout=600)
@@ -237,7 +290,7 @@ def main():
         assert result.returncode != 0 and "Deserialize does not support field 'grid'" in output, output
         assert "Serialize field 'inner' has type Plain, which does not implement Serialize" in output, output
     print("PASS deserialize: round trip, key policy, Option fields, QZI without sources; @serde "
-          "structs, renames, documents and @associated trait calls; wide numeric, "
+          "structs (JSON and INI), renames, documents and @associated trait calls; wide numeric, "
           f"nested struct, Option and Array matrix without leaks ({targets}); unsupported fields rejected")
 
 
