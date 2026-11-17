@@ -5,9 +5,12 @@ Audience: Quazi maintainers.
 Status: resolved 2026-09-12. This is a language-design decision, not an
 implementation-completion claim. The compiler has lexical local loans,
 read-only `self: &T`, call-local exclusive `self: &T!` receiver checking, and
-direct inherent-call consuming effects for bare `self: T`. It still lacks the
-effect solver, place-level moves, structural destruction, and QZI ownership
-summary format required by this decision.
+direct inherent-call consuming effects for bare `self: T`. Since 2026-11-17
+it also has place-level field moves (conditional and nested, tracked by a
+runtime drop-guard mask) and structural destruction of structs, enums,
+recursive types and concrete generic specializations. It still lacks the
+effect solver and the QZI ownership summary format required by this
+decision.
 
 Intermediate source evidence now includes
 [argument places](../internals/ownership-call-arguments.md) and
@@ -83,24 +86,20 @@ This guard prevents an unsupported partial move from leaving the aggregate's
 later cleanup unsound; it is not place-level move tracking or structural drop
 glue.
 
-The current implementation has a deliberately narrower bridge toward that
-design: an acyclic, non-`repr(C)` struct with no source `free(self)` hook
-(including concrete generic specializations, whose field types are
-substituted) cleans eligible owned fields in reverse declaration order and
-then releases its storage shell, also when no field needs cleanup
-(2026-11-09). It never combines this traversal with a manual hook, and
-excludes recursive structs, arrays and dynamic values. An enum value without a
-hook releases only its storage shell: its payloads are not destroyed, because
-a by-value `match` does not consume the scrutinee and its bindings alias the
-payloads, so destroying them needs the place-level rule above. The partial-move guard remains in force until the
-full rule above is implemented, except for an exact `ret self.field` from a
-by-value inherent receiver when that direct field has compiler-generated
-structural cleanup. At that return only, generated cleanup excludes the
-returned field and retains cleanup for every sibling; it does not mutate the
-receiver's cleanup state, so independent return branches remain correct. The
-exception excludes casts, groups, aliases, nested projections, generic or
-`repr(C)` parents, scalar fields, and any parent with a manual `free(self)`
-hook.
+The current implementation (2026-11-17) covers the owner side of this rule
+for source programs. A non-`repr(C)` struct without a source `free(self)` hook
+(including concrete generic specializations) destroys its owned fields in
+reverse declaration order and releases its storage shell; enum payloads,
+recursive enums and recursive structs are destroyed through generated drop
+functions, and a consuming `match` moves payloads out. A field, a nested field
+or a field of a concrete generic struct may move out of a local or consuming
+receiver, also on only some paths: the local's drop guard becomes a runtime
+mask (bit 0 live, bit `i + 1` for the i-th field of its depth-first structural
+plan), so every remaining field is destroyed exactly once on every path.
+Still excluded: structs over the enclosing function's own type parameters
+(their functions may compile as erased templates), parents with a manual
+`free(self)` hook, `repr(C)` parents, moves repeated by a loop, indexed
+elements and safe dereferences; these remain `S10` errors.
 
 ## QZI-only libraries
 
