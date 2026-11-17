@@ -5,7 +5,11 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 98.3%. Remaining: 1.7%.**
+**Complete: 98.5%. Remaining: 1.5%.**
+
+On 2026-11-17 general place-level partial moves were completed (Ownership
+11/16, 98.5%): conditional and nested field moves use a runtime drop-guard
+mask ([safety](../language/safety.md)).
 
 On 2026-11-17 structural destruction was completed (Ownership 10/16, 98.3%):
 recursive enums and structs drop through generated functions, and a struct
@@ -406,10 +410,12 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
   generated drop functions, concrete generic structs, struct shells, Option
   and Array fields; `scripts/check_consuming_match.py`,
   `scripts/check_recursive_enums.py`).
-- [ ] General place-level partial-move state (2026-11-17: conditional field moves
-  with a runtime drop-guard mask, from concrete generic structs and through
-  nested struct fields, `scripts/check_partial_moves.py`; template-typed
-  structs and moves in loops remain).
+- [x] General place-level partial-move state (2026-11-17: fields, nested
+  fields and fields of concrete generic structs move out of locals and
+  consuming receivers, also on only some paths; a runtime drop-guard mask
+  destroys exactly the rest; `scripts/check_partial_moves.py`. Structs over
+  the function's own type parameters keep the whole-value rule until generic
+  move semantics are decided (asks В23); moves repeated by a loop are errors).
 - [ ] Safe provenance-tracked dense-element source borrowing.
 
 ### Atomic opcodes
