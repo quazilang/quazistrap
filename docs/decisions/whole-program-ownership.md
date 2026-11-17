@@ -96,9 +96,8 @@ or a field of a concrete generic struct may move out of a local or consuming
 receiver, also on only some paths: the local's drop guard becomes a runtime
 mask (bit 0 live, bit `i + 1` for the i-th field of its depth-first structural
 plan), so every remaining field is destroyed exactly once on every path.
-Still excluded: structs over the enclosing function's own type parameters
-(their functions may compile as erased templates), parents with a manual
-`free(self)` hook, `repr(C)` parents, moves repeated by a loop, indexed
+Generic structs qualify, since code generation compiles each concrete
+specialization. Still excluded: parents with a manual `free(self)` hook, `repr(C)` parents, moves repeated by a loop, indexed
 elements and safe dereferences; these remain `S10` errors.
 
 ## QZI-only libraries

@@ -421,9 +421,8 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
 - [x] General place-level partial-move state (2026-11-17: fields, nested
   fields and fields of concrete generic structs move out of locals and
   consuming receivers, also on only some paths; a runtime drop-guard mask
-  destroys exactly the rest; `scripts/check_partial_moves.py`. Structs over
-  the function's own type parameters keep the whole-value rule until generic
-  move semantics are decided (asks В23); moves repeated by a loop are errors).
+  destroys exactly the rest; `scripts/check_partial_moves.py`. Since D-025
+  generic parameters move unless `T: Copy`; moves repeated by a loop are errors).
 - [ ] Safe provenance-tracked dense-element source borrowing.
 
 ### Atomic opcodes

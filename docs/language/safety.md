@@ -65,6 +65,13 @@ var b: String = a;  // ownership moves to b
 
 Use-after-move is a compile-time error.
 
+Inside generic code a value of a type parameter `T` moves like any owned
+value unless `T` is bounded by the compiler-known marker trait `Copy`
+(`fn twice[T: Copy](x: T)`; D-025). Integers, floats, `bool`, `str`, shared
+references and raw pointers are `Copy`. Returning `self.value` of type `T`
+from `self: &S[T]` is rejected; bound `T` with `Copy` or return
+`&self.value`.
+
 A field can move out of a local struct (a place-level move), for example
 `const name: String = person.name;`, `take(person.badge)` or, through nested
 structs, `take(order.customer.badge)`. The local then
@@ -77,9 +84,8 @@ mask so each remaining field is destroyed exactly once on every path.
 Reassigning the whole local destroys its remaining fields first. A move
 inside a loop that does not declare the local is rejected (it would repeat),
 the local must not be borrowed, and its type must be a struct without its own
-`free` hook. A generic struct qualifies once its type arguments are concrete
-(`Pair[String, Res]`), but not while they mention the enclosing function's
-type parameters.
+`free` hook (generic structs included: each concrete specialization has its
+own cleanup plan).
 
 ### Borrowed method receivers
 
