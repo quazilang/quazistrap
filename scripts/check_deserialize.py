@@ -9,6 +9,7 @@ round-trips, range and element errors propagate, and repeated decoding of a
 large struct does not leak."""
 
 import argparse
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -104,7 +105,9 @@ def project(root, name, source):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
-    qz = str(parser.parse_args().qz.resolve())
+    parser.add_argument("--wine", type=Path, help="also run the matrix as a Windows executable")
+    args = parser.parse_args()
+    qz = str(args.qz.resolve())
     with tempfile.TemporaryDirectory(prefix="quazi-deserialize-") as directory:
         root = Path(directory)
         valid = project(root, "valid", SOURCE)
@@ -132,13 +135,45 @@ def main():
         assert run.returncode == 0, run.stdout + run.stderr
         assert run.stdout == MATRIX_EXPECTED, run.stdout
         assert int(run.stderr.strip().splitlines()[-1]) < 20000, run.stderr
+        # The same matrix from a QZI artifact whose sources are gone.
+        matrix_qzi = root / "matrix.qzi"
+        build = subprocess.run([qz, "build", "--silent", "--no-incremental", "-i", "-o",
+                                str(matrix_qzi)], cwd=matrix, text=True, capture_output=True,
+                               timeout=600)
+        assert build.returncode == 0, build.stdout + build.stderr
+        (matrix / "src/main.qz").rename(matrix / "src/main.qz.moved")
+        build = subprocess.run([qz, "build", str(matrix_qzi), "--silent", "-o",
+                                str(root / "matrix-portable")], cwd=root, text=True,
+                               capture_output=True, timeout=600)
+        assert build.returncode == 0, build.stdout + build.stderr
+        rerun = subprocess.run([str(root / "matrix-portable")], text=True, capture_output=True,
+                               timeout=300)
+        assert rerun.stdout == MATRIX_EXPECTED, rerun.stdout
+        # Windows: a COFF object always; the executable under Wine when given.
+        coff = subprocess.run([qz, "build", str(matrix_qzi), "--silent", "-c", "--target",
+                               "x86_64-windows", "-o", str(root / "matrix.obj")], cwd=root,
+                              text=True, capture_output=True, timeout=600)
+        assert coff.returncode == 0, coff.stdout + coff.stderr
+        assert (root / "matrix.obj").read_bytes()[:2] == b"\x64\x86"
+        targets = "native, QZI-only, COFF"
+        if args.wine:
+            exe = root / "matrix.exe"
+            build = subprocess.run([qz, "build", str(matrix_qzi), "--silent", "--target",
+                                    "x86_64-windows", "-o", str(exe)], cwd=root, text=True,
+                                   capture_output=True, timeout=600)
+            assert build.returncode == 0, build.stdout + build.stderr
+            env = dict(os.environ, WINEDEBUG="-all")
+            run = subprocess.run([str(args.wine), str(exe)], text=True, capture_output=True,
+                                 timeout=600, env=env)
+            assert run.stdout.replace("\r\n", "\n") == MATRIX_EXPECTED, run.stdout + run.stderr
+            targets += ", Windows (Wine)"
         invalid = project(root, "unsupported", UNSUPPORTED)
         result = subprocess.run([qz, "check"], cwd=invalid, text=True, capture_output=True, timeout=600)
         output = result.stdout + result.stderr
         assert result.returncode != 0 and "Deserialize does not support field 'grid'" in output, output
         assert "Serialize field 'inner' has type Plain, which does not implement Serialize" in output, output
     print("PASS deserialize: round trip, key policy, Option fields, QZI without sources; wide numeric, "
-          "nested struct, Option and Array matrix without leaks; unsupported fields rejected")
+          f"nested struct, Option and Array matrix without leaks ({targets}); unsupported fields rejected")
 
 
 if __name__ == "__main__":
