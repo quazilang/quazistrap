@@ -708,7 +708,7 @@ impl Analyzer {
 
     /// Whether a value of `ty` may hold views borrowed from other owners. A
     /// checked owned String owns its text, so it holds none.
-    fn bc_may_hold_borrowed_views(&self, ty: &TypeKind) -> bool {
+    pub(super) fn bc_may_hold_borrowed_views(&self, ty: &TypeKind) -> bool {
         self.type_may_contain(ty, false, true)
     }
 
@@ -866,6 +866,7 @@ impl Analyzer {
         if self
             .bc_resolved_call_name(expr)
             .is_some_and(|name| self.fresh_result_intrinsics.contains(name))
+            || self.associated_trait_calls.contains(&(expr.span.start, expr.span.end))
         {
             return BTreeSet::new();
         }

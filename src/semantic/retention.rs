@@ -1099,6 +1099,16 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
                 }
             }
         }
+        // An `@associated` trait call through a bound (`T.from_json(text)`):
+        // its implementations are checked to return values that borrow
+        // nothing from their arguments.
+        if self
+            .analyzer
+            .associated_trait_calls
+            .contains(&(expr.span.start, expr.span.end))
+        {
+            return Ok(env.allocate(expr.span));
+        }
         let fresh_allocation =
             resolved.is_some_and(|name| self.analyzer.fresh_result_intrinsics.contains(name));
         // A read-only intrinsic cannot store its inputs anywhere. Its result

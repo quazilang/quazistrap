@@ -209,6 +209,12 @@ pub struct Analyzer {
     /// checked on its own, so such a result can only retain its receiver and
     /// arguments, never an unverified source.
     pub(super) bounded_trait_calls: std::collections::HashSet<(usize, usize)>,
+    /// Spans of `T.method(...)` calls to `@associated` trait methods. Their
+    /// implementations may not retain arguments in their results, so these
+    /// results are fresh owners.
+    pub(super) associated_trait_calls: std::collections::HashSet<(usize, usize)>,
+    /// Implementations of `@associated` trait methods: (type, method, span).
+    pub(super) associated_impl_methods: Vec<(String, String, Span, TypeKind)>,
     /// Specializations whose bounds were already checked (diagnostics once).
     pub(super) bound_checked_monos: HashSet<String>,
     /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
@@ -682,7 +688,86 @@ pub fn strip_cfg_for(
 /// annotations or source diagnostics. The public source still owns the derive
 /// declaration and its field metadata; this lowered AST is deliberately not a
 /// user-visible metaprogramming facility.
+/// D-026: `@serde("json", ...)` on a struct requests the listed formats'
+/// codecs; `@serde("key")` or `@serde("json:key")` on a field renames it.
+/// The JSON format lowers to the `@derive(Serialize, Deserialize)` and
+/// `@json(name=...)` metadata that the codec generator already consumes.
+fn desugar_serde_attributes(program: &Program) -> Program {
+    let strings = |attribute: &Attribute| -> Vec<String> {
+        attribute
+            .args
+            .iter()
+            .filter_map(|argument| match argument {
+                AttrArg::Positional(AttrVal::Str(value)) => Some(value.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut items = Vec::with_capacity(program.items.len());
+    for item in &program.items {
+        let mut item = item.clone();
+        if let ItemKind::Struct { attributes, fields, .. } = &mut item.node
+            && let Some(serde) = attributes.iter().find(|attribute| attribute.name == "serde").cloned()
+        {
+            let formats = strings(&serde);
+            if formats.iter().any(|format| format == "json") {
+                let derives_already = attributes.iter().any(|attribute| {
+                    attribute.name == "derive"
+                        && attribute.args.iter().any(|argument| {
+                            matches!(argument, AttrArg::Positional(AttrVal::Ident(name))
+                                if name == "Serialize" || name == "Deserialize")
+                        })
+                });
+                if !derives_already {
+                    attributes.push(Attribute {
+                        name: "derive".to_string(),
+                        args: vec![
+                            AttrArg::Positional(AttrVal::Ident("Serialize".to_string())),
+                            AttrArg::Positional(AttrVal::Ident("Deserialize".to_string())),
+                        ],
+                        span: serde.span,
+                    });
+                }
+                for field in fields.iter_mut() {
+                    if field.attributes.iter().any(|attribute| attribute.name == "json") {
+                        continue;
+                    }
+                    let names: Vec<String> = field
+                        .attributes
+                        .iter()
+                        .filter(|attribute| attribute.name == "serde")
+                        .flat_map(&strings)
+                        .collect();
+                    let key = names
+                        .iter()
+                        .find_map(|name| name.strip_prefix("json:").map(str::to_string))
+                        .or_else(|| names.iter().find(|name| !name.contains(':')).cloned());
+                    if let Some(key) = key {
+                        let span = field
+                            .attributes
+                            .iter()
+                            .find(|attribute| attribute.name == "serde")
+                            .map_or(field.ty.span, |attribute| attribute.span);
+                        field.attributes.push(Attribute {
+                            name: "json".to_string(),
+                            args: vec![AttrArg::KeyValue("name".to_string(), AttrVal::Str(key))],
+                            span,
+                        });
+                    }
+                }
+            }
+        }
+        items.push(item);
+    }
+    Program {
+        items,
+        span: program.span,
+    }
+}
+
 fn expand_serialize_derives(program: &Program) -> Program {
+    let desugared = desugar_serde_attributes(program);
+    let program = &desugared;
     struct Builder {
         next: usize,
     }
@@ -865,7 +950,7 @@ fn expand_serialize_derives(program: &Program) -> Program {
         name: &str,
         fields: &[AggregateField],
         derive_span: Span,
-    ) -> Item {
+    ) -> Vec<Item> {
         let mut statements = Vec::new();
         let array_type = builder.ident("Array");
         let keys_value = builder.method_call(array_type, "new", Vec::new());
@@ -1114,14 +1199,28 @@ fn expand_serialize_derives(program: &Program) -> Program {
             },
             derive_span,
         );
-        Spanned::new(
-            ItemKind::Impl {
-                trait_ty: None,
-                for_ty: for_type,
-                methods: std::iter::once(method).chain(helpers).collect(),
-            },
-            derive_span,
-        )
+        // `from_json` implements `codec.Deserialize`; the per-field helpers
+        // stay inherent in their own impl.
+        let deserialize_trait = builder.named_ty("Deserialize");
+        let helper_type = builder.named_ty(name);
+        vec![
+            Spanned::new(
+                ItemKind::Impl {
+                    trait_ty: Some(deserialize_trait),
+                    for_ty: for_type,
+                    methods: vec![method],
+                },
+                derive_span,
+            ),
+            Spanned::new(
+                ItemKind::Impl {
+                    trait_ty: None,
+                    for_ty: helper_type,
+                    methods: helpers,
+                },
+                derive_span,
+            ),
+        ]
     }
 
     let aliases = derive_alias_map(program);
@@ -1154,7 +1253,7 @@ fn expand_serialize_derives(program: &Program) -> Program {
             .collect();
         let fields = fields.as_slice();
         if let Some(derive_span) = derive_span(attributes, "Deserialize") {
-            items.push(deserialize_impl(&mut builder, name, fields, derive_span));
+            items.extend(deserialize_impl(&mut builder, name, fields, derive_span));
         }
         let Some(derive_span) = serialize_derive_span(attributes) else {
             continue;
@@ -1401,7 +1500,56 @@ fn same_codec_shape(left: Option<&CodecField>, right: Option<&CodecField>) -> bo
 impl Analyzer {
     /// A derived codec field must have a supported shape; a nested struct
     /// must implement `Serialize` (or define `from_json` for Deserialize).
+    /// D-026 `@serde` arguments: struct formats and field keys.
+    fn validate_serde_attributes(&mut self, program: &Program) {
+        const IMPLEMENTED: [&str; 1] = ["json"];
+        const RESERVED: [&str; 3] = ["ini", "yml", "hocon"];
+        for item in &program.items {
+            let ItemKind::Struct { attributes, fields, .. } = &item.node else {
+                continue;
+            };
+            let serde = attributes.iter().find(|attribute| attribute.name == "serde");
+            if let Some(serde) = serde {
+                if serde.args.is_empty() {
+                    self.push_error(serde.span, "S06", "@serde on a struct lists its formats, e.g. @serde(\"json\")".to_string());
+                }
+                for argument in &serde.args {
+                    match argument {
+                        AttrArg::Positional(AttrVal::Str(format)) if IMPLEMENTED.contains(&format.as_str()) => {}
+                        AttrArg::Positional(AttrVal::Str(format)) if RESERVED.contains(&format.as_str()) => {
+                            self.push_error(serde.span, "S14", format!("@serde format \"{format}\" is not implemented yet; supported: json"));
+                        }
+                        _ => self.push_error(serde.span, "S06", "@serde formats are strings such as \"json\"".to_string()),
+                    }
+                }
+            }
+            for field in fields {
+                for attribute in field.attributes.iter().filter(|attribute| attribute.name == "serde") {
+                    if serde.is_none() {
+                        self.push_error(attribute.span, "S06", "a field @serde rename needs @serde(\"format\") on its struct".to_string());
+                    }
+                    for argument in &attribute.args {
+                        let AttrArg::Positional(AttrVal::Str(key)) = argument else {
+                            self.push_error(attribute.span, "S06", "@serde field keys are strings: @serde(\"key\") or @serde(\"json:key\")".to_string());
+                            continue;
+                        };
+                        let name = key.split_once(':').map_or(key.as_str(), |(format, name)| {
+                            if !IMPLEMENTED.contains(&format) && !RESERVED.contains(&format) {
+                                self.push_error(attribute.span, "S06", format!("unknown @serde format \"{format}\""));
+                            }
+                            name
+                        });
+                        if name.is_empty() {
+                            self.push_error(attribute.span, "S06", "@serde field key must not be empty".to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn validate_derived_codec_fields(&mut self, program: &Program) {
+        self.validate_serde_attributes(program);
         let aliases = derive_alias_map(program);
         // The shape each field is generated with, from its source spelling.
         let generated: HashMap<(&str, &str), Option<CodecField>> = program
@@ -1573,6 +1721,8 @@ impl Analyzer {
             bound_method_calls: HashMap::new(),
             consuming_bound_calls: std::collections::HashSet::new(),
             bounded_trait_calls: std::collections::HashSet::new(),
+            associated_trait_calls: std::collections::HashSet::new(),
+            associated_impl_methods: Vec::new(),
             bound_checked_monos: HashSet::new(),
             trait_method_slots: HashMap::new(),
             trait_method_signatures: HashMap::new(),
@@ -1794,6 +1944,24 @@ impl Analyzer {
 
         // Compose source result dependencies before checking lexical loans.
         self.derive_result_retention(program, &mut checkpoint)?;
+        for (type_name, method, span, result) in self.associated_impl_methods.clone() {
+            // A result type that cannot hold a view cannot borrow anything.
+            if !self.bc_may_hold_borrowed_views(&result) {
+                continue;
+            }
+            let suffix = format!(".{type_name}.{method}");
+            let exact = format!("{type_name}.{method}");
+            let retains = self.result_retention.iter().any(|(name, slots)| {
+                (*name == exact || name.ends_with(&suffix)) && !slots.is_empty()
+            });
+            if retains {
+                self.push_error(
+                    span,
+                    "S10",
+                    format!("`{exact}` implements an @associated trait method, so its result must not borrow from its arguments; return owned values"),
+                );
+            }
+        }
         self.record_ownership_argument_places(program, &mut checkpoint)?;
         let source_control_flow = self.record_ownership_control_flow(program, &mut checkpoint)?;
 
@@ -2210,6 +2378,8 @@ impl Analyzer {
         self.bound_method_calls.clear();
         self.consuming_bound_calls.clear();
         self.bounded_trait_calls.clear();
+        self.associated_trait_calls.clear();
+        self.associated_impl_methods.clear();
         self.bound_checked_monos.clear();
         self.trait_method_slots.clear();
         self.trait_method_signatures.clear();

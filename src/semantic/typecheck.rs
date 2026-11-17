@@ -1381,8 +1381,18 @@ impl Analyzer {
             }
 
             let mut expected_params = Vec::new();
-            if !signature.has_explicit_receiver {
+            if !signature.has_explicit_receiver && !signature.associated {
                 expected_params.push(for_ty.node.clone());
+            }
+            if signature.associated {
+                // Its result must not borrow from its arguments (checked after
+                // result retention), so bounded `T.method(...)` calls are fresh.
+                self.associated_impl_methods.push((
+                    super::declare::type_kind_base_name(&for_ty.node),
+                    method_name.clone(),
+                    implementation.span,
+                    substitute_self_type(&return_ty.node, &for_ty.node),
+                ));
             }
             expected_params.extend(signature.params.iter().map(|param| {
                 let substituted = substitute_type_kind(param, &substitution);
@@ -4321,8 +4331,55 @@ impl Analyzer {
                                 )
                             })
                         {
-                            self.push_error(object.span, "S14", "associated calls through a type parameter require a concrete declared namespace".into());
-                            return ExprEval::default();
+                            // `T.make(args)` with `T: Trait` calls the trait's
+                            // receiverless method; each specialization calls the
+                            // concrete impl (`P.make`).
+                            let param = source_name.clone();
+                            let bounds: Vec<String> = self
+                                .current_generic_bounds()
+                                .into_iter()
+                                .filter(|(bounded, _)| *bounded == param)
+                                .map(|(_, bound)| bound)
+                                .collect();
+                            let signature = bounds.iter().find_map(|bound| {
+                                self.bound_trait_signatures(bound)
+                                    .and_then(|methods| methods.get(method))
+                                    .filter(|signature| signature.associated)
+                                    .cloned()
+                            });
+                            let Some(signature) = signature else {
+                                self.push_error(object.span, "S14", format!("`{param}.{method}` needs a bound `{param}: Trait` whose trait declares `@associated fn {method}`"));
+                                return ExprEval::default();
+                            };
+                            let self_type = TypeKind::Named { name: param.clone(), type_args: Vec::new() };
+                            let evals: Vec<ExprEval> = args
+                                .iter()
+                                .map(|argument| self.type_check_expr(argument, reachable))
+                                .collect();
+                            if args.len() != signature.params.len() {
+                                self.push_error(expr.span, "S08", format!("`{param}.{method}` expects {} argument(s), got {}", signature.params.len(), args.len()));
+                            }
+                            for ((argument, eval), expected) in args.iter().zip(&evals).zip(&signature.params) {
+                                let expected = substitute_self_type(expected, &self_type);
+                                if let Some(actual) = &eval.ty
+                                    && !self.check_expr_compat(argument, &expected, actual)
+                                {
+                                    self.push_error(argument.span, "S08", format!("argument of `{param}.{method}`: expected {expected}, got {actual}"));
+                                }
+                            }
+                            if let Some(function) = self.current_function.last().cloned() {
+                                self.bound_method_calls
+                                    .entry(function)
+                                    .or_default()
+                                    .push((param.clone(), method.to_string()));
+                            }
+                            self.associated_trait_calls.insert((expr.span.start, expr.span.end));
+                            let result = ExprEval {
+                                ty: Some(substitute_self_type(&signature.return_ty, &self_type)),
+                                const_value: None,
+                            };
+                            self.annotate_expr(expr, &result, reachable, None);
+                            return result;
                         }
                         let canonical = self.resolve_type_aliases(&TypeKind::Named {
                             name: source_name.clone(),

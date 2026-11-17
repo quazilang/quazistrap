@@ -86,17 +86,20 @@ const origin = Point { x: 0.0, y: 0.0 };
 
 ### Field attributes
 
-Struct and union fields accept postfix attributes after their type:
+Struct and union fields accept attributes before the field or after its
+type:
 
 ```quazi
 struct User {
-    name: String @ini("username") @json(name="user_name"),
-    age: u32 @ini("age"),
+    @serde("user_name")
+    name: String,
+    age: u32 @serde("json:age", "ini:age"),
 }
 ```
 
-Field attributes are opaque language metadata. Quazi itself assigns no
-built-in meaning; libraries, derive implementations, or tools choose their
+Field attributes are language metadata. Apart from `@serde` (D-026,
+[marshalling](../api/codec.md#serde-marshalling)) Quazi assigns no built-in
+meaning; libraries, derive implementations, or tools choose their
 interpretation. Metadata is retained in the parsed AST and public QZI
 interfaces.
 
@@ -140,6 +143,19 @@ pub trait Area {
 
 Traits declare method signatures. The `self` parameter names the receiver
 type explicitly. Trait methods may have default implementations.
+
+A method marked `@associated` has no receiver at all; generic code calls it
+through a bound on the type parameter:
+
+```quazi
+trait Make { @associated fn make(n: i32) Self; }
+fn build[T: Make](n: i32) T { ret T.make(n); }
+```
+
+Its implementations (`fn make(n: i32) P { ... }`) may not return values that
+borrow from their arguments, so the result of `T.make(...)` is a fresh owner.
+A trait method without `self` and without `@associated` keeps the legacy
+implicit receiver.
 
 ### Generic traits
 

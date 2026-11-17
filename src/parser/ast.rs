@@ -572,7 +572,17 @@ pub struct TraitMethod {
     pub param_names: Vec<String>,
     pub params: Vec<Type>,
     pub return_ty: Type,
+    /// `@associated` marks a method without a receiver, called through the
+    /// type (`T.from_json(text)`); other methods without `self` keep the
+    /// legacy implicit receiver.
+    pub attributes: Vec<Attribute>,
     pub span: Span,
+}
+
+impl TraitMethod {
+    pub fn is_associated(&self) -> bool {
+        self.attributes.iter().any(|attribute| attribute.name == "associated")
+    }
 }
 
 #[derive(Debug, Clone)]

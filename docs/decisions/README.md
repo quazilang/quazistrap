@@ -180,3 +180,7 @@ Decided 2026-11-16: [Display variadics replace `@format`](display-variadics.md) 
 ## D-025: maintainer answers of 2026-11-18
 
 Decided 2026-11-18: [generic values move unless `T: Copy`, `@derive(Copy)` and `AsRef`, system time zone data, streaming `Reader`/`Writer`](maintainer-answers-2026-11-18.md).
+
+## D-026: attribute-driven marshalling
+
+Accepted 2026-11-18: [`@serde("json", "ini")` structs, field renames, per-format traits, documents](serde-marshalling.md).

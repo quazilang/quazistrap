@@ -470,6 +470,7 @@ impl Analyzer {
                                     .param_names
                                     .first()
                                     .is_some_and(|name| name == "self"),
+                                associated: method.is_associated(),
                                 generic_params: method.generic_params.clone(),
                                 params: method
                                     .params

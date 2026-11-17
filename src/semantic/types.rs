@@ -642,6 +642,8 @@ pub struct ForeignGlobalInfo {
 #[derive(Debug, Clone)]
 pub struct TraitMethodSignature {
     pub has_explicit_receiver: bool,
+    /// `@associated`: no receiver at all (called as `T.method(...)`).
+    pub associated: bool,
     pub generic_params: Vec<String>,
     pub params: Vec<TypeKind>,
     pub return_ty: TypeKind,

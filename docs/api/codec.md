@@ -43,6 +43,44 @@ unsupported derived fields will remain compile-time diagnostics.
 JSON-object failures at the typed codec boundary. Derived serializers therefore
 do not expose `std.json.JsonError` directly.
 
+## `@serde` marshalling
+
+`@serde("json")` on a struct (D-026) generates its `Serialize` and
+`Deserialize` implementations. Fields match JSON keys by name; a field
+attribute renames one, before the field or after its type:
+
+```quazi
+import std.codec;
+
+@serde("json")
+struct User {
+    id: usize,
+    name: String,
+    @serde("user_age")        // every format
+    age: u8,
+    level: u8 @serde("json:lvl"),   // JSON only
+}
+
+fn main() i32 {
+    var doc = codec.Document.parse("{{\"id\": 7, \"name\": \"Ada\", \"user_age\": 36, \"lvl\": 3}}");
+    var user: User = doc.decode[User]().unwrap();
+    user.age = user.age + 1;
+    doc.encode(user).unwrap();
+    // doc.text() is {"id":7,"name":"Ada","user_age":37,"lvl":3}
+    ret 0;
+}
+```
+
+`Deserialize` declares `@associated fn from_json(source: str)
+Result[Self, DecodeError]`, so generic code decodes with a `T: Deserialize`
+bound (`T.from_json(text)`). `codec.Document` holds one JSON value and the
+file it came from: `Document.load(path)`, `Document.parse(text)`,
+`decode[T]()`, `encode(value)` (consumes the value), `text()`, `save()` and
+`save_as(path)`; failures are `DocumentError` (`Io`, `Decode`, `Encode`,
+`NoPath`). The formats `ini`, `yml` and `hocon` are reserved and rejected
+until implemented. The older `@derive(Serialize, Deserialize)` with
+`@json(name="...")` remains a JSON-only shorthand.
+
 ## Derived structs
 
 Import `std.codec`, annotate a non-generic named struct, and call the generated

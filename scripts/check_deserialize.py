@@ -84,6 +84,57 @@ JSON object is missing a required field
 failures 0
 """
 
+SERDE = r"""import std.io.println;
+import std.codec;
+import std.codec.DecodeError;
+@serde("json")
+struct Inner { x: i32, }
+@serde("json")
+struct User {
+    id: usize,
+    name: String,
+    @serde("user_age")
+    age: u8,
+    level: u8 @serde("json:lvl"),
+    inner: Inner,
+}
+trait Make { @associated fn make(n: i32) Self; }
+impl Make for Inner { fn make(n: i32) Inner { ret Inner { x: n }; } }
+fn build[T: Make](n: i32) T { ret T.make(n); }
+fn parse[T: codec.Deserialize](text: str) Result[T, DecodeError] { ret T.from_json(text); }
+fn main() i32 {
+    var doc = codec.Document.parse("{{\"id\": 7, \"name\": \"Ada\", \"user_age\": 36, \"lvl\": 3, \"inner\": {{\"x\": 1}}}}");
+    var user: User = doc.decode[User]().unwrap();
+    user.age = user.age + 1;
+    doc.encode(user).unwrap();
+    println("{}", doc.text());
+    const path = "/tmp/quazi-serde-document.json";
+    doc.save_as(path).unwrap();
+    const loaded = codec.Document.load(path).unwrap();
+    const back: User = loaded.decode[User]().unwrap();
+    println("{} {} {}", back.name, back.age, back.level);
+    println("{}", codec.Document.parse("{{}}").save().is_err());
+    const made: Inner = build[Inner](9);
+    const parsed: Inner = parse[Inner]("{{\"x\": 4}}").unwrap();
+    println("{} {}", made.x, parsed.x);
+    ret 0;
+}
+"""
+SERDE_EXPECTED = """{"id":7,"name":"Ada","user_age":37,"lvl":3,"inner":{"x":1}}
+Ada 37 3
+true
+9 4
+"""
+
+SERDE_INVALID = """import std.codec;
+@serde("yml")
+struct A { x: i32 }
+@serde("json")
+struct B { @serde("toml:x") x: i32 }
+struct C { @serde("x") x: i32 }
+fn main() i32 { ret 0; }
+"""
+
 UNSUPPORTED = """import std.codec;
 @derive(Deserialize)
 struct Wide { grid: Array[Array[i64]] }
@@ -167,12 +218,26 @@ def main():
                                  timeout=600, env=env)
             assert run.stdout.replace("\r\n", "\n") == MATRIX_EXPECTED, run.stdout + run.stderr
             targets += ", Windows (Wine)"
+        serde = project(root, "serde", SERDE)
+        result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=serde,
+                                text=True, capture_output=True, timeout=600)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout == SERDE_EXPECTED, result.stdout
+        serde_invalid = project(root, "serde-invalid", SERDE_INVALID)
+        result = subprocess.run([qz, "check"], cwd=serde_invalid, text=True,
+                                capture_output=True, timeout=600)
+        output = result.stdout + result.stderr
+        assert result.returncode != 0, output
+        for message in ['@serde format "yml" is not implemented yet', 'unknown @serde format "toml"',
+                        "a field @serde rename needs @serde(\"format\") on its struct"]:
+            assert message in output, (message, output)
         invalid = project(root, "unsupported", UNSUPPORTED)
         result = subprocess.run([qz, "check"], cwd=invalid, text=True, capture_output=True, timeout=600)
         output = result.stdout + result.stderr
         assert result.returncode != 0 and "Deserialize does not support field 'grid'" in output, output
         assert "Serialize field 'inner' has type Plain, which does not implement Serialize" in output, output
-    print("PASS deserialize: round trip, key policy, Option fields, QZI without sources; wide numeric, "
+    print("PASS deserialize: round trip, key policy, Option fields, QZI without sources; @serde "
+          "structs, renames, documents and @associated trait calls; wide numeric, "
           f"nested struct, Option and Array matrix without leaks ({targets}); unsupported fields rejected")
 
 

@@ -168,6 +168,9 @@ impl Parser {
                 return Err(self.err_here("unexpected EOF while parsing struct".to_string()));
             }
 
+            // Attributes may also precede the field (`@serde("key") name: T`).
+            let leading_attributes = self.parse_attributes()?;
+
             let is_const = if self.at(TokenKind::Const) {
                 self.advance();
                 true
@@ -182,7 +185,8 @@ impl Parser {
             // Field attributes are source-level metadata.  Their names and
             // arguments remain opaque to the compiler so libraries and tools
             // can evolve independently of the language parser.
-            let mut field_attributes = self.parse_attributes()?;
+            let mut field_attributes = leading_attributes;
+            field_attributes.extend(self.parse_attributes()?);
 
             let bit_width = if self.at(TokenKind::Colon) {
                 self.advance();
@@ -254,6 +258,7 @@ impl Parser {
                 return Err(self.err_here("unexpected EOF while parsing trait".to_string()));
             }
 
+            let method_attributes = self.parse_attributes()?;
             let method_start = self.current_span();
             self.expect(TokenKind::Fn)?;
             let method_name = self.parse_ident()?;
@@ -294,6 +299,7 @@ impl Parser {
                 param_names,
                 params,
                 return_ty,
+                attributes: method_attributes,
                 span,
             });
         }

@@ -641,7 +641,9 @@ fn render_public_item(item: &Item) -> Option<(String, Vec<String>)> {
             render_generic_params(&mut output, generic_params);
             output.push_str(" {\n");
             for method in methods {
-                output.push_str("    fn ");
+                output.push_str("    ");
+                output.push_str(&render_attributes(&method.attributes));
+                output.push_str("fn ");
                 output.push_str(&method.name);
                 render_generic_params(&mut output, &method.generic_params);
                 output.push('(');

@@ -410,6 +410,7 @@ impl Analyzer {
                                 method.clone(),
                                 TraitMethodSignature {
                                     has_explicit_receiver: signature.has_explicit_receiver,
+                                    associated: signature.associated,
                                     generic_params: signature.generic_params.clone(),
                                     params,
                                     return_ty: resolve(&signature.return_ty, &binders, item.span),
