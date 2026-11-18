@@ -41,3 +41,9 @@ maintainer decision): projects are combined through dependencies, which
 are linked into the one QZI. Limitation: each target is still analyzed and compiled once
 (the merge happens on the compiled bodies), which costs build time but not
 artifact size.
+
+## All targets required
+
+An unsuccessful compilation for any supported target fails the QZI build
+and leaves an existing output file untouched. Successful builds report the
+artifact as `QZI`. The v16 encoding and reader compatibility are unchanged.

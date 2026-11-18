@@ -551,8 +551,7 @@ fn check_project_entry(ctx: &ProjectContext, entry: PathBuf, target: &TargetSpec
     report_diagnostics(&report, &result.merged_source, &result.source_files)
 }
 
-/// Set while one operating-system variant of a universal QZI is compiled: a
-/// failure then abandons that variant instead of the whole process.
+/// Set during variant compilation so a failed build can clean its staging directory.
 static QZI_VARIANT_BUILD: AtomicBool = AtomicBool::new(false);
 
 /// Payload of an abandoned QZI variant build (not a panic: no hook runs).
@@ -586,9 +585,7 @@ fn target_os_name(target: &TargetSpec) -> &'static str {
 
 /// Builds the QZI of a project: the program is compiled once per operating
 /// system (each with its own `@cfg` resolution and full semantic/ownership
-/// analysis) and the variants are written as one universal QZI. A system the
-/// program does not compile for is left out with a warning; the build fails
-/// only when no variant compiles.
+/// analysis). Publish an artifact only if every supported target compiles.
 fn build_universal_qzi(out: &str, silent: bool, build: &dyn Fn(&TargetSpec, &str, bool)) {
     let staging = std::env::temp_dir().join(format!("quazi-qzi-{}", std::process::id()));
     std::fs::create_dir_all(&staging).unwrap_or_else(|error| {
@@ -597,13 +594,12 @@ fn build_universal_qzi(out: &str, silent: bool, build: &dyn Fn(&TargetSpec, &str
     });
     let mut variants = Vec::new();
     let mut missing = Vec::new();
-    for (index, (os, spec)) in QZI_TARGETS.iter().enumerate() {
+    for (os, spec) in QZI_TARGETS {
         let path = staging.join(format!("{os}.qzi"));
         let path_text = path.to_string_lossy().into_owned();
         let target = spec();
         bytecode::select_qzi_target(os);
         QZI_VARIANT_BUILD.store(true, Ordering::Relaxed);
-        let _ = index;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             build(&target, &path_text, true)
         }));
@@ -618,15 +614,12 @@ fn build_universal_qzi(out: &str, silent: bool, build: &dyn Fn(&TargetSpec, &str
         }
     }
     let _ = std::fs::remove_dir_all(&staging);
-    if variants.is_empty() {
-        eprintln!("\x1b[31;1merror:\x1b[0m the program compiles for no QZI target");
-        fail_build();
-    }
-    if !missing.is_empty() && !silent {
+    if !missing.is_empty() {
         eprintln!(
-            "\x1b[33;1mwarning:\x1b[0m QZI has no variant for {}: the program did not compile for it (errors above)",
+            "\x1b[31;1merror:\x1b[0m cannot build QZI for every supported target; compilation failed for {}",
             missing.join(", ")
         );
+        fail_build();
     }
     // One project is one program: merge the per-target compilations into a
     // unified QZI that stores each function body once (format 16).
@@ -642,20 +635,25 @@ fn build_universal_qzi(out: &str, silent: bool, build: &dyn Fn(&TargetSpec, &str
         eprintln!("\x1b[31;1merror:\x1b[0m cannot write unified QZI: {error}");
         fail_build();
     });
-    std::fs::write(out, &bytes).unwrap_or_else(|error| {
+    let path = Path::new(out);
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).unwrap_or_else(|error| {
+            eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {error}", parent.display());
+            fail_build();
+        });
+    }
+    std::fs::write(path, &bytes).unwrap_or_else(|error| {
         eprintln!("\x1b[31;1merror:\x1b[0m cannot write {out}: {error}");
         fail_build();
     });
     if !silent {
-        let name = Path::new(out)
+        let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| out.to_string());
-        let systems: Vec<&str> = variants.iter().map(|(os, _)| os.as_str()).collect();
         eprintln!(
-            "\x1b[1;32mbuilt\x1b[0m  {name}  {:.1} KB  QZI for {}",
+            "\x1b[1;32mbuilt\x1b[0m  {name}  {:.1} KB  QZI",
             bytes.len() as f64 / 1024.0,
-            systems.join(", ")
         );
     }
 }

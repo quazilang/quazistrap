@@ -8,8 +8,8 @@ B. that file compiles natively for Linux, Windows and NetBSD, each binary
    NetBSD contains no Linux `syscall` and links only libc);
 C. native generation needs no source files;
 D. shared code calls target-specific code and passes owned values across;
-   a program without a Windows implementation yields a QZI without that
-   target and a clear error when compiling it for Windows;
+   a program without a Windows implementation fails without publishing a
+   partial QZI or replacing a previous artifact;
 E. a project's dependencies are linked into its one QZI, which compiles
    without the dependency; a retired format 15 file is rejected.
 """
@@ -87,7 +87,10 @@ def main():
         root = Path(directory)
         work = root / "work"
         project(work, PROGRAM)
-        run([qz, "build", "--no-incremental", "--silent", "-i", "-o", str(root / "app.qzi")], work)
+        built = run([qz, "build", "--no-incremental", "--no-color", "-i",
+                     "-o", str(root / "app.qzi")], work)
+        summary = [line for line in built.stderr.splitlines() if line.startswith(b"built ")]
+        assert len(summary) == 1 and summary[0].endswith(b" QZI"), built.stderr
 
         # A: one artifact; shared bodies once, alternatives per target.
         data = (root / "app.qzi").read_bytes()
@@ -121,13 +124,17 @@ def main():
         assert b"syscall" not in disassembly, "Linux syscall in the NetBSD binary"
         assert b"libc.so.12" in netbsd and b"os=windows" not in netbsd and b"linux" not in netbsd
 
-        # D: a target without an implementation.
+        # D: a missing implementation fails both normal and quiet builds.
         project(work, LINUX_ONLY)
-        built = run([qz, "build", "--no-incremental", "-i", "-o", str(root / "partial.qzi")], work)
-        assert b"no variant for windows, netbsd" in built.stderr, built.stderr
-        failed = run([qz, "build", str(root / "partial.qzi"), "--target", "x86_64-windows",
-                      "-o", str(out / "partial")], out, ok=False)
-        assert failed.returncode != 0 and b"has no `windows` target" in failed.stderr, failed.stderr
+        partial = root / "partial.qzi"
+        command = [qz, "build", "--no-incremental", "-i", "-o", str(partial)]
+        failed = run(command, work, ok=False)
+        assert failed.returncode != 0 and b"compilation failed for windows, netbsd" in failed.stderr, failed.stderr
+        assert not partial.exists(), "failed build wrote a partial QZI"
+        partial.write_bytes(data)
+        failed = run([*command, "--silent"], work, ok=False)
+        assert failed.returncode != 0 and b"compilation failed for windows, netbsd" in failed.stderr, failed.stderr
+        assert partial.read_bytes() == data, "failed build replaced an existing QZI"
 
         # E: a dependency is part of the project's single QZI.
         library = root / "mylib"
@@ -151,7 +158,7 @@ def main():
         assert retired.returncode != 0 and b"format 15" in retired.stderr, retired.stderr
     print("PASS unified QZI: one artifact with shared bodies once and per-target alternatives; "
           f"linux/windows/netbsd natives without sources{' (windows under Wine)' if args.wine else ''}; "
-          "missing target diagnosed; dependencies linked into the one QZI; format 15 rejected")
+          "failed targets prevent publication; dependencies linked into the one QZI; format 15 rejected")
 
 
 if __name__ == "__main__":
