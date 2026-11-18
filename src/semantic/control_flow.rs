@@ -145,6 +145,13 @@ pub enum OwnershipFlowEvent {
         borrow: Option<bool>,
         place: OwnershipArgumentValue,
     },
+    /// A closure created here captures an outer place: moved into its
+    /// environment (`moved`) or copied. Its body uses it in a deferred graph.
+    Capture {
+        closure: Span,
+        moved: bool,
+        place: OwnershipArgumentValue,
+    },
     /// Unknown protocol/storage effects; never a resolved call or effect proof.
     IterationProtocol {
         span: Span,
@@ -667,6 +674,7 @@ struct Builder<'a, 'b, F> {
     target_places: Option<&'b BTreeMap<(usize, usize), OwnershipArgumentValue>>,
     read_places: Option<&'b BTreeMap<(usize, usize), OwnershipArgumentValue>>,
     return_places: Option<&'b super::places::ReturnFacts>,
+    capture_places: Option<&'b super::places::CaptureFacts>,
     finished: Vec<bool>,
     analyzer: &'b Analyzer,
     sites: Option<&'b BTreeMap<(usize, usize), SourceOwnershipCall>>,
@@ -728,6 +736,7 @@ where
             target_places: analyzer.ownership_target_places.get(caller),
             read_places: analyzer.ownership_read_places.get(caller),
             return_places: analyzer.ownership_return_places.get(caller),
+            capture_places: analyzer.ownership_capture_places.get(caller),
             finished: Vec::new(),
             analyzer,
             sites: analyzer.ownership_call_sites.get(caller),
@@ -2126,6 +2135,22 @@ where
             if matches!(expr.node, ExprKind::Closure { .. }) {
                 self.budget.charge(1, expr.span)?;
                 self.closures.push(expr);
+                // Captures happen when the closure value is created.
+                let captures = self
+                    .capture_places
+                    .and_then(|places| places.get(&(expr.span.start, expr.span.end)))
+                    .cloned()
+                    .unwrap_or_default();
+                for (moved, place) in captures {
+                    self.budget.charge(2, expr.span)?;
+                    self.graph.blocks[current]
+                        .events
+                        .push(OwnershipFlowEvent::Capture {
+                            closure: expr.span,
+                            moved,
+                            place,
+                        });
+                }
                 continue;
             }
             macro_rules! child {

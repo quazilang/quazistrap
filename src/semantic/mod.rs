@@ -169,6 +169,8 @@ pub struct Analyzer {
         HashMap<String, std::collections::BTreeMap<(usize, usize), OwnershipArgumentValue>>,
     /// Places handed out by `ret` values (by value or borrowed), per caller.
     pub(super) ownership_return_places: HashMap<String, places::ReturnFacts>,
+    /// Outer places each closure captures (moved or copied), per caller.
+    pub(super) ownership_capture_places: HashMap<String, places::CaptureFacts>,
     /// Places read as values (maximal projections), keyed by caller and span.
     pub(super) ownership_read_places:
         HashMap<String, std::collections::BTreeMap<(usize, usize), OwnershipArgumentValue>>,
@@ -2549,6 +2551,7 @@ impl Analyzer {
             ownership_target_places: HashMap::new(),
             ownership_read_places: HashMap::new(),
             ownership_return_places: HashMap::new(),
+            ownership_capture_places: HashMap::new(),
             called_functions: BTreeSet::new(),
             call_counts: HashMap::new(),
             current_function: Vec::new(),
@@ -3250,6 +3253,7 @@ impl Analyzer {
         self.ownership_target_places.clear();
         self.ownership_read_places.clear();
         self.ownership_return_places.clear();
+        self.ownership_capture_places.clear();
         self.called_functions.clear();
         self.call_counts.clear();
         self.current_function.clear();

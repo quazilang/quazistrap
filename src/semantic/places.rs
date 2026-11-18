@@ -22,12 +22,17 @@ type TargetFacts = BTreeMap<(usize, usize), OwnershipArgumentValue>;
 /// the place itself or, for `&place`/`&place!`, the borrowed place.
 pub(super) type ReturnFacts = BTreeMap<(usize, usize), (Option<bool>, OwnershipArgumentValue)>;
 
+/// Outer places a closure uses, keyed by the closure expression's span:
+/// `true` when the capture moves an owned value into the environment.
+pub(super) type CaptureFacts = BTreeMap<(usize, usize), Vec<(bool, OwnershipArgumentValue)>>;
+
 /// Everything one body walk records.
 struct BodyFacts {
     arguments: ArgumentFacts,
     targets: TargetFacts,
     reads: TargetFacts,
     returns: ReturnFacts,
+    captures: CaptureFacts,
 }
 
 struct BindingInfo<'a> {
@@ -202,7 +207,10 @@ impl Analyzer {
                 targets,
                 reads,
                 returns,
+                captures,
             } = body_facts;
+            self.ownership_capture_places
+                .insert(caller.clone(), captures);
             self.ownership_return_places.insert(caller.clone(), returns);
             self.ownership_target_places.insert(caller.clone(), targets);
             self.ownership_read_places.insert(caller.clone(), reads);
@@ -430,6 +438,8 @@ impl Places<'_> {
         // read, so the objects of recorded projections are excluded.
         let mut reads = BTreeMap::new();
         let mut returns = BTreeMap::new();
+        let mut captures: CaptureFacts = BTreeMap::new();
+        let mut captured = std::collections::HashSet::new();
         macro_rules! finish {
             ($overflow:expr) => {
                 return Ok((
@@ -438,6 +448,7 @@ impl Places<'_> {
                         targets,
                         reads,
                         returns,
+                        captures,
                     },
                     $overflow,
                 ))
@@ -562,6 +573,43 @@ impl Places<'_> {
                         targets.insert((target.span.start, target.span.end), place);
                     }
                     let key = (expr.span.start, expr.span.end);
+                    // A closure captures an outer binding it names: every
+                    // enclosing closure whose span excludes the declaration.
+                    if let ExprKind::Ident(_) = &expr.node
+                        && !closures.is_empty()
+                        && let Some(binding) = self
+                            .analyzer
+                            .retention_annotation(expr)
+                            .and_then(|annotation| annotation.resolved_binding.as_ref())
+                        && matches!(
+                            binding.kind,
+                            SymbolKind::Variable { .. } | SymbolKind::Parameter
+                        )
+                    {
+                        for closure in &closures {
+                            let declared_inside = closure.start <= binding.span.start
+                                && binding.span.end <= closure.end;
+                            if declared_inside
+                                || !captured.insert((
+                                    (closure.start, closure.end),
+                                    binding_key(&binding.name, binding.span),
+                                ))
+                            {
+                                continue;
+                            }
+                            let place = self.binding_place(binding, expr.span);
+                            let moved = matches!(
+                                &place,
+                                OwnershipArgumentValue::Place(place)
+                                    if matches!(place.root.ty, Some(TypeKind::Named { .. }))
+                            );
+                            nodes += 1;
+                            captures
+                                .entry((closure.start, closure.end))
+                                .or_default()
+                                .push((moved, place));
+                        }
+                    }
                     if matches!(
                         expr.node,
                         ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. }

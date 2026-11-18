@@ -55,7 +55,8 @@ calls. It also records places read as values (maximal projections, excluding
 projection objects, borrowed operands and method receivers). The source
 control-flow graph attaches both to its `PlaceAccess` events. Places handed
 out by `ret` values (the place, or the borrowed place of `&place`) are
-recorded for its `Escape` events.
+recorded for its `Escape` events, and the outer places each closure captures
+(moved or copied) for its `Capture` events.
 
 ## Resource and cancellation contract
 

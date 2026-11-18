@@ -2225,3 +2225,50 @@ fn main() void {}
     assert!(borrowed[0].2 >= 1, "the field projection is kept");
     assert_eq!(escapes("take"), [(None, "pair".to_string(), 0)]);
 }
+
+#[test]
+fn source_control_flow_closure_creation_records_captures() {
+    let source = r#"
+struct Token { id: i32 }
+fn build(count: i32) i32 {
+    var token = Token { id: 1 };
+    var local = 2;
+    const work: fn(i32) i32 = |step| step + count + local + token.id;
+    ret work(1);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "build")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let mut captures: Vec<(String, bool)> = graph
+        .blocks
+        .iter()
+        .flat_map(|block| block.events.iter())
+        .filter_map(|event| match event {
+            OwnershipFlowEvent::Capture {
+                moved,
+                place: OwnershipArgumentValue::Place(place),
+                ..
+            } => Some((place.root.binding.name.clone(), *moved)),
+            _ => None,
+        })
+        .collect();
+    captures.sort();
+    // The closure's own parameter is not a capture; owned values move.
+    assert_eq!(
+        captures,
+        [
+            ("count".to_string(), false),
+            ("local".to_string(), false),
+            ("token".to_string(), true),
+        ]
+    );
+}

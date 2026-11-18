@@ -112,9 +112,15 @@ because their capabilities depend on the specialization.
 
 A `ret` whose value is a classified place, or `&place`/`&place!`, records an
 `Escape` event in the exit block naming the place and whether it leaves by
-value or as a shared/exclusive borrow. Escapes through other expressions,
-storage into aggregates or globals, captures and foreign boundaries are not
-yet recorded as `Escape` events; result-retention facts still describe
+value or as a shared/exclusive borrow.
+
+Creating a closure records a `Capture` event for every outer variable or
+parameter its body names (declared outside that closure, for each enclosing
+closure), in the block that evaluates the creation. `moved` is set for owned
+named-type values, which move into the environment (D-023); other captures
+copy. The body's uses appear in its deferred graph. Escapes through other
+expressions, storage into aggregates or globals and foreign boundaries are
+not yet recorded as `Escape` events; result-retention facts still describe
 parameter-derived results.
 
 An exposed `?` evaluates its operand once and branches on `TrySuccess`, a wrapper
