@@ -669,6 +669,25 @@ fn exercise_reserve() i32 {
     }
 
     #[test]
+    fn user_types_may_share_the_spelling_of_library_generic_parameters() {
+        // std.stream declares `BufWriter[W: Writer]`; a user `struct W` is a
+        // different type and must not be checked against that bound.
+        run_receiver_fixture(
+            "user-type-named-like-binder",
+            r#"
+import std.io.println;
+struct W { x: i32 }
+fn exercise_binder_spelling() i32 {
+    const w = W { x: 3 };
+    if (w.x != 3) { ret 1; }
+    ret 0;
+}
+"#,
+            "exercise_binder_spelling",
+        );
+    }
+
+    #[test]
     fn generic_methods_call_generic_methods_of_their_specialization() {
         // `optional<i32>` must call `entry<i32>`: inside the template the
         // callee is named with the caller's parameter `T`.

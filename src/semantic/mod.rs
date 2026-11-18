@@ -103,7 +103,7 @@ pub struct Analyzer {
     pub(super) finished_scopes: Vec<Vec<(String, Symbol)>>,
     pub(super) errors: Vec<SemanticError>,
     alias_resolution_errors: std::cell::RefCell<std::collections::BTreeMap<String, Span>>,
-    symbolic_specialization_names: HashSet<String>,
+    pub(super) symbolic_specialization_names: HashSet<String>,
     concrete_specialization_ids: BTreeSet<OwnershipCallableId>,
     pub(super) warnings: Vec<SemanticWarning>,
     pub(super) suggestions: Vec<SemanticSuggestion>,
@@ -220,6 +220,9 @@ pub struct Analyzer {
     pub(super) associated_impl_methods: Vec<(String, String, Span, TypeKind)>,
     /// Specializations whose bounds were already checked (diagnostics once).
     pub(super) bound_checked_monos: HashSet<String>,
+    /// Generic parameters in scope where an expression was annotated: its
+    /// type may name them, and a global type of the same spelling differs.
+    pub(super) annotation_binders: HashMap<(usize, usize), Vec<String>>,
     /// Method slot order per trait: trait name → ordered method names (index = vtable slot).
     pub(super) trait_method_slots: HashMap<String, Vec<String>>,
     /// Declared signatures used to type-check dynamic trait dispatch.
@@ -2393,6 +2396,7 @@ impl Analyzer {
             associated_trait_calls: std::collections::HashSet::new(),
             associated_impl_methods: Vec::new(),
             bound_checked_monos: HashSet::new(),
+            annotation_binders: HashMap::new(),
             trait_method_slots: HashMap::new(),
             trait_method_signatures: HashMap::new(),
             current_fn_name_override: None,
@@ -3063,6 +3067,7 @@ impl Analyzer {
         self.associated_trait_calls.clear();
         self.associated_impl_methods.clear();
         self.bound_checked_monos.clear();
+        self.annotation_binders.clear();
         self.trait_method_slots.clear();
         self.trait_method_signatures.clear();
         self.monomorphizations.clear();

@@ -7846,6 +7846,11 @@ impl Analyzer {
             .can_elide_expression(expr)
             .then(|| eval.const_value.clone())
             .flatten();
+        if self.current_generic_params.iter().any(|scope| !scope.is_empty()) {
+            let binders = self.current_generic_params.iter().flatten().cloned().collect();
+            self.annotation_binders
+                .insert((expr.span.start, expr.span.end), binders);
+        }
         self.annotated_exprs.push(ExprAnnotation {
             span: expr.span,
             binding_span: binding_occurrence_span(expr, resolved_binding.as_ref()),
@@ -8151,6 +8156,12 @@ impl Analyzer {
             .collect();
         let mut added = Vec::new();
         for mono in self.monomorphizations.clone() {
+            // Arguments naming a generic body's own parameters are checked
+            // against that body's bounds; a global type of the same spelling
+            // (a user `struct W`) must not be mistaken for them.
+            if self.symbolic_specialization_names.contains(&mono.mangled_name) {
+                continue;
+            }
             let first_visit = self.bound_checked_monos.insert(mono.mangled_name.clone());
             let mut bounds = self.generic_bounds.get(&mono.fn_name).cloned().unwrap_or_default();
             if let Some((owner, _)) = mono.fn_name.rsplit_once('.')
@@ -8474,9 +8485,15 @@ impl Analyzer {
                         .cloned()
                         .zip(type_args.iter().map(|argument| argument.node.clone()))
                         .collect();
+                    let binders = self
+                        .annotation_binders
+                        .get(&(span.start, span.end))
+                        .cloned()
+                        .unwrap_or_default();
                     for (param, bound) in &bounds {
                         if let Some(index) = params.iter().position(|candidate| candidate == param)
                             && let Some(argument) = type_args.get(index)
+                            && !type_mentions_params(&argument.node, &binders)
                         {
                             let bound = self.instantiate_bound(bound, &substitution);
                             self.check_bound(&argument.node, param, &bound, &name, span);
