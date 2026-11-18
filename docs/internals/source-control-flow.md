@@ -150,8 +150,16 @@ initializer whose declaration is unknown stays opaque.
 An array literal evaluates its elements in source order and records an
 `ArrayLiteral` result.
 
-Other calls, multi-index reads and updates, guarded matches and struct
-initializers of unknown declarations remain whole opaque regions. Controls nested inside
+A `match` expression evaluates its scrutinee once, then tests arms in order:
+each arm has a `MatchArm` branch (pattern only), a guard is evaluated and
+branches as an `Expression` condition, and a failed pattern or guard tries
+the next arm. The chosen arm's expression ends in a `Match` result. When no
+arm matches, a value-producing match stops (lowering traps) and a `void`
+match continues. Arm bindings get no separate lexical scope here; a match
+whose type is not annotated stays opaque.
+
+Other calls, multi-index reads and updates and struct initializers of
+unknown declarations remain whole opaque regions. Controls nested inside
 these regions are not individually expanded. Multi-input iteration regions also
 remain opaque. Their internal branches and operand order require further shared
 normalization before any path-sensitive ownership proof consumes them.

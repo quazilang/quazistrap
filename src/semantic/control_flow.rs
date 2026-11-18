@@ -147,6 +147,10 @@ pub enum OwnershipExpressionResult {
     VariantConstructor {
         variant: String,
     },
+    /// An arm of the match was chosen and its expression completed.
+    Match {
+        arms: usize,
+    },
     /// The elements completed in source order and the array value is formed.
     ArrayLiteral {
         len: usize,
@@ -199,6 +203,12 @@ pub enum OwnershipBranchCondition {
         operand: Span,
     },
     IterationProtocol(Span),
+    /// The match arm at `arm` accepts the evaluated scrutinee (pattern only;
+    /// a guard is a separate `Expression` branch).
+    MatchArm {
+        scrutinee: Span,
+        arm: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1217,6 +1227,76 @@ where
                         },
                         expression.span,
                     )?;
+                }
+                ExpressionControl::Match { scrutinee, arms } => {
+                    let produces_value = self
+                        .analyzer
+                        .retention_annotation(expression)
+                        .and_then(|annotation| annotation.ty.as_ref())
+                        .map(|ty| !matches!(ty, TypeKind::Void));
+                    let Some(produces_value) = produces_value else {
+                        self.evaluate_opaque(current, &[expression], kind, normal, scopes)?;
+                        continue;
+                    };
+                    self.budget.charge(4 + arms.len() * 8, expression.span)?;
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::Match { arms: arms.len() },
+                        normal,
+                        scopes,
+                    )?;
+                    // Lowering traps when a value-producing match has no
+                    // matching arm; a `void` match continues.
+                    let unmatched = self.block(scopes, expression.span)?;
+                    let fallthrough = if produces_value {
+                        OwnershipFlowTerminator::Stop {
+                            exited_scopes: scopes.iter().rev().copied().collect(),
+                        }
+                    } else {
+                        OwnershipFlowTerminator::Goto {
+                            target: complete,
+                            exited_scopes: Vec::new(),
+                        }
+                    };
+                    self.terminate(unmatched, fallthrough, expression.span)?;
+                    let mut next = unmatched;
+                    for arm in arms.iter().rev() {
+                        let body = self.block(scopes, arm.expr.span)?;
+                        pending.push((body, &arm.expr, complete));
+                        let accepted = match &arm.guard {
+                            Some(guard) => {
+                                let guard_entry = self.block(scopes, guard.span)?;
+                                let guard_branch = self.block(scopes, guard.span)?;
+                                self.terminate(
+                                    guard_branch,
+                                    OwnershipFlowTerminator::Branch {
+                                        condition: OwnershipBranchCondition::Expression(guard.span),
+                                        then_target: body,
+                                        else_target: next,
+                                    },
+                                    guard.span,
+                                )?;
+                                pending.push((guard_entry, guard, guard_branch));
+                                guard_entry
+                            }
+                            None => body,
+                        };
+                        let test = self.block(scopes, arm.span)?;
+                        self.terminate(
+                            test,
+                            OwnershipFlowTerminator::Branch {
+                                condition: OwnershipBranchCondition::MatchArm {
+                                    scrutinee: scrutinee.span,
+                                    arm: arm.span,
+                                },
+                                then_target: accepted,
+                                else_target: next,
+                            },
+                            arm.span,
+                        )?;
+                        next = test;
+                    }
+                    pending.push((current, scrutinee, next));
                 }
                 ExpressionControl::ArrayLiteral(elements) => {
                     let complete = self.expression_result(

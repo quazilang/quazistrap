@@ -1425,3 +1425,88 @@ fn main() void {}
     assert!(!reachable(graph, second).contains(&first));
     assert!(reachable(graph, second).contains(&array));
 }
+
+#[test]
+fn source_control_flow_match_expressions_branch_per_arm_and_guard() {
+    let source = r#"
+fn check(value: i32) bool { ret value > 1; }
+fn produce(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn choose(value: Option[i32]) Option[i32] {
+    const picked = match value {
+        Some(inner) if check(inner) => produce(Some(inner))?,
+        Some(inner) => later(),
+        None => 0,
+    };
+    ret Some(picked);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "choose")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let invoke = |needle: &str| {
+        let start = source.find(needle).unwrap();
+        graph
+            .blocks
+            .iter()
+            .position(|block| {
+                block.events.iter().any(
+                    |event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == start),
+                )
+            })
+            .unwrap_or_else(|| panic!("missing invoke {needle}"))
+    };
+    let arm_tests: Vec<usize> = graph
+        .blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| {
+            matches!(
+                block.terminator,
+                OwnershipFlowTerminator::Branch {
+                    condition: OwnershipBranchCondition::MatchArm { .. },
+                    ..
+                }
+            )
+        })
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(arm_tests.len(), 3);
+    let guard = invoke("check(inner)");
+    let guarded_body = invoke("produce(Some(inner))?");
+    let fallback_body = invoke("later(),");
+    let matched = graph
+        .blocks
+        .iter()
+        .position(|block| {
+            block.events.iter().any(|event| {
+                matches!(
+                    event,
+                    OwnershipFlowEvent::ExpressionResult {
+                        value: OwnershipExpressionResult::Match { arms: 3 },
+                        ..
+                    }
+                )
+            })
+        })
+        .unwrap();
+    // A failed guard tries the next arm; arm bodies are alternatives.
+    assert!(reachable(graph, guard).contains(&guarded_body));
+    assert!(reachable(graph, guard).contains(&fallback_body));
+    assert!(!reachable(graph, guarded_body).contains(&fallback_body));
+    assert!(reachable(graph, fallback_body).contains(&matched));
+    // A value-producing match with no matching arm stops (lowering traps).
+    assert!(graph.blocks.iter().any(|block| matches!(
+        block.terminator,
+        OwnershipFlowTerminator::Stop { .. }
+    ) && block.events.is_empty()));
+    graph.validate().unwrap();
+}

@@ -6,7 +6,7 @@
 //! Unclassified expressions remain opaque; this is not an ownership effect model.
 
 use crate::parser::ast::{
-    BinOpKind, CompoundAssignOp, Expr, ExprKind, IncDecOp, Literal, UnaryOpKind,
+    BinOpKind, CompoundAssignOp, Expr, ExprKind, IncDecOp, Literal, MatchArm, UnaryOpKind,
 };
 use crate::semantic::OwnershipArgumentRole;
 
@@ -43,6 +43,12 @@ pub(crate) enum ExpressionControl<'a> {
         target: &'a Expr,
         op: &'a IncDecOp,
         prefix: bool,
+    },
+    /// `match scrutinee { arms }`: the scrutinee once, then each arm's pattern
+    /// test, its guard when present, and the chosen arm's expression.
+    Match {
+        scrutinee: &'a Expr,
+        arms: &'a [MatchArm],
     },
     /// `[a, b, c]`: the elements in source order, then the array value.
     ArrayLiteral(&'a [Expr]),
@@ -152,6 +158,7 @@ pub(crate) fn expression_control(expression: &Expr) -> ExpressionControl<'_> {
         },
         ExprKind::Binary { left, right, .. } => ExpressionControl::EagerBinary { left, right },
         ExprKind::Try { expr } => ExpressionControl::TryOperand(expr),
+        ExprKind::Match { scrutinee, arms } => ExpressionControl::Match { scrutinee, arms },
         ExprKind::ArrayLit(elements) => ExpressionControl::ArrayLiteral(elements),
         ExprKind::Field { object, .. } if !is_name_chain(object) => {
             ExpressionControl::FieldRead { object }
