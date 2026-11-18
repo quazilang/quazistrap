@@ -105,9 +105,17 @@ pub struct ModuleSpec {
 #[derive(Debug, Clone, Default)]
 pub struct ModuleResolver {
     pub modules: HashMap<String, ModuleSpec>,
+    target_interfaces: HashMap<String, HashMap<String, ModuleSpec>>,
 }
 
 impl ModuleResolver {
+    pub(crate) fn insert_target_interface(&mut self, target: &str, spec: ModuleSpec) {
+        self.target_interfaces
+            .entry(target.to_string())
+            .or_default()
+            .insert(spec.name.clone(), spec);
+    }
+
     pub fn insert(&mut self, spec: ModuleSpec) -> Result<(), String> {
         if let Some(existing) = self.modules.get(&spec.name) {
             if existing.root != spec.root {
@@ -232,7 +240,7 @@ fn load_programs_configured_with_overlays_for_target_with_checkpoint(
     checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
 ) -> Result<LoadResult, CancellableLoadError> {
     checkpoint()?;
-    let effective_resolver = resolver_with_builtin_modules(resolver, include_std);
+    let effective_resolver = resolver_with_builtin_modules(resolver, include_std, target.os);
 
     // Auto-inject prelude before user entries (as a library file).
     let prelude_path: Option<PathBuf> = include_std
@@ -1267,8 +1275,12 @@ fn char_offset_to_byte(src: &str, char_offset: usize) -> usize {
 fn resolver_with_builtin_modules(
     resolver: Option<&ModuleResolver>,
     include_std: bool,
+    target: &str,
 ) -> Option<ModuleResolver> {
     let mut combined = resolver.cloned().unwrap_or_default();
+    if let Some(interfaces) = combined.target_interfaces.remove(target) {
+        combined.modules.extend(interfaces);
+    }
 
     if include_std && let Some(prelude_spec) = builtin_prelude_module_spec() {
         combined

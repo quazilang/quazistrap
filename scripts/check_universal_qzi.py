@@ -186,6 +186,41 @@ def main():
         run([qz, "build", str(aliased), "--silent", "-o", str(out / "aliased")], out)
         assert run([str(out / "aliased")], out, ok=False).returncode == 11
 
+        # Preserve distinct public signatures even when the host interface
+        # was cached first. Conditional source type checking needs the
+        # matching interface before bytecode generation.
+        (library / "src").mkdir(parents=True)
+        (library / "quazi.toml").write_text(
+            '[package]\nname="target_lib"\nstd=false\n[lib]\npath="src/lib.qz"\n')
+        (library / "src/lib.qz").write_text(
+            '@cfg(target_abi="sysv") pub fn value(value: i32) i32 { ret value; }\n'
+            '@cfg(target_abi="win64") pub fn value(value: bool) i32 '
+            '{ if (value) { ret 22; } ret 0; }\n')
+        run([qz, "build", "--lib", "--silent", "--no-incremental", "-o", str(dependency)], library)
+        shutil.rmtree(library)
+        (consumer / "src").mkdir(parents=True)
+        (consumer / "quazi.toml").write_text(
+            '[package]\nname="target_consumer"\nstd=false\n'
+            '[dependencies]\nrenamed = { path = "../target_lib.qzi" }\n'
+            '[build]\nentry="src/main.qz"\n')
+        (consumer / "src/main.qz").write_text(
+            'import renamed;\n'
+            '@cfg(target_abi="sysv") fn main() i32 { ret renamed.value(11); }\n'
+            '@cfg(target_abi="win64") fn main() i32 { ret renamed.value(true); }\n')
+        conditional = root / "conditional.qzi"
+        run([qz, "build", "-i", "--silent", "--no-incremental", "-o", str(conditional)], consumer)
+        dependency.unlink()
+        shutil.rmtree(consumer)
+        for target in targets:
+            run([qz, "build", str(conditional), "--silent", "--target", f"x86_64-{target}",
+                 "-o", str(out / f"conditional-{target}")], out)
+        assert run([str(out / "conditional-linux")], out, ok=False).returncode == 11
+        if args.wine:
+            win = Path(str(out / "conditional-windows") + ".exe")
+            if not win.exists():
+                win = out / "conditional-windows"
+            assert run([str(args.wine), str(win)], out, ok=False, env=env).returncode == 22
+
         (root / "retired.qzi").write_bytes(b"\x00QZI\x0f\x00\x00")
         retired = run([qz, "build", str(root / "retired.qzi"), "-o", str(out / "retired")], out, ok=False)
         assert retired.returncode != 0 and b"format 15" in retired.stderr, retired.stderr

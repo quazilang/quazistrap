@@ -1170,6 +1170,11 @@ fn collect_modules(
                         module.metadata.version.as_deref().unwrap_or("<none>")
                     ));
                 }
+                let mut unified = if bytes.get(4) == Some(&crate::bytecode::chunk::QZI_UNIFIED_VERSION) {
+                    Some(crate::bytecode::chunk::decode_unified_qzi(&bytes)?)
+                } else {
+                    None
+                };
                 let qzi_path = if identity.as_deref().is_some_and(|name| name != dep.name) {
                     module.alias_library_namespace(&dep.name);
                     let alias_dir = package_cache.join("qzi-alias");
@@ -1184,8 +1189,7 @@ fn collect_modules(
                         .clone()
                         .unwrap_or_else(|| crate::package::sha256_bytes(&bytes));
                     let path = alias_dir.join(format!("{source_hash}-{}.qzi", dep.name));
-                    let encoded = if bytes.get(4) == Some(&crate::bytecode::chunk::QZI_UNIFIED_VERSION) {
-                        let mut unified = crate::bytecode::chunk::decode_unified_qzi(&bytes)?;
+                    let encoded = if let Some(unified) = &mut unified {
                         unified.alias_library_namespace(&dep.name);
                         unified.encode()?
                     } else {
@@ -1198,20 +1202,27 @@ fn collect_modules(
                 } else {
                     materialized.path.clone()
                 };
-                let interface = materialize_qzi_interface(
-                    interface_cache,
-                    &dep.name,
-                    &qzi_path,
-                    &module.interface,
-                )?;
-                resolver.insert(ModuleSpec {
-                    name: dep.name.clone(),
-                    root: interface.root,
-                    src_dir: interface.src_dir,
-                    entry: interface.entry,
-                    entry_is_package_root: true,
-                    version: module.metadata.version.clone(),
-                })?;
+                let spec_for_interface = |source: &str| -> Result<ModuleSpec, String> {
+                    let interface =
+                        materialize_qzi_interface(interface_cache, &dep.name, &qzi_path, source)?;
+                    Ok(ModuleSpec {
+                        name: dep.name.clone(),
+                        root: interface.root,
+                        src_dir: interface.src_dir,
+                        entry: interface.entry,
+                        entry_is_package_root: true,
+                        version: module.metadata.version.clone(),
+                    })
+                };
+                resolver.insert(spec_for_interface(&module.interface)?)?;
+                if let Some(unified) = unified {
+                    for (index, target) in unified.targets.iter().enumerate() {
+                        let interface = unified.interface_for_target(index);
+                        if interface != module.interface {
+                            resolver.insert_target_interface(target, spec_for_interface(interface)?);
+                        }
+                    }
+                }
                 qzi_dependencies.push(qzi_path.clone());
                 dep_versions.insert(
                     dep.name.clone(),

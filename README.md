@@ -59,6 +59,8 @@ The dependency interface cache keys target-specific signatures by their content,
 so successive native builds can use different interfaces from the same QZI.
 QZI aliases preserve conditional bodies and interfaces. The v16 writer rejects
 missing entries and incompatible entry signatures across targets.
+The loader selects a QZI dependency's public interface for the current
+target before checking source calls, including aliased dependencies.
 Specialized method calls keep their concrete dependencies live, including helpers
 that need the concrete element layout to lower `size_of[T]()`.
 The prelude provides a shared `Hash` and `Eq` contract for generic keys.

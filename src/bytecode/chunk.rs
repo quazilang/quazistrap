@@ -1449,6 +1449,15 @@ pub struct UnifiedQzi {
 }
 
 impl UnifiedQzi {
+    pub(crate) fn interface_for_target(&self, index: usize) -> &str {
+        let bit = 1u8 << index;
+        self.interface_overrides
+            .iter()
+            .find(|(mask, _)| mask & bit != 0)
+            .map(|(_, interface)| interface.as_str())
+            .unwrap_or(&self.module.interface)
+    }
+
     pub fn alias_library_namespace(&mut self, alias: &str) {
         let original = self.module.metadata.name.clone();
         if self.module.metadata.kind != QziModuleKind::Library || original.is_empty() || original == alias {
