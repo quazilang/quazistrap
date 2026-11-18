@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use super::{
     Analyzer, OwnershipArgumentRole, OwnershipArgumentValue, OwnershipCallArguments,
-    OwnershipResult, SymbolKind, item_should_include, ownership::SourceOwnershipCall,
+    OwnershipCapability, OwnershipResult, SymbolKind, item_should_include,
+    ownership::SourceOwnershipCall,
 };
 use crate::cancel::Cancelled;
 use crate::evaluation::{
@@ -233,6 +234,12 @@ pub enum OwnershipExpressionResult {
 pub enum OwnershipPlaceAccess {
     Read,
     Write,
+    /// A by-value argument whose parameter capability is `Move`.
+    Move,
+    /// An argument for a borrowing parameter capability.
+    Borrow {
+        exclusive: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -947,6 +954,58 @@ where
         Ok(())
     }
 
+    /// Record, at a resolved call's invocation, the places its arguments move
+    /// or borrow according to the callee's parameter capabilities. Generic
+    /// templates are skipped: their capabilities depend on the specialization.
+    fn argument_accesses(&mut self, block: usize, expression: &Expr) -> FlowResult<()> {
+        let Some(site) = self
+            .sites
+            .and_then(|sites| sites.get(&(expression.span.start, expression.span.end)))
+        else {
+            return Ok(());
+        };
+        let (Some((name, _)), Some(arguments)) = (site.target.as_ref(), site.arguments.as_ref())
+        else {
+            return Ok(());
+        };
+        let Some(signature) = self.analyzer.ownership_signature_index.get(name) else {
+            return Ok(());
+        };
+        if signature.generic_template {
+            return Ok(());
+        }
+        for actual in &arguments.actuals {
+            let capability = match actual.role {
+                OwnershipArgumentRole::Receiver => signature.receiver.clone(),
+                _ => actual
+                    .parameter_slot
+                    .and_then(|slot| signature.parameters.get(slot).cloned()),
+            };
+            let access = match capability {
+                Some(OwnershipCapability::Move) => OwnershipPlaceAccess::Move,
+                Some(OwnershipCapability::SharedBorrow) => {
+                    OwnershipPlaceAccess::Borrow { exclusive: false }
+                }
+                Some(OwnershipCapability::ExclusiveBorrow) => {
+                    OwnershipPlaceAccess::Borrow { exclusive: true }
+                }
+                Some(OwnershipCapability::Copy) | None => continue,
+            };
+            if !matches!(actual.value, OwnershipArgumentValue::Place(_)) {
+                continue;
+            }
+            self.budget.charge(2, actual.span)?;
+            self.graph.blocks[block]
+                .events
+                .push(OwnershipFlowEvent::PlaceAccess {
+                    target: actual.span,
+                    access,
+                    place: actual.value.clone(),
+                });
+        }
+        Ok(())
+    }
+
     /// Record a value read of `expression` in `block` when it is a recorded
     /// maximal place.
     fn place_read(&mut self, block: usize, expression: &Expr) -> FlowResult<()> {
@@ -1521,6 +1580,7 @@ where
                     self.graph.blocks[invocation]
                         .events
                         .push(OwnershipFlowEvent::Invoke { span });
+                    self.argument_accesses(invocation, expression)?;
                     let after_call = if self.call_diverges(expression) {
                         OwnershipFlowTerminator::Stop {
                             exited_scopes: scopes.iter().rev().copied().collect(),
@@ -1631,6 +1691,7 @@ where
                         self.graph.blocks[invocation]
                             .events
                             .push(OwnershipFlowEvent::Invoke { span });
+                        self.argument_accesses(invocation, expression)?;
                         // A callee of type `!` never returns to this path.
                         let after_call = if self.call_diverges(expression) {
                             OwnershipFlowTerminator::Stop {

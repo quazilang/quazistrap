@@ -2118,3 +2118,64 @@ fn main() void {}
         "{reads:?}"
     );
 }
+
+#[test]
+fn source_control_flow_invocations_record_argument_moves_and_borrows() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+impl Pair {
+    fn sum(self: &Pair) i32 { ret self.left + self.right; }
+}
+struct Token { id: i32 }
+fn observe(pair: &Pair) i32 { ret pair.left; }
+fn consume(token: Token) i32 { ret token.id; }
+fn run() i32 {
+    var pair = Pair { left: 1, right: 2 };
+    var token = Token { id: 3 };
+    ret observe(&pair) + pair.sum() + consume(token);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "run")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let accesses: Vec<(String, OwnershipPlaceAccess)> = graph
+        .blocks
+        .iter()
+        .flat_map(|block| block.events.iter())
+        .filter_map(|event| match event {
+            OwnershipFlowEvent::PlaceAccess {
+                access,
+                place: OwnershipArgumentValue::Place(place),
+                ..
+            } if !matches!(
+                access,
+                OwnershipPlaceAccess::Read | OwnershipPlaceAccess::Write
+            ) =>
+            {
+                Some((place.root.binding.name.clone(), *access))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        accesses.contains(&("token".into(), OwnershipPlaceAccess::Move)),
+        "{accesses:?}"
+    );
+    assert!(
+        accesses
+            .iter()
+            .filter(|(name, access)| name == "pair"
+                && *access == OwnershipPlaceAccess::Borrow { exclusive: false })
+            .count()
+            >= 1,
+        "{accesses:?}"
+    );
+}

@@ -104,6 +104,12 @@ opaque region whose whole expression is that place, or in the `Index`/`Field`
 result block. Whether a read copies, moves or borrows, aliasing, and the
 destruction of overwritten values remain unverified.
 
+At the `Invoke` of a resolved non-generic call, each argument whose value is
+a classified place records a `PlaceAccess` from the callee's parameter (or
+receiver) capability: `Move`, or `Borrow { exclusive }`; `Copy` parameters
+record nothing beyond the operand's read. Generic templates are skipped
+because their capabilities depend on the specialization.
+
 An exposed `?` evaluates its operand once and branches on `TrySuccess`, a wrapper
 success-discriminant condition distinct from ordinary pointer truthiness.
 Success records payload extraction; failure returns from the current callable
