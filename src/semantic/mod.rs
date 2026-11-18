@@ -2248,6 +2248,25 @@ impl Analyzer {
                         .flatten();
                     let key = explicit_json
                         .unwrap_or_else(|| serde_key(&field.attributes, format, &field.name));
+                    // An INI key cannot contain its own syntax.
+                    if format == "ini"
+                        && (key.contains(['=', '[', ']', ';', '#', '\n', '\r'])
+                            || key.trim() != key)
+                    {
+                        let span = field
+                            .attributes
+                            .iter()
+                            .find(|attribute| attribute.name == "serde")
+                            .map_or(field.ty.span, |attribute| attribute.span);
+                        self.push_error(
+                            span,
+                            "S06",
+                            format!(
+                                "INI key '{key}' of field '{}' cannot contain `=`, `[`, `]`, `;`, `#`, line breaks or surrounding spaces",
+                                field.name
+                            ),
+                        );
+                    }
                     if let Some(previous) = keys.insert(key.clone(), &field.name) {
                         let span = field
                             .attributes
@@ -2316,6 +2335,18 @@ impl Analyzer {
                     && selector
                         .chars()
                         .all(|c| c.is_ascii_alphanumeric() || c == '_');
+                // Built-in format names are lowercase; `JSON:key` would
+                // otherwise be accepted as an unknown format and ignored.
+                let miscased = ["json", "ini"]
+                    .into_iter()
+                    .find(|format| selector != *format && selector.eq_ignore_ascii_case(format));
+                if let Some(format) = miscased {
+                    self.push_error(
+                        attribute.span,
+                        "S06",
+                        format!("@serde format `{selector}` is spelled `{format}`"),
+                    );
+                }
                 if selector != "*" && !identifier {
                     self.push_error(
                         attribute.span,
@@ -5603,6 +5634,37 @@ fn main() void {}
             duplicates(r#"@derive(Serialize) struct A { a: i32 @serde("*:b"), b: i32 }"#),
             ["JSON key 'b' is used by both 'a' and 'b'"]
         );
+    }
+
+    #[test]
+    fn serde_keys_reject_miscased_formats_and_ini_syntax() {
+        let messages = |source: &str| -> Vec<String> {
+            analyze(source)
+                .errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect()
+        };
+        assert!(
+            messages(r#"@derive(Serialize) struct A { a: i32 @serde("JSON:k") }"#)
+                .iter()
+                .any(|message| message == "@serde format `JSON` is spelled `json`")
+        );
+        // Unknown lowercase formats stay open for formats built later.
+        assert!(
+            messages(r#"@derive(Serialize) struct A { a: i32 @serde("toml:k") }"#)
+                .iter()
+                .all(|message| !message.contains("@serde"))
+        );
+        for key in ["ini:a=b", "ini:[x]", "*: spaced"] {
+            let source = format!(r#"@serde("ini") struct A {{ a: i32 @serde("{key}") }}"#);
+            assert!(
+                messages(&source)
+                    .iter()
+                    .any(|message| message.starts_with("INI key")),
+                "{key}"
+            );
+        }
     }
 
     #[test]

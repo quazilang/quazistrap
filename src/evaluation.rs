@@ -64,8 +64,9 @@ pub(crate) enum ExpressionControl<'a> {
         index: &'a Expr,
     },
     /// An update of a dereference, field or single-index place. Lowering
-    /// evaluates `operands` (see [`place_target_operands`]), then the value
-    /// when there is one, then reads (for compound forms) and stores the place.
+    /// evaluates `operands` (see [`place_target_operands`]); compound and
+    /// increment forms then read the place; the value, when there is one,
+    /// follows; finally the place is stored.
     PlaceUpdate {
         target: &'a Expr,
         operands: Vec<&'a Expr>,

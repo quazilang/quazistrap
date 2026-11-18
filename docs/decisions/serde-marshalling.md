@@ -50,6 +50,10 @@ enum Shape {
 - `@serde("format:key")` names the key for one format. `@serde("*:key")`
   names it for every format; the bare `@serde("key")` means the same. For
   a format, its own key wins over the `*` key, which wins over the name.
+- Text before the first `:` is the selector, so a key that itself contains
+  `:` is written with one: `@serde("*:urn:id")`. Built-in format names are
+  lowercase; `"JSON:key"` is rejected as a misspelling. INI keys cannot
+  contain `=`, `[`, `]`, `;`, `#`, line breaks or surrounding spaces.
 - A field or variant gives each selector (`*` or a format name) at most one
   key. Keys are nonempty strings without NUL; a format name is an
   identifier. Names without a built-in codec (`toml` above) are accepted on

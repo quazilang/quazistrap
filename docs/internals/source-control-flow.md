@@ -81,8 +81,10 @@ an opaque `LoopUpdate` region.
 Plain, compound and increment updates of a dereference (`*p`), field
 (`object.field`) or single-index (`object[index]`) place evaluate the address
 operands first, in lowering's `compute_lvalue_addr` order (pointer; object;
-object then index), then the value if any, and end with a `PlaceUpdate`
-result naming the form. Operands are ordinary expression evaluations: the
+object then index). Compound and increment forms then record a
+`PlaceTargetRead`, because lowering loads the place before evaluating the
+value. The value, if any, follows, and a `PlaceUpdate` result names the
+form. Operands are ordinary expression evaluations: the
 graph does not distinguish place from value reads, and bounds, overflow and
 store effects are unmodeled. `check_expression_control.py` checks the runtime
 order. Multi-index targets stay opaque.

@@ -127,6 +127,9 @@ pub enum OwnershipExpressionResult {
     },
     /// The named target's previous value is read; no operand is evaluated.
     NamedTargetRead(Span),
+    /// A compound update's place is read after its address operands and
+    /// before its value; the load itself is unmodeled.
+    PlaceTargetRead(Span),
     /// The read target and completed value are combined and stored. Arithmetic
     /// traps or panics, the store and aliasing remain unverified.
     NamedCompoundAssignment {
@@ -1353,6 +1356,7 @@ where
                     value,
                     form,
                 } => {
+                    let reads_place = !matches!(form, PlaceUpdateForm::Assign);
                     let form = match form {
                         PlaceUpdateForm::Assign => OwnershipPlaceUpdate::Assign,
                         PlaceUpdateForm::Compound(op) => OwnershipPlaceUpdate::Compound(op.clone()),
@@ -1371,13 +1375,31 @@ where
                         normal,
                         scopes,
                     )?;
-                    let ordered: Vec<&'a Expr> = operands.into_iter().chain(value).collect();
-                    self.budget.charge(ordered.len() * 3, expression.span)?;
+                    self.budget
+                        .charge(operands.len() * 3 + 6, expression.span)?;
+                    // Compound and increment updates read the place after its
+                    // address operands and before any value, as lowering does.
+                    let mut after_operands = match value {
+                        Some(value) => {
+                            let value_entry = self.block(scopes, value.span)?;
+                            pending.push((value_entry, value, complete));
+                            value_entry
+                        }
+                        None => complete,
+                    };
+                    if reads_place {
+                        after_operands = self.expression_result(
+                            target.span,
+                            OwnershipExpressionResult::PlaceTargetRead(target.span),
+                            after_operands,
+                            scopes,
+                        )?;
+                    }
                     self.schedule_sequence(
                         &mut pending,
                         current,
-                        ordered,
-                        complete,
+                        operands,
+                        after_operands,
                         scopes,
                         expression.span,
                     )?;

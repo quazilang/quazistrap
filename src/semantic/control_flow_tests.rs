@@ -1165,6 +1165,16 @@ fn main() void {}
     let compound_value = invoke("later();\n    pair.right");
     let compound = update("pair.left");
     assert!(reachable(graph, compound_value).contains(&compound));
+    // A compound update reads its place before evaluating the value.
+    let left = source.find("pair.left").unwrap();
+    let read = block_with(&|event| {
+        matches!(event, OwnershipFlowEvent::ExpressionResult {
+            value: OwnershipExpressionResult::PlaceTargetRead(span), ..
+        } if span.start == left)
+    })
+    .expect("compound place read");
+    assert!(reachable(graph, read).contains(&compound_value));
+    assert!(!reachable(graph, compound_value).contains(&read));
     assert!(reachable(graph, compound).contains(&update("pair.right")));
 }
 
