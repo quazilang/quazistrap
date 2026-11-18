@@ -669,6 +669,24 @@ fn exercise_reserve() i32 {
     }
 
     #[test]
+    fn prelude_array_from_keeps_owned_variadic_elements() {
+        run_receiver_fixture(
+            "prelude-array-owned-arguments",
+            r#"
+fn exercise_array_from() i32 {
+    const words: Array[String] = Array.from(String.from("first"), String.from("second"));
+    if (words.len() != 2) { ret 1; }
+    if (words.get_ref(0).as_str() != "first" || words.get_ref(1).as_str() != "second") {
+        ret 2;
+    }
+    ret 0;
+}
+"#,
+            "exercise_array_from",
+        );
+    }
+
+    #[test]
     fn reference_receivers_mutate_and_observe_the_original_owner() {
         run_receiver_fixture(
             "reference-receivers",

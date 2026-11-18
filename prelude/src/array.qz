@@ -81,7 +81,7 @@ impl Array[T] {
 
     // An array of the given values: `Array.from(1, 2, 3)`.
     pub fn from(...items: T) Array[T] {
-        var result = Array.new();
+        var result: Array[T] = Array.new();
         for item : items {
             result.push(item);
         }

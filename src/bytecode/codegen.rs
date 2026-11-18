@@ -8110,22 +8110,16 @@ impl<'a> FnCompiler<'a> {
             (rp, rl)
         } else {
             // Compile each variadic arg (may land in non-consecutive regs).
-            let var_regs: Vec<u8> = if self.str_variadic_fns.contains(name) {
+            if self.str_variadic_fns.contains(name) {
                 let specs = expanded
                     .as_ref()
                     .map(|expanded| expanded.specs.as_slice())
                     .unwrap_or(&[]);
-                self.compile_format_arguments(var_args, specs)
+                let registers = self.compile_format_arguments(var_args, specs);
+                self.pack_variadic_block(&registers)
             } else {
-                var_args
-                    .iter()
-                    .map(|a| {
-                        self.mark_consumed_expr(a);
-                        self.compile_value(a)
-                    })
-                    .collect()
-            };
-            self.pack_variadic_block(&var_regs)
+                self.compile_consuming_variadic_block(var_args)
+            }
         };
         let mut all_regs = fixed_regs;
         all_regs.push(r_ptr);
@@ -8186,6 +8180,28 @@ impl<'a> FnCompiler<'a> {
         (pointer, count)
     }
 
+    fn compile_consuming_variadic_block(&mut self, args: &[Expr]) -> (u8, u8) {
+        let values: Vec<_> = args
+            .iter()
+            .map(|arg| {
+                self.mark_consumed_expr(arg);
+                self.compile_value(arg)
+            })
+            .collect();
+        let packed = self.pack_variadic_block(&values);
+        // Like fixed arguments, pending owners transfer only after the
+        // arguments are ready. A later argument can return early via `?`.
+        for (arg, value) in args.iter().zip(values) {
+            if self
+                .type_of_expr(arg)
+                .is_some_and(|ty| self.actual_argument_owns(&ty))
+            {
+                self.transfer_expression_temporary(value);
+            }
+        }
+        packed
+    }
+
     /// Argument registers of an instance-method call after its receiver. A
     /// variadic method receives its tail packed like a free function's.
     fn compile_method_arguments(&mut self, call_target: &str, args: &[Expr]) -> Vec<u8> {
@@ -8201,10 +8217,7 @@ impl<'a> FnCompiler<'a> {
         let mut registers: Vec<u8> = args[..split].iter().map(|arg| compile(self, arg)).collect();
         let (pointer, count) = match self.forwarded_variadic(&args[split..]) {
             Some(forwarded) => forwarded,
-            None => {
-                let tail: Vec<u8> = args[split..].iter().map(|arg| compile(self, arg)).collect();
-                self.pack_variadic_block(&tail)
-            }
+            None => self.compile_consuming_variadic_block(&args[split..]),
         };
         registers.extend([pointer, count]);
         registers

@@ -64,6 +64,8 @@ that need the concrete element layout to lower `size_of[T]()`.
 The prelude provides a shared `Hash` and `Eq` contract for generic keys.
 `Array.empty` and `Array.try_reserve` support fallible storage growth and
 preserve live elements when a reservation fails.
+Owned variadic temporaries transfer to consuming callees after argument
+evaluation. `Array.from` preserves the elements from owned expressions.
 On 2026-11-10 LSP reached 17/20: loader-backed navigation snapshots are
 cached while their inputs are unchanged and `scripts/check_lsp_performance.py`
 enforces measured latency targets (cold 150 ms, warm 0.6 ms in release).
