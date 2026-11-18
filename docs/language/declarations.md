@@ -24,6 +24,9 @@ fn first[T](items: Array[T]) T {
 
 Type parameters are declared in `[T, U]` after the function name. Generic
 calls normally infer arguments; explicit arguments use `function[Type](...)`.
+A matching `Some`, `Ok` or `Err` argument can infer a direct type parameter
+from its payload. Other call arguments must provide any remaining type
+information, or the caller can supply explicit type arguments.
 
 ### Variadic functions
 

@@ -669,6 +669,41 @@ fn exercise_reserve() i32 {
     }
 
     #[test]
+    fn constructor_payloads_infer_callee_parameters() {
+        // `Some(42)` passed as `Option[T]` decides `T`; it is not checked
+        // against the callee's still-unknown parameter.
+        run_receiver_fixture(
+            "constructor-payload-inference",
+            r#"
+trait Weight { fn weight(self: &Self) i32; }
+impl Weight for i32 { fn weight(self: &i32) i32 { ret *self; } }
+impl Weight for i64 { fn weight(self: &i64) i32 { ret (*self) as i32; } }
+struct Sum { total: i32 }
+impl Sum {
+    pub fn optional[T: Weight](self: &Sum!, value: Option[T]) void {
+        if value.is_some() { self.total = self.total + value.unwrap().weight(); }
+    }
+}
+fn present[T](value: Option[T]) bool { ret value.is_some(); }
+fn choose[T, E](_value: Result[T, E], fallback: E) E { ret fallback; }
+fn forward[T](sum: &Sum!) void { sum.optional(Some(2)); }
+fn exercise_payload_inference() i32 {
+    var sum = Sum { total: 0 };
+    sum.optional(Some(40));
+    forward[bool](&sum!);
+    if (sum.total != 42) { ret 1; }
+    if (!present(Some(true))) { ret 2; }
+    if (!choose(Ok(4), true)) { ret 3; }
+    sum.optional[i64](Some(9));
+    if (sum.total != 51) { ret 4; }
+    ret 0;
+}
+"#,
+            "exercise_payload_inference",
+        );
+    }
+
+    #[test]
     fn user_types_may_share_the_spelling_of_library_generic_parameters() {
         // std.stream declares `BufWriter[W: Writer]`; a user `struct W` is a
         // different type and must not be checked against that bound.

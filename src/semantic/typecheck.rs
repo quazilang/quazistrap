@@ -2851,8 +2851,26 @@ impl Analyzer {
             );
         }
 
+        let mut inferred_payload = None;
         if let Some(index) = payload_index {
-            let resolved = self.resolve_type_aliases(&expected_args[index].node);
+            let parameter = &expected_args[index].node;
+            let open = matches!(parameter, TypeKind::Error);
+            if let Some(payload) = args.first() {
+                let eval = self.type_check_expr_expected(payload, reachable, Some(parameter));
+                if let Some(actual) = eval.ty {
+                    if open {
+                        inferred_payload = Some((index, actual));
+                    } else if !self.check_expr_compat(payload, parameter, &actual) {
+                        self.push_error(
+                            payload.span,
+                            "S08",
+                            format!("{constructor} payload: expected {parameter}, got {actual}"),
+                        );
+                    }
+                }
+            }
+            let layout_type = inferred_payload.as_ref().map_or(parameter, |(_, actual)| actual);
+            let resolved = self.resolve_type_aliases(layout_type);
             if !matches!(resolved, TypeKind::Error)
                 && !crate::runtime_layout::runtime_value_layout(&resolved).fits_single_slot()
             {
@@ -2865,29 +2883,14 @@ impl Analyzer {
                 );
             }
         }
-
-        if let (Some(index), Some(payload)) = (payload_index, args.first()) {
-            let payload_eval =
-                self.type_check_expr_expected(payload, reachable, Some(&expected_args[index].node));
-            if let Some(actual) = payload_eval.ty
-                && !self.check_expr_compat(payload, &expected_args[index].node, &actual)
-            {
-                self.push_error(
-                    payload.span,
-                    "S08",
-                    format!(
-                        "{constructor} payload: expected {}, got {}",
-                        expected_args[index].node, actual
-                    ),
-                );
-            }
-            for extra in args.iter().skip(1) {
-                self.type_check_expr(extra, reachable);
-            }
-        } else {
-            for arg in args {
-                self.type_check_expr(arg, reachable);
-            }
+        for arg in args.iter().skip(expected_arg_count) {
+            self.type_check_expr(arg, reachable);
+        }
+        let mut expected = expected;
+        if let Some((index, inferred)) = inferred_payload
+            && let TypeKind::Named { type_args, .. } = &mut expected
+        {
+            type_args[index].node = inferred;
         }
 
         let _ = self.resolve_for_read(callee_name);
@@ -2898,6 +2901,39 @@ impl Analyzer {
         };
         self.annotate_expr(expr, &eval, reachable, Some(resolved));
         Some(eval)
+    }
+
+    /// Fill the unused variant's type once the other arguments have fixed
+    /// the callee's generic signature. The payload was already checked.
+    fn complete_sum_argument(&mut self, argument: &Expr, actual: &TypeKind, parameter: &TypeKind) {
+        let TypeKind::Named { name, type_args } = actual else {
+            return;
+        };
+        if !matches!(
+            (name.rsplit('.').next(), type_args.len()),
+            (Some("Option"), 1) | (Some("Result"), 2)
+        ) || !type_args.iter().any(|arg| matches!(arg.node, TypeKind::Error))
+        {
+            return;
+        }
+        let parameter = self.resolve_type_aliases(parameter);
+        let TypeKind::Named { name: expected_name, type_args: expected_args } = &parameter else {
+            return;
+        };
+        if name != expected_name || type_args.len() != expected_args.len() {
+            return;
+        }
+        let mut completed = actual.clone();
+        if let TypeKind::Named { type_args, .. } = &mut completed {
+            for (arg, expected) in type_args.iter_mut().zip(expected_args) {
+                if matches!(arg.node, TypeKind::Error) {
+                    arg.node = expected.node.clone();
+                }
+            }
+        }
+        if let Some(annotation) = self.annotated_exprs.iter_mut().rev().find(|ann| ann.span == argument.span) {
+            annotation.ty = Some(completed);
+        }
     }
 
     fn type_check_closure_expr(
@@ -3908,9 +3944,10 @@ impl Analyzer {
                                 .params
                                 .iter()
                                 .map(|param| {
-                                    infer_closure_result_binder(
-                                        substitute_type_kind(param, &substitution),
+                                    contextual_call_parameter(
+                                        param,
                                         &symbol.generic_params,
+                                        &substitution,
                                     )
                                 })
                                 .collect::<Vec<_>>();
@@ -4257,9 +4294,10 @@ impl Analyzer {
                                 .params
                                 .iter()
                                 .map(|param| {
-                                    infer_closure_result_binder(
-                                        substitute_type_kind(param, &substitution),
+                                    contextual_call_parameter(
+                                        param,
                                         &symbol.generic_params,
+                                        &substitution,
                                     )
                                 })
                                 .collect::<Vec<_>>();
@@ -4839,7 +4877,7 @@ impl Analyzer {
                             let symbol = self
                                 .resolve_symbol(&mangled)
                                 .or_else(|| self.resolve_symbol(&leaf))?;
-                            let substitution: std::collections::HashMap<String, TypeKind> =
+                            let mut substitution: std::collections::HashMap<String, TypeKind> =
                                 match receiver_named_type_args(&resolved_object_ty).as_slice() {
                                     type_args if !type_args.is_empty() => self
                                         .struct_generic_params
@@ -4854,10 +4892,22 @@ impl Analyzer {
                                         .unwrap_or_default(),
                                     _ => std::collections::HashMap::new(),
                                 };
+                            for (index, binder) in symbol.generic_params.iter().enumerate() {
+                                substitution.remove(binder);
+                                if let Some(argument) = type_args.get(index) {
+                                    substitution.insert(binder.clone(), argument.node.clone());
+                                }
+                            }
                             let params = symbol
                                 .params
                                 .iter()
-                                .map(|param| substitute_type_kind(param, &substitution))
+                                .map(|param| {
+                                    contextual_call_parameter(
+                                        param,
+                                        &symbol.generic_params,
+                                        &substitution,
+                                    )
+                                })
                                 .collect::<Vec<_>>();
                             Some(params.get(1..).unwrap_or(&[]).to_vec())
                         });
@@ -5094,6 +5144,7 @@ impl Analyzer {
                                     if let (Some(param_ty), Some(arg_ty)) = (param_ty, &arg_eval.ty)
                                     {
                                         let arg_expr = args.get(i).unwrap_or(expr);
+                                        self.complete_sum_argument(arg_expr, arg_ty, param_ty);
                                         if !self.check_expr_compat(arg_expr, param_ty, arg_ty) {
                                             self.push_error(
                                                 arg_expr.span,
@@ -7319,6 +7370,7 @@ impl Analyzer {
                     );
                     continue;
                 }
+                self.complete_sum_argument(arg_expr, at, param_ty);
                 if !self.check_expr_compat(arg_expr, param_ty, at) {
                     self.push_error(
                         arg_expr.span,
@@ -10076,32 +10128,54 @@ fn substitute_self_type(ty: &TypeKind, concrete: &TypeKind) -> TypeKind {
     }
 }
 
-/// Substitute generic type parameters with concrete types.
-/// Replaces `Named(name, [])` when `name` is a key in `subst`.
-/// A `fn(...) T` parameter whose result is a not-yet-inferred binder of the
-/// callee: a closure argument is then checked without an expected result, so
-/// its body's type infers `T` (as `spawn(|| work(n))` with `fn spawn[T](f: fn() T)`).
-fn infer_closure_result_binder(param: TypeKind, binders: &[String]) -> TypeKind {
+/// Keep enough context for closures and sum constructors to infer an open
+/// callee parameter without mistaking a caller's types for callee binders.
+fn contextual_call_parameter(
+    param: &TypeKind,
+    binders: &[String],
+    substitution: &std::collections::HashMap<String, TypeKind>,
+) -> TypeKind {
+    let open = |name: &String| binders.contains(name) && !substitution.contains_key(name);
+    let open_type = |ty: &TypeKind| {
+        matches!(ty, TypeKind::Named { name, type_args } if type_args.is_empty() && open(name))
+    };
+    let contextual_slot = |ty: &Type| {
+        let node = if open_type(&ty.node) {
+            TypeKind::Error
+        } else {
+            substitute_type_kind(&ty.node, substitution)
+        };
+        Spanned::new(node, ty.span)
+    };
+
     match param {
-        TypeKind::Fn { params, return_ty } => {
-            let uninferred = matches!(
-                &return_ty.node,
-                TypeKind::Named { name, type_args } if type_args.is_empty() && binders.contains(name)
-            );
-            let return_ty = if uninferred {
-                Box::new(Spanned::new(TypeKind::Error, return_ty.span))
-            } else {
-                return_ty
-            };
-            TypeKind::Fn { params, return_ty }
+        TypeKind::Fn { params, return_ty } => TypeKind::Fn {
+            params: params
+                .iter()
+                .map(|param| Spanned::new(substitute_type_kind(&param.node, substitution), param.span))
+                .collect(),
+            return_ty: Box::new(contextual_slot(return_ty)),
+        },
+        TypeKind::Named { name, type_args }
+            if matches!((name.rsplit('.').next(), type_args.len()), (Some("Option"), 1) | (Some("Result"), 2)) =>
+        {
+            TypeKind::Named {
+                name: name.clone(),
+                type_args: type_args.iter().map(contextual_slot).collect(),
+            }
         }
-        // A non-function parameter that still mentions a binder cannot give
-        // its argument an expected type yet.
-        other if super::type_mentions_params(&other, binders) => TypeKind::Error,
-        other => other,
+        other => {
+            let uninferred: Vec<String> = binders.iter().filter(|name| open(name)).cloned().collect();
+            if super::type_mentions_params(other, &uninferred) {
+                TypeKind::Error
+            } else {
+                substitute_type_kind(other, substitution)
+            }
+        }
     }
 }
 
+/// Substitute generic type parameters with concrete types.
 pub(crate) fn substitute_type_kind(
     ty: &TypeKind,
     subst: &std::collections::HashMap<String, TypeKind>,
@@ -10742,6 +10816,9 @@ pub(super) fn infer_type_subst(
     generic_params: &[String],
     subst: &mut std::collections::HashMap<String, TypeKind>,
 ) {
+    if matches!(arg_ty, TypeKind::Error) {
+        return;
+    }
     match param_ty {
         TypeKind::Named { name, type_args } if type_args.is_empty() => {
             if generic_params.contains(name) {

@@ -64,6 +64,9 @@ interface differs per target is read as one interface with `@cfg`
 declarations.
 Specialized method calls keep their concrete dependencies live, including helpers
 that need the concrete element layout to lower `size_of[T]()`.
+An argument such as `Some(42)` can infer the generic parameter of a declared
+`Option[T]` function or method parameter. Explicit type arguments still
+determine the payload's expected type.
 The prelude provides a shared `Hash` and `Eq` contract for generic keys.
 `Array.empty` and `Array.try_reserve` support fallible storage growth and
 preserve live elements when a reservation fails.
