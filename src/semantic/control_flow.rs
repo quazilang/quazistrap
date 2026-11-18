@@ -1119,6 +1119,33 @@ where
             .then_some(arguments)
     }
 
+    /// `Type.method(&value, args...)`: a method with a receiver called through
+    /// its type name. Lowering evaluates every positional argument, the
+    /// explicit receiver first, in source order.
+    fn static_receiver_call_site(
+        &self,
+        expression: &Expr,
+        object: &Expr,
+        named_args: &[(String, Expr)],
+    ) -> bool {
+        named_args.is_empty()
+            && matches!(object.node, ExprKind::Ident(_))
+            && self
+                .analyzer
+                .retention_annotation(object)
+                .and_then(|annotation| annotation.resolved_binding.as_ref())
+                .is_none_or(|binding| binding.kind == SymbolKind::TypeName)
+            // The explicit receiver is recorded as the first positional actual.
+            && self
+                .scheduled_call_site(expression, true)
+                .is_some_and(|arguments| {
+                    !arguments
+                        .actuals
+                        .iter()
+                        .any(|actual| actual.role == OwnershipArgumentRole::Receiver)
+                })
+    }
+
     /// `module.f(...)` or `Type.f(...)`: lowering evaluates no namespace operand
     /// and schedules the actuals like a direct call.
     fn namespace_call_site(&self, expression: &Expr) -> Option<&'b OwnershipCallArguments> {
@@ -1362,6 +1389,43 @@ where
                         expression,
                         normal,
                         scopes,
+                    )?;
+                }
+                ExpressionControl::Opaque
+                    if let ExprKind::MethodCall {
+                        object,
+                        method,
+                        args,
+                        named_args,
+                        ..
+                    } = &expression.node
+                        && method != "free"
+                        && self.static_receiver_call_site(expression, object, named_args) =>
+                {
+                    let span = expression.span;
+                    let invocation = self.block(scopes, span)?;
+                    self.graph.blocks[invocation]
+                        .events
+                        .push(OwnershipFlowEvent::Invoke { span });
+                    let after_call = if self.call_diverges(expression) {
+                        OwnershipFlowTerminator::Stop {
+                            exited_scopes: scopes.iter().rev().copied().collect(),
+                        }
+                    } else {
+                        OwnershipFlowTerminator::Opaque {
+                            normal,
+                            early_return: None,
+                        }
+                    };
+                    self.terminate(invocation, after_call, span)?;
+                    self.budget.charge(1 + args.len() * 3, span)?;
+                    self.schedule_sequence(
+                        &mut pending,
+                        current,
+                        args.iter().collect(),
+                        invocation,
+                        scopes,
+                        span,
                     )?;
                 }
                 ExpressionControl::Opaque

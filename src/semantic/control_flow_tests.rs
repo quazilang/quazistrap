@@ -1090,8 +1090,9 @@ fn main() void {}
     assert!(reachable(graph, step).contains(&later));
     assert!(reachable(graph, later).contains(&create));
     assert!(!reachable(graph, later).contains(&step));
-    // A receiver passed explicitly through the type name keeps its own lowering.
-    assert!(invoke("Counter.get(").is_none());
+    // A receiver passed explicitly through the type name is scheduled as an
+    // ordinary positional argument.
+    assert!(invoke("Counter.get(").is_some());
 }
 
 #[test]
