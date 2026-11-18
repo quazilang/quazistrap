@@ -93,6 +93,13 @@ target name. A dependency whose public interface differs between targets is
 seen through one merged interface (`bytecode::interface::merge_target_interfaces`)
 in which differing declarations carry `@cfg(target_os = ...)`.
 
+Project builds keep an exact-hit QZC under `build/quazi/universal/<name>/`.
+After loading the sources, the driver compares the resolved import closure,
+target masks, source contents, configuration and ordered dependency contents.
+A hit skips target-view construction, semantic analysis and bytecode lowering.
+A miss recompiles the whole program once. `--debug` bypasses the cache so it
+can print the lowering output.
+
 The output keeps the v16 encoding: one module of distinct bodies, one mask
 per body and interface overrides for targets whose public interface differs.
 `scripts/check_universal_qzi.py` verifies one analysis and one bytecode stage

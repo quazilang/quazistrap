@@ -93,7 +93,9 @@ function whose `@cfg` statements or conditional variants differ is compiled
 once per distinct group of targets, and those bodies carry disjoint target
 sets. Calls are recorded by name, so selecting a target links shared code to
 that target's implementation. The build prints a single analysis and
-bytecode stage and never names a target in its summary. See
+bytecode stage and never names a target in its summary. Project builds resolve
+imports before reusing a QZI whose sources, configuration and dependencies
+are unchanged. Both `--no-incremental` and `--debug` bypass this cache. See
 [the internal contract](internals/universal-qzi.md).
 
 Target-specific type aliases of built-in types (such as `std.ffi.c_long`)

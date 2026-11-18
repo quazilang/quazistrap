@@ -30,9 +30,16 @@ struct QzcFile {
 }
 
 pub fn load(path: &Path) -> Result<Option<QzcHit>, String> {
+    load_exact(path, None)
+}
+
+pub fn load_exact(path: &Path, context_hash: Option<[u8; 32]>) -> Result<Option<QzcHit>, String> {
     let Some(cache) = read_cache(path)? else {
         return Ok(None);
     };
+    if context_hash.is_some_and(|expected| cache.context_hash != expected) {
+        return Ok(None);
+    }
     for (input, expected) in &cache.inputs {
         let Ok(actual) = hash_file(input) else {
             return Ok(None);
@@ -116,8 +123,13 @@ fn read_cache(path: &Path) -> Result<Option<QzcFile>, String> {
     if Sha256::digest(&qzi).as_slice() != expected_checksum {
         return Ok(None);
     }
-    crate::bytecode::deserialize_qzi_module(&qzi)
-        .map_err(|error| format!("cached QZI is invalid: {error}"))?;
+    if qzi.get(4) == Some(&crate::bytecode::chunk::QZI_UNIFIED_VERSION) {
+        crate::bytecode::chunk::decode_unified_qzi(&qzi)
+            .map_err(|error| format!("cached QZI is invalid: {error}"))?;
+    } else {
+        crate::bytecode::deserialize_qzi_module(&qzi)
+            .map_err(|error| format!("cached QZI is invalid: {error}"))?;
+    }
     let context_hash: [u8; 32] = read_exact(&bytes, &mut pos, 32)?.try_into().unwrap();
     let raw_len = read_u64(&bytes, &mut pos)? as usize;
     let raw_qzi = read_exact(&bytes, &mut pos, raw_len)?;

@@ -1888,10 +1888,13 @@ fn main() {
                             dependencies: &ctx.config.qzi_dependencies,
                             debug,
                             header_printed: true,
+                            cache: (!no_incremental && !debug).then(|| {
+                                (ctx.incremental_cache_path("universal"), cache_inputs.clone())
+                            }),
                         },
                         &mut progress,
                     );
-                    let _ = (emit, do_strip, qzc_path, cache_inputs, explicit_linker);
+                    let _ = (emit, do_strip, qzc_path, explicit_linker);
                     return;
                 }
                 build_with_progress(
@@ -2121,6 +2124,7 @@ fn main() {
                             dependencies,
                             debug,
                             header_printed: false,
+                            cache: None,
                         },
                         &mut progress,
                     );

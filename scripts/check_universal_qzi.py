@@ -124,6 +124,43 @@ def main():
             assert len(runs) == 1, (stage, built.stderr)
         assert b"linux" not in summary[0] and b"windows" not in summary[0], summary
 
+        # The exact-hit cache returns the same artifact until a source changes.
+        cached = [qz, "build", "--no-color", "-i", "-o", str(root / "cached.qzi")]
+        assert b"cache lookup  miss" in run(cached, work).stderr
+        first = (root / "cached.qzi").read_bytes()
+        hit = run(cached, work).stderr
+        assert b"cache lookup  hit" in hit and b"ok  analysis" not in hit, hit
+        assert (root / "cached.qzi").read_bytes() == first
+        debug = run([*cached, "--debug"], work).stderr
+        assert b"; targets 0b" in debug, debug
+        source = work / "src/main.qz"
+        source.write_text(source.read_text() + "\n// edited\n")
+        assert b"cache lookup  miss" in run(cached, work).stderr
+        source.write_text(PROGRAM)
+
+        # Retargeting a symlink can change the loaded program while every
+        # previously loaded file still exists and has unchanged content.
+        source.rename(source.with_name("original.qz"))
+        source.symlink_to("original.qz")
+        assert b"cache lookup  miss" in run(cached, work).stderr
+        assert b"cache lookup  hit" in run(cached, work).stderr
+        source.with_name("replacement.qz").write_text(PROGRAM.replace("shared-", "updated-"))
+        source.unlink()
+        source.symlink_to("replacement.qz")
+        assert b"cache lookup  miss" in run(cached, work).stderr
+        assert (root / "cached.qzi").read_bytes() != first
+        source.unlink()
+        source.with_name("original.qz").rename(source)
+
+        # QZI validation does not select the CLI's native target.
+        bare = root / "bare"
+        project(bare, "fn main() i32 { ret 0; }", name="bare")
+        manifest = bare / "quazi.toml"
+        manifest.write_text(manifest.read_text().replace("[package]\n", "[package]\nstd=false\n"))
+        bare_build = [qz, "build", "--no-color", "-i", "--target", "x86_64-none"]
+        assert b"cache lookup  miss" in run(bare_build, bare).stderr
+        assert b"cache lookup  hit" in run(bare_build, bare).stderr
+
         # A: one artifact; shared bodies once, alternatives per target.
         data = (root / "app.qzi").read_bytes()
         targets, masks, module = unified_layout(data)

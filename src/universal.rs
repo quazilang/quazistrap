@@ -12,6 +12,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 // Diagnostics follow `--no-color` and plain-text pipes like the rest of the CLI.
 macro_rules! eprintln {
     ($($arg:tt)*) => {
@@ -60,6 +62,26 @@ pub struct UniversalBuild<'a> {
     pub debug: bool,
     /// The caller already printed the build header.
     pub header_printed: bool,
+    /// Exact-hit cache of the finished QZI, and the configuration files that
+    /// invalidate it besides the loaded sources and dependencies.
+    pub cache: Option<(PathBuf, Vec<PathBuf>)>,
+}
+
+fn write_output(out: &str, bytes: &[u8], progress: &mut BuildProgress) {
+    let path = Path::new(out);
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).unwrap_or_else(|error| {
+            fail(
+                progress,
+                &format!("cannot create {}: {error}", parent.display()),
+            )
+        });
+    }
+    std::fs::write(path, bytes)
+        .unwrap_or_else(|error| fail(progress, &format!("cannot write {out}: {error}")));
 }
 
 fn fail(progress: &mut BuildProgress, message: &str) -> ! {
@@ -70,15 +92,13 @@ fn fail(progress: &mut BuildProgress, message: &str) -> ! {
     std::process::exit(1)
 }
 
-fn read_dependency(path: &Path) -> Result<UnifiedQzi, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| format!("cannot read QZI dependency '{}': {error}", path.display()))?;
+fn decode_dependency(path: &Path, bytes: &[u8]) -> Result<UnifiedQzi, String> {
     let invalid = |error: String| format!("invalid QZI dependency '{}': {error}", path.display());
     if bytes.get(4) == Some(&QZI_UNIFIED_VERSION) {
-        return decode_unified_qzi(&bytes).map_err(invalid);
+        return decode_unified_qzi(bytes).map_err(invalid);
     }
     // A single-program dependency serves every target.
-    let module = bytecode::deserialize_qzi_module(&bytes).map_err(invalid)?;
+    let module = bytecode::deserialize_qzi_module(bytes).map_err(invalid)?;
     let masks = vec![(1u8 << QZI_TARGETS.len()) - 1; module.chunks.len()];
     Ok(UnifiedQzi {
         targets: QZI_TARGETS
@@ -118,6 +138,69 @@ pub fn build(request: UniversalBuild<'_>, progress: &mut BuildProgress) {
         std::process::exit(1);
     }
     progress.done(&format!("{} files", loaded.source_files.len()));
+
+    let dependency_bytes = request
+        .dependencies
+        .iter()
+        .map(|path| {
+            std::fs::read(path).unwrap_or_else(|error| {
+                fail(progress, &format!("cannot read QZI dependency '{}': {error}", path.display()))
+            })
+        })
+        .collect::<Vec<_>>();
+    let cache_context = request.cache.as_ref().and_then(|(_, configuration)| {
+        let mut hash = Sha256::new();
+        hash.update(b"universal-qzi-exact/1");
+        hash.update(format!(
+            "{:?}",
+            (
+                request.entries,
+                request.include_std,
+                request.native_mangling,
+                &request.metadata,
+                QZI_TARGETS,
+                configuration,
+                request.dependencies,
+                &loaded.source_files,
+                &file_masks,
+            )
+        ));
+        for file in &loaded.source_files {
+            hash.update(loaded.source_hashes[&file.path]);
+        }
+        for bytes in &dependency_bytes {
+            hash.update(Sha256::digest(bytes));
+        }
+        for path in configuration {
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    hash.update([1]);
+                    hash.update(Sha256::digest(bytes));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => hash.update([0]),
+                Err(_) => return None,
+            }
+        }
+        Some(hash.finalize().into())
+    });
+    if let (Some((cache_path, _)), Some(context)) = (&request.cache, cache_context) {
+        progress.begin("cache lookup");
+        match crate::incremental::load_exact(cache_path, Some(context)) {
+            Ok(Some(hit)) if hit.qzi.get(4) == Some(&QZI_UNIFIED_VERSION) => {
+                progress.done("hit");
+                write_output(request.out, &hit.qzi, progress);
+                progress.success_as(request.out, Some(hit.qzi.len() as u64), Some("QZI"));
+                return;
+            }
+            Ok(_) => progress.done("miss"),
+            Err(error) => {
+                progress.done("ignored");
+                if !progress.silent {
+                    eprintln!("\x1b[33;1mwarning:\x1b[0m ignoring QZC: {error}");
+                }
+            }
+        }
+    }
 
     progress.begin("target views");
     let views = build_target_views(&TargetViewInput {
@@ -258,7 +341,8 @@ pub fn build(request: UniversalBuild<'_>, progress: &mut BuildProgress) {
     let dependencies = request
         .dependencies
         .iter()
-        .map(|path| read_dependency(path))
+        .zip(&dependency_bytes)
+        .map(|(path, bytes)| decode_dependency(path, bytes))
         .collect::<Result<Vec<_>, _>>()
         .unwrap_or_else(|error| fail(progress, &error));
     let targets: Vec<&str> = QZI_TARGETS.iter().map(|target| target.os).collect();
@@ -294,20 +378,23 @@ pub fn build(request: UniversalBuild<'_>, progress: &mut BuildProgress) {
         shared
     ));
 
-    let path = Path::new(request.out);
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent).unwrap_or_else(|error| {
-            fail(
-                progress,
-                &format!("cannot create {}: {error}", parent.display()),
-            )
-        });
+    write_output(request.out, &bytes, progress);
+    if let (Some((cache_path, configuration)), Some(context)) = (&request.cache, cache_context) {
+        let mut inputs = loaded.loaded_files.clone();
+        inputs.extend(configuration.iter().cloned());
+        if let Err(error) = crate::incremental::store(
+            cache_path,
+            &inputs,
+            &loaded.source_hashes,
+            &bytes,
+            false,
+            context,
+            &[],
+        ) && !progress.silent
+        {
+            eprintln!("\x1b[33;1mwarning:\x1b[0m cannot update QZC: {error}");
+        }
     }
-    std::fs::write(path, &bytes)
-        .unwrap_or_else(|error| fail(progress, &format!("cannot write {}: {error}", request.out)));
     // One artifact for every supported system: no target list.
     progress.success_as(request.out, Some(bytes.len() as u64), Some("QZI"));
 }

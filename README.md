@@ -292,6 +292,8 @@ Project builds use QZC v6 at `build/quazi/<target>/<artifact>/incremental.qzc`.
 Exact hits reuse linked QZI; partial hits restore unchanged pre-WPO functions,
 compile changed files, and rerun full WPO. Progress reports hit/partial/miss,
 restored/compiled function counts, and cache writes.
+For `qz build -i`, an exact hit reuses the QZI after resolving imports and
+skips analysis and bytecode generation. A changed input triggers one full build.
 Pass `--no-incremental` to bypass both reads and writes. See
 [Libraries, QZI, and incremental builds](docs/LIBRARIES.md) for dependency TOML,
 QZI v10 library rules, lockfile behavior, and cache guarantees.
