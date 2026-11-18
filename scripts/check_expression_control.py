@@ -119,6 +119,7 @@ unsafe fn stamp(log: *i32, digit: i32, value: i32) i32 {
     *log = *log * 10 + digit;
     ret value;
 }
+struct Ordered { first: i32, second: i32 }
 unsafe fn stamped_values(log: *i32) [i32; 3] {
     *log = *log * 10 + 1;
     ret [7, 8, 9];
@@ -139,6 +140,14 @@ fn check_places() i32 {
         if item != 9 { ret 39; }
     }
     if log != 12 { ret 40; }
+    log = 0;
+    unsafe {
+        // Field values run in declaration order, not in written order.
+        const ordered = Ordered { first: stamp(&log, 1, 1), second: stamp(&log, 2, 2) };
+        const reversed = Ordered { second: stamp(&log, 4, 4), first: stamp(&log, 3, 3) };
+        if ordered.second + reversed.first != 5 { ret 41; }
+    }
+    if log != 1234 { ret 42; }
     ret 0;
 }
 fn main() i32 {
@@ -199,7 +208,7 @@ def check(qz, root, before=None):
     run([str(qz), "build", str(artifact), *common, "-c", "--target",
          "x86_64-windows", "-o", str(coff)], root)
     assert coff.read_bytes()[:2] == b"\x64\x86", "expected x86-64 COFF"
-    print("PASS expression control: 40 checks, native, QZI-only, Windows COFF")
+    print("PASS expression control: 42 checks, native, QZI-only, Windows COFF")
 
 
 def main():

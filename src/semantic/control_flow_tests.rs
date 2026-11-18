@@ -1319,3 +1319,60 @@ fn main() void {}
         .unwrap();
     assert!(reachable(graph, invoke).contains(&some));
 }
+
+#[test]
+fn source_control_flow_struct_initializers_follow_declaration_order() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+fn produce(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn build(value: Option[i32]) Option[i32] {
+    const pair = Pair { right: later(), left: produce(value)? };
+    ret Some(pair.left);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "build")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let invoke = |needle: &str| {
+        let start = source.find(needle).unwrap();
+        graph
+            .blocks
+            .iter()
+            .position(|block| {
+                block.events.iter().any(
+                    |event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == start),
+                )
+            })
+            .unwrap()
+    };
+    let built = graph
+        .blocks
+        .iter()
+        .position(|block| {
+            block.events.iter().any(|event| {
+                matches!(
+                    event,
+                    OwnershipFlowEvent::ExpressionResult {
+                        value: OwnershipExpressionResult::StructInit { .. },
+                        ..
+                    }
+                )
+            })
+        })
+        .unwrap();
+    // `left` is declared first, so its value runs before `right`'s.
+    let left = invoke("produce(value)?");
+    let right = invoke("later(), left");
+    assert!(reachable(graph, left).contains(&right));
+    assert!(!reachable(graph, right).contains(&left));
+    assert!(reachable(graph, right).contains(&built));
+}

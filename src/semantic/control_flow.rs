@@ -147,6 +147,11 @@ pub enum OwnershipExpressionResult {
     VariantConstructor {
         variant: String,
     },
+    /// Field values completed in the struct's declaration order (as lowering
+    /// evaluates them, regardless of source order) and the struct is built.
+    StructInit {
+        name: String,
+    },
     /// The object completed and the named field is read; the load is unmodeled.
     Field {
         object: Span,
@@ -822,6 +827,34 @@ where
         .then_some(variant.as_str())
     }
 
+    /// A struct initializer's values in the declaration order lowering uses,
+    /// with the canonical struct name; `None` when the declaration is unknown.
+    fn struct_init_order<'e>(
+        &self,
+        expression: &Expr,
+        fields: &'e [(String, Expr)],
+    ) -> Option<(String, Vec<&'e Expr>)> {
+        let annotation = self.analyzer.retention_annotation(expression)?;
+        let Some(TypeKind::Named { name, .. }) = annotation
+            .ty
+            .as_ref()
+            .map(|ty| self.analyzer.resolve_type_aliases(ty))
+        else {
+            return None;
+        };
+        let declared = self.analyzer.struct_defs.get(&name)?;
+        let ordered: Vec<&Expr> = declared
+            .iter()
+            .filter_map(|(field, _)| {
+                fields
+                    .iter()
+                    .find(|(written, _)| written == field)
+                    .map(|(_, value)| value)
+            })
+            .collect();
+        (ordered.len() == fields.len()).then_some((name, ordered))
+    }
+
     /// A method call lowered through ordinary resolved inherent dispatch: the
     /// receiver value first, then the declaration-slot actuals. Namespace
     /// calls have no receiver actual; `free` has a separate destruction path.
@@ -936,6 +969,40 @@ where
                             },
                             expression.span,
                         )?;
+                    }
+                }
+                ExpressionControl::Opaque
+                    if let ExprKind::StructInit { fields, .. } = &expression.node
+                        && let Some((name, ordered)) =
+                            self.struct_init_order(expression, fields) =>
+                {
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::StructInit { name },
+                        normal,
+                        scopes,
+                    )?;
+                    self.budget.charge(ordered.len() * 3, expression.span)?;
+                    if ordered.is_empty() {
+                        self.terminate(
+                            current,
+                            OwnershipFlowTerminator::Goto {
+                                target: complete,
+                                exited_scopes: Vec::new(),
+                            },
+                            expression.span,
+                        )?;
+                    }
+                    let mut next = complete;
+                    let mut reversed = ordered.into_iter().rev().peekable();
+                    while let Some(value) = reversed.next() {
+                        let entry = if reversed.peek().is_some() {
+                            self.block(scopes, value.span)?
+                        } else {
+                            current
+                        };
+                        pending.push((entry, value, next));
+                        next = entry;
                     }
                 }
                 ExpressionControl::Opaque => {

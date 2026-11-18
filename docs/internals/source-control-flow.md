@@ -141,13 +141,18 @@ analysis types the call as an enum with that variant and the callee resolves
 to no function; a callee bound to a local value or parameter stays a call.
 Allocation and payload moves are unmodeled.
 
-Other calls, multi-index reads and updates, guarded matches and
-aggregate initializers remain whole opaque regions. Controls nested inside
+A struct initializer evaluates its field values in the struct's declaration
+order, which lowering uses regardless of the written order, and records a
+`StructInit` result. The order comes from the annotated struct type; an
+initializer whose declaration is unknown stays opaque.
+`check_expression_control.py` checks this order at run time.
+
+Other calls, multi-index reads and updates, guarded matches, array literals
+and struct initializers of unknown declarations remain whole opaque regions. Controls nested inside
 these regions are not individually expanded. Multi-input iteration regions also
 remain opaque. Their internal branches and operand order require further shared
 normalization before any path-sensitive ownership proof consumes them.
-Lowering reorders struct fields and uses different operand orders for indexed
-and field assignments. [Call argument snapshots](ownership-call-arguments.md)
+Lowering evaluates struct fields in declaration order. [Call argument snapshots](ownership-call-arguments.md)
 retain lexical order for each site's binding and parameter records.
 
 ## Resource and trust boundary
