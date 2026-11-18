@@ -2056,3 +2056,65 @@ fn main() void {}
         "{accesses:?}"
     );
 }
+
+#[test]
+fn source_control_flow_value_reads_name_their_maximal_places() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+impl Pair {
+    fn sum(self: &Pair) i32 { ret self.left + self.right; }
+}
+fn observe(pair: &Pair) i32 { ret 0; }
+fn total(count: i32) i32 {
+    var pair = Pair { left: 1, right: 2 };
+    var values: [i32; 3] = [0, 0, 0];
+    const borrowed = observe(&pair) + pair.sum();
+    ret count + pair.left + values[1] + borrowed;
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "total")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let reads: Vec<String> = graph
+        .blocks
+        .iter()
+        .flat_map(|block| block.events.iter())
+        .filter_map(|event| match event {
+            OwnershipFlowEvent::PlaceAccess {
+                access: OwnershipPlaceAccess::Read,
+                place: OwnershipArgumentValue::Place(place),
+                ..
+            } => Some(format!(
+                "{}{}",
+                place.root.binding.name,
+                place
+                    .projections
+                    .iter()
+                    .map(|projection| match projection {
+                        OwnershipProjection::Field(name) => format!(".{name}"),
+                        OwnershipProjection::Index(_) => "[]".into(),
+                        OwnershipProjection::Deref { .. } => "*".into(),
+                    })
+                    .collect::<String>()
+            )),
+            _ => None,
+        })
+        .collect();
+    for read in ["count", "pair.left", "values[]", "borrowed"] {
+        assert!(reads.iter().any(|seen| seen == read), "{read}: {reads:?}");
+    }
+    // A borrowed operand, a method receiver and a projection object are not
+    // value reads of the whole binding.
+    assert!(
+        !reads.iter().any(|seen| seen == "pair" || seen == "values"),
+        "{reads:?}"
+    );
+}

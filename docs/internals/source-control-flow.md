@@ -94,8 +94,15 @@ Each read and write of an assignment or increment target also records a
 place comes from the same classifier as call-argument snapshots (binding
 root, storage and field/deref/builtin-index projections), recorded per
 callable during argument-place recording; a target it cannot classify is
-`Unknown`. These are the first typed read/write facts in the graph; aliasing,
-moves and destruction of a previous value remain unverified.
+`Unknown`.
+
+Value reads of places are recorded the same way, for the maximal place only:
+`values[i]` reads `values[]`, not `values`; `pair.left` reads `pair.left`.
+The objects of recorded projections, borrowed operands (`&x`, `&x!`) and
+method receivers are not value reads. A read appears in the block of the
+opaque region whose whole expression is that place, or in the `Index`/`Field`
+result block. Whether a read copies, moves or borrows, aliasing, and the
+destruction of overwritten values remain unverified.
 
 An exposed `?` evaluates its operand once and branches on `TrySuccess`, a wrapper
 success-discriminant condition distinct from ordinary pointer truthiness.

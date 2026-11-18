@@ -167,6 +167,9 @@ pub struct Analyzer {
     /// keyed by caller and target span; consumed by the source flow graph.
     pub(super) ownership_target_places:
         HashMap<String, std::collections::BTreeMap<(usize, usize), OwnershipArgumentValue>>,
+    /// Places read as values (maximal projections), keyed by caller and span.
+    pub(super) ownership_read_places:
+        HashMap<String, std::collections::BTreeMap<(usize, usize), OwnershipArgumentValue>>,
     pub(super) called_functions: BTreeSet<String>,
     pub(super) call_counts: HashMap<String, usize>,
     pub(super) current_function: Vec<String>,
@@ -2542,6 +2545,7 @@ impl Analyzer {
             source_call_effects: HashMap::new(),
             ownership_call_sites: HashMap::new(),
             ownership_target_places: HashMap::new(),
+            ownership_read_places: HashMap::new(),
             called_functions: BTreeSet::new(),
             call_counts: HashMap::new(),
             current_function: Vec::new(),
@@ -3241,6 +3245,7 @@ impl Analyzer {
         self.source_call_effects.clear();
         self.ownership_call_sites.clear();
         self.ownership_target_places.clear();
+        self.ownership_read_places.clear();
         self.called_functions.clear();
         self.call_counts.clear();
         self.current_function.clear();

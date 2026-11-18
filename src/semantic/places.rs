@@ -175,8 +175,9 @@ impl Analyzer {
                         .collect(),
                     binders: self.generic_params_for_function(&caller),
                 };
-                let (facts, target_places, overflow) = builder.body(body, sites, checkpoint)?;
-                collected.push((caller, facts, target_places));
+                let (facts, target_places, read_places, overflow) =
+                    builder.body(body, sites, checkpoint)?;
+                collected.push((caller, facts, target_places, read_places));
                 if let Some(span) = overflow {
                     overflows.push(span);
                 }
@@ -184,10 +185,12 @@ impl Analyzer {
         }
         checkpoint()?;
         // All snapshots were derived before mutating the source-site registry.
-        for (caller, facts, target_places) in collected {
+        for (caller, facts, target_places, read_places) in collected {
             checkpoint()?;
             self.ownership_target_places
                 .insert(caller.clone(), target_places);
+            self.ownership_read_places
+                .insert(caller.clone(), read_places);
             if let Some(sites) = self.ownership_call_sites.get_mut(&caller) {
                 for (span, arguments) in facts {
                     if let Some(site) = sites.get_mut(&span) {
@@ -395,7 +398,7 @@ impl Places<'_> {
         body: &Block,
         sites: &BTreeMap<(usize, usize), super::ownership::SourceOwnershipCall>,
         checkpoint: &mut F,
-    ) -> Result<(ArgumentFacts, TargetFacts, Option<Span>), Cancelled>
+    ) -> Result<(ArgumentFacts, TargetFacts, TargetFacts, Option<Span>), Cancelled>
     where
         F: FnMut() -> Result<(), Cancelled>,
     {
@@ -408,17 +411,21 @@ impl Places<'_> {
         let mut closures = Vec::new();
         let mut facts = BTreeMap::new();
         let mut targets = BTreeMap::new();
+        // Places read as values; only the maximal projection of a place is a
+        // read, so the objects of recorded projections are excluded.
+        let mut reads = BTreeMap::new();
+        let mut projection_objects = std::collections::HashSet::new();
         let mut nodes = 0;
         while let Some(visit) = pending.pop() {
             checkpoint()?;
             nodes += 1;
             if nodes > MAX_BODY_NODES {
-                return Ok((facts, targets, Some(body.span)));
+                return Ok((facts, targets, reads, Some(body.span)));
             }
             match visit {
                 Visit::Closure(expr) => {
                     if closures.len() >= MAX_PLACE_DEPTH {
-                        return Ok((facts, targets, Some(expr.span)));
+                        return Ok((facts, targets, reads, Some(expr.span)));
                     }
                     closures.push(expr.span);
                 }
@@ -502,17 +509,58 @@ impl Places<'_> {
                         let place = self.place(target, 0, &mut overflow);
                         nodes += 1;
                         if overflow {
-                            return Ok((facts, targets, Some(target.span)));
+                            return Ok((facts, targets, reads, Some(target.span)));
                         }
                         targets.insert((target.span.start, target.span.end), place);
                     }
                     let key = (expr.span.start, expr.span.end);
+                    if matches!(
+                        expr.node,
+                        ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. }
+                    ) && !targets.contains_key(&key)
+                        && !projection_objects.contains(&key)
+                    {
+                        let mut overflow = false;
+                        let place = self.place(expr, 0, &mut overflow);
+                        nodes += 1;
+                        if overflow {
+                            return Ok((facts, targets, reads, Some(expr.span)));
+                        }
+                        if matches!(place, OwnershipArgumentValue::Place(_)) {
+                            if let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } =
+                                &expr.node
+                            {
+                                projection_objects.insert((object.span.start, object.span.end));
+                            }
+                            reads.insert(key, place);
+                        }
+                    }
+                    // Borrowed operands and method receivers are not value reads.
+                    match &expr.node {
+                        ExprKind::Unary {
+                            op: UnaryOpKind::Ref | UnaryOpKind::RefMut,
+                            expr: inner,
+                        } => {
+                            projection_objects.insert((inner.span.start, inner.span.end));
+                        }
+                        ExprKind::MethodCall { object, .. } => {
+                            projection_objects.insert((object.span.start, object.span.end));
+                        }
+                        _ => {}
+                    }
+                    // A projection target's object is part of the written place.
+                    if targets.contains_key(&key)
+                        && let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } =
+                            &expr.node
+                    {
+                        projection_objects.insert((object.span.start, object.span.end));
+                    }
                     if let Some(site) = sites.get(&key) {
                         let (arguments, overflow) =
                             self.arguments(expr, site, &closures, checkpoint)?;
                         nodes = nodes.saturating_add(argument_cost(&arguments, true));
                         if overflow || nodes > MAX_BODY_NODES {
-                            return Ok((facts, targets, Some(expr.span)));
+                            return Ok((facts, targets, reads, Some(expr.span)));
                         }
                         facts.insert(key, arguments);
                     }
@@ -593,7 +641,7 @@ impl Places<'_> {
                 }
             }
         }
-        Ok((facts, targets, None))
+        Ok((facts, targets, reads, None))
     }
 
     fn arguments<F>(

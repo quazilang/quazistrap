@@ -650,6 +650,7 @@ struct Builder<'a, 'b, F> {
     expansions: &'a FormatExpansions,
     format_requests: Vec<FormatRequest>,
     target_places: Option<&'b BTreeMap<(usize, usize), OwnershipArgumentValue>>,
+    read_places: Option<&'b BTreeMap<(usize, usize), OwnershipArgumentValue>>,
     finished: Vec<bool>,
     analyzer: &'b Analyzer,
     sites: Option<&'b BTreeMap<(usize, usize), SourceOwnershipCall>>,
@@ -709,6 +710,7 @@ where
             expansions,
             format_requests: Vec::new(),
             target_places: analyzer.ownership_target_places.get(caller),
+            read_places: analyzer.ownership_read_places.get(caller),
             finished: Vec::new(),
             analyzer,
             sites: analyzer.ownership_call_sites.get(caller),
@@ -940,6 +942,27 @@ where
             .push(OwnershipFlowEvent::PlaceAccess {
                 target: target.span,
                 access,
+                place,
+            });
+        Ok(())
+    }
+
+    /// Record a value read of `expression` in `block` when it is a recorded
+    /// maximal place.
+    fn place_read(&mut self, block: usize, expression: &Expr) -> FlowResult<()> {
+        let Some(place) = self
+            .read_places
+            .and_then(|places| places.get(&(expression.span.start, expression.span.end)))
+            .cloned()
+        else {
+            return Ok(());
+        };
+        self.budget.charge(2, expression.span)?;
+        self.graph.blocks[block]
+            .events
+            .push(OwnershipFlowEvent::PlaceAccess {
+                target: expression.span,
+                access: OwnershipPlaceAccess::Read,
                 place,
             });
         Ok(())
@@ -1874,6 +1897,7 @@ where
                         normal,
                         scopes,
                     )?;
+                    self.place_read(complete, expression)?;
                     self.budget.charge(3, object.span)?;
                     pending.push((current, object, complete));
                 }
@@ -1887,6 +1911,7 @@ where
                         normal,
                         scopes,
                     )?;
+                    self.place_read(complete, expression)?;
                     let index_entry = self.block(scopes, index.span)?;
                     self.budget.charge(6, expression.span)?;
                     pending.push((index_entry, index, complete));
@@ -2128,6 +2153,10 @@ where
                     .collect(),
                 kind,
             });
+        // A region that is itself a place read as a value reads it here.
+        for expression in expressions {
+            self.place_read(current, expression)?;
+        }
         let early_return = if has_try {
             let failure = self.block(scopes, span)?;
             self.terminate(
