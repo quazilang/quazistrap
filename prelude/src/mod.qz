@@ -6,6 +6,7 @@
 // Option[T] and Result[T, E] are builtin — no import needed.
 
 pub import ./array.Array;
+pub import ./array.ArrayReserveError;
 pub import ./range.Range;
 pub import ./string.String;
 pub import ./string.Rune;
@@ -16,6 +17,7 @@ pub import ./layout;
 pub import ./option;
 pub import ./result;
 pub import ./traits;
+pub import ./hash;
 pub import ./fmt;
 pub import ./fmt.format;
 pub import ./panic.panic;

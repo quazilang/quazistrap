@@ -1,0 +1,56 @@
+// Quazi Programming Language
+// Copyright (c) 2026 quazilang
+// SPDX-License-Identifier: 0BSD
+
+// prelude.hash — `Hash` and `Eq` for the built-in key types.
+import traits;
+
+@intrinsic("quazi.str.byte_at")
+fn __hash_byte_at(s: str, index: usize) u8;
+
+// splitmix64 finalizer: spreads every input bit over the whole word.
+fn __hash_mix(value: u64) u64 {
+    var x: u64 = value.wrapping_add(0x9E3779B97F4A7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    ret x ^ (x >> 31);
+}
+
+// FNV-1a over the UTF-8 bytes, then mixed.
+fn __hash_text(text: str) u64 {
+    var hash: u64 = 0xCBF29CE484222325;
+    var index: usize = 0;
+    const length: usize = text.bytes_len();
+    for (index < length) {
+        hash = (hash ^ (__hash_byte_at(text, index) as u64)).wrapping_mul(0x100000001B3);
+        index = index + 1;
+    }
+    ret __hash_mix(hash);
+}
+
+impl Hash for i8 { fn hash(self: &i8) u64 { ret __hash_mix((*self) as i64 as u64); } }
+impl Eq for i8 { fn eq(self: &i8, other: &i8) bool { ret *self == *other; } }
+impl Hash for i16 { fn hash(self: &i16) u64 { ret __hash_mix((*self) as i64 as u64); } }
+impl Eq for i16 { fn eq(self: &i16, other: &i16) bool { ret *self == *other; } }
+impl Hash for i32 { fn hash(self: &i32) u64 { ret __hash_mix((*self) as i64 as u64); } }
+impl Eq for i32 { fn eq(self: &i32, other: &i32) bool { ret *self == *other; } }
+impl Hash for i64 { fn hash(self: &i64) u64 { ret __hash_mix((*self) as i64 as u64); } }
+impl Eq for i64 { fn eq(self: &i64, other: &i64) bool { ret *self == *other; } }
+impl Hash for isize { fn hash(self: &isize) u64 { ret __hash_mix((*self) as i64 as u64); } }
+impl Eq for isize { fn eq(self: &isize, other: &isize) bool { ret *self == *other; } }
+impl Hash for u8 { fn hash(self: &u8) u64 { ret __hash_mix((*self) as u64); } }
+impl Eq for u8 { fn eq(self: &u8, other: &u8) bool { ret *self == *other; } }
+impl Hash for u16 { fn hash(self: &u16) u64 { ret __hash_mix((*self) as u64); } }
+impl Eq for u16 { fn eq(self: &u16, other: &u16) bool { ret *self == *other; } }
+impl Hash for u32 { fn hash(self: &u32) u64 { ret __hash_mix((*self) as u64); } }
+impl Eq for u32 { fn eq(self: &u32, other: &u32) bool { ret *self == *other; } }
+impl Hash for u64 { fn hash(self: &u64) u64 { ret __hash_mix((*self) as u64); } }
+impl Eq for u64 { fn eq(self: &u64, other: &u64) bool { ret *self == *other; } }
+impl Hash for usize { fn hash(self: &usize) u64 { ret __hash_mix((*self) as u64); } }
+impl Eq for usize { fn eq(self: &usize, other: &usize) bool { ret *self == *other; } }
+impl Hash for bool { fn hash(self: &bool) u64 { if (*self) { ret __hash_mix(1); } ret __hash_mix(0); } }
+impl Eq for bool { fn eq(self: &bool, other: &bool) bool { ret *self == *other; } }
+impl Hash for str { fn hash(self: &str) u64 { ret __hash_text(*self); } }
+impl Eq for str { fn eq(self: &str, other: &str) bool { ret *self == *other; } }
+impl Hash for String { fn hash(self: &String) u64 { ret __hash_text(self.as_str()); } }
+impl Eq for String { fn eq(self: &String, other: &String) bool { ret self.as_str() == other.as_str(); } }

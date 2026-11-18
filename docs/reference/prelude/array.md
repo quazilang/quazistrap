@@ -4,7 +4,21 @@ prelude.array — safe generic dynamic array backed by heap memory
 
 ## Contents
 
+- [`ArrayReserveError`](#arrayreserveerror) (enum)
 - [`Array`](#array) (struct)
+
+## `ArrayReserveError`
+
+```quazi
+pub enum ArrayReserveError {
+    // The allocator could not provide the requested storage.
+    AllocationFailed,
+    // The requested element count exceeds the addressable byte size.
+    CapacityOverflow,
+}
+```
+
+Why an array could not reserve storage.
 
 ## `Array`
 
@@ -23,6 +37,23 @@ pub fn new() Array[T]
 ```
 
 An empty array.
+
+### `Array.empty`
+
+```quazi
+pub fn empty() Array[T]
+```
+
+An empty array that allocates only when first reserved or appended to.
+
+### `Array.try_reserve`
+
+```quazi
+pub fn try_reserve(self: &Array[T]!, capacity: usize) Result[bool, ArrayReserveError]
+```
+
+Ensure room for at least `capacity` elements. On failure, the existing
+storage and elements are preserved. Returns true if storage grew.
 
 ### `Array.from`
 

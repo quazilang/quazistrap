@@ -74,13 +74,14 @@ Programmer-readable representation (includes type info, escapes, etc.).
 ## `Eq`
 
 ```quazi
-pub trait Eq[T] {
-    fn eq(other: T) bool;
-    fn ne(other: T) bool;
+pub trait Eq {
+    fn eq(self: &Self, other: &Self) bool;
 }
 ```
 
 ── Eq ───────────────────────────────────────────────────────────────────────
+Value equality for generic code (`K: Eq`): reflexive, symmetric and
+transitive. Integers, `bool`, `str` and `String` implement it.
 
 ## `Ord`
 
@@ -147,11 +148,14 @@ pub trait Default {
 
 ```quazi
 pub trait Hash {
-    fn hash() u64;
+    fn hash(self: &Self) u64;
 }
 ```
 
 ── Hash ─────────────────────────────────────────────────────────────────────
+A 64-bit hash consistent with `Eq`: equal values have equal hashes.
+Integers, `bool`, `str` and `String` implement it; the values are not
+stable across compiler versions and must not be persisted.
 
 ## `Iterator`
 

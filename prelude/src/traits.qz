@@ -19,9 +19,10 @@ pub trait Debug {
 }
 
 // ── Eq ───────────────────────────────────────────────────────────────────────
-pub trait Eq[T] {
-    fn eq(other: T) bool;
-    fn ne(other: T) bool;
+// Value equality for generic code (`K: Eq`): reflexive, symmetric and
+// transitive. Integers, `bool`, `str` and `String` implement it.
+pub trait Eq {
+    fn eq(self: &Self, other: &Self) bool;
 }
 
 // ── Ord ──────────────────────────────────────────────────────────────────────
@@ -61,8 +62,11 @@ pub trait Default {
 }
 
 // ── Hash ─────────────────────────────────────────────────────────────────────
+// A 64-bit hash consistent with `Eq`: equal values have equal hashes.
+// Integers, `bool`, `str` and `String` implement it; the values are not
+// stable across compiler versions and must not be persisted.
 pub trait Hash {
-    fn hash() u64;
+    fn hash(self: &Self) u64;
 }
 
 // ── Iterator ─────────────────────────────────────────────────────────────────

@@ -24,6 +24,14 @@ fn __ptr_store[T](base: *u8, idx: usize, val: T) void;
 @intrinsic("quazi.array.load")
 fn __ptr_load[T](base: *u8, idx: usize) T;
 
+// Why an array could not reserve storage.
+pub enum ArrayReserveError {
+    // The allocator could not provide the requested storage.
+    AllocationFailed,
+    // The requested element count exceeds the addressable byte size.
+    CapacityOverflow,
+}
+
 // A growable list of values of type `T`, stored contiguously. It frees its
 // elements and storage when it goes out of scope. `for value : array`
 // consumes it; `for value : &array` reads copyable elements in place.
@@ -37,10 +45,38 @@ pub struct Array[T] {
 impl Array[T] {
     // An empty array.
     pub fn new() Array[T] {
-        var buf: *u8;
-        const initial_cap: usize = 8;
-        unsafe { buf = __array_malloc(size_of[T]() * initial_cap); }
-        ret Array { ptr: buf, len: 0, cap: initial_cap };
+        var array: Array[T] = Array.empty();
+        if (array.try_reserve(8).is_err()) { panic("Array.new: allocation failed"); }
+        ret array;
+    }
+
+    // An empty array that allocates only when first reserved or appended to.
+    pub fn empty() Array[T] {
+        ret Array { ptr: 0, len: 0, cap: 0 };
+    }
+
+    // Ensure room for at least `capacity` elements. On failure, the existing
+    // storage and elements are preserved. Returns true if storage grew.
+    pub fn try_reserve(self: &Array[T]!, capacity: usize) Result[bool, ArrayReserveError] {
+        if (capacity <= self.cap) { ret Ok(false); }
+        var stride: usize = size_of[T]();
+        if (stride == 0) { stride = 1; }
+        const limit: usize = 0x7FFFFFFFFFFFFFFF / stride;
+        if (capacity > limit) { ret Err(ArrayReserveError.CapacityOverflow); }
+        var target: usize = capacity;
+        if (self.cap <= limit / 2 && self.cap * 2 > target) { target = self.cap * 2; }
+        var storage: *u8;
+        unsafe {
+            if (self.ptr == 0) {
+                storage = __array_malloc(target * stride);
+            } else {
+                storage = __array_realloc(self.ptr, target * stride);
+            }
+        }
+        if (storage == 0) { ret Err(ArrayReserveError.AllocationFailed); }
+        self.ptr = storage;
+        self.cap = target;
+        ret Ok(true);
     }
 
     // An array of the given values: `Array.from(1, 2, 3)`.
@@ -55,8 +91,8 @@ impl Array[T] {
     // Appends `val` at the end, growing the storage when needed.
     pub fn push(self: &Array[T]!, val: T) void {
         if (self.len >= self.cap) {
-            self.cap = self.cap * 2;
-            unsafe { self.ptr = __array_realloc(self.ptr, self.cap * size_of[T]()); }
+            const capacity: usize = self.len + 1;
+            if (self.try_reserve(capacity).is_err()) { panic("Array.push: allocation failed"); }
         }
         __ptr_store(self.ptr, self.len, val);
         self.len = self.len + 1;

@@ -3,6 +3,7 @@
 - [`prelude.array`](array.md)
 - [`prelude.box`](box.md)
 - [`prelude.fmt`](fmt.md)
+- [`prelude.hash`](hash.md)
 - [`prelude.layout`](layout.md)
 - [`prelude`](mod.md)
 - [`prelude.number`](number.md)

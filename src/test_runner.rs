@@ -624,6 +624,34 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn prelude_array_reserve_preserves_multi_slot_values() {
+        run_receiver_fixture(
+            "prelude-array-reserve",
+            r#"
+fn exercise_reserve() i32 {
+    var values: Array[[i32; 2]] = Array.empty();
+    if (!values.try_reserve(2).unwrap()) { ret 1; }
+    values.push([1, 2]);
+    if (values.try_reserve(1).unwrap()) { ret 2; }
+    if (!values.try_reserve(40).unwrap()) { ret 3; }
+    const failure = values.try_reserve(0xFFFFFFFFFFFFFFFF);
+    const rejected = match failure {
+        Err(ArrayReserveError.CapacityOverflow) => true,
+        _ => false,
+    };
+    if (!rejected) { ret 4; }
+    values.push([3, 4]);
+    const first = values.remove(0);
+    const second = values.remove(0);
+    if (first[1] != 2 || second[0] != 3) { ret 5; }
+    ret 0;
+}
+"#,
+            "exercise_reserve",
+        );
+    }
+
     fn run_receiver_fixture(name: &str, source: &str, entry: &str) {
         let root = temp_dir(name);
         std::fs::create_dir_all(root.join("src")).unwrap();
