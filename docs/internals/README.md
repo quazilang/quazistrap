@@ -34,5 +34,7 @@ runtime ABI, ownership invariants, testing, and contribution workflows.
   — source storage roots, projections and declared parameter slots.
 - [Source statement and expression control flow](source-control-flow.md)
   — structured transfers, scopes and shared operand controls, with opaque boundaries.
+- [QZI ownership certificates — implementation design](ownership-certificates.md)
+  — mapping source effect facts onto the D-014 artifact contract and its verifier.
 - [Generic storage layout and recursive destruction — implementation design](generic-storage-layout.md)
   — the approved D-001/D-002/D-003 route for sound generic containers.
