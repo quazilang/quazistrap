@@ -166,6 +166,11 @@ A single-index read `object[index]` evaluates the object, then the index,
 then records an `Index` result; bounds checks and the load are unmodeled.
 `check_expression_control.py` checks this order at run time.
 
+A built-in method without arguments on a primitive receiver (`len`,
+`as_str`, `as_ptr`, classified by the `resolve_primitive_method` that
+lowering shares) evaluates only its receiver and records a `BuiltinMethod`
+result.
+
 A field read whose object is an expression (`make().field`, `items[i].field`)
 evaluates the object and records a `Field` result. Objects that are names or
 name chains (`value.field`, `module.constant`, `Enum.Variant`) stay opaque:

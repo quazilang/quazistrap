@@ -17,7 +17,10 @@ use super::{Chunk, ConstPoolEntry, Opcode, QziCallRelocation};
 use crate::abi::{
     AbiField, AbiSignature, AbiType, ForeignGlobal as AbiForeignGlobal, ForeignSymbol,
 };
-use crate::evaluation::{ExpressionControl, expression_control, ordered_call_arguments};
+use crate::evaluation::{
+    ExpressionControl, PrimitiveMethod, expression_control, is_string_view_type,
+    ordered_call_arguments, resolve_primitive_method,
+};
 use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
 use crate::semantic::{ConstValue, OwnershipArgumentRole, SemanticReport};
@@ -11388,18 +11391,6 @@ pub(crate) fn remap_instr_regs(
     }
 }
 
-/// Describes a resolved primitive method operation for codegen emission.
-enum PrimitiveMethod {
-    /// .len() on &str or slice — emit StrLen or copy hidden __len register
-    Len,
-    /// .as_str() / .as_string() — StrAsStr identity view
-    AsStr,
-    /// .as_ptr() on bytes â€” skip the read-only length prefix.
-    BytesAsPtr,
-    /// Checked `.parse[T]()` dispatched to a prelude parser.
-    Parse,
-}
-
 fn type_contains_unrepresentable_runtime_type(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Any | TypeKind::Error => true,
@@ -11483,33 +11474,6 @@ fn prim_to_str_tag(receiver_type: Option<&TypeKind>) -> u8 {
 
 /// Resolve a method call on a primitive/built-in receiver to a `PrimitiveMethod` operation.
 /// Returns `None` if the method is not a known built-in (falls through to vtable dispatch).
-fn resolve_primitive_method(
-    method: &str,
-    args: &[Expr],
-    receiver_ty: Option<&TypeKind>,
-) -> Option<PrimitiveMethod> {
-    match method {
-        "len"
-            if args.is_empty()
-                && receiver_ty.is_some_and(|ty| {
-                    matches!(ty, TypeKind::Bytes | TypeKind::Slice { .. })
-                        || is_string_view_type(ty)
-                }) =>
-        {
-            Some(PrimitiveMethod::Len)
-        }
-        "as_string" | "as_str"
-            if args.is_empty() && receiver_ty.is_some_and(is_string_view_type) =>
-        {
-            Some(PrimitiveMethod::AsStr)
-        }
-        "as_ptr" if args.is_empty() && matches!(receiver_ty, Some(TypeKind::Bytes)) => {
-            Some(PrimitiveMethod::BytesAsPtr)
-        }
-        "parse" => Some(PrimitiveMethod::Parse),
-        _ => None,
-    }
-}
 
 fn extract_field_chain(expr: &Expr) -> Option<(String, Vec<String>)> {
     match &expr.node {
@@ -11891,14 +11855,6 @@ impl NumericKind {
             _ => return None,
         };
         Some(Self::Integer { bits, signed })
-    }
-}
-
-fn is_string_view_type(ty: &TypeKind) -> bool {
-    match ty {
-        TypeKind::Str => true,
-        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => is_string_view_type(&inner.node),
-        _ => false,
     }
 }
 

@@ -6,7 +6,7 @@
 //! Unclassified expressions remain opaque; this is not an ownership effect model.
 
 use crate::parser::ast::{
-    BinOpKind, CompoundAssignOp, Expr, ExprKind, IncDecOp, Literal, MatchArm, UnaryOpKind,
+    BinOpKind, CompoundAssignOp, Expr, ExprKind, IncDecOp, Literal, MatchArm, TypeKind, UnaryOpKind,
 };
 use crate::semantic::OwnershipArgumentRole;
 
@@ -336,5 +336,56 @@ pub(crate) fn integer_literal_value(expression: &Expr) -> Option<i128> {
             }
         }
         _ => None,
+    }
+}
+
+/// A built-in method of a primitive receiver, shared by lowering and the
+/// source control-flow graph.
+pub(crate) enum PrimitiveMethod {
+    /// .len() on &str or slice — emit StrLen or copy hidden __len register
+    Len,
+    /// .as_str() / .as_string() — StrAsStr identity view
+    AsStr,
+    /// .as_ptr() on bytes: skip the read-only length prefix.
+    BytesAsPtr,
+    /// Checked `.parse[T]()` dispatched to a prelude parser.
+    Parse,
+}
+
+/// The built-in method `method` resolves to for `receiver_ty`, if any.
+pub(crate) fn resolve_primitive_method(
+    method: &str,
+    args: &[Expr],
+    receiver_ty: Option<&TypeKind>,
+) -> Option<PrimitiveMethod> {
+    match method {
+        "len"
+            if args.is_empty()
+                && receiver_ty.is_some_and(|ty| {
+                    matches!(ty, TypeKind::Bytes | TypeKind::Slice { .. })
+                        || is_string_view_type(ty)
+                }) =>
+        {
+            Some(PrimitiveMethod::Len)
+        }
+        "as_string" | "as_str"
+            if args.is_empty() && receiver_ty.is_some_and(is_string_view_type) =>
+        {
+            Some(PrimitiveMethod::AsStr)
+        }
+        "as_ptr" if args.is_empty() && matches!(receiver_ty, Some(TypeKind::Bytes)) => {
+            Some(PrimitiveMethod::BytesAsPtr)
+        }
+        "parse" => Some(PrimitiveMethod::Parse),
+        _ => None,
+    }
+}
+
+/// `str` or a reference to one.
+pub(crate) fn is_string_view_type(ty: &TypeKind) -> bool {
+    match ty {
+        TypeKind::Str => true,
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => is_string_view_type(&inner.node),
+        _ => false,
     }
 }

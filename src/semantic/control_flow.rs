@@ -16,7 +16,8 @@ use super::{
 };
 use crate::cancel::Cancelled;
 use crate::evaluation::{
-    ExpressionControl, PlaceUpdateForm, expression_control, ordered_call_arguments,
+    ExpressionControl, PlaceUpdateForm, PrimitiveMethod, expression_control,
+    ordered_call_arguments, resolve_primitive_method,
 };
 use crate::parser::ast::*;
 
@@ -193,6 +194,12 @@ pub enum OwnershipExpressionResult {
     /// evaluates them, regardless of source order) and the struct is built.
     StructInit {
         name: String,
+    },
+    /// A built-in method of a primitive receiver (`len`, `as_str`, `as_ptr`)
+    /// after the receiver completed.
+    BuiltinMethod {
+        receiver: Span,
+        method: String,
     },
     /// The object completed and the named field is read; the load is unmodeled.
     Field {
@@ -1119,6 +1126,27 @@ where
             .then_some(arguments)
     }
 
+    /// A built-in method without arguments on a primitive receiver, as
+    /// lowering resolves it: only the receiver is evaluated.
+    fn builtin_receiver_method(&self, object: &Expr, method: &str, args: &[Expr]) -> bool {
+        let Some(receiver) = self
+            .analyzer
+            .retention_annotation(object)
+            .and_then(|annotation| annotation.ty.as_ref())
+            .map(|ty| self.analyzer.resolve_type_aliases(ty))
+        else {
+            return false;
+        };
+        let receiver = match receiver {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => inner.node,
+            other => other,
+        };
+        matches!(
+            resolve_primitive_method(method, args, Some(&receiver)),
+            Some(PrimitiveMethod::Len | PrimitiveMethod::AsStr | PrimitiveMethod::BytesAsPtr)
+        )
+    }
+
     /// `Type.method(&value, args...)`: a method with a receiver called through
     /// its type name. Lowering evaluates every positional argument, the
     /// explicit receiver first, in source order.
@@ -1390,6 +1418,30 @@ where
                         normal,
                         scopes,
                     )?;
+                }
+                ExpressionControl::Opaque
+                    if let ExprKind::MethodCall {
+                        object,
+                        method,
+                        args,
+                        named_args,
+                        ..
+                    } = &expression.node
+                        && named_args.is_empty()
+                        && self.method_call_site(expression, method).is_none()
+                        && self.builtin_receiver_method(object, method, args) =>
+                {
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::BuiltinMethod {
+                            receiver: object.span,
+                            method: method.clone(),
+                        },
+                        normal,
+                        scopes,
+                    )?;
+                    self.budget.charge(3, object.span)?;
+                    pending.push((current, object, complete));
                 }
                 ExpressionControl::Opaque
                     if let ExprKind::MethodCall {

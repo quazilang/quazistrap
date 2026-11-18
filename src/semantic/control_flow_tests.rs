@@ -1930,3 +1930,46 @@ fn main() void {}
     assert!(!reachable(graph, panic).contains(&after));
     graph.validate().unwrap();
 }
+
+#[test]
+fn source_control_flow_builtin_methods_evaluate_their_receiver() {
+    let source = r#"
+fn label(value: Option[str]) Option[str] { ret value; }
+fn measure(value: Option[str]) Option[usize] {
+    const length = label(value)?.len();
+    ret Some(length);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "measure")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+            .unwrap()
+    };
+    let start = source.find("label(value)?").unwrap();
+    let receiver = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == start),
+    );
+    let length = block_with(&|event| {
+        matches!(
+            event,
+            OwnershipFlowEvent::ExpressionResult {
+                value: OwnershipExpressionResult::BuiltinMethod { method, .. },
+                ..
+            } if method == "len"
+        )
+    });
+    assert!(reachable(graph, receiver).contains(&length));
+}
