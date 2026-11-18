@@ -69,6 +69,11 @@ fn relay[T](value: T) T { ret size_of[T](value); }
 fn set_marker(marker: &i32!) i32 { *marker = 7; ret 0; }
 fn panic(first: i32, second: i32) i32 { ret first * 10 + second; }
 fn pick[T](first: T, second: T) T { ret first; }
+struct Chooser { bias: i32 }
+impl Chooser {
+    fn first_of[T](first: T, second: T) T { ret first; }
+    fn choose[T](self: &Chooser, first: T, second: T) T { ret first; }
+}
 fn main() i32 {
     var shared = Shared { value: 0 };
     if shared.digits(1, 2) != 12 { ret 1; }
@@ -119,6 +124,10 @@ fn main() i32 {
     if panic(second = 2, first = 1) != 12 { ret 36; }
     if pick(second = 2, first = 1) != 1 { ret 37; }
     if pick(5, second = 6) != 5 { ret 38; }
+    if Chooser.first_of(1, 2) != 1 { ret 39; }
+    if Chooser.first_of(second = 2, first = 1) != 1 { ret 40; }
+    var chooser = Chooser { bias: 0 };
+    if chooser.choose(second = 4, first = 9) != 9 { ret 41; }
     ret 0;
 }
 """

@@ -10085,6 +10085,26 @@ impl<'a> FnCompiler<'a> {
                         } else {
                             base_mangled.clone()
                         };
+                        // A generic function of the type names its specialization
+                        // through the arguments analysis inferred for this call.
+                        let call_target = if self.fn_index.contains_key(&call_target) {
+                            call_target
+                        } else {
+                            let inferred: Vec<TypeKind> = self
+                                .inferred_type_args_for_span(expr.span)
+                                .iter()
+                                .map(|argument| self.resolve_type(&argument.node))
+                                .collect();
+                            let mono = crate::semantic::typecheck::mangle_monomorphized(
+                                &base_mangled,
+                                &inferred,
+                            );
+                            if !inferred.is_empty() && self.fn_index.contains_key(&mono) {
+                                mono
+                            } else {
+                                call_target
+                            }
+                        };
                         if self.fn_index.contains_key(&call_target) {
                             // Variadic associated functions (and `Type.method(&value, ...)`)
                             // pack their tail like free functions.

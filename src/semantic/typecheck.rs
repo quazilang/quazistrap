@@ -4503,7 +4503,16 @@ impl Analyzer {
                                     Some((&sym.params, &param_names)),
                                 );
                                 let arg_evals = &all_evals[..args.len()];
+                                // Named arguments infer through their declared slots.
+                                let slot_evals = self.slot_ordered_evals(
+                                    &method_full,
+                                    &sym,
+                                    args.len(),
+                                    named_args,
+                                    &all_evals,
+                                );
                                 let struct_params = self.generic_params_for_function(&method_full);
+                                let mut inferred_static_args = None;
                                 let from = self
                                     .current_function
                                     .last()
@@ -4541,7 +4550,7 @@ impl Analyzer {
                                         }
                                     }
                                     for (param_ty, arg_eval) in
-                                        sym.params.iter().zip(arg_evals.iter())
+                                        sym.params.iter().zip(slot_evals.iter())
                                     {
                                         if let Some(arg_ty) = &arg_eval.ty {
                                             infer_type_subst(
@@ -4574,6 +4583,7 @@ impl Analyzer {
                                             .filter_map(|p| subst.get(p).cloned())
                                             .collect();
                                         if type_args.len() == struct_params.len() {
+                                            inferred_static_args = Some(type_args.clone());
                                             self.record_ownership_call_site(
                                                 expr.span,
                                                 Some((&method_full, &type_args)),
@@ -4636,6 +4646,13 @@ impl Analyzer {
                                     const_value: None,
                                 };
                                 self.annotate_expr(expr, &eval, reachable, None);
+                                // Codegen names the specialization from these, in the
+                                // function's type-parameter order.
+                                if let Some(inferred) = inferred_static_args
+                                    && let Some(annotation) = self.annotated_exprs.last_mut()
+                                {
+                                    annotation.inferred_type_args = inferred;
+                                }
                                 self.reject_nested_owned_function_expression(expr, &eval);
                                 return eval;
                             }
@@ -5074,6 +5091,28 @@ impl Analyzer {
                                         for (param, eval) in sym.params.iter().skip(1).zip(arg_evals.iter()) {
                                             if let Some(actual) = &eval.ty {
                                                 infer_type_subst(param, actual, &method_generics, &mut subst);
+                                            }
+                                        }
+                                        // Named arguments infer through their declared slots.
+                                        let names = self
+                                            .fn_param_names
+                                            .get(&codegen_mangled)
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        for (name, _, eval) in &named_arg_evals {
+                                            if let (Some(position), Some(actual)) = (
+                                                names
+                                                    .iter()
+                                                    .position(|parameter| parameter == name),
+                                                &eval.ty,
+                                            ) && let Some(param) = sym.params.get(position + 1)
+                                            {
+                                                infer_type_subst(
+                                                    param,
+                                                    actual,
+                                                    &method_generics,
+                                                    &mut subst,
+                                                );
                                             }
                                         }
                                     }
