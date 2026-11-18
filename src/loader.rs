@@ -344,6 +344,7 @@ pub fn load_programs_for_targets(
             entry_paths,
             prelude_entry: None,
             runtime_string: None,
+            runtime_panic: None,
             type_imports: HashMap::new(),
         },
         &mut || Ok(()),
@@ -386,6 +387,10 @@ pub fn load_programs_for_targets(
             file.implicit_prelude = collection.prelude_entry.as_ref() == Some(path);
             file.runtime_string = collection
                 .runtime_string
+                .as_ref()
+                .and_then(|(defining, name)| (defining == path).then(|| name.clone()));
+            file.runtime_panic = collection
+                .runtime_panic
                 .as_ref()
                 .and_then(|(defining, name)| (defining == path).then(|| name.clone()));
             file.type_imports = rebase_type_imports(
@@ -469,6 +474,7 @@ pub fn load_program_for_all_targets(
                     if known.module_name != file.module_name
                         || known.implicit_prelude != file.implicit_prelude
                         || known.runtime_string != file.runtime_string
+                        || known.runtime_panic != file.runtime_panic
                     {
                         return Err(format!(
                             "{} has a different module identity for {}; a QZI needs one",
@@ -541,6 +547,7 @@ struct SourceCollection {
     entry_paths: HashSet<PathBuf>,
     prelude_entry: Option<PathBuf>,
     runtime_string: Option<(PathBuf, String)>,
+    runtime_panic: Option<(PathBuf, String)>,
     type_imports: HashMap<PathBuf, Vec<SourceTypeImport>>,
 }
 
@@ -641,6 +648,19 @@ fn collect_sources_with_prelude(
                 .into());
         }
     }
+    let runtime_panic = match prelude {
+        Some(path) => {
+            resolve_public_export(path, "panic", resolver, target, overrides, checkpoint)?
+        }
+        None => None,
+    };
+    if let Some((path, _)) = &runtime_panic {
+        if !visited.contains(path) {
+            return Err("selected prelude panic declaration was not loaded"
+                .to_string()
+                .into());
+        }
+    }
 
     let type_imports =
         collect_type_import_provenance(&sources, resolver, target, overrides, checkpoint)?;
@@ -660,6 +680,7 @@ fn collect_sources_with_prelude(
         entry_paths,
         prelude_entry,
         runtime_string,
+        runtime_panic,
         type_imports,
     })
 }
@@ -1110,6 +1131,7 @@ fn finalize_sources(
         entry_paths,
         prelude_entry,
         runtime_string,
+        runtime_panic,
         type_imports,
     } = collection;
 
@@ -1184,6 +1206,9 @@ fn finalize_sources(
             module_name: module_name_overrides.get(path).cloned(),
             implicit_prelude: prelude_entry.as_ref() == Some(path),
             runtime_string: runtime_string
+                .as_ref()
+                .and_then(|(defining_path, name)| (defining_path == path).then(|| name.clone())),
+            runtime_panic: runtime_panic
                 .as_ref()
                 .and_then(|(defining_path, name)| (defining_path == path).then(|| name.clone())),
             type_imports: rebase_type_imports(type_imports.get(path), char_pos, line_pos),
@@ -2613,6 +2638,68 @@ mod tests {
                 .source_files
                 .iter()
                 .all(|file| !file.implicit_prelude)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn selected_prelude_panic_tracks_its_defining_function() {
+        let root = temp_dir("quazi_runtime_panic_identity");
+        let gateway = root.join("mod.qz");
+        fs::write(&gateway, "pub import ./stop.halt as panic;").unwrap();
+        let stop = root.join("stop.qz");
+        fs::write(
+            &stop,
+            "pub fn halt(msg: str, file: str, line: usize) void {}",
+        )
+        .unwrap();
+        let main = root.join("main.qz");
+        fs::write(
+            &main,
+            "fn panic(first: i32) i32 { ret first; } fn main() void {}",
+        )
+        .unwrap();
+        let mut checkpoint = || Ok(());
+        let collection = collect_sources_with_prelude(
+            std::slice::from_ref(&main),
+            None,
+            Some(&gateway),
+            &[],
+            false,
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut checkpoint,
+        )
+        .unwrap();
+        let loaded = finalize_sources(collection, &mut checkpoint).unwrap();
+        let marked: Vec<_> = loaded
+            .source_files
+            .iter()
+            .filter(|file| file.runtime_panic.is_some())
+            .collect();
+        assert_eq!(marked.len(), 1);
+        assert_eq!(
+            marked[0].path,
+            stop.canonicalize().unwrap().to_string_lossy()
+        );
+        assert_eq!(marked[0].runtime_panic.as_deref(), Some("halt"));
+        let no_std = collect_sources_with_prelude(
+            &[main],
+            None,
+            None,
+            &[],
+            false,
+            host_cfg_target(),
+            &HashMap::new(),
+            &mut checkpoint,
+        )
+        .unwrap();
+        let no_std = finalize_sources(no_std, &mut checkpoint).unwrap();
+        assert!(
+            no_std
+                .source_files
+                .iter()
+                .all(|file| file.runtime_panic.is_none())
         );
         fs::remove_dir_all(root).unwrap();
     }

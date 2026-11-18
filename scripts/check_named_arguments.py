@@ -67,6 +67,7 @@ fn relay[T](value: T) T { ret size_of[T](value); }
 @intrinsic("quazi.align_of") fn slot_alignment[T]() usize;
 @intrinsic("quazi.size_of") fn slot_width_with_argument[T](value: i32) usize;
 fn set_marker(marker: &i32!) i32 { *marker = 7; ret 0; }
+fn panic(first: i32, second: i32) i32 { ret first * 10 + second; }
 fn main() i32 {
     var shared = Shared { value: 0 };
     if shared.digits(1, 2) != 12 { ret 1; }
@@ -113,6 +114,8 @@ fn main() i32 {
     var marker: i32 = 0;
     if slot_width_with_argument[i32](set_marker(&marker!)) != 8 { ret 33; }
     if marker != 7 { ret 34; }
+    if panic(1, 2) != 12 { ret 35; }
+    if panic(second = 2, first = 1) != 12 { ret 36; }
     ret 0;
 }
 """

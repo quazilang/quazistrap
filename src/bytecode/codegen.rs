@@ -97,6 +97,14 @@ fn module_name_for_span(span: Span, source_files: &[SourceFile]) -> Option<Strin
         })
 }
 
+/// The prelude export selected by the loader as the runtime `panic`.
+struct RuntimePanic {
+    /// Name of its function-table entry.
+    resolved: String,
+    /// Every spelling that call-site resolution may report for it.
+    names: HashSet<String>,
+}
+
 // Enum heap layout invariants:
 //   - discriminant (tag) is stored at ENUM_DISCRIM_OFFSET (8 bytes)
 //   - variant payloads start at ENUM_PAYLOAD_OFFSET (8 bytes each)
@@ -268,6 +276,8 @@ pub struct Codegen<'a> {
     /// Variadic @intrinsic functions: call with coerced args directly (no pre-format step).
     variadic_intrinsic_fns: HashSet<String>,
     layout_intrinsics: HashMap<String, &'static str>,
+    /// The loader-selected prelude `panic`, identified by its declaration.
+    runtime_panic: Option<RuntimePanic>,
     /// Resolved Quazi function name -> portable C import description.
     foreign_imports: HashMap<String, ForeignSymbol>,
     /// Resolved Quazi function name -> portable C export description.
@@ -423,6 +433,7 @@ impl<'a> Codegen<'a> {
             str_variadic_fns: HashSet::new(),
             variadic_intrinsic_fns: HashSet::new(),
             layout_intrinsics: HashMap::new(),
+            runtime_panic: None,
             foreign_imports: HashMap::new(),
             foreign_exports: HashMap::new(),
             source_files: Vec::new(),
@@ -645,6 +656,13 @@ impl<'a> Codegen<'a> {
         self.resolve_item_name(span, name, &[])
     }
 
+    fn declares_runtime_panic(&self, span: Span, name: &str) -> bool {
+        self.source_files
+            .iter()
+            .find(|file| file.contains(span))
+            .is_some_and(|file| file.runtime_panic.as_deref() == Some(name))
+    }
+
     fn resolve_item_name(&self, span: Span, name: &str, attributes: &[Attribute]) -> String {
         if name.starts_with("__quazi_")
             || attributes
@@ -767,6 +785,7 @@ impl<'a> Codegen<'a> {
         // Pre-pass: collect str_variadic fns, variadic @intrinsic, and @panic_handler names.
         let mut user_panic_handler: Option<String> = None;
         self.layout_intrinsics.clear();
+        self.runtime_panic = None;
         for item in &program.items {
             // Skip @cfg-disabled items.
             if let ItemKind::Fn { attributes, .. } = &item.node
@@ -783,6 +802,13 @@ impl<'a> Codegen<'a> {
                 } => {
                     let has_str_variadic_param = crate::parser::format::is_format_variadic(params, attributes);
                     let resolved_name = self.resolve_item_name(item.span, name, attributes);
+                    if self.declares_runtime_panic(item.span, name) {
+                        let analysis_name = self.analysis_fn_name(item.span, name);
+                        self.runtime_panic = Some(RuntimePanic {
+                            names: HashSet::from([analysis_name, resolved_name.clone()]),
+                            resolved: resolved_name.clone(),
+                        });
+                    }
                     if let Some(intrinsic) = layout_intrinsic_declared_by(attributes) {
                         let analysis_name = self.analysis_fn_name(item.span, name);
                         if resolved_name != analysis_name {
@@ -2176,6 +2202,7 @@ impl<'a> Codegen<'a> {
             &self.str_variadic_fns,
             &self.variadic_intrinsic_fns,
             &self.layout_intrinsics,
+            &self.runtime_panic,
             &self.report.monomorphizations,
             &self.fn_value_layouts,
             &self.report.trait_method_slots,
@@ -2698,6 +2725,8 @@ struct FnCompiler<'a> {
     /// Variadic @intrinsic functions: coerce args and call directly.
     variadic_intrinsic_fns: &'a HashSet<String>,
     layout_intrinsics: &'a HashMap<String, &'static str>,
+    /// The loader-selected prelude `panic`; only its calls get location arguments.
+    runtime_panic: &'a Option<RuntimePanic>,
     /// Monomorphization info: used to resolve mangled names for generic calls.
     monomorphizations: &'a [crate::semantic::MonomorphizationInfo],
     /// Recorded internal-ABI layouts: used to size parameter blocks at call sites.
@@ -2921,6 +2950,7 @@ impl<'a> FnCompiler<'a> {
         str_variadic_fns: &'a HashSet<String>,
         variadic_intrinsic_fns: &'a HashSet<String>,
         layout_intrinsics: &'a HashMap<String, &'static str>,
+        runtime_panic: &'a Option<RuntimePanic>,
         monomorphizations: &'a [crate::semantic::MonomorphizationInfo],
         fn_value_layouts: &'a HashMap<String, crate::runtime_layout::FnValueLayout>,
         trait_method_slots: &'a HashMap<String, Vec<String>>,
@@ -2982,6 +3012,7 @@ impl<'a> FnCompiler<'a> {
             str_variadic_fns,
             variadic_intrinsic_fns,
             layout_intrinsics,
+            runtime_panic,
             monomorphizations,
             fn_value_layouts,
             trait_method_slots,
@@ -7898,15 +7929,19 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    fn is_runtime_panic(&self, call_name: &str) -> bool {
+        self.runtime_panic
+            .as_ref()
+            .is_some_and(|panic| panic.names.contains(call_name))
+    }
+
     fn emit_language_panic(&mut self, span: Span, message: &str) {
-        let panic_name = if self.fn_index.contains_key("panic.panic") {
-            Some("panic.panic")
-        } else if self.fn_index.contains_key("panic") {
-            Some("panic")
-        } else {
-            None
-        };
-        if let Some(panic_name) = panic_name {
+        let panic_name = self
+            .runtime_panic
+            .as_ref()
+            .map(|panic| panic.resolved.clone())
+            .filter(|name| self.fn_index.contains_key(name));
+        if let Some(panic_name) = panic_name.as_deref() {
             let message_idx = self
                 .chunk
                 .add_constant(ConstPoolEntry::Str(message.to_string()));
@@ -9572,11 +9607,10 @@ impl<'a> FnCompiler<'a> {
                         self.emit_usize_constant(dst, value);
                         return dst;
                     }
-                    // Panic calls: inject file/line constants from the call site span.
-                    // Only use the builtin panic path when the resolved name is the bare
-                    // builtin "panic"; a user-defined `fn panic` in a module keeps the
-                    // resolved module-qualified name and falls through to normal dispatch.
-                    if call_name.rsplit('.').next() == Some("panic") {
+                    // Calls resolved to the prelude-selected runtime panic receive
+                    // file/line constants from the call site span. Ordinary
+                    // functions spelled `panic` use normal dispatch.
+                    if self.is_runtime_panic(call_name) {
                         // A literal message is a format template (D-020): its
                         // placeholders and explicit arguments are formatted
                         // here, like `println`, and the handler receives the
@@ -10885,6 +10919,7 @@ impl<'a> FnCompiler<'a> {
                     self.str_variadic_fns,
                     self.variadic_intrinsic_fns,
                     self.layout_intrinsics,
+                    self.runtime_panic,
                     self.monomorphizations,
                     self.fn_value_layouts,
                     self.trait_method_slots,
@@ -11020,6 +11055,7 @@ impl<'a> FnCompiler<'a> {
                     self.str_variadic_fns,
                     self.variadic_intrinsic_fns,
                     self.layout_intrinsics,
+                    self.runtime_panic,
                     self.monomorphizations,
                     self.fn_value_layouts,
                     self.trait_method_slots,
@@ -12154,6 +12190,7 @@ fn main() i32 { unsafe { bump(0); } ret 0; }
                 module_name: Some("helpers".to_string()),
                 implicit_prelude: false,
                 runtime_string: None,
+                runtime_panic: None,
                 type_imports: Vec::new(),
                 start: 0,
                 end: module_len,
@@ -12164,6 +12201,7 @@ fn main() i32 { unsafe { bump(0); } ret 0; }
                 module_name: None,
                 implicit_prelude: false,
                 runtime_string: None,
+                runtime_panic: None,
                 type_imports,
                 start: module_len + 1,
                 end: merged.chars().count(),
@@ -12574,6 +12612,7 @@ fn main() void { show("{}", make_text()); }
                 module_name: Some("fmt".to_string()),
                 implicit_prelude: false,
                 runtime_string: None,
+                runtime_panic: None,
                 type_imports: Vec::new(),
                 start: 0,
                 end: module.len(),
@@ -12586,6 +12625,7 @@ fn main() void { show("{}", make_text()); }
                 module_name: None,
                 implicit_prelude: true,
                 runtime_string: Some("String".to_string()),
+                runtime_panic: None,
                 type_imports: Vec::new(),
                 start: module.len() + 1,
                 end: merged.len(),
@@ -12931,6 +12971,7 @@ fn main() void { outer[Word](7); }
             module_name: None,
             implicit_prelude: false,
             runtime_string: None,
+            runtime_panic: None,
             type_imports: Vec::new(),
             start: 0,
             end: source.chars().count(),
@@ -12985,6 +13026,7 @@ fn main() void { outer[Word](7); }
             module_name: None,
             implicit_prelude: false,
             runtime_string: None,
+            runtime_panic: None,
             type_imports: Vec::new(),
             start: 0,
             end: source.chars().count(),
@@ -13123,9 +13165,83 @@ fn main() i32 {
         );
     }
 
+    /// Compile one source file, optionally marking `runtime_panic` as the
+    /// prelude-selected panic declared in that file.
+    fn compile_with_runtime_panic(source: &str, runtime_panic: Option<&str>) -> Vec<Chunk> {
+        let source_files = vec![SourceFile {
+            path: "runtime-panic.qz".to_string(),
+            module_name: None,
+            implicit_prelude: false,
+            runtime_string: None,
+            runtime_panic: runtime_panic.map(str::to_owned),
+            type_imports: Vec::new(),
+            start: 0,
+            end: source.chars().count(),
+            line_start: 1,
+        }];
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let mut analyzer = Analyzer::new();
+        analyzer.set_source_files(source_files.clone());
+        let report = analyzer.analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        Codegen::new(&report)
+            .compile_program(&program, &source_files)
+            .expect("code generation should succeed")
+    }
+
+    fn carries_location_constant(chunk: &Chunk) -> bool {
+        chunk.constants.iter().any(
+            |constant| matches!(constant, ConstPoolEntry::Str(path) if path == "runtime-panic.qz"),
+        )
+    }
+
+    #[test]
+    fn only_the_selected_runtime_panic_receives_location_arguments() {
+        let ordinary = "fn panic(first: i32, second: i32) i32 { ret second; }
+                        fn main() i32 { ret panic(1, 7); }";
+        let chunks = compile_with_runtime_panic(ordinary, None);
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(
+            !carries_location_constant(main),
+            "an ordinary function spelled `panic` must use normal dispatch"
+        );
+
+        let selected = "fn halt(msg: str, file: str, line: usize, ...args: str) void {}
+                        fn panic(first: i32, second: i32) i32 { ret second; }
+                        fn main() i32 { if panic(1, 7) != 7 { halt(\"bad\"); } ret 0; }";
+        let chunks = compile_with_runtime_panic(selected, Some("halt"));
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(
+            carries_location_constant(main),
+            "the selected runtime panic receives the call-site file"
+        );
+        assert!(
+            main.code
+                .iter()
+                .all(|instruction| instruction.opcode != Opcode::Trap as u8),
+            "only language panics fall back to a trap"
+        );
+    }
+
+    #[test]
+    fn language_panics_reach_a_runtime_panic_selected_under_another_name() {
+        let chunks = compile_with_runtime_panic(
+            "fn halt(msg: str, file: str, line: usize, ...args: str) void {}
+             fn divide(divisor: i32) i32 { ret 42 / divisor; }
+             fn main() i32 { ret divide(2); }",
+            Some("halt"),
+        );
+        assert!(
+            chunks.iter().any(|chunk| chunk.name == "halt"),
+            "a language panic keeps the selected runtime panic reachable"
+        );
+        let divide = chunks.iter().find(|chunk| chunk.name == "divide").unwrap();
+        assert!(carries_location_constant(divide));
+    }
+
     #[test]
     fn integer_division_emits_language_panic_guard() {
-        let chunks = compile(
+        let chunks = compile_with_runtime_panic(
             r#"fn panic(msg: str, file: str, line: usize, args: str, count: usize) void {
                    var first: i32 = 1;
                    var second: i32 = 2;
@@ -13133,6 +13249,7 @@ fn main() i32 {
                }
                fn divide(divisor: i32) i32 { ret 42 / divisor; }
                fn main() i32 { ret divide(2); }"#,
+            Some("panic"),
         );
         let main = chunks.iter().find(|chunk| chunk.name == "divide").unwrap();
         assert!(

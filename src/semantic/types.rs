@@ -25,6 +25,9 @@ pub struct SourceFile {
     /// Original declaration exported as String by the loader-selected prelude.
     /// Present only on the defining source file; never inferred from its path.
     pub runtime_string: Option<String>,
+    /// Original function exported as `panic` by the loader-selected prelude.
+    /// Only calls resolved to this declaration receive the hidden location ABI.
+    pub runtime_panic: Option<String>,
     /// Import selectors and namespace members resolved to defining sources.
     pub type_imports: Vec<SourceTypeImport>,
     pub start: usize,

@@ -43,6 +43,32 @@ mod type_visibility;
 mod string_abi_tests;
 use power::PowerFacts;
 pub(crate) use power::power_result_type;
+
+/// Runtime panic declaration selected for semantic test programs.
+#[cfg(test)]
+const TEST_RUNTIME_PANIC: &str = "fn halt(msg: str, file: str, line: usize, ...args: str) void {}";
+
+/// Analyze `body` after a runtime panic named `halt`, as the loader would
+/// select it from the prelude.
+#[cfg(test)]
+fn analyze_with_runtime_panic(body: &str) -> SemanticReport {
+    use crate::{lexer::Lexer, parser::Parser};
+    let source = format!("{TEST_RUNTIME_PANIC}\n{body}");
+    let program = Parser::new(Lexer::new(&source).tokenize()).parse().unwrap();
+    let mut analyzer = Analyzer::new();
+    analyzer.set_source_files(vec![SourceFile {
+        path: "runtime-panic.qz".into(),
+        module_name: None,
+        implicit_prelude: false,
+        runtime_string: None,
+        runtime_panic: Some("halt".into()),
+        type_imports: Vec::new(),
+        start: 0,
+        end: source.chars().count(),
+        line_start: 1,
+    }]);
+    analyzer.analyze_program(&program)
+}
 mod optimize;
 mod ownership;
 mod places;
@@ -95,6 +121,11 @@ pub(super) struct MatchCandidate {
 pub struct Analyzer {
     pub(super) scopes: Vec<HashMap<String, Symbol>>,
     checked_string_abi: Option<CheckedStringAbi>,
+    /// Declaration of the loader-selected prelude `panic`, whose calls use the
+    /// hidden location ABI. Never inferred from a function's spelling.
+    runtime_panic_span: Option<Span>,
+    /// Registered name of that declaration, the target of language panics.
+    runtime_panic_name: Option<String>,
     type_name_bindings: HashMap<String, ResolvedBinding>,
     source_type_contexts: type_context::SourceTypeContexts,
     pending_type_imports: Vec<(String, String, Option<Span>, Option<Span>, Span)>,
@@ -2367,6 +2398,8 @@ impl Analyzer {
             library_char_ranges: Vec::new(),
             source_files: Vec::new(),
             checked_string_abi: None,
+            runtime_panic_span: None,
+            runtime_panic_name: None,
             type_name_bindings: HashMap::new(),
             source_type_contexts: type_context::SourceTypeContexts::default(),
             pending_type_imports: Vec::new(),
@@ -2429,6 +2462,11 @@ impl Analyzer {
 
     pub fn set_library_char_ranges(&mut self, ranges: Vec<std::ops::Range<usize>>) {
         self.library_char_ranges = ranges;
+    }
+
+    /// Whether `symbol` is the prelude-selected runtime `panic` declaration.
+    pub(super) fn is_runtime_panic(&self, symbol: &Symbol) -> bool {
+        symbol.kind == SymbolKind::Function && self.runtime_panic_span == Some(symbol.span)
     }
 
     pub fn set_source_files(&mut self, files: Vec<SourceFile>) {
@@ -3004,6 +3042,8 @@ impl Analyzer {
 
         self.errors.clear();
         self.checked_string_abi = None;
+        self.runtime_panic_span = None;
+        self.runtime_panic_name = None;
         self.type_name_bindings.clear();
         self.source_type_contexts = type_context::SourceTypeContexts::default();
         self.pending_type_imports.clear();
@@ -4503,6 +4543,7 @@ mod tests {
                 module_name: None,
                 implicit_prelude: false,
                 runtime_string: Some("String".into()),
+                runtime_panic: None,
                 type_imports: Vec::new(),
                 start: 0,
                 end: source.chars().count(),
@@ -5573,6 +5614,7 @@ fn main() void {}
                 module_name: Some("helpers".to_string()),
                 implicit_prelude: false,
                 runtime_string: None,
+                runtime_panic: None,
                 type_imports: Vec::new(),
                 start: 0,
                 end: module_len,
@@ -5583,6 +5625,7 @@ fn main() void {}
                 module_name: None,
                 implicit_prelude: false,
                 runtime_string: runtime.map(str::to_owned),
+                runtime_panic: None,
                 type_imports,
                 start: module_len + 1,
                 end: merged.chars().count(),

@@ -114,6 +114,15 @@ impl Analyzer {
                 if body.is_some() {
                     self.source_function_symbols.insert(register_name.clone());
                 }
+                if self
+                    .source_files
+                    .iter()
+                    .find(|file| file.contains(item.span))
+                    .is_some_and(|file| file.runtime_panic.as_deref() == Some(name.as_str()))
+                {
+                    self.runtime_panic_span = Some(item.span);
+                    self.runtime_panic_name = Some(register_name.clone());
+                }
                 let declared = self.declare(
                     register_name.clone(),
                     Symbol {

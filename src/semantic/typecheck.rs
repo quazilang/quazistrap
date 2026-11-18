@@ -6404,13 +6404,7 @@ impl Analyzer {
                         &object_value_ty,
                         Some(TypeKind::Array { .. } | TypeKind::Slice { .. } | TypeKind::Bytes)
                     ) {
-                        let from = self
-                            .current_function
-                            .last()
-                            .cloned()
-                            .unwrap_or_else(|| "__program__".to_string());
-                        self.add_dependency_edge(DependencyKind::Call, &from, "panic.panic");
-                        self.add_dependency_edge(DependencyKind::Call, &from, "panic");
+                        self.require_language_panic();
                     }
 
                     if let Some(first_eval) = idx_evals.first()
@@ -7235,7 +7229,7 @@ impl Analyzer {
         // Special case: panic() — codegen injects file/line hidden args after msg.
         // User writes panic("msg") or panic("msg", "extra"); we type-check as if
         // the signature were panic(msg: str, ...args: str).
-        let is_panic = name.rsplit('.').next() == Some("panic");
+        let is_panic = self.is_runtime_panic(&sym);
         let effective_non_variadic_count = if is_panic { 1 } else { non_variadic_count };
         if sym
             .attributes
@@ -7577,15 +7571,7 @@ impl Analyzer {
                             || (matches!(op, BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul)
                                 && Self::is_integer(l))
                         {
-                            let from = self
-                                .current_function
-                                .last()
-                                .cloned()
-                                .unwrap_or_else(|| "__program__".to_string());
-                            self.add_dependency_edge(DependencyKind::Call, &from, "panic.panic");
-                            // Non-namespaced/library compilation can expose the same
-                            // prelude-compatible function under its bare name.
-                            self.add_dependency_edge(DependencyKind::Call, &from, "panic");
+                            self.require_language_panic();
                         }
                         Some(l.clone())
                     }
@@ -8092,14 +8078,17 @@ impl Analyzer {
 
     /// Keep the prelude panic path reachable from the current function for
     /// operations that may panic implicitly (checked integer arithmetic).
-    fn require_language_panic(&mut self) {
+    pub(super) fn require_language_panic(&mut self) {
+        let Some(panic) = self.runtime_panic_name.clone() else {
+            // Without a selected runtime panic, language panics trap.
+            return;
+        };
         let from = self
             .current_function
             .last()
             .cloned()
             .unwrap_or_else(|| "__program__".to_string());
-        self.add_dependency_edge(DependencyKind::Call, &from, "panic.panic");
-        self.add_dependency_edge(DependencyKind::Call, &from, "panic");
+        self.add_dependency_edge(DependencyKind::Call, &from, &panic);
     }
 
     /// Trait bounds visible in the current function: its own and, in an impl

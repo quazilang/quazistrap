@@ -329,6 +329,7 @@ mod tests {
             module_name: None,
             implicit_prelude: false,
             runtime_string: None,
+            runtime_panic: None,
             type_imports: Vec::new(),
             start: 0,
             end: source.chars().count(),

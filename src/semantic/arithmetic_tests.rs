@@ -368,17 +368,22 @@ fn arithmetic_nested_string_views_keep_their_reference_representation() {
 #[test]
 fn arithmetic_generic_division_retains_its_hidden_panic_dependency() {
     for expression in ["ret a/b;", "ret a%b;", "a/=b;ret a;", "a%=b;ret a;"] {
-        let report = analyze(&format!(
-            "fn calc[T](a:T,b:T)T{{{expression}}}fn main()void{{calc[i32](4,0);}}"
-        ));
+        let source =
+            format!("fn calc[T](a:T,b:T)T{{{expression}}}fn main()void{{calc[i32](4,0);}}");
+        let report = analyze_with_runtime_panic(&source);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-        assert!(
+        let panics_from_calc = |report: &SemanticReport| -> Vec<String> {
             report
                 .dependency_graph
                 .edges
                 .iter()
-                .any(|edge| edge.from == "calc" && edge.to == "panic.panic")
-        );
+                .filter(|edge| edge.from == "calc" && edge.to != "calc")
+                .map(|edge| edge.to.clone())
+                .collect()
+        };
+        assert_eq!(panics_from_calc(&report), ["halt"]);
+        // Without a selected runtime panic, a language panic traps.
+        assert!(panics_from_calc(&analyze(&source)).is_empty());
     }
 }
 

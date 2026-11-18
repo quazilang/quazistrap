@@ -148,15 +148,22 @@ fn power_integer_capable_templates_retain_hidden_panic_dependency() {
         "fn calc[T](a:T,b:T)T{ret a**b;}fn main()void{calc[i32](2,3);}",
         "fn calc(a:i32,b:i32)i32{ret a**b;}",
     ] {
-        let report = valid(source);
-        for target in ["panic.panic", "panic"] {
-            assert!(
-                report
-                    .dependency_graph
-                    .edges
-                    .iter()
-                    .any(|edge| edge.from == "calc" && edge.to == target)
-            );
-        }
+        let report = analyze_with_runtime_panic(source);
+        assert!(report.errors.is_empty(), "{source}: {:?}", report.errors);
+        assert!(
+            report
+                .dependency_graph
+                .edges
+                .iter()
+                .any(|edge| edge.from == "calc" && edge.to == "halt")
+        );
+        assert!(
+            valid(source)
+                .dependency_graph
+                .edges
+                .iter()
+                .all(|edge| edge.from != "calc"),
+            "without a selected runtime panic, a language panic traps"
+        );
     }
 }

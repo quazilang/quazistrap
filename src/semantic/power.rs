@@ -258,13 +258,7 @@ impl Analyzer {
             );
         }
         if !floating_result {
-            let from = self
-                .current_function
-                .last()
-                .cloned()
-                .unwrap_or_else(|| "__program__".into());
-            self.add_dependency_edge(DependencyKind::Call, &from, "panic.panic");
-            self.add_dependency_edge(DependencyKind::Call, &from, "panic");
+            self.require_language_panic();
         }
         ExprEval {
             ty: Some(result_ty),

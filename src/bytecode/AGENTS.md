@@ -65,7 +65,7 @@ matching artifact ownership boundary.
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. Current source cache is QZC37. QZC30 required defining-source
+  and reserialization. Current source cache is QZC38. QZC30 required defining-source
   alias bodies. QZC29 introduced checked runtime String identity/layout.
   QZC28 introduced typed power; v27 operator requirements;
   v26 arithmetic requirements; v25 numeric mutations; v24 raw f32 conversion and
@@ -141,6 +141,10 @@ content-bound ownership-artifact envelope.
   guard. This rejects negative signed indices too. Failure calls the language
   panic path when present and then executes `Trap`; `std = false` executes the
   deterministic trap directly. Unsafe C flexible-array indexing stays unchecked.
+- The language panic path is the function the loader selects as the prelude's
+  public `panic` export (`SourceFile.runtime_panic`). Only calls resolved to
+  that declaration receive hidden file and line arguments, and language panics
+  depend on its registered name. Other functions named `panic` are ordinary.
 - `Lea.flags > 0` records the exact length of a virtual-register block that must
   remain contiguous and address-stable. Current codegen always emits explicit
   metadata, including `1` for scalar `&local`. QZI serialization/reading rejects
