@@ -91,8 +91,13 @@ For a resolved ordinary direct call with a fixed signature and a source body,
 the graph uses lowering's declaration-slot schedule for its actual arguments.
 The call gets an `Invoke` event keyed by the source call span only after the
 actuals complete. A `?` in an earlier argument can bypass later arguments and
-the invocation. Named arguments follow parameter order. Generic, variadic,
-indirect, method, foreign, unsafe and diverging calls remain opaque, as do
+the invocation. Named arguments follow parameter order. A method call that
+analysis resolves to a source-bodied inherent method with a receiver actual
+evaluates the receiver expression first, then the actuals in declaration-slot
+order, matching lowering's resolved-target path. Namespace calls (modules,
+enum constructors, associated functions) have no receiver actual and `free`
+has a separate destruction path; both stay opaque. Generic, variadic,
+indirect, dynamic, foreign, unsafe and diverging calls remain opaque, as do
 calls with special lowering such as layout queries.
 
 Refinement is iterative and charges expansion to the existing aggregate budget.

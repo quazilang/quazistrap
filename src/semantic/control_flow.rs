@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use super::{
-    Analyzer, OwnershipCallArguments, OwnershipResult, item_should_include,
+    Analyzer, OwnershipArgumentRole, OwnershipCallArguments, OwnershipResult, item_should_include,
     ownership::SourceOwnershipCall,
 };
 use crate::cancel::Cancelled;
@@ -759,13 +759,42 @@ where
         if !matches!(callee.node, ExprKind::Ident(_)) {
             return None;
         }
+        self.scheduled_call_site(expression, false)
+    }
+
+    /// A method call lowered through ordinary resolved inherent dispatch: the
+    /// receiver value first, then the declaration-slot actuals. Namespace
+    /// calls have no receiver actual; `free` has a separate destruction path.
+    fn method_call_site(
+        &self,
+        expression: &Expr,
+        method: &str,
+    ) -> Option<&'b OwnershipCallArguments> {
+        if method == "free" {
+            return None;
+        }
+        let arguments = self.scheduled_call_site(expression, true)?;
+        arguments
+            .actuals
+            .iter()
+            .any(|actual| actual.role == OwnershipArgumentRole::Receiver)
+            .then_some(arguments)
+    }
+
+    /// Argument facts for a resolved source-bodied call whose lowering follows
+    /// the ordinary schedule. `receiver` selects methods or plain functions.
+    fn scheduled_call_site(
+        &self,
+        expression: &Expr,
+        receiver: bool,
+    ) -> Option<&'b OwnershipCallArguments> {
         let site = self.sites?.get(&(expression.span.start, expression.span.end))?;
         let (name, _) = site.target.as_ref()?;
         let signature = self.analyzer.ownership_signature_index.get(name)?;
         let symbol = self.analyzer.resolve_symbol(name)?;
         if !signature.has_body
             || signature.generic_template
-            || signature.receiver.is_some()
+            || signature.receiver.is_some() != receiver
             || signature.variadic.is_some()
             || signature.result == OwnershipResult::Never
             || symbol.unsafe_fn
@@ -798,20 +827,38 @@ where
             self.tick(expression.span)?;
             match expression_control(expression) {
                 ExpressionControl::Opaque => {
-                    let arguments = if let ExprKind::Call {
-                        callee, args, named_args, ..
-                    } = &expression.node
-                        && let Some(site) = self.direct_call_site(expression, callee)
-                    {
-                        self.budget.charge(1 + site.actuals.len() * 3, expression.span)?;
-                        ordered_call_arguments(
-                            site.actuals.iter().map(|arg| (&arg.role, arg.parameter_slot)),
+                    let arguments = match &expression.node {
+                        ExprKind::Call {
+                            callee,
                             args,
                             named_args,
-                        )
-                        .ok()
-                    } else {
-                        None
+                            ..
+                        } => self
+                            .direct_call_site(expression, callee)
+                            .map(|site| (site, None, args, named_args)),
+                        ExprKind::MethodCall {
+                            object,
+                            method,
+                            args,
+                            named_args,
+                            ..
+                        } => self
+                            .method_call_site(expression, method)
+                            .map(|site| (site, Some(object.as_ref()), args, named_args)),
+                        _ => None,
+                    };
+                    let arguments = match arguments {
+                        Some((site, receiver, args, named_args)) => {
+                            self.budget.charge(1 + site.actuals.len() * 3, expression.span)?;
+                            ordered_call_arguments(
+                                site.actuals.iter().map(|arg| (&arg.role, arg.parameter_slot)),
+                                args,
+                                named_args,
+                            )
+                            .ok()
+                            .map(|ordered| receiver.into_iter().chain(ordered).collect::<Vec<_>>())
+                        }
+                        None => None,
                     };
                     if let Some(arguments) = arguments {
                         let span = expression.span;

@@ -988,3 +988,64 @@ fn source_control_flow_named_increments_have_result_identities() {
     }
     graph.validate().unwrap();
 }
+
+#[test]
+fn source_control_flow_invokes_resolved_methods_after_receiver_and_slots() {
+    let source = r#"
+struct Counter { value: i32 }
+impl Counter {
+    fn add(self: &Counter, first: i32, second: i32) i32 { ret self.value + first + second; }
+}
+fn make() Counter { ret Counter { value: 1 }; }
+fn step(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn sum(value: Option[i32]) Option[i32] {
+    const counter = make();
+    const total = counter.add(second = later(), first = step(value)?);
+    ret Some(total);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "sum")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let invoke = |needle: &str| {
+        let start = source.find(needle).unwrap();
+        graph
+            .blocks
+            .iter()
+            .position(|block| {
+                block.events.iter().any(|event| {
+                    matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == start)
+                })
+            })
+            .unwrap_or_else(|| panic!("missing invoke {needle}"))
+    };
+    let add = invoke("counter.add(");
+    let step = invoke("step(value)?");
+    let later = invoke("later(), first");
+    let failure = graph
+        .blocks
+        .iter()
+        .find_map(|block| match block.terminator {
+            OwnershipFlowTerminator::Branch {
+                condition: OwnershipBranchCondition::TrySuccess { .. },
+                else_target,
+                ..
+            } => Some(else_target),
+            _ => None,
+        })
+        .unwrap();
+    // Declaration slots order the actuals: `first` before `second`.
+    assert!(reachable(graph, step).contains(&later));
+    assert!(!reachable(graph, later).contains(&step));
+    assert!(reachable(graph, later).contains(&add));
+    assert!(!reachable(graph, failure).contains(&add));
+}
