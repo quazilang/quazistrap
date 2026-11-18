@@ -134,6 +134,13 @@ evaluates the object and records a `Field` result. Objects that are names or
 name chains (`value.field`, `module.constant`, `Enum.Variant`) stay opaque:
 they may be namespaces and evaluate nothing with effects.
 
+A variant constructor call (`Some(value)`, `Ok(value)`) evaluates its
+positional payloads in source order, as lowering does, and records a
+`VariantConstructor` result. It is recognized like the borrow checker does:
+analysis types the call as an enum with that variant and the callee resolves
+to no function; a callee bound to a local value or parameter stays a call.
+Allocation and payload moves are unmodeled.
+
 Other calls, multi-index reads and updates, guarded matches and
 aggregate initializers remain whole opaque regions. Controls nested inside
 these regions are not individually expanded. Multi-input iteration regions also

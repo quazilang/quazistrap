@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use super::{
-    Analyzer, OwnershipArgumentRole, OwnershipCallArguments, OwnershipResult, item_should_include,
-    ownership::SourceOwnershipCall,
+    Analyzer, OwnershipArgumentRole, OwnershipCallArguments, OwnershipResult, SymbolKind,
+    item_should_include, ownership::SourceOwnershipCall,
 };
 use crate::cancel::Cancelled;
 use crate::evaluation::{
@@ -141,6 +141,11 @@ pub enum OwnershipExpressionResult {
         op: IncDecOp,
         target: Span,
         prefix: bool,
+    },
+    /// The positional payloads completed in source order and the named enum
+    /// variant is constructed; allocation and payload moves are unmodeled.
+    VariantConstructor {
+        variant: String,
     },
     /// The object completed and the named field is read; the load is unmodeled.
     Field {
@@ -789,6 +794,34 @@ where
         self.scheduled_call_site(expression, false)
     }
 
+    /// `Variant(payloads...)`: analysis types the call as an enum with that
+    /// variant, and the callee is not a function or a local value. Lowering
+    /// evaluates the positional payloads in source order.
+    fn variant_constructor<'e>(
+        &self,
+        expression: &Expr,
+        callee: &'e Expr,
+        named_args: &[(String, Expr)],
+    ) -> Option<&'e str> {
+        let ExprKind::Ident(variant) = &callee.node else {
+            return None;
+        };
+        let local = self
+            .analyzer
+            .retention_annotation(callee)
+            .and_then(|annotation| annotation.resolved_binding.as_ref())
+            .is_some_and(|binding| {
+                matches!(
+                    binding.kind,
+                    SymbolKind::Variable { .. } | SymbolKind::Parameter
+                )
+            });
+        (named_args.is_empty()
+            && !local
+            && self.analyzer.bc_is_enum_constructor(expression, variant))
+        .then_some(variant.as_str())
+    }
+
     /// A method call lowered through ordinary resolved inherent dispatch: the
     /// receiver value first, then the declaration-slot actuals. Namespace
     /// calls have no receiver actual; `free` has a separate destruction path.
@@ -864,6 +897,47 @@ where
         while let Some((current, expression, normal)) = pending.pop() {
             self.tick(expression.span)?;
             match expression_control(expression) {
+                ExpressionControl::Opaque
+                    if let ExprKind::Call {
+                        callee,
+                        args,
+                        named_args,
+                        ..
+                    } = &expression.node
+                        && let Some(variant) =
+                            self.variant_constructor(expression, callee, named_args) =>
+                {
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::VariantConstructor {
+                            variant: variant.to_string(),
+                        },
+                        normal,
+                        scopes,
+                    )?;
+                    self.budget.charge(args.len() * 3, expression.span)?;
+                    let mut next = complete;
+                    let mut reversed = args.iter().rev().peekable();
+                    while let Some(payload) = reversed.next() {
+                        let entry = if reversed.peek().is_some() {
+                            self.block(scopes, payload.span)?
+                        } else {
+                            current
+                        };
+                        pending.push((entry, payload, next));
+                        next = entry;
+                    }
+                    if args.is_empty() {
+                        self.terminate(
+                            current,
+                            OwnershipFlowTerminator::Goto {
+                                target: complete,
+                                exited_scopes: Vec::new(),
+                            },
+                            expression.span,
+                        )?;
+                    }
+                }
                 ExpressionControl::Opaque => {
                     let arguments = match &expression.node {
                         ExprKind::Call {

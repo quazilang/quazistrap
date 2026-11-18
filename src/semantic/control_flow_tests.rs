@@ -1264,3 +1264,58 @@ fn main() void {}
     }));
     graph.validate().unwrap();
 }
+
+#[test]
+fn source_control_flow_variant_constructors_schedule_payloads() {
+    let source = r#"
+fn produce(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn wrap(value: Option[i32]) Option[i32] {
+    const choice: Result[i32, i32] = Ok(later());
+    ret Some(produce(value)? + later());
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "wrap")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let constructors: Vec<(usize, &str)> = graph
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(id, block)| block.events.iter().map(move |event| (id, event)))
+        .filter_map(|(id, event)| match event {
+            OwnershipFlowEvent::ExpressionResult {
+                value: OwnershipExpressionResult::VariantConstructor { variant },
+                ..
+            } => Some((id, variant.as_str())),
+            _ => None,
+        })
+        .collect();
+    let names: BTreeSet<&str> = constructors.iter().map(|(_, name)| *name).collect();
+    assert_eq!(names, BTreeSet::from(["Ok", "Some"]));
+    let some = constructors
+        .iter()
+        .find(|(_, name)| *name == "Some")
+        .unwrap()
+        .0;
+    let produce = source.find("produce(value)?").unwrap();
+    let invoke = graph
+        .blocks
+        .iter()
+        .position(|block| {
+            block
+                .events
+                .iter()
+                .any(|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == produce))
+        })
+        .unwrap();
+    assert!(reachable(graph, invoke).contains(&some));
+}

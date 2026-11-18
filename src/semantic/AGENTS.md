@@ -98,7 +98,8 @@ operand control shared with codegen for unary/eager-binary/short-circuit/try
 forms, plain/compound assignments and `++`/`--` of a bare (grouped) name, and
 updates of dereference, field and single-index places (address operands, then
 value, then `PlaceUpdate`), single-index reads (object, index, `Index`) and
-field reads of non-name objects (object, `Field`).
+field reads of non-name objects (object, `Field`) and enum variant constructors
+(payloads, `VariantConstructor`).
 Result events distinguish group/cast/unary/binary completion, logical
 normalization, payload extraction, the compound target read, named (compound)
 assignment and named increment; they prove no typed access or storage alias.

@@ -2633,7 +2633,7 @@ impl Analyzer {
             .and_then(|annotation| annotation.ty.clone())
     }
 
-    fn bc_is_enum_constructor(&self, expr: &Expr, variant: &str) -> bool {
+    pub(super) fn bc_is_enum_constructor(&self, expr: &Expr, variant: &str) -> bool {
         if self.bc_resolved_call_name(expr).is_some_and(|name| {
             self.resolve_symbol(name)
                 .is_some_and(|symbol| !matches!(symbol.ty, Some(TypeKind::Error)))
