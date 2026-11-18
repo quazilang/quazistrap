@@ -1819,3 +1819,26 @@ fn main() void {}
     assert!(reachable(graph, inner).contains(&outer));
     assert!(!reachable(graph, inner).contains(&value));
 }
+
+#[test]
+fn format_placeholder_calls_are_recorded_in_the_ownership_call_graph() {
+    let source = r#"
+fn show(template: str, ...args: Display) void {}
+fn later() i32 { ret 2; }
+fn report() void { show("value {later()}"); }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let caller = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "report")
+        .unwrap();
+    let start = source.find("later()}").unwrap();
+    assert!(
+        caller.calls.iter().any(|call| call.span.start == start),
+        "{:?}",
+        caller.calls.iter().map(|call| (call.span, &call.target)).collect::<Vec<_>>()
+    );
+}
