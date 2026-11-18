@@ -25,9 +25,12 @@ use crate::semantic::{ConstValue, OwnershipArgumentRole, SemanticReport};
 #[path = "power.rs"]
 mod power;
 
-fn chunk_requires_owned_callable_companions(chunk: &Chunk) -> bool {
+fn chunk_requires_generated_companions(chunk: &Chunk) -> bool {
     chunk.constants.iter().any(|constant| {
-        matches!(constant, ConstPoolEntry::FnAddr(name) if name.starts_with("__quazi_closure_") || name.starts_with("__quazi_fwd_"))
+        matches!(constant, ConstPoolEntry::FnAddr(name) if
+            name.starts_with("__quazi_closure_")
+                || name.starts_with("__quazi_fwd_")
+                || name.starts_with("__quazi_drop_"))
     })
 }
 
@@ -558,7 +561,10 @@ impl<'a> Codegen<'a> {
     fn restore_codegen_unit(&mut self, name: &str, source_path: &str) -> Option<Chunk> {
         let unit = self.incremental_seed.get(name)?;
         let current_hash = self.incremental_source_hashes.get(source_path)?;
-        if unit.source_path != source_path || &unit.source_hash != current_hash {
+        if unit.source_path != source_path
+            || &unit.source_hash != current_hash
+            || chunk_requires_generated_companions(&unit.chunk)
+        {
             return None;
         }
         let mut chunk = unit.chunk.clone();
@@ -593,7 +599,7 @@ impl<'a> Codegen<'a> {
             let Some(source_path) = unit_sources.get(&chunk.name) else {
                 continue;
             };
-            if chunk_requires_owned_callable_companions(chunk) {
+            if chunk_requires_generated_companions(chunk) {
                 continue;
             }
             let Some(source_hash) = self.incremental_source_hashes.get(source_path).copied() else {
@@ -15484,14 +15490,14 @@ fn main() i32 {
     }
 
     #[test]
-    fn incremental_units_with_callable_companions_are_recompiled() {
-        for companion in ["__quazi_closure_0", "__quazi_fwd_one"] {
+    fn incremental_units_with_generated_companions_are_recompiled() {
+        for companion in ["__quazi_closure_0", "__quazi_fwd_one", "__quazi_drop_List"] {
             let mut chunk = Chunk::new("owner");
             chunk
                 .constants
                 .push(ConstPoolEntry::FnAddr(companion.to_string()));
             assert!(
-                chunk_requires_owned_callable_companions(&chunk),
+                chunk_requires_generated_companions(&chunk),
                 "partial QZC restore must not separate an owner from {companion}"
             );
         }

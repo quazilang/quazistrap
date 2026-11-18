@@ -29,6 +29,14 @@ fn main() i32 {
 
 STRUCTS_EXPECTED = "1 3\ndrop 3\ndrop 2\ndrop 1\n"
 
+INCREMENTAL = """import ./helper;
+enum List { Cons(i32, List), Nil }
+fn main() i32 {
+    const list: List = List.Cons(1, List.Cons(2, List.Nil));
+    ret helper.calculation();
+}
+"""
+
 
 def run_program(qz, root, name, source):
     path = root / name
@@ -60,6 +68,20 @@ def main():
         assert int(run.stderr.strip().splitlines()[-1]) < 20000, run.stderr
         structs = run_program(qz, root, "structs", STRUCTS)
         assert structs == STRUCTS_EXPECTED, structs
+        incremental = root / "incremental"
+        (incremental / "src").mkdir(parents=True)
+        (incremental / "quazi.toml").write_text(
+            '[package]\nname="incremental"\n[build]\nentry="src/main.qz"\n')
+        (incremental / "src/main.qz").write_text(INCREMENTAL)
+        helper = incremental / "src/helper.qz"
+        binary = incremental / "app"
+        for expected in [1, 2]:
+            helper.write_text(f"pub fn calculation() i32 {{ ret {expected}; }}\n")
+            build = subprocess.run([qz, "build", "--silent", "-o", str(binary)],
+                                   cwd=incremental, text=True, capture_output=True, timeout=600)
+            assert build.returncode == 0, build.stdout + build.stderr
+            run = subprocess.run([str(binary)], timeout=60)
+            assert run.returncode == expected, run.returncode
     print("PASS recursive types: nested enum and struct payloads destroyed once, consuming match, no leak")
 
 
