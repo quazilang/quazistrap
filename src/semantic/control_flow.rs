@@ -111,6 +111,11 @@ pub enum OwnershipFlowEvent {
     FormatInvoke {
         span: Span,
     },
+    /// A call of an `@api` or `@syscall` declaration after its positional
+    /// arguments complete in source order. Foreign effects are unknown.
+    ForeignInvoke {
+        span: Span,
+    },
     /// A call through a local function value or closure, reached after its
     /// positional arguments complete in source order. The target and its
     /// effects are unknown.
@@ -910,6 +915,22 @@ where
         self.scheduled_call_site(expression, false)
     }
 
+    /// A call resolved to an `@api` or `@syscall` declaration with positional
+    /// arguments only. Lowering evaluates them in order (a module namespace
+    /// object is not evaluated) and calls the foreign symbol or wrapper.
+    fn foreign_call(&self, expression: &Expr, named_args: &[(String, Expr)]) -> bool {
+        named_args.is_empty()
+            && self
+                .analyzer
+                .retention_annotation(expression)
+                .and_then(|annotation| annotation.resolved_fn.as_deref())
+                .and_then(|name| self.analyzer.resolve_symbol(name))
+                .is_some_and(|symbol| {
+                    let attribute = |wanted: &str| symbol.attributes.iter().any(|a| a == wanted);
+                    (attribute("api") || attribute("syscall")) && !attribute("intrinsic")
+                })
+    }
+
     /// A direct call of a non-generic format function with positional
     /// arguments, lowered by expanding its literal template.
     fn format_call(&self, expression: &Expr, callee: &Expr, named_args: &[(String, Expr)]) -> bool {
@@ -1212,6 +1233,38 @@ where
                             self.evaluate_opaque(current, &[expression], kind, normal, scopes)?;
                         }
                     }
+                }
+                ExpressionControl::Opaque
+                    if let ExprKind::Call {
+                        args, named_args, ..
+                    }
+                    | ExprKind::MethodCall {
+                        args, named_args, ..
+                    } = &expression.node
+                        && self.foreign_call(expression, named_args) =>
+                {
+                    let span = expression.span;
+                    let invocation = self.block(scopes, span)?;
+                    self.graph.blocks[invocation]
+                        .events
+                        .push(OwnershipFlowEvent::ForeignInvoke { span });
+                    self.terminate(
+                        invocation,
+                        OwnershipFlowTerminator::Opaque {
+                            normal,
+                            early_return: None,
+                        },
+                        span,
+                    )?;
+                    self.budget.charge(1 + args.len() * 3, span)?;
+                    self.schedule_sequence(
+                        &mut pending,
+                        current,
+                        args.iter().collect(),
+                        invocation,
+                        scopes,
+                        span,
+                    )?;
                 }
                 ExpressionControl::Opaque
                     if let ExprKind::Call {

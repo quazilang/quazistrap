@@ -128,8 +128,12 @@ trees: a family is rebuilt with the requested expansions, up to
 `FORMAT_EXPANSION_ROUNDS` times for format calls nested inside expansions,
 restoring its budget counters before each rebuild. Calls without a literal
 template stay opaque, as do placeholder calls (analysis records no call site
-for them, so their region is evaluated whole). Other variadic and foreign
-calls remain opaque, as do the runtime panic and calls
+for them, so their region is evaluated whole).
+
+A call resolved to an `@api` or `@syscall` declaration, directly or through a
+module (`posix.write(...)`), evaluates its positional arguments in source
+order and records a `ForeignInvoke` with unknown effects. Intrinsics keep
+their special lowering and stay opaque, as do other variadic calls, as do the runtime panic and calls
 with special lowering such as layout queries.
 
 Refinement is iterative and charges expansion to the existing aggregate budget.

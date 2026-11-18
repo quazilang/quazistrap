@@ -1842,3 +1842,44 @@ fn main() void {}
         caller.calls.iter().map(|call| (call.span, &call.target)).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn source_control_flow_foreign_calls_invoke_after_arguments() {
+    let source = r#"
+@api("labs") unsafe fn labs(value: i64) i64;
+@syscall(60) fn leave(code: i32) isize { }
+fn step(value: Option[i64]) Option[i64] { ret value; }
+fn measure(value: Option[i64]) Option[i64] {
+    var result: i64 = 0;
+    unsafe { result = labs(step(value)?); }
+    ret Some(result);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "measure")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+            .unwrap()
+    };
+    let at = |needle: &str| source.find(needle).unwrap();
+    let argument = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("step(value)?")),
+    );
+    let foreign = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::ForeignInvoke { span } if span.start == at("labs(step")),
+    );
+    assert!(reachable(graph, argument).contains(&foreign));
+    assert!(!reachable(graph, foreign).contains(&argument));
+}
