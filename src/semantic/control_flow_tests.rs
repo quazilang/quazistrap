@@ -1612,3 +1612,58 @@ fn main() void {}
     assert!(!reachable(graph, fail).contains(&after));
     graph.validate().unwrap();
 }
+
+#[test]
+fn source_control_flow_local_function_values_invoke_after_arguments() {
+    let source = r#"
+fn step(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn apply(value: Option[i32], callback: fn(i32, i32) i32) Option[i32] {
+    const total = callback(step(value)?, later());
+    ret Some(total);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "apply")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+            .unwrap()
+    };
+    let at = |needle: &str| source.find(needle).unwrap();
+    let first = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("step(value)?")),
+    );
+    let second = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("later())")),
+    );
+    let indirect = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::IndirectInvoke { span } if span.start == at("callback(step")),
+    );
+    let failure = graph
+        .blocks
+        .iter()
+        .find_map(|block| match block.terminator {
+            OwnershipFlowTerminator::Branch {
+                condition: OwnershipBranchCondition::TrySuccess { .. },
+                else_target,
+                ..
+            } => Some(else_target),
+            _ => None,
+        })
+        .unwrap();
+    assert!(reachable(graph, first).contains(&second));
+    assert!(reachable(graph, second).contains(&indirect));
+    assert!(!reachable(graph, failure).contains(&indirect));
+}

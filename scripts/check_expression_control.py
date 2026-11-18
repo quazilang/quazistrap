@@ -148,6 +148,13 @@ fn check_places() i32 {
         if ordered.second + reversed.first != 5 { ret 41; }
     }
     if log != 1234 { ret 42; }
+    log = 0;
+    var add: fn(i32, i32) i32 = |left, right| left + right;
+    unsafe {
+        // Arguments of a call through a function value run left to right.
+        if add(stamp(&log, 1, 1), stamp(&log, 2, 2)) != 3 { ret 43; }
+    }
+    if log != 12 { ret 44; }
     ret 0;
 }
 fn main() i32 {
@@ -208,7 +215,7 @@ def check(qz, root, before=None):
     run([str(qz), "build", str(artifact), *common, "-c", "--target",
          "x86_64-windows", "-o", str(coff)], root)
     assert coff.read_bytes()[:2] == b"\x64\x86", "expected x86-64 COFF"
-    print("PASS expression control: 42 checks, native, QZI-only, Windows COFF")
+    print("PASS expression control: 44 checks, native, QZI-only, Windows COFF")
 
 
 def main():

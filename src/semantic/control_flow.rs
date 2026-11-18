@@ -96,6 +96,12 @@ pub enum OwnershipFlowEvent {
     /// The direct source call at this span is reached after all actuals
     /// complete. Its result and storage effects remain opaque.
     Invoke { span: Span },
+    /// A call through a local function value or closure, reached after its
+    /// positional arguments complete in source order. The target and its
+    /// effects are unknown.
+    IndirectInvoke {
+        span: Span,
+    },
     /// Unknown protocol/storage effects; never a resolved call or effect proof.
     IterationProtocol {
         span: Span,
@@ -851,6 +857,24 @@ where
         self.scheduled_call_site(expression, false)
     }
 
+    /// `value(args...)` where `value` is a local or parameter holding a
+    /// function value: lowering reads it, then evaluates the positional
+    /// arguments in source order, then calls indirectly.
+    fn local_value_call(&self, callee: &Expr, named_args: &[(String, Expr)]) -> bool {
+        named_args.is_empty()
+            && matches!(callee.node, ExprKind::Ident(_))
+            && self
+                .analyzer
+                .retention_annotation(callee)
+                .and_then(|annotation| annotation.resolved_binding.as_ref())
+                .is_some_and(|binding| {
+                    matches!(
+                        binding.kind,
+                        SymbolKind::Variable { .. } | SymbolKind::Parameter
+                    )
+                })
+    }
+
     /// `Variant(payloads...)`: analysis types the call as an enum with that
     /// variant, and the callee is not a function or a local value. Lowering
     /// evaluates the positional payloads in source order.
@@ -1016,6 +1040,38 @@ where
                         complete,
                         scopes,
                         expression.span,
+                    )?;
+                }
+                ExpressionControl::Opaque
+                    if let ExprKind::Call {
+                        callee,
+                        args,
+                        named_args,
+                        ..
+                    } = &expression.node
+                        && self.local_value_call(callee, named_args) =>
+                {
+                    let span = expression.span;
+                    let invocation = self.block(scopes, span)?;
+                    self.graph.blocks[invocation]
+                        .events
+                        .push(OwnershipFlowEvent::IndirectInvoke { span });
+                    self.terminate(
+                        invocation,
+                        OwnershipFlowTerminator::Opaque {
+                            normal,
+                            early_return: None,
+                        },
+                        span,
+                    )?;
+                    self.budget.charge(1 + args.len() * 3, span)?;
+                    self.schedule_sequence(
+                        &mut pending,
+                        current,
+                        args.iter().collect(),
+                        invocation,
+                        scopes,
+                        span,
                     )?;
                 }
                 ExpressionControl::Opaque

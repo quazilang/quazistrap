@@ -110,7 +110,10 @@ separate destruction path) stay opaque. Generic targets follow the same
 schedule (lowering calls the specialization after the same actuals).
 Unsafe source functions follow the same schedule (`unsafe` is only a
 permission). A call whose callee has the never type `!` ends its path: the
-`Invoke` block stops with every active scope exited. Variadic, indirect,
+`Invoke` block stops with every active scope exited. A call through a local
+or parameter holding a function value or closure (`callback(a, b)`)
+evaluates its positional arguments in source order and records an
+`IndirectInvoke`: the target and its effects are unknown. Variadic,
 dynamic and foreign calls remain opaque, as do the runtime panic and calls
 with special lowering such as layout queries.
 
