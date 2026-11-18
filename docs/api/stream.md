@@ -85,8 +85,8 @@ dropped, because a failure could not be reported. `buffered()` is the number
 of waiting bytes; `into_inner()` passes them on and returns the wrapped
 writer.
 
-`into_inner()` on `BufReader` returns its reader and drops bytes still
-buffered.
+Both adapters lend their inner stream with `get_ref()`. `into_inner()` on
+`BufReader` returns its reader and drops bytes still buffered.
 
 ## Limits
 
