@@ -65,7 +65,7 @@ matching artifact ownership boundary.
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. Current source cache is QZC38. QZC30 required defining-source
+  and reserialization. Current source cache is QZC39. QZC30 required defining-source
   alias bodies. QZC29 introduced checked runtime String identity/layout.
   QZC28 introduced typed power; v27 operator requirements;
   v26 arithmetic requirements; v25 numeric mutations; v24 raw f32 conversion and

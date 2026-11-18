@@ -76,8 +76,9 @@ document alive only for subsequent queries; values returned from `get` or
 `@serde("ini")` on a struct (D-026) generates `IniSerialize` and
 `IniDeserialize`. Scalar and `String` fields are `key = value` lines before
 the first section, `Option` fields may be absent, and a struct field is the
-section `[key]`; keys default to field names and `@serde("key")` or
-`@serde("ini:key")` renames them.
+section `[key]`; keys default to field names and `@serde("key")`,
+`@serde("*:key")` or `@serde("ini:key")` renames them. The INI key wins over
+the `*` key.
 
 ```quazi
 import std.ini;

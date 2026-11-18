@@ -98,6 +98,13 @@ struct User {
     level: u8 @serde("json:lvl"),
     inner: Inner,
 }
+@derive(Serialize, Deserialize)
+struct Square {
+    side: f64 @serde("json:alpha", "toml:alpha"),
+    aaaa: f64 @serde("*:bbbbb"),
+    @serde("*:wide", "json:narrow")
+    both: i32,
+}
 trait Make { @associated fn make(n: i32) Self; }
 impl Make for Inner { fn make(n: i32) Inner { ret Inner { x: n }; } }
 fn build[T: Make](n: i32) T { ret T.make(n); }
@@ -117,6 +124,10 @@ fn main() i32 {
     const made: Inner = build[Inner](9);
     const parsed: Inner = parse[Inner]("{{\"x\": 4}}").unwrap();
     println("{} {}", made.x, parsed.x);
+    const square = Square { side: 1.5, aaaa: 2.5, both: 3 };
+    println("{}", square.to_json().unwrap());
+    const decoded: Square = parse[Square]("{{\"alpha\": 4.5, \"bbbbb\": 0.5, \"narrow\": 6}}").unwrap();
+    println("{} {} {}", decoded.side, decoded.aaaa, decoded.both);
     ret 0;
 }
 """
@@ -124,6 +135,8 @@ SERDE_EXPECTED = """{"id":7,"name":"Ada","user_age":37,"lvl":3,"inner":{"x":1}}
 Ada 37 3
 true
 9 4
+{"alpha":1.5,"bbbbb":2.5,"narrow":3}
+4.5 0.5 6
 """
 
 INI = r"""import std.io.println;
@@ -173,8 +186,10 @@ SERDE_INVALID = """import std.codec;
 @serde("yml")
 struct A { x: i32 }
 @serde("json")
-struct B { @serde("toml:x") x: i32 }
+struct B { @serde("json:x", "json:y") x: i32, @serde("bad format:z") z: i32, @serde("*:w", "w") w: i32 }
 struct C { @serde("x") x: i32 }
+@serde("json:x")
+struct D { x: i32 }
 fn main() i32 { ret 0; }
 """
 
@@ -281,8 +296,12 @@ def main():
                                 capture_output=True, timeout=600)
         output = result.stdout + result.stderr
         assert result.returncode != 0, output
-        for message in ['@serde format "yml" is not implemented yet', 'unknown @serde format "toml"',
-                        "a field @serde rename needs @serde(\"format\") on its struct"]:
+        for message in ['@serde format "yml" has no built-in codec yet',
+                        "@serde gives `json` more than one key",
+                        "@serde format `bad format` must be `*` or a format name",
+                        "@serde gives every format more than one key",
+                        "@serde keys need a serialized struct",
+                        'put the key "json:x" on a field']:
             assert message in output, (message, output)
         invalid = project(root, "unsupported", UNSUPPORTED)
         result = subprocess.run([qz, "check"], cwd=invalid, text=True, capture_output=True, timeout=600)

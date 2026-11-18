@@ -714,65 +714,63 @@ fn strip_cfg_matching(
 /// declaration and its field metadata; this lowered AST is deliberately not a
 /// user-visible metaprogramming facility.
 /// D-026: `@serde("json", ...)` on a struct requests the listed formats'
-/// codecs; `@serde("key")` or `@serde("json:key")` on a field renames it.
-/// The JSON format lowers to the `@derive(Serialize, Deserialize)` and
-/// `@json(name=...)` metadata that the codec generator already consumes.
+/// codecs; `@serde` keys on a field rename it (see [`serde_key`]). JSON lowers
+/// to the `@derive(Serialize, Deserialize)` and `@json(name=...)` metadata
+/// that the codec generator already consumes, so field keys apply equally to
+/// a struct that derives the JSON traits directly.
 fn desugar_serde_attributes(program: &Program) -> Program {
-    let strings = |attribute: &Attribute| -> Vec<String> {
-        attribute
-            .args
-            .iter()
-            .filter_map(|argument| match argument {
-                AttrArg::Positional(AttrVal::Str(value)) => Some(value.clone()),
-                _ => None,
-            })
-            .collect()
-    };
     let mut items = Vec::with_capacity(program.items.len());
     for item in &program.items {
         let mut item = item.clone();
-        if let ItemKind::Struct { attributes, fields, .. } = &mut item.node
-            && let Some(serde) = attributes.iter().find(|attribute| attribute.name == "serde").cloned()
+        if let ItemKind::Struct {
+            attributes, fields, ..
+        } = &mut item.node
         {
-            let formats = strings(&serde);
-            if formats.iter().any(|format| format == "json") {
-                let derives_already = attributes.iter().any(|attribute| {
-                    attribute.name == "derive"
-                        && attribute.args.iter().any(|argument| {
-                            matches!(argument, AttrArg::Positional(AttrVal::Ident(name))
-                                if name == "Serialize" || name == "Deserialize")
-                        })
+            let serde = attributes
+                .iter()
+                .find(|attribute| attribute.name == "serde")
+                .cloned();
+            let json_format = serde.as_ref().is_some_and(|serde| {
+                serde.args.iter().any(|argument| {
+                    matches!(argument, AttrArg::Positional(AttrVal::Str(format)) if format == "json")
+                })
+            });
+            let derives_json = attributes.iter().any(|attribute| {
+                attribute.name == "derive"
+                    && attribute.args.iter().any(|argument| {
+                        matches!(argument, AttrArg::Positional(AttrVal::Ident(name))
+                            if name == "Serialize" || name == "Deserialize")
+                    })
+            });
+            if json_format && !derives_json {
+                attributes.push(Attribute {
+                    name: "derive".to_string(),
+                    args: vec![
+                        AttrArg::Positional(AttrVal::Ident("Serialize".to_string())),
+                        AttrArg::Positional(AttrVal::Ident("Deserialize".to_string())),
+                    ],
+                    span: serde.as_ref().map_or(item.span, |serde| serde.span),
                 });
-                if !derives_already {
-                    attributes.push(Attribute {
-                        name: "derive".to_string(),
-                        args: vec![
-                            AttrArg::Positional(AttrVal::Ident("Serialize".to_string())),
-                            AttrArg::Positional(AttrVal::Ident("Deserialize".to_string())),
-                        ],
-                        span: serde.span,
-                    });
-                }
+            }
+            if json_format || derives_json {
                 for field in fields.iter_mut() {
-                    if field.attributes.iter().any(|attribute| attribute.name == "json") {
-                        continue;
-                    }
-                    let names: Vec<String> = field
+                    if field
                         .attributes
                         .iter()
-                        .filter(|attribute| attribute.name == "serde")
-                        .flat_map(&strings)
-                        .collect();
-                    let key = names
+                        .any(|attribute| attribute.name == "json")
+                    {
+                        continue;
+                    }
+                    let Some(span) = field
+                        .attributes
                         .iter()
-                        .find_map(|name| name.strip_prefix("json:").map(str::to_string))
-                        .or_else(|| names.iter().find(|name| !name.contains(':')).cloned());
-                    if let Some(key) = key {
-                        let span = field
-                            .attributes
-                            .iter()
-                            .find(|attribute| attribute.name == "serde")
-                            .map_or(field.ty.span, |attribute| attribute.span);
+                        .find(|attribute| attribute.name == "serde")
+                        .map(|attribute| attribute.span)
+                    else {
+                        continue;
+                    };
+                    let key = serde_key(&field.attributes, "json", &field.name);
+                    if key != field.name {
                         field.attributes.push(Attribute {
                             name: "json".to_string(),
                             args: vec![AttrArg::KeyValue("name".to_string(), AttrVal::Str(key))],
@@ -790,16 +788,37 @@ fn desugar_serde_attributes(program: &Program) -> Program {
     }
 }
 
-fn enum_json_tag(variant: &EnumVariant) -> &str {
-    variant.attributes.iter().find_map(|attribute| {
-        if attribute.name != "tag" {
-            return None;
+/// D-026: the key of a field or enum variant in `format`.
+/// `@serde("format:key")` wins over `@serde("*:key")`, which the bare
+/// `@serde("key")` abbreviates; without either, `declared` is the key.
+/// Format names other than the built-in ones are accepted so formats built on
+/// top of serialization can read their own keys.
+pub(crate) fn serde_key(attributes: &[Attribute], format: &str, declared: &str) -> String {
+    let mut every_format = None;
+    let arguments = attributes
+        .iter()
+        .filter(|attribute| attribute.name == "serde")
+        .flat_map(|attribute| attribute.args.iter());
+    for argument in arguments {
+        let AttrArg::Positional(AttrVal::Str(value)) = argument else {
+            continue;
+        };
+        match value.split_once(':') {
+            Some((selector, key)) if selector == format => return key.to_string(),
+            Some(("*", key)) => {
+                every_format.get_or_insert(key);
+            }
+            None => {
+                every_format.get_or_insert(value.as_str());
+            }
+            Some(_) => {}
         }
-        match attribute.args.as_slice() {
-            [AttrArg::Positional(AttrVal::Str(value))] => Some(value.as_str()),
-            _ => None,
-        }
-    }).unwrap_or(&variant.name)
+    }
+    every_format.unwrap_or(declared).to_string()
+}
+
+fn enum_json_tag(variant: &EnumVariant) -> String {
+    serde_key(&variant.attributes, "json", &variant.name)
 }
 
 pub(crate) fn expand_serialize_derives(program: &Program) -> Program {
@@ -1002,25 +1021,9 @@ pub(crate) fn expand_serialize_derives(program: &Program) -> Program {
             .collect()
     }
 
-    /// A field's key in `format`: `@serde("format:key")`, else `@serde("key")`,
-    /// else the field name.
+    /// A field's key in `format` (see [`serde_key`]).
     fn serde_field_key(field: &AggregateField, format: &str) -> String {
-        let names: Vec<String> = field
-            .attributes
-            .iter()
-            .filter(|attribute| attribute.name == "serde")
-            .flat_map(|attribute| attribute.args.iter())
-            .filter_map(|argument| match argument {
-                AttrArg::Positional(AttrVal::Str(value)) => Some(value.clone()),
-                _ => None,
-            })
-            .collect();
-        let prefix = format!("{format}:");
-        names
-            .iter()
-            .find_map(|name| name.strip_prefix(&prefix).map(str::to_string))
-            .or_else(|| names.iter().find(|name| !name.contains(':')).cloned())
-            .unwrap_or_else(|| field.name.clone())
+        serde_key(&field.attributes, format, &field.name)
     }
 
     /// `@serde("ini")`: `impl IniSerialize` (`to_ini_writer`) and
@@ -2109,26 +2112,35 @@ impl Analyzer {
             }
             let mut tags = HashMap::new();
             for variant in variants {
-                let mut tag_attributes = variant.attributes.iter().filter(|attr| attr.name == "tag");
-                let tag = tag_attributes.next();
-                if let Some(tag) = tag {
-                    if derive.is_none() {
-                        self.push_error(tag.span, "S06",
-                            "@tag requires Serialize or Deserialize derivation on the enum".into());
-                    }
-                    if tag_attributes.next().is_some()
-                        || !matches!(tag.args.as_slice(), [AttrArg::Positional(AttrVal::Str(value))]
-                            if !value.is_empty() && !value.contains('\0'))
-                    {
-                        self.push_error(tag.span, "S06",
-                            "use one @tag with a nonempty string without NUL".into());
-                    }
+                for tag in variant
+                    .attributes
+                    .iter()
+                    .filter(|attribute| attribute.name == "tag")
+                {
+                    self.push_error(
+                        tag.span,
+                        "S06",
+                        "@tag was replaced by @serde: write @serde(\"name\") or @serde(\"json:name\")"
+                            .into(),
+                    );
                 }
+                self.validate_serde_keys(&variant.attributes, derive.is_some(), "enum");
                 if derive.is_some() {
                     let name = enum_json_tag(variant);
-                    if let Some(previous) = tags.insert(name, &variant.name) {
-                        self.push_error(tag.map_or(variant.span, |tag| tag.span), "S06",
-                            format!("JSON tag `{name}` is used by `{previous}` and `{}`", variant.name));
+                    let key_span = variant
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.name == "serde")
+                        .map_or(variant.span, |attribute| attribute.span);
+                    if let Some(previous) = tags.insert(name.clone(), &variant.name) {
+                        self.push_error(
+                            key_span,
+                            "S06",
+                            format!(
+                                "JSON tag `{name}` is used by `{previous}` and `{}`",
+                                variant.name
+                            ),
+                        );
                     }
                     for payload in &variant.payload_types {
                         if codec_field(&derive_field_type(&payload.node, aliases, 0)).is_none() {
@@ -2147,7 +2159,6 @@ impl Analyzer {
     /// D-026 `@serde` arguments: struct formats and field keys.
     fn validate_serde_attributes(&mut self, program: &Program) {
         const IMPLEMENTED: [&str; 2] = ["json", "ini"];
-        const RESERVED: [&str; 2] = ["yml", "hocon"];
         for item in &program.items {
             let ItemKind::Struct { attributes, fields, .. } = &item.node else {
                 continue;
@@ -2160,8 +2171,11 @@ impl Analyzer {
                 for argument in &serde.args {
                     match argument {
                         AttrArg::Positional(AttrVal::Str(format)) if IMPLEMENTED.contains(&format.as_str()) => {}
-                        AttrArg::Positional(AttrVal::Str(format)) if RESERVED.contains(&format.as_str()) => {
-                            self.push_error(serde.span, "S14", format!("@serde format \"{format}\" is not implemented yet; supported: json, ini"));
+                        AttrArg::Positional(AttrVal::Str(format)) if format.contains([':', '*']) => {
+                            self.push_error(serde.span, "S06", format!("@serde on a struct lists formats; put the key \"{format}\" on a field"));
+                        }
+                        AttrArg::Positional(AttrVal::Str(format)) => {
+                            self.push_error(serde.span, "S14", format!("@serde format \"{format}\" has no built-in codec yet; supported: json, ini"));
                         }
                         _ => self.push_error(serde.span, "S06", "@serde formats are strings such as \"json\"".to_string()),
                     }
@@ -2192,26 +2206,143 @@ impl Analyzer {
                     }
                 }
             }
+            let derives_json = attributes.iter().any(|attribute| {
+                attribute.name == "derive"
+                    && attribute.args.iter().any(|argument| {
+                        matches!(argument, AttrArg::Positional(AttrVal::Ident(name))
+                            if name == "Serialize" || name == "Deserialize")
+                    })
+            });
             for field in fields {
-                for attribute in field.attributes.iter().filter(|attribute| attribute.name == "serde") {
-                    if serde.is_none() {
-                        self.push_error(attribute.span, "S06", "a field @serde rename needs @serde(\"format\") on its struct".to_string());
+                self.validate_serde_keys(
+                    &field.attributes,
+                    serde.is_some() || derives_json,
+                    "struct",
+                );
+            }
+            let json = derives_json
+                || serde.is_some_and(|serde| {
+                    serde.args.iter().any(|argument| {
+                        matches!(argument, AttrArg::Positional(AttrVal::Str(format)) if format == "json")
+                    })
+                });
+            for (format, label) in [("json", "JSON"), ("ini", "INI")] {
+                if (format == "json" && !json) || (format == "ini" && !ini) {
+                    continue;
+                }
+                let mut keys: HashMap<String, &str> = HashMap::new();
+                for field in fields {
+                    let explicit_json = (format == "json")
+                        .then(|| {
+                            field.attributes.iter().find_map(|attribute| {
+                                match attribute.args.as_slice() {
+                                    [AttrArg::KeyValue(key, AttrVal::Str(value))]
+                                        if attribute.name == "json" && key == "name" =>
+                                    {
+                                        Some(value.clone())
+                                    }
+                                    _ => None,
+                                }
+                            })
+                        })
+                        .flatten();
+                    let key = explicit_json
+                        .unwrap_or_else(|| serde_key(&field.attributes, format, &field.name));
+                    if let Some(previous) = keys.insert(key.clone(), &field.name) {
+                        let span = field
+                            .attributes
+                            .iter()
+                            .find(|attribute| attribute.name == "json" || attribute.name == "serde")
+                            .map_or(field.ty.span, |attribute| attribute.span);
+                        self.push_error(
+                            span,
+                            "S06",
+                            format!(
+                                "{label} key '{key}' is used by both '{previous}' and '{}'",
+                                field.name
+                            ),
+                        );
                     }
-                    for argument in &attribute.args {
-                        let AttrArg::Positional(AttrVal::Str(key)) = argument else {
-                            self.push_error(attribute.span, "S06", "@serde field keys are strings: @serde(\"key\") or @serde(\"json:key\")".to_string());
-                            continue;
-                        };
-                        let name = key.split_once(':').map_or(key.as_str(), |(format, name)| {
-                            if !IMPLEMENTED.contains(&format) && !RESERVED.contains(&format) {
-                                self.push_error(attribute.span, "S06", format!("unknown @serde format \"{format}\""));
-                            }
-                            name
-                        });
-                        if name.is_empty() {
-                            self.push_error(attribute.span, "S06", "@serde field key must not be empty".to_string());
-                        }
-                    }
+                }
+            }
+        }
+    }
+
+    /// D-026 keys on one field or enum variant: strings `"key"`, `"*:key"` or
+    /// `"format:key"`, at most one key per format selector. `requested` is
+    /// whether the owning declaration asks for serialization.
+    fn validate_serde_keys(&mut self, attributes: &[Attribute], requested: bool, owner: &str) {
+        const KEY_FORMS: &str = "@serde(\"key\"), @serde(\"*:key\") or @serde(\"json:key\")";
+        let mut selectors = HashSet::new();
+        for attribute in attributes
+            .iter()
+            .filter(|attribute| attribute.name == "serde")
+        {
+            if !requested {
+                let formats = if owner == "struct" {
+                    " or @serde(\"json\")"
+                } else {
+                    ""
+                };
+                self.push_error(
+                    attribute.span,
+                    "S06",
+                    format!(
+                        "@serde keys need a serialized {owner}: add @derive(Serialize, Deserialize){formats}"
+                    ),
+                );
+            }
+            if attribute.args.is_empty() {
+                self.push_error(
+                    attribute.span,
+                    "S06",
+                    format!("@serde here names a key: {KEY_FORMS}"),
+                );
+            }
+            for argument in &attribute.args {
+                let AttrArg::Positional(AttrVal::Str(value)) = argument else {
+                    self.push_error(
+                        attribute.span,
+                        "S06",
+                        format!("@serde keys are strings: {KEY_FORMS}"),
+                    );
+                    continue;
+                };
+                let (selector, key) = value.split_once(':').unwrap_or(("*", value.as_str()));
+                let identifier = selector
+                    .chars()
+                    .next()
+                    .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+                    && selector
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if selector != "*" && !identifier {
+                    self.push_error(
+                        attribute.span,
+                        "S06",
+                        format!(
+                            "@serde format `{selector}` must be `*` or a format name such as `json`"
+                        ),
+                    );
+                }
+                if key.is_empty() || key.contains('\0') {
+                    self.push_error(
+                        attribute.span,
+                        "S06",
+                        "@serde key must be nonempty and contain no NUL".into(),
+                    );
+                }
+                if !selectors.insert(selector.to_string()) {
+                    let target = if selector == "*" {
+                        "every format".to_string()
+                    } else {
+                        format!("`{selector}`")
+                    };
+                    self.push_error(
+                        attribute.span,
+                        "S06",
+                        format!("@serde gives {target} more than one key"),
+                    );
                 }
             }
         }
@@ -5400,6 +5531,78 @@ fn main() void {}
             .get("Request")
             .expect("derive metadata for the generated codec methods");
         assert_eq!(metadata.requested_traits, ["Serialize", "Deserialize"]);
+    }
+
+    #[test]
+    fn serde_keys_prefer_the_format_then_every_format_then_the_name() {
+        use crate::parser::ast::{AttrArg, AttrVal, Attribute};
+        let attribute = |keys: &[&str]| Attribute {
+            name: "serde".into(),
+            args: keys
+                .iter()
+                .map(|key| AttrArg::Positional(AttrVal::Str((*key).into())))
+                .collect(),
+            span: Span::new(0, 0, 0, 0),
+        };
+        let keys = [
+            attribute(&["*:wide", "toml:tall"]),
+            attribute(&["json:narrow"]),
+        ];
+        assert_eq!(super::serde_key(&keys, "json", "both"), "narrow");
+        assert_eq!(super::serde_key(&keys, "toml", "both"), "tall");
+        assert_eq!(super::serde_key(&keys, "ini", "both"), "wide");
+        assert_eq!(
+            super::serde_key(&[attribute(&["short"])], "ini", "long"),
+            "short"
+        );
+        assert_eq!(super::serde_key(&[], "json", "name"), "name");
+    }
+
+    #[test]
+    fn serde_field_keys_apply_to_derived_json_codecs() {
+        let source = r#"
+    @derive(Serialize, Deserialize)
+    struct Square {
+        side: f64 @serde("json:alpha", "toml:alpha"),
+        aaaa: f64 @serde("*:bbbbb"),
+        plain: f64 @serde("toml:only"),
+    }
+    fn main() void {}
+    "#;
+        let report = analyze(source);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let fields = &report.serialization_derives["Square"].fields;
+        let keys: Vec<Option<&str>> = fields
+            .iter()
+            .map(|field| field.json_name.as_deref())
+            .collect();
+        assert_eq!(keys, [Some("alpha"), Some("bbbbb"), None]);
+    }
+
+    #[test]
+    fn serde_duplicate_keys_are_reported_per_requested_format() {
+        let duplicates = |source: &str| -> Vec<String> {
+            analyze(source)
+                .errors
+                .into_iter()
+                .map(|error| error.message)
+                .filter(|message| message.contains("is used by both"))
+                .collect()
+        };
+        assert!(
+            duplicates(
+                r#"@serde("ini") struct A { a: i32 @serde("json:k"), b: i32 @serde("json:k") }"#
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            duplicates(r#"@serde("ini") struct A { a: i32 @serde("k"), b: i32 @serde("k") }"#),
+            ["INI key 'k' is used by both 'a' and 'b'"]
+        );
+        assert_eq!(
+            duplicates(r#"@derive(Serialize) struct A { a: i32 @serde("*:b"), b: i32 }"#),
+            ["JSON key 'b' is used by both 'a' and 'b'"]
+        );
     }
 
     #[test]

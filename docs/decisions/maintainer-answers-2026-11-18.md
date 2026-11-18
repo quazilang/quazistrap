@@ -13,7 +13,12 @@ Status: decided by the maintainers on 2026-11-18 (asks.txt В23-В26).
   containers read elements by value only when the concrete element is
   `Copy`, and gain a borrowing accessor (`get_ref`) for the rest.
 - **В24 → В27.** Derived JSON enum codecs use external tags by default.
-  `@tag("name")` renames a variant. See the [codec contract](../api/codec.md#externally-tagged-enums).
+  See the [codec contract](../api/codec.md#externally-tagged-enums).
+- **В27Б.** One universal attribute names wire keys: `@serde` replaces
+  `@tag` on enum variants and also applies to fields of structs that
+  write `@derive(Serialize, Deserialize)`. `"*:key"` names a key for every
+  format, including formats that are built on serialization later. See
+  [D-026](serde-marshalling.md#keys).
 - **В25А.** Time zone data is discovered from the system IANA database
   (`$TZDIR`, `/usr/share/zoneinfo`, `/etc/zoneinfo`,
   `/usr/share/lib/zoneinfo`); updates come with the operating system and

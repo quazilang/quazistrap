@@ -17,13 +17,13 @@ struct Point { x: i32, y: i32 }
 @derive(Serialize, Deserialize)
 enum Message {
     Empty,
-    Text(String) @tag("label"),
-    @tag("pair")
+    Text(String) @serde("label"),
+    @serde("*:pair", "toml:tuple")
     Pair(i32, String),
     Count(Option[i32]),
     Values(Array[i32]),
     Position(Point),
-    Braces @tag("braces{tag}"),
+    Braces @serde("json:braces{tag}", "*:other"),
 }
 
 fn round_trip(source: str) void {
@@ -106,11 +106,15 @@ def main():
             assert run([str(args.wine), str(windows)], root) == EXPECTED
         invalid = project(root, "invalid-enum-tag", IMPORTS + r"""
 @derive(Serialize, Deserialize)
-enum Bad { First @tag("Second"), Second }
+enum Bad { First @serde("Second"), Second, Third @tag("third"), Fourth @serde("json:a", "json:b") }
+enum Plain { One @serde("one") }
 fn main() void {}
 """)
         checked = subprocess.run([qz, "check"], cwd=invalid, capture_output=True, text=True, timeout=60)
-        assert checked.returncode != 0 and 'JSON tag `Second` is used by' in checked.stderr, checked.stderr
+        for message in ['JSON tag `Second` is used by', '@tag was replaced by @serde',
+                        '@serde gives `json` more than one key',
+                        '@serde keys need a serialized enum']:
+            assert checked.returncode != 0 and message in checked.stderr, (message, checked.stderr)
         # A library QZI exposing a derived enum links into a consumer: the
         # library's prelude bodies must match the consumer's (same destructors).
         library = root / "answers"
@@ -118,7 +122,7 @@ fn main() void {}
         (library / "quazi.toml").write_text('[package]\nname="answers"\n[lib]\npath="src/lib.qz"\n')
         (library / "src/lib.qz").write_text(
             "import std.codec;\n@derive(Serialize, Deserialize)\n"
-            'pub enum Answer { Yes @tag("No"), No @tag("Yes"), Text(String) @tag("body") }\n'
+            'pub enum Answer { Yes @serde("No"), No @serde("json:Yes"), Text(String) @serde("*:body") }\n'
         )
         run([qz, "build", "-i", "--silent", "--no-incremental", "-o", str(root / "answers.qzi")], library)
         consumer = project(root, "enum-consumer", """import std.codec;

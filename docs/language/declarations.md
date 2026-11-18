@@ -93,10 +93,11 @@ Struct and union fields accept attributes before the field or after its
 type:
 
 ```quazi
+@serde("json", "ini")
 struct User {
     @serde("user_name")
     name: String,
-    age: u32 @serde("json:age", "ini:age"),
+    age: u32 @serde("json:age", "ini:years"),
 }
 ```
 

@@ -12,8 +12,8 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Rebuild panic calls lowered from a function's spelling.
-const QZC_VERSION: u8 = 38;
+// Rebuild derived codecs whose `@serde` keys gained a wildcard and derive use.
+const QZC_VERSION: u8 = 39;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {

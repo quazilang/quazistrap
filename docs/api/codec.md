@@ -48,7 +48,12 @@ do not expose `std.json.JsonError` directly.
 
 `@serde("json")` on a struct (D-026) generates its `Serialize` and
 `Deserialize` implementations. Fields match JSON keys by name; a field
-attribute renames one, before the field or after its type:
+attribute renames one, before the field or after its type. A key is
+`"json:key"` for JSON only, `"*:key"` for every format, or the bare
+`"key"`, which means the same as `"*:key"`. The JSON key wins over the
+`*` key. Other format names, such as `"toml:key"`, are kept for the
+formats that read them. Keys apply in the same way to a struct that
+writes `@derive(Serialize, Deserialize)`:
 
 ```quazi
 import std.codec;
@@ -60,6 +65,7 @@ struct User {
     @serde("user_age")        // every format
     age: u8,
     level: u8 @serde("json:lvl"),   // JSON only
+    score: u32 @serde("*:points", "json:pts"),   // `pts` in JSON
 }
 
 fn main() i32 {
@@ -78,9 +84,10 @@ bound (`T.from_json(text)`). `codec.Document` holds one JSON value and the
 file it came from: `Document.load(path)`, `Document.parse(text)`,
 `decode[T]()`, `encode(value)` (consumes the value), `text()`, `save()` and
 `save_as(path)`; failures are `DocumentError` (`Io`, `Decode`, `Encode`,
-`NoPath`). `@serde("ini")` is described in [`std.ini`](ini.md); `yml` and
-`hocon` are reserved and rejected until implemented. The older `@derive(Serialize, Deserialize)` with
-`@json(name="...")` remains a JSON-only shorthand.
+`NoPath`). `@serde("ini")` is described in [`std.ini`](ini.md). A format
+without a built-in codec, such as `yml`, is rejected on the struct. The older
+`@derive(Serialize, Deserialize)` with `@json(name="...")` remains a
+JSON-only shorthand; `@json(name=...)` wins over `@serde` keys.
 
 ## Derived structs
 
@@ -121,7 +128,9 @@ derive attribute.
 non-empty, non-generic enum. A unit variant is a JSON string. A variant
 with one payload is a one-member object whose value is that payload. A
 variant with multiple payloads stores them in a JSON array in declaration order.
-`@tag("name")` sets a variant's wire name. Tags must be unique and non-empty.
+`@serde` keys on a variant set its wire name, with the same rules as field
+keys (`@serde("name")`, `@serde("*:name")`, `@serde("json:name")`). Tags
+must be unique and non-empty.
 
 ```quazi
 import std.codec;
@@ -129,7 +138,7 @@ import std.codec;
 @derive(Serialize, Deserialize)
 enum Event {
     Ready,
-    Note(String) @tag("note"),
+    Note(String) @serde("note"),
     Position(i32, i32),
 }
 

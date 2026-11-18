@@ -219,7 +219,7 @@ Generic bodies are not yet a stable binary-library ABI. The compiler rejects a
 QZI library with public generic declarations and tells the author to distribute
 source until generic templates gain a portable representation.
 
-## QZC v38
+## QZC v39
 
 QZC means **Quazi Compilation Cache**. Project builds cache native targets
 and QZI at the following paths:
@@ -232,7 +232,9 @@ build/quazi/qzi/<artifact>/incremental.qzc
 After a successful build it stores compiler/target identity, canonical input
 paths and SHA-256 hashes, validated linked QZI, backend metadata, and reusable
 pre-WPO function chunks keyed by source hash and semantic-context fingerprint.
-QZC v38 rebuilds calls after panic lowering changed from spelling-based
+QZC v39 rebuilds derived codecs after `@serde` keys gained `*:` and began
+to apply to `@derive(Serialize, Deserialize)` structs and enum variants.
+QZC v38 rebuilt calls after panic lowering changed from spelling-based
 dispatch to the prelude-selected declaration. QZC v37 rebuilt calls after
 layout intrinsic resolution moved to declaration identity. QZC v36 rebuilt calls
 that could be lowered as a same-named enum variant.

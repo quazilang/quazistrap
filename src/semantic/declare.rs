@@ -354,7 +354,6 @@ impl Analyzer {
                             .to_string(),
                     );
                 }
-                let mut json_names: HashMap<String, String> = HashMap::new();
                 let serialization_fields = fields
                     .iter()
                     .map(|field| {
@@ -363,11 +362,19 @@ impl Analyzer {
                             .iter()
                             .filter(|attribute| attribute.name == "json")
                             .collect();
-                        let json_name = json_attributes.iter().find_map(|attribute| match attribute.args.as_slice() {
-                            [AttrArg::KeyValue(key, AttrVal::Str(value))]
-                                if key == "name" && !value.is_empty() => Some(value.clone()),
-                            _ => None,
-                        });
+                        // An explicit `@json(name=...)` wins; otherwise the
+                        // D-026 `@serde` keys choose the JSON key.
+                        let json_name = json_attributes
+                            .iter()
+                            .find_map(|attribute| match attribute.args.as_slice() {
+                                [AttrArg::KeyValue(key, AttrVal::Str(value))]
+                                    if key == "name" && !value.is_empty() => Some(value.clone()),
+                                _ => None,
+                            })
+                            .or_else(|| {
+                                let key = super::serde_key(&field.attributes, "json", &field.name);
+                                (key != field.name).then_some(key)
+                            });
 
                         if !json_attributes.is_empty() && !has_serialization_derive {
                             self.push_error(
@@ -397,18 +404,6 @@ impl Analyzer {
                                         .to_string(),
                                 );
                             }
-                        }
-                        let wire_name = json_name.clone().unwrap_or_else(|| field.name.clone());
-                        if let Some(previous_field) = json_names.insert(wire_name.clone(), field.name.clone())
-                        {
-                            self.push_error(
-                                json_attributes.first().map_or(field.ty.span, |attribute| attribute.span),
-                                "S06",
-                                format!(
-                                    "JSON key '{}' is used by both '{}' and '{}'",
-                                    wire_name, previous_field, field.name
-                                ),
-                            );
                         }
 
                         SerializationFieldMetadata {

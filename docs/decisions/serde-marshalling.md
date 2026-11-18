@@ -21,14 +21,44 @@ struct User {
 - `@serde(...)` on a struct lists the formats. Each listed format makes the
   compiler generate that format's serialize and deserialize impls; the file
   imports the format's module (`std.codec` for JSON, `std.ini` for INI).
-  Supported: `json`, `ini`. Other names (`yml`, `hocon`) are reserved and
-  rejected until they are implemented.
-- A field needs no attribute when its key equals its name. `@serde("key")`
-  renames it in every format; `@serde("fmt:key", ...)` renames it per format
-  and takes precedence for that format. The attribute may precede the field
-  or follow its type, like other field attributes.
+  Supported: `json`, `ini`. Any other format name is rejected on the
+  struct until a built-in codec implements it.
 - The older `@derive(Serialize, Deserialize)` with `@json(name="...")` stays
-  as JSON-only shorthand.
+  as JSON-only shorthand. `@json(name=...)` wins over `@serde` keys.
+
+## Keys
+
+Amended 2026-11-18 by maintainer answer В27Б: `@serde` is the one universal
+attribute for wire keys, so formats added later (and ORM-style layers built
+on serialization) read the same metadata.
+
+```quazi
+@derive(Serialize, Deserialize)
+struct Square {
+    side: f64 @serde("json:alpha", "toml:alpha"),
+    aaaa: f64 @serde("*:bbbbb"),
+}
+
+@derive(Serialize, Deserialize)
+enum Shape {
+    Circle(f64) @serde("circle"),
+    Empty,
+}
+```
+
+- A field or enum variant needs no attribute when its key equals its name.
+- `@serde("format:key")` names the key for one format. `@serde("*:key")`
+  names it for every format; the bare `@serde("key")` means the same. For
+  a format, its own key wins over the `*` key, which wins over the name.
+- A field or variant gives each selector (`*` or a format name) at most one
+  key. Keys are nonempty strings without NUL; a format name is an
+  identifier. Names without a built-in codec (`toml` above) are accepted on
+  keys and ignored by the built-in codecs, so another format can use them.
+- Keys need a serialized owner: a struct with `@serde(...)` formats or a
+  `Serialize`/`Deserialize` derive, or an enum with that derive. Keys are
+  unique per requested format.
+- `@serde` replaces the earlier `@tag("name")` on enum variants, which is now
+  rejected with a pointer to `@serde`.
 
 ## Traits
 
