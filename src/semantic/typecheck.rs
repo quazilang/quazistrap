@@ -4041,12 +4041,17 @@ impl Analyzer {
                                 resolved,
                                 named_args,
                                 args.len(),
-                                &sym,
-                                &arg_evals,
                             );
                         }
                         let inferred_type_args = if type_args.is_empty() {
-                            self.infer_call_type_args(&sym, &arg_evals[..args.len()], expr.span)
+                            let ordered = self.slot_ordered_evals(
+                                resolved,
+                                &sym,
+                                args.len(),
+                                named_args,
+                                &arg_evals,
+                            );
+                            self.infer_call_type_args(&sym, &ordered, expr.span)
                         } else {
                             None
                         };
@@ -4349,16 +4354,17 @@ impl Analyzer {
                                         resolved,
                                         named_args,
                                         args.len(),
-                                        &sym,
-                                        &arg_evals,
                                     );
                                 }
                                 let inferred = if type_args.is_empty() {
-                                    self.infer_call_type_args(
+                                    let ordered = self.slot_ordered_evals(
+                                        resolved,
                                         &sym,
-                                        &arg_evals[..args.len().min(arg_evals.len())],
-                                        expr.span,
-                                    )
+                                        args.len(),
+                                        named_args,
+                                        &arg_evals,
+                                    );
+                                    self.infer_call_type_args(&sym, &ordered, expr.span)
                                 } else {
                                     None
                                 };
@@ -6777,8 +6783,6 @@ impl Analyzer {
         fn_name: &str,
         named_args: &[(String, Expr)],
         positional_count: usize,
-        sym: &Symbol,
-        arg_evals: &[ExprEval],
     ) {
         let param_names = self
             .fn_param_names
@@ -6786,7 +6790,7 @@ impl Analyzer {
             .cloned()
             .unwrap_or_default();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (index, (arg_name, arg_expr)) in named_args.iter().enumerate() {
+        for (arg_name, arg_expr) in named_args {
             if !seen.insert(arg_name.clone()) {
                 self.push_error(
                     arg_expr.span,
@@ -6818,26 +6822,44 @@ impl Analyzer {
                 );
                 continue;
             }
-            // Reuse the evaluation at its scheduled position. Rechecking an
-            // argument here would observe later assignments and duplicate effects.
-            if let (Some(param_ty), Some(arg_ty)) = (
-                sym.params.get(pos),
-                arg_evals
-                    .get(positional_count + index)
-                    .and_then(|eval| eval.ty.as_ref()),
-            ) {
-                if !self.check_expr_compat(arg_expr, param_ty, arg_ty) {
-                    self.push_error(
-                        arg_expr.span,
-                        "S09",
-                        format!(
-                            "named argument `{}`: expected {}, got {}",
-                            arg_name, param_ty, arg_ty
-                        ),
-                    );
-                }
-            }
+            // Types are checked by `check_function_call` against the
+            // signature after generic substitution.
         }
+    }
+
+    /// Argument evaluations in declaration-slot order, for generic inference:
+    /// positional arguments keep their slots and each named argument moves to
+    /// its parameter's slot. Unsupplied slots have no type.
+    fn slot_ordered_evals(
+        &self,
+        fn_name: &str,
+        sym: &Symbol,
+        positional_count: usize,
+        named_args: &[(String, Expr)],
+        arg_evals: &[ExprEval],
+    ) -> Vec<ExprEval> {
+        let positional = positional_count.min(arg_evals.len());
+        let mut ordered = arg_evals[..positional].to_vec();
+        let names = self
+            .fn_param_names
+            .get(fn_name)
+            .cloned()
+            .unwrap_or_default();
+        let receiver_offset = sym.params.len().saturating_sub(names.len());
+        for (index, (name, _)) in named_args.iter().enumerate() {
+            let (Some(position), Some(eval)) = (
+                names.iter().position(|parameter| parameter == name),
+                arg_evals.get(positional + index),
+            ) else {
+                continue;
+            };
+            let slot = position + receiver_offset;
+            if ordered.len() <= slot {
+                ordered.resize(slot + 1, ExprEval::default());
+            }
+            ordered[slot] = eval.clone();
+        }
+        ordered
     }
 
     /// The item type `T` of an iterator: a named type whose methods
