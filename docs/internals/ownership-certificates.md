@@ -71,7 +71,16 @@ suites, the bytecode summary must be no smaller than `parameter_effects`.
 ## Staged plan
 
 1. Bytecode provenance analysis computing the effect sets for compiled
-   chunks, with differential tests against `parameter_effects`.
+   chunks, with differential tests against `parameter_effects`. Started:
+   `src/bytecode/effects.rs` runs a flow-sensitive dataflow over each chunk
+   (per-register parameter-slot masks; `Lea` of the frame's own registers is
+   local), records loads, stores through parameter-derived addresses,
+   returned and stored slots, direct calls with per-argument masks and
+   arguments to unknown targets, and composes callee writes through
+   parameters to a fixed point. Its tests compile programs without inlining,
+   map register slots to source parameters through `fn_value_layouts`, and
+   require the bytecode writes and returned slots to cover the source
+   `written_through_reference` and `returned_borrow` sets.
 2. The QZI certificate section and canonical encoding for exported callables,
    with serialization tests and the major-version/QZC bump.
 3. Verification on import; a missing, malformed, stale or incomplete record at

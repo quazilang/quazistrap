@@ -23,7 +23,7 @@ const JUMPS: [Opcode; 11] = [
     Opcode::Jnz,
 ];
 
-fn jump_target(instr: &Instruction) -> Option<usize> {
+pub(crate) fn jump_target(instr: &Instruction) -> Option<usize> {
     JUMPS
         .iter()
         .any(|op| instr.opcode == *op as u8)
@@ -517,7 +517,7 @@ fn compute_intervals(chunk: &Chunk) -> HashMap<u8, (usize, usize)> {
 
 // ── Per-instruction def / use ─────────────────────────────────────────────────
 
-fn instr_def(instr: &Instruction) -> Option<u8> {
+pub(crate) fn instr_def(instr: &Instruction) -> Option<u8> {
     let Some(op) = Opcode::from_u8(instr.opcode) else {
         return None;
     };
@@ -550,7 +550,7 @@ fn instr_def(instr: &Instruction) -> Option<u8> {
     }
 }
 
-fn instr_uses(instr: &Instruction) -> Vec<u8> {
+pub(crate) fn instr_uses(instr: &Instruction) -> Vec<u8> {
     let Some(op) = Opcode::from_u8(instr.opcode) else {
         return vec![];
     };

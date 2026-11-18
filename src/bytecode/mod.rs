@@ -5,6 +5,7 @@
 pub mod chunk;
 pub mod codegen;
 pub mod constprop;
+pub mod effects;
 pub mod instruction;
 pub mod interface;
 pub mod opcode;
