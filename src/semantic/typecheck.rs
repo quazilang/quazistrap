@@ -4345,14 +4345,8 @@ impl Analyzer {
                             // files are present (real loader run), emit a clear S04 error
                             // instead of silently producing default code. Raw tests that
                             // do not load imports stay lenient.
-                            let (base, path) = Self::extract_field_chain(object)
-                                .unwrap_or_else(|| (method.to_string(), Vec::new()));
-                            let module_name = path.last().map(|s| s.as_str()).unwrap_or(&base);
-                            self.push_error(
-                                expr.span,
-                                "S04",
-                                format!("'{}' is not exported by '{}'", method, module_name),
-                            );
+                            let message = self.missing_module_member_message(object, method);
+                            self.push_error(expr.span, "S04", message);
                             ExprEval::default()
                         } else {
                             ExprEval::default()
@@ -5557,14 +5551,8 @@ impl Analyzer {
                                 return eval;
                             }
                         } else if !self.source_files.is_empty() {
-                            let (base, path) = Self::extract_field_chain(object)
-                                .unwrap_or_else(|| (name.to_string(), Vec::new()));
-                            let module_name = path.last().map(|s| s.as_str()).unwrap_or(&base);
-                            self.push_error(
-                                expr.span,
-                                "S04",
-                                format!("'{}' is not exported by '{}'", name, module_name),
-                            );
+                            let message = self.missing_module_member_message(object, name);
+                            self.push_error(expr.span, "S04", message);
                             return ExprEval::default();
                         }
                     }
@@ -6944,6 +6932,32 @@ impl Analyzer {
                 }
             }
         }
+    }
+
+    /// The S04 message for `path.member` when `path` is a module namespace
+    /// spelling without such a member. Enum variants are not reachable
+    /// through module paths yet (`lib.Shape.Circle`); name the remedy.
+    fn missing_module_member_message(&self, object: &Expr, member: &str) -> String {
+        let Some((base, path)) = Self::extract_field_chain(object) else {
+            return format!("'{member}' is not exported by '{member}'");
+        };
+        let owner = path.last().map_or(base.as_str(), String::as_str);
+        if let Some((module, _)) = std::iter::once(base.as_str())
+            .chain(path.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(".")
+            .rsplit_once('.')
+            .map(|(module, enum_name)| (module.to_string(), enum_name.to_string()))
+            && self
+                .enums
+                .get(owner)
+                .is_some_and(|info| info.variants.contains_key(member))
+        {
+            return format!(
+                "enum variants cannot be reached through a module path yet: add `import {module}.{owner};` and write `{owner}.{member}`"
+            );
+        }
+        format!("'{member}' is not exported by '{owner}'")
     }
 
     /// Infer every generic argument of a call without explicit ones from its

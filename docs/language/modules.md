@@ -120,6 +120,13 @@ import helper.make;
 fn area(p: shapes.Point) i32 { ret 0; } // S04: not imported into this file
 ```
 
+Namespace spellings name types and call their associated functions
+(`geometry.Point.new()`, inferring the type's generic parameters like
+`Point.new()`). Enum variants are not reachable through a module path yet:
+`geometry.Shape.Circle(2)` is rejected with `S04` naming the remedy, which is
+to import the enum by name (`import geometry.Shape;`) and write
+`Shape.Circle(2)`, in expressions and patterns alike.
+
 Limitation: type declarations still share one program-wide namespace, so two
 files cannot declare the same type name (`S05`), even when neither imports the
 other; see [D-018](../decisions/module-type-identity.md).
