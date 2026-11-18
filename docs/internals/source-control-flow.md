@@ -110,6 +110,13 @@ receiver) capability: `Move`, or `Borrow { exclusive }`; `Copy` parameters
 record nothing beyond the operand's read. Generic templates are skipped
 because their capabilities depend on the specialization.
 
+A `ret` whose value is a classified place, or `&place`/`&place!`, records an
+`Escape` event in the exit block naming the place and whether it leaves by
+value or as a shared/exclusive borrow. Escapes through other expressions,
+storage into aggregates or globals, captures and foreign boundaries are not
+yet recorded as `Escape` events; result-retention facts still describe
+parameter-derived results.
+
 An exposed `?` evaluates its operand once and branches on `TrySuccess`, a wrapper
 success-discriminant condition distinct from ordinary pointer truthiness.
 Success records payload extraction; failure returns from the current callable

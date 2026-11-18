@@ -2179,3 +2179,49 @@ fn main() void {}
         "{accesses:?}"
     );
 }
+
+#[test]
+fn source_control_flow_returned_places_escape_at_exit() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+fn left_of(pair: &Pair) &i32 { ret &pair.left; }
+fn take(pair: Pair) Pair { ret pair; }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let escapes = |name: &str| -> Vec<(Option<bool>, String, usize)> {
+        let graph = report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+            .control_flow
+            .as_deref()
+            .unwrap();
+        graph
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, OwnershipFlowTerminator::Return { .. }))
+            .flat_map(|block| block.events.iter())
+            .filter_map(|event| match event {
+                OwnershipFlowEvent::Escape {
+                    borrow,
+                    place: OwnershipArgumentValue::Place(place),
+                    ..
+                } => Some((
+                    *borrow,
+                    place.root.binding.name.clone(),
+                    place.projections.len(),
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    let borrowed = escapes("left_of");
+    assert_eq!(borrowed.len(), 1, "{borrowed:?}");
+    assert_eq!(borrowed[0].0, Some(false));
+    assert_eq!(borrowed[0].1, "pair");
+    assert!(borrowed[0].2 >= 1, "the field projection is kept");
+    assert_eq!(escapes("take"), [(None, "pair".to_string(), 0)]);
+}

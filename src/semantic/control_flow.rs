@@ -137,6 +137,14 @@ pub enum OwnershipFlowEvent {
         access: OwnershipPlaceAccess,
         place: OwnershipArgumentValue,
     },
+    /// A `ret` value hands a place out of the callable: by value, or as a
+    /// shared/exclusive borrow (`borrow: Some(exclusive)`). Provenance through
+    /// other expressions remains with result-retention facts.
+    Escape {
+        value: Span,
+        borrow: Option<bool>,
+        place: OwnershipArgumentValue,
+    },
     /// Unknown protocol/storage effects; never a resolved call or effect proof.
     IterationProtocol {
         span: Span,
@@ -658,6 +666,7 @@ struct Builder<'a, 'b, F> {
     format_requests: Vec<FormatRequest>,
     target_places: Option<&'b BTreeMap<(usize, usize), OwnershipArgumentValue>>,
     read_places: Option<&'b BTreeMap<(usize, usize), OwnershipArgumentValue>>,
+    return_places: Option<&'b super::places::ReturnFacts>,
     finished: Vec<bool>,
     analyzer: &'b Analyzer,
     sites: Option<&'b BTreeMap<(usize, usize), SourceOwnershipCall>>,
@@ -718,6 +727,7 @@ where
             format_requests: Vec::new(),
             target_places: analyzer.ownership_target_places.get(caller),
             read_places: analyzer.ownership_read_places.get(caller),
+            return_places: analyzer.ownership_return_places.get(caller),
             finished: Vec::new(),
             analyzer,
             sites: analyzer.ownership_call_sites.get(caller),
@@ -2289,6 +2299,22 @@ where
                 StmtKind::Var { value, .. } | StmtKind::Return(value) => {
                     let destination = if matches!(statement.node, StmtKind::Return(_)) {
                         let exit = self.block(&task.scopes, statement.span)?;
+                        // A returned place escapes the callable at its exit.
+                        if let Some(value) = value
+                            && let Some((borrow, place)) = self
+                                .return_places
+                                .and_then(|places| places.get(&(value.span.start, value.span.end)))
+                                .cloned()
+                        {
+                            self.budget.charge(2, value.span)?;
+                            self.graph.blocks[exit]
+                                .events
+                                .push(OwnershipFlowEvent::Escape {
+                                    value: value.span,
+                                    borrow,
+                                    place,
+                                });
+                        }
                         self.terminate(
                             exit,
                             OwnershipFlowTerminator::Return {

@@ -53,7 +53,9 @@ The same walk records the place of every assignment, compound assignment and
 increment target, keyed by caller and target span, including bodies without
 calls. It also records places read as values (maximal projections, excluding
 projection objects, borrowed operands and method receivers). The source
-control-flow graph attaches both to its `PlaceAccess` events.
+control-flow graph attaches both to its `PlaceAccess` events. Places handed
+out by `ret` values (the place, or the borrowed place of `&place`) are
+recorded for its `Escape` events.
 
 ## Resource and cancellation contract
 

@@ -18,6 +18,17 @@ type BindingKey = (usize, usize, String);
 type ArgumentFacts = BTreeMap<(usize, usize), OwnershipCallArguments>;
 /// Places of assignment and increment targets, keyed by target span.
 type TargetFacts = BTreeMap<(usize, usize), OwnershipArgumentValue>;
+/// Places a `ret` value hands out, keyed by the returned expression's span:
+/// the place itself or, for `&place`/`&place!`, the borrowed place.
+pub(super) type ReturnFacts = BTreeMap<(usize, usize), (Option<bool>, OwnershipArgumentValue)>;
+
+/// Everything one body walk records.
+struct BodyFacts {
+    arguments: ArgumentFacts,
+    targets: TargetFacts,
+    reads: TargetFacts,
+    returns: ReturnFacts,
+}
 
 struct BindingInfo<'a> {
     ty: Option<&'a TypeKind>,
@@ -175,9 +186,8 @@ impl Analyzer {
                         .collect(),
                     binders: self.generic_params_for_function(&caller),
                 };
-                let (facts, target_places, read_places, overflow) =
-                    builder.body(body, sites, checkpoint)?;
-                collected.push((caller, facts, target_places, read_places));
+                let (body_facts, overflow) = builder.body(body, sites, checkpoint)?;
+                collected.push((caller, body_facts));
                 if let Some(span) = overflow {
                     overflows.push(span);
                 }
@@ -185,12 +195,17 @@ impl Analyzer {
         }
         checkpoint()?;
         // All snapshots were derived before mutating the source-site registry.
-        for (caller, facts, target_places, read_places) in collected {
+        for (caller, body_facts) in collected {
             checkpoint()?;
-            self.ownership_target_places
-                .insert(caller.clone(), target_places);
-            self.ownership_read_places
-                .insert(caller.clone(), read_places);
+            let BodyFacts {
+                arguments: facts,
+                targets,
+                reads,
+                returns,
+            } = body_facts;
+            self.ownership_return_places.insert(caller.clone(), returns);
+            self.ownership_target_places.insert(caller.clone(), targets);
+            self.ownership_read_places.insert(caller.clone(), reads);
             if let Some(sites) = self.ownership_call_sites.get_mut(&caller) {
                 for (span, arguments) in facts {
                     if let Some(site) = sites.get_mut(&span) {
@@ -398,7 +413,7 @@ impl Places<'_> {
         body: &Block,
         sites: &BTreeMap<(usize, usize), super::ownership::SourceOwnershipCall>,
         checkpoint: &mut F,
-    ) -> Result<(ArgumentFacts, TargetFacts, TargetFacts, Option<Span>), Cancelled>
+    ) -> Result<(BodyFacts, Option<Span>), Cancelled>
     where
         F: FnMut() -> Result<(), Cancelled>,
     {
@@ -414,18 +429,32 @@ impl Places<'_> {
         // Places read as values; only the maximal projection of a place is a
         // read, so the objects of recorded projections are excluded.
         let mut reads = BTreeMap::new();
+        let mut returns = BTreeMap::new();
+        macro_rules! finish {
+            ($overflow:expr) => {
+                return Ok((
+                    BodyFacts {
+                        arguments: facts,
+                        targets,
+                        reads,
+                        returns,
+                    },
+                    $overflow,
+                ))
+            };
+        }
         let mut projection_objects = std::collections::HashSet::new();
         let mut nodes = 0;
         while let Some(visit) = pending.pop() {
             checkpoint()?;
             nodes += 1;
             if nodes > MAX_BODY_NODES {
-                return Ok((facts, targets, reads, Some(body.span)));
+                finish!(Some(body.span));
             }
             match visit {
                 Visit::Closure(expr) => {
                     if closures.len() >= MAX_PLACE_DEPTH {
-                        return Ok((facts, targets, reads, Some(expr.span)));
+                        finish!(Some(expr.span));
                     }
                     closures.push(expr.span);
                 }
@@ -433,6 +462,25 @@ impl Places<'_> {
                     closures.pop();
                 }
                 Visit::Statement(stmt) => match &stmt.node {
+                    StmtKind::Return(Some(value)) => {
+                        let (borrow, place_expr) = match &value.node {
+                            ExprKind::Unary {
+                                op: op @ (UnaryOpKind::Ref | UnaryOpKind::RefMut),
+                                expr: inner,
+                            } => (Some(matches!(op, UnaryOpKind::RefMut)), inner.as_ref()),
+                            _ => (None, value),
+                        };
+                        let mut overflow = false;
+                        let place = self.place(place_expr, 0, &mut overflow);
+                        nodes += 1;
+                        if overflow {
+                            finish!(Some(value.span));
+                        }
+                        if matches!(place, OwnershipArgumentValue::Place(_)) {
+                            returns.insert((value.span.start, value.span.end), (borrow, place));
+                        }
+                        pending.push(Visit::Expression(value));
+                    }
                     StmtKind::Var { value, .. } | StmtKind::Return(value) => {
                         if let Some(value) = value {
                             pending.push(Visit::Expression(value));
@@ -509,7 +557,7 @@ impl Places<'_> {
                         let place = self.place(target, 0, &mut overflow);
                         nodes += 1;
                         if overflow {
-                            return Ok((facts, targets, reads, Some(target.span)));
+                            finish!(Some(target.span));
                         }
                         targets.insert((target.span.start, target.span.end), place);
                     }
@@ -524,7 +572,7 @@ impl Places<'_> {
                         let place = self.place(expr, 0, &mut overflow);
                         nodes += 1;
                         if overflow {
-                            return Ok((facts, targets, reads, Some(expr.span)));
+                            finish!(Some(expr.span));
                         }
                         if matches!(place, OwnershipArgumentValue::Place(_)) {
                             if let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } =
@@ -560,7 +608,7 @@ impl Places<'_> {
                             self.arguments(expr, site, &closures, checkpoint)?;
                         nodes = nodes.saturating_add(argument_cost(&arguments, true));
                         if overflow || nodes > MAX_BODY_NODES {
-                            return Ok((facts, targets, reads, Some(expr.span)));
+                            finish!(Some(expr.span));
                         }
                         facts.insert(key, arguments);
                     }
@@ -641,7 +689,7 @@ impl Places<'_> {
                 }
             }
         }
-        Ok((facts, targets, reads, None))
+        finish!(None)
     }
 
     fn arguments<F>(
