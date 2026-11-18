@@ -4,8 +4,9 @@
 booleans, every integer width, `f32`/`f64`, and text; typed decoding is exposed
 through explicit `decode_*` functions. `@derive(Serialize)` and
 `@derive(Deserialize)` support non-generic structs whose fields are scalars,
-`String`, nested structs, and `Option` or `Array` of those (see
-[the field matrix](#derived-field-matrix)).
+`String`, nested codecs, and `Option` or `Array` of those (see
+[the field matrix](#derived-field-matrix)). Non-generic enums use
+[external tags](#externally-tagged-enums).
 
 ## Encoding
 
@@ -106,13 +107,45 @@ const encoded: String = request.to_json().unwrap();
 // Exactly: {"active":true,"offset":-42,"label":"Ada"}
 ```
 
-Unsupported fields (borrowed `str`, enums, generic structs, nested `Option` or
+Unsupported fields (borrowed `str`, generic structs, nested `Option` or
 `Array` such as `Array[Array[i64]]`) are rejected with a field-level compiler
 diagnostic. The generated method emits a fresh quoted token for every `String`
 field and moves every other field out of the consumed receiver. A type
 must choose either `@derive(Serialize)` or its own `impl Serialize`: combining
 them is rejected as a duplicate `Type.to_json` declaration, diagnosed at the
 derive attribute.
+
+## Externally tagged enums
+
+`@derive(Serialize, Deserialize)` generates `to_json` and `from_json` for a
+non-empty, non-generic enum. A unit variant is a JSON string. A variant
+with one payload is a one-member object whose value is that payload. A
+variant with multiple payloads stores them in a JSON array in declaration order.
+`@tag("name")` sets a variant's wire name. Tags must be unique and non-empty.
+
+```quazi
+import std.codec;
+
+@derive(Serialize, Deserialize)
+enum Event {
+    Ready,
+    Note(String) @tag("note"),
+    Position(i32, i32),
+}
+
+fn main() void {
+    const event: Event = Event.Position(2, 3);
+    const text = event.to_json().unwrap();
+    // text contains {"Position":[2,3]}.
+    Event.from_json(text.as_str()).unwrap();
+}
+```
+
+Decoding rejects unknown tags, incorrect case forms, and incorrect tuple
+lengths with `DecodeError.InvalidValue`. A repeated object tag gives
+`DecodeError.DuplicateField`. Payloads follow the derived field matrix.
+The compiler uses `tagged_json`, `tuple_json` and `enum_input` to compose or
+decode the envelope within the default JSON size and depth limits.
 
 ## Decoding
 
@@ -173,10 +206,11 @@ for `Serialize`. The object policy (maintainer answer
 | `bool`, integers, `f32`, `f64` | number or boolean | `to_json` | `decode_<type>` |
 | `String` | string | through its `str` view | `decode_string` |
 | struct `S` | object | `S` must implement `Serialize` | `S.from_json` must exist |
+| enum `E` | external tag | `E` must implement `Serialize` | `E.from_json` must exist |
 | `Option[T]` | `T` or `null` | `null` for `None` | `None` when missing or `null` |
 | `Array[T]` | array of `T` | `codec.array_json` | each element decoded as `T` |
 
-`T` above is any non-container row (a scalar, `String`, or a struct).
+`T` above is any non-container row.
 
 ```quazi
 import std.codec;

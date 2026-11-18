@@ -687,6 +687,51 @@ fn exercise_array_from() i32 {
     }
 
     #[test]
+    fn prelude_box_drops_its_payload_or_transfers_it_to_the_caller() {
+        run_receiver_fixture(
+            "prelude-box-ownership",
+            r#"
+@intrinsic("quazi.malloc")
+unsafe fn allocate(size: usize) *usize;
+@intrinsic("quazi.free")
+unsafe fn release(pointer: *usize) void;
+
+struct Probe { hits: *usize }
+impl Probe {
+    fn free(self: Probe) void {
+        unsafe { *self.hits = *self.hits + 1; }
+    }
+}
+
+unsafe fn abandon(hits: *usize) void {
+    const _box: Box[Probe] = Box.new(Probe { hits: hits });
+}
+
+fn exercise_box() i32 {
+    var hits: *usize;
+    unsafe { hits = allocate(8); *hits = 0; }
+    unsafe { abandon(hits); }
+    unsafe { if (*hits != 1) { release(hits); ret 1; } }
+    const explicit: Box[Probe] = Box.new(Probe { hits: hits });
+    explicit.free();
+    unsafe { if (*hits != 2) { release(hits); ret 2; } }
+    const owned: Box[Probe] = Box.new(Probe { hits: hits });
+    const value: Probe = owned.get();
+    unsafe { if (*hits != 2) { release(hits); ret 3; } }
+    value.free();
+    unsafe {
+        const count = *hits;
+        release(hits);
+        if (count != 3) { ret 4; }
+    }
+    ret 0;
+}
+"#,
+            "exercise_box",
+        );
+    }
+
+    #[test]
     fn reference_receivers_mutate_and_observe_the_original_owner() {
         run_receiver_fixture(
             "reference-receivers",

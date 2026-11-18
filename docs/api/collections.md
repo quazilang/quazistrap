@@ -2,14 +2,47 @@
 
 Audience: Quazi application developers.
 
-Status: experimental. `std.collections` currently exports integer-keyed
-`Map` and `Set` only. It is not a generic collection framework: keys and values
-are `usize`, and it does not provide iterators, ordering, stable hashing,
-serialization, or concurrent access.
+Status: experimental. This module exports the generic `HashMap` and
+`HashSet` alongside the original `usize` collections `Map` and `Set`.
 
-**Safety status:** the former update/cleanup aliasing crash was fixed on
-2026-09-02 by making updates mutate the existing owner in place. The containers
-remain experimental and limited to `usize` keys and values.
+## `HashMap[K, V]` and `HashSet[K]`
+
+Both collections accept keys that implement `Hash` and `Eq`. The prelude
+provides implementations for integers, `bool`, `str`, and `String`.
+Custom implementations must give equal keys the same hash and keep their
+equality and hash stable while they are in the collection. Hashes are
+deterministic and intended for in-memory lookup.
+
+`new()` makes an empty collection and backing arrays allocate on first
+insertion. `insert` consumes its arguments and returns
+`Result[bool, ArrayReserveError]`. `Ok(true)` marks a new entry.
+`Ok(false)` marks replacement of an existing map value or a duplicate set
+value. On a capacity or allocation error, existing entries are preserved.
+The map retains its original key on replacement and drops the previous value.
+
+Both types provide `contains(&key)`, `remove(&key)`, `len()`, `is_empty()`,
+and `clear()`. Removing a key drops its entry and reports whether it existed.
+For maps, `find(&key)` returns `Option[usize]`. A successful index can be passed
+to `key_at(index)` or `value_at(index)` to borrow the stored element.
+`HashSet.value_at(index)` borrows a stored key. These indexed accessors panic
+for an out-of-range index. Removing an entry can move the last entry into its
+position, so use indices only while the collection has no intervening mutation.
+
+Shared results borrow the collection. Mutation requires exclusive access.
+Scope exit and `clear()` release stored owners and backing storage. The
+collections do not define a concurrent access or serialization interface.
+
+```quazi
+import std.collections.HashMap;
+
+fn main() void {
+    var counts: HashMap[String, i32] = HashMap.new();
+    counts.insert(String.from("apples"), 3).unwrap();
+    const apples = String.from("apples");
+    const index = counts.find(&apples).unwrap();
+    println("{}", *counts.value_at(index));
+}
+```
 
 ## `Map`
 
@@ -43,7 +76,3 @@ or `self: &Set!`), so a call cannot overlap another loan of that container.
 `clear()` releases backing storage while retaining an empty reusable container.
 Normal scope cleanup calls consuming `free(self)` once; direct `free()` also
 consumes the owner and must be its final use.
-
-The current surface remains limited until generic element bounds and fully
-audited drop-aware storage exist; do not treat it as a substitute for a general
-`Map[K, V]` or `Set[T]` API.

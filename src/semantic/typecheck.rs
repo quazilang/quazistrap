@@ -4428,7 +4428,12 @@ impl Analyzer {
                             TypeKind::Named { name, .. } => name,
                             _ => source_name,
                         };
-                        let is_struct_ns = self.struct_defs.contains_key(struct_name.as_str())
+                        let method_full = format!("{struct_name}.{method}");
+                        let is_enum_method = self.enums.get(struct_name.as_str())
+                            .is_some_and(|info| !info.variants.contains_key(method))
+                            && self.resolve_symbol(&method_full).is_some();
+                        let is_type_namespace = (self.struct_defs.contains_key(struct_name.as_str())
+                            || is_enum_method)
                             && !self
                                 .current_generic_params
                                 .iter()
@@ -4437,8 +4442,7 @@ impl Analyzer {
                                 self.resolve_symbol(source_name).map(|s| s.kind),
                                 Some(SymbolKind::Variable { .. }) | Some(SymbolKind::Parameter)
                             );
-                        if is_struct_ns {
-                            let method_full = format!("{}.{}", struct_name, method);
+                        if is_type_namespace {
                             if let Some(sym) = self.resolve_for_read(&method_full) {
                                 // Retain declaration identity independently of whether
                                 // this call's generic arguments have been inferred.

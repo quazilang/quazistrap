@@ -30,7 +30,8 @@ fn chunk_requires_generated_companions(chunk: &Chunk) -> bool {
         matches!(constant, ConstPoolEntry::FnAddr(name) if
             name.starts_with("__quazi_closure_")
                 || name.starts_with("__quazi_fwd_")
-                || name.starts_with("__quazi_drop_"))
+                || name.starts_with("__quazi_drop_")
+                || name.starts_with("__quazi_export_adapter_"))
     })
 }
 
@@ -988,6 +989,9 @@ impl<'a> Codegen<'a> {
                 }
             }
             set.extend(dynamic_roots.iter().cloned());
+            // Generated cleanup calls source destructors such as `String.free`;
+            // without them a library would release owners without running them.
+            set.extend(destructor_roots.iter().cloned());
             let mut queue = set.iter().cloned().collect::<Vec<_>>();
             while let Some(fn_name) = queue.pop() {
                 if let Some(targets) = self.report.dependency_graph.calls_from.get(&fn_name) {
@@ -1006,6 +1010,7 @@ impl<'a> Codegen<'a> {
                     name,
                     generic_params,
                     attributes,
+                    body: Some(_),
                     ..
                 } = &item.node
                     && !generic_params.is_empty()
@@ -1127,7 +1132,6 @@ impl<'a> Codegen<'a> {
 
         // Pass 2: compile each live function body.
         let mut chunks = Vec::new();
-        let mut next_closure_idx = 0u16;
         for item in &program.items {
             if let ItemKind::Fn {
                 name,
@@ -1176,7 +1180,6 @@ impl<'a> Codegen<'a> {
                             attributes,
                             *c_variadic,
                             &mut chunks,
-                            &mut next_closure_idx,
                         )?
                     };
                     if let Some(mut chunk) = chunk {
@@ -1188,11 +1191,7 @@ impl<'a> Codegen<'a> {
                         }
                         chunks.push(chunk);
                         if let Some(foreign) = self.foreign_exports.get(&compile_name).cloned() {
-                            let fn_idx = *self
-                                .fn_index
-                                .get(&compile_name)
-                                .expect("exported function must have a function-table index");
-                            let adapter_name = export_adapter_name(&compile_name, fn_idx);
+                            let adapter_name = export_adapter_name(&compile_name);
                             let mut adapter = Chunk::with_params(adapter_name, params.len());
                             adapter.export = Some(foreign);
                             adapter.reg_count = params.len().max(1) as u8;
@@ -1273,7 +1272,6 @@ impl<'a> Codegen<'a> {
                                     attributes,
                                     *c_variadic,
                                     &mut chunks,
-                                    &mut next_closure_idx,
                                 )?
                             };
                             if let Some(mut chunk) = chunk {
@@ -1397,7 +1395,6 @@ impl<'a> Codegen<'a> {
                                     attributes,
                                     *c_variadic,
                                     &mut chunks,
-                                    &mut next_closure_idx,
                                     subst,
                                 )? {
                                     self.configure_native_symbol(&mut chunk, m.span);
@@ -1455,7 +1452,6 @@ impl<'a> Codegen<'a> {
                             attributes,
                             *c_variadic,
                             &mut chunks,
-                            &mut next_closure_idx,
                             subst,
                         )? {
                             self.configure_native_symbol(&mut chunk, *span);
@@ -1504,7 +1500,6 @@ impl<'a> Codegen<'a> {
                         attributes,
                         *c_variadic,
                         &mut chunks,
-                        &mut next_closure_idx,
                         subst,
                     )? {
                         self.configure_native_symbol(&mut chunk, *span);
@@ -2055,7 +2050,6 @@ impl<'a> Codegen<'a> {
         attributes: &[crate::parser::ast::Attribute],
         c_variadic: bool,
         output_chunks: &mut Vec<Chunk>,
-        next_closure_idx: &mut u16,
     ) -> Result<Option<Chunk>, String> {
         self.compile_fn_with_subst(
             name,
@@ -2064,7 +2058,6 @@ impl<'a> Codegen<'a> {
             attributes,
             c_variadic,
             output_chunks,
-            next_closure_idx,
             HashMap::new(),
         )
     }
@@ -2077,7 +2070,6 @@ impl<'a> Codegen<'a> {
         attributes: &[crate::parser::ast::Attribute],
         c_variadic: bool,
         output_chunks: &mut Vec<Chunk>,
-        next_closure_idx: &mut u16,
         type_subst: HashMap<String, TypeKind>,
     ) -> Result<Option<Chunk>, String> {
         if params.len() > u8::MAX as usize {
@@ -2173,7 +2165,6 @@ impl<'a> Codegen<'a> {
             &self.report.trait_method_slots,
             &self.report.trait_method_signatures,
             output_chunks,
-            next_closure_idx,
             type_subst,
             &self.named_call_slots,
             &self.source_files,
@@ -2700,8 +2691,8 @@ struct FnCompiler<'a> {
         &'a HashMap<String, HashMap<String, crate::semantic::TraitMethodSignature>>,
     /// Output chunks accumulator — closure chunks are pushed here.
     output_chunks: &'a mut Vec<Chunk>,
-    /// Counter for generating unique closure names.
-    next_closure_idx: &'a mut u16,
+    /// Repeated lowering of one lexical closure within this callable.
+    closure_occurrences: HashMap<usize, usize>,
     /// Tracks which local variable registers hold closure environment struct pointers.
     /// Used at call sites to dispatch through the env-wrapper convention.
     closure_env_regs: HashSet<u8>,
@@ -2920,7 +2911,6 @@ impl<'a> FnCompiler<'a> {
             HashMap<String, crate::semantic::TraitMethodSignature>,
         >,
         output_chunks: &'a mut Vec<Chunk>,
-        next_closure_idx: &'a mut u16,
         type_subst: HashMap<String, TypeKind>,
         named_call_slots: &'a NamedCallSlots,
         source_files: &'a [SourceFile],
@@ -2978,7 +2968,7 @@ impl<'a> FnCompiler<'a> {
             trait_method_slots,
             trait_method_signatures,
             output_chunks,
-            next_closure_idx,
+            closure_occurrences: HashMap::new(),
             closure_env_regs: HashSet::new(),
             generating_drop_glue: HashSet::new(),
             type_subst,
@@ -5319,23 +5309,8 @@ impl<'a> FnCompiler<'a> {
         if let Some(action) = self.contiguous_element_drop_action(name, type_args) {
             return Some(action);
         }
-        let base = format!("{}.free", name);
-        if !type_args.is_empty() {
-            let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
-            let mangled = crate::semantic::typecheck::mangle_monomorphized(&base, &type_kinds);
-            if self.has_consuming_drop_hook(&base, &mangled) && self.fn_index.contains_key(&mangled)
-            {
-                return Some(DropAction::Call(mangled));
-            }
-            if self.has_consuming_drop_hook(&base, &mangled) && self.fn_index.contains_key(&base) {
-                return Some(DropAction::Call(base));
-            }
-        }
-        if type_args.is_empty()
-            && self.consuming_receiver_methods.contains(&base)
-            && self.fn_index.contains_key(&base)
-        {
-            return Some(DropAction::Call(base));
+        if let Some(hook) = self.consuming_drop_hook(name, type_args) {
+            return Some(DropAction::Call(hook));
         }
         // An enum value owns its storage shell and its active payload; a
         // consuming `match` moves payloads out before releasing the shell.
@@ -5346,6 +5321,28 @@ impl<'a> FnCompiler<'a> {
             );
         }
         self.structural_drop_action_for_named(&name, &type_args, &mut HashSet::new())
+    }
+
+    fn consuming_drop_hook(&self, name: &str, type_args: &[Type]) -> Option<String> {
+        let base = format!("{}.free", name);
+        if !type_args.is_empty() {
+            let type_kinds: Vec<TypeKind> = type_args.iter().map(|t| t.node.clone()).collect();
+            let mangled = crate::semantic::typecheck::mangle_monomorphized(&base, &type_kinds);
+            if self.has_consuming_drop_hook(&base, &mangled) && self.fn_index.contains_key(&mangled)
+            {
+                return Some(mangled);
+            }
+            if self.has_consuming_drop_hook(&base, &mangled) && self.fn_index.contains_key(&base) {
+                return Some(base);
+            }
+        }
+        if type_args.is_empty()
+            && self.consuming_receiver_methods.contains(&base)
+            && self.fn_index.contains_key(&base)
+        {
+            return Some(base);
+        }
+        None
     }
 
     fn contiguous_element_drop_action(&self, name: &str, type_args: &[Type]) -> Option<DropAction> {
@@ -5583,12 +5580,8 @@ impl<'a> FnCompiler<'a> {
         if let Some(action) = self.contiguous_element_drop_action(&name, &type_args) {
             return Some(action);
         }
-        let base = format!("{}.free", name);
-        if type_args.is_empty()
-            && self.consuming_receiver_methods.contains(&base)
-            && self.fn_index.contains_key(&base)
-        {
-            return Some(DropAction::Call(base));
+        if let Some(hook) = self.consuming_drop_hook(&name, &type_args) {
+            return Some(DropAction::Call(hook));
         }
         if self.enum_defs.contains_key(name.as_str()) {
             return self.enum_drop_action(&name, &type_args, visiting);
@@ -6737,8 +6730,10 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn emit_c_callback_address(&mut self, resolved_name: &str) -> Option<u8> {
-        let fn_idx = *self.fn_index.get(resolved_name)?;
-        let adapter_name = export_adapter_name(resolved_name, fn_idx);
+        if !self.fn_index.contains_key(resolved_name) {
+            return None;
+        }
+        let adapter_name = export_adapter_name(resolved_name);
         let dst = self.alloc_reg();
         let constant = self
             .chunk
@@ -7881,7 +7876,8 @@ impl<'a> FnCompiler<'a> {
         } else {
             if self.codegen_error.is_none() {
                 self.codegen_error = Some(format!(
-                    "internal codegen error: function `{name}` is missing from the function table"
+                    "internal codegen error: function `{name}` called by `{}` is missing from the function table",
+                    self.chunk.name
                 ));
             }
         }
@@ -9957,6 +9953,7 @@ impl<'a> FnCompiler<'a> {
                         _ => source_name,
                     };
                     let is_type_ns = (self.struct_defs.contains_key(type_name.as_str())
+                        || self.enum_defs.contains_key(type_name.as_str())
                         || primitive_name.is_some())
                         && !(self.bound_names.contains(source_name)
                             && !self.type_subst.contains_key(source_name))
@@ -10799,16 +10796,18 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::Closure { params, body, .. } => {
-                let val = *self.next_closure_idx;
-                if let Some(next) = val.checked_add(1) {
-                    *self.next_closure_idx = next;
+                let site = expr.span.start;
+                let occurrence = self.closure_occurrences.entry(site).or_default();
+                let owner = &self.chunk.name;
+                let anon_name = if owner.starts_with("__quazi_closure_") {
+                    format!("{owner}_{site}_{occurrence}")
                 } else {
-                    self.codegen_error.get_or_insert_with(|| {
-                        "too many closures: generated symbol space exceeds 65535 entries"
-                            .to_string()
-                    });
-                }
-                let anon_name = format!("__quazi_closure_{}", val);
+                    format!(
+                        "__quazi_closure_{}_{site}_{occurrence}",
+                        encode_generated_callable_owner(owner)
+                    )
+                };
+                *occurrence += 1;
 
                 let captures = self.capture_ident_names(body, params);
 
@@ -10849,7 +10848,6 @@ impl<'a> FnCompiler<'a> {
                     self.trait_method_slots,
                     self.trait_method_signatures,
                     &mut temp_chunks,
-                    &mut *self.next_closure_idx,
                     self.type_subst.clone(),
                     self.named_call_slots,
                     self.source_files,
@@ -10984,7 +10982,6 @@ impl<'a> FnCompiler<'a> {
                     self.trait_method_slots,
                     self.trait_method_signatures,
                     &mut glue_chunks,
-                    &mut *self.next_closure_idx,
                     self.type_subst.clone(),
                     self.named_call_slots,
                     self.source_files,
@@ -11488,14 +11485,24 @@ fn item_cfg_active(attributes: &[crate::parser::ast::Attribute]) -> bool {
     true
 }
 
-fn export_adapter_name(function_name: &str, function_index: u16) -> String {
+fn encode_generated_callable_owner(name: &str) -> String {
+    use std::fmt::Write;
+
+    let mut encoded = String::with_capacity(name.len());
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            encoded.push(char::from(byte));
+        } else {
+            write!(&mut encoded, "_{byte:02x}").expect("writing to a String cannot fail");
+        }
+    }
+    encoded
+}
+
+fn export_adapter_name(function_name: &str) -> String {
     format!(
-        "__quazi_export_adapter_{}_{}",
-        function_name
-            .chars()
-            .map(|ch| if ch.is_alphanumeric() { ch } else { '_' })
-            .collect::<String>(),
-        function_index
+        "__quazi_export_adapter_{}_abi",
+        encode_generated_callable_owner(function_name)
     )
 }
 
@@ -15352,13 +15359,9 @@ fn main() i32 {
                 var x: i32 = f();
             }"#,
         );
-        assert!(
-            chunks.iter().any(|c| c.name == "__quazi_closure_0"),
-            "expected anonymous closure chunk"
-        );
         let closure_chunk = chunks
             .iter()
-            .find(|c| c.name == "__quazi_closure_0")
+            .find(|c| c.name.starts_with("__quazi_closure_main_"))
             .unwrap();
         assert_eq!(
             closure_chunk.code.last().unwrap().opcode,
@@ -15397,7 +15400,7 @@ fn main() i32 {
         );
         let closure_chunk = chunks
             .iter()
-            .find(|c| c.name == "__quazi_closure_0")
+            .find(|c| c.name.starts_with("__quazi_closure_main_"))
             .unwrap();
         // With one capture, param_count = 0 user params + 1 hidden env ptr = 1
         assert_eq!(
@@ -15443,7 +15446,7 @@ fn main() i32 {
         );
         let closure = chunks
             .iter()
-            .find(|chunk| chunk.name == "__quazi_closure_0")
+            .find(|chunk| chunk.name.starts_with("__quazi_closure_main_"))
             .expect("captured closure chunk");
         let loads = closure
             .code
@@ -15476,6 +15479,43 @@ fn main() i32 {
     }
 
     #[test]
+    fn generated_callable_names_survive_other_target_bodies() {
+        let source = r#"
+@repr(C) type Callback = fn(i32) i32;
+@cfg(target_os="windows")
+fn earlier() i32 {
+    const extra: fn() i32 = || 3;
+    ret extra();
+}
+@export("increment") pub fn increment(value: i32) i32 { ret value + 1; }
+fn main() i32 {
+    const shared: fn() i32 = || 4;
+    var total = shared();
+    @cfg(target_os="windows") { total += earlier(); }
+    unsafe {
+        const callback: Callback = increment;
+        total += callback(1);
+    }
+    ret total;
+}
+"#;
+        let program = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let compile_for = |os: &str, abi: &str| {
+            let target = crate::semantic::strip_cfg_for(&program, os, "x86_64", abi);
+            let report = Analyzer::new().analyze_program(&target);
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            Codegen::new(&report).compile_program(&target, &[]).unwrap()
+        };
+        let linux = compile_for("linux", "sysv");
+        let windows = compile_for("windows", "win64");
+        assert!(windows.iter().any(|chunk| chunk.name.starts_with("__quazi_closure_earlier_")));
+        for prefix in ["__quazi_closure_main_", "__quazi_export_adapter_increment_"] {
+            let common = linux.iter().find(|chunk| chunk.name.starts_with(prefix)).unwrap();
+            assert!(windows.iter().any(|chunk| chunk.name == common.name), "{}", common.name);
+        }
+    }
+
+    #[test]
     fn repeated_named_function_values_share_one_forwarder() {
         let chunks = compile(
             r#"fn one() i32 { ret 1; }
@@ -15496,7 +15536,12 @@ fn main() i32 {
 
     #[test]
     fn incremental_units_with_generated_companions_are_recompiled() {
-        for companion in ["__quazi_closure_0", "__quazi_fwd_one", "__quazi_drop_List"] {
+        for companion in [
+            "__quazi_closure_0",
+            "__quazi_fwd_one",
+            "__quazi_drop_List",
+            "__quazi_export_adapter_increment_0",
+        ] {
             let mut chunk = Chunk::new("owner");
             chunk
                 .constants

@@ -3310,6 +3310,20 @@ fn main() void {
     }
 
     #[test]
+    fn parses_attributes_on_enum_variants() {
+        let program = parse_program(r#"enum Value { @tag("empty") Empty, Item(i32) @tag("item"), }"#);
+        let ItemKind::Enum { variants, .. } = &program.items[0].node else {
+            panic!("expected enum item");
+        };
+        for (variant, expected) in variants.iter().zip(["empty", "item"]) {
+            assert_eq!(variant.attributes.len(), 1);
+            let tag = &variant.attributes[0];
+            assert_eq!(tag.name, "tag");
+            assert!(matches!(&tag.args[..], [AttrArg::Positional(AttrVal::Str(name))] if name == expected));
+        }
+    }
+
+    #[test]
     fn parses_enum_and_match_expression() {
         let program = parse_program(
             r#"

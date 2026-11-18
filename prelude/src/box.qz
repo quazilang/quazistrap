@@ -28,18 +28,23 @@ impl Box[T] {
     pub fn new(val: T) Box[T] {
         var p: *u8;
         unsafe { p = __box_malloc(size_of[T]()); }
+        if (p == 0) { panic("Box.new: allocation failed"); }
         __box_write(p, 0, val);
         ret Box { ptr: p };
     }
 
     // Moves the value out of the box.
     pub fn get(self: Box[T]) T {
-        ret __box_read(self.ptr, 0);
+        const value: T = __box_read(self.ptr, 0);
+        unsafe { __box_free(self.ptr); }
+        self.ptr = 0;
+        ret value;
     }
 
-    // Frees the storage; called automatically at the end of scope.
+    // Drops the value and frees its storage at the end of scope.
     pub fn free(self: Box[T]) void {
         if (self.ptr != 0) {
+            const _value: T = __box_read(self.ptr, 0);
             unsafe { __box_free(self.ptr); }
             self.ptr = 0;
         }

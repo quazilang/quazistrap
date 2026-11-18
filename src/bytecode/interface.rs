@@ -133,6 +133,17 @@ pub fn build_qzi_interface(
             })
             .unwrap_or_else(|| package_name.to_string());
         let entry = modules.entry(module).or_default();
+        if let ItemKind::Impl { trait_ty: Some(trait_ty), methods, .. } = &item.node
+            && matches!(trait_ty.node.to_string().as_str(), "Serialize" | "Deserialize")
+            && methods.iter().any(|method| {
+                matches!(method.node, ItemKind::Fn { name_span: None, body: Some(_), .. })
+            })
+        {
+            const CODEC_IMPORT: &str = "import std.codec.{Serialize, Deserialize, EncodeError, DecodeError};\n";
+            if !entry.1.contains(CODEC_IMPORT) {
+                entry.1.insert_str(0, CODEC_IMPORT);
+            }
+        }
         entry.0.extend(exports);
         entry.1.push_str(&declaration);
         entry.1.push('\n');
@@ -752,7 +763,12 @@ fn render_public_item(item: &Item) -> Option<(String, Vec<String>)> {
             attributes,
             public,
         } if *public => {
-            let mut output = render_attributes(attributes);
+            // Codec bodies are carried by the QZI and declared by their
+            // interface methods. Importing it must not derive them again.
+            let attributes: Vec<_> = attributes.iter()
+                .filter(|attribute| attribute.name != "derive")
+                .cloned().collect();
+            let mut output = render_attributes(&attributes);
             output.push_str("pub enum ");
             output.push_str(name);
             render_generic_params(&mut output, generic_params);

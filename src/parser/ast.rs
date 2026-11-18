@@ -589,6 +589,7 @@ impl TraitMethod {
 pub struct EnumVariant {
     pub name: String,
     pub payload_types: Vec<Type>,
+    pub attributes: Vec<Attribute>,
     pub span: Span,
 }
 

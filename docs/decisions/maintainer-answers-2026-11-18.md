@@ -12,9 +12,8 @@ Status: decided by the maintainers on 2026-11-18 (asks.txt В23-В26).
   error that suggests a `Copy` bound or returning `&self.value`; contiguous
   containers read elements by value only when the concrete element is
   `Copy`, and gain a borrowing accessor (`get_ref`) for the rest.
-- **В24 → В27.** Enum serialization is to be configured through attributes
-  (like `@json(name=...)` on fields); the concrete attribute set is asked in
-  В27.
+- **В24 → В27.** Derived JSON enum codecs use external tags by default.
+  `@tag("name")` renames a variant. See the [codec contract](../api/codec.md#externally-tagged-enums).
 - **В25А.** Time zone data is discovered from the system IANA database
   (`$TZDIR`, `/usr/share/zoneinfo`, `/etc/zoneinfo`,
   `/usr/share/lib/zoneinfo`); updates come with the operating system and

@@ -872,7 +872,7 @@ impl Analyzer {
     }
 
     fn bc_declare_parameter(&mut self, parameter: &Param, slot: usize, env: &mut MoveEnv) {
-        self.bc_record_contiguous_destructor_root(&parameter.ty.node);
+        self.bc_record_destructor_root(&parameter.ty.node);
         env.declare(
             parameter.name.clone(),
             Some(parameter.ty.node.clone()),
@@ -1592,7 +1592,7 @@ impl Analyzer {
                     .as_ref()
                     .map(|value| self.bc_binding_view_origins(value, env));
                 if let Some(var_ty) = &var_ty {
-                    self.bc_record_contiguous_destructor_root(var_ty);
+                    self.bc_record_destructor_root(var_ty);
                 }
                 env.declare(name.clone(), var_ty, stmt.span, 0);
                 if let Some(value) = value {
@@ -1614,7 +1614,7 @@ impl Analyzer {
                 self.bc_expr(value, env, true);
                 let origins = self.bc_binding_view_origins(value, env);
                 if let Some(var_ty) = &var_ty {
-                    self.bc_record_contiguous_destructor_root(var_ty);
+                    self.bc_record_destructor_root(var_ty);
                 }
                 env.declare(name.clone(), var_ty, stmt.span, 0);
                 self.bc_bind_view_origins(name, value, origins, env);
@@ -3063,17 +3063,16 @@ impl Analyzer {
     }
 
     /// Implicit scope cleanup is an ownership use just like an explicit
-    /// `value.free()`. Record every reachable contiguous container release
-    /// hook now so tree shaking and monomorphization retain the chunks that
-    /// generated structural cleanup must call.
-    fn bc_record_contiguous_destructor_root(&mut self, ty: &TypeKind) {
+    /// `value.free()`. Keep concrete release hooks reachable for generated
+    /// cleanup, including the nested owners whose cleanup it invokes.
+    fn bc_record_destructor_root(&mut self, ty: &TypeKind) {
         let Some(owner) = self.current_function.last().cloned() else {
             return;
         };
-        self.bc_record_contiguous_destructor_roots(ty, &owner, &mut HashSet::new());
+        self.bc_record_destructor_roots(ty, &owner, &mut HashSet::new());
     }
 
-    fn bc_record_contiguous_destructor_roots(
+    fn bc_record_destructor_roots(
         &mut self,
         ty: &TypeKind,
         owner: &str,
@@ -3093,59 +3092,56 @@ impl Analyzer {
         if !visiting.insert(visit_key) {
             return;
         }
-        if !type_args.is_empty()
-            && let Some(contract) = self.contiguous_element_contracts.get(&name)
+        let release = format!("{name}.free");
+        let element_index = self.contiguous_element_contracts
+            .get(&name)
+            .map(|contract| contract.element_param_index);
+        if (element_index.is_some() || self.consuming_receiver_methods.contains(&release))
+            && !type_args.is_empty()
         {
-            let release = format!("{name}.free");
-            let type_args = type_args
-                .iter()
-                .map(|argument| argument.node.clone())
-                .collect::<Vec<_>>();
-            let element_type = type_args.get(contract.element_param_index).cloned();
-            let mangled_name =
-                crate::semantic::typecheck::mangle_monomorphized(&release, &type_args);
-            let generic_params = self.generic_params_for_function(&release);
-            self.record_specialization_layout(&release, &generic_params, &type_args);
-            if !self.has_monomorphization(&release, &type_args, &mangled_name) {
-                self.monomorphizations.push(MonomorphizationInfo {
-                    fn_name: release,
-                    type_args,
-                    mangled_name: mangled_name.clone(),
-                });
+            let args: Vec<_> = type_args.iter().map(|argument| argument.node.clone()).collect();
+            let parameters = self.generic_params_for_function(&release);
+            if parameters.len() == args.len() {
+                let target = crate::semantic::typecheck::mangle_monomorphized(&release, &args);
+                self.record_specialization_layout(&release, &parameters, &args);
+                if !self.has_monomorphization(&release, &args, &target) {
+                    self.monomorphizations.push(MonomorphizationInfo {
+                        fn_name: release.clone(),
+                        type_args: args,
+                        mangled_name: target.clone(),
+                    });
+                }
+                self.add_dependency_edge(DependencyKind::Call, owner, &target);
             }
-            self.add_dependency_edge(DependencyKind::Call, owner, &mangled_name);
-            // Generated destruction recursively lowers the concrete element
-            // action. Keep the element's release specialization reachable too;
-            // otherwise Buffer[Buffer[Token]] can reach codegen without the
-            // Buffer.free<Token> chunk it must invoke.
-            if let Some(element) = element_type.as_ref() {
-                self.bc_record_contiguous_destructor_roots(element, owner, visiting);
+            if let Some(element) = element_index.and_then(|index| type_args.get(index)) {
+                self.bc_record_destructor_roots(&element.node, owner, visiting);
             }
             return;
         }
-        if self
-            .consuming_receiver_methods
-            .contains(&format!("{name}.free"))
-            || self.repr_c_structs.contains(&name)
-        {
+        if self.consuming_receiver_methods.contains(&release) || self.repr_c_structs.contains(&name) {
             return;
         }
-        let Some(fields) = self.struct_defs.get(&name).cloned() else {
+        let fields: Vec<TypeKind> = if let Some(fields) = self.struct_defs.get(&name) {
+            fields.iter().map(|(_, ty)| ty.clone()).collect()
+        } else if let Some(info) = self.enums.get(&name) {
+            info.order.iter()
+                .filter_map(|variant| info.variant_fields.get(variant))
+                .flatten().cloned().collect()
+        } else {
             return;
         };
         let params = self
-            .struct_generic_params
-            .get(&name)
+            .declared_type_parameters(&name)
             .cloned()
             .unwrap_or_default();
         let substitutions = params
             .into_iter()
             .zip(type_args.into_iter().map(|argument| argument.node))
             .collect::<HashMap<_, _>>();
-        for (_, field_ty) in fields {
+        for field_ty in fields {
             let field_ty =
                 crate::semantic::typecheck::substitute_type_kind(&field_ty, &substitutions);
-            self.bc_record_contiguous_destructor_roots(&field_ty, owner, visiting);
+            self.bc_record_destructor_roots(&field_ty, owner, visiting);
         }
     }
 

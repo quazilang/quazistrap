@@ -334,6 +334,7 @@ impl Parser {
                 return Err(self.err_here("unexpected EOF while parsing enum".to_string()));
             }
 
+            let mut variant_attributes = self.parse_attributes()?;
             let variant_name_tok = self.expect_ident_token()?;
             let variant_name = match &variant_name_tok.kind {
                 TokenKind::Ident(s) => s.clone(),
@@ -361,10 +362,13 @@ impl Parser {
                 variant_end = self.expect(TokenKind::RParen)?.span;
             }
 
+            variant_attributes.extend(self.parse_attributes()?);
+            let code_span = to_ast_span(merge_token_spans(variant_name_tok.span, variant_end));
             variants.push(EnumVariant {
                 name: variant_name,
                 payload_types,
-                span: to_ast_span(merge_token_spans(variant_name_tok.span, variant_end)),
+                attributes: variant_attributes,
+                span: code_span,
             });
 
             if self.at(TokenKind::Comma) || self.at(TokenKind::Semicolon) {

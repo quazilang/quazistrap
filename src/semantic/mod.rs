@@ -795,6 +795,18 @@ fn desugar_serde_attributes(program: &Program) -> Program {
     }
 }
 
+fn enum_json_tag(variant: &EnumVariant) -> &str {
+    variant.attributes.iter().find_map(|attribute| {
+        if attribute.name != "tag" {
+            return None;
+        }
+        match attribute.args.as_slice() {
+            [AttrArg::Positional(AttrVal::Str(value))] => Some(value.as_str()),
+            _ => None,
+        }
+    }).unwrap_or(&variant.name)
+}
+
 fn expand_serialize_derives(program: &Program) -> Program {
     let desugared = desugar_serde_attributes(program);
     let program = &desugared;
@@ -906,6 +918,10 @@ fn expand_serialize_derives(program: &Program) -> Program {
 
         fn local(&mut self, name: &str, ty: Option<TypeKind>, value: Expr, mutable: bool) -> Stmt {
             let ty = ty.map(|ty| self.ty(ty));
+            self.local_with_type(name, ty, value, mutable)
+        }
+
+        fn local_with_type(&mut self, name: &str, ty: Option<Type>, value: Expr, mutable: bool) -> Stmt {
             let node = if mutable {
                 StmtKind::Var {
                     name: name.to_string(),
@@ -931,11 +947,18 @@ fn expand_serialize_derives(program: &Program) -> Program {
 
         /// `<decoder>(text)?` for one JSON value of the codec element type.
         fn decode_value(&mut self, value: &CodecValue, text: Expr) -> Expr {
+            self.decode_value_at(value, text, None)
+        }
+
+        fn decode_value_at(&mut self, value: &CodecValue, text: Expr, origin: Option<Span>) -> Expr {
             let decoded = match value {
                 CodecValue::Scalar(scalar) => self.codec_call(&format!("decode_{scalar}"), vec![text]),
                 CodecValue::Text => self.codec_call("decode_string", vec![text]),
                 CodecValue::Struct(name) => {
-                    let ty = self.type_path(name);
+                    let mut ty = self.type_path(name);
+                    if let Some(span) = origin {
+                        ty.span = span;
+                    }
                     self.method_call(ty, "from_json", vec![text])
                 }
             };
@@ -1428,12 +1451,359 @@ fn expand_serialize_derives(program: &Program) -> Program {
         ]
     }
 
+    fn enum_codec_method(
+        builder: &mut Builder,
+        name: &str,
+        parameter: &str,
+        parameter_type: Type,
+        result: Type,
+        error: &str,
+        statements: Vec<Stmt>,
+        public: bool,
+        span: Span,
+    ) -> Item {
+        let error = builder.named_ty(error);
+        let result = builder.ty(TypeKind::Named {
+            name: "Result".into(),
+            type_args: vec![result, error],
+        });
+        Spanned::new(
+            ItemKind::Fn {
+                name: name.into(),
+                name_span: None,
+                generic_params: Vec::new(),
+                params: vec![Param {
+                    name: parameter.into(),
+                    name_span: builder.span(),
+                    ty: parameter_type,
+                    variadic: false,
+                    attributes: Vec::new(),
+                }],
+                return_ty: result,
+                body: Some(builder.block(statements)),
+                attributes: Vec::new(),
+                unsafe_fn: false,
+                pub_fn: public,
+                c_variadic: false,
+            },
+            span,
+        )
+    }
+
+    fn enum_invalid_value(builder: &mut Builder) -> Expr {
+        let error = builder.ident("DecodeError");
+        let value = builder.field(error, "InvalidValue");
+        builder.call("Err", vec![value])
+    }
+
+    fn enum_tag_literal(builder: &mut Builder, variant: &EnumVariant) -> Expr {
+        let tag = enum_json_tag(variant).replace('{', "{{").replace('}', "}}");
+        builder.string_literal(tag)
+    }
+
+    fn enum_serialize(
+        builder: &mut Builder,
+        name: &str,
+        variants: &[EnumVariant],
+        shapes: &[Vec<CodecField>],
+        span: Span,
+    ) -> Item {
+        let mut arms = Vec::new();
+        for (variant, shapes) in variants.iter().zip(shapes) {
+            let mut sub_patterns = Vec::new();
+            let mut encoded = Vec::new();
+            let tag = enum_tag_literal(builder, variant);
+            for (slot, shape) in shapes.iter().enumerate() {
+                let binding = format!("__quazi_json_payload_{slot}");
+                sub_patterns.push(Spanned::new(PatternKind::Bind(binding.clone()), builder.span()));
+                let value = builder.ident(&binding);
+                let encoded_value = match shape {
+                    CodecField::Required(_) => builder.method_call(value, "to_json", Vec::new()),
+                    CodecField::Optional(_) => builder.codec_call("optional_json", vec![value]),
+                    CodecField::Array(_) => builder.codec_call("array_json", vec![value]),
+                };
+                encoded.push(builder.try_expr(encoded_value));
+            }
+            let value = if encoded.is_empty() {
+                builder.method_call(tag, "to_json", Vec::new())
+            } else {
+                let payload = if encoded.len() == 1 {
+                    encoded.pop().unwrap()
+                } else {
+                    let array = builder.ident("Array");
+                    let values = builder.method_call(array, "from", encoded);
+                    let encoded = builder.codec_call("tuple_json", vec![values]);
+                    builder.try_expr(encoded)
+                };
+                builder.codec_call("tagged_json", vec![tag, payload])
+            };
+            let pattern = Spanned::new(
+                PatternKind::Variant {
+                    enum_name: Some(name.into()),
+                    variant: variant.name.clone(),
+                    sub_patterns,
+                },
+                builder.span(),
+            );
+            arms.push(MatchArm { pattern, guard: None, expr: value, span: builder.span() });
+        }
+        let receiver = builder.ident("self");
+        let value = builder.expr(ExprKind::Match { scrutinee: Box::new(receiver), arms });
+        let statement = builder.stmt(StmtKind::Return(Some(value)));
+        let owner = builder.named_ty(name);
+        let result = builder.named_ty("String");
+        let method = enum_codec_method(builder, "to_json", "self", owner, result, "EncodeError",
+            vec![statement], true, span);
+        Spanned::new(
+            ItemKind::Impl {
+                trait_ty: Some(builder.named_ty("Serialize")),
+                for_ty: builder.named_ty(name),
+                methods: vec![method],
+            },
+            span,
+        )
+    }
+
+    fn decode_enum_payload(
+        builder: &mut Builder,
+        shape: &CodecField,
+        ty: &Type,
+        raw: &str,
+        output: &str,
+        statements: &mut Vec<Stmt>,
+    ) {
+        let raw = builder.ident(raw);
+        match shape {
+            CodecField::Required(codec) => {
+                let decoded = builder.decode_value_at(codec, raw, Some(ty.span));
+                statements.push(builder.local_with_type(output, Some(ty.clone()), decoded, false));
+            }
+            CodecField::Optional(codec) => {
+                let none = builder.ident("None");
+                statements.push(builder.local_with_type(output, Some(ty.clone()), none, true));
+                let null = builder.string_literal("null".into());
+                let is_some = builder.expr(ExprKind::Binary {
+                    left: Box::new(raw.clone()),
+                    op: BinOpKind::NotEq,
+                    right: Box::new(null),
+                });
+                let decoded = builder.decode_value_at(codec, raw, Some(ty.span));
+                let some = builder.call("Some", vec![decoded]);
+                let target = builder.ident(output);
+                let assign = builder.expr(ExprKind::Assign {
+                    target: Box::new(target),
+                    value: Box::new(some),
+                });
+                let assign = builder.stmt(StmtKind::ExprStmt(assign));
+                let then_block = builder.block(vec![assign]);
+                statements.push(builder.stmt(StmtKind::If {
+                    condition: is_some,
+                    then_block,
+                    else_if: Vec::new(),
+                    else_block: None,
+                }));
+            }
+            CodecField::Array(codec) => {
+                let items = builder.codec_call("array_items", vec![raw]);
+                let items = builder.try_expr(items);
+                let array = builder.ident("Array");
+                let values = builder.method_call(array, "new", Vec::new());
+                statements.push(builder.local_with_type(output, Some(ty.clone()), values, true));
+                let item_name = format!("{output}_item");
+                let item = builder.ident(&item_name);
+                let text = builder.method_call(item, "as_str", Vec::new());
+                let decoded = builder.decode_value_at(codec, text, Some(ty.span));
+                let target = builder.ident(output);
+                let push = builder.method_call(target, "push", vec![decoded]);
+                let push = builder.stmt(StmtKind::ExprStmt(push));
+                let body = builder.block(vec![push]);
+                let span = builder.span();
+                statements.push(builder.stmt(StmtKind::For {
+                    kind: ForLoop::Each {
+                        vars: vec![item_name],
+                        var_spans: vec![span],
+                        iter: ForIter::Iter(Box::new(items)),
+                    },
+                    body,
+                }));
+            }
+        }
+    }
+
+    fn enum_deserialize_case(
+        builder: &mut Builder,
+        name: &str,
+        variant: &EnumVariant,
+        shapes: &[CodecField],
+        helper: &str,
+        span: Span,
+    ) -> Item {
+        let mut statements = Vec::new();
+        if shapes.len() > 1 {
+            let payload = builder.ident("__quazi_json_payload");
+            let text = builder.method_call(payload, "as_str", Vec::new());
+            let parts = builder.codec_call("array_items", vec![text]);
+            let parts = builder.try_expr(parts);
+            statements.push(builder.local("__quazi_json_parts", None, parts, false));
+            let parts = builder.ident("__quazi_json_parts");
+            let len = builder.method_call(parts, "len", Vec::new());
+            let count = builder.expr(ExprKind::Literal(Literal::Int(shapes.len() as u64)));
+            let mismatch = builder.expr(ExprKind::Binary {
+                left: Box::new(len),
+                op: BinOpKind::NotEq,
+                right: Box::new(count),
+            });
+            let invalid = enum_invalid_value(builder);
+            let invalid = builder.stmt(StmtKind::Return(Some(invalid)));
+            let then_block = builder.block(vec![invalid]);
+            statements.push(builder.stmt(StmtKind::If {
+                condition: mismatch,
+                then_block,
+                else_if: Vec::new(),
+                else_block: None,
+            }));
+        }
+        let mut args = Vec::new();
+        for (index, (shape, ty)) in shapes.iter().zip(&variant.payload_types).enumerate() {
+            let source = if shapes.len() > 1 {
+                let parts = builder.ident("__quazi_json_parts");
+                let position = builder.expr(ExprKind::Literal(Literal::Int(index as u64)));
+                builder.method_call(parts, "get_ref", vec![position])
+            } else {
+                builder.ident("__quazi_json_payload")
+            };
+            let text = builder.method_call(source, "as_str", Vec::new());
+            let raw = format!("__quazi_json_raw_{index}");
+            statements.push(builder.local(&raw, None, text, false));
+            let value = format!("__quazi_json_value_{index}");
+            decode_enum_payload(builder, shape, ty, &raw, &value, &mut statements);
+            args.push(builder.ident(&value));
+        }
+        let owner = builder.ident(name);
+        let value = if args.is_empty() {
+            builder.field(owner, &variant.name)
+        } else {
+            builder.method_call(owner, &variant.name, args)
+        };
+        let ty = TypeKind::Named { name: name.into(), type_args: Vec::new() };
+        statements.push(builder.local("__quazi_json_case", Some(ty), value, false));
+        let value = builder.ident("__quazi_json_case");
+        let ok = builder.call("Ok", vec![value]);
+        statements.push(builder.stmt(StmtKind::Return(Some(ok))));
+        let input = builder.named_ty("String");
+        let output = builder.named_ty(name);
+        enum_codec_method(builder, helper, "__quazi_json_payload", input, output, "DecodeError",
+            statements, false, span)
+    }
+
+    fn enum_deserialize(
+        builder: &mut Builder,
+        name: &str,
+        variants: &[EnumVariant],
+        shapes: &[Vec<CodecField>],
+        span: Span,
+    ) -> [Item; 2] {
+        let mut statements = Vec::new();
+        for (binding, element) in [
+            ("__quazi_json_tags", TypeKind::Str),
+            ("__quazi_json_payloads", TypeKind::Bool),
+        ] {
+            let array = builder.ident("Array");
+            let new = builder.method_call(array, "new", Vec::new());
+            let ty = builder.array_ty(element).node;
+            statements.push(builder.local(binding, Some(ty), new, true));
+        }
+        let mut helpers = Vec::new();
+        let mut dispatch = Vec::new();
+        for (index, (variant, shapes)) in variants.iter().zip(shapes).enumerate() {
+            let tags = builder.ident("__quazi_json_tags");
+            let tag = enum_tag_literal(builder, variant);
+            let push = builder.method_call(tags, "push", vec![tag]);
+            statements.push(builder.stmt(StmtKind::ExprStmt(push)));
+            let payloads = builder.ident("__quazi_json_payloads");
+            let value = builder.expr(ExprKind::Literal(Literal::Bool(!shapes.is_empty())));
+            let push = builder.method_call(payloads, "push", vec![value]);
+            statements.push(builder.stmt(StmtKind::ExprStmt(push)));
+            let helper = format!("__quazi_json_case_{index}");
+            helpers.push(enum_deserialize_case(builder, name, variant, shapes, &helper, span));
+            let owner = builder.ident(name);
+            let payload = builder.ident("__quazi_json_payload");
+            let call = builder.method_call(owner, &helper, vec![payload]);
+            let ret = builder.stmt(StmtKind::Return(Some(call)));
+            let then_block = builder.block(vec![ret]);
+            let selected = builder.ident("__quazi_json_index");
+            let discriminant = builder.expr(ExprKind::Literal(Literal::Int(index as u64)));
+            let condition = builder.expr(ExprKind::Binary {
+                left: Box::new(selected),
+                op: BinOpKind::EqEq,
+                right: Box::new(discriminant),
+            });
+            dispatch.push(builder.stmt(StmtKind::If {
+                condition, then_block, else_if: Vec::new(), else_block: None,
+            }));
+        }
+        let source = builder.ident("source");
+        let tags = builder.ident("__quazi_json_tags");
+        let tags = builder.reference(tags);
+        let payloads = builder.ident("__quazi_json_payloads");
+        let payloads = builder.reference(payloads);
+        let parsed = builder.codec_call("enum_input", vec![source, tags, payloads]);
+        let parsed = builder.try_expr(parsed);
+        statements.push(builder.local("__quazi_json_input", None, parsed, false));
+        let input = builder.ident("__quazi_json_input");
+        let index = builder.field(input, "index");
+        statements.push(builder.local("__quazi_json_index", Some(TypeKind::Usize), index, false));
+        let input = builder.ident("__quazi_json_input");
+        let payload = builder.field(input, "payload");
+        statements.push(builder.local("__quazi_json_payload", None, payload, false));
+        statements.extend(dispatch);
+        let fallback = enum_invalid_value(builder);
+        statements.push(builder.stmt(StmtKind::Return(Some(fallback))));
+        let input = builder.ty(TypeKind::Str);
+        let output = builder.named_ty(name);
+        let method = enum_codec_method(builder, "from_json", "source", input, output, "DecodeError",
+            statements, true, span);
+        [
+            Spanned::new(ItemKind::Impl {
+                trait_ty: Some(builder.named_ty("Deserialize")), for_ty: builder.named_ty(name),
+                methods: vec![method],
+            }, span),
+            Spanned::new(ItemKind::Impl {
+                trait_ty: None, for_ty: builder.named_ty(name), methods: helpers,
+            }, span),
+        ]
+    }
+
     let aliases = derive_alias_map(program);
     let mut builder = Builder {
         next: 1_000_000_000,
     };
     let mut items = program.items.clone();
     for item in &program.items {
+        if let ItemKind::Enum { name, generic_params, variants, attributes, .. } = &item.node {
+            let serialize = derive_span(attributes, "Serialize");
+            let deserialize = derive_span(attributes, "Deserialize");
+            if (serialize.is_none() && deserialize.is_none())
+                || !generic_params.is_empty()
+                || variants.is_empty()
+            {
+                continue;
+            }
+            let Some(shapes) = variants.iter().map(|variant| {
+                variant.payload_types.iter().map(|ty| {
+                    codec_field(&derive_field_type(&ty.node, &aliases, 0))
+                }).collect::<Option<Vec<_>>>()
+            }).collect::<Option<Vec<_>>>() else {
+                continue;
+            };
+            if let Some(span) = serialize {
+                items.push(enum_serialize(&mut builder, name, variants, &shapes, span));
+            }
+            if let Some(span) = deserialize {
+                items.extend(enum_deserialize(&mut builder, name, variants, &shapes, span));
+            }
+            continue;
+        }
         let ItemKind::Struct {
             name,
             generic_params,
@@ -1630,7 +2000,11 @@ fn derive_field_type(ty: &TypeKind, aliases: &DeriveAliases<'_>, depth: usize) -
         .map(|argument| Spanned::new(derive_field_type(&argument.node, aliases, depth + 1), argument.span))
         .collect();
     if depth < 16
-        && let Some((params, aliased)) = aliases.get(name.as_str())
+        && let Some((params, aliased)) = aliases.get(name.as_str()).or_else(|| {
+            // The current nominal namespace has one declaration per leaf,
+            // including aliases. Semantic validation still checks the path.
+            name.rsplit_once('.').and_then(|(_, leaf)| aliases.get(leaf))
+        })
         && params.len() == arguments.len()
     {
         let substitution: HashMap<String, TypeKind> = params
@@ -1721,6 +2095,58 @@ fn same_codec_shape(left: Option<&CodecField>, right: Option<&CodecField>) -> bo
 }
 
 impl Analyzer {
+    fn validate_enum_codec_tags(&mut self, program: &Program, aliases: &DeriveAliases<'_>) {
+        for item in &program.items {
+            let ItemKind::Enum { name, generic_params, variants, attributes, .. } = &item.node else {
+                continue;
+            };
+            let derive = attributes.iter().find(|attribute| {
+                attribute.name == "derive" && attribute.args.iter().any(|arg| {
+                    matches!(arg, AttrArg::Positional(AttrVal::Ident(name))
+                        if name == "Serialize" || name == "Deserialize")
+                })
+            });
+            if let Some(derive) = derive
+                && (!generic_params.is_empty() || variants.is_empty())
+            {
+                self.push_error(derive.span, "S14",
+                    format!("JSON derivation requires a nonempty, nongeneric enum, got `{name}`"));
+            }
+            let mut tags = HashMap::new();
+            for variant in variants {
+                let mut tag_attributes = variant.attributes.iter().filter(|attr| attr.name == "tag");
+                let tag = tag_attributes.next();
+                if let Some(tag) = tag {
+                    if derive.is_none() {
+                        self.push_error(tag.span, "S06",
+                            "@tag requires Serialize or Deserialize derivation on the enum".into());
+                    }
+                    if tag_attributes.next().is_some()
+                        || !matches!(tag.args.as_slice(), [AttrArg::Positional(AttrVal::Str(value))]
+                            if !value.is_empty() && !value.contains('\0'))
+                    {
+                        self.push_error(tag.span, "S06",
+                            "use one @tag with a nonempty string without NUL".into());
+                    }
+                }
+                if derive.is_some() {
+                    let name = enum_json_tag(variant);
+                    if let Some(previous) = tags.insert(name, &variant.name) {
+                        self.push_error(tag.map_or(variant.span, |tag| tag.span), "S06",
+                            format!("JSON tag `{name}` is used by `{previous}` and `{}`", variant.name));
+                    }
+                    for payload in &variant.payload_types {
+                        if codec_field(&derive_field_type(&payload.node, aliases, 0)).is_none() {
+                            self.push_error(payload.span, "S14",
+                                format!("unsupported JSON payload type `{}` for enum variant `{}`",
+                                    payload.node, variant.name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// A derived codec field must have a supported shape; a nested struct
     /// must implement `Serialize` (or define `from_json` for Deserialize).
     /// D-026 `@serde` arguments: struct formats and field keys.
@@ -1831,6 +2257,7 @@ impl Analyzer {
         self.validate_copy_impls(program);
         self.validate_serde_attributes(program);
         let aliases = derive_alias_map(program);
+        self.validate_enum_codec_tags(program, &aliases);
         // The shape each field is generated with, from its source spelling.
         let generated: HashMap<(&str, &str), Option<CodecField>> = program
             .items
