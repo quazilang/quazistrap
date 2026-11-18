@@ -781,6 +781,17 @@ where
             .then_some(arguments)
     }
 
+    /// `module.f(...)` or `Type.f(...)`: lowering evaluates no namespace operand
+    /// and schedules the actuals like a direct call.
+    fn namespace_call_site(&self, expression: &Expr) -> Option<&'b OwnershipCallArguments> {
+        let arguments = self.scheduled_call_site(expression, false)?;
+        (!arguments
+            .actuals
+            .iter()
+            .any(|actual| actual.role == OwnershipArgumentRole::Receiver))
+        .then_some(arguments)
+    }
+
     /// Argument facts for a resolved source-bodied call whose lowering follows
     /// the ordinary schedule. `receiver` selects methods or plain functions.
     fn scheduled_call_site(
@@ -844,14 +855,21 @@ where
                             ..
                         } => self
                             .method_call_site(expression, method)
-                            .map(|site| (site, Some(object.as_ref()), args, named_args)),
+                            .map(|site| (site, Some(object.as_ref()), args, named_args))
+                            .or_else(|| {
+                                self.namespace_call_site(expression)
+                                    .map(|site| (site, None, args, named_args))
+                            }),
                         _ => None,
                     };
                     let arguments = match arguments {
                         Some((site, receiver, args, named_args)) => {
-                            self.budget.charge(1 + site.actuals.len() * 3, expression.span)?;
+                            self.budget
+                                .charge(1 + site.actuals.len() * 3, expression.span)?;
                             ordered_call_arguments(
-                                site.actuals.iter().map(|arg| (&arg.role, arg.parameter_slot)),
+                                site.actuals
+                                    .iter()
+                                    .map(|arg| (&arg.role, arg.parameter_slot)),
                                 args,
                                 named_args,
                             )

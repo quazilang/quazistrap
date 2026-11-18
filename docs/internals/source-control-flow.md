@@ -94,9 +94,11 @@ actuals complete. A `?` in an earlier argument can bypass later arguments and
 the invocation. Named arguments follow parameter order. A method call that
 analysis resolves to a source-bodied inherent method with a receiver actual
 evaluates the receiver expression first, then the actuals in declaration-slot
-order, matching lowering's resolved-target path. Namespace calls (modules,
-enum constructors, associated functions) have no receiver actual and `free`
-has a separate destruction path; both stay opaque. Generic, variadic,
+order, matching lowering's resolved-target path. A resolved module or
+associated call (`module.f(...)`, `Type.f(...)`) without a receiver actual
+evaluates no namespace operand and schedules its actuals like a direct call.
+Enum constructors, receivers passed through a type name, and `free` (a
+separate destruction path) stay opaque. Generic, variadic,
 indirect, dynamic, foreign, unsafe and diverging calls remain opaque, as do
 calls with special lowering such as layout queries.
 

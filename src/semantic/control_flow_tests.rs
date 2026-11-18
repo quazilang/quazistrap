@@ -1049,3 +1049,47 @@ fn main() void {}
     assert!(reachable(graph, later).contains(&add));
     assert!(!reachable(graph, failure).contains(&add));
 }
+
+#[test]
+fn source_control_flow_invokes_associated_functions_without_a_namespace_operand() {
+    let source = r#"
+struct Counter { value: i32 }
+impl Counter {
+    fn create(first: i32, second: i32) Counter { ret Counter { value: first + second }; }
+    fn get(self: &Counter) i32 { ret self.value; }
+}
+fn step(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn build(value: Option[i32]) Option[i32] {
+    const counter = Counter.create(second = later(), first = step(value)?);
+    ret Some(Counter.get(&counter));
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "build")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let invoke = |needle: &str| {
+        let start = source.find(needle).unwrap();
+        graph.blocks.iter().position(|block| {
+            block.events.iter().any(
+                |event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == start),
+            )
+        })
+    };
+    let create = invoke("Counter.create(").expect("associated call is scheduled");
+    let step = invoke("step(value)?").unwrap();
+    let later = invoke("later(), first").unwrap();
+    assert!(reachable(graph, step).contains(&later));
+    assert!(reachable(graph, later).contains(&create));
+    assert!(!reachable(graph, later).contains(&step));
+    // A receiver passed explicitly through the type name keeps its own lowering.
+    assert!(invoke("Counter.get(").is_none());
+}
