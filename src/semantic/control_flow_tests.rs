@@ -1216,3 +1216,51 @@ fn main() void {}
     assert!(!reachable(graph, index).contains(&object));
     assert!(reachable(graph, index).contains(&read));
 }
+
+#[test]
+fn source_control_flow_field_reads_evaluate_expression_objects() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+fn make(value: Option[i32]) Option[Pair] {
+    ret Some(Pair { left: value?, right: 0 });
+}
+fn sum(value: Option[i32]) Option[i32] {
+    const pair = Pair { left: 1, right: 2 };
+    const total = make(value)?.left + pair.right;
+    ret Some(total);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "sum")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let fields: Vec<&str> = graph
+        .blocks
+        .iter()
+        .flat_map(|block| block.events.iter())
+        .filter_map(|event| match event {
+            OwnershipFlowEvent::ExpressionResult {
+                value: OwnershipExpressionResult::Field { field, .. },
+                ..
+            } => Some(field.as_str()),
+            _ => None,
+        })
+        .collect();
+    // `make(value)?.left` evaluates its object; `pair.right` is a name chain.
+    assert_eq!(fields, ["left"]);
+    let make = source.find("make(value)?").unwrap();
+    assert!(graph.blocks.iter().any(|block| {
+        block
+            .events
+            .iter()
+            .any(|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == make))
+    }));
+    graph.validate().unwrap();
+}

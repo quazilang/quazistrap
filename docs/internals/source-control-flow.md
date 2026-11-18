@@ -129,7 +129,12 @@ A single-index read `object[index]` evaluates the object, then the index,
 then records an `Index` result; bounds checks and the load are unmodeled.
 `check_expression_control.py` checks this order at run time.
 
-Other calls, multi-index reads and updates, guarded matches, field reads and
+A field read whose object is an expression (`make().field`, `items[i].field`)
+evaluates the object and records a `Field` result. Objects that are names or
+name chains (`value.field`, `module.constant`, `Enum.Variant`) stay opaque:
+they may be namespaces and evaluate nothing with effects.
+
+Other calls, multi-index reads and updates, guarded matches and
 aggregate initializers remain whole opaque regions. Controls nested inside
 these regions are not individually expanded. Multi-input iteration regions also
 remain opaque. Their internal branches and operand order require further shared

@@ -44,6 +44,12 @@ pub(crate) enum ExpressionControl<'a> {
         op: &'a IncDecOp,
         prefix: bool,
     },
+    /// `object.field` read whose object is an expression, not a name chain
+    /// (names may be module, enum or type namespaces): the object, then the
+    /// field load.
+    FieldRead {
+        object: &'a Expr,
+    },
     /// `object[index]` read: the object, then the index, then bounds and load.
     IndexRead {
         object: &'a Expr,
@@ -101,6 +107,15 @@ fn place_update<'a>(
     }
 }
 
+/// `a`, `a.b.c` or a grouped form: a path that may name a namespace.
+fn is_name_chain(expression: &Expr) -> bool {
+    match &expression.node {
+        ExprKind::Ident(_) => true,
+        ExprKind::Group(inner) | ExprKind::Field { object: inner, .. } => is_name_chain(inner),
+        _ => false,
+    }
+}
+
 /// The local or global name an assignment target spells, through groups.
 pub(crate) fn assignment_target_name(target: &Expr) -> Option<&str> {
     match &target.node {
@@ -135,6 +150,9 @@ pub(crate) fn expression_control(expression: &Expr) -> ExpressionControl<'_> {
         },
         ExprKind::Binary { left, right, .. } => ExpressionControl::EagerBinary { left, right },
         ExprKind::Try { expr } => ExpressionControl::TryOperand(expr),
+        ExprKind::Field { object, .. } if !is_name_chain(object) => {
+            ExpressionControl::FieldRead { object }
+        }
         ExprKind::Index { object, indices } if indices.len() == 1 => ExpressionControl::IndexRead {
             object,
             index: &indices[0],

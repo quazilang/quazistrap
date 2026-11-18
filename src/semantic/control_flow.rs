@@ -142,6 +142,11 @@ pub enum OwnershipExpressionResult {
         target: Span,
         prefix: bool,
     },
+    /// The object completed and the named field is read; the load is unmodeled.
+    Field {
+        object: Span,
+        field: String,
+    },
     /// The object and index completed; bounds checks and the load are unmodeled.
     Index {
         object: Span,
@@ -1071,6 +1076,22 @@ where
                         },
                         expression.span,
                     )?;
+                }
+                ExpressionControl::FieldRead { object } => {
+                    let ExprKind::Field { name, .. } = &expression.node else {
+                        unreachable!("shared field-read control");
+                    };
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::Field {
+                            object: object.span,
+                            field: name.clone(),
+                        },
+                        normal,
+                        scopes,
+                    )?;
+                    self.budget.charge(3, object.span)?;
+                    pending.push((current, object, complete));
                 }
                 ExpressionControl::IndexRead { object, index } => {
                     let complete = self.expression_result(
