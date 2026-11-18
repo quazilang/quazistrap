@@ -115,6 +115,22 @@ fn check_eager() i32 {
     }
     ret 0;
 }
+unsafe fn stamp(log: *i32, digit: i32, value: i32) i32 {
+    *log = *log * 10 + digit;
+    ret value;
+}
+fn check_places() i32 {
+    var log: i32 = 0;
+    var values: [i32; 3] = [0, 0, 0];
+    unsafe {
+        values[stamp(&log, 1, 1) as usize] = stamp(&log, 2, 7);
+        values[stamp(&log, 3, 1) as usize] += stamp(&log, 4, 1);
+    }
+    // Place operands complete before the value, matching the source graph.
+    if log != 1234 { ret 37; }
+    if values[1] != 8 { ret 38; }
+    ret 0;
+}
 fn main() i32 {
     var result0 = check_booleans();
     if result0 != 0 { ret result0; }
@@ -124,6 +140,8 @@ fn main() i32 {
     if result2 != 0 { ret result2; }
     var result3 = check_eager();
     if result3 != 0 { ret result3; }
+    var result4 = check_places();
+    if result4 != 0 { ret result4; }
     ret 0;
 }
 """
@@ -171,7 +189,7 @@ def check(qz, root, before=None):
     run([str(qz), "build", str(artifact), *common, "-c", "--target",
          "x86_64-windows", "-o", str(coff)], root)
     assert coff.read_bytes()[:2] == b"\x64\x86", "expected x86-64 COFF"
-    print("PASS expression control: 36 checks, native, QZI-only, Windows COFF")
+    print("PASS expression control: 38 checks, native, QZI-only, Windows COFF")
 
 
 def main():

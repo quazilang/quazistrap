@@ -880,13 +880,13 @@ fn main() void {}
     assert!(!reachable(graph, failure).contains(&store));
     assert!(!reachable(graph, store).contains(&invoke_later));
 
-    // Field targets keep lowering's separate address/value order opaque.
+    // A field target is a place update: its value is scheduled too.
     let field_value = source.rfind("later();").unwrap();
     assert!(
         block_with(&|event| {
             matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == field_value)
         })
-        .is_none()
+        .is_some()
     );
 }
 
@@ -1092,4 +1092,78 @@ fn main() void {}
     assert!(!reachable(graph, later).contains(&step));
     // A receiver passed explicitly through the type name keeps its own lowering.
     assert!(invoke("Counter.get(").is_none());
+}
+
+#[test]
+fn source_control_flow_place_updates_evaluate_address_operands_before_value() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+fn slot(value: Option[usize]) Option[usize] { ret value; }
+fn later() i32 { ret 2; }
+fn store(value: Option[usize]) Option[usize] {
+    var values: [i32; 3] = [0, 0, 0];
+    values[slot(value)?] = later();
+    var pair = Pair { left: 0, right: 0 };
+    pair.left += later();
+    pair.right++;
+    ret Some(0);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "store")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+    };
+    let invoke = |needle: &str| {
+        let start = source.find(needle).unwrap();
+        block_with(
+            &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == start),
+        )
+        .unwrap_or_else(|| panic!("missing invoke {needle}"))
+    };
+    let update = |needle: &str| {
+        let start = source.find(needle).unwrap();
+        block_with(&|event| {
+            matches!(event, OwnershipFlowEvent::ExpressionResult {
+                value: OwnershipExpressionResult::PlaceUpdate { target, .. }, ..
+            } if target.start == start)
+        })
+        .unwrap_or_else(|| panic!("missing place update {needle}"))
+    };
+    let index = invoke("slot(value)?");
+    let value = invoke("later();\n    var pair");
+    let indexed = update("values[slot");
+    let failure = graph
+        .blocks
+        .iter()
+        .find_map(|block| match block.terminator {
+            OwnershipFlowTerminator::Branch {
+                condition: OwnershipBranchCondition::TrySuccess { .. },
+                else_target,
+                ..
+            } => Some(else_target),
+            _ => None,
+        })
+        .unwrap();
+    assert!(reachable(graph, index).contains(&value));
+    assert!(!reachable(graph, value).contains(&index));
+    assert!(reachable(graph, value).contains(&indexed));
+    assert!(!reachable(graph, failure).contains(&value));
+
+    let compound_value = invoke("later();\n    pair.right");
+    let compound = update("pair.left");
+    assert!(reachable(graph, compound_value).contains(&compound));
+    assert!(reachable(graph, compound).contains(&update("pair.right")));
 }

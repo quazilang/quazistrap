@@ -78,8 +78,14 @@ result is the new (prefix) or previous value; overflow panics are unmodeled.
 A C-style loop update of this form therefore has a result event instead of
 an opaque `LoopUpdate` region.
 
-Field, index and dereference targets of these forms remain opaque because
-lowering computes their address before the value.
+Plain, compound and increment updates of a dereference (`*p`), field
+(`object.field`) or single-index (`object[index]`) place evaluate the address
+operands first, in lowering's `compute_lvalue_addr` order (pointer; object;
+object then index), then the value if any, and end with a `PlaceUpdate`
+result naming the form. Operands are ordinary expression evaluations: the
+graph does not distinguish place from value reads, and bounds, overflow and
+store effects are unmodeled. `check_expression_control.py` checks the runtime
+order. Multi-index targets stay opaque.
 
 An exposed `?` evaluates its operand once and branches on `TrySuccess`, a wrapper
 success-discriminant condition distinct from ordinary pointer truthiness.
@@ -119,8 +125,7 @@ its deferred graph. The edge does not identify the exact failing subexpression
 or prove which preceding effects occurred. A `?` on a conditionally unexecuted
 path can therefore introduce a conservative extra edge.
 
-Other calls, assignments and increments of places other than a bare name,
-guarded matches, fields/indexes and
+Other calls, multi-index updates, guarded matches, field/index reads and
 aggregate initializers remain whole opaque regions. Controls nested inside
 these regions are not individually expanded. Multi-input iteration regions also
 remain opaque. Their internal branches and operand order require further shared

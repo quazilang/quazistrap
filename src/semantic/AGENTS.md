@@ -95,7 +95,9 @@ Include leaves without calls. Return/break/continue end their path and retain
 lexical scope exits; C-style continue targets the update. Closure graphs are
 deferred, never synchronous successors of creation. `evaluation.rs` supplies
 operand control shared with codegen for unary/eager-binary/short-circuit/try
-forms and plain or compound assignments and `++`/`--` of a bare (grouped) name.
+forms, plain/compound assignments and `++`/`--` of a bare (grouped) name, and
+updates of dereference, field and single-index places (address operands, then
+value, then `PlaceUpdate`).
 Result events distinguish group/cast/unary/binary completion, logical
 normalization, payload extraction, the compound target read, named (compound)
 assignment and named increment; they prove no typed access or storage alias.

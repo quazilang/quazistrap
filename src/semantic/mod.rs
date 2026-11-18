@@ -17,7 +17,7 @@ pub use control_flow::{
     OwnershipExpressionResult,
     OwnershipFlowBlock, OwnershipFlowBlockId, OwnershipFlowEvent, OwnershipFlowScope,
     OwnershipFlowScopeId, OwnershipFlowScopeKind, OwnershipFlowTerminator, OwnershipIterationStage,
-    OwnershipReturnKind,
+    OwnershipPlaceUpdate, OwnershipReturnKind,
 };
 #[cfg(test)]
 mod control_flow_tests;

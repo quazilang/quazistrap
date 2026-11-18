@@ -44,6 +44,56 @@ pub(crate) enum ExpressionControl<'a> {
         op: &'a IncDecOp,
         prefix: bool,
     },
+    /// An update of a dereference, field or single-index place. Lowering
+    /// evaluates `operands` (see [`place_target_operands`]), then the value
+    /// when there is one, then reads (for compound forms) and stores the place.
+    PlaceUpdate {
+        target: &'a Expr,
+        operands: Vec<&'a Expr>,
+        value: Option<&'a Expr>,
+        form: PlaceUpdateForm<'a>,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PlaceUpdateForm<'a> {
+    Assign,
+    Compound(&'a CompoundAssignOp),
+    IncDec { op: &'a IncDecOp, prefix: bool },
+}
+
+/// The subexpressions lowering evaluates to address a place target, in order:
+/// a dereferenced pointer, a field's object, or an indexed object and then its
+/// single index. Bare names and other targets return `None`.
+pub(crate) fn place_target_operands(target: &Expr) -> Option<Vec<&Expr>> {
+    match &target.node {
+        ExprKind::Group(inner) => place_target_operands(inner),
+        ExprKind::Unary {
+            op: UnaryOpKind::Deref,
+            expr,
+        } => Some(vec![expr]),
+        ExprKind::Field { object, .. } => Some(vec![object]),
+        ExprKind::Index { object, indices } if indices.len() == 1 => {
+            Some(vec![object, &indices[0]])
+        }
+        _ => None,
+    }
+}
+
+fn place_update<'a>(
+    target: &'a Expr,
+    value: Option<&'a Expr>,
+    form: PlaceUpdateForm<'a>,
+) -> ExpressionControl<'a> {
+    match place_target_operands(target) {
+        Some(operands) => ExpressionControl::PlaceUpdate {
+            target,
+            operands,
+            value,
+            form,
+        },
+        None => ExpressionControl::Opaque,
+    }
 }
 
 /// The local or global name an assignment target spells, through groups.
@@ -86,12 +136,15 @@ pub(crate) fn expression_control(expression: &Expr) -> ExpressionControl<'_> {
                 target,
                 value,
             },
-            None => ExpressionControl::Opaque,
+            None => place_update(target, Some(value), PlaceUpdateForm::Assign),
         },
         ExprKind::CompoundAssign { target, op, value }
             if assignment_target_name(target).is_some() =>
         {
             ExpressionControl::NamedCompoundAssignment { target, op, value }
+        }
+        ExprKind::CompoundAssign { target, op, value } => {
+            place_update(target, Some(value), PlaceUpdateForm::Compound(op))
         }
         ExprKind::IncDec { expr, op, prefix } if assignment_target_name(expr).is_some() => {
             ExpressionControl::NamedIncDec {
@@ -100,6 +153,14 @@ pub(crate) fn expression_control(expression: &Expr) -> ExpressionControl<'_> {
                 prefix: *prefix,
             }
         }
+        ExprKind::IncDec { expr, op, prefix } => place_update(
+            expr,
+            None,
+            PlaceUpdateForm::IncDec {
+                op,
+                prefix: *prefix,
+            },
+        ),
         _ => ExpressionControl::Opaque,
     }
 }

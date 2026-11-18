@@ -15,7 +15,9 @@ use super::{
     ownership::SourceOwnershipCall,
 };
 use crate::cancel::Cancelled;
-use crate::evaluation::{ExpressionControl, expression_control, ordered_call_arguments};
+use crate::evaluation::{
+    ExpressionControl, PlaceUpdateForm, expression_control, ordered_call_arguments,
+};
 use crate::parser::ast::*;
 
 pub type OwnershipFlowBlockId = usize;
@@ -140,6 +142,21 @@ pub enum OwnershipExpressionResult {
         target: Span,
         prefix: bool,
     },
+    /// A dereference, field or single-index place is updated after its address
+    /// operands and value complete. Place-versus-value reads, bounds and
+    /// overflow panics, the store and aliasing remain unverified.
+    PlaceUpdate {
+        target: Span,
+        value: Option<Span>,
+        form: OwnershipPlaceUpdate,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum OwnershipPlaceUpdate {
+    Assign,
+    Compound(CompoundAssignOp),
+    IncDec { op: IncDecOp, prefix: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1049,6 +1066,44 @@ where
                         },
                         expression.span,
                     )?;
+                }
+                ExpressionControl::PlaceUpdate {
+                    target,
+                    operands,
+                    value,
+                    form,
+                } => {
+                    let form = match form {
+                        PlaceUpdateForm::Assign => OwnershipPlaceUpdate::Assign,
+                        PlaceUpdateForm::Compound(op) => OwnershipPlaceUpdate::Compound(op.clone()),
+                        PlaceUpdateForm::IncDec { op, prefix } => OwnershipPlaceUpdate::IncDec {
+                            op: op.clone(),
+                            prefix,
+                        },
+                    };
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::PlaceUpdate {
+                            target: target.span,
+                            value: value.map(|value| value.span),
+                            form,
+                        },
+                        normal,
+                        scopes,
+                    )?;
+                    let ordered: Vec<&'a Expr> = operands.into_iter().chain(value).collect();
+                    self.budget.charge(ordered.len() * 3, expression.span)?;
+                    let mut next = complete;
+                    let mut reversed = ordered.into_iter().rev().peekable();
+                    while let Some(operand) = reversed.next() {
+                        let entry = if reversed.peek().is_some() {
+                            self.block(scopes, operand.span)?
+                        } else {
+                            current
+                        };
+                        pending.push((entry, operand, next));
+                        next = entry;
+                    }
                 }
                 ExpressionControl::TryOperand(operand) => {
                     let success = self.expression_result(
