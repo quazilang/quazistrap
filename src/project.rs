@@ -1184,7 +1184,13 @@ fn collect_modules(
                         .clone()
                         .unwrap_or_else(|| crate::package::sha256_bytes(&bytes));
                     let path = alias_dir.join(format!("{source_hash}-{}.qzi", dep.name));
-                    let encoded = crate::bytecode::serialize_qzi_module(&module)?;
+                    let encoded = if bytes.get(4) == Some(&crate::bytecode::chunk::QZI_UNIFIED_VERSION) {
+                        let mut unified = crate::bytecode::chunk::decode_unified_qzi(&bytes)?;
+                        unified.alias_library_namespace(&dep.name);
+                        unified.encode()?
+                    } else {
+                        crate::bytecode::serialize_qzi_module(&module)?
+                    };
                     std::fs::write(&path, encoded).map_err(|error| {
                         format!("cannot write aliased QZI '{}': {error}", path.display())
                     })?;

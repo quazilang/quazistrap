@@ -135,6 +135,12 @@ def main():
         failed = run([*command, "--silent"], work, ok=False)
         assert failed.returncode != 0 and b"compilation failed for windows, netbsd" in failed.stderr, failed.stderr
         assert partial.read_bytes() == data, "failed build replaced an existing QZI"
+        project(work, '@cfg(target_os="linux") fn main() i32 { ret 0; }')
+        manifest = work / "quazi.toml"
+        manifest.write_text(manifest.read_text().replace("[package]\n", "[package]\nstd=false\n"))
+        failed = run([*command, "--silent"], work, ok=False)
+        assert failed.returncode != 0 and b"missing an entry for windows" in failed.stderr, failed.stderr
+        assert partial.read_bytes() == data, "missing entry replaced an existing QZI"
 
         # E: a dependency is part of the project's single QZI.
         library = root / "mylib"
@@ -153,6 +159,33 @@ def main():
         run([qz, "build", str(root / "consumer.qzi"), "-o", str(out / "consumer")], out)
         linked = subprocess.run([str(out / "consumer")], timeout=60)
         assert linked.returncode == 42, linked.returncode
+
+        # Aliasing a compiled library preserves every conditional body.
+        (library / "src").mkdir(parents=True)
+        (library / "quazi.toml").write_text(
+            '[package]\nname="target_lib"\nstd=false\n[lib]\npath="src/lib.qz"\n')
+        (library / "src/lib.qz").write_text("".join(
+            f'@cfg(target_os="{target}") pub fn value() i32 {{ ret {value}; }}\n'
+            for target, value in [("linux", 11), ("windows", 22), ("netbsd", 33)]))
+        dependency = root / "target_lib.qzi"
+        run([qz, "build", "--lib", "--silent", "--no-incremental", "-o", str(dependency)], library)
+        shutil.rmtree(library)
+        (consumer / "src").mkdir(parents=True)
+        (consumer / "quazi.toml").write_text(
+            '[package]\nname="target_consumer"\nstd=false\n'
+            '[dependencies]\nrenamed = { path = "../target_lib.qzi" }\n'
+            '[build]\nentry="src/main.qz"\n')
+        (consumer / "src/main.qz").write_text(
+            "import renamed;\nfn main() i32 { ret renamed.value(); }\n")
+        aliased = root / "aliased.qzi"
+        run([qz, "build", "-i", "--silent", "--no-incremental", "-o", str(aliased)], consumer)
+        _, alias_masks, _ = unified_layout(aliased.read_bytes())
+        assert sorted(alias_masks) == [1, 2, 4, 7], alias_masks
+        dependency.unlink()
+        shutil.rmtree(consumer)
+        run([qz, "build", str(aliased), "--silent", "-o", str(out / "aliased")], out)
+        assert run([str(out / "aliased")], out, ok=False).returncode == 11
+
         (root / "retired.qzi").write_bytes(b"\x00QZI\x0f\x00\x00")
         retired = run([qz, "build", str(root / "retired.qzi"), "-o", str(out / "retired")], out, ok=False)
         assert retired.returncode != 0 and b"format 15" in retired.stderr, retired.stderr

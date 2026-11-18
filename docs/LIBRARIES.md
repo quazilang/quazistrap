@@ -101,11 +101,11 @@ reach NetBSD output and no NetBSD libc reaches Linux output. QZI
 dependencies of a project are selected the same way, and native generation
 needs no source files.
 
-A system the program does not compile for (for example Linux-only code
-without a `@cfg` alternative) is left out with a warning; compiling the QZI
-for it fails with "this QZI has no `windows` target" instead of falling back
-to another system. A call to a function without a body for the selected
-target is reported by name.
+If any supported target fails to compile, the project build fails and
+preserves any existing output. The successful build summary says `QZI`.
+Earlier partial QZI artifacts can still be read for the targets they contain.
+One artifact carries one entry signature, so the presence of
+`main(args: Array[str])` must agree across targets.
 
 Layout: magic, 16, the target names, one module in the sectioned v14 layout
 holding every distinct body (one metadata section, interface, call
@@ -119,6 +119,8 @@ ownership safety. `scripts/check_universal_qzi.py` checks the contract.
 Projects are combined through dependencies, not through a separate
 container: a project's QZI links the code of its `quazi.toml` dependencies
 (recursively) into the same one artifact, which compiles without them.
+Aliasing a compiled library preserves its target-specific bodies and interfaces.
+Interface cache entries are keyed by the content of the selected interface.
 Format 15, an early container holding one complete program per operating
 system, is retired; reading such a file asks to rebuild it from source.
 
