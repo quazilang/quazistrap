@@ -10080,7 +10080,26 @@ impl<'a> FnCompiler<'a> {
                     );
                     let call_target = match self.receiver_value_type(object) {
                         // Analysis already named a generic method's specialization.
-                        _ if resolved_target.contains('<') => resolved_target,
+                        _ if resolved_target.contains('<')
+                            && self.fn_index.contains_key(&resolved_target) =>
+                        {
+                            resolved_target
+                        }
+                        // Inside a generic body that name uses the caller's
+                        // parameters: specialize its arguments for this copy.
+                        _ if let Some((template, _)) = resolved_target.split_once('<') => {
+                            let type_args = self.inferred_type_args_for_span(expr.span);
+                            if type_args.is_empty() {
+                                resolved_target
+                            } else {
+                                let Some(target) =
+                                    self.require_monomorphized_name(template, &type_args)
+                                else {
+                                    return self.alloc_reg();
+                                };
+                                target
+                            }
+                        }
                         Some(TypeKind::Named { type_args, .. }) if !type_args.is_empty() => {
                             let Some(target) =
                                 self.require_monomorphized_name(&resolved_target, &type_args)

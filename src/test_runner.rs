@@ -669,6 +669,39 @@ fn exercise_reserve() i32 {
     }
 
     #[test]
+    fn generic_methods_call_generic_methods_of_their_specialization() {
+        // `optional<i32>` must call `entry<i32>`: inside the template the
+        // callee is named with the caller's parameter `T`.
+        run_receiver_fixture(
+            "generic-method-calls-generic-method",
+            r#"
+trait Weight { fn weight(self: &Self) i32; }
+impl Weight for i32 { fn weight(self: &i32) i32 { ret *self; } }
+struct Total { sum: i32 }
+impl Total {
+    pub fn entry[T: Weight](self: &Total!, value: T) void {
+        self.sum = self.sum + value.weight();
+    }
+    pub fn optional[T: Weight](self: &Total!, value: Option[T]) void {
+        if value.is_some() { self.entry(value.unwrap()); }
+    }
+}
+fn exercise_generic_methods() i32 {
+    var total = Total { sum: 0 };
+    const some: Option[i32] = Some(40);
+    const none: Option[i32] = None;
+    total.optional(some);
+    total.optional(none);
+    total.entry(2);
+    if (total.sum != 42) { ret 1; }
+    ret 0;
+}
+"#,
+            "exercise_generic_methods",
+        );
+    }
+
+    #[test]
     fn prelude_array_from_keeps_owned_variadic_elements() {
         run_receiver_fixture(
             "prelude-array-owned-arguments",

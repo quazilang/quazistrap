@@ -5192,6 +5192,7 @@ impl Analyzer {
                                         is_variadic,
                                         expr.span,
                                     );
+                                    let type_kinds_for_codegen = type_kinds.clone();
                                     let mono_name =
                                         mangle_monomorphized(&codegen_mangled, &type_kinds);
                                     if !self.has_monomorphization(
@@ -5212,6 +5213,10 @@ impl Analyzer {
                                     );
                                     if !method_generics.is_empty() {
                                         resolved_target = mono_name.clone();
+                                        // Inside a generic body these name its
+                                        // parameters; each specialization of the
+                                        // caller substitutes its own.
+                                        inferred_type_args = Some(type_kinds_for_codegen.clone());
                                     }
                                 } else {
                                     self.add_dependency_edge(
