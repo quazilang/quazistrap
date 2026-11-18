@@ -2347,3 +2347,35 @@ fn main() void {}
     assert!(effects("wrapper").callee_unmodeled);
     assert!(!effects("relay").callee_unmodeled);
 }
+
+#[test]
+fn returned_callee_borrows_compose_into_callers() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+fn first(pair: &Pair) &i32 { ret &pair.left; }
+fn pass(pair: &Pair) &i32 { ret first(pair); }
+fn outer(other: i32, pair: &Pair) &i32 { ret pass(pair); }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let effects = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+            .parameter_effects
+            .clone()
+            .unwrap()
+    };
+    assert!(effects("first").returned_borrow.contains(&0));
+    assert!(
+        effects("pass").returned_borrow.contains(&0),
+        "{:?}",
+        effects("pass")
+    );
+    let outer = effects("outer");
+    assert!(outer.returned_borrow.contains(&1), "{outer:?}");
+    assert!(!outer.returned_borrow.contains(&0), "{outer:?}");
+}

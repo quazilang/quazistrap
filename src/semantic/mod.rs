@@ -171,6 +171,8 @@ pub struct Analyzer {
     pub(super) ownership_return_places: HashMap<String, places::ReturnFacts>,
     /// Outer places each closure captures (moved or copied), per caller.
     pub(super) ownership_capture_places: HashMap<String, places::CaptureFacts>,
+    /// Calls whose result a `ret` hands out directly, per caller.
+    pub(super) ownership_returned_calls: HashMap<String, places::ReturnedCalls>,
     /// Places read as values (maximal projections), keyed by caller and span.
     pub(super) ownership_read_places:
         HashMap<String, std::collections::BTreeMap<(usize, usize), OwnershipArgumentValue>>,
@@ -2552,6 +2554,7 @@ impl Analyzer {
             ownership_read_places: HashMap::new(),
             ownership_return_places: HashMap::new(),
             ownership_capture_places: HashMap::new(),
+            ownership_returned_calls: HashMap::new(),
             called_functions: BTreeSet::new(),
             call_counts: HashMap::new(),
             current_function: Vec::new(),
@@ -2673,6 +2676,13 @@ impl Analyzer {
                     continue;
                 };
                 let mut inherited = Vec::new();
+                let mut returned_borrows = Vec::new();
+                let mut returned_values = Vec::new();
+                let no_returns = places::ReturnedCalls::new();
+                let returned = self
+                    .ownership_returned_calls
+                    .get(&graph[caller].id.callable)
+                    .unwrap_or(&no_returns);
                 let mut callee_unmodeled = false;
                 for site in sites.values() {
                     let Some((name, _)) = &site.target else {
@@ -2696,10 +2706,20 @@ impl Analyzer {
                         else {
                             continue;
                         };
-                        if let OwnershipPlaceStorage::Parameter(own) = place.root.storage
-                            && callee_effects.written_through_reference.contains(&slot)
-                        {
+                        let OwnershipPlaceStorage::Parameter(own) = place.root.storage else {
+                            continue;
+                        };
+                        if callee_effects.written_through_reference.contains(&slot) {
                             inherited.push(own);
+                        }
+                        // `ret callee(p)` hands out what the callee returns.
+                        if returned.contains(&(site.span.start, site.span.end)) {
+                            if callee_effects.returned_borrow.contains(&slot) {
+                                returned_borrows.push(own);
+                            }
+                            if callee_effects.returned.contains(&slot) {
+                                returned_values.push(own);
+                            }
                         }
                     }
                 }
@@ -2709,6 +2729,12 @@ impl Analyzer {
                 for slot in inherited {
                     changed |= effects.written.insert(slot);
                     changed |= effects.written_through_reference.insert(slot);
+                }
+                for slot in returned_borrows {
+                    changed |= effects.returned_borrow.insert(slot);
+                }
+                for slot in returned_values {
+                    changed |= effects.returned.insert(slot);
                 }
                 if callee_unmodeled && !effects.callee_unmodeled {
                     effects.callee_unmodeled = true;
@@ -3340,6 +3366,7 @@ impl Analyzer {
         self.ownership_read_places.clear();
         self.ownership_return_places.clear();
         self.ownership_capture_places.clear();
+        self.ownership_returned_calls.clear();
         self.called_functions.clear();
         self.call_counts.clear();
         self.current_function.clear();

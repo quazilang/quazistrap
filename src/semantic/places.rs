@@ -26,6 +26,9 @@ pub(super) type ReturnFacts = BTreeMap<(usize, usize), (Option<bool>, OwnershipA
 /// `true` when the capture moves an owned value into the environment.
 pub(super) type CaptureFacts = BTreeMap<(usize, usize), Vec<(bool, OwnershipArgumentValue)>>;
 
+/// Spans of calls whose result a `ret` hands out directly.
+pub(super) type ReturnedCalls = std::collections::BTreeSet<(usize, usize)>;
+
 /// Everything one body walk records.
 struct BodyFacts {
     arguments: ArgumentFacts,
@@ -33,6 +36,7 @@ struct BodyFacts {
     reads: TargetFacts,
     returns: ReturnFacts,
     captures: CaptureFacts,
+    returned_calls: ReturnedCalls,
 }
 
 struct BindingInfo<'a> {
@@ -208,7 +212,10 @@ impl Analyzer {
                 reads,
                 returns,
                 captures,
+                returned_calls,
             } = body_facts;
+            self.ownership_returned_calls
+                .insert(caller.clone(), returned_calls);
             self.ownership_capture_places
                 .insert(caller.clone(), captures);
             self.ownership_return_places.insert(caller.clone(), returns);
@@ -439,6 +446,7 @@ impl Places<'_> {
         let mut reads = BTreeMap::new();
         let mut returns = BTreeMap::new();
         let mut captures: CaptureFacts = BTreeMap::new();
+        let mut returned_calls = ReturnedCalls::new();
         let mut captured = std::collections::HashSet::new();
         macro_rules! finish {
             ($overflow:expr) => {
@@ -449,6 +457,7 @@ impl Places<'_> {
                         reads,
                         returns,
                         captures,
+                        returned_calls,
                     },
                     $overflow,
                 ))
@@ -489,6 +498,12 @@ impl Places<'_> {
                         }
                         if matches!(place, OwnershipArgumentValue::Place(_)) {
                             returns.insert((value.span.start, value.span.end), (borrow, place));
+                        }
+                        if matches!(
+                            value.node,
+                            ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+                        ) {
+                            returned_calls.insert((value.span.start, value.span.end));
                         }
                         pending.push(Visit::Expression(value));
                     }

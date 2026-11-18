@@ -71,8 +71,10 @@ effect of the body is modeled.
 Callee effects compose to a fixed point over resolved calls: an argument
 rooted at a caller parameter inherits the callee's write through a reference
 for that slot, and a callee with unmodeled effects or without a source
-summary marks its callers `callee_unmodeled`. Other callee effects (returned
-borrows, captures) are not yet composed. This is source evidence toward the D-014 export summary, not
+summary marks its callers `callee_unmodeled`. A call whose result a `ret`
+hands out directly (`ret callee(p)`) also passes on what the callee returns:
+a callee returning slot k by value or as a borrow makes the caller return the
+parameter its argument k is rooted at. Captures are not composed. This is source evidence toward the D-014 export summary, not
 an artifact certificate.
 
 ## Support boundary
