@@ -13,6 +13,8 @@ use crate::semantic::SourceFile;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QziInterfaceBundle {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub heap_fixed_array_refs: bool,
     pub modules: Vec<QziInterfaceModule>,
 }
 
@@ -147,7 +149,7 @@ pub fn build_qzi_interface(
             }
         })
         .collect();
-    toml::to_string(&QziInterfaceBundle { modules })
+    toml::to_string(&QziInterfaceBundle { heap_fixed_array_refs: true, modules })
         .map_err(|error| format!("cannot serialize QZI interface: {error}"))
 }
 
@@ -408,6 +410,78 @@ fn is_quazi_identifier(name: &str) -> bool {
 
 pub fn parse_qzi_interface(text: &str) -> Result<QziInterfaceBundle, String> {
     toml::from_str(text).map_err(|error| format!("cannot parse QZI interface: {error}"))
+}
+
+pub(crate) fn check_fixed_array_reference_abi(text: &str) -> Result<(), String> {
+    let bundle = parse_qzi_interface(text)?;
+    if bundle.heap_fixed_array_refs {
+        return Ok(());
+    }
+    let mut items = Vec::new();
+    let mut aliases = HashMap::new();
+    for module in bundle.modules {
+        let tokens = crate::lexer::Lexer::new(&module.source).tokenize();
+        let program = crate::parser::Parser::new(tokens).parse()
+            .map_err(|error| format!("cannot check QZI reference ABI: {error}"))?;
+        for item in program.items {
+            if let ItemKind::TypeAlias { name, generic_params, aliased_type, .. } = &item.node {
+                aliases.insert(name.clone(), (generic_params.clone(), aliased_type.node.clone()));
+            }
+            items.push(item);
+        }
+    }
+    fn has_fixed_array_reference(ty: &TypeKind) -> bool {
+        match ty {
+            TypeKind::Ref { inner } => {
+                matches!(inner.node, TypeKind::Array { .. })
+                    && crate::runtime_layout::runtime_value_layout(&inner.node)
+                        .slot_count().is_some_and(|slots| slots > 1)
+            }
+            TypeKind::Named { type_args, .. } => type_args.iter()
+                .any(|ty| has_fixed_array_reference(&ty.node)),
+            TypeKind::Fn { params, return_ty } => has_fixed_array_reference(&return_ty.node)
+                || params.iter().any(|ty| has_fixed_array_reference(&ty.node)),
+            _ => false,
+        }
+    }
+    let check = |ty: &TypeKind| -> Result<(), String> {
+        let resolved = crate::type_resolution::resolve_type(
+            ty, &aliases, &HashMap::new(), &HashSet::new(),
+            |name| name.rsplit_once('.').map(|(_, leaf)| leaf.to_string()),
+        ).map_err(|error| format!("cannot check QZI reference ABI: {error}"))?;
+        if has_fixed_array_reference(&resolved) {
+            return Err("QZI library uses the older fixed-array reference ABI; rebuild it from source".into());
+        }
+        Ok(())
+    };
+    let check_function = |item: &Item| -> Result<(), String> {
+        if let ItemKind::Fn { params, return_ty, .. } = &item.node {
+            for param in params {
+                check(&param.ty.node)?;
+            }
+            check(&return_ty.node)?;
+        }
+        Ok(())
+    };
+    for item in &items {
+        match &item.node {
+            ItemKind::Impl { methods, .. } => {
+                for method in methods {
+                    check_function(method)?;
+                }
+            }
+            ItemKind::Trait { methods, .. } => {
+                for method in methods {
+                    for param in &method.params {
+                        check(&param.node)?;
+                    }
+                    check(&method.return_ty.node)?;
+                }
+            }
+            _ => check_function(item)?,
+        }
+    }
+    Ok(())
 }
 
 pub fn qzi_v6_interface_has_ambiguous_trait_receivers(text: &str) -> Result<bool, String> {
@@ -904,6 +978,23 @@ fn render_attr_value(output: &mut String, value: &AttrVal) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn older_interfaces_cannot_exchange_multislot_array_references() {
+        let legacy = r#"
+[[modules]]
+name = "arrays"
+exports = ["Pair", "read"]
+source = """
+pub type Pair = [i32; 2];
+pub fn read(value: &Pair) i32;
+"""
+"#;
+        assert!(super::check_fixed_array_reference_abi(legacy).unwrap_err().contains("rebuild"));
+        assert!(super::check_fixed_array_reference_abi(&legacy.replace("; 2]", "; 1]")).is_ok());
+        let marked = format!("heap_fixed_array_refs = true\n{legacy}");
+        assert!(super::check_fixed_array_reference_abi(&marked).is_ok());
+    }
+
     use super::*;
     use crate::lexer::Lexer;
     use crate::parser::Parser;

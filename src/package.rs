@@ -741,6 +741,7 @@ mod tests {
         let qzi_path = root.join("library.qzi");
         fs::write(&qzi_path, b"interface fixture").expect("write QZI fixture");
         let interface = toml::to_string(&QziInterfaceBundle {
+            heap_fixed_array_refs: false,
             modules: vec![
                 QziInterfaceModule {
                     name: "types".to_string(),

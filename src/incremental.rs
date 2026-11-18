@@ -12,8 +12,8 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Require declaration types and imported signatures normalized in defining context.
-const QZC_VERSION: u8 = 34;
+// Fixed-array reference lowering must agree across all cached source units.
+const QZC_VERSION: u8 = 35;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {

@@ -4732,8 +4732,23 @@ impl<'a> FnCompiler<'a> {
         self.prepare_method_receiver_at(value, self.type_of_expr(object), target, place)
     }
 
-    /// Fixed-array references already point to the first descending VM slot;
-    /// taking another address would index the reference variable itself.
+    /// Fixed-array references address slot zero. An aligned pointer has
+    /// descending stack slots. A set low bit marks ascending heap slots.
+    fn fixed_array_reference_layout(&mut self, reference: u8) -> (u8, u8) {
+        let one = self.emit_u64_constant(1);
+        let tag = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::And, tag, reference, one));
+        let base = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Sub, base, reference, tag));
+        let sixteen = self.emit_u64_constant(16);
+        let eight = self.emit_u64_constant(8);
+        let stride = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mul, stride, tag, sixteen));
+        self.chunk.emit(rrr(Opcode::Sub, stride, stride, eight));
+        (base, stride)
+    }
+
+    /// Index the referenced array, not the local that holds the reference.
     fn borrowed_fixed_array_address(&mut self, object: &Expr, index: &Expr) -> Option<LvalueAddr> {
         let (TypeKind::Ref { inner } | TypeKind::MutRef { inner }) = self.type_of_expr(object)?
         else {
@@ -4748,11 +4763,11 @@ impl<'a> FnCompiler<'a> {
         self.emit_bounds_guard(idx, length, index.span);
         // Freeze the checked address before an assignment RHS can change the
         // index variable. Retaining its register would invalidate the guard.
-        let eight = self.emit_u64_constant(8);
+        let (base, stride) = self.fixed_array_reference_layout(ptr);
         let offset = self.alloc_reg();
-        self.chunk.emit(rrr(Opcode::Mul, offset, idx, eight));
+        self.chunk.emit(rrr(Opcode::Mul, offset, idx, stride));
         let address = self.alloc_reg();
-        self.chunk.emit(rrr(Opcode::Sub, address, ptr, offset));
+        self.chunk.emit(rrr(Opcode::Add, address, base, offset));
         Some(LvalueAddr::Deref {
             ptr: address,
             width: MemWidth::Qword,
@@ -4774,11 +4789,22 @@ impl<'a> FnCompiler<'a> {
             Some(TypeKind::MutRef { inner }) => inner,
             _ => return reference,
         };
-        let slots = crate::runtime_layout::runtime_value_layout(&self.resolve_type(&inner.node))
+        let referred = self.resolve_type(&inner.node);
+        let slots = crate::runtime_layout::runtime_value_layout(&referred)
             .slot_count()
             .unwrap_or(1);
         let slots = self.qzi_u8(slots, "referenced receiver slot count") as usize;
         let value = self.reserve_reg_block(slots);
+        if slots > 1 && matches!(referred, TypeKind::Array { .. }) {
+            let (address, stride) = self.fixed_array_reference_layout(reference);
+            for index in 0..slots {
+                self.chunk.emit(mem_load(address, value + index as u8, 0));
+                if index + 1 < slots {
+                    self.chunk.emit(rrr(Opcode::Add, address, address, stride));
+                }
+            }
+            return value;
+        }
         for index in 0..slots {
             self.chunk.emit(mem_load(
                 reference,
@@ -5922,6 +5948,10 @@ impl<'a> FnCompiler<'a> {
             [address, pointer, index_reg, length],
             element_slots,
         ));
+        if element_slots > 1 && matches!(element_ty, TypeKind::Array { .. }) {
+            let tag = self.emit_u64_constant(1);
+            self.chunk.emit(rrr(Opcode::Or, address, address, tag));
+        }
         self.chunk.emit(rrr(Opcode::Mov, 0, address, 0));
         self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
     }

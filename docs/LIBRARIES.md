@@ -114,6 +114,12 @@ interface overrides for targets whose public interface differs, and a
 SHA-256 of the whole file. Integrity verification does not establish
 ownership safety. `scripts/check_universal_qzi.py` checks the contract.
 
+Shared references to multi-slot fixed arrays can refer to stack or heap
+storage. A library interface that exchanges these references requires the
+current reference representation marker. Rebuild an older library from
+source if the compiler reports a fixed-array reference ABI mismatch. Existing
+raw-pointer buffers retain their slot order, and the QZI v16 layout is unchanged.
+
 ### Dependencies inside a project QZI
 
 Projects are combined through dependencies, not through a separate

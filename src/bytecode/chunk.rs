@@ -114,6 +114,9 @@ impl QziModule {
             );
         }
         if self.ownership_abi_version >= 12 {
+            if self.metadata.kind == QziModuleKind::Library && !self.interface.is_empty() {
+                crate::bytecode::interface::check_fixed_array_reference_abi(&self.interface)?;
+            }
             return Ok(());
         }
         // Legacy bytecode contains no typed call-site receiver ABI facts. Only
@@ -2463,6 +2466,7 @@ mod tests {
         module.metadata.name = "old".to_string();
         module.ownership_abi_version = 10;
         module.interface = toml::to_string(&crate::bytecode::interface::QziInterfaceBundle {
+            heap_fixed_array_refs: false,
             modules: vec![crate::bytecode::interface::QziInterfaceModule {
                 name: "old".to_string(),
                 exports: vec!["answer".to_string()],
@@ -2711,10 +2715,12 @@ mod tests {
         let interfaces = [
             String::new(),
             toml::to_string(&QziInterfaceBundle {
+                heap_fixed_array_refs: false,
                 modules: Vec::new(),
             })
             .unwrap(),
             toml::to_string(&QziInterfaceBundle {
+                heap_fixed_array_refs: false,
                 modules: vec![QziInterfaceModule {
                     name: "old".to_string(),
                     exports: Vec::new(),
@@ -2723,6 +2729,7 @@ mod tests {
             })
             .unwrap(),
             toml::to_string(&QziInterfaceBundle {
+                heap_fixed_array_refs: false,
                 modules: vec![QziInterfaceModule {
                     name: "old".to_string(),
                     exports: vec!["Number".to_string()],
@@ -3220,6 +3227,7 @@ mod tests {
         let mut chunk = Chunk::new("legacy.consume");
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
         let interface = toml::to_string(&crate::bytecode::interface::QziInterfaceBundle {
+            heap_fixed_array_refs: false,
             modules: vec![crate::bytecode::interface::QziInterfaceModule {
                 name: "legacy".to_string(),
                 exports: vec!["consume".to_string()],
@@ -3264,6 +3272,7 @@ mod tests {
         let mut chunk = Chunk::new("main");
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
         let interface = toml::to_string(&crate::bytecode::interface::QziInterfaceBundle {
+            heap_fixed_array_refs: false,
             modules: vec![crate::bytecode::interface::QziInterfaceModule {
                 name: "legacy".to_string(),
                 exports: vec!["Write".to_string()],
@@ -3302,6 +3311,7 @@ mod tests {
         let mut chunk = Chunk::new("legacy.erase");
         chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
         let interface = toml::to_string(&crate::bytecode::interface::QziInterfaceBundle {
+            heap_fixed_array_refs: false,
             modules: vec![crate::bytecode::interface::QziInterfaceModule {
                 name: "legacy".to_string(),
                 exports: vec!["erase".to_string()],

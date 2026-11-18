@@ -1660,6 +1660,7 @@ version = "1.2.3"
         .expect("write main");
 
         let interface = toml::to_string(&QziInterfaceBundle {
+            heap_fixed_array_refs: false,
             modules: vec![QziInterfaceModule {
                 name: "dep".to_string(),
                 exports: vec!["answer".to_string()],

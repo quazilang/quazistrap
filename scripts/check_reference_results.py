@@ -32,6 +32,7 @@ struct Table { values: Array[i32] }
 impl Table { fn pick(self: &Table, key: &i32) &i32 { ret self.values.get_ref((*key) as usize); } }
 fn chained(p: &Point) &String { ret p.inner_ref().label(); }
 fn passed(p: &Point) &String { ret larger(&p.inner, &p.inner).label(); }
+fn array_tail(pair: &[i32; 2]) i32 { ret pair[1]; }
 fn main() i32 {
     var point = Point { inner: Inner { value: 1, label: String.from("first") }, y: 2 };
     const y: &i32 = &point.y;
@@ -73,10 +74,16 @@ fn main() i32 {
         key = key + 1;
     }
     println("{}", sum);
+    const stack_pair: [i32; 2] = [10, 20];
+    var heap_pairs: Array[[i32; 2]] = Array.new();
+    heap_pairs.push([30, 40]);
+    heap_pairs.push([50, 60]);
+    println("{} {} {}", array_tail(&stack_pair), array_tail(heap_pairs.get_ref(0)),
+        array_tail(heap_pairs.get_ref(1)));
     ret 0;
 }
 """
-EXPECTED = "2 5 other 2\n5 3\nfirst first\n5\nfirst 7\n9\n4 5\n3 5\n30\n"
+EXPECTED = "2 5 other 2\n5 3\nfirst first\n5\nfirst 7\n9\n4 5\n3 5\n30\n20 40 60\n"
 
 INVALID = [
     ("struct Table { n: i32 } impl Table { fn pick(self: &Table, key: &i32) &i32 { ret key; } } "
