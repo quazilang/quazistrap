@@ -586,7 +586,7 @@ fn target_os_name(target: &TargetSpec) -> &'static str {
 /// Builds the QZI of a project: the program is compiled once per operating
 /// system (each with its own `@cfg` resolution and full semantic/ownership
 /// analysis). Publish an artifact only if every supported target compiles.
-fn build_universal_qzi(out: &str, silent: bool, build: &dyn Fn(&TargetSpec, &str, bool)) {
+fn build_universal_qzi(out: &str, silent: bool, mut build: impl FnMut(&TargetSpec, &str, bool)) {
     let staging = std::env::temp_dir().join(format!("quazi-qzi-{}", std::process::id()));
     std::fs::create_dir_all(&staging).unwrap_or_else(|error| {
         eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {error}", staging.display());
@@ -1236,6 +1236,7 @@ fn build_with_progress(
     initial_progress: Option<progress::BuildProgress>,
     project_resolver: Option<&loader::ModuleResolver>,
     package_settings: project::PackageSettings,
+    preloaded: Option<loader::LoadResult>,
 ) {
     use progress::{
         BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count,
@@ -1329,18 +1330,19 @@ fn build_with_progress(
 
     // ── Step 1: Lexing (file I/O + tokenize) ─────────────────────────────────
     prog.begin("frontend");
-    let result = match project_resolver
-        .map(|resolver| {
-            loader::load_programs_configured_for_target(
-                files,
-                Some(resolver),
-                package_settings.std,
-                &[],
-                cfg_target_for_spec(&target),
-            )
-        })
-        .unwrap_or_else(|| load_with_optional_project_for_target(files, target.clone()))
-    {
+    let result = match preloaded.map(Ok).unwrap_or_else(|| {
+        project_resolver
+            .map(|resolver| {
+                loader::load_programs_configured_for_target(
+                    files,
+                    Some(resolver),
+                    package_settings.std,
+                    &[],
+                    cfg_target_for_spec(&target),
+                )
+            })
+            .unwrap_or_else(|| load_with_optional_project_for_target(files, target.clone()))
+    }) {
         Ok(r) => r,
         Err(e) => {
             prog.fail("");
@@ -1612,7 +1614,9 @@ fn build_with_progress(
     match emit {
         EmitType::Bytecode => {
             let bytes = project_qzi.unwrap_or_else(|| {
-                bytecode::serialize_qzi(&chunks).unwrap_or_else(|error| {
+                let mut module = bytecode::QziModule::from_chunks(chunks.clone());
+                module.metadata.main_takes_args = sema.main_takes_args;
+                bytecode::serialize_qzi_module(&module).unwrap_or_else(|error| {
                     prog.fail("error");
                     eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
                     fail_build();
@@ -1965,11 +1969,22 @@ fn main() {
                     main_takes_args: false,
                 };
                 if matches!(effective_emit, EmitType::Bytecode) {
-                    // A QZI always carries every operating system.
+                    let targets = QZI_TARGETS.map(|(_, spec)| cfg_target_for_spec(&spec()));
+                    let results = loader::load_programs_for_targets(
+                        std::slice::from_ref(&entry),
+                        Some(&ctx.resolver),
+                        ctx.config.package.std,
+                        &targets,
+                    )
+                    .unwrap_or_else(|error| {
+                        eprintln!("error: {error}");
+                        fail_build();
+                    });
+                    let mut results = results.into_iter();
                     let build_variant = |variant: &TargetSpec, path: &str, quiet: bool| {
                         let variant = apply_package_settings(variant.clone(), ctx.config.package);
-                        let variant_cache = (!no_incremental)
-                            .then(|| ctx.incremental_cache_path(variant.triple()));
+                        let variant_cache =
+                            (!no_incremental).then(|| ctx.incremental_cache_path(variant.triple()));
                         build_with_progress(
                             std::slice::from_ref(&entry),
                             path,
@@ -1990,9 +2005,10 @@ fn main() {
                             None,
                             Some(&ctx.resolver),
                             ctx.config.package,
+                            Some(results.next().expect("one loaded view per target")),
                         );
                     };
-                    build_universal_qzi(&out, silent, &build_variant);
+                    build_universal_qzi(&out, silent, build_variant);
                     bytecode::select_qzi_target(target_os_name(&target));
                     let _ = (emit, do_strip, preview_progress, qzc_path);
                     return;
@@ -2026,6 +2042,7 @@ fn main() {
                     Some(preview_progress),
                     Some(&ctx.resolver),
                     ctx.config.package,
+                    None,
                 );
                 let _ = (emit, do_strip);
 
@@ -2191,6 +2208,65 @@ fn main() {
                     .filter(|path| path.extension().is_some_and(|ext| ext == "qz"))
                     .cloned()
                     .collect();
+                if matches!(emit, EmitType::Bytecode) && !source_files.is_empty() {
+                    let ctx = ProjectContext::discover(&source_files[0]).unwrap_or_else(|error| {
+                        eprintln!("error: {error}");
+                        fail_build();
+                    });
+                    let settings = ctx
+                        .as_ref()
+                        .map_or_else(project::PackageSettings::default, |context| {
+                            context.config.package
+                        });
+                    let resolver = ctx.as_ref().map(|context| &context.resolver);
+                    let dependencies = ctx.as_ref().map_or(&[][..], |context| {
+                        context.config.qzi_dependencies.as_slice()
+                    });
+                    let stem = source_files[0]
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+                    let out =
+                        output.unwrap_or_else(|| target_output_name(&stem, emit.clone(), &target));
+                    let targets = QZI_TARGETS.map(|(_, spec)| cfg_target_for_spec(&spec()));
+                    let mut results = loader::load_programs_for_targets(
+                        &source_files,
+                        resolver,
+                        settings.std,
+                        &targets,
+                    )
+                    .unwrap_or_else(|error| {
+                        eprintln!("error: {error}");
+                        fail_build();
+                    })
+                    .into_iter();
+                    build_universal_qzi(&out, silent, |variant, path, quiet| {
+                        let variant = apply_package_settings(variant.clone(), settings);
+                        build_with_progress(
+                            &source_files,
+                            path,
+                            EmitType::Bytecode,
+                            debug,
+                            Some(&[]),
+                            explicit_linker,
+                            false,
+                            None,
+                            dependencies,
+                            None,
+                            &[],
+                            &variant,
+                            quiet,
+                            no_color,
+                            no_unicode,
+                            no_progress,
+                            None,
+                            resolver,
+                            settings,
+                            Some(results.next().expect("one loaded view per target")),
+                        );
+                    });
+                    return;
+                }
                 let native_objects: Vec<String> = files
                     .iter()
                     .filter(|path| {
@@ -2373,6 +2449,7 @@ fn main() {
                     None,
                     None,
                     package_settings,
+                    None,
                 );
                 for object in &compiled_c_objects {
                     remove_temp(object);
@@ -2595,6 +2672,7 @@ fn main() {
             let name = alias.unwrap_or(inferred_name);
             if url.is_some() {
                 let preview =
+
                     project::preview(Path::new("."), None, false).unwrap_or_else(|error| {
                         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
                         fail_build();
@@ -2671,7 +2749,6 @@ fn main() {
             }
             _ => generate_project_docs(output.as_deref()),
         },
-
 
         CliCmd::Clean => {
             clean_project_artifacts();

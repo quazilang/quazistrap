@@ -103,6 +103,12 @@ def main():
                     for index, target in enumerate(targets)}
         assert shared > 0 and all(specific.values()), (shared, specific)
         assert data.count(b"shared-") == 1, "a shared string constant is stored more than once"
+        extra = work / "native.c"
+        extra.write_text("invalid C must be ignored during QZI emission\n")
+        direct = root / "explicit-source.qzi"
+        run([qz, "build", str(work / "src/main.qz"), str(extra), "-i", "--silent",
+             "-o", str(direct)], work)
+        assert unified_layout(direct.read_bytes())[0] == targets
 
         # C: no sources.
         shutil.rmtree(work)

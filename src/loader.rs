@@ -239,6 +239,27 @@ fn load_programs_configured_with_overlays_for_target_with_checkpoint(
     overrides: &HashMap<PathBuf, String>,
     checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
 ) -> Result<LoadResult, CancellableLoadError> {
+    let collection = collect_configured_sources(
+        entries,
+        resolver,
+        include_std,
+        additional_roots,
+        target,
+        overrides,
+        checkpoint,
+    )?;
+    finalize_sources(collection, checkpoint)
+}
+
+fn collect_configured_sources(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    additional_roots: &[PathBuf],
+    target: CfgTarget<'_>,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<SourceCollection, CancellableLoadError> {
     checkpoint()?;
     let effective_resolver = resolver_with_builtin_modules(resolver, include_std, target.os);
 
@@ -269,7 +290,160 @@ fn load_programs_configured_with_overlays_for_target_with_checkpoint(
         overrides,
         checkpoint,
     )
-    .and_then(|collection| finalize_sources(collection, checkpoint))
+}
+
+/// Resolve conditional imports for all targets, then establish one source
+/// snapshot and one parsed syntax tree. The current scalar consumers get
+/// target-specific ordered views of that syntax with shared coordinates.
+pub fn load_programs_for_targets(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    targets: &[CfgTarget<'_>],
+) -> Result<Vec<LoadResult>, String> {
+    let overrides = HashMap::new();
+    let collections = targets
+        .iter()
+        .map(|target| {
+            collect_configured_sources(
+                entries,
+                resolver,
+                include_std,
+                &[],
+                *target,
+                &overrides,
+                &mut || Ok(()),
+            )
+            .map_err(|error| format!("{}: {}", target.os, error.into_load_error()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut merged_sources = Vec::new();
+    let mut source_indices = HashMap::new();
+    let mut library_paths = HashSet::new();
+    let mut entry_paths = HashSet::new();
+    let mut module_name_overrides = HashMap::new();
+    for collection in &collections {
+        library_paths.extend(collection.library_paths.iter().cloned());
+        entry_paths.extend(collection.entry_paths.iter().cloned());
+        module_name_overrides.extend(collection.module_name_overrides.clone());
+        for (path, source) in &collection.sources {
+            if let Some(&index) = source_indices.get(path) {
+                let (_, snapshot): &(PathBuf, String) = &merged_sources[index];
+                if snapshot != source {
+                    return Err(format!(
+                        "source changed during target resolution: {}",
+                        path.display()
+                    ));
+                }
+            } else {
+                source_indices.insert(path.clone(), merged_sources.len());
+                merged_sources.push((path.clone(), source.clone()));
+            }
+        }
+    }
+    let shared = finalize_sources(
+        SourceCollection {
+            sources: merged_sources,
+            library_paths,
+            dep_edges: Vec::new(),
+            module_name_overrides,
+            module_specs: Vec::new(),
+            entry_paths,
+            prelude_entry: None,
+            runtime_string: None,
+            type_imports: HashMap::new(),
+        },
+        &mut || Ok(()),
+    )
+    .map_err(CancellableLoadError::into_load_error)?;
+    if let Some(error) = &shared.parse_error {
+        return Err(error.clone());
+    }
+    let mut items_by_source = vec![Vec::new(); shared.source_files.len()];
+    for item in &shared.program.items {
+        let index = shared
+            .source_files
+            .partition_point(|file| file.start <= item.span.start);
+        let source = index
+            .checked_sub(1)
+            .filter(|&i| {
+                shared.source_files[i].contains(item.span)
+                    && item.span.end <= shared.source_files[i].end
+            })
+            .ok_or_else(|| "parsed item has no source in the shared program".to_string())?;
+        items_by_source[source].push(item);
+    }
+
+    let mut outputs = Vec::new();
+    for collection in collections {
+        let mut items = Vec::new();
+        let mut source_files = Vec::with_capacity(collection.sources.len());
+        let mut loaded_files = Vec::with_capacity(collection.sources.len());
+        let mut library_file_paths = Vec::new();
+        let mut library_char_ranges = Vec::new();
+        let mut namespaced_paths = HashSet::new();
+        let mut effective_sources = HashMap::new();
+        let mut source_hashes = HashMap::new();
+        let mut display_names = HashMap::new();
+        for (path, _) in &collection.sources {
+            let index = source_indices[path];
+            items.extend(items_by_source[index].iter().map(|item| (*item).clone()));
+            let mut file = shared.source_files[index].clone();
+            file.module_name = collection.module_name_overrides.get(path).cloned();
+            file.implicit_prelude = collection.prelude_entry.as_ref() == Some(path);
+            file.runtime_string = collection
+                .runtime_string
+                .as_ref()
+                .and_then(|(defining, name)| (defining == path).then(|| name.clone()));
+            file.type_imports = rebase_type_imports(
+                collection.type_imports.get(path),
+                file.start,
+                file.line_start,
+            );
+            if collection.library_paths.contains(path) {
+                library_file_paths.push(path.clone());
+                library_char_ranges.push(file.start..file.end);
+            }
+            if !collection.entry_paths.contains(path) {
+                namespaced_paths.insert(path.clone());
+                if let Some(name) = logical_module_name(path, &collection.module_specs) {
+                    display_names.insert(path.clone(), name);
+                }
+            }
+            source_hashes.insert(file.path.clone(), shared.source_hashes[&file.path]);
+            effective_sources.insert(path.clone(), shared.effective_sources[path].clone());
+            loaded_files.push(path.clone());
+            source_files.push(file);
+        }
+        source_files.sort_unstable_by_key(|file| file.start);
+        let program = Program {
+            items,
+            span: shared.program.span,
+        };
+        let library_fn_names =
+            collect_library_function_names(&program, &source_files, &namespaced_paths, &mut || {
+                Ok(())
+            })
+            .map_err(CancellableLoadError::into_load_error)?;
+        outputs.push(LoadResult {
+            merged_source: shared.merged_source.clone(),
+            program,
+            loaded_files,
+            source_hashes,
+            effective_sources,
+            library_fn_names,
+            library_file_paths,
+            library_char_ranges,
+            source_files,
+            dep_edges: collection.dep_edges,
+            display_names,
+            token_count: shared.token_count,
+            parse_error: None,
+            namespaced_paths,
+        });
+    }
+    Ok(outputs)
 }
 
 struct SourceCollection {
@@ -929,18 +1103,7 @@ fn finalize_sources(
             runtime_string: runtime_string
                 .as_ref()
                 .and_then(|(defining_path, name)| (defining_path == path).then(|| name.clone())),
-            type_imports: type_imports
-                .get(path)
-                .into_iter()
-                .flatten()
-                .cloned()
-                .map(|mut import| {
-                    import.selector_span.start += char_pos;
-                    import.selector_span.end += char_pos;
-                    import.selector_span.line += line_pos - 1;
-                    import
-                })
-                .collect(),
+            type_imports: rebase_type_imports(type_imports.get(path), char_pos, line_pos),
             start: char_pos,
             end: char_pos + src_char_len,
             line_start: line_pos,
@@ -985,6 +1148,51 @@ fn finalize_sources(
         ),
     };
 
+    let library_fn_names =
+        collect_library_function_names(&program, &source_files, &namespaced_paths, checkpoint)?;
+
+    Ok(LoadResult {
+        merged_source: merged,
+        program,
+        loaded_files,
+        source_hashes,
+        effective_sources,
+        library_fn_names,
+        library_file_paths,
+        library_char_ranges,
+        source_files,
+        dep_edges,
+        display_names,
+        token_count,
+        parse_error,
+        namespaced_paths,
+    })
+}
+
+fn rebase_type_imports(
+    imports: Option<&Vec<SourceTypeImport>>,
+    char_pos: usize,
+    line_pos: usize,
+) -> Vec<SourceTypeImport> {
+    imports
+        .into_iter()
+        .flatten()
+        .cloned()
+        .map(|mut import| {
+            import.selector_span.start += char_pos;
+            import.selector_span.end += char_pos;
+            import.selector_span.line += line_pos - 1;
+            import
+        })
+        .collect()
+}
+
+fn collect_library_function_names(
+    program: &Program,
+    source_files: &[SourceFile],
+    namespaced_paths: &HashSet<PathBuf>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<HashSet<String>, CancellableLoadError> {
     // Reuse the merged parse to collect public dependency functions. Parsing
     // every dependency again here made warm builds pay for each module three
     // times: import discovery, name collection, and the merged program.
@@ -1034,22 +1242,7 @@ fn finalize_sources(
         library_fn_names.insert(entry_name);
     }
 
-    Ok(LoadResult {
-        merged_source: merged,
-        program,
-        loaded_files,
-        source_hashes,
-        effective_sources,
-        library_fn_names,
-        library_file_paths,
-        library_char_ranges,
-        source_files,
-        dep_edges,
-        display_names,
-        token_count,
-        parse_error,
-        namespaced_paths,
-    })
+    Ok(library_fn_names)
 }
 
 fn logical_module_name(path: &Path, specs: &[ModuleSpec]) -> Option<String> {
@@ -1595,7 +1788,12 @@ fn local_import_paths(
         {
             if remainder.is_empty() && base == "std" {
                 // import std; — only load sub-modules actually used in source
-                for module in used_std_modules_with_checkpoint(src, target, checkpoint)? {
+                let mut modules: Vec<_> =
+                    used_std_modules_with_checkpoint(src, target, checkpoint)?
+                        .into_iter()
+                        .collect();
+                modules.sort_unstable();
+                for module in modules {
                     if let Some(module_path) =
                         resolve_module_file(spec, &module, target, overrides, checkpoint)?
                         && seen.insert(module_path.clone())
@@ -2172,6 +2370,87 @@ fn import_base_and_remainder(ip: &crate::parser::ast::ImportPath) -> Option<(Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_target_parse_preserves_spans_and_target_dependency_order() {
+        let root = temp_dir("shared-target-parse");
+        fs::create_dir_all(&root).unwrap();
+        let main = root.join("main.qz");
+        fs::write(
+            &main,
+            concat!(
+                "// π before both selectors\n",
+                "@cfg(target_os=\"linux\") import ./a.A as Payload;\n",
+                "@cfg(target_os=\"windows\") import ./b.B as Payload;\n",
+                "fn main() i32 { ret 0; }\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("a.qz"),
+            concat!(
+                "@cfg(target_os=\"linux\") import ./b;\n",
+                "pub struct A { value: i32 }\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("b.qz"),
+            concat!(
+                "@cfg(target_os=\"windows\") import ./a;\n",
+                "pub struct B { value: i32 }\n",
+            ),
+        )
+        .unwrap();
+        let targets = [
+            CfgTarget {
+                os: "linux",
+                arch: "x86_64",
+                abi: "sysv",
+            },
+            CfgTarget {
+                os: "windows",
+                arch: "x86_64",
+                abi: "win64",
+            },
+        ];
+        let views = load_programs_for_targets(&[main.clone()], None, false, &targets).unwrap();
+        let files = |view: &LoadResult| {
+            view.loaded_files
+                .iter()
+                .map(|path| path.file_name().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(files(&views[0]), ["b.qz", "a.qz", "main.qz"]);
+        assert_eq!(files(&views[1]), ["a.qz", "b.qz", "main.qz"]);
+        assert_eq!(views[0].merged_source, views[1].merged_source);
+        let span_for = |view: &LoadResult, expected: &str| {
+            view.program
+                .items
+                .iter()
+                .find_map(|item| {
+                    matches!(&item.node, ItemKind::Struct { name, .. } if name == expected)
+                        .then_some(item.span)
+                })
+                .unwrap()
+        };
+        assert_eq!(span_for(&views[0], "A"), span_for(&views[1], "A"));
+        assert_eq!(span_for(&views[0], "B"), span_for(&views[1], "B"));
+        for (view, expected) in views.iter().zip(["A", "B"]) {
+            let file = view
+                .source_files
+                .iter()
+                .find(|file| file.path.ends_with("main.qz"))
+                .unwrap();
+            let proof = file
+                .type_imports
+                .iter()
+                .find(|proof| proof.target_name == expected)
+                .unwrap();
+            assert!(proof.selector_span.start >= file.start && proof.selector_span.end <= file.end);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
