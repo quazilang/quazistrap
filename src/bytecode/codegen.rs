@@ -878,7 +878,7 @@ impl<'a> Codegen<'a> {
         }
 
         // Compute the set of functions reachable from main via the call graph.
-        // Library mode (no main) compiles everything.
+        // Without main, every concrete callable is a root.
         let has_main = self.test_mode
             || program
                 .items
@@ -1050,7 +1050,62 @@ impl<'a> Codegen<'a> {
             }
             Some(set)
         } else {
-            None
+            // Without `main`, every concrete callable is a root. Generic
+            // templates have no layout for their parameters, so they and the
+            // symbolic specializations they request are compiled only through
+            // a concrete instantiation.
+            let mut set: HashSet<String> = HashSet::new();
+            for item in &program.items {
+                match &item.node {
+                    ItemKind::Fn {
+                        name,
+                        generic_params,
+                        attributes,
+                        ..
+                    } if generic_params.is_empty() => {
+                        set.insert(self.resolve_item_name(item.span, name, attributes));
+                    }
+                    ItemKind::Impl {
+                        for_ty, methods, ..
+                    } => {
+                        let type_name = type_kind_base_name(&for_ty.node);
+                        for method in methods {
+                            if let ItemKind::Fn {
+                                name,
+                                generic_params,
+                                ..
+                            } = &method.node
+                                && generic_params.is_empty()
+                            {
+                                let mangled = format!("{type_name}.{name}");
+                                if self
+                                    .report
+                                    .impl_generic_params
+                                    .get(&mangled)
+                                    .is_none_or(Vec::is_empty)
+                                {
+                                    set.insert(mangled);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            set.extend(user_panic_handler.iter().cloned());
+            set.extend(dynamic_roots.iter().cloned());
+            set.extend(destructor_roots.iter().cloned());
+            let mut queue = set.iter().cloned().collect::<Vec<_>>();
+            while let Some(fn_name) = queue.pop() {
+                if let Some(targets) = self.report.dependency_graph.calls_from.get(&fn_name) {
+                    for target in targets {
+                        if set.insert(target.clone()) {
+                            queue.push(target.clone());
+                        }
+                    }
+                }
+            }
+            Some(set)
         };
 
         let is_live = |name: &str| -> bool { reachable.as_ref().is_none_or(|r| r.contains(name)) };
@@ -13108,6 +13163,54 @@ fn main() i32 {
                     && instruction.ri16() == (0, 8)),
             "align_of[i32] must compile to 8 bytes: {:?}",
             align_of.code
+        );
+    }
+
+    #[test]
+    fn programs_without_main_compile_only_concrete_callables() {
+        let chunks = compile(
+            r#"
+@intrinsic("quazi.malloc")
+fn malloc(size: usize) *u8;
+
+@intrinsic("quazi.size_of")
+fn size_of[T]() usize;
+
+struct Buffer[T] {
+    ptr: *u8,
+}
+
+impl Buffer[T] {
+    fn new() Buffer[T] {
+        var buffer: Buffer[T] = Buffer { ptr: 0 };
+        buffer.allocate();
+        ret buffer;
+    }
+    fn allocate(self: &Buffer[T]!) void {
+        var ptr: *u8;
+        unsafe { ptr = malloc(size_of[T]()); }
+        self.ptr = ptr;
+    }
+}
+
+fn unused_buffer[T]() Buffer[T] { ret Buffer.new(); }
+
+pub fn word_buffer() Buffer[i64] { ret Buffer.new(); }
+"#,
+        );
+        let names: Vec<&str> = chunks.iter().map(|chunk| chunk.name.as_str()).collect();
+        assert!(names.contains(&"word_buffer"), "{names:?}");
+        assert!(
+            names
+                .iter()
+                .any(|name| name.starts_with("Buffer.allocate<")),
+            "a concrete caller instantiates the generic method: {names:?}"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.ends_with("<T>") || *name == "unused_buffer"),
+            "templates and symbolic specializations have no layout: {names:?}"
         );
     }
 
