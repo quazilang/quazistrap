@@ -113,8 +113,10 @@ permission). A call whose callee has the never type `!` ends its path: the
 `Invoke` block stops with every active scope exited. A call through a local
 or parameter holding a function value or closure (`callback(a, b)`)
 evaluates its positional arguments in source order and records an
-`IndirectInvoke`: the target and its effects are unknown. Variadic,
-dynamic and foreign calls remain opaque, as do the runtime panic and calls
+`IndirectInvoke`: the target and its effects are unknown. A method call on a
+`dyn Trait` receiver evaluates the receiver, then its positional arguments,
+then records an `IndirectInvoke` for the vtable call. Variadic and foreign
+calls remain opaque, as do the runtime panic and calls
 with special lowering such as layout queries.
 
 Refinement is iterative and charges expansion to the existing aggregate budget.

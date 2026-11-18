@@ -1667,3 +1667,52 @@ fn main() void {}
     assert!(reachable(graph, second).contains(&indirect));
     assert!(!reachable(graph, failure).contains(&indirect));
 }
+
+#[test]
+fn source_control_flow_dynamic_methods_invoke_after_receiver_and_arguments() {
+    let source = r#"
+trait Scaled { fn scale(self: &Self, factor: i32, offset: i32) i32; }
+struct Counter { value: i32 }
+impl Scaled for Counter {
+    fn scale(self: &Counter, factor: i32, offset: i32) i32 { ret self.value * factor + offset; }
+}
+fn step(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn measure(value: Option[i32]) Option[i32] {
+    var shape: dyn Scaled = Counter { value: 3 };
+    const total = shape.scale(step(value)?, later());
+    ret Some(total);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "measure")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+            .unwrap()
+    };
+    let at = |needle: &str| source.find(needle).unwrap();
+    let first = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("step(value)?")),
+    );
+    let second = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("later())")),
+    );
+    let dynamic = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::IndirectInvoke { span } if span.start == at("shape.scale")),
+    );
+    assert!(reachable(graph, first).contains(&second));
+    assert!(reachable(graph, second).contains(&dynamic));
+    assert!(!reachable(graph, dynamic).contains(&first));
+}

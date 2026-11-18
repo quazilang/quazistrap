@@ -875,6 +875,54 @@ where
                 })
     }
 
+    /// Evaluate `operands` in order, then an `IndirectInvoke` whose target
+    /// and effects are unknown, then continue at `normal`.
+    fn indirect_call(
+        &mut self,
+        pending: &mut Vec<(usize, &'a Expr, usize)>,
+        current: usize,
+        operands: Vec<&'a Expr>,
+        expression: &'a Expr,
+        normal: usize,
+        scopes: &[usize],
+    ) -> FlowResult<()> {
+        let span = expression.span;
+        let invocation = self.block(scopes, span)?;
+        self.graph.blocks[invocation]
+            .events
+            .push(OwnershipFlowEvent::IndirectInvoke { span });
+        self.terminate(
+            invocation,
+            OwnershipFlowTerminator::Opaque {
+                normal,
+                early_return: None,
+            },
+            span,
+        )?;
+        self.budget.charge(1 + operands.len() * 3, span)?;
+        self.schedule_sequence(pending, current, operands, invocation, scopes, span)
+    }
+
+    /// `receiver.method(args...)` on a `dyn Trait` receiver: lowering
+    /// evaluates the receiver, then the positional arguments in source order,
+    /// then calls through the vtable.
+    fn dynamic_method_call(
+        &self,
+        object: &Expr,
+        method: &str,
+        named_args: &[(String, Expr)],
+    ) -> bool {
+        method != "free"
+            && named_args.is_empty()
+            && self
+                .analyzer
+                .retention_annotation(object)
+                .and_then(|annotation| annotation.ty.as_ref())
+                .is_some_and(|ty| {
+                    matches!(self.analyzer.resolve_type_aliases(ty), TypeKind::Dyn { .. })
+                })
+    }
+
     /// `Variant(payloads...)`: analysis types the call as an enum with that
     /// variant, and the callee is not a function or a local value. Lowering
     /// evaluates the positional payloads in source order.
@@ -1051,27 +1099,34 @@ where
                     } = &expression.node
                         && self.local_value_call(callee, named_args) =>
                 {
-                    let span = expression.span;
-                    let invocation = self.block(scopes, span)?;
-                    self.graph.blocks[invocation]
-                        .events
-                        .push(OwnershipFlowEvent::IndirectInvoke { span });
-                    self.terminate(
-                        invocation,
-                        OwnershipFlowTerminator::Opaque {
-                            normal,
-                            early_return: None,
-                        },
-                        span,
-                    )?;
-                    self.budget.charge(1 + args.len() * 3, span)?;
-                    self.schedule_sequence(
+                    self.indirect_call(
                         &mut pending,
                         current,
                         args.iter().collect(),
-                        invocation,
+                        expression,
+                        normal,
                         scopes,
-                        span,
+                    )?;
+                }
+                ExpressionControl::Opaque
+                    if let ExprKind::MethodCall {
+                        object,
+                        method,
+                        args,
+                        named_args,
+                        ..
+                    } = &expression.node
+                        && self.method_call_site(expression, method).is_none()
+                        && self.dynamic_method_call(object, method, named_args) =>
+                {
+                    let operands = std::iter::once(object.as_ref()).chain(args).collect();
+                    self.indirect_call(
+                        &mut pending,
+                        current,
+                        operands,
+                        expression,
+                        normal,
+                        scopes,
                     )?;
                 }
                 ExpressionControl::Opaque

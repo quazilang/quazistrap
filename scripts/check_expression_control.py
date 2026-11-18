@@ -120,6 +120,11 @@ unsafe fn stamp(log: *i32, digit: i32, value: i32) i32 {
     ret value;
 }
 struct Ordered { first: i32, second: i32 }
+trait Combine { fn combine(self: &Self, left: i32, right: i32) i32; }
+struct Adder { base: i32 }
+impl Combine for Adder {
+    fn combine(self: &Adder, left: i32, right: i32) i32 { ret self.base + left + right; }
+}
 unsafe fn stamped_values(log: *i32) [i32; 3] {
     *log = *log * 10 + 1;
     ret [7, 8, 9];
@@ -155,6 +160,13 @@ fn check_places() i32 {
         if add(stamp(&log, 1, 1), stamp(&log, 2, 2)) != 3 { ret 43; }
     }
     if log != 12 { ret 44; }
+    log = 0;
+    var combiner: dyn Combine = Adder { base: 0 };
+    unsafe {
+        // A dynamic method runs its arguments left to right after the receiver.
+        if combiner.combine(stamp(&log, 1, 1), stamp(&log, 2, 2)) != 3 { ret 45; }
+    }
+    if log != 12 { ret 46; }
     ret 0;
 }
 fn main() i32 {
@@ -215,7 +227,7 @@ def check(qz, root, before=None):
     run([str(qz), "build", str(artifact), *common, "-c", "--target",
          "x86_64-windows", "-o", str(coff)], root)
     assert coff.read_bytes()[:2] == b"\x64\x86", "expected x86-64 COFF"
-    print("PASS expression control: 44 checks, native, QZI-only, Windows COFF")
+    print("PASS expression control: 46 checks, native, QZI-only, Windows COFF")
 
 
 def main():
