@@ -334,6 +334,8 @@ pub struct Chunk {
     /// Set when a caller attempted to allocate an unencodable constant index.
     /// Validation turns this into a compile error before bytes are emitted.
     constant_pool_overflowed: bool,
+    /// Symbolic operands exist during lowering and are bound before optimization.
+    pending_calls: Vec<(usize, String)>,
 }
 
 impl Chunk {
@@ -364,6 +366,34 @@ impl Chunk {
 
     pub fn emit_ri16(&mut self, op: Opcode, dst: u8, imm: u16) -> usize {
         self.emit(ri16(op, dst, imm))
+    }
+
+    pub(super) fn emit_named_call(&mut self, target: &str, dst: u8, flags: u8) {
+        let mut instruction = ri16(Opcode::CallIdx, dst, 0);
+        instruction.flags = flags;
+        let site = self.emit(instruction);
+        self.pending_calls.push((site, target.to_owned()));
+    }
+
+    pub(super) fn bind_named_calls(
+        &mut self,
+        function_indices: &std::collections::HashMap<String, u16>,
+    ) -> Result<(), String> {
+        for (site, target) in &self.pending_calls {
+            let index = function_indices.get(target).ok_or_else(|| {
+                format!("function `{}` calls unknown symbol `{target}`", self.name)
+            })?;
+            let instruction = self
+                .code
+                .get_mut(*site)
+                .filter(|instruction| instruction.opcode() == Some(Opcode::CallIdx))
+                .ok_or_else(|| format!("invalid symbolic call site in `{}`", self.name))?;
+            let [lo, hi] = index.to_le_bytes();
+            instruction.ops[1] = lo;
+            instruction.ops[2] = hi;
+        }
+        self.pending_calls.clear();
+        Ok(())
     }
 
     pub fn add_constant(&mut self, val: ConstPoolEntry) -> u16 {
@@ -727,6 +757,7 @@ fn deserialize_qzi_legacy(buf: &[u8], allow_vtable_layouts: bool) -> Result<Vec<
             constants,
             code,
             constant_pool_overflowed: false,
+            pending_calls: Vec::new(),
         });
     }
 
@@ -741,6 +772,9 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
     use super::opcode::Opcode;
 
     for (chunk_index, chunk) in chunks.iter().enumerate() {
+        if !chunk.pending_calls.is_empty() {
+            return Err(format!("function `{}` has unbound symbolic calls", chunk.name));
+        }
         if chunk.constant_pool_overflowed {
             return Err(format!(
                 "chunk `{}` exceeded the QZI constant-pool limit",
@@ -2343,6 +2377,27 @@ impl std::fmt::Display for Chunk {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lowered_calls_bind_to_each_function_table_without_changing_flags() {
+        let mut lowered = Chunk::new("main");
+        lowered.reg_count = 1;
+        lowered.emit_named_call("callee", 0, 1);
+        lowered.emit(rrr(Opcode::Ret, 0, 0, 0));
+        assert!(
+            validate_qzi_chunks(std::slice::from_ref(&lowered))
+                .unwrap_err()
+                .contains("unbound symbolic calls")
+        );
+        for index in [1, 257] {
+            let mut body = lowered.clone();
+            body.bind_named_calls(&std::collections::HashMap::from([("callee".to_owned(), index)]))
+                .unwrap();
+            assert_eq!(body.code[0].ri16(), (0, index));
+            assert_eq!(body.code[0].flags, 1);
+            assert!(body.pending_calls.is_empty());
+        }
+    }
+
     fn unified_variant(os_value: u16) -> QziModule {
         // main -> shared -> os; `os` differs per target.
         let mut main = Chunk::with_params("main", 0);

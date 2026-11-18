@@ -57,6 +57,7 @@ summary identifies the artifact as `QZI`, and a failed build preserves any
 previous output. This fixes publication behavior within the existing plan.
 Project and explicit source-file builds share one parsed source snapshot for QZI.
 Their conditional predicates share target masks before semantic analysis.
+Bytecode lowering carries symbolic calls until function-table binding.
 Incremental rebuilds regenerate recursive destructor helpers with their callers.
 The dependency interface cache keys target-specific signatures by their content,
 so successive native builds can use different interfaces from the same QZI.

@@ -1199,7 +1199,7 @@ impl<'a> Codegen<'a> {
                             for index in 0..params.len() {
                                 adapter.emit(rrr(Opcode::CallArg, index as u8, 0, 0));
                             }
-                            adapter.emit(ri16(Opcode::CallIdx, 0, fn_idx));
+                            adapter.emit_named_call(&compile_name, 0, 0);
                             adapter.emit(rrr(Opcode::Ret, 0, 0, 0));
                             chunks.push(adapter);
                         }
@@ -1514,10 +1514,17 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        for chunk in &mut chunks {
+            chunk.bind_named_calls(&self.fn_index)?;
+        }
         // Preserve reusable, pre-WPO function units. Restored and freshly compiled
         // chunks enter the same global optimization pipeline below.
         self.capture_codegen_snapshot(&chunks, &incremental_unit_sources);
+        self.optimize_and_bind_calls(chunks)
+    }
 
+    /// Finish the function table after each body has been lowered.
+    fn optimize_and_bind_calls(&mut self, mut chunks: Vec<Chunk>) -> Result<Vec<Chunk>, String> {
         // Post-pass: inline small functions that are inline candidates.
         let inline_set: std::collections::HashSet<String> = self
             .report
@@ -7833,7 +7840,7 @@ impl<'a> FnCompiler<'a> {
         if self.emit_specialized_storage_intrinsic(name, arg_bases, dst) {
             return;
         }
-        if let Some(&idx) = self.fn_index.get(name) {
+        if self.fn_index.contains_key(name) {
             let result_slots = self
                 .fn_value_layouts
                 .get(name)
@@ -7867,9 +7874,7 @@ impl<'a> FnCompiler<'a> {
                     self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
                 }
             }
-            let mut call = ri16(Opcode::CallIdx, dst, idx);
-            call.flags = result_slots as u8;
-            self.chunk.emit(call);
+            self.chunk.emit_named_call(name, dst, result_slots as u8);
             if let Some(base) = sret_base {
                 self.emit_block_copy(dst, base, result_slots);
             }
@@ -8934,7 +8939,7 @@ impl<'a> FnCompiler<'a> {
                     {
                         return address;
                     }
-                    if let Some(&fn_idx) = self.fn_index.get(resolved_name.as_str()) {
+                    if self.fn_index.contains_key(resolved_name.as_str()) {
                         let user_param_count =
                             if let Some(TypeKind::Fn { params, .. }) = self.type_map.get(&key) {
                                 params.len()
@@ -8947,7 +8952,7 @@ impl<'a> FnCompiler<'a> {
                         for i in 0..user_param_count {
                             fwd_chunk.emit(rrr(Opcode::CallArg, (i + 1) as u8, 0, 0));
                         }
-                        fwd_chunk.emit(ri16(Opcode::CallIdx, 0, fn_idx));
+                        fwd_chunk.emit_named_call(&resolved_name, 0, 0);
                         fwd_chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
                         if !self
                             .output_chunks
@@ -10350,7 +10355,7 @@ impl<'a> FnCompiler<'a> {
                         return address;
                     }
                     let key = (expr.span.start, expr.span.end);
-                    if let Some(&fn_idx) = self.fn_index.get(resolved.as_str()) {
+                    if self.fn_index.contains_key(resolved.as_str()) {
                         let user_param_count =
                             if let Some(TypeKind::Fn { params, .. }) = self.type_map.get(&key) {
                                 params.len()
@@ -10362,7 +10367,7 @@ impl<'a> FnCompiler<'a> {
                         for i in 0..user_param_count {
                             fwd_chunk.emit(rrr(Opcode::CallArg, (i + 1) as u8, 0, 0));
                         }
-                        fwd_chunk.emit(ri16(Opcode::CallIdx, 0, fn_idx));
+                        fwd_chunk.emit_named_call(&resolved, 0, 0);
                         fwd_chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
                         if !self
                             .output_chunks
