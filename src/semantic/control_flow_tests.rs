@@ -1167,3 +1167,52 @@ fn main() void {}
     assert!(reachable(graph, compound_value).contains(&compound));
     assert!(reachable(graph, compound).contains(&update("pair.right")));
 }
+
+#[test]
+fn source_control_flow_index_reads_evaluate_object_then_index() {
+    let source = r#"
+fn values() [i32; 3] { ret [1, 2, 3]; }
+fn position(value: Option[usize]) Option[usize] { ret value; }
+fn read(value: Option[usize]) Option[i32] {
+    const item = values()[position(value)?];
+    ret Some(item);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "read")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+            .unwrap()
+    };
+    let at = |needle: &str| source.find(needle).unwrap();
+    let object = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("values()[")),
+    );
+    let index = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("position(value)?")),
+    );
+    let read = block_with(&|event| {
+        matches!(
+            event,
+            OwnershipFlowEvent::ExpressionResult {
+                value: OwnershipExpressionResult::Index { .. },
+                ..
+            }
+        )
+    });
+    assert!(reachable(graph, object).contains(&index));
+    assert!(!reachable(graph, index).contains(&object));
+    assert!(reachable(graph, index).contains(&read));
+}

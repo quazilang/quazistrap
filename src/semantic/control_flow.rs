@@ -142,6 +142,11 @@ pub enum OwnershipExpressionResult {
         target: Span,
         prefix: bool,
     },
+    /// The object and index completed; bounds checks and the load are unmodeled.
+    Index {
+        object: Span,
+        index: Span,
+    },
     /// A dereference, field or single-index place is updated after its address
     /// operands and value complete. Place-versus-value reads, bounds and
     /// overflow panics, the store and aliasing remain unverified.
@@ -1066,6 +1071,21 @@ where
                         },
                         expression.span,
                     )?;
+                }
+                ExpressionControl::IndexRead { object, index } => {
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::Index {
+                            object: object.span,
+                            index: index.span,
+                        },
+                        normal,
+                        scopes,
+                    )?;
+                    let index_entry = self.block(scopes, index.span)?;
+                    self.budget.charge(6, expression.span)?;
+                    pending.push((index_entry, index, complete));
+                    pending.push((current, object, index_entry));
                 }
                 ExpressionControl::PlaceUpdate {
                     target,

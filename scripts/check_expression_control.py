@@ -119,6 +119,10 @@ unsafe fn stamp(log: *i32, digit: i32, value: i32) i32 {
     *log = *log * 10 + digit;
     ret value;
 }
+unsafe fn stamped_values(log: *i32) [i32; 3] {
+    *log = *log * 10 + 1;
+    ret [7, 8, 9];
+}
 fn check_places() i32 {
     var log: i32 = 0;
     var values: [i32; 3] = [0, 0, 0];
@@ -129,6 +133,12 @@ fn check_places() i32 {
     // Place operands complete before the value, matching the source graph.
     if log != 1234 { ret 37; }
     if values[1] != 8 { ret 38; }
+    log = 0;
+    unsafe {
+        const item = stamped_values(&log)[stamp(&log, 2, 2) as usize];
+        if item != 9 { ret 39; }
+    }
+    if log != 12 { ret 40; }
     ret 0;
 }
 fn main() i32 {
@@ -189,7 +199,7 @@ def check(qz, root, before=None):
     run([str(qz), "build", str(artifact), *common, "-c", "--target",
          "x86_64-windows", "-o", str(coff)], root)
     assert coff.read_bytes()[:2] == b"\x64\x86", "expected x86-64 COFF"
-    print("PASS expression control: 38 checks, native, QZI-only, Windows COFF")
+    print("PASS expression control: 40 checks, native, QZI-only, Windows COFF")
 
 
 def main():

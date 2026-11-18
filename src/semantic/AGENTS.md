@@ -97,7 +97,7 @@ deferred, never synchronous successors of creation. `evaluation.rs` supplies
 operand control shared with codegen for unary/eager-binary/short-circuit/try
 forms, plain/compound assignments and `++`/`--` of a bare (grouped) name, and
 updates of dereference, field and single-index places (address operands, then
-value, then `PlaceUpdate`).
+value, then `PlaceUpdate`), and single-index reads (object, index, `Index`).
 Result events distinguish group/cast/unary/binary completion, logical
 normalization, payload extraction, the compound target read, named (compound)
 assignment and named increment; they prove no typed access or storage alias.

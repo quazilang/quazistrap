@@ -125,7 +125,11 @@ its deferred graph. The edge does not identify the exact failing subexpression
 or prove which preceding effects occurred. A `?` on a conditionally unexecuted
 path can therefore introduce a conservative extra edge.
 
-Other calls, multi-index updates, guarded matches, field/index reads and
+A single-index read `object[index]` evaluates the object, then the index,
+then records an `Index` result; bounds checks and the load are unmodeled.
+`check_expression_control.py` checks this order at run time.
+
+Other calls, multi-index reads and updates, guarded matches, field reads and
 aggregate initializers remain whole opaque regions. Controls nested inside
 these regions are not individually expanded. Multi-input iteration regions also
 remain opaque. Their internal branches and operand order require further shared

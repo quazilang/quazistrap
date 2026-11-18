@@ -44,6 +44,11 @@ pub(crate) enum ExpressionControl<'a> {
         op: &'a IncDecOp,
         prefix: bool,
     },
+    /// `object[index]` read: the object, then the index, then bounds and load.
+    IndexRead {
+        object: &'a Expr,
+        index: &'a Expr,
+    },
     /// An update of a dereference, field or single-index place. Lowering
     /// evaluates `operands` (see [`place_target_operands`]), then the value
     /// when there is one, then reads (for compound forms) and stores the place.
@@ -130,6 +135,10 @@ pub(crate) fn expression_control(expression: &Expr) -> ExpressionControl<'_> {
         },
         ExprKind::Binary { left, right, .. } => ExpressionControl::EagerBinary { left, right },
         ExprKind::Try { expr } => ExpressionControl::TryOperand(expr),
+        ExprKind::Index { object, indices } if indices.len() == 1 => ExpressionControl::IndexRead {
+            object,
+            index: &indices[0],
+        },
         ExprKind::Assign { target, value } => match assignment_target_name(target) {
             Some(name) => ExpressionControl::NamedAssignment {
                 name,
