@@ -12971,9 +12971,14 @@ struct Buffer[T] {
 
 impl Buffer[T] {
     fn new() Buffer[T] {
+        var buffer: Buffer[T] = Buffer { ptr: 0 };
+        buffer.allocate();
+        ret buffer;
+    }
+    fn allocate(self: &Buffer[T]!) void {
         var ptr: *u8;
         unsafe { ptr = malloc(size_of[T]()); }
-        ret Buffer { ptr: ptr };
+        self.ptr = ptr;
     }
 }
 
@@ -12983,22 +12988,23 @@ fn main() i32 {
 }
 "#,
         );
-        let new = chunks
+        let allocate = chunks
             .iter()
-            .find(|chunk| chunk.name == "Buffer.new<i32>")
-            .expect("Buffer.new[i32] specialization");
+            .find(|chunk| chunk.name == "Buffer.allocate<i32>")
+            .expect("Buffer.allocate[i32] specialization");
         assert!(
-            new.code.iter().any(|instruction| {
+            allocate.code.iter().any(|instruction| {
                 instruction.opcode == Opcode::MovI as u8 && instruction.ri16().1 == 8
             }),
-            "size_of[T] inside Buffer.new[i32] must lower to the concrete i32 size: {:?}",
-            new.code
+            "size_of[T] inside Buffer.allocate[i32] must lower to the concrete i32 size: {:?}",
+            allocate.code
         );
         assert!(
-            chunks
-                .iter()
-                .all(|chunk| chunk.name != "size_of<T>" && chunk.name != "layout.size_of<T>"),
-            "template-only layout intrinsic chunks must not be emitted: {:?}",
+            chunks.iter().all(|chunk| {
+                !["size_of<T>", "layout.size_of<T>", "Buffer.allocate<T>"]
+                    .contains(&chunk.name.as_str())
+            }),
+            "template-only layout-dependent chunks must not be emitted: {:?}",
             chunks.iter().map(|chunk| &chunk.name).collect::<Vec<_>>()
         );
     }

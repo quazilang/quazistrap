@@ -4465,6 +4465,9 @@ impl Analyzer {
                                 // ones only once every type parameter is inferred.
                                 let mut checked_params: Option<Vec<TypeKind>> =
                                     struct_params.is_empty().then(|| sym.params.clone());
+                                // A concrete call should reach its specialization without
+                                // also keeping the declaration's symbolic dependencies live.
+                                let mut dependency = method_full.clone();
                                 let ret_ty = if !struct_params.is_empty() {
                                     let mut subst: std::collections::HashMap<String, TypeKind> =
                                         std::collections::HashMap::new();
@@ -4558,11 +4561,7 @@ impl Analyzer {
                                                     mangled_name: mono_name.clone(),
                                                 });
                                             }
-                                            self.add_dependency_edge(
-                                                DependencyKind::Call,
-                                                &from,
-                                                &mono_name,
-                                            );
+                                            dependency = mono_name;
                                         }
                                     }
                                     sym.ty.as_ref().map(|t| substitute_type_kind(t, &subst))
@@ -4573,7 +4572,7 @@ impl Analyzer {
                                     );
                                     sym.ty.clone()
                                 };
-                                self.add_dependency_edge(DependencyKind::Call, &from, &method_full);
+                                self.add_dependency_edge(DependencyKind::Call, &from, &dependency);
                                 if let Some(params) = checked_params {
                                     self.check_associated_call_arguments(
                                         expr.span,
@@ -5210,12 +5209,13 @@ impl Analyzer {
                                     if !method_generics.is_empty() {
                                         resolved_target = mono_name.clone();
                                     }
+                                } else {
+                                    self.add_dependency_edge(
+                                        DependencyKind::Call,
+                                        &from,
+                                        &codegen_mangled,
+                                    );
                                 }
-                                self.add_dependency_edge(
-                                    DependencyKind::Call,
-                                    &from,
-                                    &codegen_mangled,
-                                );
                                 if sym
                                     .attributes
                                     .iter()
