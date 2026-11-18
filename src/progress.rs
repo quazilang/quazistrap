@@ -370,6 +370,11 @@ impl BuildProgress {
 
     /// Print "  ✓  output  (N KB)" final line.
     pub fn success(&self, output: &str, size_bytes: Option<u64>) {
+        self.success_as(output, size_bytes, None);
+    }
+
+    /// Like `success`, naming the kind of artifact after the summary.
+    pub fn success_as(&self, output: &str, size_bytes: Option<u64>, kind: Option<&str>) {
         if self.silent {
             return;
         }
@@ -377,9 +382,15 @@ impl BuildProgress {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or(output);
-        let elapsed = Self::elapsed_label(self.build_started.elapsed());
+        let mut elapsed = Self::elapsed_label(self.build_started.elapsed());
+        if let Some(kind) = kind {
+            elapsed = format!("{elapsed}  {kind}");
+        }
         if self.no_progress {
-            eprintln!("built {}", name);
+            match kind {
+                Some(kind) => eprintln!("built {name} {kind}"),
+                None => eprintln!("built {}", name),
+            }
             return;
         }
         eprintln!();

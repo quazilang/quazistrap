@@ -47,3 +47,16 @@ artifact size.
 An unsuccessful compilation for any supported target fails the QZI build
 and leaves an existing output file untouched. Successful builds report the
 artifact as `QZI`. The v16 encoding and reader compatibility are unchanged.
+
+## One compilation (2026-11-18)
+
+The per-target frontend runs and the merge are gone. `qz build -i` loads
+every target's import closure as one program, turns `@cfg` into target
+masks (`semantic::target_views`), analyzes and lowers once, and assembles
+the v16 file directly (`bytecode::unified`). Only declarations that differ
+per target are compiled more than once, one copy per group of targets. For a
+migrated quazifetch the QZI is 398 KB built in 4.5 s, against 404 KB in 6.9 s
+for the previous three builds and merge; the Linux binary runs, the Windows
+binary runs under Wine and the NetBSD binary has no `syscall` and needs only
+`libc.so.12`. `std.thread.ThreadCallback` is now `fn(*u8) *u8` on every
+target. See [the contract](../internals/universal-qzi.md).

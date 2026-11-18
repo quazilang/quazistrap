@@ -37,4 +37,4 @@ Moves the value out of the box.
 pub fn free(self: Box[T]) void
 ```
 
-Frees the storage; called automatically at the end of scope.
+Drops the value and frees its storage at the end of scope.

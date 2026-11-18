@@ -105,17 +105,9 @@ pub struct ModuleSpec {
 #[derive(Debug, Clone, Default)]
 pub struct ModuleResolver {
     pub modules: HashMap<String, ModuleSpec>,
-    target_interfaces: HashMap<String, HashMap<String, ModuleSpec>>,
 }
 
 impl ModuleResolver {
-    pub(crate) fn insert_target_interface(&mut self, target: &str, spec: ModuleSpec) {
-        self.target_interfaces
-            .entry(target.to_string())
-            .or_default()
-            .insert(spec.name.clone(), spec);
-    }
-
     pub fn insert(&mut self, spec: ModuleSpec) -> Result<(), String> {
         if let Some(existing) = self.modules.get(&spec.name) {
             if existing.root != spec.root {
@@ -261,7 +253,7 @@ fn collect_configured_sources(
     checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
 ) -> Result<SourceCollection, CancellableLoadError> {
     checkpoint()?;
-    let effective_resolver = resolver_with_builtin_modules(resolver, include_std, target.os);
+    let effective_resolver = resolver_with_builtin_modules(resolver, include_std);
 
     // Auto-inject prelude before user entries (as a library file).
     let prelude_path: Option<PathBuf> = include_std
@@ -444,6 +436,97 @@ pub fn load_programs_for_targets(
         });
     }
     Ok(outputs)
+}
+
+/// Every supported target's import closure as one program: each file once,
+/// in shared source coordinates, with the mask of targets that load it
+/// (aligned with `source_files`). Conditional syntax inside the files is kept
+/// for the target-view pass.
+pub fn load_program_for_all_targets(
+    entries: &[PathBuf],
+    resolver: Option<&ModuleResolver>,
+    include_std: bool,
+    targets: &[CfgTarget<'_>],
+) -> Result<(LoadResult, Vec<u8>), String> {
+    assert!((1..=8).contains(&targets.len()));
+    let views = load_programs_for_targets(entries, resolver, include_std, targets)?;
+    let mut views = views.into_iter().enumerate();
+    let (_, mut union) = views.next().expect("at least one target");
+    let mut masks = vec![1u8; union.source_files.len()];
+    let mut seen_items: HashSet<(usize, usize)> = union
+        .program
+        .items
+        .iter()
+        .map(|item| (item.span.start, item.span.end))
+        .collect();
+    let import_key = |import: &SourceTypeImport| format!("{import:?}");
+    for (bit, view) in views {
+        for file in view.source_files {
+            match union.source_files.iter().position(|known| known.path == file.path) {
+                Some(index) => {
+                    masks[index] |= 1 << bit;
+                    let known = &mut union.source_files[index];
+                    if known.module_name != file.module_name
+                        || known.implicit_prelude != file.implicit_prelude
+                        || known.runtime_string != file.runtime_string
+                    {
+                        return Err(format!(
+                            "{} has a different module identity for {}; a universal QZI needs one",
+                            file.path, targets[bit].os
+                        ));
+                    }
+                    let existing: HashSet<String> =
+                        known.type_imports.iter().map(import_key).collect();
+                    for import in file.type_imports {
+                        if !existing.contains(&import_key(&import)) {
+                            known.type_imports.push(import);
+                        }
+                    }
+                }
+                None => {
+                    union.source_files.push(file);
+                    masks.push(1 << bit);
+                }
+            }
+        }
+        for item in view.program.items {
+            if seen_items.insert((item.span.start, item.span.end)) {
+                union.program.items.push(item);
+            }
+        }
+        for path in view.loaded_files {
+            if !union.loaded_files.contains(&path) {
+                union.loaded_files.push(path);
+            }
+        }
+        for path in view.library_file_paths {
+            if !union.library_file_paths.contains(&path) {
+                union.library_file_paths.push(path);
+            }
+        }
+        for range in view.library_char_ranges {
+            if !union.library_char_ranges.contains(&range) {
+                union.library_char_ranges.push(range);
+            }
+        }
+        for edge in view.dep_edges {
+            if !union.dep_edges.contains(&edge) {
+                union.dep_edges.push(edge);
+            }
+        }
+        union.source_hashes.extend(view.source_hashes);
+        union.effective_sources.extend(view.effective_sources);
+        union.library_fn_names.extend(view.library_fn_names);
+        union.display_names.extend(view.display_names);
+        union.namespaced_paths.extend(view.namespaced_paths);
+    }
+    let mut order: Vec<usize> = (0..union.source_files.len()).collect();
+    order.sort_by_key(|&index| union.source_files[index].start);
+    union.source_files = order.iter().map(|&index| union.source_files[index].clone()).collect();
+    let masks = order.iter().map(|&index| masks[index]).collect();
+    union.program.items.sort_by_key(|item| item.span.start);
+    union.library_char_ranges.sort_by_key(|range| range.start);
+    Ok((union, masks))
 }
 
 struct SourceCollection {
@@ -1468,12 +1551,8 @@ fn char_offset_to_byte(src: &str, char_offset: usize) -> usize {
 fn resolver_with_builtin_modules(
     resolver: Option<&ModuleResolver>,
     include_std: bool,
-    target: &str,
 ) -> Option<ModuleResolver> {
     let mut combined = resolver.cloned().unwrap_or_default();
-    if let Some(interfaces) = combined.target_interfaces.remove(target) {
-        combined.modules.extend(interfaces);
-    }
 
     if include_std && let Some(prelude_spec) = builtin_prelude_module_spec() {
         combined

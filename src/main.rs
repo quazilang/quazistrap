@@ -26,6 +26,7 @@ mod runtime_layout;
 pub mod semantic;
 mod test_runner;
 mod type_resolution;
+mod universal;
 
 use analysis::{analyze_program_with_source_files, format_quazi_source};
 use backend::linker::{LinkerInvocation, link_object, remove_temp, write_temp_object};
@@ -46,7 +47,7 @@ use project::ProjectContext;
 
 static NO_COLOR_OUTPUT: AtomicBool = AtomicBool::new(false);
 
-fn print_stderr_line(arguments: std::fmt::Arguments<'_>) {
+pub(crate) fn print_stderr_line(arguments: std::fmt::Arguments<'_>) {
     let rendered = arguments.to_string();
     // Colors are for terminals only; pipes, logs and tools receive plain text.
     // `stderr_is_tty` also honors NO_COLOR.
@@ -551,27 +552,10 @@ fn check_project_entry(ctx: &ProjectContext, entry: PathBuf, target: &TargetSpec
     report_diagnostics(&report, &result.merged_source, &result.source_files)
 }
 
-/// Set during variant compilation so a failed build can clean its staging directory.
-static QZI_VARIANT_BUILD: AtomicBool = AtomicBool::new(false);
-
-/// Payload of an abandoned QZI variant build (not a panic: no hook runs).
-struct QziVariantFailed;
-
-/// Ends a failed build: the process exits with status 1, or, inside a
-/// universal-QZI variant build, control returns to `build_universal_qzi`.
+/// Ends a failed build with status 1.
 fn fail_build() -> ! {
-    if QZI_VARIANT_BUILD.load(Ordering::Relaxed) {
-        std::panic::resume_unwind(Box::new(QziVariantFailed));
-    }
     std::process::exit(1)
 }
-
-/// The operating systems every QZI carries a variant for.
-const QZI_TARGETS: [(&str, fn() -> TargetSpec); 3] = [
-    ("linux", TargetSpec::x86_64_linux),
-    ("windows", TargetSpec::x86_64_windows),
-    ("netbsd", TargetSpec::x86_64_netbsd),
-];
 
 fn target_os_name(target: &TargetSpec) -> &'static str {
     match target.os {
@@ -580,94 +564,6 @@ fn target_os_name(target: &TargetSpec) -> &'static str {
         backend::target::Os::NetBsd => "netbsd",
         backend::target::Os::None => "none",
         backend::target::Os::MacOs => "macos",
-    }
-}
-
-/// Builds the QZI of a project: the program is compiled once per operating
-/// system (each with its own `@cfg` resolution and full semantic/ownership
-/// analysis). Publish an artifact only if every supported target compiles.
-fn build_universal_qzi(
-    out: &str,
-    silent: bool,
-    mut build: impl FnMut(usize, &TargetSpec, &str, bool),
-) {
-    let staging = std::env::temp_dir().join(format!("quazi-qzi-{}", std::process::id()));
-    std::fs::create_dir_all(&staging).unwrap_or_else(|error| {
-        eprintln!(
-            "\x1b[31;1merror:\x1b[0m cannot create {}: {error}",
-            staging.display()
-        );
-        fail_build();
-    });
-    let mut variants = Vec::new();
-    let mut missing = Vec::new();
-    for (index, (os, spec)) in QZI_TARGETS.into_iter().enumerate() {
-        let path = staging.join(format!("{os}.qzi"));
-        let path_text = path.to_string_lossy().into_owned();
-        let target = spec();
-        bytecode::select_qzi_target(os);
-        QZI_VARIANT_BUILD.store(true, Ordering::Relaxed);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            build(index, &target, &path_text, true)
-        }));
-        QZI_VARIANT_BUILD.store(false, Ordering::Relaxed);
-        match result {
-            Ok(()) => match std::fs::read(&path) {
-                Ok(bytes) => variants.push((os.to_string(), bytes)),
-                Err(error) => missing.push(format!("{os} ({error})")),
-            },
-            Err(payload) if payload.is::<QziVariantFailed>() => missing.push(os.to_string()),
-            Err(payload) => std::panic::resume_unwind(payload),
-        }
-    }
-    let _ = std::fs::remove_dir_all(&staging);
-    if !missing.is_empty() {
-        eprintln!(
-            "\x1b[31;1merror:\x1b[0m cannot build QZI for every supported target; compilation failed for {}",
-            missing.join(", ")
-        );
-        fail_build();
-    }
-    // One project is one program: merge the per-target compilations into a
-    // unified QZI that stores each function body once (format 16).
-    let mut modules = Vec::with_capacity(variants.len());
-    for (os, module_bytes) in &variants {
-        let module = bytecode::deserialize_qzi_module(module_bytes).unwrap_or_else(|error| {
-            eprintln!("\x1b[31;1merror:\x1b[0m cannot read the {os} compilation: {error}");
-            fail_build();
-        });
-        modules.push((os.clone(), module));
-    }
-    let bytes = bytecode::serialize_unified_qzi(&modules).unwrap_or_else(|error| {
-        eprintln!("\x1b[31;1merror:\x1b[0m cannot write unified QZI: {error}");
-        fail_build();
-    });
-    let path = Path::new(out);
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent).unwrap_or_else(|error| {
-            eprintln!(
-                "\x1b[31;1merror:\x1b[0m cannot create {}: {error}",
-                parent.display()
-            );
-            fail_build();
-        });
-    }
-    std::fs::write(path, &bytes).unwrap_or_else(|error| {
-        eprintln!("\x1b[31;1merror:\x1b[0m cannot write {out}: {error}");
-        fail_build();
-    });
-    if !silent {
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| out.to_string());
-        eprintln!(
-            "\x1b[1;32mbuilt\x1b[0m  {name}  {:.1} KB  QZI",
-            bytes.len() as f64 / 1024.0,
-        );
     }
 }
 
@@ -1249,7 +1145,6 @@ fn build_with_progress(
     initial_progress: Option<progress::BuildProgress>,
     project_resolver: Option<&loader::ModuleResolver>,
     package_settings: project::PackageSettings,
-    preloaded: Option<(loader::LoadResult, &mut semantic::CfgPlan<'_>, usize)>,
 ) {
     use progress::{
         BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count,
@@ -1343,23 +1238,17 @@ fn build_with_progress(
 
     // ── Step 1: Lexing (file I/O + tokenize) ─────────────────────────────────
     prog.begin("frontend");
-    let (loaded, cfg) = match preloaded {
-        Some((loaded, plan, index)) => (Ok(loaded), Some((plan, index))),
-        None => (
-            project_resolver
-                .map(|resolver| {
-                    loader::load_programs_configured_for_target(
-                        files,
-                        Some(resolver),
-                        package_settings.std,
-                        &[],
-                        cfg_target_for_spec(&target),
-                    )
-                })
-                .unwrap_or_else(|| load_with_optional_project_for_target(files, target.clone())),
-            None,
-        ),
-    };
+    let loaded = project_resolver
+        .map(|resolver| {
+            loader::load_programs_configured_for_target(
+                files,
+                Some(resolver),
+                package_settings.std,
+                &[],
+                cfg_target_for_spec(&target),
+            )
+        })
+        .unwrap_or_else(|| load_with_optional_project_for_target(files, target.clone()));
     let result = match loaded {
         Ok(r) => r,
         Err(e) => {
@@ -1403,10 +1292,7 @@ fn build_with_progress(
         backend::target::Os::None => ("none", "sysv"),
         backend::target::Os::MacOs => ("macos", "sysv"),
     };
-    let target_program = match cfg {
-        Some((plan, index)) => plan.project(&result.program, index),
-        None => semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi),
-    };
+    let target_program = semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
     let source_hashes = result.source_hashes.clone();
     let mut context_inputs = extra_cache_inputs.to_vec();
     context_inputs.extend_from_slice(qzi_dependencies);
@@ -1990,53 +1876,22 @@ fn main() {
                     main_takes_args: false,
                 };
                 if matches!(effective_emit, EmitType::Bytecode) {
-                    let targets = QZI_TARGETS.map(|(_, spec)| cfg_target_for_spec(&spec()));
-                    let results = loader::load_programs_for_targets(
-                        std::slice::from_ref(&entry),
-                        Some(&ctx.resolver),
-                        ctx.config.package.std,
-                        &targets,
-                    )
-                    .unwrap_or_else(|error| {
-                        eprintln!("error: {error}");
-                        fail_build();
-                    });
-                    let mut results = results.into_iter();
-                    let mut cfg_plan = semantic::CfgPlan::new(&targets);
-                    let build_variant = |index, variant: &TargetSpec, path: &str, quiet: bool| {
-                        let variant = apply_package_settings(variant.clone(), ctx.config.package);
-                        let variant_cache =
-                            (!no_incremental).then(|| ctx.incremental_cache_path(variant.triple()));
-                        build_with_progress(
-                            std::slice::from_ref(&entry),
-                            path,
-                            EmitType::Bytecode,
+                    let mut progress = preview_progress;
+                    universal::build(
+                        universal::UniversalBuild {
+                            entries: std::slice::from_ref(&entry),
+                            out: &out,
+                            resolver: Some(&ctx.resolver),
+                            include_std: ctx.config.package.std,
+                            native_mangling: ctx.config.package.mangling,
+                            metadata: Some(qzi_metadata),
+                            dependencies: &ctx.config.qzi_dependencies,
                             debug,
-                            Some(&[]),
-                            explicit_linker,
-                            false,
-                            Some(qzi_metadata.clone()),
-                            &ctx.config.qzi_dependencies,
-                            variant_cache.as_deref(),
-                            &cache_inputs,
-                            &variant,
-                            quiet,
-                            no_color,
-                            no_unicode,
-                            no_progress,
-                            None,
-                            Some(&ctx.resolver),
-                            ctx.config.package,
-                            Some((
-                                results.next().expect("one loaded view per target"),
-                                &mut cfg_plan,
-                                index,
-                            )),
-                        );
-                    };
-                    build_universal_qzi(&out, silent, build_variant);
-                    bytecode::select_qzi_target(target_os_name(&target));
-                    let _ = (emit, do_strip, preview_progress, qzc_path);
+                            header_printed: true,
+                        },
+                        &mut progress,
+                    );
+                    let _ = (emit, do_strip, qzc_path, cache_inputs, explicit_linker);
                     return;
                 }
                 build_with_progress(
@@ -2068,7 +1923,6 @@ fn main() {
                     Some(preview_progress),
                     Some(&ctx.resolver),
                     ctx.config.package,
-                    None,
                 );
                 let _ = (emit, do_strip);
 
@@ -2254,48 +2108,22 @@ fn main() {
                         .to_string_lossy();
                     let out =
                         output.unwrap_or_else(|| target_output_name(&stem, emit.clone(), &target));
-                    let targets = QZI_TARGETS.map(|(_, spec)| cfg_target_for_spec(&spec()));
-                    let mut results = loader::load_programs_for_targets(
-                        &source_files,
-                        resolver,
-                        settings.std,
-                        &targets,
-                    )
-                    .unwrap_or_else(|error| {
-                        eprintln!("error: {error}");
-                        fail_build();
-                    })
-                    .into_iter();
-                    let mut cfg_plan = semantic::CfgPlan::new(&targets);
-                    build_universal_qzi(&out, silent, |index, variant, path, quiet| {
-                        let variant = apply_package_settings(variant.clone(), settings);
-                        build_with_progress(
-                            &source_files,
-                            path,
-                            EmitType::Bytecode,
-                            debug,
-                            Some(&[]),
-                            explicit_linker,
-                            false,
-                            None,
-                            dependencies,
-                            None,
-                            &[],
-                            &variant,
-                            quiet,
-                            no_color,
-                            no_unicode,
-                            no_progress,
-                            None,
+                    let mut progress =
+                        progress::BuildProgress::new(silent, no_color, no_unicode, no_progress);
+                    universal::build(
+                        universal::UniversalBuild {
+                            entries: &source_files,
+                            out: &out,
                             resolver,
-                            settings,
-                            Some((
-                                results.next().expect("one loaded view per target"),
-                                &mut cfg_plan,
-                                index,
-                            )),
-                        );
-                    });
+                            include_std: settings.std,
+                            native_mangling: settings.mangling,
+                            metadata: None,
+                            dependencies,
+                            debug,
+                            header_printed: false,
+                        },
+                        &mut progress,
+                    );
                     return;
                 }
                 let native_objects: Vec<String> = files
@@ -2480,7 +2308,6 @@ fn main() {
                     None,
                     None,
                     package_settings,
-                    None,
                 );
                 for object in &compiled_c_objects {
                     remove_temp(object);

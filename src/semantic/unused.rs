@@ -115,8 +115,10 @@ impl Analyzer {
                     }
                 }
                 SymbolKind::Function => {
+                    // Target copies are reached through their source name.
                     if include_functions
                         && name != "main"
+                        && !name.contains(super::target_views::VARIANT_MARKER)
                         && !should_ignore_warning(&symbol.attributes, "W03")
                     {
                         self.push_warning_with_suggestion(

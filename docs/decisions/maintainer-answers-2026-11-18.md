@@ -27,3 +27,8 @@ Status: decided by the maintainers on 2026-11-18 (asks.txt В23-В26).
   `TcpStream` and `Stdout` already have `read`/`write` methods with other
   signatures, and a type cannot have two methods of one name. See
   [std.stream](../api/stream.md).
+- **Universal QZI compiles once (direct request).** A QZI does not know the
+  system it will run on, so `qz build -i` neither builds per target nor
+  merges per-target results: one compilation produces every target's bodies
+  in the unchanged format 16, and its output never lists systems. See
+  [the contract](../internals/universal-qzi.md).

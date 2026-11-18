@@ -34,6 +34,7 @@ collections do not define a concurrent access or serialization interface.
 
 ```quazi
 import std.collections.HashMap;
+import std.io.println;
 
 fn main() void {
     var counts: HashMap[String, i32] = HashMap.new();

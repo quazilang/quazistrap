@@ -86,7 +86,13 @@ changing lowering. Do not ask the maintainer to choose these rules again.
 source → Loader → Lexer → Parser → Analyzer → Codegen → Backend (iced-x86) → .o → Linker → binary
 ```
 
-QZI (`-b`): Codegen → serialized chunks, no backend.  
+QZI (`-i`): Loader (all targets) → target views → Analyzer → Codegen → unified
+v16 assembly, once for every target; no backend. See
+[the universal QZI contract](docs/internals/universal-qzi.md): copies of
+target-specific declarations are `name@t<mask>` with `@__targets(mask)`, live in
+replica images of their file (`SpanLayout`), and lose the marker at assembly.
+Never reintroduce per-target QZI builds or a merge of compiled programs.
+
 Object (`-c`): backend only, no linker.
 
 ### Component Guide

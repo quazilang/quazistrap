@@ -243,6 +243,11 @@ fn abi_type_from_layout(
 pub struct Codegen<'a> {
     report: &'a SemanticReport,
     resolution_errors: Rc<RefCell<Vec<String>>>,
+    /// Chunks compiled from source declarations and the targets each one is
+    /// declared for (`u8::MAX`: every target). Read by universal QZI assembly.
+    declared_targets: RefCell<HashMap<String, u8>>,
+    /// Public API chunks of a library build (its reachability roots).
+    library_roots: Vec<String>,
     /// Layout records are canonical in semantic analysis, while bytecode chunks
     /// are addressed by monomorphized names. Keep a derived codegen lookup so
     /// the latter never falls back to the historical one-slot ABI.
@@ -435,6 +440,8 @@ impl<'a> Codegen<'a> {
             named_call_slots: named_call_slots(report),
             report,
             resolution_errors: Rc::new(RefCell::new(Vec::new())),
+            declared_targets: RefCell::new(HashMap::new()),
+            library_roots: Vec::new(),
             fn_value_layouts,
             fn_index: HashMap::new(),
             contiguous_element_containers: HashMap::new(),
@@ -546,6 +553,16 @@ impl<'a> Codegen<'a> {
 
     pub fn external_call_relocations(&self) -> &[QziCallRelocation] {
         &self.external_call_relocations
+    }
+
+    /// Source-declared chunks with their target masks (see `declared_targets`).
+    pub fn declared_targets(&self) -> HashMap<String, u8> {
+        self.declared_targets.borrow().clone()
+    }
+
+    /// The public API a library build keeps (empty for executables).
+    pub fn library_roots(&self) -> &[String] {
+        &self.library_roots
     }
 
     pub fn retain_public_library_api(&mut self, excluded_paths: HashSet<PathBuf>) {
@@ -988,6 +1005,9 @@ impl<'a> Codegen<'a> {
                     _ => {}
                 }
             }
+            let mut library_roots: Vec<String> = set.iter().cloned().collect();
+            library_roots.sort();
+            self.library_roots = library_roots;
             set.extend(dynamic_roots.iter().cloned());
             // Generated cleanup calls source destructors such as `String.free`;
             // without them a library would release owners without running them.
@@ -1192,6 +1212,13 @@ impl<'a> Codegen<'a> {
                         chunks.push(chunk);
                         if let Some(foreign) = self.foreign_exports.get(&compile_name).cloned() {
                             let adapter_name = export_adapter_name(&compile_name);
+                            // The C entry exists exactly where its function does.
+                            let mask = self.declared_targets.borrow().get(&compile_name).copied();
+                            if let Some(mask) = mask {
+                                self.declared_targets
+                                    .borrow_mut()
+                                    .insert(adapter_name.clone(), mask);
+                            }
                             let mut adapter = Chunk::with_params(adapter_name, params.len());
                             adapter.export = Some(foreign);
                             adapter.reg_count = params.len().max(1) as u8;
@@ -2072,6 +2099,10 @@ impl<'a> Codegen<'a> {
         output_chunks: &mut Vec<Chunk>,
         type_subst: HashMap<String, TypeKind>,
     ) -> Result<Option<Chunk>, String> {
+        self.declared_targets.borrow_mut().insert(
+            name.to_string(),
+            crate::semantic::target_views::declared_targets(attributes).unwrap_or(u8::MAX),
+        );
         if params.len() > u8::MAX as usize {
             return Err(format!(
                 "function `{name}` has {} parameters, exceeding the QZI limit of {}",

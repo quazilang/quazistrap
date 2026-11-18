@@ -52,19 +52,16 @@ Statuses and percentages are refreshed before committing.
 A read-only method receiver no longer keeps a temporary argument borrow alive
 after the call statement. A live reference result still keeps its source
 borrowed. This corrects loan tracking within the existing ownership milestone.
-Project QZI builds now require every supported target to compile. The success
-summary identifies the artifact as `QZI`, and a failed build preserves any
-previous output. This fixes publication behavior within the existing plan.
-Project and explicit source-file builds share one parsed source snapshot for QZI.
-Their conditional predicates share target masks before semantic analysis.
+QZI builds compile once for every supported target: one load, one analysis
+and one bytecode pass produce the format-16 artifact directly, without
+per-target builds or a merge ([contract](docs/internals/universal-qzi.md)).
+The success summary identifies the artifact as `QZI`, and a failed build names
+what is missing on which target and preserves any previous output.
 Bytecode lowering carries symbolic calls until function-table binding.
 Incremental rebuilds regenerate recursive destructor helpers with their callers.
-The dependency interface cache keys target-specific signatures by their content,
-so successive native builds can use different interfaces from the same QZI.
-QZI aliases preserve conditional bodies and interfaces. The v16 writer rejects
-missing entries and incompatible entry signatures across targets.
-The loader selects a QZI dependency's public interface for the current
-target before checking source calls, including aliased dependencies.
+QZI aliases preserve conditional bodies and interfaces. A dependency whose
+interface differs per target is read as one interface with `@cfg`
+declarations.
 Specialized method calls keep their concrete dependencies live, including helpers
 that need the concrete element layout to lower `size_of[T]()`.
 The prelude provides a shared `Hash` and `Eq` contract for generic keys.

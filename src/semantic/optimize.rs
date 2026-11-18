@@ -341,6 +341,11 @@ impl Analyzer {
         if name == "main" || attributes.iter().any(|attribute| attribute.name == "test") {
             return Ok(());
         }
+        // A target-specific copy must stay a call: the QZI selects the body
+        // of the caller's target by name.
+        if super::target_views::declared_targets(attributes).is_some() {
+            return Ok(());
+        }
 
         if attributes
             .iter()

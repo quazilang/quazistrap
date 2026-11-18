@@ -1370,3 +1370,193 @@ impl Printer {
         assert!(bundle.modules.is_empty());
     }
 }
+
+/// One interface for every target of a universal QZI. Declarations that
+/// differ between targets are kept once per target under
+/// `@cfg(target_os = ...)`, so a single program sees each target's API.
+pub fn merge_target_interfaces(targets: &[&str], interfaces: &[String]) -> Result<String, String> {
+    if interfaces.iter().all(|interface| *interface == interfaces[0]) {
+        return Ok(interfaces[0].clone());
+    }
+    let bundles = interfaces
+        .iter()
+        .map(|interface| parse_qzi_interface(interface))
+        .collect::<Result<Vec<_>, _>>()?;
+    let full = (1u16 << targets.len()) as u8;
+    let full = full.wrapping_sub(1);
+    let mut order: Vec<String> = Vec::new();
+    for bundle in &bundles {
+        for module in &bundle.modules {
+            if !order.contains(&module.name) {
+                order.push(module.name.clone());
+            }
+        }
+    }
+    let mut modules = Vec::new();
+    for name in order {
+        let mut exports: Vec<String> = Vec::new();
+        let mut segments: Vec<Vec<Segment>> = Vec::new();
+        for bundle in &bundles {
+            let module = bundle.modules.iter().find(|module| module.name == name);
+            if let Some(module) = module {
+                for export in &module.exports {
+                    if !exports.contains(export) {
+                        exports.push(export.clone());
+                    }
+                }
+            }
+            segments.push(match module {
+                Some(module) => interface_segments(&module.source)?,
+                None => Vec::new(),
+            });
+        }
+        let mut source = String::new();
+        let mut emitted: Vec<String> = Vec::new();
+        for (index, target_segments) in segments.iter().enumerate() {
+            for segment in target_segments {
+                if emitted.contains(&segment.key) {
+                    continue;
+                }
+                emitted.push(segment.key.clone());
+                let variants: Vec<(u8, &Segment)> = segments
+                    .iter()
+                    .enumerate()
+                    .skip(index)
+                    .filter_map(|(bit, list)| {
+                        list.iter().find(|other| other.key == segment.key).map(|found| (bit as u8, found))
+                    })
+                    .collect();
+                source.push_str(&merge_segment(targets, full, &variants)?);
+            }
+        }
+        modules.push(QziInterfaceModule { name, exports, source });
+    }
+    let heap_fixed_array_refs = bundles.iter().all(|bundle| bundle.heap_fixed_array_refs);
+    toml::to_string(&QziInterfaceBundle { heap_fixed_array_refs, modules })
+        .map_err(|error| format!("cannot serialize QZI interface: {error}"))
+}
+
+/// A top-level declaration of an interface source: its identity, full text
+/// (leading attributes and comments included) and, for an impl, its methods.
+struct Segment {
+    key: String,
+    text: String,
+    impl_parts: Option<(String, Vec<(String, String)>)>,
+}
+
+fn char_slice(chars: &[usize], source: &str, start: usize, end: usize) -> String {
+    let byte = |index: usize| chars.get(index).copied().unwrap_or(source.len());
+    source[byte(start)..byte(end)].to_string()
+}
+
+fn interface_segments(source: &str) -> Result<Vec<Segment>, String> {
+    let program = crate::parser::Parser::new(crate::lexer::Lexer::new(source).tokenize())
+        .parse()
+        .map_err(|error| format!("cannot parse QZI interface: {error}"))?;
+    let chars: Vec<usize> = source.char_indices().map(|(index, _)| index).collect();
+    let mut segments = Vec::new();
+    let mut previous = 0;
+    for item in &program.items {
+        let text = char_slice(&chars, source, previous, item.span.end);
+        let key = match &item.node {
+            ItemKind::Fn { name, .. } => format!("fn {name}"),
+            ItemKind::Struct { name, .. }
+            | ItemKind::Enum { name, .. }
+            | ItemKind::Trait { name, .. }
+            | ItemKind::TypeAlias { name, .. }
+            | ItemKind::ForeignGlobal { name, .. }
+            | ItemKind::Const { name, .. } => format!("decl {name}"),
+            ItemKind::Import(_) => format!("import {}", text.trim()),
+            ItemKind::Impl {
+                trait_ty, for_ty, ..
+            } => format!(
+                "impl {} for {}",
+                trait_ty.as_ref().map(|ty| ty.node.to_string()).unwrap_or_default(),
+                for_ty.node
+            ),
+        };
+        let impl_parts = match &item.node {
+            ItemKind::Impl { methods, .. } => {
+                let open = text.find('{').ok_or("malformed QZI interface impl")?;
+                let header = text[..=open].to_string();
+                let body_start = previous + text[..=open].chars().count();
+                let mut cursor = body_start;
+                let mut parts = Vec::new();
+                for method in methods {
+                    let method_text = char_slice(&chars, source, cursor, method.span.end);
+                    let name = match &method.node {
+                        ItemKind::Fn { name, .. } => name.clone(),
+                        _ => String::new(),
+                    };
+                    parts.push((name, method_text));
+                    cursor = method.span.end;
+                }
+                Some((header, parts))
+            }
+            _ => None,
+        };
+        segments.push(Segment {
+            key,
+            text,
+            impl_parts,
+        });
+        previous = item.span.end;
+    }
+    Ok(segments)
+}
+
+fn cfg_prefix(target: &str) -> String {
+    format!("@cfg(target_os = \"{target}\")\n")
+}
+
+/// Text of one declaration for every target that has it.
+fn merge_segment(targets: &[&str], full: u8, variants: &[(u8, &Segment)]) -> Result<String, String> {
+    let mask = variants.iter().fold(0u8, |mask, (bit, _)| mask | 1 << bit);
+    if mask == full && variants.iter().all(|(_, segment)| segment.text == variants[0].1.text) {
+        return Ok(format!("{}\n", variants[0].1.text));
+    }
+    if let Some((header, _)) = &variants[0].1.impl_parts {
+        // Impl blocks cannot be conditional; their methods can.
+        let mut out = format!("\n{}\n", header.trim_start());
+        let mut seen: Vec<String> = Vec::new();
+        for (bit, segment) in variants {
+            let (_, methods) = segment.impl_parts.as_ref().ok_or("inconsistent QZI interface")?;
+            for (name, text) in methods {
+                if seen.contains(text) {
+                    continue;
+                }
+                seen.push(text.clone());
+                let owners: Vec<u8> = variants
+                    .iter()
+                    .filter(|(_, other)| {
+                        other.impl_parts.as_ref().is_some_and(|(_, list)| {
+                            list.iter().any(|(other_name, other_text)| other_name == name && other_text == text)
+                        })
+                    })
+                    .map(|(owner, _)| *owner)
+                    .collect();
+                let _ = bit;
+                if owners.len() == targets.len() {
+                    out.push_str(text);
+                    out.push('\n');
+                } else {
+                    for owner in owners {
+                        out.push_str(&format!("    {}", cfg_prefix(targets[owner as usize])));
+                        out.push_str(text.trim_start_matches('\n'));
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+        out.push_str("}\n");
+        return Ok(out);
+    }
+    let mut out = String::new();
+    for (bit, segment) in variants {
+        out.push('\n');
+        out.push_str(&cfg_prefix(targets[*bit as usize]));
+        out.push_str(segment.text.trim_start_matches('\n'));
+        out.push('\n');
+    }
+    Ok(out)
+}

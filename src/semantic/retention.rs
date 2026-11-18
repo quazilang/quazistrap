@@ -467,6 +467,7 @@ impl Analyzer {
                 _ => {}
             }
         }
+        let variant_pairs = self.target_variant_pairs();
         // Greatest fixed point: recursive/unresolved dependencies remain
         // conservative until source bodies prove individual slots unnecessary.
         let mut summaries = declarations
@@ -533,9 +534,18 @@ impl Analyzer {
                     .intersection(&result)
                     .copied()
                     .collect::<Dependencies>();
-                changed |= refined != *previous;
                 next.insert(name.clone(), refined);
             }
+            // Callers name the first copy of a target-specific function; its
+            // summary covers every copy (see `target_views`).
+            for (primary, variant) in &variant_pairs {
+                if let Some(slots) = next.get(variant).cloned()
+                    && let Some(target) = next.get_mut(primary)
+                {
+                    target.extend(slots);
+                }
+            }
+            changed |= next != summaries;
             summaries = next;
             if !changed {
                 break;

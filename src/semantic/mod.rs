@@ -8,6 +8,7 @@ use crate::parser::ast::*;
 use crate::semantic::typecheck::substitute_type_kind;
 
 pub mod types;
+pub(crate) mod target_views;
 pub use types::*;
 mod borrow;
 mod control_flow;
@@ -512,46 +513,6 @@ pub fn strip_cfg_for(
     })
 }
 
-/// Cache the target mask of each conditional predicate in one source snapshot.
-/// Scalar consumers can still request a projection while semantic passes move
-/// to accepting masks directly.
-pub(crate) struct CfgPlan<'a> {
-    targets: &'a [crate::loader::CfgTarget<'a>],
-    masks: HashMap<(usize, usize), u8>,
-}
-
-impl<'a> CfgPlan<'a> {
-    pub(crate) fn new(targets: &'a [crate::loader::CfgTarget<'a>]) -> Self {
-        assert!(targets.len() <= u8::BITS as usize);
-        Self {
-            targets,
-            masks: HashMap::new(),
-        }
-    }
-
-    pub(crate) fn project(&mut self, program: &Program, index: usize) -> Program {
-        assert!(index < self.targets.len());
-        strip_cfg_matching(program, &mut |span, attributes| {
-            if !attributes.iter().any(|attribute| attribute.name == "cfg") {
-                return true;
-            }
-            let mask = self.masks.entry((span.start, span.end)).or_insert_with(|| {
-                self.targets
-                    .iter()
-                    .enumerate()
-                    .fold(0, |mask, (bit, target)| {
-                        if item_should_include_for(attributes, target.os, target.arch, target.abi) {
-                            mask | (1 << bit)
-                        } else {
-                            mask
-                        }
-                    })
-            });
-            *mask & (1 << index) != 0
-        })
-    }
-}
-
 fn strip_cfg_matching(
     program: &Program,
     enabled: &mut impl FnMut(Span, &[Attribute]) -> bool,
@@ -807,7 +768,7 @@ fn enum_json_tag(variant: &EnumVariant) -> &str {
     }).unwrap_or(&variant.name)
 }
 
-fn expand_serialize_derives(program: &Program) -> Program {
+pub(crate) fn expand_serialize_derives(program: &Program) -> Program {
     let desugared = desugar_serde_attributes(program);
     let program = &desugared;
     struct Builder {
@@ -2633,6 +2594,7 @@ impl Analyzer {
         // and keep the concrete trait methods they call.
         self.check_generic_bound_instantiations();
         self.check_bounded_declarations_and_types();
+        self.link_target_variants();
 
         // A direct source call may end a temporary loan only after every
         // resolved callee in its source call graph has the same property.
@@ -3244,6 +3206,27 @@ impl Analyzer {
         }
     }
 
+    /// Universal QZI copies (`name@t<mask>`, see `target_views`) are the same
+    /// function on other targets. Callers name the first copy, so it depends
+    /// on the others: they stay reachable and its facts cover theirs.
+    pub(super) fn target_variant_pairs(&self) -> Vec<(String, String)> {
+        let mut pairs: Vec<(String, String)> = self
+            .fn_param_names
+            .keys()
+            .filter(|name| name.contains(target_views::VARIANT_MARKER))
+            .map(|name| (target_views::strip_variant_markers(name), name.clone()))
+            .filter(|(primary, _)| self.fn_param_names.contains_key(primary))
+            .collect();
+        pairs.sort();
+        pairs
+    }
+
+    fn link_target_variants(&mut self) {
+        for (primary, variant) in self.target_variant_pairs() {
+            self.add_dependency_edge(DependencyKind::Call, &primary, &variant);
+        }
+    }
+
     pub(super) fn add_dependency_edge(&mut self, kind: DependencyKind, from: &str, to: &str) {
         let inserted = self
             .dependency_edges
@@ -3270,6 +3253,11 @@ impl Analyzer {
             .collect();
         let mut known_mangled: HashSet<String> = template_monos.keys().cloned().collect();
         let mut pending = self.monomorphizations.clone();
+        // A generic function compiled per target class specializes every copy.
+        let mut target_variants: HashMap<String, Vec<String>> = HashMap::new();
+        for (primary, variant) in self.target_variant_pairs() {
+            target_variants.entry(primary).or_default().push(variant);
+        }
 
         while let Some(source) = pending.pop() {
             checkpoint()?;
@@ -3367,6 +3355,9 @@ impl Analyzer {
                 specialized_targets.push((template.fn_name.clone(), type_args));
             }
 
+            for variant in target_variants.get(&source.fn_name).into_iter().flatten() {
+                specialized_targets.push((variant.clone(), source.type_args.clone()));
+            }
             for (target_function, type_args) in specialized_targets {
                 checkpoint()?;
                 let target_params = self.generic_params_for_function(&target_function);
@@ -5638,99 +5629,6 @@ fn main() void {}
                 attributes.iter().all(|attribute| attribute.name != "cfg"),
             _ => true,
         }));
-    }
-
-    #[test]
-    fn shared_cfg_plan_matches_scalar_projections() {
-        use crate::loader::CfgTarget;
-        use crate::parser::ast::{ExprKind, Literal, StmtKind};
-
-        let targets = [
-            CfgTarget {
-                os: "linux",
-                arch: "x86_64",
-                abi: "sysv",
-            },
-            CfgTarget {
-                os: "windows",
-                arch: "x86_64",
-                abi: "win64",
-            },
-            CfgTarget {
-                os: "netbsd",
-                arch: "x86_64",
-                abi: "sysv",
-            },
-        ];
-        let program = parse_program(
-            r#"
-@cfg(target_abi="sysv") type Word = i64;
-@cfg(target_os="windows") type Word = i32;
-struct Marker {}
-impl Marker {
-    @cfg(target_os="windows") fn active() void {}
-}
-fn main() i32 {
-    @cfg(target_abi="sysv") {
-        @cfg(target_os="netbsd") { ret 30; }
-        @cfg(target_os="windows") { ret 99; }
-    }
-    @cfg(target_os="windows") { ret 20; }
-    ret 10;
-}
-"#,
-        );
-        let mut plan = super::CfgPlan::new(&targets);
-        for (index, target) in targets.iter().enumerate() {
-            let projected = plan.project(&program, index);
-            assert_eq!(
-                format!("{projected:?}"),
-                format!(
-                    "{:?}",
-                    strip_cfg_for(&program, target.os, target.arch, target.abi)
-                ),
-            );
-            let [alias, _, implementation, entry] = projected.items.as_slice() else {
-                panic!("expected one alias, one struct, one impl and main");
-            };
-            let ItemKind::TypeAlias { aliased_type, .. } = &alias.node else {
-                panic!("expected Word alias");
-            };
-            assert_eq!(
-                aliased_type.node.to_string(),
-                if index == 1 { "i32" } else { "i64" }
-            );
-            let ItemKind::Impl { methods, .. } = &implementation.node else {
-                panic!("expected Marker impl");
-            };
-            assert_eq!(methods.len(), usize::from(index == 1));
-            let ItemKind::Fn {
-                body: Some(body), ..
-            } = &entry.node
-            else {
-                panic!("expected main body");
-            };
-            let returns = body
-                .stmts
-                .iter()
-                .map(|stmt| match &stmt.node {
-                    StmtKind::Return(Some(value)) => match value.node {
-                        ExprKind::Literal(Literal::Int(value)) => value,
-                        _ => panic!("expected an integer literal"),
-                    },
-                    _ => panic!("expected only return statements"),
-                })
-                .collect::<Vec<_>>();
-            match target.os {
-                "linux" => assert_eq!(returns, [10]),
-                "windows" => assert_eq!(returns, [20, 10]),
-                "netbsd" => assert_eq!(returns, [30, 10]),
-                _ => unreachable!(),
-            }
-        }
-        let mut masks = plan.masks.into_values().collect::<Vec<_>>();
-        masks.sort_unstable();
-        assert_eq!(masks, [0b010, 0b010, 0b010, 0b010, 0b100, 0b101, 0b101]);
     }
 
     #[test]

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Check the unified multi-target QZI (format 16, qzifix.txt):
 
-A. one project is ONE artifact: shared function bodies are stored once (for
-   every target), the @cfg(target_os) alternatives once per target;
+A. one project is ONE artifact from ONE compilation: analysis and bytecode
+   generation run once for every target (no per-target build or merge);
+   shared function bodies are stored once (for every target), the
+   @cfg(target_os) alternatives once per target;
 B. that file compiles natively for Linux, Windows and NetBSD, each binary
    running its own branches (Linux runs; Windows under Wine with --wine;
    NetBSD contains no Linux `syscall` and links only libc);
@@ -11,7 +13,11 @@ D. shared code calls target-specific code and passes owned values across;
    a program without a Windows implementation fails without publishing a
    partial QZI or replacing a previous artifact;
 E. a project's dependencies are linked into its one QZI, which compiles
-   without the dependency; a retired format 15 file is rejected.
+   without the dependency (including a compiled library that uses std); a
+   retired format 15 file is rejected;
+F. per-target copies keep per-target semantics: a generic function with
+   per-target bodies specializes each copy, and a view returned through a
+   caller of a per-target function is rejected as on that target alone.
 """
 
 import argparse
@@ -42,6 +48,25 @@ fn main() i32 {
     println("{} {} {}", label, name, native_width());
     0
 }
+"""
+GENERIC = """import std.io.println;
+fn pick[T](x: T) i32 {
+    @cfg(target_os = "windows") { ret 2; }
+    @cfg(target_os = "netbsd") { ret 3; }
+    ret 1;
+}
+fn main() i32 { println("{}", pick[i32](5)); 0 }
+"""
+RETAINED_VIEW = """fn choose(a: str, b: str) str {
+    @cfg(target_os = "windows") { ret b; }
+    ret a;
+}
+fn wrap(a: str, b: str) str { ret choose(a, b); }
+fn outer(x: str) str {
+    const b = String.from("b");
+    ret wrap(x, b.as_str());
+}
+fn main() i32 { const a = String.from("a"); ret outer(a.as_str()).len() as i32; }
 """
 LINUX_ONLY = """@cfg(target_os = "linux")
 fn only() i32 { ret 0; }
@@ -94,6 +119,10 @@ def main():
                      "-o", str(root / "app.qzi")], work)
         summary = [line for line in built.stderr.splitlines() if line.startswith(b"built ")]
         assert len(summary) == 1 and summary[0].endswith(b" QZI"), built.stderr
+        for stage in (b"ok  analysis", b"ok  bytecode"):
+            runs = [line for line in built.stderr.splitlines() if line.startswith(stage)]
+            assert len(runs) == 1, (stage, built.stderr)
+        assert b"linux" not in summary[0] and b"windows" not in summary[0], summary
 
         # A: one artifact; shared bodies once, alternatives per target.
         data = (root / "app.qzi").read_bytes()
@@ -139,17 +168,19 @@ def main():
         partial = root / "partial.qzi"
         command = [qz, "build", "--no-incremental", "-i", "-o", str(partial)]
         failed = run(command, work, ok=False)
-        assert failed.returncode != 0 and b"compilation failed for windows, netbsd" in failed.stderr, failed.stderr
+        missing = [b"`main` uses `only`, which is not available on " + target
+                   for target in (b"windows", b"netbsd")]
+        assert failed.returncode != 0 and all(m in failed.stderr for m in missing), failed.stderr
         assert not partial.exists(), "failed build wrote a partial QZI"
         partial.write_bytes(data)
         failed = run([*command, "--silent"], work, ok=False)
-        assert failed.returncode != 0 and b"compilation failed for windows, netbsd" in failed.stderr, failed.stderr
+        assert failed.returncode != 0 and all(m in failed.stderr for m in missing), failed.stderr
         assert partial.read_bytes() == data, "failed build replaced an existing QZI"
         project(work, '@cfg(target_os="linux") fn main() i32 { ret 0; }')
         manifest = work / "quazi.toml"
         manifest.write_text(manifest.read_text().replace("[package]\n", "[package]\nstd=false\n"))
         failed = run([*command, "--silent"], work, ok=False)
-        assert failed.returncode != 0 and b"missing an entry for windows" in failed.stderr, failed.stderr
+        assert failed.returncode != 0 and b"no entry point for windows" in failed.stderr, failed.stderr
         assert partial.read_bytes() == data, "missing entry replaced an existing QZI"
 
         # E: a dependency is part of the project's single QZI.
@@ -231,12 +262,51 @@ def main():
                 win = out / "conditional-windows"
             assert run([str(args.wine), str(win)], out, ok=False, env=env).returncode == 22
 
+        # A compiled library that uses std links into a consumer's QZI.
+        std_library = root / "stdlib"
+        (std_library / "src").mkdir(parents=True)
+        (std_library / "quazi.toml").write_text('[package]\nname="stdlib"\n[lib]\npath="src/lib.qz"\n')
+        (std_library / "src/lib.qz").write_text("pub fn twice(v: i32) i32 { ret 2 * v; }\n")
+        run([qz, "build", "--lib", "--silent", "--no-incremental", "-o", str(root / "stdlib.qzi")],
+            std_library)
+        project(consumer, "import std.io.println;\nimport stdlib.twice;\n"
+                "fn main() i32 { println(\"{}\", twice(5)); 0 }\n", name="std_consumer")
+        with (consumer / "quazi.toml").open("a") as manifest:
+            manifest.write('[dependencies]\nstdlib = { path = "../stdlib.qzi" }\n')
+        run([qz, "build", "-i", "--silent", "--no-incremental", "-o", str(root / "std_consumer.qzi")],
+            consumer)
+        run([qz, "build", str(root / "std_consumer.qzi"), "--silent", "-o", str(out / "std_consumer")], out)
+        assert run([str(out / "std_consumer")], out).stdout == b"10\n"
+
+        # F: per-target copies keep per-target semantics.
+        project(work, GENERIC)
+        run([qz, "build", "-i", "--silent", "--no-incremental", "-o", str(root / "generic.qzi")], work)
+        for target, expected in [("linux", b"1\n"), ("windows", b"2\n")]:
+            run([qz, "build", str(root / "generic.qzi"), "--silent", "--target", f"x86_64-{target}",
+                 "-o", str(out / f"generic-{target}")], out)
+            if target == "linux":
+                assert run([str(out / "generic-linux")], out).stdout == expected
+            elif args.wine:
+                win = Path(str(out / "generic-windows") + ".exe")
+                if not win.exists():
+                    win = out / "generic-windows"
+                got = run([str(args.wine), str(win)], out, env=env).stdout.replace(b"\r", b"")
+                assert got == expected, got
+        project(work, RETAINED_VIEW)
+        failed = run([qz, "build", "-i", "--silent", "--no-incremental", "-o", str(root / "view.qzi")],
+                     work, ok=False)
+        assert failed.returncode != 0 and b"S10" in failed.stderr, failed.stderr
+        windows_only = run([qz, "build", "--silent", "--no-incremental", "--target", "x86_64-windows",
+                            "-o", str(root / "view.exe")], work, ok=False)
+        assert windows_only.returncode != 0 and b"S10" in windows_only.stderr, windows_only.stderr
+
         (root / "retired.qzi").write_bytes(b"\x00QZI\x0f\x00\x00")
         retired = run([qz, "build", str(root / "retired.qzi"), "-o", str(out / "retired")], out, ok=False)
         assert retired.returncode != 0 and b"format 15" in retired.stderr, retired.stderr
-    print("PASS unified QZI: one artifact with shared bodies once and per-target alternatives; "
+    print("PASS unified QZI: one compilation, one artifact with shared bodies once and per-target alternatives; "
           f"linux/windows/netbsd natives without sources{' (windows under Wine)' if args.wine else ''}; "
-          "failed targets prevent publication; dependencies linked into the one QZI; format 15 rejected")
+          "failed targets prevent publication; dependencies (source, QZI, QZI with std) linked into the one QZI; "
+          "per-target generic copies and retention; format 15 rejected")
 
 
 if __name__ == "__main__":

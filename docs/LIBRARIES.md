@@ -86,16 +86,20 @@ status diamond as build stages; failures use a red diamond.
 ## Unified multi-target QZI (format 16)
 
 `qz build -i` and `qz build path/to/main.qz -i` produce one QZI that serves
-Linux, Windows, and NetBSD. Import resolution determines which files each system
-uses. The compiler parses their combined source into an AST with shared source
-positions and evaluates `@cfg` predicates into target masks. It uses those masks
-to select the syntax for semantic analysis, ownership analysis, and code
-generation for each system. The writer merges the results so each
-function body is stored once together with the set of targets it applies to.
-Platform-independent functions (and their constants) apply to all targets;
-the `@cfg` alternatives of a function are separate bodies with disjoint
-target sets. Calls are recorded by name, so selecting a target links shared
-code to that target's implementation.
+Linux, Windows, and NetBSD from a single compilation. Import resolution
+determines which files each system uses; the files are parsed once and
+analyzed and lowered once. Shared code is one body for every target. A
+function whose `@cfg` statements or conditional variants differ is compiled
+once per distinct group of targets, and those bodies carry disjoint target
+sets. Calls are recorded by name, so selecting a target links shared code to
+that target's implementation. The build prints a single analysis and
+bytecode stage and never names a target in its summary. See
+[the internal contract](internals/universal-qzi.md).
+
+Target-specific type aliases of built-in types (such as `std.ffi.c_long`)
+and functions whose signatures differ per target are supported. Structs,
+enums and traits whose definitions differ per target, and methods whose
+signatures differ, are rejected with an explanation.
 
 `qz build app.qzi --target x86_64-netbsd` selects the NetBSD bodies: the
 native binary contains only them and the shared code, so no Linux syscalls
@@ -103,11 +107,11 @@ reach NetBSD output and no NetBSD libc reaches Linux output. QZI
 dependencies of a project are selected the same way, and native generation
 needs no source files.
 
-If any supported target fails to compile, the project build fails and
-preserves any existing output. The successful build summary says `QZI`.
+If code needed on a supported target is missing there, the build names the
+caller, the missing declaration and the target, and preserves any existing
+output. The successful build summary says `QZI`.
 Earlier partial QZI artifacts can still be read for the targets they contain.
-One artifact carries one entry signature, so the presence of
-`main(args: Array[str])` must agree across targets.
+One artifact carries one entry signature.
 
 Layout: magic, 16, the target names, one module in the sectioned v14 layout
 holding every distinct body (one metadata section, interface, call
@@ -128,7 +132,9 @@ Projects are combined through dependencies, not through a separate
 container: a project's QZI links the code of its `quazi.toml` dependencies
 (recursively) into the same one artifact, which compiles without them.
 Aliasing a compiled library preserves its target-specific bodies and interfaces.
-Interface cache entries are keyed by the content of the selected interface.
+A library whose public interface differs per target is seen through one
+interface whose differing declarations carry `@cfg(target_os = ...)`.
+Interface cache entries are keyed by interface content.
 Format 15, an early container holding one complete program per operating
 system, is retired; reading such a file asks to rebuild it from source.
 

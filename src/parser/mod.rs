@@ -6,6 +6,7 @@ pub mod ast;
 pub mod common;
 pub mod format;
 pub mod items;
+pub mod visit;
 
 use crate::lexer::token::Span as TokenSpan;
 use crate::lexer::token::{Token, TokenKind};

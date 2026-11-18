@@ -1214,15 +1214,20 @@ fn collect_modules(
                         version: module.metadata.version.clone(),
                     })
                 };
-                resolver.insert(spec_for_interface(&module.interface)?)?;
-                if let Some(unified) = unified {
-                    for (index, target) in unified.targets.iter().enumerate() {
-                        let interface = unified.interface_for_target(index);
-                        if interface != module.interface {
-                            resolver.insert_target_interface(target, spec_for_interface(interface)?);
-                        }
+                // A universal QZI may expose a different API per target:
+                // consumers see one interface with conditional declarations.
+                let interface = match &unified {
+                    Some(unified) => {
+                        let targets: Vec<&str> =
+                            unified.targets.iter().map(String::as_str).collect();
+                        let interfaces: Vec<String> = (0..targets.len())
+                            .map(|index| unified.interface_for_target(index).to_string())
+                            .collect();
+                        crate::bytecode::interface::merge_target_interfaces(&targets, &interfaces)?
                     }
-                }
+                    None => module.interface.clone(),
+                };
+                resolver.insert(spec_for_interface(&interface)?)?;
                 qzi_dependencies.push(qzi_path.clone());
                 dep_versions.insert(
                     dep.name.clone(),

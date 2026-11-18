@@ -21,6 +21,8 @@ runtime ABI, ownership invariants, testing, and contribution workflows.
 
 ## Pages
 
+- [Universal QZI: one compilation for every target](universal-qzi.md)
+  — target views, replica source images and unified assembly.
 - [Source result retention](source-result-retention.md)
 - [Portable dynamic vtable layouts](dynamic-vtable-layout.md)
 
