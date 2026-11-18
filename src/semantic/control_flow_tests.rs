@@ -1973,3 +1973,86 @@ fn main() void {}
     });
     assert!(reachable(graph, receiver).contains(&length));
 }
+
+#[test]
+fn source_control_flow_assignment_targets_carry_typed_places() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+fn update(count: i32, index: usize) i32 {
+    var total = 0;
+    total = count;
+    var pair = Pair { left: 0, right: 0 };
+    pair.left += 2;
+    var values: [i32; 3] = [0, 0, 0];
+    values[index] = 3;
+    total++;
+    ret total + pair.left + values[0];
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "update")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let accesses: Vec<(String, OwnershipPlaceAccess, Vec<String>)> = graph
+        .blocks
+        .iter()
+        .flat_map(|block| block.events.iter())
+        .filter_map(|event| match event {
+            OwnershipFlowEvent::PlaceAccess {
+                access,
+                place: OwnershipArgumentValue::Place(place),
+                ..
+            } => Some((
+                place.root.binding.name.clone(),
+                *access,
+                place
+                    .projections
+                    .iter()
+                    .map(|projection| match projection {
+                        OwnershipProjection::Field(name) => format!(".{name}"),
+                        OwnershipProjection::Index(_) => "[]".into(),
+                        OwnershipProjection::Deref { .. } => "*".into(),
+                    })
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    let has = |name: &str, access: OwnershipPlaceAccess, path: &[&str]| {
+        accesses.iter().any(|(root, kind, projections)| {
+            root == name
+                && *kind == access
+                && projections
+                    .iter()
+                    .map(String::as_str)
+                    .eq(path.iter().copied())
+        })
+    };
+    assert!(
+        has("total", OwnershipPlaceAccess::Write, &[]),
+        "{accesses:?}"
+    );
+    assert!(
+        has("pair", OwnershipPlaceAccess::Read, &[".left"]),
+        "{accesses:?}"
+    );
+    assert!(
+        has("pair", OwnershipPlaceAccess::Write, &[".left"]),
+        "{accesses:?}"
+    );
+    assert!(
+        has("values", OwnershipPlaceAccess::Write, &["[]"]),
+        "{accesses:?}"
+    );
+    assert!(
+        has("total", OwnershipPlaceAccess::Read, &[]),
+        "{accesses:?}"
+    );
+}

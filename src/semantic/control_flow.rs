@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 use super::{
-    Analyzer, OwnershipArgumentRole, OwnershipCallArguments, OwnershipResult, SymbolKind,
-    item_should_include, ownership::SourceOwnershipCall,
+    Analyzer, OwnershipArgumentRole, OwnershipArgumentValue, OwnershipCallArguments,
+    OwnershipResult, SymbolKind, item_should_include, ownership::SourceOwnershipCall,
 };
 use crate::cancel::Cancelled;
 use crate::evaluation::{
@@ -128,6 +128,14 @@ pub enum OwnershipFlowEvent {
     IndirectInvoke {
         span: Span,
     },
+    /// The place an assignment or increment target reads or writes: its
+    /// binding root and projections when classifiable. Aliasing, moves and
+    /// destruction of the previous value remain unverified.
+    PlaceAccess {
+        target: Span,
+        access: OwnershipPlaceAccess,
+        place: OwnershipArgumentValue,
+    },
     /// Unknown protocol/storage effects; never a resolved call or effect proof.
     IterationProtocol {
         span: Span,
@@ -219,6 +227,12 @@ pub enum OwnershipExpressionResult {
         value: Option<Span>,
         form: OwnershipPlaceUpdate,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipPlaceAccess {
+    Read,
+    Write,
 }
 
 #[derive(Debug, Clone)]
@@ -635,6 +649,7 @@ struct Builder<'a, 'b, F> {
     closures: Vec<&'a Expr>,
     expansions: &'a FormatExpansions,
     format_requests: Vec<FormatRequest>,
+    target_places: Option<&'b BTreeMap<(usize, usize), OwnershipArgumentValue>>,
     finished: Vec<bool>,
     analyzer: &'b Analyzer,
     sites: Option<&'b BTreeMap<(usize, usize), SourceOwnershipCall>>,
@@ -693,6 +708,7 @@ where
             closures: Vec::new(),
             expansions,
             format_requests: Vec::new(),
+            target_places: analyzer.ownership_target_places.get(caller),
             finished: Vec::new(),
             analyzer,
             sites: analyzer.ownership_call_sites.get(caller),
@@ -903,6 +919,29 @@ where
             pending.push((entry, expression, next));
             next = entry;
         }
+        Ok(())
+    }
+
+    /// Record the typed place `target` is read or written as, in `block`.
+    fn place_access(
+        &mut self,
+        block: usize,
+        target: &Expr,
+        access: OwnershipPlaceAccess,
+    ) -> FlowResult<()> {
+        self.budget.charge(2, target.span)?;
+        let place = self
+            .target_places
+            .and_then(|places| places.get(&(target.span.start, target.span.end)))
+            .cloned()
+            .unwrap_or(OwnershipArgumentValue::Unknown);
+        self.graph.blocks[block]
+            .events
+            .push(OwnershipFlowEvent::PlaceAccess {
+                target: target.span,
+                access,
+                place,
+            });
         Ok(())
     }
 
@@ -1674,6 +1713,7 @@ where
                         normal,
                         scopes,
                     )?;
+                    self.place_access(complete, target, OwnershipPlaceAccess::Write)?;
                     self.budget.charge(3, value.span)?;
                     pending.push((current, value, complete));
                 }
@@ -1695,6 +1735,8 @@ where
                         value_entry,
                         scopes,
                     )?;
+                    self.place_access(read, target, OwnershipPlaceAccess::Read)?;
+                    self.place_access(complete, target, OwnershipPlaceAccess::Write)?;
                     self.terminate(
                         current,
                         OwnershipFlowTerminator::Goto {
@@ -1719,6 +1761,8 @@ where
                                 prefix,
                             },
                         });
+                    self.place_access(current, target, OwnershipPlaceAccess::Read)?;
+                    self.place_access(current, target, OwnershipPlaceAccess::Write)?;
                     self.terminate(
                         current,
                         OwnershipFlowTerminator::Opaque {
@@ -1873,6 +1917,7 @@ where
                         normal,
                         scopes,
                     )?;
+                    self.place_access(complete, target, OwnershipPlaceAccess::Write)?;
                     self.budget
                         .charge(operands.len() * 3 + 6, expression.span)?;
                     // Compound and increment updates read the place after its
@@ -1892,6 +1937,7 @@ where
                             after_operands,
                             scopes,
                         )?;
+                        self.place_access(after_operands, target, OwnershipPlaceAccess::Read)?;
                     }
                     self.schedule_sequence(
                         &mut pending,

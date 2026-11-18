@@ -89,6 +89,14 @@ graph does not distinguish place from value reads, and bounds, overflow and
 store effects are unmodeled. `check_expression_control.py` checks the runtime
 order. Multi-index targets stay opaque.
 
+Each read and write of an assignment or increment target also records a
+`PlaceAccess` event (`Read` or `Write`) in the block where it happens. Its
+place comes from the same classifier as call-argument snapshots (binding
+root, storage and field/deref/builtin-index projections), recorded per
+callable during argument-place recording; a target it cannot classify is
+`Unknown`. These are the first typed read/write facts in the graph; aliasing,
+moves and destruction of a previous value remain unverified.
+
 An exposed `?` evaluates its operand once and branches on `TrySuccess`, a wrapper
 success-discriminant condition distinct from ordinary pointer truthiness.
 Success records payload extraction; failure returns from the current callable

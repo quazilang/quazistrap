@@ -16,6 +16,8 @@ pub(super) const MAX_GRAPH_ARGUMENT_NODES: usize = 1_000_000;
 
 type BindingKey = (usize, usize, String);
 type ArgumentFacts = BTreeMap<(usize, usize), OwnershipCallArguments>;
+/// Places of assignment and increment targets, keyed by target span.
+type TargetFacts = BTreeMap<(usize, usize), OwnershipArgumentValue>;
 
 struct BindingInfo<'a> {
     ty: Option<&'a TypeKind>,
@@ -160,9 +162,9 @@ impl Analyzer {
                 {
                     continue;
                 }
-                let Some(sites) = self.ownership_call_sites.get(&caller) else {
-                    continue;
-                };
+                // Bodies without calls still record their assignment targets.
+                let no_sites = BTreeMap::new();
+                let sites = self.ownership_call_sites.get(&caller).unwrap_or(&no_sites);
                 let builder = Places {
                     analyzer: self,
                     bindings: &bindings,
@@ -173,8 +175,8 @@ impl Analyzer {
                         .collect(),
                     binders: self.generic_params_for_function(&caller),
                 };
-                let (facts, overflow) = builder.body(body, sites, checkpoint)?;
-                collected.push((caller, facts));
+                let (facts, target_places, overflow) = builder.body(body, sites, checkpoint)?;
+                collected.push((caller, facts, target_places));
                 if let Some(span) = overflow {
                     overflows.push(span);
                 }
@@ -182,8 +184,10 @@ impl Analyzer {
         }
         checkpoint()?;
         // All snapshots were derived before mutating the source-site registry.
-        for (caller, facts) in collected {
+        for (caller, facts, target_places) in collected {
             checkpoint()?;
+            self.ownership_target_places
+                .insert(caller.clone(), target_places);
             if let Some(sites) = self.ownership_call_sites.get_mut(&caller) {
                 for (span, arguments) in facts {
                     if let Some(site) = sites.get_mut(&span) {
@@ -391,7 +395,7 @@ impl Places<'_> {
         body: &Block,
         sites: &BTreeMap<(usize, usize), super::ownership::SourceOwnershipCall>,
         checkpoint: &mut F,
-    ) -> Result<(ArgumentFacts, Option<Span>), Cancelled>
+    ) -> Result<(ArgumentFacts, TargetFacts, Option<Span>), Cancelled>
     where
         F: FnMut() -> Result<(), Cancelled>,
     {
@@ -403,17 +407,18 @@ impl Places<'_> {
             .collect::<Vec<_>>();
         let mut closures = Vec::new();
         let mut facts = BTreeMap::new();
+        let mut targets = BTreeMap::new();
         let mut nodes = 0;
         while let Some(visit) = pending.pop() {
             checkpoint()?;
             nodes += 1;
             if nodes > MAX_BODY_NODES {
-                return Ok((facts, Some(body.span)));
+                return Ok((facts, targets, Some(body.span)));
             }
             match visit {
                 Visit::Closure(expr) => {
                     if closures.len() >= MAX_PLACE_DEPTH {
-                        return Ok((facts, Some(expr.span)));
+                        return Ok((facts, targets, Some(expr.span)));
                     }
                     closures.push(expr.span);
                 }
@@ -488,13 +493,26 @@ impl Places<'_> {
                     _ => {}
                 },
                 Visit::Expression(expr) => {
+                    // The place an assignment or increment writes.
+                    if let ExprKind::Assign { target, .. }
+                    | ExprKind::CompoundAssign { target, .. }
+                    | ExprKind::IncDec { expr: target, .. } = &expr.node
+                    {
+                        let mut overflow = false;
+                        let place = self.place(target, 0, &mut overflow);
+                        nodes += 1;
+                        if overflow {
+                            return Ok((facts, targets, Some(target.span)));
+                        }
+                        targets.insert((target.span.start, target.span.end), place);
+                    }
                     let key = (expr.span.start, expr.span.end);
                     if let Some(site) = sites.get(&key) {
                         let (arguments, overflow) =
                             self.arguments(expr, site, &closures, checkpoint)?;
                         nodes = nodes.saturating_add(argument_cost(&arguments, true));
                         if overflow || nodes > MAX_BODY_NODES {
-                            return Ok((facts, Some(expr.span)));
+                            return Ok((facts, targets, Some(expr.span)));
                         }
                         facts.insert(key, arguments);
                     }
@@ -575,7 +593,7 @@ impl Places<'_> {
                 }
             }
         }
-        Ok((facts, None))
+        Ok((facts, targets, None))
     }
 
     fn arguments<F>(

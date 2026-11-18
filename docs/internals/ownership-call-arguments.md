@@ -47,6 +47,12 @@ under concrete caller substitutions. Global types have no caller binders, so a
 caller's generic `T` cannot capture a globally declared alias `T`. Storage type
 is retained separately from automatic value reads.
 
+## Assignment targets
+
+The same walk records the place of every assignment, compound assignment and
+increment target, keyed by caller and target span, including bodies without
+calls. The source control-flow graph attaches it to its `PlaceAccess` events.
+
 ## Resource and cancellation contract
 
 The source walk is iterative and polls cancellation for each visit. Each body
