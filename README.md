@@ -57,6 +57,8 @@ ordinary direct invocation after evaluating arguments in declaration order.
 Propagation can skip later arguments and the invocation.
 Functions and closures keep their call identity when an enum variant has the
 same name. QZC36 rebuilds older cached calls.
+Layout intrinsics use their resolved declaration. QZC37 rebuilds calls to
+ordinary functions named `size_of` or `align_of`.
 QZI builds compile once for every supported target: one load, one analysis
 and one bytecode pass produce the format-16 artifact directly, without
 per-target builds or a merge ([contract](docs/internals/qzi.md)).
@@ -295,7 +297,7 @@ retaining the discovered package identity in `quazi.lock`; no separate
 then validates it against downloaded package metadata. Git `--version` accepts
 a tag, commit hash, or `latest`.
 
-Project builds use QZC v36 at `build/quazi/<target>/<artifact>/incremental.qzc`.
+Project builds use QZC v37 at `build/quazi/<target>/<artifact>/incremental.qzc`.
 Exact hits reuse linked QZI; partial hits restore unchanged pre-WPO functions,
 compile changed files, and rerun full WPO. Progress reports hit/partial/miss,
 restored/compiled function counts, and cache writes.

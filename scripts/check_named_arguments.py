@@ -10,6 +10,7 @@ from pathlib import Path
 
 SOURCE = """import helpers;
 import helpers.digits as imported;
+import helpers.slot_width as actual_slot_width;
 fn digits(second: i32, first: i32) i32 { ret second; }
 struct Shared { value: i32 }
 impl Shared {
@@ -60,6 +61,12 @@ fn forward[T](value: T) i32 {
 fn formatted(first: str, ...rest: str) i32 { ret first.len() as i32; }
 enum Choice { Pick }
 fn Pick() i32 { ret 7; }
+fn align_of() i32 { ret 7; }
+fn size_of[T](value: T) T { ret value; }
+fn relay[T](value: T) T { ret size_of[T](value); }
+@intrinsic("quazi.align_of") fn slot_alignment[T]() usize;
+@intrinsic("quazi.size_of") fn slot_width_with_argument[T](value: i32) usize;
+fn set_marker(marker: &i32!) i32 { *marker = 7; ret 0; }
 fn main() i32 {
     var shared = Shared { value: 0 };
     if shared.digits(1, 2) != 12 { ret 1; }
@@ -96,12 +103,23 @@ fn main() i32 {
     if Pick() != 7 { ret 25; }
     const Pick: fn() i32 = || 8;
     if Pick() != 8 { ret 26; }
+    if align_of() != 7 { ret 27; }
+    if relay[i32](21) != 21 { ret 28; }
+    if helpers.slot_width[i32]() != 8 { ret 29; }
+    if actual_slot_width[i32]() != 8 { ret 30; }
+    if slot_alignment[i32]() != 8 { ret 31; }
+    const slot_alignment: fn() usize = || 19 as usize;
+    if slot_alignment() != 19 { ret 32; }
+    var marker: i32 = 0;
+    if slot_width_with_argument[i32](set_marker(&marker!)) != 8 { ret 33; }
+    if marker != 7 { ret 34; }
     ret 0;
 }
 """
 
 HELPERS = """pub fn digits(first: i32, second: i32) i32 { ret first * 10 + second; }
 pub fn generic[T](first: i32, second: i32) i32 { ret first * 10 + second; }
+@intrinsic("quazi.size_of") pub fn slot_width[T]() usize;
 """
 
 

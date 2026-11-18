@@ -267,6 +267,7 @@ pub struct Codegen<'a> {
     str_variadic_fns: HashSet<String>,
     /// Variadic @intrinsic functions: call with coerced args directly (no pre-format step).
     variadic_intrinsic_fns: HashSet<String>,
+    layout_intrinsics: HashMap<String, &'static str>,
     /// Resolved Quazi function name -> portable C import description.
     foreign_imports: HashMap<String, ForeignSymbol>,
     /// Resolved Quazi function name -> portable C export description.
@@ -421,6 +422,7 @@ impl<'a> Codegen<'a> {
             variadic_fn_info,
             str_variadic_fns: HashSet::new(),
             variadic_intrinsic_fns: HashSet::new(),
+            layout_intrinsics: HashMap::new(),
             foreign_imports: HashMap::new(),
             foreign_exports: HashMap::new(),
             source_files: Vec::new(),
@@ -764,6 +766,7 @@ impl<'a> Codegen<'a> {
         }
         // Pre-pass: collect str_variadic fns, variadic @intrinsic, and @panic_handler names.
         let mut user_panic_handler: Option<String> = None;
+        self.layout_intrinsics.clear();
         for item in &program.items {
             // Skip @cfg-disabled items.
             if let ItemKind::Fn { attributes, .. } = &item.node
@@ -780,6 +783,13 @@ impl<'a> Codegen<'a> {
                 } => {
                     let has_str_variadic_param = crate::parser::format::is_format_variadic(params, attributes);
                     let resolved_name = self.resolve_item_name(item.span, name, attributes);
+                    if let Some(intrinsic) = layout_intrinsic_declared_by(attributes) {
+                        let analysis_name = self.analysis_fn_name(item.span, name);
+                        if resolved_name != analysis_name {
+                            self.layout_intrinsics.insert(analysis_name, intrinsic);
+                        }
+                        self.layout_intrinsics.insert(resolved_name.clone(), intrinsic);
+                    }
                     if has_str_variadic_param {
                         self.str_variadic_fns.insert(resolved_name.clone());
                     }
@@ -806,6 +816,11 @@ impl<'a> Codegen<'a> {
                         {
                             let has_str_var =
                                 crate::parser::format::is_format_variadic(params, attributes);
+                            if let Some(intrinsic) = layout_intrinsic_declared_by(attributes)
+                                && item_cfg_active(attributes)
+                            {
+                                self.layout_intrinsics.insert(format!("{type_name}.{name}"), intrinsic);
+                            }
                             if has_str_var {
                                 self.str_variadic_fns
                                     .insert(format!("{}.{}", type_name, name));
@@ -1068,7 +1083,7 @@ impl<'a> Codegen<'a> {
 
         // Index monomorphized specializations.
         for mono in &self.report.monomorphizations {
-            if is_unresolved_layout_intrinsic_mono(mono) {
+            if is_unresolved_layout_intrinsic_mono(mono, &self.layout_intrinsics) {
                 continue;
             }
             let mono_name = &mono.mangled_name;
@@ -1288,7 +1303,7 @@ impl<'a> Codegen<'a> {
         // Compile monomorphized specializations (top-level fns and impl methods).
         let monos: Vec<_> = self.report.monomorphizations.clone();
         for mono in &monos {
-            if is_unresolved_layout_intrinsic_mono(mono) {
+            if is_unresolved_layout_intrinsic_mono(mono, &self.layout_intrinsics) {
                 continue;
             }
             let mono_name = &mono.mangled_name;
@@ -2160,6 +2175,7 @@ impl<'a> Codegen<'a> {
             &self.report.consuming_receiver_methods,
             &self.str_variadic_fns,
             &self.variadic_intrinsic_fns,
+            &self.layout_intrinsics,
             &self.report.monomorphizations,
             &self.fn_value_layouts,
             &self.report.trait_method_slots,
@@ -2681,6 +2697,7 @@ struct FnCompiler<'a> {
     str_variadic_fns: &'a HashSet<String>,
     /// Variadic @intrinsic functions: coerce args and call directly.
     variadic_intrinsic_fns: &'a HashSet<String>,
+    layout_intrinsics: &'a HashMap<String, &'static str>,
     /// Monomorphization info: used to resolve mangled names for generic calls.
     monomorphizations: &'a [crate::semantic::MonomorphizationInfo],
     /// Recorded internal-ABI layouts: used to size parameter blocks at call sites.
@@ -2903,6 +2920,7 @@ impl<'a> FnCompiler<'a> {
         consuming_receiver_methods: &'a HashSet<String>,
         str_variadic_fns: &'a HashSet<String>,
         variadic_intrinsic_fns: &'a HashSet<String>,
+        layout_intrinsics: &'a HashMap<String, &'static str>,
         monomorphizations: &'a [crate::semantic::MonomorphizationInfo],
         fn_value_layouts: &'a HashMap<String, crate::runtime_layout::FnValueLayout>,
         trait_method_slots: &'a HashMap<String, Vec<String>>,
@@ -2963,6 +2981,7 @@ impl<'a> FnCompiler<'a> {
             consuming_receiver_methods,
             str_variadic_fns,
             variadic_intrinsic_fns,
+            layout_intrinsics,
             monomorphizations,
             fn_value_layouts,
             trait_method_slots,
@@ -3687,11 +3706,7 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn layout_intrinsic_call_value(&mut self, fn_name: &str, type_args: &[Type]) -> Option<usize> {
-        let intrinsic = match fn_name.rsplit('.').next().unwrap_or(fn_name) {
-            "size_of" => "quazi.size_of",
-            "align_of" => "quazi.align_of",
-            _ => return None,
-        };
+        let intrinsic = *self.layout_intrinsics.get(fn_name)?;
         if type_args.len() != 1 {
             self.codegen_error.get_or_insert_with(|| {
                 format!("layout intrinsic `{intrinsic}` requires exactly one type argument")
@@ -9531,9 +9546,8 @@ impl<'a> FnCompiler<'a> {
                 let dst = self.alloc_reg();
                 if let ExprKind::Ident(name) = &callee.node {
                     // Use the sema-resolved name when available (handles namespacing).
-                    let call_name = self
-                        .resolved_fn_for_span(expr.span)
-                        .unwrap_or_else(|| name.clone());
+                    let resolved_call = self.resolved_fn_for_span(expr.span);
+                    let call_name = resolved_call.as_ref().unwrap_or(name);
                     // Merge positional + named args into correct param order if needed.
                     let merged_owned: Vec<Expr>;
                     let args: &[Expr] = if named_args.is_empty() {
@@ -9548,10 +9562,13 @@ impl<'a> FnCompiler<'a> {
                         };
                         &merged_owned
                     };
-                    if self.emit_c_variadic_call(&call_name, args, dst) {
+                    if self.emit_c_variadic_call(call_name, args, dst) {
                         return dst;
                     }
-                    if let Some(value) = self.layout_intrinsic_call_value(&call_name, type_args) {
+                    if args.is_empty()
+                        && let Some(resolved) = resolved_call.as_deref()
+                        && let Some(value) = self.layout_intrinsic_call_value(resolved, type_args)
+                    {
                         self.emit_usize_constant(dst, value);
                         return dst;
                     }
@@ -9611,7 +9628,7 @@ impl<'a> FnCompiler<'a> {
                         let (r_ptr, r_len) = self.pack_variadic_block(&extra);
                         call_regs.push(r_ptr);
                         call_regs.push(r_len);
-                        self.emit_call_by_name(&call_name, &call_regs, dst);
+                        self.emit_call_by_name(call_name, &call_regs, dst);
                         return dst;
                     }
                     // Monomorphized generic function: resolve to mangled name,
@@ -9625,7 +9642,7 @@ impl<'a> FnCompiler<'a> {
                     };
                     if !type_args.is_empty() {
                         let Some(mono_name) =
-                            self.require_monomorphized_name(&call_name, type_args)
+                            self.require_monomorphized_name(call_name, type_args)
                         else {
                             return dst;
                         };
@@ -9641,7 +9658,7 @@ impl<'a> FnCompiler<'a> {
                         return result_dst;
                     }
                     if call_name == "fmt.format" {
-                        return self.compile_variadic_call(&call_name, args);
+                        return self.compile_variadic_call(call_name, args);
                     }
                     // str_variadic dispatch: auto-coerce args to str at call sites.
                     if self.str_variadic_fns.contains(call_name.as_str()) && !args.is_empty() {
@@ -9663,20 +9680,20 @@ impl<'a> FnCompiler<'a> {
                             self.begin_format_scratch(true);
                             let coerced_var =
                                 self.compile_format_arguments(&expanded.args, &expanded.specs);
-                            self.emit_display_call(&call_name, None, template_reg, &coerced_var, dst);
+                            self.emit_display_call(call_name, None, template_reg, &coerced_var, dst);
                             self.end_format_scratch();
                             return dst;
                         }
                     }
                     if self.str_variadic_fns.contains(call_name.as_str()) && !args.is_empty() {
                         return self
-                            .compile_runtime_format_wrapper(&call_name, args, expr.span, None);
+                            .compile_runtime_format_wrapper(call_name, args, expr.span, None);
                     }
                     if self.variadic_info_for(call_name.as_str()).is_some() {
-                        return self.compile_variadic_call(&call_name, args);
-                    } else if !self.fn_index.contains_key(&call_name)
-                        && !self.regs.contains_key(&call_name)
-                        && let Some(tag) = self.enum_ctor_tag(&call_name, self.type_of_expr(expr))
+                        return self.compile_variadic_call(call_name, args);
+                    } else if !self.fn_index.contains_key(call_name)
+                        && !self.regs.contains_key(call_name)
+                        && let Some(tag) = self.enum_ctor_tag(call_name, self.type_of_expr(expr))
                     {
                         // Enum variant constructor: allocate heap struct, store discriminant + payloads.
                         let payload_regs: Vec<u8> = args
@@ -9734,8 +9751,8 @@ impl<'a> FnCompiler<'a> {
                                 self.compile_value(a)
                             })
                             .collect();
-                        let result_dst = self.alloc_result_block(&call_name);
-                        self.emit_source_call_by_name(&call_name, &arg_regs, args, result_dst);
+                        let result_dst = self.alloc_result_block(call_name);
+                        self.emit_source_call_by_name(call_name, &arg_regs, args, result_dst);
                         return result_dst;
                     }
                 } else {
@@ -9798,12 +9815,16 @@ impl<'a> FnCompiler<'a> {
                     let dst = self.alloc_reg();
                     // Use sema-resolved name when available; otherwise form the target from
                     // the module chain. The resolved name already accounts for namespacing.
+                    let is_resolved = resolved_module_call.is_some();
                     let mut call_target = resolved_module_call
                         .unwrap_or_else(|| format!("{}.{}", module_base, method));
                     if self.emit_c_variadic_call(&call_target, args, dst) {
                         return dst;
                     }
-                    if let Some(value) = self.layout_intrinsic_call_value(&call_target, type_args) {
+                    if args.is_empty()
+                        && is_resolved
+                        && let Some(value) = self.layout_intrinsic_call_value(&call_target, type_args)
+                    {
                         self.emit_usize_constant(dst, value);
                         return dst;
                     }
@@ -10863,6 +10884,7 @@ impl<'a> FnCompiler<'a> {
                     self.consuming_receiver_methods,
                     self.str_variadic_fns,
                     self.variadic_intrinsic_fns,
+                    self.layout_intrinsics,
                     self.monomorphizations,
                     self.fn_value_layouts,
                     self.trait_method_slots,
@@ -10997,6 +11019,7 @@ impl<'a> FnCompiler<'a> {
                     self.consuming_receiver_methods,
                     self.str_variadic_fns,
                     self.variadic_intrinsic_fns,
+                    self.layout_intrinsics,
                     self.monomorphizations,
                     self.fn_value_layouts,
                     self.trait_method_slots,
@@ -11296,14 +11319,24 @@ fn type_contains_unrepresentable_runtime_type(ty: &TypeKind) -> bool {
     }
 }
 
-fn is_unresolved_layout_intrinsic_mono(mono: &crate::semantic::MonomorphizationInfo) -> bool {
-    matches!(
-        mono.fn_name.rsplit('.').next(),
-        Some("size_of" | "align_of")
-    ) && mono
-        .type_args
-        .iter()
-        .any(type_kind_mentions_unresolved_param)
+fn layout_intrinsic_declared_by(attributes: &[Attribute]) -> Option<&'static str> {
+    let attr = attributes.iter().find(|attr| attr.name == "intrinsic")?;
+    match attr.args.first()? {
+        AttrArg::Positional(AttrVal::Str(value)) => match value.as_str() {
+            "quazi.size_of" => Some("quazi.size_of"),
+            "quazi.align_of" => Some("quazi.align_of"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn is_unresolved_layout_intrinsic_mono(
+    mono: &crate::semantic::MonomorphizationInfo,
+    layout_intrinsics: &HashMap<String, &'static str>,
+) -> bool {
+    layout_intrinsics.contains_key(&mono.fn_name)
+        && mono.type_args.iter().any(type_kind_mentions_unresolved_param)
 }
 
 fn type_kind_mentions_unresolved_param(ty: &TypeKind) -> bool {

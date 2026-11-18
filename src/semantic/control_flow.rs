@@ -747,7 +747,7 @@ where
             || signature.result == OwnershipResult::Never
             || symbol.unsafe_fn
             // These spellings still have a separate dispatch path in lowering.
-            || matches!(name.rsplit('.').next(), Some("panic" | "size_of" | "align_of"))
+            || name.rsplit('.').next() == Some("panic")
             || name == "fmt.format"
             || symbol.attributes.iter().any(|attr| matches!(
                 attr.as_str(), "api" | "intrinsic" | "syscall" | "str_variadic"

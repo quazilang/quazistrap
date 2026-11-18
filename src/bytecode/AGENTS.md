@@ -65,7 +65,7 @@ matching artifact ownership boundary.
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. Current source cache is QZC36. QZC30 required defining-source
+  and reserialization. Current source cache is QZC37. QZC30 required defining-source
   alias bodies. QZC29 introduced checked runtime String identity/layout.
   QZC28 introduced typed power; v27 operator requirements;
   v26 arithmetic requirements; v25 numeric mutations; v24 raw f32 conversion and
@@ -211,6 +211,7 @@ content-bound ownership-artifact envelope.
 
 - `INTRINSIC_MAP` HashMap; array ops via `INTRINSIC_OPCODE_MAP` HashMap.
 - `quazi.size_of[T]()` and `quazi.align_of[T]()` are generic layout intrinsics.
+  Call lowering identifies them by a resolved `@intrinsic` declaration.
   Codegen resolves their single concrete type argument during monomorphization
   and emits a constant, so native backends should not see their intrinsic IDs in
   executable chunks.

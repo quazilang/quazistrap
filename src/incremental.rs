@@ -12,8 +12,8 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Rebuild call sites that could dispatch to a same-named enum variant.
-const QZC_VERSION: u8 = 36;
+// Rebuild layout-query calls lowered from a function's spelling.
+const QZC_VERSION: u8 = 37;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {
