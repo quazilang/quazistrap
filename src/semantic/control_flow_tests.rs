@@ -1562,3 +1562,53 @@ fn main() void {}
     assert!(!reachable(graph, second).contains(&first));
     assert!(reachable(graph, second).contains(&pick));
 }
+
+#[test]
+fn source_control_flow_diverging_and_unsafe_calls_are_scheduled() {
+    let source = r#"
+fn fail(code: i32) ! { fail(code) }
+unsafe fn raw(value: i32) i32 { ret value; }
+fn later() i32 { ret 2; }
+fn after(value: i32) void {}
+fn check(flag: bool) i32 {
+    var value: i32 = 0;
+    unsafe { value = raw(later()); }
+    if flag { fail(later()); }
+    after(value);
+    ret value;
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "check")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let invoke = |needle: &str| {
+        let start = source.find(needle).unwrap();
+        graph
+            .blocks
+            .iter()
+            .position(|block| {
+                block.events.iter().any(
+                    |event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == start),
+                )
+            })
+            .unwrap_or_else(|| panic!("missing invoke {needle}"))
+    };
+    invoke("raw(later())");
+    let fail = invoke("fail(later())");
+    // A `!` callee ends its path: nothing after the call is reachable from it.
+    assert!(matches!(
+        graph.blocks[fail].terminator,
+        OwnershipFlowTerminator::Stop { .. }
+    ));
+    let after = statement_block(graph, source, "after(value)");
+    assert!(!reachable(graph, fail).contains(&after));
+    graph.validate().unwrap();
+}

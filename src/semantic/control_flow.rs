@@ -937,6 +937,16 @@ where
         .then_some(arguments)
     }
 
+    /// Whether the resolved callee at this call site has the never type `!`:
+    /// its invocation has no normal continuation.
+    fn call_diverges(&self, expression: &Expr) -> bool {
+        self.sites
+            .and_then(|sites| sites.get(&(expression.span.start, expression.span.end)))
+            .and_then(|site| site.target.as_ref())
+            .and_then(|(name, _)| self.analyzer.ownership_signature_index.get(name))
+            .is_some_and(|signature| signature.result == OwnershipResult::Never)
+    }
+
     /// Argument facts for a resolved source-bodied call whose lowering follows
     /// the ordinary schedule. `receiver` selects methods or plain functions.
     fn scheduled_call_site(
@@ -951,8 +961,6 @@ where
         if !signature.has_body
             || signature.receiver.is_some() != receiver
             || signature.variadic.is_some()
-            || signature.result == OwnershipResult::Never
-            || symbol.unsafe_fn
             // These spellings still have a separate dispatch path in lowering.
             || self.analyzer.is_runtime_panic(&symbol)
             || name == "fmt.format"
@@ -1078,11 +1086,18 @@ where
                         self.graph.blocks[invocation]
                             .events
                             .push(OwnershipFlowEvent::Invoke { span });
-                        self.terminate(
-                            invocation,
-                            OwnershipFlowTerminator::Opaque { normal, early_return: None },
-                            span,
-                        )?;
+                        // A callee of type `!` never returns to this path.
+                        let after_call = if self.call_diverges(expression) {
+                            OwnershipFlowTerminator::Stop {
+                                exited_scopes: scopes.iter().rev().copied().collect(),
+                            }
+                        } else {
+                            OwnershipFlowTerminator::Opaque {
+                                normal,
+                                early_return: None,
+                            }
+                        };
+                        self.terminate(invocation, after_call, span)?;
                         self.schedule_sequence(
                             &mut pending,
                             current,
