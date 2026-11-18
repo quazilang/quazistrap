@@ -25,6 +25,8 @@ fn larger(a: &Inner, b: &Inner) &Inner {
     ret b;
 }
 fn total(p: &Point) i32 { ret p.y + p.inner.value; }
+impl AsRef[String] for Point { fn as_ref(self: &Point) &String { ret &self.inner.label; } }
+fn length[S: AsRef[String]](value: &S) usize { ret value.as_ref().len(); }
 impl Inner { fn label(self: &Inner) &String { ret &self.label; } }
 fn chained(p: &Point) &String { ret p.inner_ref().label(); }
 fn passed(p: &Point) &String { ret larger(&p.inner, &p.inner).label(); }
@@ -49,10 +51,18 @@ fn main() i32 {
     const copied: i32 = *k;
     point.y = copied + 1;
     println("{}", point.y);
+    // Array.get_ref (D-015) and AsRef (D-025): borrowed views of owners.
+    var names: Array[String] = Array.new();
+    names.push(String.from("alpha"));
+    names.push(String.from("beta"));
+    const second = names.get_ref(1);
+    println("{} {}", second.len(), length(&point.inner.label));
+    names.push(String.from("gamma"));
+    println("{} {}", names.len(), length(&point));
     ret 0;
 }
 """
-EXPECTED = "2 5 other 2\n5 3\nfirst first\n5\nfirst 7\n9\n"
+EXPECTED = "2 5 other 2\n5 3\nfirst first\n5\nfirst 7\n9\n4 5\n3 5\n"
 
 INVALID = [
     ("struct P { y: i32 } fn f(p: P) &i32 { ret &p.y; } fn main() void {}",
@@ -91,6 +101,21 @@ INVALID = [
     ("import std.io;\nfn main() void { var owner = \"first {1}\"; var v: str = \"\";\n"
      "for i : 0..2 { owner = \"replacement {i}\"; io.println(v); v = owner.as_str(); } }",
      "cannot mutate `owner` while it is shared-borrowed"),
+    ("fn main() i32 { var names: Array[String] = Array.new(); names.push(String.from(\"a\"));\n"
+     "const first = names.get_ref(0); names.push(String.from(\"b\")); ret first.len() as i32; }",
+     "cannot mutate `names` while it is shared-borrowed"),
+    ("struct Num { n: i32, } impl AsRef[i32] for Num { fn as_ref(self: &Num) &i32 { ret &self.n; } }\n"
+     "fn length[S: AsRef[String]](value: &S) usize { ret value.as_ref().len(); }\n"
+     "fn main() i32 { const n = Num { n: 3 }; ret length(&n) as i32; }",
+     "`Num` does not implement `AsRef[String]`"),
+    # A view stored through a local `&arr!` keeps `s` borrowed for `arr`.
+    ("import std.io;\nfn main() i32 { var arr: Array[str] = Array.new(); var s = String.from(\"hello\");\n"
+     "const r = &arr!; r.push(s.as_str()); s = String.from(\"X\"); io.println(arr.get(0)); ret 0; }",
+     "cannot mutate `s` while it is shared-borrowed"),
+    # A generic AsRef impl is matched with its parameters substituted.
+    ("fn first[T, S: AsRef[Array[T]]](v: &S, hint: T) &T { ret v.as_ref().get_ref(0); }\n"
+     "fn main() i32 { var a: Array[i64] = Array.new(); a.push(4); const r = first(&a, String.from(\"x\")); ret r.len() as i32; }",
+     "does not implement `AsRef[Array[String]]`"),
     # Exclusive access may not be minted through a shared reference.
     ("struct S { y: i32 } fn poke(p: &S) void { const q = &p.y!; *q = 99; }\n"
      "fn main() i32 { const a = S { y: 1 }; poke(&a); ret a.y; }",

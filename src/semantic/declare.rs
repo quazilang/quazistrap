@@ -660,10 +660,15 @@ impl Analyzer {
                 let type_name = type_kind_base_name(&for_ty.node);
                 if let Some(t) = trait_ty {
                     let trait_name = type_kind_base_name(&t.node);
-                    self.trait_impls
-                        .entry(type_name.clone())
-                        .or_default()
-                        .insert(trait_name);
+                    let implemented = self.trait_impls.entry(type_name.clone()).or_default();
+                    implemented.insert(trait_name);
+                    // A generic trait impl (`impl AsRef[Array[T]] for Array[T]`)
+                    // is matched structurally against instantiated bounds.
+                    if let TypeKind::Named { type_args, .. } = &t.node
+                        && !type_args.is_empty()
+                    {
+                        self.generic_trait_impls.push((type_name.clone(), for_ty.node.clone(), t.node.clone()));
+                    }
                 }
                 for method in methods {
                     if let ItemKind::Fn {

@@ -236,22 +236,34 @@ impl MoveEnv {
         before: &BTreeMap<(BindingId, bool), (String, Span)>,
         depth: usize,
     ) {
+        // Only locals a statement can store a reference or view into become
+        // holders: those it declares or assigns, method receivers (which may
+        // keep an argument) and `&x!` operands. Plain reads cannot.
+        let mut read_names = Vec::new();
+        collect_stmt_identifiers(stmt, &mut read_names);
+        // A call through a function value is an opaque boundary (D-014).
+        let opaque = read_names.iter().any(|name| {
+            self.lookup(name).is_some_and(|var| {
+                var.ty.as_ref().is_some_and(|ty| matches!(ty, TypeKind::Fn { .. } | TypeKind::CFn { .. }))
+            })
+        });
+        let read: BTreeSet<BindingId> = read_names
+            .iter()
+            .filter_map(|name| self.lookup(name).map(|var| var.binding))
+            .collect();
         let mut names = Vec::new();
-        collect_stmt_identifiers(stmt, &mut names);
+        collect_stmt_sinks(stmt, &mut names);
         // Holders are identified by binding, so a shadowing declaration in a
         // nested block never stands in for them. A mention resolves to the
         // binding visible after the statement; a scalar cannot carry a
         // reference or a view.
         let mut mentioned: BTreeSet<(BindingId, String)> = BTreeSet::new();
-        let mut opaque = false;
+        let mut reference_sinks: BTreeSet<BindingId> = BTreeSet::new();
         for name in names {
             let Some(var) = self.lookup(&name) else {
                 continue;
             };
             let ty = var.ty.as_ref();
-            if ty.is_some_and(|ty| matches!(ty, TypeKind::Fn { .. } | TypeKind::CFn { .. })) {
-                opaque = true;
-            }
             let scalar = ty.is_some_and(|ty| {
                 matches!(
                     ty,
@@ -262,10 +274,30 @@ impl MoveEnv {
                 )
             });
             if !scalar {
+                if ty.is_some_and(|ty| matches!(ty, TypeKind::Ref { .. } | TypeKind::MutRef { .. })) {
+                    reference_sinks.insert(var.binding);
+                }
                 mentioned.insert((var.binding, name));
             }
         }
         let now = self.loan_snapshot();
+        // Storing through a reference (`r.push(view)` with `r = &arr!`) stores
+        // into its referent: the roots a reference sink borrows become sinks
+        // too, until no new root appears.
+        loop {
+            let mut added = false;
+            for (key, (root, _)) in &now {
+                let reached = self.loan_holders.get(key).is_some_and(|holders| {
+                    holders.iter().any(|(holder, _)| reference_sinks.contains(holder))
+                });
+                if reached && mentioned.insert((key.0, root.clone())) {
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
         for (key, (_, at)) in &now {
             let fresh = before.get(key).is_none_or(|(_, previous)| previous != at);
             // A call through a function value is an opaque boundary (D-014):
@@ -279,7 +311,7 @@ impl MoveEnv {
             if fresh {
                 self.loan_holders.insert(*key, holders);
             } else if let Some(existing) = self.loan_holders.get_mut(key)
-                && mentioned.iter().any(|(binding, _)| {
+                && read.iter().any(|binding| {
                     *binding == key.0 || existing.iter().any(|(holder, _)| holder == binding)
                 })
             {
@@ -3943,6 +3975,161 @@ fn collect_stmt_identifiers(stmt: &Stmt, names: &mut Vec<String>) {
             block(body, names);
         }
         StmtKind::ExprStmt(value) => expr(value, names),
+        StmtKind::CfgBlock { body, .. } | StmtKind::UnsafeBlock { body } => block(body, names),
+        StmtKind::Break | StmtKind::Continue => {}
+    }
+}
+
+/// The locals a statement may store a value into: declared bindings,
+/// assignment targets, method receivers and `&x!` operands (roots only).
+fn collect_stmt_sinks(stmt: &Stmt, names: &mut Vec<String>) {
+    fn root(expr: &Expr) -> Option<&str> {
+        match &expr.node {
+            ExprKind::Ident(name) => Some(name),
+            ExprKind::Field { object, .. }
+            | ExprKind::Index { object, .. }
+            | ExprKind::Group(object)
+            | ExprKind::Unary { expr: object, .. } => root(object),
+            _ => None,
+        }
+    }
+    fn expr_sinks(expr: &Expr, names: &mut Vec<String>) {
+        match &expr.node {
+            ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
+                if let Some(name) = root(target) {
+                    names.push(name.to_string());
+                }
+                expr_sinks(target, names);
+                expr_sinks(value, names);
+            }
+            ExprKind::MethodCall { object, args, named_args, .. } => {
+                if let Some(name) = root(object) {
+                    names.push(name.to_string());
+                }
+                expr_sinks(object, names);
+                for argument in args.iter().chain(named_args.iter().map(|(_, value)| value)) {
+                    expr_sinks(argument, names);
+                }
+            }
+            ExprKind::Unary { op: UnaryOpKind::RefMut, expr: inner } => {
+                if let Some(name) = root(inner) {
+                    names.push(name.to_string());
+                }
+                expr_sinks(inner, names);
+            }
+            ExprKind::Call { callee, args, named_args, .. } => {
+                expr_sinks(callee, names);
+                for argument in args.iter().chain(named_args.iter().map(|(_, value)| value)) {
+                    expr_sinks(argument, names);
+                }
+            }
+            ExprKind::Group(inner)
+            | ExprKind::Spread(inner)
+            | ExprKind::Unary { expr: inner, .. }
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::IncDec { expr: inner, .. }
+            | ExprKind::Try { expr: inner } => expr_sinks(inner, names),
+            ExprKind::Binary { left, right, .. } => {
+                expr_sinks(left, names);
+                expr_sinks(right, names);
+            }
+            ExprKind::Field { object, .. } => expr_sinks(object, names),
+            ExprKind::Index { object, indices } => {
+                expr_sinks(object, names);
+                for index in indices {
+                    expr_sinks(index, names);
+                }
+            }
+            ExprKind::StructInit { fields, .. } => {
+                for (_, value) in fields {
+                    expr_sinks(value, names);
+                }
+            }
+            ExprKind::ArrayLit(elements) => {
+                for element in elements {
+                    expr_sinks(element, names);
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                expr_sinks(scrutinee, names);
+                for arm in arms {
+                    expr_sinks(&arm.expr, names);
+                    if let Some(guard) = &arm.guard {
+                        expr_sinks(guard, names);
+                    }
+                }
+            }
+            // A closure may capture anything it mentions.
+            ExprKind::Closure { body, .. } => {
+                super::typecheck::collect_expr_identifiers(body, names);
+            }
+            ExprKind::Literal(_) | ExprKind::Ident(_) => {}
+        }
+    }
+    let block = |block: &Block, names: &mut Vec<String>| {
+        for statement in &block.stmts {
+            collect_stmt_sinks(statement, names);
+        }
+    };
+    match &stmt.node {
+        StmtKind::Var { name, value, .. } => {
+            names.push(name.clone());
+            if let Some(value) = value {
+                expr_sinks(value, names);
+            }
+        }
+        StmtKind::Const { name, value, .. } => {
+            names.push(name.clone());
+            expr_sinks(value, names);
+        }
+        StmtKind::Return(value) => {
+            if let Some(value) = value {
+                expr_sinks(value, names);
+            }
+        }
+        StmtKind::If { condition, then_block, else_if, else_block } => {
+            expr_sinks(condition, names);
+            block(then_block, names);
+            for (condition, body) in else_if {
+                expr_sinks(condition, names);
+                block(body, names);
+            }
+            if let Some(body) = else_block {
+                block(body, names);
+            }
+        }
+        StmtKind::For { kind, body } => {
+            match kind {
+                ForLoop::Each { vars, iter, .. } => {
+                    names.extend(vars.iter().cloned());
+                    match iter {
+                        ForIter::Range { start, end } => {
+                            expr_sinks(start, names);
+                            expr_sinks(end, names);
+                        }
+                        ForIter::Iter(value) => expr_sinks(value, names),
+                    }
+                }
+                ForLoop::CStyle { init, condition, update } => {
+                    if let Some(init) = init {
+                        collect_stmt_sinks(init, names);
+                    }
+                    if let Some(condition) = condition {
+                        expr_sinks(condition, names);
+                    }
+                    if let Some(update) = update {
+                        expr_sinks(update, names);
+                    }
+                }
+                ForLoop::Cond { condition } => {
+                    if let Some(condition) = condition {
+                        expr_sinks(condition, names);
+                    }
+                }
+            }
+            block(body, names);
+        }
+        StmtKind::ExprStmt(value) => expr_sinks(value, names),
         StmtKind::CfgBlock { body, .. } | StmtKind::UnsafeBlock { body } => block(body, names),
         StmtKind::Break | StmtKind::Continue => {}
     }

@@ -2234,6 +2234,11 @@ impl<'a> Codegen<'a> {
             .any(|attribute| attribute.name == "contiguous_element_remove")
         {
             fc.emit_contiguous_element_removal(params);
+        } else if attributes
+            .iter()
+            .any(|attribute| attribute.name == "contiguous_element_borrow")
+        {
+            fc.emit_contiguous_element_borrow(params);
         } else {
             fc.compile_block(body);
         }
@@ -5834,6 +5839,74 @@ impl<'a> FnCompiler<'a> {
                 self.emit_drop_action(reg, DropAction::ReleaseStorage);
             }
         }
+    }
+
+    /// D-015: a shared reference to one initialized element. After the
+    /// bounds check, the checked dense-element address of slot `index` is the
+    /// result; the caller keeps the container borrowed while it is used.
+    fn emit_contiguous_element_borrow(&mut self, params: &[crate::parser::ast::Param]) {
+        let Some([receiver, index]) = params.get(..2) else {
+            self.codegen_error
+                .get_or_insert_with(|| "invalid contiguous borrow signature".to_string());
+            return;
+        };
+        let receiver_ty = self
+            .local_types
+            .get(&receiver.name)
+            .map(|ty| self.resolve_type(ty));
+        let Some(TypeKind::Ref { inner }) = receiver_ty else {
+            self.codegen_error.get_or_insert_with(|| {
+                "contiguous borrow requires a shared container receiver".to_string()
+            });
+            return;
+        };
+        let TypeKind::Named { name, type_args } = self.resolve_type(&inner.node) else {
+            self.codegen_error
+                .get_or_insert_with(|| "contiguous borrow receiver is not a container".to_string());
+            return;
+        };
+        let Some(metadata) = self.contiguous_element_containers.get(&name) else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("`{name}` has no contiguous-element borrow contract")
+            });
+            return;
+        };
+        let Some(element_ty) = type_args.get(metadata.element_param_index) else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("`{name}` is missing its contiguous element type argument")
+            });
+            return;
+        };
+        let element_ty = self.resolve_type(&element_ty.node);
+        let Some(element_slots) = crate::runtime_layout::runtime_value_layout(&element_ty)
+            .slot_count()
+            .and_then(|slots| u8::try_from(slots).ok())
+            .filter(|slots| *slots > 0)
+        else {
+            self.codegen_error.get_or_insert_with(|| {
+                format!("`{element_ty}` has no runtime layout for a contiguous borrow")
+            });
+            return;
+        };
+        let receiver_slot = self.reg_of(&receiver.name);
+        let receiver_reg =
+            self.aggregate_handle(receiver_slot, self.local_types.get(&receiver.name).cloned());
+        let index_reg = self.reg_of(&index.name);
+        let pointer = self.alloc_reg();
+        let length = self.alloc_reg();
+        self.chunk
+            .emit(field_load(pointer, receiver_reg, metadata.pointer_offset));
+        self.chunk
+            .emit(field_load(length, receiver_reg, metadata.length_offset));
+        self.emit_bounds_guard(index_reg, length, index.ty.span);
+        let address = self.alloc_reg();
+        self.chunk.emit(crate::bytecode::Instruction::new(
+            Opcode::ContiguousElementAddr,
+            [address, pointer, index_reg, length],
+            element_slots,
+        ));
+        self.chunk.emit(rrr(Opcode::Mov, 0, address, 0));
+        self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
     }
 
     /// Lower a compiler-validated contiguous replacement method. The contract

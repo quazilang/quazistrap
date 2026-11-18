@@ -48,6 +48,15 @@ pub fn get(self: &Array[T], idx: usize) T
 
 A copy of the element at `idx`; panics when `idx >= len()`.
 
+### `Array.get_ref`
+
+```quazi
+pub fn get_ref(self: &Array[T], idx: usize) &T
+```
+
+A shared reference to the element at `idx`; panics when `idx >= len()`.
+The array stays borrowed while the reference is used (D-015).
+
 ### `Array.set`
 
 ```quazi

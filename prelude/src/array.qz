@@ -70,6 +70,13 @@ impl Array[T] {
         ret __ptr_load(self.ptr, idx);
     }
 
+    // A shared reference to the element at `idx`; panics when `idx >= len()`.
+    // The array stays borrowed while the reference is used (D-015).
+    @contiguous_element_borrow pub fn get_ref(self: &Array[T], idx: usize) &T {
+        // Lowered by the compiler to a bounds-checked element address.
+        panic("Array.get_ref is lowered by the compiler");
+    }
+
     // Replaces the element at `idx` with `val` and drops the old element;
     // panics when `idx >= len()`. (The compiler lowers this contract through a
     // checked load, recursive drop, then store.)
@@ -124,4 +131,9 @@ impl Index[usize, T] for Array[T] {
     pub fn index(self: &Array[T], i: usize) T {
         ret self.get(i);
     }
+}
+
+impl AsRef[Array[T]] for Array[T] {
+    // The array itself.
+    fn as_ref(self: &Array[T]) &Array[T] { ret self; }
 }

@@ -184,6 +184,11 @@ and borrowed `CStr` never gain ownership automatically.
 - Dereferencing a shared reference works for scalar pointees. Aggregate
   pointees require immutable receiver semantics.
 - `str`/`&str` are the representation-identical string-view exception.
+- `Array.get_ref(i)` returns a bounds-checked `&T` to an element (D-015) and
+  `AsRef[T]` lends `&T` from a type (`fn show[S: AsRef[String]](value: &S)`,
+  D-025); both keep their owner borrowed while the reference is used.
+  Generic trait bounds such as `S: AsRef[Array[T]]` are matched against
+  implementations with their type parameters substituted.
 
 `&T!` is an exclusive safe reference. It may currently target only a mutable
 local variable or parameter through `&value!`, and assignment through

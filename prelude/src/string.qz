@@ -840,3 +840,8 @@ impl Index[isize, Rune] for String {
     // when out of range.
     pub fn index(self: &String, index: isize) Rune { ret __string_index(self.data, index); }
 }
+
+impl AsRef[String] for String {
+    // The string itself.
+    fn as_ref(self: &String) &String { ret self; }
+}

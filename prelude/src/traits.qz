@@ -47,6 +47,14 @@ pub trait Clone {
 pub trait Copy {
 }
 
+// ── AsRef ────────────────────────────────────────────────────────────────────
+// A cheap shared view of `self` as a `&T`, for generic code that accepts any
+// type which can lend a `T` (`fn show[S: AsRef[String]](value: &S)`). The
+// returned reference borrows `self`.
+pub trait AsRef[T] {
+    fn as_ref(self: &Self) &T;
+}
+
 // ── Default ──────────────────────────────────────────────────────────────────
 pub trait Default {
     fn default() Self;

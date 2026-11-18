@@ -2403,6 +2403,13 @@ impl Parser {
                         bound.push('.');
                         bound.push_str(&self.parse_ident()?);
                     }
+                    // A generic trait bound: `S: AsRef[String]`.
+                    if self.at(TokenKind::LBracket) {
+                        let arguments = self.parse_type_args()?;
+                        let rendered: Vec<String> =
+                            arguments.iter().map(|argument| argument.node.to_string()).collect();
+                        bound = format!("{bound}[{}]", rendered.join(", "));
+                    }
                     self.pending_bounds.push((param.clone(), bound, bound_span));
                     if self.at(TokenKind::Plus) {
                         self.advance();
@@ -2422,6 +2429,11 @@ impl Parser {
 
         self.expect(TokenKind::RBracket)?;
         Ok(params)
+    }
+
+    /// One type parsed from standalone text (`AsRef[String]`), or None.
+    pub(crate) fn parse_type_text(&mut self) -> Option<TypeKind> {
+        self.parse_type().ok().map(|ty| ty.node)
     }
 
     fn parse_optional_type_args(&mut self) -> Result<Vec<Type>, String> {

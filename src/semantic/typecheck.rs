@@ -855,14 +855,17 @@ impl Analyzer {
                             ),
                         );
                     }
-                    if contains_non_string_reference(
-                        &self.resolve_type_aliases(&method.return_ty.node),
-                    ) {
+                    // A method with an explicit receiver may return a plain `&T`
+                    // derived from it (each implementation's `ret` is checked).
+                    let returned = self.resolve_type_aliases(&method.return_ty.node);
+                    let receiver_reference = method.param_names.first().is_some_and(|name| name == "self")
+                        && matches!(&returned, TypeKind::Ref { inner } if !contains_non_string_reference(&inner.node));
+                    if contains_non_string_reference(&returned) && !receiver_reference {
                         self.push_error(
                             method.return_ty.span,
                             "S10",
                             format!(
-                                "trait method `{name}.{}` cannot return a shared reference before Quazi has lifetime parameters",
+                                "trait method `{name}.{}` may return only a plain `&T` derived from its `self` receiver",
                                 method.name
                             ),
                         );
@@ -1008,6 +1011,43 @@ impl Analyzer {
                                     method.span,
                                     "S14",
                                     "@contiguous_element_remove requires one safe, non-variadic method with `self: &Container[...]!`, usize index, and the declared element result".to_string(),
+                                );
+                            }
+                        }
+                        let borrow_attrs = attributes
+                            .iter()
+                            .filter(|attribute| attribute.name == "contiguous_element_borrow")
+                            .collect::<Vec<_>>();
+                        if !borrow_attrs.is_empty() {
+                            let element = match (
+                                &for_ty.node,
+                                self.contiguous_element_contracts.get(&type_name),
+                            ) {
+                                (TypeKind::Named { type_args, .. }, Some(contract)) => {
+                                    type_args.get(contract.element_param_index)
+                                }
+                                _ => None,
+                            };
+                            let valid = borrow_attrs.len() == 1
+                                && borrow_attrs[0].args.is_empty()
+                                && !unsafe_fn
+                                && !c_variadic
+                                && params.len() == 2
+                                && matches!(params.first().map(|param| &param.ty.node), Some(TypeKind::Ref { inner }) if self.resolve_type_aliases(&inner.node).to_string() == self.resolve_type_aliases(&for_ty.node).to_string())
+                                && matches!(
+                                    params.get(1).map(|param| &param.ty.node),
+                                    Some(TypeKind::Usize)
+                                )
+                                && element.is_some_and(|element| {
+                                    matches!(&return_ty.node, TypeKind::Ref { inner }
+                                        if self.resolve_type_aliases(&inner.node).to_string()
+                                            == self.resolve_type_aliases(&element.node).to_string())
+                                });
+                            if !valid {
+                                self.push_error(
+                                    method.span,
+                                    "S14",
+                                    "@contiguous_element_borrow requires one safe, non-variadic method with `self: &Container[...]`, usize index, and a `&Element` result".to_string(),
                                 );
                             }
                         }
@@ -1540,8 +1580,7 @@ impl Analyzer {
             .filter(|(bounded, _)| bounded == param)
             .find_map(|(_, bound)| {
                 self.bound_trait_signatures(&bound)
-                    .and_then(|methods| methods.get(method))
-                    .cloned()
+                    .and_then(|methods| methods.get(method).cloned())
             })?;
         if !signature.has_explicit_receiver {
             return Some((false, false));
@@ -4343,9 +4382,8 @@ impl Analyzer {
                                 .collect();
                             let signature = bounds.iter().find_map(|bound| {
                                 self.bound_trait_signatures(bound)
-                                    .and_then(|methods| methods.get(method))
+                                    .and_then(|methods| methods.get(method).cloned())
                                     .filter(|signature| signature.associated)
-                                    .cloned()
                             });
                             let Some(signature) = signature else {
                                 self.push_error(object.span, "S14", format!("`{param}.{method}` needs a bound `{param}: Trait` whose trait declares `@associated fn {method}`"));
@@ -8035,7 +8073,7 @@ impl Analyzer {
         for bound in &bounds {
             if let Some(signature) = self
                 .bound_trait_signatures(bound)
-                .and_then(|methods| methods.get(method))
+                .and_then(|methods| methods.get(method).cloned())
             {
                 let result = signature.return_ty.clone();
                 let by_value = !signature.has_explicit_receiver
@@ -8106,9 +8144,15 @@ impl Analyzer {
                     .resolve_symbol(&mono.fn_name)
                     .map(|symbol| symbol.span)
                     .unwrap_or(Span::new(0, 0, 0, 0));
+                let substitution: std::collections::HashMap<String, TypeKind> = params
+                    .iter()
+                    .cloned()
+                    .zip(mono.type_args.iter().cloned())
+                    .collect();
                 for (param, bound) in &bounds {
                     if let Some(argument) = concrete(param) {
-                        self.check_bound(&argument, param, bound, &mono.fn_name, span);
+                        let bound = self.instantiate_bound(bound, &substitution);
+                        self.check_bound(&argument, param, &bound, &mono.fn_name, span);
                     }
                 }
             }
@@ -8161,13 +8205,106 @@ impl Analyzer {
 
     /// The method signatures of a bound's trait, named plainly or through
     /// its module (`marks.Tag`).
+    /// A bound's trait name and type arguments: `AsRef[String]` is
+    /// (`AsRef`, [String]).
+    fn bound_parts(&self, bound: &str) -> (String, Vec<TypeKind>) {
+        let Some(open) = bound.find('[') else {
+            return (bound.to_string(), Vec::new());
+        };
+        let tokens = crate::lexer::Lexer::new(bound).tokenize();
+        let parsed = crate::parser::Parser::new(tokens).parse_type_text();
+        let arguments = match parsed {
+            Some(TypeKind::Named { type_args, .. }) => type_args.into_iter().map(|argument| argument.node).collect(),
+            _ => Vec::new(),
+        };
+        (bound[..open].to_string(), arguments)
+    }
+
+    /// The method signatures of a bound's trait with the bound's type
+    /// arguments substituted for the trait's parameters.
     fn bound_trait_signatures(
         &self,
         bound: &str,
-    ) -> Option<&HashMap<String, super::TraitMethodSignature>> {
-        self.trait_method_signatures
-            .get(bound)
-            .or_else(|| self.trait_method_signatures.get(bound.rsplit('.').next()?))
+    ) -> Option<HashMap<String, super::TraitMethodSignature>> {
+        let (base, arguments) = self.bound_parts(bound);
+        let methods = self
+            .trait_method_signatures
+            .get(&base)
+            .or_else(|| self.trait_method_signatures.get(base.rsplit('.').next()?))?;
+        if arguments.is_empty() {
+            return Some(methods.clone());
+        }
+        let params = self
+            .resolve_symbol(&base)
+            .map(|symbol| symbol.generic_params.clone())
+            .unwrap_or_default();
+        let substitution: std::collections::HashMap<String, TypeKind> =
+            params.into_iter().zip(arguments).collect();
+        Some(
+            methods
+                .iter()
+                .map(|(name, signature)| {
+                    let mut signature = signature.clone();
+                    signature.params = signature
+                        .params
+                        .iter()
+                        .map(|param| substitute_type_kind(param, &substitution))
+                        .collect();
+                    signature.return_ty = substitute_type_kind(&signature.return_ty, &substitution);
+                    (name.clone(), signature)
+                })
+                .collect(),
+        )
+    }
+
+    /// Whether `argument` implements the instantiated generic bound
+    /// `Trait[Args]`: some impl's target unifies with `argument` and its trait
+    /// arguments, under that unification, equal the bound's.
+    fn implements_generic_bound(&self, argument: &TypeKind, bound: &str) -> bool {
+        let (base, bound_args) = self.bound_parts(bound);
+        let base = base.rsplit('.').next().unwrap_or(&base).to_string();
+        let type_name = super::declare::type_kind_base_name(argument);
+        let rendered: Vec<String> = bound_args
+            .iter()
+            .map(|argument| self.resolve_type_aliases(argument).to_string())
+            .collect();
+        self.generic_trait_impls.iter().any(|(implemented, for_ty, trait_ty)| {
+            if *implemented != type_name {
+                return false;
+            }
+            let TypeKind::Named { name, type_args } = trait_ty else {
+                return false;
+            };
+            if name.rsplit('.').next() != Some(base.as_str()) || type_args.len() != rendered.len() {
+                return false;
+            }
+            // The impl's own parameters: bare names that are not types.
+            let mut params = Vec::new();
+            collect_bare_names(for_ty, &mut params);
+            params.retain(|name| {
+                !self.resolve_symbol(name).is_some_and(|symbol| symbol.kind == SymbolKind::TypeName)
+            });
+            let mut substitution = std::collections::HashMap::new();
+            infer_type_subst(for_ty, argument, &params, &mut substitution);
+            type_args.iter().zip(&rendered).all(|(implemented, wanted)| {
+                let concrete = substitute_type_kind(&implemented.node, &substitution);
+                self.resolve_type_aliases(&concrete).to_string() == *wanted
+            })
+        })
+    }
+
+    /// `bound` with the enclosing generic's parameters replaced by their
+    /// concrete arguments (`AsRef[Array[T]]` with T = i64).
+    pub(super) fn instantiate_bound(&self, bound: &str, substitution: &std::collections::HashMap<String, TypeKind>) -> String {
+        let (base, arguments) = self.bound_parts(bound);
+        if arguments.is_empty() {
+            return bound.to_string();
+        }
+        let rendered: Vec<String> = arguments
+            .iter()
+            .map(|argument| substitute_type_kind(argument, substitution).to_string())
+            .collect();
+        format!("{base}[{}]", rendered.join(", "))
     }
 
     /// Whether values of `ty` are duplicated rather than moved (`Copy`).
@@ -8215,6 +8352,17 @@ impl Analyzer {
         if self.is_unresolved_type_parameter(&argument) {
             return;
         }
+        if bound.contains('[') {
+            if !self.implements_generic_bound(&argument, bound) {
+                let type_name = super::declare::type_kind_base_name(&argument);
+                self.push_error(
+                    span,
+                    "S04",
+                    format!("`{type_name}` does not implement `{bound}`, required by `{param}` of `{owner}`"),
+                );
+            }
+            return;
+        }
         let trait_name = bound.rsplit('.').next().unwrap_or(bound);
         let type_name = super::declare::type_kind_base_name(&argument);
         if trait_name == "Copy" {
@@ -8255,7 +8403,8 @@ impl Analyzer {
                 .map(|symbol| symbol.span)
                 .unwrap_or(Span::new(0, 0, 0, 0));
             for (param, bound) in bounds {
-                let trait_name = bound.rsplit('.').next().unwrap_or(bound);
+                let base = bound.split('[').next().unwrap_or(bound);
+                let trait_name = base.rsplit('.').next().unwrap_or(base);
                 // `Copy` is a compiler-known marker trait (В23А).
                 if trait_name != "Copy"
                     && !self.trait_method_slots.contains_key(trait_name)
@@ -8290,11 +8439,17 @@ impl Analyzer {
                         continue;
                     };
                     let params = self.declared_type_parameters(&name).cloned().unwrap_or_default();
+                    let substitution: std::collections::HashMap<String, TypeKind> = params
+                        .iter()
+                        .cloned()
+                        .zip(type_args.iter().map(|argument| argument.node.clone()))
+                        .collect();
                     for (param, bound) in &bounds {
                         if let Some(index) = params.iter().position(|candidate| candidate == param)
                             && let Some(argument) = type_args.get(index)
                         {
-                            self.check_bound(&argument.node, param, bound, &name, span);
+                            let bound = self.instantiate_bound(bound, &substitution);
+                            self.check_bound(&argument.node, param, &bound, &name, span);
                         }
                     }
                 }
@@ -10604,4 +10759,20 @@ pub(crate) fn mangle_monomorphized(name: &str, type_args: &[TypeKind]) -> String
         .map(|t| format!("{}", t).replace(|c: char| !c.is_alphanumeric(), "_"))
         .collect();
     format!("{}<{}>", name, type_suffix.join(","))
+}
+
+/// Every bare (argument-free) type name inside `ty`.
+fn collect_bare_names(ty: &TypeKind, names: &mut Vec<String>) {
+    match ty {
+        TypeKind::Named { name, type_args } if type_args.is_empty() => names.push(name.clone()),
+        TypeKind::Named { type_args, .. } => {
+            for argument in type_args {
+                collect_bare_names(&argument.node, names);
+            }
+        }
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
+            collect_bare_names(&inner.node, names)
+        }
+        _ => {}
+    }
 }

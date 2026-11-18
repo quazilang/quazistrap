@@ -197,6 +197,8 @@ pub struct Analyzer {
     pub(super) serialization_derives: HashMap<String, SerializationDeriveMetadata>,
     /// Trait implementations: type name → set of trait names explicitly implemented via `impl Trait for Type`.
     pub(super) trait_impls: HashMap<String, std::collections::HashSet<String>>,
+    /// Impls of generic traits: (type name, impl target, trait type).
+    pub(super) generic_trait_impls: Vec<(String, TypeKind, TypeKind)>,
     /// Trait bounds of generic parameters (`fn f[K: Hash]`, `struct Map[K: Eq]`):
     /// function or struct name -> (parameter, trait).
     pub(super) generic_bounds: HashMap<String, Vec<(String, String)>>,
@@ -1967,6 +1969,7 @@ impl Analyzer {
             derived_traits: HashMap::new(),
             serialization_derives: HashMap::new(),
             trait_impls: HashMap::new(),
+            generic_trait_impls: Vec::new(),
             generic_bounds: HashMap::new(),
             bound_method_calls: HashMap::new(),
             consuming_bound_calls: std::collections::HashSet::new(),
@@ -2624,6 +2627,7 @@ impl Analyzer {
         self.derived_traits.clear();
         self.serialization_derives.clear();
         self.trait_impls.clear();
+        self.generic_trait_impls.clear();
         self.generic_bounds.clear();
         self.bound_method_calls.clear();
         self.consuming_bound_calls.clear();

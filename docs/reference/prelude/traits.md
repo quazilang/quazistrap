@@ -10,6 +10,7 @@ prelude.traits — core language traits
 - [`Ord`](#ord) (trait)
 - [`Clone`](#clone) (trait)
 - [`Copy`](#copy) (trait)
+- [`AsRef`](#asref) (trait)
 - [`Default`](#default) (trait)
 - [`Hash`](#hash) (trait)
 - [`Iterator`](#iterator) (trait)
@@ -118,6 +119,19 @@ A value that may be duplicated bit for bit: using it does not move it.
 Integers, floats, `bool`, `str`, shared references and raw pointers are
 Copy; a struct is Copy through `@derive(Copy)` or `impl Copy for S {}` when
 every field is Copy. A generic parameter is Copy only under `T: Copy`.
+
+## `AsRef`
+
+```quazi
+pub trait AsRef[T] {
+    fn as_ref(self: &Self) &T;
+}
+```
+
+── AsRef ────────────────────────────────────────────────────────────────────
+A cheap shared view of `self` as a `&T`, for generic code that accepts any
+type which can lend a `T` (`fn show[S: AsRef[String]](value: &S)`). The
+returned reference borrows `self`.
 
 ## `Default`
 
