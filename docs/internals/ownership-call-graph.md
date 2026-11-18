@@ -64,10 +64,15 @@ from its graph and deferred closure graphs: parameter slots read, written
 (and written through a dereference, which the caller observes), moved into
 `Move` parameters, borrowed (shared or exclusive), returned by value or as a
 borrow, and captured by closures, plus whether it writes globals. `unmodeled`
-counts opaque regions and indirect, foreign and format calls whose effects
-the sets omit; zero means every source effect of the body is modeled. Callee
-effects are not composed yet: a call contributes only the moves and borrows of
-its arguments. This is source evidence toward the D-014 export summary, not
+counts opaque regions (except effect-free name/literal regions) and indirect,
+foreign and format calls whose effects the sets omit; zero means every source
+effect of the body is modeled.
+
+Callee effects compose to a fixed point over resolved calls: an argument
+rooted at a caller parameter inherits the callee's write through a reference
+for that slot, and a callee with unmodeled effects or without a source
+summary marks its callers `callee_unmodeled`. Other callee effects (returned
+borrows, captures) are not yet composed. This is source evidence toward the D-014 export summary, not
 an artifact certificate.
 
 ## Support boundary

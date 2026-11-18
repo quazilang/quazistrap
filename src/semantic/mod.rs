@@ -2641,6 +2641,87 @@ impl Analyzer {
         self.library_char_ranges = ranges;
     }
 
+    /// Compose callee parameter effects into callers to a fixed point: an
+    /// argument rooted at a caller parameter inherits the callee's write
+    /// through a reference for that slot, and a callee with unmodeled effects
+    /// (or no source summary) marks its callers `callee_unmodeled`.
+    fn compose_parameter_effects<F>(
+        &self,
+        graph: &mut [OwnershipCallable],
+        checkpoint: &mut F,
+    ) -> Result<(), crate::cancel::Cancelled>
+    where
+        F: FnMut() -> Result<(), crate::cancel::Cancelled>,
+    {
+        let mut by_name: HashMap<&str, Option<usize>> = HashMap::new();
+        for (index, callable) in graph.iter().enumerate() {
+            by_name
+                .entry(callable.id.callable.as_str())
+                .and_modify(|unique| *unique = None)
+                .or_insert(Some(index));
+        }
+        let by_name: HashMap<String, usize> = by_name
+            .into_iter()
+            .filter_map(|(name, index)| index.map(|index| (name.to_string(), index)))
+            .collect();
+        // Every round only adds facts, so at most one round per callable.
+        for _ in 0..=graph.len() {
+            checkpoint()?;
+            let mut changed = false;
+            for caller in 0..graph.len() {
+                let Some(sites) = self.ownership_call_sites.get(&graph[caller].id.callable) else {
+                    continue;
+                };
+                let mut inherited = Vec::new();
+                let mut callee_unmodeled = false;
+                for site in sites.values() {
+                    let Some((name, _)) = &site.target else {
+                        continue;
+                    };
+                    let callee_effects = by_name
+                        .get(name)
+                        .and_then(|&callee| graph[callee].parameter_effects.as_ref());
+                    let Some(callee_effects) = callee_effects else {
+                        callee_unmodeled = true;
+                        continue;
+                    };
+                    callee_unmodeled |=
+                        callee_effects.unmodeled > 0 || callee_effects.callee_unmodeled;
+                    let Some(arguments) = &site.arguments else {
+                        continue;
+                    };
+                    for actual in &arguments.actuals {
+                        let (Some(slot), OwnershipArgumentValue::Place(place)) =
+                            (actual.parameter_slot, &actual.value)
+                        else {
+                            continue;
+                        };
+                        if let OwnershipPlaceStorage::Parameter(own) = place.root.storage
+                            && callee_effects.written_through_reference.contains(&slot)
+                        {
+                            inherited.push(own);
+                        }
+                    }
+                }
+                let Some(effects) = graph[caller].parameter_effects.as_mut() else {
+                    continue;
+                };
+                for slot in inherited {
+                    changed |= effects.written.insert(slot);
+                    changed |= effects.written_through_reference.insert(slot);
+                }
+                if callee_unmodeled && !effects.callee_unmodeled {
+                    effects.callee_unmodeled = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     /// Whether `symbol` is the prelude-selected runtime `panic` declaration.
     pub(super) fn is_runtime_panic(&self, symbol: &Symbol) -> bool {
         symbol.kind == SymbolKind::Function && self.runtime_panic_span == Some(symbol.span)
@@ -2887,6 +2968,7 @@ impl Analyzer {
                 .as_deref()
                 .map(OwnershipControlFlow::parameter_effects);
         }
+        self.compose_parameter_effects(&mut ownership_call_graph, &mut checkpoint)?;
         // Source discovery retains binding context that symbolic mono spellings
         // lose. Its concrete identities may disambiguate emission dependencies,
         // while injected cleanup/intrinsic mono roots remain available too.

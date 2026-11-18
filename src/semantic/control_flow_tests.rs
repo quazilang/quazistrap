@@ -272,7 +272,7 @@ fn source_control_flow_iteration_evaluates_bounds_once_and_protocol_repeats() {
     let source = "fn main() void { for i : lower()..upper() { continue; } after(); }";
     let maps = graphs(source);
     let graph = &maps["main"];
-    let input = graph.blocks.iter().position(|block| block.events.iter().any(|event| matches!(event, OwnershipFlowEvent::Evaluate { kind: OwnershipEvaluationKind::IterationInput, spans } if spans.len() == 2))).unwrap();
+    let input = graph.blocks.iter().position(|block| block.events.iter().any(|event| matches!(event, OwnershipFlowEvent::Evaluate { kind: OwnershipEvaluationKind::IterationInput, spans, .. } if spans.len() == 2))).unwrap();
     let prepare = graph
         .blocks
         .iter()
@@ -2310,4 +2310,40 @@ fn main() void {}
     let hand = effects("hand");
     assert!(hand.returned_borrow.contains(&0), "{hand:?}");
     assert!(hand.written.is_empty(), "{hand:?}");
+}
+
+#[test]
+fn callee_writes_through_references_compose_into_callers() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+fn set(pair: &Pair!) void { pair.left = 1; }
+fn relay(pair: &Pair!) void { set(pair); }
+fn outer(pair: &Pair!, other: &Pair) i32 { relay(pair); ret other.left; }
+fn run(callback: fn() i32) i32 { ret callback(); }
+fn wrapper(callback: fn() i32) i32 { ret run(callback); }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let effects = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+            .parameter_effects
+            .clone()
+            .unwrap()
+    };
+    for name in ["set", "relay", "outer"] {
+        assert!(
+            effects(name).written_through_reference.contains(&0),
+            "{name}: {:?}",
+            effects(name)
+        );
+    }
+    assert!(!effects("outer").written.contains(&1));
+    assert!(effects("run").unmodeled > 0);
+    assert!(effects("wrapper").callee_unmodeled);
+    assert!(!effects("relay").callee_unmodeled);
 }

@@ -96,6 +96,9 @@ pub enum OwnershipFlowEvent {
     Evaluate {
         spans: Vec<Span>,
         kind: OwnershipEvaluationKind,
+        /// Every expression of the region is a name or literal (possibly
+        /// grouped): it calls nothing and changes no storage.
+        effect_free: bool,
     },
     /// Result identity after the scheduled operands. Physical operations,
     /// traps, allocations and ownership effects remain unverified.
@@ -341,6 +344,15 @@ enum ValidationError {
     Invalid(String),
 }
 
+/// A name or literal, possibly grouped: evaluating it has no effects.
+fn is_name_or_literal(expression: &Expr) -> bool {
+    match &expression.node {
+        ExprKind::Ident(_) | ExprKind::Literal(_) => true,
+        ExprKind::Group(inner) => is_name_or_literal(inner),
+        _ => false,
+    }
+}
+
 /// The parameter slot a place is rooted at, with the place.
 fn slot_of(place: &OwnershipArgumentValue) -> Option<(usize, &super::OwnershipPlace)> {
     match place {
@@ -376,6 +388,9 @@ pub struct OwnershipParameterEffects {
     /// Opaque regions and indirect, foreign or format calls whose effects
     /// these sets do not include; zero means every source effect is modeled.
     pub unmodeled: usize,
+    /// A resolved callee, transitively, has unmodeled effects or no source
+    /// summary, so composed effects may be incomplete.
+    pub callee_unmodeled: bool,
 }
 
 impl OwnershipControlFlow {
@@ -439,6 +454,9 @@ impl OwnershipControlFlow {
                             effects.captured.insert(slot);
                         }
                     }
+                    OwnershipFlowEvent::Evaluate {
+                        effect_free: true, ..
+                    } => {}
                     OwnershipFlowEvent::Evaluate { .. }
                     | OwnershipFlowEvent::IndirectInvoke { .. }
                     | OwnershipFlowEvent::ForeignInvoke { .. }
@@ -2356,6 +2374,9 @@ where
                     .map(|expression| expression.span)
                     .collect(),
                 kind,
+                effect_free: expressions
+                    .iter()
+                    .all(|expression| is_name_or_literal(expression)),
             });
         // A region that is itself a place read as a value reads it here.
         for expression in expressions {

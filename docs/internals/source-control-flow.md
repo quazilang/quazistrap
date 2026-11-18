@@ -186,7 +186,7 @@ does not acquire a duplicate possible-return edge.
 ## Opaque expression regions
 
 An evaluation event references one expression, or the input spans belonging to
-one region. Span-vector order is not runtime operand order. The normal edge
+one region. `effect_free` marks regions made only of names and literals. Span-vector order is not runtime operand order. The normal edge
 means normal completion is possible; it does not prove termination or account
 for panics, traps, callbacks or implicit cleanup.
 
