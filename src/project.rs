@@ -1170,8 +1170,8 @@ fn collect_modules(
                         module.metadata.version.as_deref().unwrap_or("<none>")
                     ));
                 }
-                let mut unified = if bytes.get(4) == Some(&crate::bytecode::chunk::QZI_UNIFIED_VERSION) {
-                    Some(crate::bytecode::chunk::decode_unified_qzi(&bytes)?)
+                let mut qzi = if bytes.get(4) == Some(&crate::bytecode::chunk::QZI_VERSION) {
+                    Some(crate::bytecode::chunk::decode_qzi(&bytes)?)
                 } else {
                     None
                 };
@@ -1189,9 +1189,9 @@ fn collect_modules(
                         .clone()
                         .unwrap_or_else(|| crate::package::sha256_bytes(&bytes));
                     let path = alias_dir.join(format!("{source_hash}-{}.qzi", dep.name));
-                    let encoded = if let Some(unified) = &mut unified {
-                        unified.alias_library_namespace(&dep.name);
-                        unified.encode()?
+                    let encoded = if let Some(qzi) = &mut qzi {
+                        qzi.alias_library_namespace(&dep.name);
+                        qzi.encode()?
                     } else {
                         crate::bytecode::serialize_qzi_module(&module)?
                     };
@@ -1214,14 +1214,14 @@ fn collect_modules(
                         version: module.metadata.version.clone(),
                     })
                 };
-                // A universal QZI may expose a different API per target:
+                // A QZI may expose a different API per target:
                 // consumers see one interface with conditional declarations.
-                let interface = match &unified {
-                    Some(unified) => {
+                let interface = match &qzi {
+                    Some(qzi) => {
                         let targets: Vec<&str> =
-                            unified.targets.iter().map(String::as_str).collect();
+                            qzi.targets.iter().map(String::as_str).collect();
                         let interfaces: Vec<String> = (0..targets.len())
-                            .map(|index| unified.interface_for_target(index).to_string())
+                            .map(|index| qzi.interface_for_target(index).to_string())
                             .collect();
                         crate::bytecode::interface::merge_target_interfaces(&targets, &interfaces)?
                     }
@@ -1760,7 +1760,7 @@ numbers = { path = "dep.qzi" }
             },
             interface: String::new(),
             call_relocations: codegen.external_call_relocations().to_vec(),
-            ownership_abi_version: crate::bytecode::chunk::QZI_VERSION,
+            ownership_abi_version: crate::bytecode::chunk::QZI_MODULE_VERSION,
             ownership: Default::default(),
             chunks,
         };

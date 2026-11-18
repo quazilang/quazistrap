@@ -48,7 +48,7 @@ qz build src/main.qz native/codec.o native/hash.o -o app
 qz run src/main.qz native/codec.o
 ```
 
-Portable QZI may be combined with objects in the same way:
+QZI may be combined with objects in the same way:
 
 ```bash
 qz build program.qzi native/codec.o -o app

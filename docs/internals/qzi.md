@@ -1,11 +1,11 @@
-# Universal QZI: one compilation for every target
+# QZI: one compilation for every target
 
 Audience: compiler developers.
 
 `qz build -i` (project or explicit source files) writes one format-16 QZI
 for Linux, Windows and NetBSD from a single compilation. There is no
 per-target frontend run, no staging artifact and no merge of compiled
-programs. The pipeline lives in `src/universal.rs`:
+programs. The pipeline lives in `src/qzi_build.rs`:
 
 1. **Load** (`loader::load_program_for_all_targets`). Import discovery runs
    for each target, because `@cfg` imports decide which files exist. The
@@ -15,7 +15,7 @@ programs. The pipeline lives in `src/universal.rs`:
    `@cfg`, becomes one analyzable program in which every declaration is
    valid for a known target mask.
 3. **Analysis and code generation** run once on that program.
-4. **Assembly** (`bytecode::unified::assemble_unified_qzi`) assigns each
+4. **Assembly** (`bytecode::qzi_link::link_qzi`) assigns each
    chunk its targets and writes the v16 layout directly.
 
 ## Target views
@@ -93,7 +93,7 @@ target name. A dependency whose public interface differs between targets is
 seen through one merged interface (`bytecode::interface::merge_target_interfaces`)
 in which differing declarations carry `@cfg(target_os = ...)`.
 
-Project builds keep an exact-hit QZC under `build/quazi/universal/<name>/`.
+Project builds keep an exact-hit QZC under `build/quazi/qzi/<name>/`.
 After loading the sources, the driver compares the resolved import closure,
 target masks, source contents, configuration and ordered dependency contents.
 A hit skips target-view construction, semantic analysis and bytecode lowering.
@@ -102,6 +102,6 @@ can print the lowering output.
 
 The output keeps the v16 encoding: one module of distinct bodies, one mask
 per body and interface overrides for targets whose public interface differs.
-`scripts/check_universal_qzi.py` verifies one analysis and one bytecode stage
+`scripts/check_qzi.py` verifies one analysis and one bytecode stage
 per build, the layout, natives for every target (Windows under Wine),
 diagnostics for missing implementations, and dependency linking.

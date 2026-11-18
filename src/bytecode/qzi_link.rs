@@ -14,14 +14,14 @@
 use std::collections::{HashMap, HashSet};
 
 use super::chunk::{
-    Chunk, ConstPoolEntry, QZI_VERSION, QziCallRelocation, QziMetadata, QziModule, QziModuleKind,
-    QziOwnershipArtifact, UnifiedQzi, equivalent_relocatable_chunks, infer_call_relocations,
+    Chunk, ConstPoolEntry, QZI_MODULE_VERSION, QziCallRelocation, QziMetadata, QziModule, QziModuleKind,
+    QziOwnershipArtifact, Qzi, equivalent_relocatable_chunks, infer_call_relocations,
     validate_qzi_chunks,
 };
 use super::opcode::Opcode;
 use crate::semantic::target_views::{strip_variant_markers, variant_marker_mask};
 
-pub struct UnifiedInput<'a> {
+pub struct QziLinkInput<'a> {
     pub targets: &'a [&'a str],
     pub chunks: Vec<Chunk>,
     /// Target mask of chunks compiled from source declarations.
@@ -30,7 +30,7 @@ pub struct UnifiedInput<'a> {
     pub external_relocations: Vec<QziCallRelocation>,
     /// A library's public API (its reachability roots); unused for executables.
     pub library_roots: Vec<String>,
-    pub dependencies: Vec<UnifiedQzi>,
+    pub dependencies: Vec<Qzi>,
     pub metadata: QziMetadata,
     /// Public interface per target (empty for executables).
     pub interfaces: Vec<String>,
@@ -80,10 +80,10 @@ fn call_names(chunk: &Chunk, names: &[String]) -> Result<Vec<(usize, String)>, S
         .collect()
 }
 
-pub fn assemble_unified_qzi(input: UnifiedInput<'_>) -> Result<UnifiedQzi, String> {
+pub fn link_qzi(input: QziLinkInput<'_>) -> Result<Qzi, String> {
     let count = input.targets.len();
     if !(1..=8).contains(&count) {
-        return Err("a unified QZI needs between one and eight targets".to_string());
+        return Err("a QZI needs between one and eight targets".to_string());
     }
     let full = (u16::from(u8::MAX) >> (8 - count)) as u8;
 
@@ -160,7 +160,7 @@ pub fn assemble_unified_qzi(input: UnifiedInput<'_>) -> Result<UnifiedQzi, Strin
                 continue;
             }
             let calls = call_names(chunk, &names)?;
-            // As in single-target QZI linking, a dependency body equivalent
+            // As in native linking from QZI, a dependency body equivalent
             // up to call targets is the one already present (a library
             // qualifies its root symbols, so callee names may differ).
             if let Some(existing) = nodes.iter_mut().find(|node| {
@@ -356,7 +356,7 @@ pub fn assemble_unified_qzi(input: UnifiedInput<'_>) -> Result<UnifiedQzi, Strin
                 })
                 .ok_or_else(|| format!("`{}` calls missing `{name}`", chunk.name))?;
             let [lo, hi] = u16::try_from(target)
-                .map_err(|_| "unified QZI has too many functions".to_string())?
+                .map_err(|_| "QZI has too many functions".to_string())?
                 .to_le_bytes();
             let instruction = &mut chunk.code[*instruction_index];
             instruction.ops[1] = lo;
@@ -398,14 +398,14 @@ pub fn assemble_unified_qzi(input: UnifiedInput<'_>) -> Result<UnifiedQzi, Strin
         }
     }
     let masks = kept.iter().map(|(_, mask)| *mask).collect();
-    Ok(UnifiedQzi {
+    Ok(Qzi {
         targets: input
             .targets
             .iter()
             .map(|target| target.to_string())
             .collect(),
         module: QziModule {
-            ownership_abi_version: QZI_VERSION,
+            ownership_abi_version: QZI_MODULE_VERSION,
             metadata: input.metadata,
             interface: base,
             call_relocations: infer_call_relocations(&chunks)?,
@@ -420,7 +420,7 @@ pub fn assemble_unified_qzi(input: UnifiedInput<'_>) -> Result<UnifiedQzi, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::chunk::{decode_unified_qzi, select_unified_target};
+    use crate::bytecode::chunk::{decode_qzi, project_qzi_for_target};
     use crate::bytecode::instruction::{ri16, rrr};
 
     const TARGETS: [&str; 3] = ["linux", "windows", "netbsd"];
@@ -463,8 +463,8 @@ mod tests {
         (chunks, declared)
     }
 
-    fn assemble(chunks: Vec<Chunk>, declared: HashMap<String, u8>) -> Result<UnifiedQzi, String> {
-        assemble_unified_qzi(UnifiedInput {
+    fn assemble(chunks: Vec<Chunk>, declared: HashMap<String, u8>) -> Result<Qzi, String> {
+        link_qzi(QziLinkInput {
             targets: &TARGETS,
             chunks,
             declared,
@@ -480,24 +480,24 @@ mod tests {
     fn one_compilation_stores_shared_bodies_once_and_selects_each_target() {
         let (chunks, declared) = program();
         let bytes = assemble(chunks, declared).unwrap().encode().unwrap();
-        let unified = decode_unified_qzi(&bytes).unwrap();
-        let names: Vec<_> = unified
+        let qzi = decode_qzi(&bytes).unwrap();
+        let names: Vec<_> = qzi
             .module
             .chunks
             .iter()
             .map(|chunk| chunk.name.as_str())
             .collect();
         assert_eq!(names, ["main", "shared", "os", "os"]);
-        assert_eq!(unified.masks, [0b111, 0b111, 0b101, 0b010]);
+        assert_eq!(qzi.masks, [0b111, 0b111, 0b101, 0b010]);
         for (os, value) in [("linux", 1), ("windows", 2), ("netbsd", 1)] {
-            let module = select_unified_target(decode_unified_qzi(&bytes).unwrap(), os).unwrap();
+            let module = project_qzi_for_target(decode_qzi(&bytes).unwrap(), os).unwrap();
             assert_eq!(module.chunks.len(), 3);
             let callee = module.chunks[1].code[0].ri16().1 as usize;
             assert_eq!(module.chunks[callee].name, "os");
             assert_eq!(module.chunks[callee].code[0].ri16().1, value, "{os}");
         }
         assert!(
-            select_unified_target(decode_unified_qzi(&bytes).unwrap(), "macos")
+            project_qzi_for_target(decode_qzi(&bytes).unwrap(), "macos")
                 .unwrap_err()
                 .contains("no `macos` target")
         );
@@ -507,13 +507,13 @@ mod tests {
     fn identical_target_copies_merge_and_tampering_is_rejected() {
         let (mut chunks, declared) = program();
         chunks[3] = chunk("os@t2", None, 1);
-        let unified = assemble(chunks, declared).unwrap();
-        assert_eq!(unified.masks, [0b111, 0b111, 0b111]);
-        let mut bytes = unified.encode().unwrap();
+        let qzi = assemble(chunks, declared).unwrap();
+        assert_eq!(qzi.masks, [0b111, 0b111, 0b111]);
+        let mut bytes = qzi.encode().unwrap();
         let last = bytes.len() - 40;
         bytes[last] ^= 1;
         assert!(
-            decode_unified_qzi(&bytes)
+            decode_qzi(&bytes)
                 .unwrap_err()
                 .contains("integrity")
         );
@@ -538,13 +538,13 @@ mod tests {
         let (mut chunks, declared) = program();
         chunks[3] = chunk("os@t2", Some(4), 0);
         chunks.push(chunk("os@t2.closure0", None, 7));
-        let unified = assemble(chunks, declared).unwrap();
-        let closure = unified
+        let qzi = assemble(chunks, declared).unwrap();
+        let closure = qzi
             .module
             .chunks
             .iter()
             .position(|chunk| chunk.name == "os.closure0")
             .unwrap();
-        assert_eq!(unified.masks[closure], 0b010);
+        assert_eq!(qzi.masks[closure], 0b010);
     }
 }

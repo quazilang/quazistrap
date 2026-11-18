@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the unified multi-target QZI (format 16, qzifix.txt):
+"""Check the QZI (format 16, qzifix.txt):
 
 A. one project is ONE artifact from ONE compilation: analysis and bytecode
    generation run once for every target (no per-target build or merge);
@@ -81,16 +81,16 @@ def run(command, cwd, ok=True, env=None):
     return result
 
 
-def project(root, source, name="universal"):
+def project(root, source, name="qzi_app"):
     shutil.rmtree(root, ignore_errors=True)
     (root / "src").mkdir(parents=True)
     (root / "quazi.toml").write_text(f'[package]\nname="{name}"\n[build]\nentry="src/main.qz"\n')
     (root / "src/main.qz").write_text(source)
 
 
-def unified_layout(data):
+def qzi_layout(data):
     """(targets, masks of every function body, body names) of a format-16 QZI."""
-    assert data[:5] == b"\x00QZI\x10", "expected a unified QZI (format 16)"
+    assert data[:5] == b"\x00QZI\x10", "expected a QZI (format 16)"
     offset = 6
     targets = []
     for _ in range(data[5]):
@@ -111,7 +111,7 @@ def main():
     parser.add_argument("--wine", type=Path)
     args = parser.parse_args()
     qz = str(args.qz.resolve())
-    with tempfile.TemporaryDirectory(prefix="quazi-unified-") as directory:
+    with tempfile.TemporaryDirectory(prefix="quazi-qzi-") as directory:
         root = Path(directory)
         work = root / "work"
         project(work, PROGRAM)
@@ -161,9 +161,30 @@ def main():
         assert b"cache lookup  miss" in run(bare_build, bare).stderr
         assert b"cache lookup  hit" in run(bare_build, bare).stderr
 
+        # Re-emitting a QZI keeps all target bodies, even if the caller asks
+        # for a different native target.
+        reemitted = root / "reemitted.qzi"
+        run([qz, "build", str(root / "app.qzi"), "--qzi", "--target", "x86_64-none",
+             "-o", str(reemitted)], work)
+        assert reemitted.read_bytes() == (root / "app.qzi").read_bytes()
+        broken = root / "broken.qzi"
+        broken.write_bytes(b"BROK" + reemitted.read_bytes()[4:])
+        bad = run([qz, "build", str(broken), "--qzi", "-o", str(reemitted)], work, ok=False)
+        assert bad.returncode != 0 and b"malformed QZI" in bad.stderr, bad.stderr
+        assert reemitted.read_bytes() == (root / "app.qzi").read_bytes()
+
+        # The debug sample uses the same emitter. The old flag still works.
+        debug_dir = root / "debug"
+        debug_dir.mkdir()
+        debug_env = dict(os.environ, TMPDIR=str(debug_dir))
+        run([qz, "debug", "--bytecode"], debug_dir, env=debug_env)
+        debug_qzi = debug_dir / "dbg.qzi"
+        assert qzi_layout(debug_qzi.read_bytes())[0] == ["linux", "windows", "netbsd"]
+        assert list(debug_dir.iterdir()) == [debug_qzi]
+
         # A: one artifact; shared bodies once, alternatives per target.
         data = (root / "app.qzi").read_bytes()
-        targets, masks, module = unified_layout(data)
+        targets, masks, module = qzi_layout(data)
         assert targets == ["linux", "windows", "netbsd"], targets
         everyone = (1 << len(targets)) - 1
         assert module.count(b"shared_label") >= 1
@@ -177,7 +198,7 @@ def main():
         direct = root / "explicit-source.qzi"
         run([qz, "build", str(work / "src/main.qz"), str(extra), "-i", "--silent",
              "-o", str(direct)], work)
-        assert unified_layout(direct.read_bytes())[0] == targets
+        assert qzi_layout(direct.read_bytes())[0] == targets
 
         # C: no sources.
         shutil.rmtree(work)
@@ -257,7 +278,7 @@ def main():
             "import renamed;\nfn main() i32 { ret renamed.value(); }\n")
         aliased = root / "aliased.qzi"
         run([qz, "build", "-i", "--silent", "--no-incremental", "-o", str(aliased)], consumer)
-        _, alias_masks, _ = unified_layout(aliased.read_bytes())
+        _, alias_masks, _ = qzi_layout(aliased.read_bytes())
         assert sorted(alias_masks) == [1, 2, 4, 7], alias_masks
         dependency.unlink()
         shutil.rmtree(consumer)
@@ -340,7 +361,7 @@ def main():
         (root / "retired.qzi").write_bytes(b"\x00QZI\x0f\x00\x00")
         retired = run([qz, "build", str(root / "retired.qzi"), "-o", str(out / "retired")], out, ok=False)
         assert retired.returncode != 0 and b"format 15" in retired.stderr, retired.stderr
-    print("PASS unified QZI: one compilation, one artifact with shared bodies once and per-target alternatives; "
+    print("PASS QZI: one compilation, one artifact with shared bodies once and per-target alternatives; "
           f"linux/windows/netbsd natives without sources{' (windows under Wine)' if args.wine else ''}; "
           "failed targets prevent publication; dependencies (source, QZI, QZI with std) linked into the one QZI; "
           "per-target generic copies and retention; format 15 rejected")

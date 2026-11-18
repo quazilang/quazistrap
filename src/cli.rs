@@ -51,8 +51,8 @@ pub enum Command {
         /// output file name
         #[arg(short, long)]
         output: Option<String>,
-        /// emit portable QZI bytecode instead of native output
-        #[arg(short = 'i', long = "bytecode")]
+        /// emit QZI bytecode instead of native output
+        #[arg(short = 'i', long = "qzi", alias = "bytecode")]
         emit_bytecode: bool,
         /// emit relocatable object file (.o) without linking
         #[arg(short = 'c', long = "obj")]
@@ -237,7 +237,7 @@ pub enum Command {
     Clean,
     /// Run the compiler's internal debug program
     Debug {
-        #[arg(short = 'i', long = "bytecode")]
+        #[arg(short = 'i', long = "qzi", alias = "bytecode")]
         emit_bytecode: bool,
     },
     /// Start the language server

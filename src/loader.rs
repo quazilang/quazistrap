@@ -471,7 +471,7 @@ pub fn load_program_for_all_targets(
                         || known.runtime_string != file.runtime_string
                     {
                         return Err(format!(
-                            "{} has a different module identity for {}; a universal QZI needs one",
+                            "{} has a different module identity for {}; a QZI needs one",
                             file.path, targets[bit].os
                         ));
                     }

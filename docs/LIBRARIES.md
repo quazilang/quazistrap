@@ -83,9 +83,9 @@ Build dependency trees show logical import names such as `std.io` and
 Git's reported percentage as an accurate progress bar followed by the same green
 status diamond as build stages; failures use a red diamond.
 
-## Unified multi-target QZI (format 16)
+## QZI (format 16)
 
-`qz build -i` and `qz build path/to/main.qz -i` produce one QZI that serves
+`qz build --qzi` and `qz build path/to/main.qz -i` produce one QZI that serves
 Linux, Windows, and NetBSD from a single compilation. Import resolution
 determines which files each system uses; the files are parsed once and
 analyzed and lowered once. Shared code is one body for every target. A
@@ -96,7 +96,11 @@ that target's implementation. The build prints a single analysis and
 bytecode stage and never names a target in its summary. Project builds resolve
 imports before reusing a QZI whose sources, configuration and dependencies
 are unchanged. Both `--no-incremental` and `--debug` bypass this cache. See
-[the internal contract](internals/universal-qzi.md).
+[the internal contract](internals/qzi.md).
+
+`qz build app.qzi --qzi -o copy.qzi` validates and copies the complete current
+QZI. To combine code and dependencies in a new QZI, build the source project
+that declares those dependencies.
 
 Target-specific type aliases of built-in types (such as `std.ffi.c_long`)
 and functions whose signatures differ per target are supported. Structs,
@@ -120,7 +124,7 @@ holding every distinct body (one metadata section, interface, call
 relocations, ownership envelope, bytecode), one target mask per body,
 interface overrides for targets whose public interface differs, and a
 SHA-256 of the whole file. Integrity verification does not establish
-ownership safety. `scripts/check_universal_qzi.py` checks the contract.
+ownership safety. `scripts/check_qzi.py` checks the contract.
 
 Shared references to multi-slot fixed arrays can refer to stack or heap
 storage. A library interface that exchanges these references requires the
@@ -140,11 +144,10 @@ Interface cache entries are keyed by interface content.
 Format 15, an early container holding one complete program per operating
 system, is retired; reading such a file asks to rebuild it from source.
 
-## Single-target modules (QZI v14)
+## QZI module layout and compatibility
 
-QZI is both the portable bytecode container and compiled-library format. It is
-not a package-manager archive. Each variant of a universal QZI (and an older
-single-target QZI file) contains:
+QZI is the bytecode container for executables and compiled libraries. The
+module embedded in v16 uses the sectioned layout from v14:
 
 1. package name, version, `executable`/`library` kind, and entry signature;
 2. a source-visible public interface;
@@ -216,21 +219,23 @@ Generic bodies are not yet a stable binary-library ABI. The compiler rejects a
 QZI library with public generic declarations and tells the author to distribute
 source until generic templates gain a portable representation.
 
-## QZC v6
+## QZC v35
 
-QZC means **Quazi Compilation Cache**. A project uses one cache file:
+QZC means **Quazi Compilation Cache**. Project builds cache native targets
+and QZI at the following paths:
 
 ```text
-build/quazi/<architecture>-<os>/default/incremental.qzc
+build/quazi/<architecture>-<os>/<artifact>/incremental.qzc
+build/quazi/qzi/<artifact>/incremental.qzc
 ```
 
 After a successful build it stores compiler/target identity, canonical input
 paths and SHA-256 hashes, validated linked QZI, backend metadata, and reusable
 pre-WPO function chunks keyed by source hash and semantic-context fingerprint.
-V6 invalidates cache entries produced before phase-2 layout intrinsic lowering
-and the current layout ABI boundary.
+QZC v35 refreshes caches from before the current fixed-array reference layout.
 
-An exact hit skips frontend and WPO and reuses linked QZI. On a partial hit the
+For a native target, an exact hit skips frontend and WPO and reuses linked
+bytecode. On a partial hit the
 compiler parses and analyzes the complete program for sound WPO, restores
 unchanged pre-WPO function chunks, compiles only functions in changed source
 files, then reruns global reachability, inlining, constant propagation, dead

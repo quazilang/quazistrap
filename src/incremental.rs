@@ -123,8 +123,8 @@ fn read_cache(path: &Path) -> Result<Option<QzcFile>, String> {
     if Sha256::digest(&qzi).as_slice() != expected_checksum {
         return Ok(None);
     }
-    if qzi.get(4) == Some(&crate::bytecode::chunk::QZI_UNIFIED_VERSION) {
-        crate::bytecode::chunk::decode_unified_qzi(&qzi)
+    if qzi.get(4) == Some(&crate::bytecode::chunk::QZI_VERSION) {
+        crate::bytecode::chunk::decode_qzi(&qzi)
             .map_err(|error| format!("cached QZI is invalid: {error}"))?;
     } else {
         crate::bytecode::deserialize_qzi_module(&qzi)

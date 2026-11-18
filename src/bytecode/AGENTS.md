@@ -55,15 +55,18 @@ matching artifact ownership boundary.
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- Version: `0x0E` (v14). Readers retain compatible v2-v13 bytecode without
+- The current QZI version is `0x10` (v16). It stores one module with per-body
+  target masks and optional interface overrides. See
+  [the QZI contract](../../docs/internals/qzi.md).
+- The embedded module layout is `0x0E` (v14). Readers retain compatible v2-v13 bytecode without
   legacy Pow; pre-v14 Pow requires a source rebuild. Decoding
   does not prove current link compatibility. Pre-v12 safe-reference
   receiver/aggregate contracts and opaque outbound calls require a source
   rebuild; proven closed scalar/raw-pointer/shared-string artifacts retain
   compatibility. V1 omitted frame metadata; parameterized v6 trait interfaces
   also require rebuilding. Original ownership ABI generation survives aliases
-  and reserialization. Current source cache is QZC30, requiring defining-source
-  alias bodies; QZC29 introduced checked runtime String identity/layout.
+  and reserialization. Current source cache is QZC35. QZC30 required defining-source
+  alias bodies. QZC29 introduced checked runtime String identity/layout.
   QZC28 introduced typed power; v27 operator requirements;
   v26 arithmetic requirements; v25 numeric mutations; v24 raw f32 conversion and
   floating updates. Earlier dated checkpoints below describe historical versions.

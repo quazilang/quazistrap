@@ -97,7 +97,7 @@ impl QziModule {
             },
             interface: String::new(),
             call_relocations: infer_call_relocations(&chunks).unwrap_or_default(),
-            ownership_abi_version: QZI_VERSION,
+            ownership_abi_version: QZI_MODULE_VERSION,
             ownership: QziOwnershipArtifact::default(),
             chunks,
         }
@@ -107,7 +107,7 @@ impl QziModule {
     /// receiver ABI and the v11 owned-value ABI. This is compatibility metadata,
     /// not an ownership certificate; current envelopes remain unverified.
     pub fn validate_current_ownership_abi(&self) -> Result<(), String> {
-        if !(2..=QZI_VERSION).contains(&self.ownership_abi_version) {
+        if !(2..=QZI_MODULE_VERSION).contains(&self.ownership_abi_version) {
             return Err(
                 "unsupported QZI ownership ABI generation; rebuild this artifact from source"
                     .to_string(),
@@ -906,7 +906,7 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
 }
 
 pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
-pub const QZI_VERSION: u8 = 14;
+pub const QZI_MODULE_VERSION: u8 = 14;
 const QZI_LEGACY_VERSION: u8 = 5;
 const QZI_FIRST_SECTIONED_VERSION: u8 = 6;
 const QZI_OWNERSHIP_SCHEMA_VERSION: u16 = 1;
@@ -1286,7 +1286,7 @@ pub fn serialize_qzi_module(module: &QziModule) -> Result<Vec<u8>, String> {
         );
     }
     let relocations: Vec<_> = relocation_map.into_values().collect();
-    if !(2..=QZI_VERSION).contains(&module.ownership_abi_version) {
+    if !(2..=QZI_MODULE_VERSION).contains(&module.ownership_abi_version) {
         return Err("unsupported QZI ownership ABI generation".to_string());
     }
     let mut metadata = encode_qzi_metadata(&module.metadata)?;
@@ -1314,7 +1314,7 @@ pub fn serialize_qzi_module(module: &QziModule) -> Result<Vec<u8>, String> {
         .ok_or_else(|| "QZI section directory overflow".to_string())?;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(QZI_MAGIC);
-    bytes.push(QZI_VERSION);
+    bytes.push(QZI_MODULE_VERSION);
     bytes.extend_from_slice(&(sections.len() as u16).to_le_bytes());
     for (kind, payload) in &sections {
         let section_offset = u32::try_from(offset)
@@ -1340,11 +1340,11 @@ pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
 }
 
 /// Retired format 15: one complete program per operating system in a
-/// container. A project now compiles to one unified QZI (format 16); such
+/// container. A project now compiles to one QZI (format 16); such
 /// files are rejected with a request to rebuild.
 const QZI_RETIRED_PER_OS_VERSION: u8 = 15;
 
-/// Unified multi-target QZI (format 16): ONE program or library. Every
+/// QZI (format 16): ONE program or library. Every
 /// function body appears once with the set of target operating systems it
 /// applies to: platform-independent functions apply to all of them, and the
 /// `@cfg(target_os)` alternatives of a function are separate bodies with
@@ -1357,19 +1357,19 @@ const QZI_RETIRED_PER_OS_VERSION: u8 = 15;
 /// a u32 count and one target-mask byte per function body; a u8 count of
 /// interface overrides, each a target mask and a u32-length interface; then a
 /// SHA-256 of all preceding bytes.
-pub const QZI_UNIFIED_VERSION: u8 = 16;
+pub const QZI_VERSION: u8 = 16;
 
-/// Decoded unified QZI: target names, the module of all function bodies,
+/// Decoded QZI: target names, the module of all function bodies,
 /// each body's target mask, and interface overrides.
 #[derive(Debug)]
-pub struct UnifiedQzi {
+pub struct Qzi {
     pub targets: Vec<String>,
     pub module: QziModule,
     pub masks: Vec<u8>,
     pub interface_overrides: Vec<(u8, String)>,
 }
 
-impl UnifiedQzi {
+impl Qzi {
     pub(crate) fn interface_for_target(&self, index: usize) -> &str {
         let bit = 1u8 << index;
         self.interface_overrides
@@ -1403,19 +1403,19 @@ impl UnifiedQzi {
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         let target_count = self.targets.len();
         if !(1..=8).contains(&target_count) {
-            return Err("a unified QZI needs between one and eight targets".to_string());
+            return Err("a QZI needs between one and eight targets".to_string());
         }
         let supported = (u16::from(u8::MAX) >> (8 - target_count)) as u8;
         if self.masks.len() != self.module.chunks.len()
             || self.masks.iter().any(|mask| *mask == 0 || mask & !supported != 0)
         {
-            return Err("invalid unified QZI body masks".to_string());
+            return Err("invalid QZI body masks".to_string());
         }
         let mut bodies = std::collections::HashMap::new();
         for (chunk, mask) in self.module.chunks.iter().zip(&self.masks) {
             let available = bodies.entry(chunk.name.as_str()).or_insert(0);
             if *available & mask != 0 {
-                return Err(format!("unified QZI has overlapping bodies for `{}`", chunk.name));
+                return Err(format!("QZI has overlapping bodies for `{}`", chunk.name));
             }
             *available |= mask;
         }
@@ -1423,14 +1423,14 @@ impl UnifiedQzi {
             let entry_mask = bodies.get("main").copied().unwrap_or(0);
             for (index, target) in self.targets.iter().enumerate() {
                 if entry_mask & (1 << index) == 0 {
-                    return Err(format!("unified QZI executable is missing an entry for {target}"));
+                    return Err(format!("QZI executable is missing an entry for {target}"));
                 }
             }
         }
         let mut override_targets = 0;
         for (mask, _) in &self.interface_overrides {
             if *mask == 0 || mask & !supported != 0 || mask & override_targets != 0 {
-                return Err("invalid unified QZI interface override mask".to_string());
+                return Err("invalid QZI interface override mask".to_string());
             }
             override_targets |= mask;
         }
@@ -1438,12 +1438,12 @@ impl UnifiedQzi {
         let module = serialize_qzi_module(&self.module)?;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(QZI_MAGIC);
-        bytes.push(QZI_UNIFIED_VERSION);
+        bytes.push(QZI_VERSION);
         bytes.push(target_count as u8);
         let mut seen_targets = std::collections::HashSet::new();
         for target in &self.targets {
             if !seen_targets.insert(target) {
-                return Err(format!("duplicate unified QZI target `{target}`"));
+                return Err(format!("duplicate QZI target `{target}`"));
             }
             let length = u8::try_from(target.len())
                 .map_err(|_| "QZI target name too long".to_string())?;
@@ -1451,17 +1451,17 @@ impl UnifiedQzi {
             bytes.extend_from_slice(target.as_bytes());
         }
         let module_length = u32::try_from(module.len())
-            .map_err(|_| "unified QZI module exceeds 4 GiB".to_string())?;
+            .map_err(|_| "QZI module exceeds 4 GiB".to_string())?;
         bytes.extend_from_slice(&module_length.to_le_bytes());
         let body_count = u32::try_from(self.masks.len())
-            .map_err(|_| "too many unified QZI body masks".to_string())?;
+            .map_err(|_| "too many QZI body masks".to_string())?;
         bytes.extend_from_slice(&module);
         bytes.extend_from_slice(&body_count.to_le_bytes());
         bytes.extend_from_slice(&self.masks);
         bytes.push(self.interface_overrides.len() as u8);
         for (mask, interface) in &self.interface_overrides {
             let length = u32::try_from(interface.len())
-                .map_err(|_| "unified QZI interface exceeds 4 GiB".to_string())?;
+                .map_err(|_| "QZI interface exceeds 4 GiB".to_string())?;
             bytes.push(*mask);
             bytes.extend_from_slice(&length.to_le_bytes());
             bytes.extend_from_slice(interface.as_bytes());
@@ -1472,9 +1472,9 @@ impl UnifiedQzi {
     }
 }
 
-pub fn decode_unified_qzi(bytes: &[u8]) -> Result<UnifiedQzi, String> {
-    let malformed = |what: &str| format!("malformed unified QZI: {what}");
-    if bytes.len() < 6 + 32 || bytes[4] != QZI_UNIFIED_VERSION {
+pub fn decode_qzi(bytes: &[u8]) -> Result<Qzi, String> {
+    let malformed = |what: &str| format!("malformed QZI: {what}");
+    if bytes.len() < 6 + 32 || &bytes[..4] != QZI_MAGIC || bytes[4] != QZI_VERSION {
         return Err(malformed("header"));
     }
     let (content, digest) = bytes.split_at(bytes.len() - 32);
@@ -1543,7 +1543,7 @@ pub fn decode_unified_qzi(bytes: &[u8]) -> Result<UnifiedQzi, String> {
             }
         }
     }
-    Ok(UnifiedQzi {
+    Ok(Qzi {
         targets,
         module,
         masks,
@@ -1553,20 +1553,20 @@ pub fn decode_unified_qzi(bytes: &[u8]) -> Result<UnifiedQzi, String> {
 
 /// The program as compiled for `os`: its function bodies, calls re-linked by
 /// name, and its interface.
-pub(crate) fn select_unified_target(unified: UnifiedQzi, os: &str) -> Result<QziModule, String> {
-    let Some(bit) = unified.targets.iter().position(|target| target == os) else {
+pub(crate) fn project_qzi_for_target(qzi: Qzi, os: &str) -> Result<QziModule, String> {
+    let Some(bit) = qzi.targets.iter().position(|target| target == os) else {
         return Err(format!(
             "this QZI has no `{os}` target (it supports: {}); the program did not compile for {os} when the QZI was built",
-            unified.targets.join(", ")
+            qzi.targets.join(", ")
         ));
     };
     let bit = 1u8 << bit;
-    let UnifiedQzi {
+    let Qzi {
         module,
         masks,
         interface_overrides,
         ..
-    } = unified;
+    } = qzi;
     let callee_names: Vec<String> = module.chunks.iter().map(|chunk| chunk.name.clone()).collect();
     let mut kept: Vec<Chunk> = Vec::new();
     for (chunk, mask) in module.chunks.into_iter().zip(&masks) {
@@ -1610,7 +1610,7 @@ pub(crate) fn select_unified_target(unified: UnifiedQzi, os: &str) -> Result<Qzi
 
 static SELECTED_QZI_TARGET: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 
-/// The operating system a unified QZI is compiled for (set by
+/// The operating system a QZI is compiled for (set by
 /// the driver from `--target`; otherwise the host).
 pub fn select_qzi_target(os: &str) {
     if let Ok(mut selected) = SELECTED_QZI_TARGET.write() {
@@ -1635,8 +1635,8 @@ fn selected_qzi_target() -> String {
 }
 
 pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
-    if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_UNIFIED_VERSION {
-        return select_unified_target(decode_unified_qzi(bytes)?, &selected_qzi_target());
+    if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_VERSION {
+        return project_qzi_for_target(decode_qzi(bytes)?, &selected_qzi_target());
     }
     if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_RETIRED_PER_OS_VERSION {
         return Err(
@@ -1676,7 +1676,7 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
             chunks,
         });
     }
-    if !(QZI_FIRST_SECTIONED_VERSION..=QZI_VERSION).contains(&version) {
+    if !(QZI_FIRST_SECTIONED_VERSION..=QZI_MODULE_VERSION).contains(&version) {
         return Err(format!("unsupported QZI version {version}"));
     }
     let mut pos = 5usize;
@@ -1775,7 +1775,7 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
         let (&origin, metadata) = metadata_payload
             .split_last()
             .ok_or_else(|| "QZI ownership ABI generation is missing".to_string())?;
-        if !(2..=QZI_VERSION).contains(&origin) {
+        if !(2..=QZI_MODULE_VERSION).contains(&origin) {
             return Err("unsupported QZI ownership ABI generation".to_string());
         }
         (metadata, origin)
@@ -2288,7 +2288,7 @@ mod tests {
     /// Produces a real pre-envelope sectioned fixture from current payloads so
     /// compatibility tests do not pretend a v10 directory is a v6 artifact.
     fn qzi_v9_fixture(bytes: &[u8]) -> Vec<u8> {
-        assert_eq!(bytes[4], QZI_VERSION);
+        assert_eq!(bytes[4], QZI_MODULE_VERSION);
         let count = u16::from_le_bytes(bytes[5..7].try_into().unwrap()) as usize;
         let mut payloads = std::collections::BTreeMap::new();
         for entry in 0..count {
@@ -2400,7 +2400,7 @@ mod tests {
         let mut tampered = encoded.clone();
         let metadata_offset = u32::from_le_bytes(encoded[11..15].try_into().unwrap()) as usize;
         let metadata_len = u32::from_le_bytes(encoded[15..19].try_into().unwrap()) as usize;
-        tampered[metadata_offset + metadata_len - 1] = QZI_VERSION;
+        tampered[metadata_offset + metadata_len - 1] = QZI_MODULE_VERSION;
         assert!(
             deserialize_qzi_module(&tampered)
                 .unwrap_err()
@@ -2634,7 +2634,7 @@ mod tests {
         module.alias_library_namespace("renamed");
         module.qualify_library_root_symbols();
         let encoded = serialize_qzi_module(&module).unwrap();
-        assert_eq!(encoded[4], QZI_VERSION);
+        assert_eq!(encoded[4], QZI_MODULE_VERSION);
         let decoded = deserialize_qzi_module(&encoded).unwrap();
         assert_eq!(decoded.ownership_abi_version, 11);
         assert_eq!(decoded.metadata.name, "renamed");
@@ -2694,7 +2694,7 @@ mod tests {
         );
         module.ownership_abi_version = 12;
         let encoded = serialize_qzi_module(&module).unwrap();
-        assert_eq!(encoded[4], QZI_VERSION);
+        assert_eq!(encoded[4], QZI_MODULE_VERSION);
         let decoded = deserialize_qzi_module(&encoded).unwrap();
         assert_eq!(decoded.ownership_abi_version, 12);
         assert!(matches!(
@@ -2856,10 +2856,10 @@ mod tests {
     #[test]
     fn qzi_current_owned_contract_roundtrip_stays_unverified() {
         let mut module = legacy_abi_library("pub type Text = String; pub fn answer() Text;");
-        module.ownership_abi_version = QZI_VERSION;
+        module.ownership_abi_version = QZI_MODULE_VERSION;
         module.chunks[0].name = "old.String.free".to_string();
         let decoded = deserialize_qzi_module(&serialize_qzi_module(&module).unwrap()).unwrap();
-        assert_eq!(decoded.ownership_abi_version, QZI_VERSION);
+        assert_eq!(decoded.ownership_abi_version, QZI_MODULE_VERSION);
         assert!(matches!(
             decoded.ownership,
             QziOwnershipArtifact::Unverified { .. }
@@ -2952,13 +2952,13 @@ mod tests {
             },
             interface: "pub fn add(a: i32, b: i32) i32;".to_string(),
             call_relocations: Vec::new(),
-            ownership_abi_version: QZI_VERSION,
+            ownership_abi_version: QZI_MODULE_VERSION,
             ownership: Default::default(),
             chunks: vec![chunk],
         };
 
         let encoded = serialize_qzi_module(&module).expect("serialize current QZI module");
-        assert_eq!(encoded[4], QZI_VERSION);
+        assert_eq!(encoded[4], QZI_MODULE_VERSION);
         let decoded = deserialize_qzi_module(&encoded).expect("deserialize current QZI module");
         assert_eq!(decoded.metadata, module.metadata);
         assert_eq!(decoded.interface, module.interface);
@@ -2986,7 +2986,7 @@ mod tests {
             },
             interface: "pub fn answer() i32;".to_string(),
             call_relocations: Vec::new(),
-            ownership_abi_version: QZI_VERSION,
+            ownership_abi_version: QZI_MODULE_VERSION,
             ownership: Default::default(),
             chunks: vec![{
                 let mut chunk = Chunk::new("bound.answer");
@@ -3052,7 +3052,7 @@ mod tests {
         let mut missing = qzi_v9_fixture(
             &serialize_qzi_module(&module).expect("serialize missing-envelope fixture"),
         );
-        missing[4] = QZI_VERSION;
+        missing[4] = QZI_MODULE_VERSION;
         let error =
             deserialize_qzi_module(&missing).expect_err("v10 must require its ownership envelope");
         assert!(error.contains("ownership envelope is missing"));
@@ -3111,7 +3111,7 @@ mod tests {
             },
             interface,
             call_relocations: Vec::new(),
-            ownership_abi_version: QZI_VERSION,
+            ownership_abi_version: QZI_MODULE_VERSION,
             ownership: Default::default(),
             chunks: vec![chunk],
         };
@@ -3159,7 +3159,7 @@ mod tests {
             },
             interface,
             call_relocations: Vec::new(),
-            ownership_abi_version: QZI_VERSION,
+            ownership_abi_version: QZI_MODULE_VERSION,
             ownership: Default::default(),
             chunks: vec![chunk],
         };
@@ -3195,7 +3195,7 @@ mod tests {
             },
             interface,
             call_relocations: Vec::new(),
-            ownership_abi_version: QZI_VERSION,
+            ownership_abi_version: QZI_MODULE_VERSION,
             ownership: Default::default(),
             chunks: vec![chunk],
         };
@@ -3268,7 +3268,7 @@ mod tests {
                 instruction_index: 0,
                 symbol: "math.add".to_string(),
             }],
-            ownership_abi_version: QZI_VERSION,
+            ownership_abi_version: QZI_MODULE_VERSION,
             ownership: Default::default(),
             chunks: vec![main],
         };
@@ -3284,7 +3284,7 @@ mod tests {
             },
             interface: String::new(),
             call_relocations: Vec::new(),
-            ownership_abi_version: QZI_VERSION,
+            ownership_abi_version: QZI_MODULE_VERSION,
             ownership: Default::default(),
             chunks: vec![add],
         };
@@ -3506,7 +3506,7 @@ mod tests {
     #[test]
     fn qzi_rejects_impossible_chunk_counts_before_allocating() {
         let mut encoded = Vec::from(QZI_MAGIC.as_slice());
-        encoded.push(QZI_VERSION);
+        encoded.push(QZI_MODULE_VERSION);
         encoded.extend_from_slice(&u32::MAX.to_le_bytes());
         assert!(deserialize_qzi(&encoded).is_err());
     }

@@ -9,7 +9,7 @@ pub mod instruction;
 pub mod interface;
 pub mod opcode;
 pub mod regalloc;
-pub mod unified;
+pub mod qzi_link;
 pub mod vtable;
 
 pub use chunk::{

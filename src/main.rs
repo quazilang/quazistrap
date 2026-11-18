@@ -22,22 +22,19 @@ mod package;
 pub mod parser;
 mod progress;
 mod project;
+mod qzi_build;
 mod runtime_layout;
 pub mod semantic;
 mod test_runner;
 mod type_resolution;
-mod universal;
 
 use analysis::{analyze_program_with_source_files, format_quazi_source};
 use backend::linker::{LinkerInvocation, link_object, remove_temp, write_temp_object};
 use backend::{TargetSpec, select_backend};
-use bytecode::{Codegen, serialize_qzi};
+use bytecode::Codegen;
 use clap::Parser as ClapParser;
 use cli::Args;
-use lexer::Lexer;
-use parser::Parser;
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -108,125 +105,6 @@ fn report_diagnostics(
         return false;
     }
     true
-}
-
-fn run_pipeline(
-    src: &str,
-    program: &parser::ast::Program,
-    library_fn_names: HashSet<String>,
-    library_char_ranges: Vec<std::ops::Range<usize>>,
-    source_files: Vec<semantic::types::SourceFile>,
-    namespaced_paths: HashSet<String>,
-    debug: bool,
-    emit: EmitType,
-    output_file_name: &str,
-    link_flags: Option<&[String]>,
-    explicit_linker: Option<&Path>,
-) {
-    let program = &semantic::strip_cfg(program);
-    let sema_report = analyze_program_with_source_files(
-        src,
-        program,
-        library_fn_names,
-        library_char_ranges,
-        source_files.clone(),
-        namespaced_paths,
-    );
-    if !report_diagnostics(&sema_report, src, &source_files) {
-        fail_build();
-    }
-
-    let mut cg = Codegen::new(&sema_report);
-    cg.set_native_mangling(true);
-    let chunks = cg
-        .compile_program(program, &source_files)
-        .unwrap_or_else(|error| {
-            eprintln!("\x1b[31;1merror:\x1b[0m code generation failed: {error}");
-            fail_build();
-        });
-
-    if debug {
-        for chunk in &chunks {
-            eprint!("{}", chunk);
-        }
-    }
-
-    match emit {
-        EmitType::Bytecode => {
-            let bytes = serialize_qzi(&chunks).unwrap_or_else(|error| {
-                eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
-                fail_build();
-            });
-            let mut f = std::fs::File::create(output_file_name).unwrap_or_else(|e| {
-                eprintln!(
-                    "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
-                    output_file_name, e
-                );
-                fail_build();
-            });
-            f.write_all(&bytes).unwrap_or_else(|e| {
-                eprintln!("\x1b[31;1merror:\x1b[0m write failed: {}", e);
-                fail_build();
-            });
-            println!(
-                "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m({} bytes)\x1b[0m",
-                bytes.len()
-            );
-            for chunk in &chunks {
-                print!("{}", chunk);
-            }
-        }
-
-        EmitType::Object => {
-            let obj_bytes = compile_to_object(
-                &chunks,
-                false,
-                false,
-                Some(&sema_report),
-                sema_report.main_takes_args,
-                &TargetSpec::host(),
-            );
-            write_or_package_object(
-                &obj_bytes,
-                output_file_name,
-                link_flags.unwrap_or(&[]),
-                explicit_linker,
-                &TargetSpec::host(),
-                &sema_report
-                    .exported_symbols
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            );
-            println!(
-                "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m[object]\x1b[0m"
-            );
-        }
-
-        EmitType::Binary => {
-            let flags = link_flags.unwrap_or(&[]);
-            let obj_bytes = compile_to_object(
-                &chunks,
-                true,
-                false,
-                Some(&sema_report),
-                sema_report.main_takes_args,
-                &TargetSpec::host().linking(flags),
-            );
-            link_object(
-                &obj_bytes,
-                Path::new(output_file_name),
-                TargetSpec::host(),
-                flags,
-                explicit_linker,
-            )
-            .unwrap_or_else(|e| {
-                eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
-                fail_build();
-            });
-            println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
-        }
-    }
 }
 
 fn write_or_package_object(
@@ -436,29 +314,7 @@ fn emit_chunks(
     }
 
     match emit {
-        EmitType::Bytecode => {
-            let bytes = serialize_qzi(chunks).unwrap_or_else(|error| {
-                eprintln!("\x1b[31;1merror:\x1b[0m cannot serialize QZI: {error}");
-                fail_build();
-            });
-            let mut f = std::fs::File::create(output_file_name).unwrap_or_else(|e| {
-                eprintln!(
-                    "\x1b[31;1merror:\x1b[0m cannot create {}: {}",
-                    output_file_name, e
-                );
-                fail_build();
-            });
-            f.write_all(&bytes).unwrap_or_else(|e| {
-                eprintln!("\x1b[31;1merror:\x1b[0m write failed: {}", e);
-                fail_build();
-            });
-            if announce {
-                println!(
-                    "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m({} bytes)\x1b[0m",
-                    bytes.len()
-                );
-            }
-        }
+        EmitType::Bytecode => unreachable!("QZI output uses qzi_build"),
 
         EmitType::Object => {
             let obj_bytes =
@@ -1408,7 +1264,7 @@ fn build_with_progress(
     if !qzi_dependencies.is_empty() {
         prog.begin("qzi linking");
         let generated = bytecode::QziModule {
-            ownership_abi_version: bytecode::chunk::QZI_VERSION,
+            ownership_abi_version: bytecode::chunk::QZI_MODULE_VERSION,
             metadata: qzi_metadata.clone().unwrap_or(bytecode::QziMetadata {
                 name: String::new(),
                 version: None,
@@ -1480,7 +1336,7 @@ fn build_with_progress(
             String::new()
         };
         let mut module = bytecode::QziModule {
-            ownership_abi_version: bytecode::chunk::QZI_VERSION,
+            ownership_abi_version: bytecode::chunk::QZI_MODULE_VERSION,
             metadata,
             interface,
             call_relocations: Vec::new(),
@@ -1877,8 +1733,8 @@ fn main() {
                 };
                 if matches!(effective_emit, EmitType::Bytecode) {
                     let mut progress = preview_progress;
-                    universal::build(
-                        universal::UniversalBuild {
+                    qzi_build::build(
+                        qzi_build::QziBuild {
                             entries: std::slice::from_ref(&entry),
                             out: &out,
                             resolver: Some(&ctx.resolver),
@@ -1889,7 +1745,7 @@ fn main() {
                             debug,
                             header_printed: true,
                             cache: (!no_incremental && !debug).then(|| {
-                                (ctx.incremental_cache_path("universal"), cache_inputs.clone())
+                                (ctx.incremental_cache_path("qzi"), cache_inputs.clone())
                             }),
                         },
                         &mut progress,
@@ -1936,6 +1792,19 @@ fn main() {
                 .iter()
                 .any(|f| f.extension().is_some_and(|e| e == "qzi"))
             {
+                if emit_bytecode {
+                    let [input] = files.as_slice() else {
+                        eprintln!("error: --qzi accepts one QZI input. Declare dependencies in a source project to combine them into one QZI");
+                        fail_build();
+                    };
+                    let out = output.unwrap_or_else(|| {
+                        input.file_name().unwrap_or_default().to_string_lossy().into_owned()
+                    });
+                    let mut progress =
+                        progress::BuildProgress::new(silent, no_color, no_unicode, no_progress);
+                    qzi_build::copy(input, &out, debug, &mut progress);
+                    return;
+                }
                 // .qzi input — deserialize and compile to native directly;
                 // ELF objects may be supplied alongside it for final linking.
                 for input in &files {
@@ -2113,8 +1982,8 @@ fn main() {
                         output.unwrap_or_else(|| target_output_name(&stem, emit.clone(), &target));
                     let mut progress =
                         progress::BuildProgress::new(silent, no_color, no_unicode, no_progress);
-                    universal::build(
-                        universal::UniversalBuild {
+                    qzi_build::build(
+                        qzi_build::QziBuild {
                             entries: &source_files,
                             out: &out,
                             resolver,
@@ -2636,37 +2505,52 @@ fn main() i32 {
     ret 0;
 }
 "#;
-            let (emit, output) = if emit_bytecode {
-                (EmitType::Bytecode, "dbg.qzi".to_owned())
-            } else {
-                (
-                    EmitType::Binary,
-                    if cfg!(target_os = "windows") {
-                        "dbg.exe".to_owned()
-                    } else {
-                        "dbg".to_owned()
-                    },
-                )
+            let build_sample = || -> std::io::Result<std::process::ExitStatus> {
+                let compiler = std::env::current_exe()?;
+                let output_name = if emit_bytecode {
+                    "dbg.qzi"
+                } else if cfg!(target_os = "windows") {
+                    "dbg.exe"
+                } else {
+                    "dbg"
+                };
+                let cwd = std::env::current_dir()?;
+                let output = cwd.join(output_name);
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let scratch = std::env::temp_dir().join(format!(
+                    "qz-debug-{}-{stamp}",
+                    std::process::id()
+                ));
+                std::fs::create_dir(&scratch)?;
+                let source = scratch.join("main.qz");
+                let status = std::fs::write(&source, src).and_then(|()| {
+                    let mut command = std::process::Command::new(&compiler);
+                    command
+                        .current_dir(&scratch)
+                        .args(["build", "main.qz", "-o"])
+                        .arg(output);
+                    for variable in ["QUAZI_STD_ROOT", "QUAZI_PRELUDE_ROOT"] {
+                        if let Ok(root) = std::env::var(variable) {
+                            command.env(variable, cwd.join(root));
+                        }
+                    }
+                    if emit_bytecode {
+                        command.args(["--qzi", "--debug"]);
+                    }
+                    command.status()
+                });
+                remove_temp(&source);
+                let _ = std::fs::remove_dir(&scratch);
+                status
             };
-            let mut lexer = Lexer::new(src);
-            let tokens = lexer.tokenize();
-            let mut parser = Parser::new_with_source(tokens, src);
-            match parser.parse() {
-                Ok(program) => run_pipeline(
-                    src,
-                    &program,
-                    HashSet::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    HashSet::new(),
-                    false,
-                    emit,
-                    &output,
-                    None,
-                    None,
-                ),
-                Err(err) => {
-                    eprintln!("{}", err);
+            match build_sample() {
+                Ok(status) if status.success() => {}
+                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+                Err(error) => {
+                    eprintln!("error: cannot build the debug program: {error}");
                     fail_build();
                 }
             }

@@ -22,8 +22,8 @@ macro_rules! eprintln {
 }
 
 use crate::analysis::analyze_program_with_source_files;
-use crate::bytecode::chunk::{QZI_UNIFIED_VERSION, UnifiedQzi, decode_unified_qzi};
-use crate::bytecode::unified::{UnifiedInput, assemble_unified_qzi};
+use crate::bytecode::chunk::{QZI_VERSION, Qzi, decode_qzi};
+use crate::bytecode::qzi_link::{QziLinkInput, link_qzi};
 use crate::bytecode::{self, Codegen, QziMetadata, QziModuleKind};
 use crate::loader::{self, CfgTarget, ModuleResolver};
 use crate::progress::BuildProgress;
@@ -50,7 +50,7 @@ pub const QZI_TARGETS: [CfgTarget<'static>; 3] = [
     },
 ];
 
-pub struct UniversalBuild<'a> {
+pub struct QziBuild<'a> {
     pub entries: &'a [PathBuf],
     pub out: &'a str,
     pub resolver: Option<&'a ModuleResolver>,
@@ -92,15 +92,57 @@ fn fail(progress: &mut BuildProgress, message: &str) -> ! {
     std::process::exit(1)
 }
 
-fn decode_dependency(path: &Path, bytes: &[u8]) -> Result<UnifiedQzi, String> {
+fn dump_chunks(qzi: &Qzi) {
+    for (chunk, mask) in qzi.module.chunks.iter().zip(&qzi.masks) {
+        eprintln!("; targets {mask:#05b}");
+        eprint!("{chunk}");
+    }
+}
+
+pub fn copy(input: &Path, out: &str, debug: bool, progress: &mut BuildProgress) {
+    let input_name = input
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("?");
+    let out_name = Path::new(out)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(out);
+    progress.header(input_name, out_name);
+    progress.begin("qzi");
+    let bytes = std::fs::read(input).unwrap_or_else(|error| {
+        fail(progress, &format!("cannot read '{}': {error}", input.display()))
+    });
+    let qzi = decode_qzi(&bytes).unwrap_or_else(|error| {
+        fail(
+            progress,
+            &format!("cannot re-emit '{}': {error}. Rebuild older QZI from source", input.display()),
+        )
+    });
+    if debug {
+        dump_chunks(&qzi);
+    }
+    progress.done(&format!("{} bodies", qzi.masks.len()));
+    let same_path = input
+        .canonicalize()
+        .ok()
+        .zip(Path::new(out).canonicalize().ok())
+        .is_some_and(|(input, output)| input == output);
+    if !same_path {
+        write_output(out, &bytes, progress);
+    }
+    progress.success_as(out, Some(bytes.len() as u64), Some("QZI"));
+}
+
+fn decode_dependency(path: &Path, bytes: &[u8]) -> Result<Qzi, String> {
     let invalid = |error: String| format!("invalid QZI dependency '{}': {error}", path.display());
-    if bytes.get(4) == Some(&QZI_UNIFIED_VERSION) {
-        return decode_unified_qzi(bytes).map_err(invalid);
+    if bytes.get(4) == Some(&QZI_VERSION) {
+        return decode_qzi(bytes).map_err(invalid);
     }
     // A single-program dependency serves every target.
     let module = bytecode::deserialize_qzi_module(bytes).map_err(invalid)?;
     let masks = vec![(1u8 << QZI_TARGETS.len()) - 1; module.chunks.len()];
-    Ok(UnifiedQzi {
+    Ok(Qzi {
         targets: QZI_TARGETS
             .iter()
             .map(|target| target.os.to_string())
@@ -111,7 +153,7 @@ fn decode_dependency(path: &Path, bytes: &[u8]) -> Result<UnifiedQzi, String> {
     })
 }
 
-pub fn build(request: UniversalBuild<'_>, progress: &mut BuildProgress) {
+pub fn build(request: QziBuild<'_>, progress: &mut BuildProgress) {
     let input_name = request.entries[0]
         .file_name()
         .and_then(|name| name.to_str())
@@ -150,7 +192,7 @@ pub fn build(request: UniversalBuild<'_>, progress: &mut BuildProgress) {
         .collect::<Vec<_>>();
     let cache_context = request.cache.as_ref().and_then(|(_, configuration)| {
         let mut hash = Sha256::new();
-        hash.update(b"universal-qzi-exact/1");
+        hash.update(b"qzi-exact/1");
         hash.update(format!(
             "{:?}",
             (
@@ -186,7 +228,7 @@ pub fn build(request: UniversalBuild<'_>, progress: &mut BuildProgress) {
     if let (Some((cache_path, _)), Some(context)) = (&request.cache, cache_context) {
         progress.begin("cache lookup");
         match crate::incremental::load_exact(cache_path, Some(context)) {
-            Ok(Some(hit)) if hit.qzi.get(4) == Some(&QZI_UNIFIED_VERSION) => {
+            Ok(Some(hit)) if hit.qzi.get(4) == Some(&QZI_VERSION) => {
                 progress.done("hit");
                 write_output(request.out, &hit.qzi, progress);
                 progress.success_as(request.out, Some(hit.qzi.len() as u64), Some("QZI"));
@@ -346,7 +388,7 @@ pub fn build(request: UniversalBuild<'_>, progress: &mut BuildProgress) {
         .collect::<Result<Vec<_>, _>>()
         .unwrap_or_else(|error| fail(progress, &error));
     let targets: Vec<&str> = QZI_TARGETS.iter().map(|target| target.os).collect();
-    let mut unified = assemble_unified_qzi(UnifiedInput {
+    let mut qzi = link_qzi(QziLinkInput {
         targets: &targets,
         chunks,
         declared,
@@ -357,24 +399,21 @@ pub fn build(request: UniversalBuild<'_>, progress: &mut BuildProgress) {
         interfaces,
     })
     .unwrap_or_else(|error| fail(progress, &error));
-    unified.module.qualify_library_root_symbols();
+    qzi.module.qualify_library_root_symbols();
     if request.debug {
-        for (chunk, mask) in unified.module.chunks.iter().zip(&unified.masks) {
-            eprintln!("; targets {mask:#05b}");
-            eprint!("{chunk}");
-        }
+        dump_chunks(&qzi);
     }
-    let bytes = unified
+    let bytes = qzi
         .encode()
         .unwrap_or_else(|error| fail(progress, &format!("cannot write QZI: {error}")));
-    let shared = unified
+    let shared = qzi
         .masks
         .iter()
         .filter(|mask| **mask == (1u8 << QZI_TARGETS.len()) - 1)
         .count();
     progress.done(&format!(
         "{} bodies · {} shared",
-        unified.masks.len(),
+        qzi.masks.len(),
         shared
     ));
 

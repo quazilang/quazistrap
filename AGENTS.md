@@ -86,9 +86,9 @@ changing lowering. Do not ask the maintainer to choose these rules again.
 source → Loader → Lexer → Parser → Analyzer → Codegen → Backend (iced-x86) → .o → Linker → binary
 ```
 
-QZI (`-i`): Loader (all targets) → target views → Analyzer → Codegen → unified
+QZI (`-i`, `--qzi`): Loader (all targets) → target views → Analyzer → Codegen →
 v16 assembly, once for every target; no backend. See
-[the universal QZI contract](docs/internals/universal-qzi.md): copies of
+[the QZI contract](docs/internals/qzi.md): copies of
 target-specific declarations are `name@t<mask>` with `@__targets(mask)`, live in
 replica images of their file (`SpanLayout`), and lose the marker at assembly.
 Never reintroduce per-target QZI builds or a merge of compiled programs.
@@ -696,7 +696,8 @@ and [remaining findings](docs/audits/2026-10-23-string-followups.md).
 
 ## Source type context: required follow-up (2026-10-24)
 
-Current source formats are QZC34 and QZI14; the latter remains Unverified.
+Current source builds use QZC35 and emit QZI16. The bytecode module layout is
+v14, and ownership remains Unverified.
 Verify constants in source and the installed binary separately before reporting
 artifact compatibility. Earlier dated cache/ABI checkpoints describe their own
 revisions, including QZC30 for the alias-definition prerequisite.

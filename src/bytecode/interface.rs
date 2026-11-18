@@ -1371,7 +1371,7 @@ impl Printer {
     }
 }
 
-/// One interface for every target of a universal QZI. Declarations that
+/// One interface for every target of a QZI. Declarations that
 /// differ between targets are kept once per target under
 /// `@cfg(target_os = ...)`, so a single program sees each target's API.
 pub fn merge_target_interfaces(targets: &[&str], interfaces: &[String]) -> Result<String, String> {

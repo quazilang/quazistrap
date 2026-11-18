@@ -4,7 +4,7 @@
 
 //! One program for every QZI target.
 //!
-//! A universal QZI is analyzed and lowered once. This pass turns the loaded
+//! A QZI is analyzed and lowered once. This pass turns the loaded
 //! program, whose items and statements still carry `@cfg`, into one
 //! analyzable program in which every declaration is valid for a known set of
 //! targets (a bit mask over the target list):
@@ -677,7 +677,7 @@ pub fn build_target_views(
                 builder.error(
                     item.span,
                     format!(
-                        "type alias `{}` differs between targets; a universal QZI supports this only for non-generic aliases of built-in types",
+                        "type alias `{}` differs between targets; a QZI supports this only for non-generic aliases of built-in types",
                         decls[member].name
                     ),
                 );
@@ -853,7 +853,7 @@ pub fn build_target_views(
             builder.error(
                 span,
                 format!(
-                    "`{}` has a different signature or definition on some targets; a universal QZI supports target-specific functions, constants and built-in type aliases, but not target-specific types or method signatures",
+                    "`{}` has a different signature or definition on some targets; a QZI supports target-specific functions, constants and built-in type aliases, but not target-specific types or method signatures",
                     decl.name
                 ),
             );

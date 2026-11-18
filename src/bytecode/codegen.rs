@@ -244,7 +244,7 @@ pub struct Codegen<'a> {
     report: &'a SemanticReport,
     resolution_errors: Rc<RefCell<Vec<String>>>,
     /// Chunks compiled from source declarations and the targets each one is
-    /// declared for (`u8::MAX`: every target). Read by universal QZI assembly.
+    /// declared for (`u8::MAX`: every target). Read by QZI assembly.
     declared_targets: RefCell<HashMap<String, u8>>,
     /// Public API chunks of a library build (its reachability roots).
     library_roots: Vec<String>,

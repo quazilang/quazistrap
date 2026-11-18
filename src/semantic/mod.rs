@@ -3211,7 +3211,7 @@ impl Analyzer {
         }
     }
 
-    /// Universal QZI copies (`name@t<mask>`, see `target_views`) are the same
+    /// QZI copies (`name@t<mask>`, see `target_views`) are the same
     /// function on other targets. Callers name the first copy, so it depends
     /// on the others: they stay reachable and its facts cover theirs.
     pub(super) fn target_variant_pairs(&self) -> Vec<(String, String)> {
