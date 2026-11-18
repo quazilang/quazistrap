@@ -132,6 +132,14 @@ pub enum OwnershipExpressionResult {
         target: Span,
         value: Span,
     },
+    /// The named target is read, adjusted by one and stored; the result is the
+    /// new value when `prefix`, else the previous one. Overflow panics remain
+    /// unmodeled.
+    NamedIncDec {
+        op: IncDecOp,
+        target: Span,
+        prefix: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -954,6 +962,28 @@ where
                     )?;
                     self.budget.charge(3, value.span)?;
                     pending.push((value_entry, value, complete));
+                }
+                ExpressionControl::NamedIncDec { target, op, prefix } => {
+                    // No operand is evaluated, so the entry block holds the result.
+                    self.budget.charge(4, expression.span)?;
+                    self.graph.blocks[current]
+                        .events
+                        .push(OwnershipFlowEvent::ExpressionResult {
+                            span: expression.span,
+                            value: OwnershipExpressionResult::NamedIncDec {
+                                op: op.clone(),
+                                target: target.span,
+                                prefix,
+                            },
+                        });
+                    self.terminate(
+                        current,
+                        OwnershipFlowTerminator::Opaque {
+                            normal,
+                            early_return: None,
+                        },
+                        expression.span,
+                    )?;
                 }
                 ExpressionControl::TryOperand(operand) => {
                     let success = self.expression_result(

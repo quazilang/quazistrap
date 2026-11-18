@@ -72,7 +72,13 @@ value before it evaluates the value. After the value completes, a
 `NamedCompoundAssignment` result records the operator. Its arithmetic guards
 can panic and are not modeled as edges.
 
-Field, index and dereference targets of either form remain opaque because
+`name++`, `++name`, `name--` and `--name` evaluate no operand. Their entry
+block holds a `NamedIncDec` result recording the operator and whether the
+result is the new (prefix) or previous value; overflow panics are unmodeled.
+A C-style loop update of this form therefore has a result event instead of
+an opaque `LoopUpdate` region.
+
+Field, index and dereference targets of these forms remain opaque because
 lowering computes their address before the value.
 
 An exposed `?` evaluates its operand once and branches on `TrySuccess`, a wrapper
@@ -106,8 +112,8 @@ its deferred graph. The edge does not identify the exact failing subexpression
 or prove which preceding effects occurred. A `?` on a conditionally unexecuted
 path can therefore introduce a conservative extra edge.
 
-Other calls, assignments to places other than a bare name,
-increment/decrement, guarded matches, fields/indexes and
+Other calls, assignments and increments of places other than a bare name,
+guarded matches, fields/indexes and
 aggregate initializers remain whole opaque regions. Controls nested inside
 these regions are not individually expanded. Multi-input iteration regions also
 remain opaque. Their internal branches and operand order require further shared

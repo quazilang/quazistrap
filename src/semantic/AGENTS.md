@@ -95,9 +95,10 @@ Include leaves without calls. Return/break/continue end their path and retain
 lexical scope exits; C-style continue targets the update. Closure graphs are
 deferred, never synchronous successors of creation. `evaluation.rs` supplies
 operand control shared with codegen for unary/eager-binary/short-circuit/try
-forms and plain or compound assignments to a bare (grouped) name. Result events
-distinguish group/cast/unary/binary completion, logical normalization, payload
-extraction, the compound target read and named (compound) assignment; they prove no typed access or storage alias.
+forms and plain or compound assignments and `++`/`--` of a bare (grouped) name.
+Result events distinguish group/cast/unary/binary completion, logical
+normalization, payload extraction, the compound target read, named (compound)
+assignment and named increment; they prove no typed access or storage alias.
 Exposed `?` uses a success-discriminant branch, never enum-handle truthiness.
 For ordinary resolved direct source calls, `Invoke` follows all actuals in
 lowering's declared-slot order. Its span joins the existing call-argument

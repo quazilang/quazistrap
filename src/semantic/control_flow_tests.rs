@@ -43,6 +43,23 @@ fn statement_block(graph: &OwnershipControlFlow, source: &str, text: &str) -> us
         .unwrap_or_else(|| panic!("missing statement {text}"))
 }
 
+/// The block that starts evaluating the expression at `text`: an opaque
+/// region containing it or its result identity.
+fn expression_block(graph: &OwnershipControlFlow, source: &str, text: &str) -> usize {
+    let start = source.find(text).unwrap();
+    graph
+        .blocks
+        .iter()
+        .position(|block| {
+            block.events.iter().any(|event| match event {
+                OwnershipFlowEvent::Evaluate { spans, .. } => spans[0].start == start,
+                OwnershipFlowEvent::ExpressionResult { span, .. } => span.start == start,
+                _ => false,
+            })
+        })
+        .unwrap_or_else(|| panic!("missing expression {text}"))
+}
+
 #[test]
 fn source_control_flow_keeps_leaf_generic_and_terminal_statements() {
     let source =
@@ -103,21 +120,7 @@ fn source_control_flow_c_continue_runs_update_and_break_exits_loop_scope() {
     let source = "fn main() void { for var i = 0; i < 3; i++ { if test() { continue; } unsafe { break; } } after(); }";
     let maps = graphs(source);
     let graph = &maps["main"];
-    let update = graph
-        .blocks
-        .iter()
-        .position(|block| {
-            block.events.iter().any(|event| {
-                matches!(
-                    event,
-                    OwnershipFlowEvent::Evaluate {
-                        kind: OwnershipEvaluationKind::LoopUpdate,
-                        ..
-                    }
-                )
-            })
-        })
-        .unwrap();
+    let update = expression_block(graph, source, "i++");
     let continue_block = statement_block(graph, source, "continue;");
     let break_block = statement_block(graph, source, "break;");
     let after = statement_block(graph, source, "after()");
@@ -370,22 +373,8 @@ fn source_control_flow_nested_loops_transfer_to_innermost_targets() {
     let source = "fn main() void { for var outer = 0; outer < 3; outer++ { for var inner = 0; inner < 2; inner++ { if test() { continue; } break; } outer_after(); } done(); }";
     let maps = graphs(source);
     let graph = &maps["main"];
-    let updates = graph
-        .blocks
-        .iter()
-        .enumerate()
-        .filter_map(|(id, block)| {
-            block.events.iter().find_map(|event| match event {
-                OwnershipFlowEvent::Evaluate {
-                    spans,
-                    kind: OwnershipEvaluationKind::LoopUpdate,
-                } => Some((spans[0].start, id)),
-                _ => None,
-            })
-        })
-        .collect::<BTreeMap<_, _>>();
-    let inner_update = updates[&source.find("inner++").unwrap()];
-    let outer_update = updates[&source.find("outer++").unwrap()];
+    let inner_update = expression_block(graph, source, "inner++");
+    let outer_update = expression_block(graph, source, "outer++");
     let continue_block = statement_block(graph, source, "continue;");
     assert!(
         matches!(graph.blocks[continue_block].terminator, OwnershipFlowTerminator::Goto { target, .. } if target == inner_update && target != outer_update)
@@ -971,4 +960,31 @@ fn main() void {}
     assert!(reachable(graph, invoke_produce).contains(&store));
     assert!(!reachable(graph, invoke_produce).contains(&read));
     assert!(!reachable(graph, failure).contains(&store));
+}
+
+#[test]
+fn source_control_flow_named_increments_have_result_identities() {
+    let source = "fn main() void { var count = 0; count++; --count; for var i = 0; i < 3; i++ { after(); } }";
+    let maps = graphs(source);
+    let graph = maps.get("main").unwrap();
+    let increments: Vec<(usize, bool)> = graph
+        .blocks
+        .iter()
+        .flat_map(|block| block.events.iter())
+        .filter_map(|event| match event {
+            OwnershipFlowEvent::ExpressionResult {
+                value: OwnershipExpressionResult::NamedIncDec { target, prefix, .. },
+                ..
+            } => Some((target.start, *prefix)),
+            _ => None,
+        })
+        .collect();
+    for (needle, prefix) in [("count++", false), ("count;", true), ("i++", false)] {
+        let start = source.find(needle).unwrap();
+        assert!(
+            increments.contains(&(start, prefix)),
+            "{needle}: {increments:?}"
+        );
+    }
+    graph.validate().unwrap();
 }
