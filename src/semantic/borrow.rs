@@ -235,10 +235,11 @@ impl MoveEnv {
         rest: &[Stmt],
         before: &BTreeMap<(BindingId, bool), (String, Span)>,
         depth: usize,
+        receiver_may_store: &dyn Fn(&Expr) -> bool,
     ) {
         // Only locals a statement can store a reference or view into become
-        // holders: those it declares or assigns, method receivers (which may
-        // keep an argument) and `&x!` operands. Plain reads cannot.
+        // holders: those it declares or assigns, method receivers that may
+        // store an argument, and `&x!` operands. Plain reads cannot.
         let mut read_names = Vec::new();
         collect_stmt_identifiers(stmt, &mut read_names);
         // A call through a function value is an opaque boundary (D-014).
@@ -252,7 +253,7 @@ impl MoveEnv {
             .filter_map(|name| self.lookup(name).map(|var| var.binding))
             .collect();
         let mut names = Vec::new();
-        collect_stmt_sinks(stmt, &mut names);
+        collect_stmt_sinks(stmt, &mut names, receiver_may_store);
         // Holders are identified by binding, so a shadowing declaration in a
         // nested block never stands in for them. A mention resolves to the
         // binding visible after the statement; a scalar cannot carry a
@@ -667,7 +668,15 @@ impl Analyzer {
         for (index, stmt) in block.stmts.iter().enumerate() {
             let before = env.loan_snapshot();
             self.bc_stmt(stmt, env);
-            env.track_loan_holders(stmt, &block.stmts[index + 1..], &before, depth);
+            // A shared receiver cannot store arguments through itself.
+            let receiver_may_store = |call: &Expr| !self.bc_has_explicit_shared_receiver(call);
+            env.track_loan_holders(
+                stmt,
+                &block.stmts[index + 1..],
+                &before,
+                depth,
+                &receiver_may_store,
+            );
         }
         env.exit_scope();
         env.prune_loan_holders();
@@ -2773,15 +2782,8 @@ impl Analyzer {
     }
 
     fn bc_has_explicit_shared_receiver(&self, expr: &Expr) -> bool {
-        let resolved = self
-            .annotated_exprs
-            .iter()
-            .rev()
-            .find(|annotation| {
-                annotation.span.start == expr.span.start && annotation.span.end == expr.span.end
-            })
-            .and_then(|annotation| annotation.resolved_fn.as_deref());
-        resolved.is_some_and(|name| self.explicit_shared_receiver_methods.contains(name))
+        self.bc_resolved_call_name(expr)
+            .is_some_and(|name| self.explicit_shared_receiver_methods.contains(name))
     }
 
     /// Views stored through `target` (a mutated receiver or exclusive address
@@ -3982,7 +3984,11 @@ fn collect_stmt_identifiers(stmt: &Stmt, names: &mut Vec<String>) {
 
 /// The locals a statement may store a value into: declared bindings,
 /// assignment targets, method receivers and `&x!` operands (roots only).
-fn collect_stmt_sinks(stmt: &Stmt, names: &mut Vec<String>) {
+fn collect_stmt_sinks(
+    stmt: &Stmt,
+    names: &mut Vec<String>,
+    receiver_may_store: &dyn Fn(&Expr) -> bool,
+) {
     fn root(expr: &Expr) -> Option<&str> {
         match &expr.node {
             ExprKind::Ident(name) => Some(name),
@@ -3993,34 +3999,41 @@ fn collect_stmt_sinks(stmt: &Stmt, names: &mut Vec<String>) {
             _ => None,
         }
     }
-    fn expr_sinks(expr: &Expr, names: &mut Vec<String>) {
+    fn expr_sinks(
+        expr: &Expr,
+        names: &mut Vec<String>,
+        receiver_may_store: &dyn Fn(&Expr) -> bool,
+    ) {
         match &expr.node {
             ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
                 if let Some(name) = root(target) {
                     names.push(name.to_string());
                 }
-                expr_sinks(target, names);
-                expr_sinks(value, names);
+                expr_sinks(target, names, receiver_may_store);
+                expr_sinks(value, names, receiver_may_store);
             }
             ExprKind::MethodCall { object, args, named_args, .. } => {
-                if let Some(name) = root(object) {
+                // A shared receiver cannot be written through.
+                if receiver_may_store(expr)
+                    && let Some(name) = root(object)
+                {
                     names.push(name.to_string());
                 }
-                expr_sinks(object, names);
+                expr_sinks(object, names, receiver_may_store);
                 for argument in args.iter().chain(named_args.iter().map(|(_, value)| value)) {
-                    expr_sinks(argument, names);
+                    expr_sinks(argument, names, receiver_may_store);
                 }
             }
             ExprKind::Unary { op: UnaryOpKind::RefMut, expr: inner } => {
                 if let Some(name) = root(inner) {
                     names.push(name.to_string());
                 }
-                expr_sinks(inner, names);
+                expr_sinks(inner, names, receiver_may_store);
             }
             ExprKind::Call { callee, args, named_args, .. } => {
-                expr_sinks(callee, names);
+                expr_sinks(callee, names, receiver_may_store);
                 for argument in args.iter().chain(named_args.iter().map(|(_, value)| value)) {
-                    expr_sinks(argument, names);
+                    expr_sinks(argument, names, receiver_may_store);
                 }
             }
             ExprKind::Group(inner)
@@ -4028,34 +4041,34 @@ fn collect_stmt_sinks(stmt: &Stmt, names: &mut Vec<String>) {
             | ExprKind::Unary { expr: inner, .. }
             | ExprKind::Cast { expr: inner, .. }
             | ExprKind::IncDec { expr: inner, .. }
-            | ExprKind::Try { expr: inner } => expr_sinks(inner, names),
+            | ExprKind::Try { expr: inner } => expr_sinks(inner, names, receiver_may_store),
             ExprKind::Binary { left, right, .. } => {
-                expr_sinks(left, names);
-                expr_sinks(right, names);
+                expr_sinks(left, names, receiver_may_store);
+                expr_sinks(right, names, receiver_may_store);
             }
-            ExprKind::Field { object, .. } => expr_sinks(object, names),
+            ExprKind::Field { object, .. } => expr_sinks(object, names, receiver_may_store),
             ExprKind::Index { object, indices } => {
-                expr_sinks(object, names);
+                expr_sinks(object, names, receiver_may_store);
                 for index in indices {
-                    expr_sinks(index, names);
+                    expr_sinks(index, names, receiver_may_store);
                 }
             }
             ExprKind::StructInit { fields, .. } => {
                 for (_, value) in fields {
-                    expr_sinks(value, names);
+                    expr_sinks(value, names, receiver_may_store);
                 }
             }
             ExprKind::ArrayLit(elements) => {
                 for element in elements {
-                    expr_sinks(element, names);
+                    expr_sinks(element, names, receiver_may_store);
                 }
             }
             ExprKind::Match { scrutinee, arms } => {
-                expr_sinks(scrutinee, names);
+                expr_sinks(scrutinee, names, receiver_may_store);
                 for arm in arms {
-                    expr_sinks(&arm.expr, names);
+                    expr_sinks(&arm.expr, names, receiver_may_store);
                     if let Some(guard) = &arm.guard {
-                        expr_sinks(guard, names);
+                        expr_sinks(guard, names, receiver_may_store);
                     }
                 }
             }
@@ -4068,30 +4081,30 @@ fn collect_stmt_sinks(stmt: &Stmt, names: &mut Vec<String>) {
     }
     let block = |block: &Block, names: &mut Vec<String>| {
         for statement in &block.stmts {
-            collect_stmt_sinks(statement, names);
+            collect_stmt_sinks(statement, names, receiver_may_store);
         }
     };
     match &stmt.node {
         StmtKind::Var { name, value, .. } => {
             names.push(name.clone());
             if let Some(value) = value {
-                expr_sinks(value, names);
+                expr_sinks(value, names, receiver_may_store);
             }
         }
         StmtKind::Const { name, value, .. } => {
             names.push(name.clone());
-            expr_sinks(value, names);
+            expr_sinks(value, names, receiver_may_store);
         }
         StmtKind::Return(value) => {
             if let Some(value) = value {
-                expr_sinks(value, names);
+                expr_sinks(value, names, receiver_may_store);
             }
         }
         StmtKind::If { condition, then_block, else_if, else_block } => {
-            expr_sinks(condition, names);
+            expr_sinks(condition, names, receiver_may_store);
             block(then_block, names);
             for (condition, body) in else_if {
-                expr_sinks(condition, names);
+                expr_sinks(condition, names, receiver_may_store);
                 block(body, names);
             }
             if let Some(body) = else_block {
@@ -4104,32 +4117,32 @@ fn collect_stmt_sinks(stmt: &Stmt, names: &mut Vec<String>) {
                     names.extend(vars.iter().cloned());
                     match iter {
                         ForIter::Range { start, end } => {
-                            expr_sinks(start, names);
-                            expr_sinks(end, names);
+                            expr_sinks(start, names, receiver_may_store);
+                            expr_sinks(end, names, receiver_may_store);
                         }
-                        ForIter::Iter(value) => expr_sinks(value, names),
+                        ForIter::Iter(value) => expr_sinks(value, names, receiver_may_store),
                     }
                 }
                 ForLoop::CStyle { init, condition, update } => {
                     if let Some(init) = init {
-                        collect_stmt_sinks(init, names);
+                        collect_stmt_sinks(init, names, receiver_may_store);
                     }
                     if let Some(condition) = condition {
-                        expr_sinks(condition, names);
+                        expr_sinks(condition, names, receiver_may_store);
                     }
                     if let Some(update) = update {
-                        expr_sinks(update, names);
+                        expr_sinks(update, names, receiver_may_store);
                     }
                 }
                 ForLoop::Cond { condition } => {
                     if let Some(condition) = condition {
-                        expr_sinks(condition, names);
+                        expr_sinks(condition, names, receiver_may_store);
                     }
                 }
             }
             block(body, names);
         }
-        StmtKind::ExprStmt(value) => expr_sinks(value, names),
+        StmtKind::ExprStmt(value) => expr_sinks(value, names, receiver_may_store),
         StmtKind::CfgBlock { body, .. } | StmtKind::UnsafeBlock { body } => block(body, names),
         StmtKind::Break | StmtKind::Continue => {}
     }

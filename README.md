@@ -49,6 +49,9 @@ recursive destruction and artifact certification remain open. Ownership stays
 9/16; LSP stays 16/20. On 2026-11-08 the maintainer removed the macOS Mach-O
 backend from the plan, leaving a 32-item, 75-requirement rubric.
 Statuses and percentages are refreshed before committing.
+A read-only method receiver no longer keeps a temporary argument borrow alive
+after the call statement. A live reference result still keeps its source
+borrowed. This corrects loan tracking within the existing ownership milestone.
 On 2026-11-10 LSP reached 17/20: loader-backed navigation snapshots are
 cached while their inputs are unchanged and `scripts/check_lsp_performance.py`
 enforces measured latency targets (cold 150 ms, warm 0.6 ms in release).

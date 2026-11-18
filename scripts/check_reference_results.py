@@ -28,6 +28,8 @@ fn total(p: &Point) i32 { ret p.y + p.inner.value; }
 impl AsRef[String] for Point { fn as_ref(self: &Point) &String { ret &self.inner.label; } }
 fn length[S: AsRef[String]](value: &S) usize { ret value.as_ref().len(); }
 impl Inner { fn label(self: &Inner) &String { ret &self.label; } }
+struct Table { values: Array[i32] }
+impl Table { fn pick(self: &Table, key: &i32) &i32 { ret self.values.get_ref((*key) as usize); } }
 fn chained(p: &Point) &String { ret p.inner_ref().label(); }
 fn passed(p: &Point) &String { ret larger(&p.inner, &p.inner).label(); }
 fn main() i32 {
@@ -59,12 +61,28 @@ fn main() i32 {
     println("{} {}", second.len(), length(&point.inner.label));
     names.push(String.from("gamma"));
     println("{} {}", names.len(), length(&point));
+    // A `self: &Self` receiver cannot keep `&key`: the loan ends with the
+    // statement although `table` outlives the loop.
+    var table = Table { values: Array.new() };
+    table.values.push(10);
+    table.values.push(20);
+    var key: i32 = 0;
+    var sum: i32 = 0;
+    for (key < 2) {
+        if (*table.pick(&key) > 0) { sum = sum + *table.pick(&key); }
+        key = key + 1;
+    }
+    println("{}", sum);
     ret 0;
 }
 """
-EXPECTED = "2 5 other 2\n5 3\nfirst first\n5\nfirst 7\n9\n4 5\n3 5\n"
+EXPECTED = "2 5 other 2\n5 3\nfirst first\n5\nfirst 7\n9\n4 5\n3 5\n30\n"
 
 INVALID = [
+    ("struct Table { n: i32 } impl Table { fn pick(self: &Table, key: &i32) &i32 { ret key; } } "
+     "fn main() i32 { const table = Table { n: 0 }; var key: i32 = 0; "
+     "const picked = table.pick(&key); key = 1; ret *picked; }",
+     "cannot mutate `key` while it is shared-borrowed"),
     ("struct P { y: i32 } fn f(p: P) &i32 { ret &p.y; } fn main() void {}",
      "a returned reference must be a reference parameter"),
     ("struct P { y: i32 } fn f() &i32 { const p = P { y: 1 }; ret &p.y; } fn main() void {}",
