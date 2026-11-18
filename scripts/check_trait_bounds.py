@@ -20,6 +20,19 @@ impl Hashed for i64 { fn hash_code(self: &i64) u64 { ret ((*self) as u64) * 3; }
 impl Named for i64 { fn label(self: &i64) str { ret "int"; } }
 """
 
+# `impl marks.Tag for Point` satisfies `T: Tag` inside `marks`, and the
+# bounded `marks.Pack` is built through module-qualified constructors whose
+# specializations call their concrete sibling (`Pack.with<Point>`).
+MARKS = """pub trait Tag { fn tag(self: &Self) u64; }
+pub fn doubled[T: Tag](v: &T) u64 { ret v.tag() * 2; }
+pub struct Pack[T: Tag] { item: T, extra: u64, }
+impl Pack[T] {
+    pub fn new(item: T) Pack[T] { ret Pack.with(item, 10); }
+    pub fn with(item: T, extra: u64) Pack[T] { ret Pack { item: item, extra: extra }; }
+    pub fn total(self: &Pack[T]) u64 { ret self.item.tag() + self.extra; }
+}
+"""
+
 VALID = PRELUDE + """import marks;
 impl marks.Tag for Point { fn tag(self: &Point) u64 { ret 4; } }
 fn tagged[T: marks.Tag](v: &T) u64 { ret v.tag(); }
@@ -67,6 +80,9 @@ fn main() i32 {
     const flag: bool = shelf.first[bool](true);
     const three: i64 = shelf.first(3 as i64);
     println("{shelf.code(&p)} {flag} {three}");
+    const pack = marks.Pack.new(p);
+    const other = marks.Pack.with(Point { x: 1 }, 1);
+    println("{pack.total()} {other.total()} {marks.doubled(&other.item)}");
     var points: Array[Point] = Array.new();
     points.push(Point { x: 1 });
     points.push(Point { x: 2 });
@@ -107,7 +123,7 @@ def project(root: Path, name: str, source: str) -> Path:
     (path / "src").mkdir(parents=True)
     (path / "quazi.toml").write_text(f'[package]\nname="{name}"\n[build]\nentry="src/main.qz"\n')
     (path / "src/main.qz").write_text(source)
-    (path / "src/marks.qz").write_text("pub trait Tag { fn tag(self: &Self) u64; }\n")
+    (path / "src/marks.qz").write_text(MARKS)
     return path
 
 
@@ -121,7 +137,7 @@ def main():
         result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=valid,
                                 text=True, capture_output=True, timeout=600)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert result.stdout == "pt\nint\n42 22 102 115\n42 2003 9 4\n6 1007\n42 true 3\npt none ptpt\n", result.stdout
+        assert result.stdout == "pt\nint\n42 22 102 115\n42 2003 9 4\n6 1007\n42 true 3\n14 5 8\npt none ptpt\n", result.stdout
         for index, (source, message) in enumerate(INVALID):
             invalid = project(root, f"invalid{index}", PRELUDE + source)
             result = subprocess.run([qz, "check"], cwd=invalid, text=True,

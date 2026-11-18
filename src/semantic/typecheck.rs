@@ -4295,9 +4295,16 @@ impl Analyzer {
                                 self.push_error(expr.span, "S04", msg);
                                 ExprEval::default()
                             } else {
-                                let sym = self
+                                let mut sym = self
                                     .resolve_for_read(resolved)
                                     .expect("symbol should resolve");
+                                // `module.Type.function(...)` on a generic type infers the
+                                // impl's parameters too, like the unqualified `Type.function`;
+                                // explicit type arguments keep naming the function's own.
+                                let impl_params = self.generic_params_for_function(resolved);
+                                if type_args.is_empty() && impl_params.len() > sym.generic_params.len() {
+                                    sym.generic_params = impl_params;
+                                }
                                 if !named_args.is_empty() {
                                     self.validate_named_args(
                                         expr.span,

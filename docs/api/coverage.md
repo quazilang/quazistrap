@@ -20,6 +20,7 @@ prevents the API index from implying that undocumented modules are stable.
 | `std.timezone` | [timezone](timezone.md) | Named IANA zones (TZif + POSIX rules) from the system database (D-009, D-025). |
 | `std.posix` | [posix](posix.md) | Unix-specific identities, signals, umask and raw cwd. |
 | `std.core` | [core](core.md) | Low-level intrinsic, allocation, and UTF-8 safety boundary; allocation-backed `str` results remain unstable under D-013. |
+| `std.stream` | [stream](stream.md) | Initial `Reader`/`Writer` byte streams, `IoError`, `copy` and buffered adapters (D-025). |
 | `std.io` | [io](io.md) | Current UTF-8 console input/output and writer contracts. |
 | `std.collections` | [collections](collections.md) | Experimental `usize` Map/Set with in-place updates and audited single-owner cleanup. |
 | `std.ffi` | [ffi](ffi.md) | C ABI aliases, raw-pointer boundary, and explicit C-string ownership. |

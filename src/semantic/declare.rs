@@ -661,6 +661,10 @@ impl Analyzer {
                 if let Some(t) = trait_ty {
                     let trait_name = type_kind_base_name(&t.node);
                     let implemented = self.trait_impls.entry(type_name.clone()).or_default();
+                    // `impl stream.Reader for File` satisfies a `Reader` bound too.
+                    if let Some((_, short)) = trait_name.rsplit_once('.') {
+                        implemented.insert(short.to_string());
+                    }
                     implemented.insert(trait_name);
                     // A generic trait impl (`impl AsRef[Array[T]] for Array[T]`)
                     // is matched structurally against instantiated bounds.

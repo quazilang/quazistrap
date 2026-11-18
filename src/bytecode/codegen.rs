@@ -1304,6 +1304,21 @@ impl<'a> Codegen<'a> {
                 // Could be an impl method ("TypeName.method") or a module-namespaced
                 // top-level generic function ("module.fn"). Try impl blocks first.
                 let (type_part, method_part) = mono.fn_name.split_once('.').unwrap();
+                // `struct Owner[T: Trait]` bounds every method of its impls.
+                let owner_bounds: Vec<Attribute> = program
+                    .items
+                    .iter()
+                    .find_map(|item| match &item.node {
+                        ItemKind::Struct { name, attributes, .. } if name == type_part => Some(
+                            attributes
+                                .iter()
+                                .filter(|attribute| attribute.name == "bound")
+                                .cloned()
+                                .collect(),
+                        ),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
                 let mut found = false;
                 for item in &program.items {
                     if let ItemKind::Impl {
@@ -1331,7 +1346,9 @@ impl<'a> Codegen<'a> {
                                 // (`entry<T>` recorded inside another generic
                                 // body) has no concrete bound targets; each
                                 // concrete specialization is compiled instead.
-                                if self.symbolic_bounded_specialization(attributes, &mono.type_args) {
+                                let bounded: Vec<Attribute> =
+                                    attributes.iter().chain(&owner_bounds).cloned().collect();
+                                if self.symbolic_bounded_specialization(&bounded, &mono.type_args) {
                                     found = true;
                                     break;
                                 }
@@ -9893,9 +9910,11 @@ impl<'a> FnCompiler<'a> {
                     if is_type_ns {
                         let base_mangled = format!("{}.{}", type_name, method);
                         let expr_key = (expr.span.start, expr.span.end);
+                        // Inside a specialization the annotated arguments name its
+                        // type variables (`Wrap.with` in `Wrap.new<R>`): substitute them.
                         let type_kinds: Vec<TypeKind> = match self.type_map.get(&expr_key) {
                             Some(TypeKind::Named { type_args, .. }) => {
-                                type_args.iter().map(|t| t.node.clone()).collect()
+                                type_args.iter().map(|t| self.resolve_type(&t.node)).collect()
                             }
                             _ => vec![],
                         };
@@ -12673,6 +12692,43 @@ fn main() i32 {
                 .iter()
                 .any(|chunk| chunk.name == "Wrapper.inner<i32>"),
             "transitive inner specialization was not emitted"
+        );
+    }
+
+    #[test]
+    fn bounded_struct_specializations_call_concrete_sibling_constructors() {
+        let chunks = compile(
+            r#"
+trait Source { fn pull(self: &Self!) i32; }
+struct Counter { n: i32, }
+impl Source for Counter { fn pull(self: &Counter!) i32 { self.n = self.n + 1; ret self.n; } }
+struct Wrap[R: Source] { inner: R, calls: i32, }
+impl Wrap[R] {
+    fn new(inner: R) Wrap[R] { ret Wrap.with(inner, 0); }
+    fn with(inner: R, calls: i32) Wrap[R] { ret Wrap { inner: inner, calls: calls }; }
+    fn pull_twice(self: &Wrap[R]!) i32 { ret self.inner.pull() + self.inner.pull(); }
+}
+fn main() i32 {
+    var wrap = Wrap.new(Counter { n: 0 });
+    ret wrap.pull_twice();
+}
+"#,
+        );
+        let constructor = chunks
+            .iter()
+            .find(|chunk| chunk.name == "Wrap.new<Counter>")
+            .expect("concrete constructor");
+        assert!(
+            reachable_instructions(constructor).into_iter().any(|instruction| {
+                instruction.opcode() == Some(Opcode::CallIdx)
+                    && chunks[instruction.ri16().1 as usize].name == "Wrap.with<Counter>"
+            }),
+            "the specialized constructor must call its concrete sibling: {:?}",
+            constructor.code
+        );
+        assert!(
+            !chunks.iter().any(|chunk| chunk.name.ends_with("<R>")),
+            "symbolic specializations of a bounded struct must not be compiled"
         );
     }
 

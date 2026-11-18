@@ -14,6 +14,7 @@ Documented modules:
 
 - [`std.core`](core.md) — low-level intrinsics, raw memory, and UTF-8 boundaries.
 - [`std.io`](io.md) — UTF-8 console input and output helpers.
+- [`std.stream`](stream.md) — `Reader`/`Writer` byte streams, `copy` and buffered adapters.
 - [`std.collections`](collections.md) — experimental integer-keyed maps and sets.
 - [`std.ffi`](ffi.md) — C ABI aliases and explicit C-string ownership.
 - [`std.math`](math.md) — dependency-free integer and `f64` helpers.

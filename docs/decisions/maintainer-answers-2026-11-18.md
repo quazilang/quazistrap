@@ -23,3 +23,8 @@ Status: decided by the maintainers on 2026-11-18 (asks.txt В23-В26).
   `IoError` (`Closed`, `WouldBlock`, `TimedOut`, `Interrupted`, `Native`,
   `Other`), a generic `io.copy`, and buffered adapters, implemented for files,
   TCP streams and the standard streams; an empty read means end of input.
+  The traits live in `std.stream` (`io.copy` forwards to `stream.copy`).
+  Their methods are `read_bytes`, `write_bytes` and `flush`: `File`,
+  `TcpStream` and `Stdout` already have `read`/`write` methods with other
+  signatures, and a type cannot have two methods of one name. See
+  [std.stream](../api/stream.md).
