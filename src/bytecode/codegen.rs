@@ -17,7 +17,7 @@ use super::{Chunk, ConstPoolEntry, Opcode, QziCallRelocation};
 use crate::abi::{
     AbiField, AbiSignature, AbiType, ForeignGlobal as AbiForeignGlobal, ForeignSymbol,
 };
-use crate::evaluation::{ExpressionControl, expression_control};
+use crate::evaluation::{ExpressionControl, expression_control, ordered_call_arguments};
 use crate::parser::ast::*;
 use crate::semantic::types::{SourceFile, SymbolKind};
 use crate::semantic::{ConstValue, OwnershipArgumentRole, SemanticReport};
@@ -323,43 +323,12 @@ fn order_named_arguments(
     let slots = slots.and_then(Option::as_ref).ok_or_else(|| {
         "named call has no unambiguous resolved declaration-slot mapping".to_string()
     })?;
-    let supplied =
-        positional
-            .iter()
-            .enumerate()
-            .map(|(index, expression)| (OwnershipArgumentRole::Positional(index), expression))
-            .chain(named.iter().map(|(name, expression)| {
-                (OwnershipArgumentRole::Named(name.clone()), expression)
-            }));
-    let expected = slots
-        .iter()
-        .filter(|(role, _)| *role != OwnershipArgumentRole::Receiver)
-        .collect::<Vec<_>>();
-    if expected.len() != positional.len() + named.len() {
-        return Err(
-            "named call declaration-slot mapping does not cover every supplied argument"
-                .to_string(),
-        );
-    }
-    let mut ordered = Vec::with_capacity(expected.len());
-    for ((role, expression), (expected_role, slot)) in supplied.zip(expected) {
-        if &role != expected_role {
-            return Err(
-                "named call declaration-slot mapping does not match its supplied arguments"
-                    .to_string(),
-            );
-        }
-        let slot =
-            slot.ok_or_else(|| "named call argument has no resolved declaration slot".to_string())?;
-        ordered.push((slot, expression.clone()));
-    }
-    // Stable sorting keeps all supplied variadic elements in their existing
-    // order. Receiver arguments are emitted separately by method dispatch.
-    ordered.sort_by_key(|(slot, _)| *slot);
-    Ok(ordered
-        .into_iter()
-        .map(|(_, expression)| expression)
-        .collect())
+    ordered_call_arguments(
+        slots.iter().map(|(role, slot)| (role, *slot)),
+        positional,
+        named,
+    )
+    .map(|arguments| arguments.into_iter().cloned().collect())
 }
 
 /// Physical layout contract for a generic container whose initialized elements
@@ -9705,8 +9674,9 @@ impl<'a> FnCompiler<'a> {
                     }
                     if self.variadic_info_for(call_name.as_str()).is_some() {
                         return self.compile_variadic_call(&call_name, args);
-                    } else if let Some(tag) =
-                        self.enum_ctor_tag(&call_name, self.type_of_expr(expr))
+                    } else if !self.fn_index.contains_key(&call_name)
+                        && !self.regs.contains_key(&call_name)
+                        && let Some(tag) = self.enum_ctor_tag(&call_name, self.type_of_expr(expr))
                     {
                         // Enum variant constructor: allocate heap struct, store discriminant + payloads.
                         let payload_regs: Vec<u8> = args

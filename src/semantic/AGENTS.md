@@ -98,6 +98,9 @@ operand control shared with codegen for unary/eager-binary/short-circuit/try
 forms. Result events distinguish group/cast/unary/binary completion, logical
 normalization and payload extraction; they prove no typed access or storage alias.
 Exposed `?` uses a success-discriminant branch, never enum-handle truthiness.
+For ordinary resolved direct source calls, `Invoke` follows all actuals in
+lowering's declared-slot order. Its span joins the existing call-argument
+facts. Keep unknown dispatch and implicit effects opaque.
 Do not rescan completed wrappers and duplicate their failure edges. Unclassified
 regions and iteration protocols stay opaque; conservative nested-`?` scans stop
 at closure boundaries. No effect/loan/artifact flags may be inferred from

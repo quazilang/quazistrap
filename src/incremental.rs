@@ -12,8 +12,8 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Fixed-array reference lowering must agree across all cached source units.
-const QZC_VERSION: u8 = 35;
+// Rebuild call sites that could dispatch to a same-named enum variant.
+const QZC_VERSION: u8 = 36;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {

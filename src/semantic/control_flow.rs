@@ -10,9 +10,12 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-use super::{Analyzer, item_should_include};
+use super::{
+    Analyzer, OwnershipCallArguments, OwnershipResult, item_should_include,
+    ownership::SourceOwnershipCall,
+};
 use crate::cancel::Cancelled;
-use crate::evaluation::{ExpressionControl, expression_control};
+use crate::evaluation::{ExpressionControl, expression_control, ordered_call_arguments};
 use crate::parser::ast::*;
 
 pub type OwnershipFlowBlockId = usize;
@@ -88,6 +91,9 @@ pub enum OwnershipFlowEvent {
         span: Span,
         value: OwnershipExpressionResult,
     },
+    /// The direct source call at this span is reached after all actuals
+    /// complete. Its result and storage effects remain opaque.
+    Invoke { span: Span },
     /// Unknown protocol/storage effects; never a resolved call or effect proof.
     IterationProtocol {
         span: Span,
@@ -440,7 +446,7 @@ impl Analyzer {
                     );
                     return Ok(BTreeMap::new());
                 }
-                match build_family(body, &mut budget, checkpoint) {
+                match build_family(self, &canonical, body, &mut budget, checkpoint) {
                     Ok(graph) => {
                         result.insert(canonical, graph);
                     }
@@ -485,6 +491,8 @@ struct Builder<'a, 'b, F> {
     graph: OwnershipControlFlow,
     closures: Vec<&'a Expr>,
     finished: Vec<bool>,
+    analyzer: &'b Analyzer,
+    sites: Option<&'b BTreeMap<(usize, usize), SourceOwnershipCall>>,
     budget: &'b mut Budget,
     checkpoint: &'b mut F,
 }
@@ -501,6 +509,8 @@ struct RootTask<'a> {
 }
 
 fn build_family<F>(
+    analyzer: &Analyzer,
+    caller: &str,
     body: &Block,
     budget: &mut Budget,
     checkpoint: &mut F,
@@ -535,6 +545,8 @@ where
             },
             closures: Vec::new(),
             finished: Vec::new(),
+            analyzer,
+            sites: analyzer.ownership_call_sites.get(caller),
             budget,
             checkpoint,
         };
@@ -577,7 +589,7 @@ where
     Ok(completed[0].take().expect("function graph"))
 }
 
-impl<'a, F> Builder<'a, '_, F>
+impl<'a, 'b, F> Builder<'a, 'b, F>
 where
     F: FnMut() -> Result<(), Cancelled>,
 {
@@ -715,6 +727,36 @@ where
         pending.push(expression);
         Ok(())
     }
+
+    fn direct_call_site(
+        &self,
+        expression: &Expr,
+        callee: &Expr,
+    ) -> Option<&'b OwnershipCallArguments> {
+        if !matches!(callee.node, ExprKind::Ident(_)) {
+            return None;
+        }
+        let site = self.sites?.get(&(expression.span.start, expression.span.end))?;
+        let (name, _) = site.target.as_ref()?;
+        let signature = self.analyzer.ownership_signature_index.get(name)?;
+        let symbol = self.analyzer.resolve_symbol(name)?;
+        if !signature.has_body
+            || signature.generic_template
+            || signature.receiver.is_some()
+            || signature.variadic.is_some()
+            || signature.result == OwnershipResult::Never
+            || symbol.unsafe_fn
+            // These spellings still have a separate dispatch path in lowering.
+            || matches!(name.rsplit('.').next(), Some("panic" | "size_of" | "align_of"))
+            || name == "fmt.format"
+            || symbol.attributes.iter().any(|attr| matches!(
+                attr.as_str(), "api" | "intrinsic" | "syscall" | "str_variadic"
+            ))
+        {
+            return None;
+        }
+        site.arguments.as_ref()
+    }
     fn evaluate(
         &mut self,
         current: usize,
@@ -733,7 +775,57 @@ where
             self.tick(expression.span)?;
             match expression_control(expression) {
                 ExpressionControl::Opaque => {
-                    self.evaluate_opaque(current, &[expression], kind, normal, scopes)?;
+                    let arguments = if let ExprKind::Call {
+                        callee, args, named_args, ..
+                    } = &expression.node
+                        && let Some(site) = self.direct_call_site(expression, callee)
+                    {
+                        self.budget.charge(1 + site.actuals.len() * 3, expression.span)?;
+                        ordered_call_arguments(
+                            site.actuals.iter().map(|arg| (&arg.role, arg.parameter_slot)),
+                            args,
+                            named_args,
+                        )
+                        .ok()
+                    } else {
+                        None
+                    };
+                    if let Some(arguments) = arguments {
+                        let span = expression.span;
+                        let invocation = self.block(scopes, span)?;
+                        self.graph.blocks[invocation]
+                            .events
+                            .push(OwnershipFlowEvent::Invoke { span });
+                        self.terminate(
+                            invocation,
+                            OwnershipFlowTerminator::Opaque { normal, early_return: None },
+                            span,
+                        )?;
+                        if arguments.is_empty() {
+                            self.terminate(
+                                current,
+                                OwnershipFlowTerminator::Goto {
+                                    target: invocation,
+                                    exited_scopes: Vec::new(),
+                                },
+                                span,
+                            )?;
+                        } else {
+                            let mut next = invocation;
+                            let mut reversed = arguments.into_iter().rev().peekable();
+                            while let Some(argument) = reversed.next() {
+                                let entry = if reversed.peek().is_some() {
+                                    self.block(scopes, argument.span)?
+                                } else {
+                                    current
+                                };
+                                pending.push((entry, argument, next));
+                                next = entry;
+                            }
+                        }
+                    } else {
+                        self.evaluate_opaque(current, &[expression], kind, normal, scopes)?;
+                    }
                 }
                 ExpressionControl::UnaryChild(operand) => {
                     let value = match &expression.node {

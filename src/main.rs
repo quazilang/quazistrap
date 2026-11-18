@@ -31,7 +31,6 @@ mod type_resolution;
 use analysis::{analyze_program_with_source_files, format_quazi_source};
 use backend::linker::{LinkerInvocation, link_object, remove_temp, write_temp_object};
 use backend::{TargetSpec, select_backend};
-use bytecode::Codegen;
 use clap::Parser as ClapParser;
 use cli::Args;
 use std::collections::HashSet;

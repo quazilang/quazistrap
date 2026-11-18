@@ -58,6 +58,8 @@ fn forward[T](value: T) i32 {
     ret instance.digits(second = 2, first = 1);
 }
 fn formatted(first: str, ...rest: str) i32 { ret first.len() as i32; }
+enum Choice { Pick }
+fn Pick() i32 { ret 7; }
 fn main() i32 {
     var shared = Shared { value: 0 };
     if shared.digits(1, 2) != 12 { ret 1; }
@@ -91,6 +93,9 @@ fn main() i32 {
     if closure() != 12 { ret 22; }
     if formatted("a", "bb") != 1 { ret 23; }
     if formatted(rest = "bb", first = "a") != 1 { ret 24; }
+    if Pick() != 7 { ret 25; }
+    const Pick: fn() i32 = || 8;
+    if Pick() != 8 { ret 26; }
     ret 0;
 }
 """
@@ -105,6 +110,7 @@ def run(command, root):
                             stderr=subprocess.STDOUT, timeout=60)
     if result.returncode != 0:
         raise AssertionError(f"{command!r} returned {result.returncode}:\n{result.stdout}")
+    return result.stdout
 
 
 def check(qz, root):
@@ -170,6 +176,41 @@ def imported_qzi(qz, root):
     print("PASS named arguments: aliased scalar QZI library with defining source removed")
 
 
+def argument_control_flow(qz, root):
+    project = root / "argument_flow"
+    (project / "src").mkdir(parents=True)
+    (project / "quazi.toml").write_text('[package]\nname="argument_flow"\n')
+    source = project / "src/main.qz"
+    source.write_text("""import std.io.println;
+fn step(ok: bool) Option[i32] {
+    println("first");
+    if ok { ret Some(4); }
+    ret None;
+}
+fn later() i32 { println("second"); ret 2; }
+fn combine(first: i32, second: i32) i32 { println("call"); ret first + second; }
+fn trace(ok: bool) Option[i32] {
+    const value = combine(second = later(), first = step(ok)?);
+    ret Some(value);
+}
+fn main() i32 {
+    if trace(false).is_some() { ret 1; }
+    if trace(true).unwrap() != 6 { ret 2; }
+    ret 0;
+}
+""")
+    native = root / "argument_flow_native"
+    artifact = root / "argument_flow.qzi"
+    expected = "first\nfirst\nsecond\ncall\n"
+    run([qz, "build", "--silent", "--no-incremental", "-o", native], project)
+    assert run([native], root) == expected
+    run([qz, "build", "--silent", "--no-incremental", "-i", "-o", artifact], project)
+    source.unlink()
+    run([qz, "build", artifact, "--silent", "-o", native], root)
+    assert run([native], root) == expected
+    print("PASS named arguments: propagation skips later operands and the invocation")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
@@ -179,6 +220,7 @@ def main():
         root = Path(directory)
         check(qz, root)
         imported_qzi(qz, root)
+        argument_control_flow(qz, root)
 
 
 if __name__ == "__main__":

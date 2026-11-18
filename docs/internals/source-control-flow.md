@@ -66,6 +66,14 @@ Success records payload extraction; failure returns from the current callable
 and retains its active scope exits. Typed wrapper compatibility and emitted
 cleanup effects remain unverified by this graph.
 
+For a resolved ordinary direct call with a fixed signature and a source body,
+the graph uses lowering's declaration-slot schedule for its actual arguments.
+The call gets an `Invoke` event keyed by the source call span only after the
+actuals complete. A `?` in an earlier argument can bypass later arguments and
+the invocation. Named arguments follow parameter order. Generic, variadic,
+indirect, method, foreign, unsafe and diverging calls remain opaque, as do
+calls with special lowering such as layout queries.
+
 Refinement is iterative and charges expansion to the existing aggregate budget.
 Completed wrappers are not scanned again as opaque regions, so an exposed `?`
 does not acquire a duplicate possible-return edge.
@@ -83,14 +91,14 @@ its deferred graph. The edge does not identify the exact failing subexpression
 or prove which preceding effects occurred. A `?` on a conditionally unexecuted
 path can therefore introduce a conservative extra edge.
 
-Calls, assignments, increment/decrement, guarded matches, fields/indexes and
+Other calls, assignments, increment/decrement, guarded matches, fields/indexes and
 aggregate initializers remain whole opaque regions. Controls nested inside
 these regions are not individually expanded. Multi-input iteration regions also
 remain opaque. Their internal branches and operand order require further shared
 normalization before any path-sensitive ownership proof consumes them.
-In particular, current lowering reorders named arguments and struct fields,
-and uses different operand orders for indexed and field assignments. The
-lexical [argument snapshot walk](ownership-call-arguments.md) is not that plan.
+Lowering reorders struct fields and uses different operand orders for indexed
+and field assignments. [Call argument snapshots](ownership-call-arguments.md)
+retain lexical order for each site's binding and parameter records.
 
 ## Resource and trust boundary
 

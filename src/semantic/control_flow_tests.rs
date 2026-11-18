@@ -210,6 +210,61 @@ fn source_control_flow_try_and_deferred_closure_have_separate_returns() {
 }
 
 #[test]
+fn source_control_flow_invokes_direct_calls_in_declared_slot_order() {
+    let source = r#"
+fn step(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn combine(first: i32, second: i32) i32 { ret first + second; }
+fn sequence(value: Option[i32]) Option[i32] {
+    const sum = combine(second = later(), first = step(value)?);
+    ret Some(sum);
+}
+fn defer() void {
+    const work: fn() i32 = || later();
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = |name| {
+        report.ownership_call_graph.iter().find(|callable| callable.id.callable == name)
+            .unwrap().control_flow.as_deref().unwrap()
+    };
+    let invoke = |graph: &OwnershipControlFlow, needle| {
+        let start = source.rfind(needle).unwrap();
+        graph.blocks.iter().position(|block| block.events.iter().any(
+            |event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == start),
+        ))
+    };
+
+    let sequence = graph("sequence");
+    let step = invoke(sequence, "step(value)?").unwrap();
+    let combine = invoke(sequence, "combine(second").unwrap();
+    let later = sequence.blocks.iter().position(|block| block.events.iter().any(
+        |event| matches!(event, OwnershipFlowEvent::Invoke { span }
+            if span.start == source.find("later(), first").unwrap()),
+    )).unwrap();
+    let (success, failure) = sequence.blocks.iter().find_map(|block| match block.terminator {
+        OwnershipFlowTerminator::Branch {
+            condition: OwnershipBranchCondition::TrySuccess { .. },
+            then_target,
+            else_target,
+        } => Some((then_target, else_target)),
+        _ => None,
+    }).unwrap();
+    assert!(reachable(sequence, step).contains(&failure));
+    assert!(reachable(sequence, success).contains(&later));
+    assert!(reachable(sequence, later).contains(&combine));
+    assert!(!reachable(sequence, later).contains(&step));
+    assert!(!reachable(sequence, failure).contains(&later));
+    assert!(!reachable(sequence, failure).contains(&combine));
+
+    let deferred = graph("defer");
+    assert!(invoke(deferred, "later();").is_none());
+    assert!(invoke(&deferred.deferred[0].graph, "later();").is_some());
+}
+
+#[test]
 fn source_control_flow_iteration_evaluates_bounds_once_and_protocol_repeats() {
     let source = "fn main() void { for i : lower()..upper() { continue; } after(); }";
     let maps = graphs(source);

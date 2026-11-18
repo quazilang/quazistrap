@@ -6,6 +6,7 @@
 //! Unclassified expressions remain opaque; this is not an ownership effect model.
 
 use crate::parser::ast::{BinOpKind, Expr, ExprKind, Literal, UnaryOpKind};
+use crate::semantic::OwnershipArgumentRole;
 
 pub(crate) enum ExpressionControl<'a> {
     Opaque,
@@ -51,6 +52,51 @@ pub(crate) fn expression_control(expression: &Expr) -> ExpressionControl<'_> {
     }
 }
 
+/// Schedule by declared slot, keeping multiple variadic values in source
+/// order. Method lowering evaluates a receiver separately before this schedule.
+pub(crate) fn ordered_call_arguments<'a, 'slots>(
+    slots: impl Iterator<Item = (&'slots OwnershipArgumentRole, Option<usize>)>,
+    positional: &'a [Expr],
+    named: &'a [(String, Expr)],
+) -> Result<Vec<&'a Expr>, String> {
+    let supplied =
+        positional
+            .iter()
+            .enumerate()
+            .map(|(index, expression)| (OwnershipArgumentRole::Positional(index), expression))
+            .chain(named.iter().map(|(name, expression)| {
+                (OwnershipArgumentRole::Named(name.clone()), expression)
+            }));
+    let expected = slots
+        .filter(|(role, _)| **role != OwnershipArgumentRole::Receiver)
+        .collect::<Vec<_>>();
+    if expected.len() != positional.len() + named.len() {
+        return Err(
+            "named call declaration-slot mapping does not cover every supplied argument"
+                .to_string(),
+        );
+    }
+    let mut ordered = Vec::with_capacity(expected.len());
+    for ((role, expression), (expected_role, slot)) in supplied.zip(expected) {
+        if &role != expected_role {
+            return Err(
+                "named call declaration-slot mapping does not match its supplied arguments"
+                    .to_string(),
+            );
+        }
+        let slot =
+            slot.ok_or_else(|| "named call argument has no resolved declaration slot".to_string())?;
+        ordered.push((slot, expression));
+    }
+    // Stable sorting keeps all supplied variadic elements in their existing
+    // order. Receiver arguments are emitted separately by method dispatch.
+    ordered.sort_by_key(|(slot, _)| *slot);
+    Ok(ordered
+        .into_iter()
+        .map(|(_, expression)| expression)
+        .collect())
+}
+
 /// Integer literals are typed `i32` without contextual inference, so an
 /// expression built only from integer literals has no declared width: `1 << 40`
 /// in a `u64` context must not wrap at 32 bits.
@@ -62,7 +108,9 @@ pub(crate) fn is_integer_literal_expression(expression: &Expr) -> bool {
             op: UnaryOpKind::Neg,
             expr: inner,
         } => is_integer_literal_expression(inner),
-        ExprKind::Binary { left, op, right } if !matches!(op, BinOpKind::AndAnd | BinOpKind::OrOr) => {
+        ExprKind::Binary { left, op, right }
+            if !matches!(op, BinOpKind::AndAnd | BinOpKind::OrOr) =>
+        {
             is_integer_literal_expression(left) && is_integer_literal_expression(right)
         }
         _ => false,

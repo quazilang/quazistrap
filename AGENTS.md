@@ -696,7 +696,7 @@ and [remaining findings](docs/audits/2026-10-23-string-followups.md).
 
 ## Source type context: required follow-up (2026-10-24)
 
-Current source builds use QZC35 and emit QZI16. The bytecode module layout is
+Current source builds use QZC36 and emit QZI16. The bytecode module layout is
 v14, and ownership remains Unverified.
 Verify constants in source and the installed binary separately before reporting
 artifact compatibility. Earlier dated cache/ABI checkpoints describe their own
