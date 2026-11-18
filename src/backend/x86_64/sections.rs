@@ -18,6 +18,18 @@ pub(super) const FAULT_PREFIX: &[u8] = b"fault: 0x";
 pub(super) const RIP_PREFIX: &[u8] = b"rip: 0x";
 pub(super) const TRACE_HINT: &[u8] = b"use QUAZI_TRACE=1 to see full stack trace\n";
 pub(super) const ENV_VAR_NAME: &[u8] = b"QUAZI_TRACE\0";
+/// Separates a backtrace address from the function that contains it.
+pub(super) const FUNCTION_SEPARATOR: &[u8] = b" in ";
+pub(super) const REGISTERS_HEADER: &[u8] = b"registers:\n";
+/// Linux `ucontext_t` general registers in `gregs` order, up to `eflags`.
+pub(super) const CRASH_REGISTERS: [&str; 18] = [
+    "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rdi", "rsi", "rbp", "rbx", "rdx", "rax",
+    "rcx", "rsp", "rip", "eflags",
+];
+/// Bytes per register label record in `__quazi_reg_names`.
+pub(super) const REGISTER_LABEL_STRIDE: usize = 16;
+/// Printed bytes of each label: two spaces, the name padded to 7, `= 0x`.
+pub(super) const REGISTER_LABEL_LEN: usize = 13;
 
 fn safe_label(name: &str) -> String {
     name.chars()
@@ -153,6 +165,37 @@ impl SectionAccumulator {
         sym_table.define_data(obj, self.rodata_id, "__quazi_at_0x", at_0x_offset, 7);
         let nl_offset = obj.append_section_data(self.rodata_id, b"\n", 1);
         sym_table.define_data(obj, self.rodata_id, "__quazi_nl", nl_offset, 1);
+        let separator_offset = obj.append_section_data(self.rodata_id, FUNCTION_SEPARATOR, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__quazi_bt_in",
+            separator_offset,
+            FUNCTION_SEPARATOR.len() as u64,
+        );
+        let registers_offset = obj.append_section_data(self.rodata_id, REGISTERS_HEADER, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__quazi_regs_header",
+            registers_offset,
+            REGISTERS_HEADER.len() as u64,
+        );
+        let mut labels = Vec::with_capacity(CRASH_REGISTERS.len() * REGISTER_LABEL_STRIDE);
+        for name in CRASH_REGISTERS {
+            let mut label = format!("  {name:<7}= 0x").into_bytes();
+            debug_assert_eq!(label.len(), REGISTER_LABEL_LEN);
+            label.resize(REGISTER_LABEL_STRIDE, 0);
+            labels.extend_from_slice(&label);
+        }
+        let labels_offset = obj.append_section_data(self.rodata_id, &labels, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__quazi_reg_names",
+            labels_offset,
+            labels.len() as u64,
+        );
 
         let mut interned: std::collections::HashMap<Vec<u8>, u64> =
             std::collections::HashMap::new();
@@ -302,6 +345,82 @@ impl SectionAccumulator {
                 )
                 .map_err(|error| BackendError(format!("cannot emit vtable relocation: {error}")))?;
             }
+        }
+        Ok(())
+    }
+
+    /// Emit `__quazi_fn_table`, which the Linux crash handler and backtrace
+    /// use to name code addresses: a `u64` entry count, then 24-byte entries
+    /// `{start: u64, size: u32, name_len: u32, name: u64}`. `functions` names
+    /// each emitted body once, by its source name and native symbol.
+    pub fn build_function_table(
+        &self,
+        obj: &mut Object<'_>,
+        sym_table: &mut SymbolTable,
+        functions: &[(&str, &str, u64)],
+    ) -> Result<(), BackendError> {
+        let mut names = Vec::new();
+        let mut name_offsets = Vec::with_capacity(functions.len());
+        for (display, _, _) in functions {
+            name_offsets.push(names.len() as u64);
+            names.extend_from_slice(display.as_bytes());
+        }
+        let names_offset = obj.append_section_data(self.rodata_id, &names, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__quazi_fn_names",
+            names_offset,
+            names.len() as u64,
+        );
+        let names_symbol = sym_table
+            .get_defined("__quazi_fn_names")
+            .ok_or_else(|| BackendError("function names symbol was not defined".into()))?;
+        let mut table = Vec::with_capacity(8 + functions.len() * 24);
+        table.extend_from_slice(&(functions.len() as u64).to_le_bytes());
+        for ((display, _, size), _) in functions.iter().zip(&name_offsets) {
+            let size = u32::try_from(*size)
+                .map_err(|_| BackendError(format!("function `{display}` exceeds 4 GiB")))?;
+            table.extend_from_slice(&0u64.to_le_bytes());
+            table.extend_from_slice(&size.to_le_bytes());
+            table.extend_from_slice(&(display.len() as u32).to_le_bytes());
+            table.extend_from_slice(&0u64.to_le_bytes());
+        }
+        let table_offset = obj.append_section_data(self.rodata_id, &table, 8);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__quazi_fn_table",
+            table_offset,
+            table.len() as u64,
+        );
+        let absolute = |offset: u64, symbol, addend| Relocation {
+            offset,
+            symbol,
+            addend,
+            flags: RelocationFlags::Generic {
+                kind: RelocationKind::Absolute,
+                encoding: RelocationEncoding::Generic,
+                size: 64,
+            },
+        };
+        for (index, ((_, native, _), name_offset)) in
+            functions.iter().zip(&name_offsets).enumerate()
+        {
+            let entry = table_offset + 8 + index as u64 * 24;
+            let function = sym_table.get_defined(native).ok_or_else(|| {
+                BackendError(format!("undefined function table target `{native}`"))
+            })?;
+            obj.add_relocation(self.rodata_id, absolute(entry, function, 0))
+                .and_then(|()| {
+                    obj.add_relocation(
+                        self.rodata_id,
+                        absolute(entry + 16, names_symbol, *name_offset as i64),
+                    )
+                })
+                .map_err(|error| {
+                    BackendError(format!("cannot emit function table relocation: {error}"))
+                })?;
         }
         Ok(())
     }

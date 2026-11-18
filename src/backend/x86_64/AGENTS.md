@@ -55,6 +55,13 @@ Identical output format on Linux & Windows:
 - Then `fatal: signal 0x<hex>` / `fatal: exception 0x<hex>`, `fault: 0x<addr>`, `rip: 0x<rip>`
 - Checks `__quazi_trace_enabled`; if set, calls `__quazi_print_backtrace` (RBP chain walk, up to 16 frames)
 - If not set, prints `use QUAZI_TRACE=1 to see full stack trace\n`
+- Linux (В28): `rip:` and each backtrace frame append ` in <function>` from
+  `__quazi_fn_table` (`u64` count, then 24-byte `{start, size: u32,
+  name_len: u32, name}` entries built by `build_function_table` with absolute
+  relocations; one entry per emitted body, ICF copies share it). Return
+  addresses look up `address - 1`. `QUAZI_TRACE=2` also prints the
+  interrupted `ucontext` general registers (`r8`..`rip`, `eflags`) before the
+  backtrace. Windows and NetBSD still print raw addresses.
 
 ---
 
@@ -75,7 +82,10 @@ source attributes must not be reintroduced.
 
 ---
 
-## `QUAZI_TRACE=1` Detection
+## `QUAZI_TRACE` Detection
+
+Accepted values are `1` (backtraces) and `2` (backtraces plus crash
+registers on Linux); other values are ignored.
 
 - Windows `mainCRTStartup` uses `GetEnvironmentVariableA`.
 - Linux `_start` walks `envp` from the kernel-provided initial stack; it does

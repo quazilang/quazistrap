@@ -5,6 +5,7 @@ with a bare SIGSEGV, and that other faults keep the generic crash report
 (exit status 101). Native and QZI."""
 
 import argparse
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -21,9 +22,13 @@ NULL_READ = """fn main() i32 {
     unsafe { ret (*p) as i32; }
 }
 """
+NAMED_FRAMES = """fn inner(v: i32) i32 { if v > 2 { panic("bad value {}", v); } ret v; }
+fn middle(v: i32) i32 { ret inner(v + 1) * 2; }
+fn main() i32 { ret middle(5); }
+"""
 
 
-def build(qz, root, source, qzi):
+def build(qz, root, source, qzi, environment=None):
     (root / "src/main.qz").write_text(source)
     common = ["--no-incremental", "--no-color", "--no-unicode", "--silent"]
     binary = root / "program"
@@ -35,7 +40,11 @@ def build(qz, root, source, qzi):
     for step in steps:
         result = subprocess.run(step, cwd=root, text=True, capture_output=True, timeout=300)
         assert result.returncode == 0, result.stdout + result.stderr
-    return subprocess.run([str(binary)], cwd=root, text=True, capture_output=True, timeout=60)
+    env = dict(os.environ)
+    env.pop("QUAZI_TRACE", None)
+    env.update(environment or {})
+    return subprocess.run([str(binary)], cwd=root, text=True, capture_output=True,
+                          timeout=60, env=env)
 
 
 def main():
@@ -54,10 +63,23 @@ def main():
             assert fault.returncode == 101, (fault.returncode, fault.stderr)
             assert "== CRASHED ==" in fault.stderr and "overflowed" not in fault.stderr, fault.stderr
             assert fault.stderr.endswith("stack trace\n"), repr(fault.stderr)
+            traced = build(qz, root, NULL_READ, qzi, {"QUAZI_TRACE": "2"})
+            assert traced.returncode == 101, (traced.returncode, traced.stderr)
+            assert " in main\n" in traced.stderr, traced.stderr
+            assert "registers:\n" in traced.stderr and "  rip    = 0x" in traced.stderr, traced.stderr
+            assert "stack backtrace:" in traced.stderr, traced.stderr
+            plain = build(qz, root, NULL_READ, qzi, {"QUAZI_TRACE": "1"})
+            assert "registers:" not in plain.stderr and "stack backtrace:" in plain.stderr, plain.stderr
+            frames = build(qz, root, NAMED_FRAMES, qzi, {"QUAZI_TRACE": "1"})
+            assert frames.returncode == 101, (frames.returncode, frames.stderr)
+            names = [line.rsplit(" in ", 1)[1] for line in frames.stderr.splitlines() if " in " in line]
+            assert names[-3:] == ["inner", "middle", "main"], frames.stderr
             nested = build(qz, root, NESTED_PANIC, qzi)
             assert nested.returncode == 101, (nested.returncode, nested.stderr)
             assert "panicked while processing a panic: 'inner failure'" in nested.stderr, nested.stderr
-    print("PASS stack overflow: recursion reports overflow (134), null read keeps crash report (101), panic in panic handler aborts (101); native and QZI")
+    print("PASS stack overflow: recursion reports overflow (134), null read keeps crash report (101) "
+          "with named frames and QUAZI_TRACE=2 registers, panic in panic handler aborts (101); "
+          "native and QZI")
 
 
 if __name__ == "__main__":

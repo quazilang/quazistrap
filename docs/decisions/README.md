@@ -60,6 +60,13 @@ Recursion handling decided 2026-11-15 (В16А): a second panic while handling
 one prints `panicked while processing a panic` and exits with 101 without
 calling the handler again.
 
+Resolved 2026-11-18 (В28): the fatal contract stays — `@panic_handler fn(PanicInfo) !`
+runs once, the stack is not unwound, local destructors are not guaranteed,
+the default exits 101 and a qoroutine panic reaches `join()` (D-019). The
+maintainer asked for readable diagnostics: backtraces name their functions
+and `QUAZI_TRACE=2` adds crash registers (Linux implemented; Windows and
+NetBSD still print raw addresses).
+
 ## D-007: concurrency model and terminology
 
 Define native Quazi thread/task semantics, result and panic propagation,
@@ -71,10 +78,20 @@ Blocked on implementation of [D-014](whole-program-ownership.md): no safe
 concurrency surface can be finalized before borrow transfer, ownership effects,
 and QZI-only composition are enforceable.
 
+Direction chosen 2026-11-18 (В29А): cooperative cancellation; a consumed
+`JoinHandle[T]` waits when destroyed; an isolated panic is returned as an
+error from `join()` after guaranteed cleanup. Implementation stays blocked on
+D-014; qoroutine rules from D-019 are unchanged.
+
 ## D-008: TLS and trust policy
 
 Select a maintained TLS backend and define certificate/hostname verification,
 trust-store source, protocol policy, backend/version support, and update model.
+
+Resolved 2026-11-18 (В30А): system TLS libraries and the system trust store,
+with supported versions and dependencies documented per platform. Certificate
+and hostname verification are on by default; the test matrix includes a local
+TLS server, an untrusted certificate and a wrong hostname. Not implemented yet.
 
 ## D-009: time-zone data
 

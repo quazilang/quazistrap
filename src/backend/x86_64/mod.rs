@@ -218,6 +218,24 @@ fn emit_native_object(
         text_bytes.extend_from_slice(&fn_bytes);
     }
 
+    // The Linux crash handler and backtrace name addresses through a table of
+    // emitted bodies (folded copies share their canonical body's entry).
+    if target.emit_start && !target.no_crash && target.os == target::Os::Linux {
+        let functions: Vec<(&str, &str, u64)> = chunks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| canonical[*index] == *index)
+            .map(|(index, chunk)| {
+                (
+                    chunk.name.as_str(),
+                    fn_names[index].as_str(),
+                    emitted_at[index].1 as u64,
+                )
+            })
+            .collect();
+        section_acc.build_function_table(&mut obj, &mut sym_table, &functions)?;
+    }
+
     if target.emit_start {
         let stub_offset = text_bytes.len();
         let no_crash = target.no_crash;

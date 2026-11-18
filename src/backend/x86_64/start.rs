@@ -175,6 +175,9 @@ impl StartStub {
         }
 
         let mut print_bt_label = asm.create_label();
+        let mut hex16_label = asm.create_label();
+        let mut symbolize_label = asm.create_label();
+        let mut registers_label = asm.create_label();
 
         // ═══════════════════════════════════════════════════════
         // __quazi_sigreturn
@@ -343,12 +346,22 @@ impl StartStub {
         lea_rip!(rsi, "__quazi_hex_buf");
         emit!(asm.mov(rdx, 16i64));
         emit!(asm.syscall());
+        emit!(asm.mov(r15, qword_ptr(r14 + 0xA8)));
+        emit!(asm.call(symbolize_label));
 
         emit!(asm.mov(rax, 1i64));
         emit!(asm.mov(rdi, 2i64));
         lea_rip!(rsi, "__quazi_nl");
         emit!(asm.mov(rdx, 1i64));
         emit!(asm.syscall());
+
+        // ── Registers at the fault with QUAZI_TRACE=2 ──
+        let mut skip_registers = asm.create_label();
+        lea_rip!(rax, "__quazi_trace_enabled");
+        emit!(asm.cmp(byte_ptr(rax), 2i32));
+        emit!(asm.jb(skip_registers));
+        emit!(asm.call(registers_label));
+        emit!(asm.set_label(&mut skip_registers));
 
         // ── Backtrace or hint ──
         let mut bt_done_c = asm.create_label();
@@ -431,6 +444,7 @@ impl StartStub {
 
         // format [r12+8] as 16 hex digits
         emit!(asm.mov(rbx, qword_ptr(r12 + 8)));
+        emit!(asm.mov(r15, rbx));
         emit!(asm.mov(ecx, 16i32));
         lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
@@ -457,6 +471,9 @@ impl StartStub {
         lea_rip!(rsi, "__quazi_hex_buf");
         emit!(asm.mov(rdx, 16i64));
         emit!(asm.syscall());
+        // A return address follows its call: name the calling function.
+        emit!(asm.lea(r15, qword_ptr(r15 - 1)));
+        emit!(asm.call(symbolize_label));
 
         // write(2, "\n", 1)
         emit!(asm.mov(rax, 1i64));
@@ -475,6 +492,118 @@ impl StartStub {
         emit!(asm.pop(r13));
         emit!(asm.pop(r12));
         emit!(asm.pop(rbx));
+        emit!(asm.ret());
+
+        // hex16: write rbx as 16 hex digits to stderr. Clobbers rax, rbx,
+        // rcx, rdx, rsi, rdi, r8 and r11.
+        emit!(asm.set_label(&mut hex16_label));
+        emit!(asm.mov(ecx, 16i32));
+        lea_rip!(r8, "__quazi_hex_buf");
+        emit!(asm.add(r8, 15i32));
+        let mut hex_digit = asm.create_label();
+        let mut hex_decimal = asm.create_label();
+        emit!(asm.set_label(&mut hex_digit));
+        emit!(asm.mov(rax, rbx));
+        emit!(asm.and(rax, 0x0Fi32));
+        emit!(asm.cmp(al, 10i32));
+        emit!(asm.jb(hex_decimal));
+        emit!(asm.add(al, 7i32));
+        emit!(asm.set_label(&mut hex_decimal));
+        emit!(asm.add(al, '0' as i32));
+        emit!(asm.mov(byte_ptr(r8), al));
+        emit!(asm.dec(r8));
+        emit!(asm.shr(rbx, 4i32));
+        emit!(asm.dec(ecx));
+        emit!(asm.jne(hex_digit));
+        emit!(asm.mov(rax, 1i64));
+        emit!(asm.mov(rdi, 2i64));
+        lea_rip!(rsi, "__quazi_hex_buf");
+        emit!(asm.mov(rdx, 16i64));
+        emit!(asm.syscall());
+        emit!(asm.ret());
+
+        // symbolize: write " in <function>" when r15 lies in a table entry.
+        // Clobbers rax, rcx, rdx, rsi, rdi, r9, r10 and r11.
+        emit!(asm.set_label(&mut symbolize_label));
+        lea_rip!(r9, "__quazi_fn_table");
+        emit!(asm.mov(r10, qword_ptr(r9)));
+        emit!(asm.add(r9, 8i32));
+        let mut lookup = asm.create_label();
+        let mut found = asm.create_label();
+        let mut unknown = asm.create_label();
+        emit!(asm.set_label(&mut lookup));
+        emit!(asm.test(r10, r10));
+        emit!(asm.je(unknown));
+        emit!(asm.mov(rax, r15));
+        emit!(asm.sub(rax, qword_ptr(r9)));
+        emit!(asm.mov(ecx, dword_ptr(r9 + 8)));
+        emit!(asm.cmp(rax, rcx));
+        emit!(asm.jb(found));
+        emit!(asm.add(r9, 24i32));
+        emit!(asm.dec(r10));
+        emit!(asm.jmp(lookup));
+        emit!(asm.set_label(&mut found));
+        emit!(asm.mov(rax, 1i64));
+        emit!(asm.mov(rdi, 2i64));
+        lea_rip!(rsi, "__quazi_bt_in");
+        emit!(asm.mov(
+            rdx,
+            crate::backend::x86_64::sections::FUNCTION_SEPARATOR.len() as i64
+        ));
+        emit!(asm.syscall());
+        emit!(asm.mov(rax, 1i64));
+        emit!(asm.mov(rdi, 2i64));
+        emit!(asm.mov(rsi, qword_ptr(r9 + 16)));
+        emit!(asm.mov(edx, dword_ptr(r9 + 12)));
+        emit!(asm.syscall());
+        emit!(asm.set_label(&mut unknown));
+        emit!(asm.ret());
+
+        // registers: dump the interrupted general registers from the
+        // ucontext in r14 (`uc_mcontext.gregs` starts at offset 40).
+        emit!(asm.set_label(&mut registers_label));
+        emit!(asm.push(r15));
+        emit!(asm.push(rbx));
+        emit!(asm.mov(rax, 1i64));
+        emit!(asm.mov(rdi, 2i64));
+        lea_rip!(rsi, "__quazi_regs_header");
+        emit!(asm.mov(
+            rdx,
+            crate::backend::x86_64::sections::REGISTERS_HEADER.len() as i64
+        ));
+        emit!(asm.syscall());
+        emit!(asm.xor(r15d, r15d));
+        let mut register_loop = asm.create_label();
+        let mut registers_done = asm.create_label();
+        emit!(asm.set_label(&mut register_loop));
+        emit!(asm.cmp(
+            r15,
+            crate::backend::x86_64::sections::CRASH_REGISTERS.len() as i32
+        ));
+        emit!(asm.jae(registers_done));
+        emit!(asm.mov(rax, r15));
+        emit!(asm.shl(rax, 4i32));
+        lea_rip!(rsi, "__quazi_reg_names");
+        emit!(asm.add(rsi, rax));
+        emit!(asm.mov(rax, 1i64));
+        emit!(asm.mov(rdi, 2i64));
+        emit!(asm.mov(
+            rdx,
+            crate::backend::x86_64::sections::REGISTER_LABEL_LEN as i64
+        ));
+        emit!(asm.syscall());
+        emit!(asm.mov(rbx, qword_ptr(r14 + r15 * 8 + 40i32)));
+        emit!(asm.call(hex16_label));
+        emit!(asm.mov(rax, 1i64));
+        emit!(asm.mov(rdi, 2i64));
+        lea_rip!(rsi, "__quazi_nl");
+        emit!(asm.mov(rdx, 1i64));
+        emit!(asm.syscall());
+        emit!(asm.inc(r15));
+        emit!(asm.jmp(register_loop));
+        emit!(asm.set_label(&mut registers_done));
+        emit!(asm.pop(rbx));
+        emit!(asm.pop(r15));
         emit!(asm.ret());
 
         let print_bt_end_idx = asm.instructions().len();
@@ -560,10 +689,16 @@ impl StartStub {
         emit!(asm.jne(next_env));
         emit!(asm.cmp(dword_ptr(rax + 8i32), 0x3d45_4341u32 as i32)); // "ACE="
         emit!(asm.jne(next_env));
-        emit!(asm.cmp(word_ptr(rax + 12i32), 0x0031i32)); // "1\0"
+        // "1\0" enables backtraces; "2\0" also dumps crash registers.
+        emit!(asm.cmp(byte_ptr(rax + 13i32), 0i32));
         emit!(asm.jne(next_env));
+        emit!(asm.movzx(ecx, byte_ptr(rax + 12i32)));
+        emit!(asm.sub(ecx, '1' as i32));
+        emit!(asm.cmp(ecx, 1i32));
+        emit!(asm.ja(next_env));
+        emit!(asm.inc(ecx));
         lea_rip!(rax, "__quazi_trace_enabled");
-        emit!(asm.mov(byte_ptr(rax), 1i32));
+        emit!(asm.mov(byte_ptr(rax), cl));
         emit!(asm.jmp(no_trace));
         emit!(asm.set_label(&mut next_env));
         emit!(asm.add(rsi, 8i32));

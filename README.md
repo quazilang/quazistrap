@@ -343,7 +343,8 @@ Quazi project.
 **Environment variables:**
 - `QUAZI_LINKER=builtin` — require the in-process ELF/PE linker
 - `QUAZI_LINKER=/path/to/linker` — select an external linker
-- `QUAZI_TRACE=1` — enable crash backtraces
+- `QUAZI_TRACE=1` — enable panic and crash backtraces with function names
+- `QUAZI_TRACE=2` — also print the general registers at a crash (Linux)
 
 ---
 
