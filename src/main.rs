@@ -586,22 +586,29 @@ fn target_os_name(target: &TargetSpec) -> &'static str {
 /// Builds the QZI of a project: the program is compiled once per operating
 /// system (each with its own `@cfg` resolution and full semantic/ownership
 /// analysis). Publish an artifact only if every supported target compiles.
-fn build_universal_qzi(out: &str, silent: bool, mut build: impl FnMut(&TargetSpec, &str, bool)) {
+fn build_universal_qzi(
+    out: &str,
+    silent: bool,
+    mut build: impl FnMut(usize, &TargetSpec, &str, bool),
+) {
     let staging = std::env::temp_dir().join(format!("quazi-qzi-{}", std::process::id()));
     std::fs::create_dir_all(&staging).unwrap_or_else(|error| {
-        eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {error}", staging.display());
+        eprintln!(
+            "\x1b[31;1merror:\x1b[0m cannot create {}: {error}",
+            staging.display()
+        );
         fail_build();
     });
     let mut variants = Vec::new();
     let mut missing = Vec::new();
-    for (os, spec) in QZI_TARGETS {
+    for (index, (os, spec)) in QZI_TARGETS.into_iter().enumerate() {
         let path = staging.join(format!("{os}.qzi"));
         let path_text = path.to_string_lossy().into_owned();
         let target = spec();
         bytecode::select_qzi_target(os);
         QZI_VARIANT_BUILD.store(true, Ordering::Relaxed);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            build(&target, &path_text, true)
+            build(index, &target, &path_text, true)
         }));
         QZI_VARIANT_BUILD.store(false, Ordering::Relaxed);
         match result {
@@ -636,9 +643,15 @@ fn build_universal_qzi(out: &str, silent: bool, mut build: impl FnMut(&TargetSpe
         fail_build();
     });
     let path = Path::new(out);
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         std::fs::create_dir_all(parent).unwrap_or_else(|error| {
-            eprintln!("\x1b[31;1merror:\x1b[0m cannot create {}: {error}", parent.display());
+            eprintln!(
+                "\x1b[31;1merror:\x1b[0m cannot create {}: {error}",
+                parent.display()
+            );
             fail_build();
         });
     }
@@ -1236,7 +1249,7 @@ fn build_with_progress(
     initial_progress: Option<progress::BuildProgress>,
     project_resolver: Option<&loader::ModuleResolver>,
     package_settings: project::PackageSettings,
-    preloaded: Option<loader::LoadResult>,
+    preloaded: Option<(loader::LoadResult, &mut semantic::CfgPlan<'_>, usize)>,
 ) {
     use progress::{
         BuildProgress, arch_label, build_dep_tree, codegen_stats, common_lib_prefix, fmt_count,
@@ -1330,19 +1343,24 @@ fn build_with_progress(
 
     // ── Step 1: Lexing (file I/O + tokenize) ─────────────────────────────────
     prog.begin("frontend");
-    let result = match preloaded.map(Ok).unwrap_or_else(|| {
-        project_resolver
-            .map(|resolver| {
-                loader::load_programs_configured_for_target(
-                    files,
-                    Some(resolver),
-                    package_settings.std,
-                    &[],
-                    cfg_target_for_spec(&target),
-                )
-            })
-            .unwrap_or_else(|| load_with_optional_project_for_target(files, target.clone()))
-    }) {
+    let (loaded, cfg) = match preloaded {
+        Some((loaded, plan, index)) => (Ok(loaded), Some((plan, index))),
+        None => (
+            project_resolver
+                .map(|resolver| {
+                    loader::load_programs_configured_for_target(
+                        files,
+                        Some(resolver),
+                        package_settings.std,
+                        &[],
+                        cfg_target_for_spec(&target),
+                    )
+                })
+                .unwrap_or_else(|| load_with_optional_project_for_target(files, target.clone())),
+            None,
+        ),
+    };
+    let result = match loaded {
         Ok(r) => r,
         Err(e) => {
             prog.fail("");
@@ -1385,7 +1403,10 @@ fn build_with_progress(
         backend::target::Os::None => ("none", "sysv"),
         backend::target::Os::MacOs => ("macos", "sysv"),
     };
-    let target_program = semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
+    let target_program = match cfg {
+        Some((plan, index)) => plan.project(&result.program, index),
+        None => semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi),
+    };
     let source_hashes = result.source_hashes.clone();
     let mut context_inputs = extra_cache_inputs.to_vec();
     context_inputs.extend_from_slice(qzi_dependencies);
@@ -1981,7 +2002,8 @@ fn main() {
                         fail_build();
                     });
                     let mut results = results.into_iter();
-                    let build_variant = |variant: &TargetSpec, path: &str, quiet: bool| {
+                    let mut cfg_plan = semantic::CfgPlan::new(&targets);
+                    let build_variant = |index, variant: &TargetSpec, path: &str, quiet: bool| {
                         let variant = apply_package_settings(variant.clone(), ctx.config.package);
                         let variant_cache =
                             (!no_incremental).then(|| ctx.incremental_cache_path(variant.triple()));
@@ -2005,7 +2027,11 @@ fn main() {
                             None,
                             Some(&ctx.resolver),
                             ctx.config.package,
-                            Some(results.next().expect("one loaded view per target")),
+                            Some((
+                                results.next().expect("one loaded view per target"),
+                                &mut cfg_plan,
+                                index,
+                            )),
                         );
                     };
                     build_universal_qzi(&out, silent, build_variant);
@@ -2240,7 +2266,8 @@ fn main() {
                         fail_build();
                     })
                     .into_iter();
-                    build_universal_qzi(&out, silent, |variant, path, quiet| {
+                    let mut cfg_plan = semantic::CfgPlan::new(&targets);
+                    build_universal_qzi(&out, silent, |index, variant, path, quiet| {
                         let variant = apply_package_settings(variant.clone(), settings);
                         build_with_progress(
                             &source_files,
@@ -2262,7 +2289,11 @@ fn main() {
                             None,
                             resolver,
                             settings,
-                            Some(results.next().expect("one loaded view per target")),
+                            Some((
+                                results.next().expect("one loaded view per target"),
+                                &mut cfg_plan,
+                                index,
+                            )),
                         );
                     });
                     return;

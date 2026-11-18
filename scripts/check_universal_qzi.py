@@ -28,6 +28,9 @@ fn system(prefix: String) String { var text = prefix; text.push_str("linux"); te
 fn system(prefix: String) String { var text = prefix; text.push_str("windows"); text }
 @cfg(target_os = "netbsd")
 fn system(prefix: String) String { var text = prefix; text.push_str("netbsd"); text }
+@cfg(target_abi = "sysv") type NativeWord = i32;
+@cfg(target_abi = "win64") type NativeWord = [i32; 2];
+fn native_width() usize { ret size_of[NativeWord](); }
 fn shared_label(count: i32) String {
     var label = String.from("shared-");
     label.push_str(count.to_string().as_str());
@@ -36,7 +39,7 @@ fn shared_label(count: i32) String {
 fn main() i32 {
     const label = shared_label(7);
     const name = system(String.from("os="));
-    println("{} {}", label, name);
+    println("{} {} {}", label, name, native_width());
     0
 }
 """
@@ -118,12 +121,13 @@ def main():
         for target in targets:
             run([qz, "build", str(root / "app.qzi"), "--silent", "--target", f"x86_64-{target}",
                  "-o", str(out / target)], out)
-        assert run([str(out / "linux")], out).stdout == b"shared-7 os=linux\n"
+        output = run([str(out / "linux")], out).stdout
+        assert output == b"shared-7 os=linux 8\n", output
         if args.wine:
             env = dict(os.environ, WINEDEBUG="-all")
             exe = out / "windows.exe" if (out / "windows.exe").exists() else out / "windows"
             output = run([str(args.wine), str(exe)], out, env=env).stdout.replace(b"\r", b"")
-            assert output == b"shared-7 os=windows\n", output
+            assert output == b"shared-7 os=windows 16\n", output
         netbsd = (out / "netbsd").read_bytes()
         disassembly = run(["objdump", "-D", "-b", "binary", "-m", "i386:x86-64", str(out / "netbsd")],
                           out).stdout

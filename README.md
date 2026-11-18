@@ -56,6 +56,7 @@ Project QZI builds now require every supported target to compile. The success
 summary identifies the artifact as `QZI`, and a failed build preserves any
 previous output. This fixes publication behavior within the existing plan.
 Project and explicit source-file builds share one parsed source snapshot for QZI.
+Their conditional predicates share target masks before semantic analysis.
 The dependency interface cache keys target-specific signatures by their content,
 so successive native builds can use different interfaces from the same QZI.
 QZI aliases preserve conditional bodies and interfaces. The v16 writer rejects

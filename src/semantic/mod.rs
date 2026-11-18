@@ -507,18 +507,62 @@ pub fn strip_cfg_for(
     target_arch: &str,
     target_abi: &str,
 ) -> Program {
-    fn strip_block(block: &Block, target_os: &str, target_arch: &str, target_abi: &str) -> Block {
+    strip_cfg_matching(program, &mut |_, attributes| {
+        item_should_include_for(attributes, target_os, target_arch, target_abi)
+    })
+}
+
+/// Cache the target mask of each conditional predicate in one source snapshot.
+/// Scalar consumers can still request a projection while semantic passes move
+/// to accepting masks directly.
+pub(crate) struct CfgPlan<'a> {
+    targets: &'a [crate::loader::CfgTarget<'a>],
+    masks: HashMap<(usize, usize), u8>,
+}
+
+impl<'a> CfgPlan<'a> {
+    pub(crate) fn new(targets: &'a [crate::loader::CfgTarget<'a>]) -> Self {
+        assert!(targets.len() <= u8::BITS as usize);
+        Self {
+            targets,
+            masks: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn project(&mut self, program: &Program, index: usize) -> Program {
+        assert!(index < self.targets.len());
+        strip_cfg_matching(program, &mut |span, attributes| {
+            if !attributes.iter().any(|attribute| attribute.name == "cfg") {
+                return true;
+            }
+            let mask = self.masks.entry((span.start, span.end)).or_insert_with(|| {
+                self.targets
+                    .iter()
+                    .enumerate()
+                    .fold(0, |mask, (bit, target)| {
+                        if item_should_include_for(attributes, target.os, target.arch, target.abi) {
+                            mask | (1 << bit)
+                        } else {
+                            mask
+                        }
+                    })
+            });
+            *mask & (1 << index) != 0
+        })
+    }
+}
+
+fn strip_cfg_matching(
+    program: &Program,
+    enabled: &mut impl FnMut(Span, &[Attribute]) -> bool,
+) -> Program {
+    fn strip_block(block: &Block, enabled: &mut impl FnMut(Span, &[Attribute]) -> bool) -> Block {
         let mut stmts = Vec::new();
         for stmt in &block.stmts {
             match &stmt.node {
                 StmtKind::CfgBlock { condition, body } => {
-                    if item_should_include_for(
-                        std::slice::from_ref(condition),
-                        target_os,
-                        target_arch,
-                        target_abi,
-                    ) {
-                        stmts.extend(strip_block(body, target_os, target_arch, target_abi).stmts);
+                    if enabled(stmt.span, std::slice::from_ref(condition)) {
+                        stmts.extend(strip_block(body, enabled).stmts);
                     }
                 }
                 StmtKind::If {
@@ -530,19 +574,14 @@ pub fn strip_cfg_for(
                     stmts.push(Spanned::new(
                         StmtKind::If {
                             condition: condition.clone(),
-                            then_block: strip_block(then_block, target_os, target_arch, target_abi),
+                            then_block: strip_block(then_block, enabled),
                             else_if: else_if
                                 .iter()
-                                .map(|(c, b)| {
-                                    (
-                                        c.clone(),
-                                        strip_block(b, target_os, target_arch, target_abi),
-                                    )
-                                })
+                                .map(|(c, b)| (c.clone(), strip_block(b, enabled)))
                                 .collect(),
-                            else_block: else_block.as_ref().map(|block| {
-                                strip_block(block, target_os, target_arch, target_abi)
-                            }),
+                            else_block: else_block
+                                .as_ref()
+                                .map(|block| strip_block(block, enabled)),
                         },
                         stmt.span,
                     ));
@@ -551,7 +590,7 @@ pub fn strip_cfg_for(
                     stmts.push(Spanned::new(
                         StmtKind::For {
                             kind: kind.clone(),
-                            body: strip_block(body, target_os, target_arch, target_abi),
+                            body: strip_block(body, enabled),
                         },
                         stmt.span,
                     ));
@@ -559,7 +598,7 @@ pub fn strip_cfg_for(
                 StmtKind::UnsafeBlock { body } => {
                     stmts.push(Spanned::new(
                         StmtKind::UnsafeBlock {
-                            body: strip_block(body, target_os, target_arch, target_abi),
+                            body: strip_block(body, enabled),
                         },
                         stmt.span,
                     ));
@@ -573,7 +612,7 @@ pub fn strip_cfg_for(
         }
     }
 
-    fn strip_fn(node: &ItemKind, target_os: &str, target_arch: &str, target_abi: &str) -> ItemKind {
+    fn strip_fn(node: &ItemKind, enabled: &mut impl FnMut(Span, &[Attribute]) -> bool) -> ItemKind {
         match node {
             ItemKind::Fn {
                 name,
@@ -591,9 +630,7 @@ pub fn strip_cfg_for(
                 name_span: *name_span,
                 return_ty: return_ty.clone(),
                 params: params.clone(),
-                body: body
-                    .as_ref()
-                    .map(|block| strip_block(block, target_os, target_arch, target_abi)),
+                body: body.as_ref().map(|block| strip_block(block, enabled)),
                 attributes: attributes
                     .iter()
                     .filter(|attribute| attribute.name != "cfg")
@@ -636,9 +673,7 @@ pub fn strip_cfg_for(
             ItemKind::Import(import_path) => Some(&import_path.attributes),
             _ => None,
         };
-        if attrs.is_some_and(|attributes| {
-            !item_should_include_for(attributes, target_os, target_arch, target_abi)
-        }) {
+        if attrs.is_some_and(|attributes| !enabled(item.span, attributes)) {
             continue;
         }
         let mut node = match &item.node {
@@ -647,29 +682,22 @@ pub fn strip_cfg_for(
                 for_ty,
                 methods,
             } => {
-                let methods: Vec<Item> = methods
-                    .iter()
-                    .filter(|m| {
-                        if let ItemKind::Fn { attributes, .. } = &m.node {
-                            item_should_include_for(attributes, target_os, target_arch, target_abi)
-                        } else {
-                            true
-                        }
-                    })
-                    .map(|m| {
-                        Spanned::new(
-                            strip_fn(&m.node, target_os, target_arch, target_abi),
-                            m.span,
-                        )
-                    })
-                    .collect();
+                let mut active_methods = Vec::new();
+                for method in methods {
+                    if let ItemKind::Fn { attributes, .. } = &method.node
+                        && !enabled(method.span, attributes)
+                    {
+                        continue;
+                    }
+                    active_methods.push(Spanned::new(strip_fn(&method.node, enabled), method.span));
+                }
                 ItemKind::Impl {
                     trait_ty: trait_ty.clone(),
                     for_ty: for_ty.clone(),
-                    methods,
+                    methods: active_methods,
                 }
             }
-            ItemKind::Fn { .. } => strip_fn(&item.node, target_os, target_arch, target_abi),
+            ItemKind::Fn { .. } => strip_fn(&item.node, enabled),
             other => other.clone(),
         };
         remove_cfg_attributes(&mut node);
@@ -2105,11 +2133,12 @@ impl Analyzer {
         self.analyze_program_with_checkpoint(program, || cancellation.check())
     }
 
-    fn analyze_program_with_checkpoint(
+    /// Establish the declaration environment before checks that inspect function bodies.
+    fn prepare_declarations(
         &mut self,
         program: &Program,
-        mut checkpoint: impl FnMut() -> Result<(), crate::cancel::Cancelled>,
-    ) -> Result<SemanticReport, crate::cancel::Cancelled> {
+        checkpoint: &mut dyn FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<(), crate::cancel::Cancelled> {
         checkpoint()?;
         self.reset_state();
         self.validate_panic_handler_count(program);
@@ -2120,9 +2149,9 @@ impl Analyzer {
             checkpoint()?;
             self.declare_top_level_item(item);
         }
-        self.register_source_type_bindings(program, &mut checkpoint)?;
-        self.canonicalize_source_aliases(program, &mut checkpoint)?;
-        self.validate_runtime_string(program, &mut checkpoint)?;
+        self.register_source_type_bindings(program, checkpoint)?;
+        self.canonicalize_source_aliases(program, checkpoint)?;
+        self.validate_runtime_string(program, checkpoint)?;
         // Implicit impl binders are unresolved target names, not concrete
         // declared types/aliases. Resolve this after all forward declarations.
         self.impl_generic_params = self
@@ -2139,12 +2168,12 @@ impl Analyzer {
                 )
             })
             .collect();
-        self.canonicalize_declaration_types(program, &mut checkpoint)?;
-        self.validate_source_type_visibility(program, &mut checkpoint)?;
+        self.canonicalize_declaration_types(program, checkpoint)?;
+        self.validate_source_type_visibility(program, checkpoint)?;
         // Validate declaration types before any layout or ownership consumer.
         for item in &program.items {
             checkpoint()?;
-            self.validate_declaration_aliases(item, &[], &mut checkpoint)?;
+            self.validate_declaration_aliases(item, &[], checkpoint)?;
         }
         self.validate_derived_codec_fields(program);
         self.ownership_signature_index = self
@@ -2156,6 +2185,16 @@ impl Analyzer {
 
         // Module constants first: functions may use them before their line.
         self.evaluate_module_constants(program);
+
+        Ok(())
+    }
+
+    fn analyze_program_with_checkpoint(
+        &mut self,
+        program: &Program,
+        mut checkpoint: impl FnMut() -> Result<(), crate::cancel::Cancelled>,
+    ) -> Result<SemanticReport, crate::cancel::Cancelled> {
+        self.prepare_declarations(program, &mut checkpoint)?;
 
         // Pass 2: type checking + usage tracking + initialization checks + annotations.
         for item in &program.items {
@@ -5172,6 +5211,99 @@ fn main() void {}
                 attributes.iter().all(|attribute| attribute.name != "cfg"),
             _ => true,
         }));
+    }
+
+    #[test]
+    fn shared_cfg_plan_matches_scalar_projections() {
+        use crate::loader::CfgTarget;
+        use crate::parser::ast::{ExprKind, Literal, StmtKind};
+
+        let targets = [
+            CfgTarget {
+                os: "linux",
+                arch: "x86_64",
+                abi: "sysv",
+            },
+            CfgTarget {
+                os: "windows",
+                arch: "x86_64",
+                abi: "win64",
+            },
+            CfgTarget {
+                os: "netbsd",
+                arch: "x86_64",
+                abi: "sysv",
+            },
+        ];
+        let program = parse_program(
+            r#"
+@cfg(target_abi="sysv") type Word = i64;
+@cfg(target_os="windows") type Word = i32;
+struct Marker {}
+impl Marker {
+    @cfg(target_os="windows") fn active() void {}
+}
+fn main() i32 {
+    @cfg(target_abi="sysv") {
+        @cfg(target_os="netbsd") { ret 30; }
+        @cfg(target_os="windows") { ret 99; }
+    }
+    @cfg(target_os="windows") { ret 20; }
+    ret 10;
+}
+"#,
+        );
+        let mut plan = super::CfgPlan::new(&targets);
+        for (index, target) in targets.iter().enumerate() {
+            let projected = plan.project(&program, index);
+            assert_eq!(
+                format!("{projected:?}"),
+                format!(
+                    "{:?}",
+                    strip_cfg_for(&program, target.os, target.arch, target.abi)
+                ),
+            );
+            let [alias, _, implementation, entry] = projected.items.as_slice() else {
+                panic!("expected one alias, one struct, one impl and main");
+            };
+            let ItemKind::TypeAlias { aliased_type, .. } = &alias.node else {
+                panic!("expected Word alias");
+            };
+            assert_eq!(
+                aliased_type.node.to_string(),
+                if index == 1 { "i32" } else { "i64" }
+            );
+            let ItemKind::Impl { methods, .. } = &implementation.node else {
+                panic!("expected Marker impl");
+            };
+            assert_eq!(methods.len(), usize::from(index == 1));
+            let ItemKind::Fn {
+                body: Some(body), ..
+            } = &entry.node
+            else {
+                panic!("expected main body");
+            };
+            let returns = body
+                .stmts
+                .iter()
+                .map(|stmt| match &stmt.node {
+                    StmtKind::Return(Some(value)) => match value.node {
+                        ExprKind::Literal(Literal::Int(value)) => value,
+                        _ => panic!("expected an integer literal"),
+                    },
+                    _ => panic!("expected only return statements"),
+                })
+                .collect::<Vec<_>>();
+            match target.os {
+                "linux" => assert_eq!(returns, [10]),
+                "windows" => assert_eq!(returns, [20, 10]),
+                "netbsd" => assert_eq!(returns, [30, 10]),
+                _ => unreachable!(),
+            }
+        }
+        let mut masks = plan.masks.into_values().collect::<Vec<_>>();
+        masks.sort_unstable();
+        assert_eq!(masks, [0b010, 0b010, 0b010, 0b010, 0b100, 0b101, 0b101]);
     }
 
     #[test]

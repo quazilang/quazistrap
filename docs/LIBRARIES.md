@@ -88,8 +88,9 @@ status diamond as build stages; failures use a red diamond.
 `qz build -i` and `qz build path/to/main.qz -i` produce one QZI that serves
 Linux, Windows, and NetBSD. Import resolution determines which files each system
 uses. The compiler parses their combined source into an AST with shared source
-positions, then resolves `@cfg` and runs semantic analysis, ownership analysis,
-and code generation for each system. The writer merges the results so each
+positions and evaluates `@cfg` predicates into target masks. It uses those masks
+to select the syntax for semantic analysis, ownership analysis, and code
+generation for each system. The writer merges the results so each
 function body is stored once together with the set of targets it applies to.
 Platform-independent functions (and their constants) apply to all targets;
 the `@cfg` alternatives of a function are separate bodies with disjoint
