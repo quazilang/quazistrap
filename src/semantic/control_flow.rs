@@ -111,6 +111,11 @@ pub enum OwnershipFlowEvent {
     FormatInvoke {
         span: Span,
     },
+    /// The runtime panic is called after its message arguments complete (a
+    /// literal message is expanded as a format template); it never returns.
+    PanicInvoke {
+        span: Span,
+    },
     /// A call of an `@api` or `@syscall` declaration after its positional
     /// arguments complete in source order. Foreign effects are unknown.
     ForeignInvoke {
@@ -915,6 +920,23 @@ where
         self.scheduled_call_site(expression, false)
     }
 
+    /// A direct call of the prelude-selected runtime panic.
+    fn runtime_panic_call(
+        &self,
+        expression: &Expr,
+        callee: &Expr,
+        named_args: &[(String, Expr)],
+    ) -> bool {
+        named_args.is_empty()
+            && matches!(callee.node, ExprKind::Ident(_))
+            && self
+                .analyzer
+                .retention_annotation(expression)
+                .and_then(|annotation| annotation.resolved_fn.as_deref())
+                .and_then(|name| self.analyzer.resolve_symbol(name))
+                .is_some_and(|symbol| self.analyzer.is_runtime_panic(&symbol))
+    }
+
     /// A call resolved to an `@api` or `@syscall` declaration with positional
     /// arguments only. Lowering evaluates them in order (a module namespace
     /// object is not evaluated) and calls the foreign symbol or wrapper.
@@ -1231,6 +1253,64 @@ where
                         None => {
                             self.format_requests.push((key, args.clone()));
                             self.evaluate_opaque(current, &[expression], kind, normal, scopes)?;
+                        }
+                    }
+                }
+                ExpressionControl::Opaque
+                    if let ExprKind::Call {
+                        callee,
+                        args,
+                        named_args,
+                        ..
+                    } = &expression.node
+                        && self.runtime_panic_call(expression, callee, named_args) =>
+                {
+                    // Lowering formats a literal message (when `fmt.format` is
+                    // available) from its expanded template arguments, and
+                    // otherwise passes the message and extra values in order.
+                    let literal = args.first().is_some_and(|first| {
+                        matches!(first.node, ExprKind::Literal(Literal::String(_)))
+                    }) && self.analyzer.resolve_symbol("fmt.format").is_some();
+                    let key = (expression.span.start, expression.span.end);
+                    let operands: Option<Vec<&'a Expr>> = if literal {
+                        match self.expansions.get(&key) {
+                            Some(Some(expanded)) => Some(expanded.args.iter().collect()),
+                            Some(None) => None,
+                            None => {
+                                self.format_requests.push((key, args.clone()));
+                                None
+                            }
+                        }
+                    } else {
+                        Some(args.iter().collect())
+                    };
+                    let span = expression.span;
+                    let invocation = self.block(scopes, span)?;
+                    self.graph.blocks[invocation]
+                        .events
+                        .push(OwnershipFlowEvent::PanicInvoke { span });
+                    self.terminate(
+                        invocation,
+                        OwnershipFlowTerminator::Stop {
+                            exited_scopes: scopes.iter().rev().copied().collect(),
+                        },
+                        span,
+                    )?;
+                    match operands {
+                        Some(operands) => {
+                            self.budget.charge(1 + operands.len() * 3, span)?;
+                            self.schedule_sequence(
+                                &mut pending,
+                                current,
+                                operands,
+                                invocation,
+                                scopes,
+                                span,
+                            )?;
+                        }
+                        // Not yet expanded: one region, which still never returns.
+                        None => {
+                            self.evaluate_opaque(current, &[expression], kind, invocation, scopes)?;
                         }
                     }
                 }

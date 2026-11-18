@@ -132,7 +132,13 @@ for them, so their region is evaluated whole).
 
 A call resolved to an `@api` or `@syscall` declaration, directly or through a
 module (`posix.write(...)`), evaluates its positional arguments in source
-order and records a `ForeignInvoke` with unknown effects. Intrinsics keep
+order and records a `ForeignInvoke` with unknown effects.
+
+A call of the prelude-selected runtime panic evaluates a literal message as a
+format template (when `fmt.format` exists, using the same expansion rounds)
+or its message and extra values in order, then records a `PanicInvoke` whose
+block stops with every active scope exited: the panic never returns.
+Intrinsics keep
 their special lowering and stay opaque, as do other variadic calls, as do the runtime panic and calls
 with special lowering such as layout queries.
 

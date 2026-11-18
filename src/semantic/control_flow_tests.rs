@@ -1883,3 +1883,49 @@ fn main() void {}
     assert!(reachable(graph, argument).contains(&foreign));
     assert!(!reachable(graph, foreign).contains(&argument));
 }
+
+#[test]
+fn source_control_flow_runtime_panic_stops_after_its_arguments() {
+    let body = r#"
+fn later() str { ret "x"; }
+fn after() void {}
+fn check(flag: bool) void {
+    if flag { halt("failed", later()); }
+    after();
+}
+fn main() void {}
+"#;
+    let report = super::analyze_with_runtime_panic(body);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let source = format!("{}\n{body}", super::TEST_RUNTIME_PANIC);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "check")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let at = |needle: &str| source.find(needle).unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+            .unwrap()
+    };
+    let argument = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("later());")),
+    );
+    let panic = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::PanicInvoke { span } if span.start == at("halt(\"failed")),
+    );
+    assert!(reachable(graph, argument).contains(&panic));
+    assert!(matches!(
+        graph.blocks[panic].terminator,
+        OwnershipFlowTerminator::Stop { .. }
+    ));
+    let after = statement_block(graph, &source, "after();");
+    assert!(!reachable(graph, panic).contains(&after));
+    graph.validate().unwrap();
+}
