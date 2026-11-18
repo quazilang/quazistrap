@@ -1376,3 +1376,52 @@ fn main() void {}
     assert!(!reachable(graph, right).contains(&left));
     assert!(reachable(graph, right).contains(&built));
 }
+
+#[test]
+fn source_control_flow_array_literals_evaluate_elements_in_order() {
+    let source = r#"
+fn produce(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn gather(value: Option[i32]) Option[i32] {
+    const values: [i32; 2] = [produce(value)?, later()];
+    ret Some(values[0]);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "gather")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let position = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+            .unwrap()
+    };
+    let at = |needle: &str| source.find(needle).unwrap();
+    let first = position(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("produce(value)?")),
+    );
+    let second = position(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("later()]")),
+    );
+    let array = position(&|event| {
+        matches!(
+            event,
+            OwnershipFlowEvent::ExpressionResult {
+                value: OwnershipExpressionResult::ArrayLiteral { len: 2 },
+                ..
+            }
+        )
+    });
+    assert!(reachable(graph, first).contains(&second));
+    assert!(!reachable(graph, second).contains(&first));
+    assert!(reachable(graph, second).contains(&array));
+}

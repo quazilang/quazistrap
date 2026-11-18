@@ -44,6 +44,8 @@ pub(crate) enum ExpressionControl<'a> {
         op: &'a IncDecOp,
         prefix: bool,
     },
+    /// `[a, b, c]`: the elements in source order, then the array value.
+    ArrayLiteral(&'a [Expr]),
     /// `object.field` read whose object is an expression, not a name chain
     /// (names may be module, enum or type namespaces): the object, then the
     /// field load.
@@ -150,6 +152,7 @@ pub(crate) fn expression_control(expression: &Expr) -> ExpressionControl<'_> {
         },
         ExprKind::Binary { left, right, .. } => ExpressionControl::EagerBinary { left, right },
         ExprKind::Try { expr } => ExpressionControl::TryOperand(expr),
+        ExprKind::ArrayLit(elements) => ExpressionControl::ArrayLiteral(elements),
         ExprKind::Field { object, .. } if !is_name_chain(object) => {
             ExpressionControl::FieldRead { object }
         }

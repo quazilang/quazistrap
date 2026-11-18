@@ -147,8 +147,11 @@ order, which lowering uses regardless of the written order, and records a
 initializer whose declaration is unknown stays opaque.
 `check_expression_control.py` checks this order at run time.
 
-Other calls, multi-index reads and updates, guarded matches, array literals
-and struct initializers of unknown declarations remain whole opaque regions. Controls nested inside
+An array literal evaluates its elements in source order and records an
+`ArrayLiteral` result.
+
+Other calls, multi-index reads and updates, guarded matches and struct
+initializers of unknown declarations remain whole opaque regions. Controls nested inside
 these regions are not individually expanded. Multi-input iteration regions also
 remain opaque. Their internal branches and operand order require further shared
 normalization before any path-sensitive ownership proof consumes them.

@@ -100,7 +100,7 @@ updates of dereference, field and single-index places (address operands, then
 value, then `PlaceUpdate`), single-index reads (object, index, `Index`) and
 field reads of non-name objects (object, `Field`) and enum variant constructors
 (payloads, `VariantConstructor`) and struct initializers (values in declaration
-order, `StructInit`).
+order, `StructInit`) and array literals (elements, `ArrayLiteral`).
 Result events distinguish group/cast/unary/binary completion, logical
 normalization, payload extraction, the compound target read, named (compound)
 assignment and named increment; they prove no typed access or storage alias.

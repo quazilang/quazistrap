@@ -147,6 +147,10 @@ pub enum OwnershipExpressionResult {
     VariantConstructor {
         variant: String,
     },
+    /// The elements completed in source order and the array value is formed.
+    ArrayLiteral {
+        len: usize,
+    },
     /// Field values completed in the struct's declaration order (as lowering
     /// evaluates them, regardless of source order) and the struct is built.
     StructInit {
@@ -778,6 +782,41 @@ where
             }
         }
     }
+    /// Evaluate `expressions` in order starting at `current`, then continue at
+    /// `complete`. An empty sequence transfers directly to `complete`.
+    fn schedule_sequence(
+        &mut self,
+        pending: &mut Vec<(usize, &'a Expr, usize)>,
+        current: usize,
+        expressions: Vec<&'a Expr>,
+        complete: usize,
+        scopes: &[usize],
+        span: Span,
+    ) -> FlowResult<()> {
+        if expressions.is_empty() {
+            return self.terminate(
+                current,
+                OwnershipFlowTerminator::Goto {
+                    target: complete,
+                    exited_scopes: Vec::new(),
+                },
+                span,
+            );
+        }
+        let mut next = complete;
+        let mut reversed = expressions.into_iter().rev().peekable();
+        while let Some(expression) = reversed.next() {
+            let entry = if reversed.peek().is_some() {
+                self.block(scopes, expression.span)?
+            } else {
+                current
+            };
+            pending.push((entry, expression, next));
+            next = entry;
+        }
+        Ok(())
+    }
+
     fn expression_child(
         &mut self,
         pending: &mut Vec<&'a Expr>,
@@ -949,27 +988,15 @@ where
                         scopes,
                     )?;
                     self.budget.charge(args.len() * 3, expression.span)?;
-                    let mut next = complete;
-                    let mut reversed = args.iter().rev().peekable();
-                    while let Some(payload) = reversed.next() {
-                        let entry = if reversed.peek().is_some() {
-                            self.block(scopes, payload.span)?
-                        } else {
-                            current
-                        };
-                        pending.push((entry, payload, next));
-                        next = entry;
-                    }
-                    if args.is_empty() {
-                        self.terminate(
-                            current,
-                            OwnershipFlowTerminator::Goto {
-                                target: complete,
-                                exited_scopes: Vec::new(),
-                            },
-                            expression.span,
-                        )?;
-                    }
+                    let payloads = args.iter().collect();
+                    self.schedule_sequence(
+                        &mut pending,
+                        current,
+                        payloads,
+                        complete,
+                        scopes,
+                        expression.span,
+                    )?;
                 }
                 ExpressionControl::Opaque
                     if let ExprKind::StructInit { fields, .. } = &expression.node
@@ -983,27 +1010,14 @@ where
                         scopes,
                     )?;
                     self.budget.charge(ordered.len() * 3, expression.span)?;
-                    if ordered.is_empty() {
-                        self.terminate(
-                            current,
-                            OwnershipFlowTerminator::Goto {
-                                target: complete,
-                                exited_scopes: Vec::new(),
-                            },
-                            expression.span,
-                        )?;
-                    }
-                    let mut next = complete;
-                    let mut reversed = ordered.into_iter().rev().peekable();
-                    while let Some(value) = reversed.next() {
-                        let entry = if reversed.peek().is_some() {
-                            self.block(scopes, value.span)?
-                        } else {
-                            current
-                        };
-                        pending.push((entry, value, next));
-                        next = entry;
-                    }
+                    self.schedule_sequence(
+                        &mut pending,
+                        current,
+                        ordered,
+                        complete,
+                        scopes,
+                        expression.span,
+                    )?;
                 }
                 ExpressionControl::Opaque => {
                     let arguments = match &expression.node {
@@ -1057,28 +1071,14 @@ where
                             OwnershipFlowTerminator::Opaque { normal, early_return: None },
                             span,
                         )?;
-                        if arguments.is_empty() {
-                            self.terminate(
-                                current,
-                                OwnershipFlowTerminator::Goto {
-                                    target: invocation,
-                                    exited_scopes: Vec::new(),
-                                },
-                                span,
-                            )?;
-                        } else {
-                            let mut next = invocation;
-                            let mut reversed = arguments.into_iter().rev().peekable();
-                            while let Some(argument) = reversed.next() {
-                                let entry = if reversed.peek().is_some() {
-                                    self.block(scopes, argument.span)?
-                                } else {
-                                    current
-                                };
-                                pending.push((entry, argument, next));
-                                next = entry;
-                            }
-                        }
+                        self.schedule_sequence(
+                            &mut pending,
+                            current,
+                            arguments,
+                            invocation,
+                            scopes,
+                            span,
+                        )?;
                     } else {
                         self.evaluate_opaque(current, &[expression], kind, normal, scopes)?;
                     }
@@ -1218,6 +1218,25 @@ where
                         expression.span,
                     )?;
                 }
+                ExpressionControl::ArrayLiteral(elements) => {
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::ArrayLiteral {
+                            len: elements.len(),
+                        },
+                        normal,
+                        scopes,
+                    )?;
+                    self.budget.charge(elements.len() * 3, expression.span)?;
+                    self.schedule_sequence(
+                        &mut pending,
+                        current,
+                        elements.iter().collect(),
+                        complete,
+                        scopes,
+                        expression.span,
+                    )?;
+                }
                 ExpressionControl::FieldRead { object } => {
                     let ExprKind::Field { name, .. } = &expression.node else {
                         unreachable!("shared field-read control");
@@ -1275,17 +1294,14 @@ where
                     )?;
                     let ordered: Vec<&'a Expr> = operands.into_iter().chain(value).collect();
                     self.budget.charge(ordered.len() * 3, expression.span)?;
-                    let mut next = complete;
-                    let mut reversed = ordered.into_iter().rev().peekable();
-                    while let Some(operand) = reversed.next() {
-                        let entry = if reversed.peek().is_some() {
-                            self.block(scopes, operand.span)?
-                        } else {
-                            current
-                        };
-                        pending.push((entry, operand, next));
-                        next = entry;
-                    }
+                    self.schedule_sequence(
+                        &mut pending,
+                        current,
+                        ordered,
+                        complete,
+                        scopes,
+                        expression.span,
+                    )?;
                 }
                 ExpressionControl::TryOperand(operand) => {
                     let success = self.expression_result(
