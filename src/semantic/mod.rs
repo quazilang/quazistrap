@@ -17,7 +17,7 @@ pub use control_flow::{
     OwnershipExpressionResult,
     OwnershipFlowBlock, OwnershipFlowBlockId, OwnershipFlowEvent, OwnershipFlowScope,
     OwnershipFlowScopeId, OwnershipFlowScopeKind, OwnershipFlowTerminator, OwnershipIterationStage,
-    OwnershipPlaceAccess, OwnershipPlaceUpdate, OwnershipReturnKind,
+    OwnershipParameterEffects, OwnershipPlaceAccess, OwnershipPlaceUpdate, OwnershipReturnKind,
 };
 #[cfg(test)]
 mod control_flow_tests;
@@ -2882,6 +2882,10 @@ impl Analyzer {
         for callable in &mut ownership_call_graph {
             checkpoint()?;
             callable.control_flow = source_control_flow.get(&callable.id.callable).cloned();
+            callable.parameter_effects = callable
+                .control_flow
+                .as_deref()
+                .map(OwnershipControlFlow::parameter_effects);
         }
         // Source discovery retains binding context that symbolic mono spellings
         // lose. Its concrete identities may disambiguate emission dependencies,

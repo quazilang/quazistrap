@@ -2272,3 +2272,42 @@ fn main() void {}
         ]
     );
 }
+
+#[test]
+fn callables_summarize_source_parameter_effects() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+struct Token { id: i32 }
+fn consume(token: Token) i32 { ret token.id; }
+fn observe(pair: &Pair) i32 { ret pair.left; }
+fn mutate(pair: &Pair!, token: Token, count: i32) i32 {
+    pair.left = count;
+    const used = consume(token);
+    ret used + observe(pair);
+}
+fn hand(pair: &Pair) &i32 { ret &pair.left; }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let effects = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+            .parameter_effects
+            .clone()
+            .unwrap()
+    };
+    let mutate = effects("mutate");
+    assert!(mutate.written.contains(&0), "{mutate:?}");
+    assert!(mutate.written_through_reference.contains(&0), "{mutate:?}");
+    assert!(mutate.moved.contains(&1), "{mutate:?}");
+    assert!(mutate.read.contains(&2), "{mutate:?}");
+    assert!(mutate.borrowed.contains(&0), "{mutate:?}");
+    assert!(!mutate.writes_globals);
+    let hand = effects("hand");
+    assert!(hand.returned_borrow.contains(&0), "{hand:?}");
+    assert!(hand.written.is_empty(), "{hand:?}");
+}

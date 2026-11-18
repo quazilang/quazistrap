@@ -543,6 +543,8 @@ pub struct OwnershipCallable {
     /// Source statement flow shared by concrete instances of this declaration.
     /// Expressions and implicit effects remain unverified; never a loan proof.
     pub control_flow: Option<std::sync::Arc<super::OwnershipControlFlow>>,
+    /// Source parameter effects collected from `control_flow`.
+    pub parameter_effects: Option<super::OwnershipParameterEffects>,
     /// Closure of the recorded source calls only. This neither verifies runtime
     /// cleanup/implicit calls nor proves provenance, escapes, or a QZI artifact.
     pub source_calls_closed: bool,

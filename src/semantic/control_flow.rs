@@ -7,7 +7,7 @@
 //! implicit runtime effects and typed accesses remain unverified; these graphs
 //! grant no ownership permission and are not artifact certificates.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use super::{
@@ -341,7 +341,115 @@ enum ValidationError {
     Invalid(String),
 }
 
+/// The parameter slot a place is rooted at, with the place.
+fn slot_of(place: &OwnershipArgumentValue) -> Option<(usize, &super::OwnershipPlace)> {
+    match place {
+        OwnershipArgumentValue::Place(place) => match place.root.storage {
+            super::OwnershipPlaceStorage::Parameter(slot) => Some((slot, place)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Source effects of one callable on its parameter slots, collected from its
+/// graph and deferred closure graphs. A conservative source summary toward
+/// the D-014 export contract, not an artifact certificate.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnershipParameterEffects {
+    /// Parameters (or places rooted at them) read as values.
+    pub read: BTreeSet<usize>,
+    /// Parameters with a written place; a write through a dereference is
+    /// visible to the caller, other writes change the callee's copy.
+    pub written: BTreeSet<usize>,
+    pub written_through_reference: BTreeSet<usize>,
+    /// Parameters passed to a callee's `Move` parameter.
+    pub moved: BTreeSet<usize>,
+    pub borrowed: BTreeSet<usize>,
+    pub borrowed_exclusive: BTreeSet<usize>,
+    /// Parameters a `ret` hands out by value or as a borrow.
+    pub returned: BTreeSet<usize>,
+    pub returned_borrow: BTreeSet<usize>,
+    /// Parameters captured by a closure created in the body.
+    pub captured: BTreeSet<usize>,
+    pub writes_globals: bool,
+    /// Opaque regions and indirect, foreign or format calls whose effects
+    /// these sets do not include; zero means every source effect is modeled.
+    pub unmodeled: usize,
+}
+
 impl OwnershipControlFlow {
+    /// Collect parameter effects from this graph and its deferred graphs.
+    pub fn parameter_effects(&self) -> OwnershipParameterEffects {
+        let mut effects = OwnershipParameterEffects::default();
+        let mut pending: Vec<&OwnershipControlFlow> = vec![self];
+        while let Some(graph) = pending.pop() {
+            pending.extend(
+                graph
+                    .deferred
+                    .iter()
+                    .map(|deferred| deferred.graph.as_ref()),
+            );
+            for event in graph.blocks.iter().flat_map(|block| block.events.iter()) {
+                match event {
+                    OwnershipFlowEvent::PlaceAccess { access, place, .. } => {
+                        if let OwnershipArgumentValue::Place(written) = place
+                            && *access == OwnershipPlaceAccess::Write
+                            && matches!(written.root.storage, super::OwnershipPlaceStorage::Global)
+                        {
+                            effects.writes_globals = true;
+                        }
+                        let Some((slot, place)) = slot_of(place) else {
+                            continue;
+                        };
+                        match access {
+                            OwnershipPlaceAccess::Read => {
+                                effects.read.insert(slot);
+                            }
+                            OwnershipPlaceAccess::Write => {
+                                effects.written.insert(slot);
+                                if place.projections.iter().any(|projection| {
+                                    matches!(projection, super::OwnershipProjection::Deref { .. })
+                                }) {
+                                    effects.written_through_reference.insert(slot);
+                                }
+                            }
+                            OwnershipPlaceAccess::Move => {
+                                effects.moved.insert(slot);
+                            }
+                            OwnershipPlaceAccess::Borrow { exclusive } => {
+                                effects.borrowed.insert(slot);
+                                if *exclusive {
+                                    effects.borrowed_exclusive.insert(slot);
+                                }
+                            }
+                        }
+                    }
+                    OwnershipFlowEvent::Escape { borrow, place, .. } => {
+                        if let Some((slot, _)) = slot_of(place) {
+                            if borrow.is_some() {
+                                effects.returned_borrow.insert(slot);
+                            } else {
+                                effects.returned.insert(slot);
+                            }
+                        }
+                    }
+                    OwnershipFlowEvent::Capture { place, .. } => {
+                        if let Some((slot, _)) = slot_of(place) {
+                            effects.captured.insert(slot);
+                        }
+                    }
+                    OwnershipFlowEvent::Evaluate { .. }
+                    | OwnershipFlowEvent::IndirectInvoke { .. }
+                    | OwnershipFlowEvent::ForeignInvoke { .. }
+                    | OwnershipFlowEvent::FormatInvoke { .. } => effects.unmodeled += 1,
+                    _ => {}
+                }
+            }
+        }
+        effects
+    }
+
     /// Validate structural edges and lexical-scope transfers only. This does
     /// not validate expression effects, ownership, destruction or feasibility.
     pub fn validate(&self) -> Result<(), String> {

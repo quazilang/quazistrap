@@ -443,6 +443,7 @@ impl Analyzer {
                     signature,
                     calls,
                     control_flow: None,
+                    parameter_effects: None,
                     source_calls_closed: false,
                 },
             );

@@ -57,6 +57,19 @@ by current codegen. Removing all symbolic helper emission and changing to an
 injective artifact symbol format require their own coordinated implementation;
 until then, an ambiguous emitted name is a compiler error.
 
+## Parameter effects
+
+Each callable with a source graph also carries `parameter_effects`, collected
+from its graph and deferred closure graphs: parameter slots read, written
+(and written through a dereference, which the caller observes), moved into
+`Move` parameters, borrowed (shared or exclusive), returned by value or as a
+borrow, and captured by closures, plus whether it writes globals. `unmodeled`
+counts opaque regions and indirect, foreign and format calls whose effects
+the sets omit; zero means every source effect of the body is modeled. Callee
+effects are not composed yet: a call contributes only the moves and borrows of
+its arguments. This is source evidence toward the D-014 export summary, not
+an artifact certificate.
+
 ## Support boundary
 
 The graph does not drive the lexical temporary-loan shortcut. Its signatures
